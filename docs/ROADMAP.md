@@ -20,6 +20,8 @@ Definition of done:
 - search-space enumeration scaffold;
 - split invocation model: splitters produce `FoldSet` through the campaign plan,
   not through ordinary data-transform nodes;
+- leakage-unit, aggregation and data/model shape policies;
+- shape deltas for augmentation, feature selection, filtering and fusion;
 - sequential fold/variant executor;
 - mock controllers proving external operator orchestration;
 - `PredictionStore` and OOF join with leakage rejection;

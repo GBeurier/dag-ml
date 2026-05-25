@@ -136,6 +136,42 @@ Controller outputs:
 - structured errors;
 - artifact refs or serialization bytes.
 
+## Public Method Shape
+
+The data/model piloting contract must be visible in public Rust and binding
+APIs. It must not be hidden inside controller-specific side effects.
+
+Minimum public coordinator flow:
+
+| Method | Inputs | Output |
+|---|---|---|
+| `compile` | frontend pipeline IR, frontend registry | `GraphSpec`, `CampaignSpec` |
+| `plan` | graph, campaign, controller manifests, dataset schema, data planner | immutable `ExecutionPlan` |
+| `fit_cv` | execution plan, data provider handle, controller registry, stores | `CVResult` with prediction and lineage refs |
+| `select` | CV result, ranking policy | `SelectedGraph` / selected variant refs |
+| `refit` | selected graph, execution plan, data provider handle, stores | `RefitResult` / bundle inputs |
+| `export_bundle` | selected graph, refit result, artifacts, fingerprints | `ExecutionBundle` |
+| `predict` | bundle, new data provider handle | prediction blocks |
+| `explain` | bundle, new data provider handle, target node/method | explanation payload refs |
+
+Minimum controller-facing request/response shapes:
+
+| Type | Required fields |
+|---|---|
+| `ControllerPlanRequest` | node id, operator params, phase set, data requirements, input/output ports, data schema fingerprint |
+| `SplitRequest` | identity table, sample relation table, split policy, seed context |
+| `TaskRequest` | phase, node id, fold id, branch path, variant id, data view, data-plan refs, input handles, seed context |
+| `TaskResponse` | output handles, prediction blocks, sample relation deltas, metrics, artifacts, lineage payload |
+
+Every shape-changing operation must declare the affected domain:
+
+| Domain | Examples | Contract |
+|---|---|---|
+| row domain | sample filtering, sample augmentation, repetitions, group splits | changes identity/sample relation or view membership |
+| feature domain | preprocessing, feature augmentation, feature selection, source fusion | changes representation/schema/feature names |
+| target domain | y-transform, target aggregation, multi-target mapping | changes target space and inverse-transform requirements |
+| prediction domain | model predict, OOF join, aggregation of repetitions | changes prediction block shape and aggregation level |
+
 ## DAG, Campaign Plan And Splits
 
 This is the key correction.
@@ -196,6 +232,208 @@ Implementation consequence:
 - A legacy or compatibility graph node may exist only as a control node that
   emits no feature data and is excluded from model/data transforms.
 
+## Identity And Leakage Units
+
+The coordinator must distinguish physical rows from logical samples. This is
+critical for products with repeated measurements: several `X` observations can
+share one `Y`.
+
+| Identity | Meaning | Owned by |
+|---|---|---|
+| `ObservationId` | physical row/acquisition in one source | data provider |
+| `SampleId` | logical sample requested by the user | data provider, validated by core |
+| `TargetId` | target/label unit; may cover one or more samples | data provider, validated by core |
+| `GroupId` | leakage unit such as plant, product, patient, plot, batch | data provider, validated by core |
+| `OriginId` | original sample/observation from which an augmented row was derived | data provider/controller, validated by core |
+| `RepetitionId` | repeated acquisition id inside a sample | data provider |
+
+Split policies must declare the leakage unit:
+
+| `split_unit` | Rule |
+|---|---|
+| `observation` | only the same observation is atomic; unsafe for repeated X / one Y unless explicitly allowed |
+| `sample` | all observations of one sample stay on the same fold side |
+| `target` | all samples sharing one target stay on the same fold side |
+| `group` | all samples/observations sharing one group stay on the same fold side |
+
+Defaults:
+
+- repeated measurements default to `split_unit="sample"`;
+- group ids, when present and requested, dominate sample ids for leakage;
+- augmentation origin constraints are always checked unless explicitly disabled by
+  a traceable unsafe policy;
+- fold membership is stored at sample/target/group level and broadcast to
+  observations during materialization.
+
+The core refuses a split when:
+
+- a requested split unit is absent from the sample relation table;
+- one leakage unit appears in both train and validation of a fold;
+- an augmented row derived from a validation origin appears in train;
+- repeated observations of the same sample are split across train/validation
+  under `split_unit="sample"`;
+- a feature-dependent splitter returns folds not expressible in stable ids.
+
+## Repetitions, Aggregation And Refit
+
+Repeated observations are first-class. The core must support models trained on
+individual observations while also evaluating and selecting on aggregated
+sample-level predictions.
+
+Example: several spectra (`ObservationId`) for the same product (`SampleId`) with
+one chemical value (`TargetId`).
+
+Required prediction levels:
+
+| Level | Meaning |
+|---|---|
+| `observation` | one prediction per physical acquisition |
+| `sample` | aggregation of observations for the same sample |
+| `target` | aggregation of samples for the same target unit |
+| `group` | aggregation at group level, only if explicitly requested |
+
+Required aggregation policies:
+
+| Policy field | Purpose |
+|---|---|
+| `aggregation_level` | observation, sample, target, group |
+| `method` | mean, weighted_mean, median, vote, custom_controller |
+| `weights` | none, quality, repetition_count, controller_emitted |
+| `emit_parallel_metrics` | whether raw and aggregated metrics are both computed |
+| `selection_metric_level` | which level drives variant/model selection |
+| `store_raw_predictions` | keep observation-level predictions for audit |
+| `store_aggregated_predictions` | keep aggregated predictions for ranking/replay |
+
+FIT_CV requirements:
+
+1. Models may fit on observation-level rows if the data plan says so.
+2. Validation predictions are first captured at the controller-emitted level.
+3. The Rust core aggregates predictions by identity according to policy.
+4. Metrics are computed in parallel when requested: raw observation metrics and
+   aggregated sample/target metrics.
+5. Selection must declare which metric level is authoritative.
+6. OOF joins use the declared aggregation level and must not mix raw and
+   aggregated predictions implicitly.
+
+REFIT requirements:
+
+1. The final fit boundary is the selected training universe, excluding held-out
+   test samples.
+2. Refit may train on all repeated observations of selected samples if the
+   `DataModelShapePlan` declares observation-level fitting.
+3. Refit prediction outputs must preserve the same aggregation policy used for
+   selection unless the user explicitly chooses a different predict policy.
+4. Final prediction blocks may store both raw repetition predictions and
+   aggregated sample predictions.
+5. A bundle must record whether the selected model was chosen by observation,
+   sample, target or group metrics.
+
+## Data/Model Shape Plan
+
+The coordinator must make shape control explicit because augmentations,
+selection, fusion and aggregation change what a controller sees.
+
+Each model or transform node receives a `DataModelShapePlan`:
+
+| Field | Meaning |
+|---|---|
+| `input_granularity` | observation, sample, target, group |
+| `target_granularity` | observation, sample, target, group |
+| `fit_rows` | train observations/samples allowed for fit |
+| `predict_rows` | validation/test/final rows expected for predict |
+| `feature_namespace` | source/branch/augmentation prefixes |
+| `feature_schema_fingerprint` | stable identity of column/feature layout |
+| `target_space` | raw, transformed, scaled, encoded |
+| `aggregation_policy` | how controller predictions are reduced |
+| `augmentation_policy` | sample/feature augmentation rules |
+| `selection_policy` | feature selection and supervised selection fit scope |
+
+Shape-changing controllers must return a shape delta:
+
+| Delta | Examples | Required validation |
+|---|---|---|
+| `row_delta` | sample filter, sample augmentation, separation branch | identity and fold boundaries remain valid |
+| `feature_delta` | feature augmentation, selection, source fusion | feature schema fingerprint changes deterministically |
+| `target_delta` | y scaling, target encoding | inverse-transform and target space are recorded |
+| `prediction_delta` | probability output, repetition aggregation | prediction columns and aggregation level are recorded |
+
+The core validates deltas before downstream tasks can consume them.
+
+## Augmentation, Selection, Filtering And Fusion
+
+These operations are leakage-sensitive because they can change rows, features or
+target spaces.
+
+### Sample Augmentation
+
+Sample augmentation creates new observations or samples. Default policy:
+
+- FIT_CV: train partition only;
+- validation/test rows are never augmented for training metrics;
+- each augmented row carries `OriginId`;
+- an augmented row inherits target, group and fold boundary from its origin;
+- OOF and scoring are reported on original identities unless policy opts into
+  augmented reporting.
+
+Forbidden by default:
+
+- validation-origin augmentation appearing in train;
+- augmented rows counted as independent samples for group/sample metrics;
+- sample augmentation after a prediction join unless explicitly declared safe.
+
+### Feature Augmentation
+
+Feature augmentation changes columns/features but not identity.
+
+Rules:
+
+- stateless feature augmentation may run on train/validation/test if declared
+  deterministic and fitted nowhere;
+- stateful feature augmentation must fit on fold train and apply to validation;
+- supervised feature augmentation is treated like supervised feature selection and
+  must use fold-train targets only;
+- feature namespaces and schema fingerprints must change deterministically;
+- source/branch/augmentation provenance is preserved for merge and explain.
+
+### Feature Selection
+
+Feature selection is a transform that may be supervised or unsupervised.
+
+Rules:
+
+- supervised feature selection fits only inside the current train boundary;
+- selected feature masks are artifacts with fold/refit lineage;
+- validation/test/final data only receive `apply`, never `fit`;
+- downstream feature joins must verify compatible selected schemas or use an
+  explicit missing-feature policy;
+- selection masks used at REFIT are recorded separately from CV-fold masks.
+
+### Sample Filtering / Exclusion
+
+Filtering changes row membership.
+
+Rules:
+
+- filters must declare whether they affect train only, predict only, all
+  partitions, or branch-local views;
+- train-only exclusion cannot silently remove validation samples from scoring;
+- separation branches must produce disjoint or explicitly overlapping identity
+  sets according to branch policy;
+- all filters emit a `row_delta` with before/after identity fingerprints.
+
+### Source Fusion And Merge
+
+Feature/source fusion changes feature shape and possibly missingness.
+
+Rules:
+
+- sample alignment remains data-layer work, but the core records and validates
+  the chosen alignment plan fingerprint;
+- feature joins are namespace-stable and branch-aware;
+- prediction joins are OOF-checked by the core;
+- mixed joins must declare which inputs are raw features and which are
+  predictions, with separate leakage checks.
+
 ## Phase Model
 
 The coordinator executes:
@@ -224,6 +462,9 @@ An `ExecutionPlan` is the Rust-owned, immutable plan after compile and plan:
 - controller manifests and versions;
 - variant list or lazy enumerator;
 - split invocation specs and resulting fold fingerprints;
+- leakage unit policy;
+- data/model shape plans per node;
+- aggregation policies for prediction/evaluation/refit;
 - topological task groups;
 - phase gates per node;
 - expected input/output contracts;
@@ -262,6 +503,8 @@ Before dispatch, the Rust core checks:
 - phase is allowed by controller manifest;
 - data plan fingerprint matches;
 - view sample ids are in the active fold/partition;
+- leakage unit membership is compatible with the active fold;
+- task data/model shape plan matches the phase and controller manifest;
 - seed is derived from the canonical path;
 - unsafe policy is explicit if required.
 
@@ -273,6 +516,8 @@ After dispatch, the Rust core checks:
 - train/validation/test/final partitions are legal for the phase;
 - augmentation origins do not cross fold boundaries;
 - group/repetition/target leakage units remain on one side of a fold;
+- shape deltas are declared before downstream consumption;
+- aggregation level and prediction columns match the node policy;
 - artifact refs and handle lifetimes are registered;
 - lineage was recorded.
 
@@ -294,6 +539,10 @@ Rules:
 6. Group, target and repetition leakage units are validated from sample relation
    facts supplied by the data layer.
 7. OOF joins are by sample identity, never by row position.
+8. Repetition aggregation is explicit; raw observation predictions and aggregated
+   sample/target predictions are never silently mixed.
+9. Refit uses the selected aggregation and shape policies unless the predict/refit
+   policy explicitly overrides them and records the override.
 
 ## Traceability
 
@@ -308,6 +557,8 @@ Every accepted task emits or updates a `LineageRecord` containing:
 - controller id/version;
 - params fingerprint;
 - data-plan fingerprint;
+- data/model shape fingerprint;
+- aggregation level and policy fingerprint;
 - input lineage refs;
 - output handle/artifact refs;
 - seed;
@@ -355,6 +606,9 @@ architecture.
 | Split step mutates pipeline/dataset state | Splitter controller invocation produces `FoldSet` in `CampaignPlan` |
 | Branching stored in mutable contexts/snapshots | `Fork/Map` graph semantics with explicit branch path |
 | Merge reconstructs features/predictions in Python controllers | Rust-owned feature/prediction join contracts and OOF validation |
+| Repetition averages such as `avg` / `w_avg` are controller/runtime conventions | Aggregation policy is explicit, fingerprinted and evaluated in parallel with raw predictions |
+| Several spectra can share one product target through dataset conventions | `ObservationId`, `SampleId`, `TargetId`, `GroupId`, `OriginId` are first-class leakage identities |
+| Feature/sample augmentation and selection are controller-specific effects | Shape deltas, fit scopes and augmentation/selection policies are validated by the core |
 | NIRS-shaped data assumptions leak through dataset/model logic | Generic data contracts through `dag-ml-data` |
 | Dynamic routing through Python registry | Binding registries export controller manifests to Rust |
 | Trace, artifacts and prediction store are pipeline-specific | Rust-owned lineage/cache/artifact/prediction contracts |
@@ -388,6 +642,11 @@ The next implementation layer must make the coordinator visible:
 12. in-memory lineage recorder
 13. mock controller conformance tests
 14. split invocation model that produces and validates `FoldSet`
+15. `LeakageUnitPolicy`
+16. `AggregationPolicy`
+17. `DataModelShapePlan`
+18. `ShapeDelta`
+19. augmentation, feature-selection and filtering policies
 
 The existing OOF/fold/data-plan code remains useful, but it is not the product
 shape by itself. The product shape starts when a compiled `ExecutionPlan` drives
@@ -409,5 +668,9 @@ An implementation is aligned only if all answers are "yes":
    artifacts and lineage?
 7. Can the same core coordinate Python, native C++, R, JS or bioinformatics
    controllers with the same safety rules?
+8. Can repeated observations with one target be trained, scored, aggregated,
+   selected and refit without leakage or hidden metric-level changes?
+9. Can feature/sample augmentation, feature selection, filtering and fusion
+   declare shape deltas that the core validates before downstream use?
 
 If any answer is "no", the implementation has drifted from the product goal.

@@ -24,6 +24,10 @@ Not implemented yet:
   `NodeResult` and `RunContext`;
 - executor and scheduler;
 - split invocation as campaign-plan controller call;
+- leakage-unit policy for sample/target/group/repetition/origin boundaries;
+- aggregation policy for repeated observations and sample-level metrics;
+- data/model shape plan plus shape deltas for augmentation, selection, filtering
+  and fusion;
 - artifact/cache/lineage stores;
 - Arrow prediction storage;
 - host controller adapters;
