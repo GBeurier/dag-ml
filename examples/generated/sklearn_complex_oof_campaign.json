@@ -1,0 +1,3313 @@
+{
+  "fold_set": {
+    "folds": [
+      {
+        "fold_id": "fold:0",
+        "metadata": {
+          "n_train_augmented_observations": 135,
+          "n_train_observations": 135,
+          "n_validation_observations": 45,
+          "splitter": "sklearn.model_selection.GroupKFold"
+        },
+        "train_sample_ids": [
+          "sample:000",
+          "sample:001",
+          "sample:002",
+          "sample:003",
+          "sample:004",
+          "sample:010",
+          "sample:011",
+          "sample:012",
+          "sample:013",
+          "sample:014",
+          "sample:015",
+          "sample:016",
+          "sample:017",
+          "sample:018",
+          "sample:019",
+          "sample:020",
+          "sample:021",
+          "sample:022",
+          "sample:023",
+          "sample:024",
+          "sample:025",
+          "sample:026",
+          "sample:027",
+          "sample:028",
+          "sample:029",
+          "sample:035",
+          "sample:036",
+          "sample:037",
+          "sample:038",
+          "sample:039",
+          "sample:040",
+          "sample:041",
+          "sample:042",
+          "sample:043",
+          "sample:044",
+          "sample:045",
+          "sample:046",
+          "sample:047",
+          "sample:048",
+          "sample:049",
+          "sample:050",
+          "sample:051",
+          "sample:052",
+          "sample:053",
+          "sample:054"
+        ],
+        "validation_sample_ids": [
+          "sample:005",
+          "sample:006",
+          "sample:007",
+          "sample:008",
+          "sample:009",
+          "sample:030",
+          "sample:031",
+          "sample:032",
+          "sample:033",
+          "sample:034",
+          "sample:055",
+          "sample:056",
+          "sample:057",
+          "sample:058",
+          "sample:059"
+        ]
+      },
+      {
+        "fold_id": "fold:1",
+        "metadata": {
+          "n_train_augmented_observations": 135,
+          "n_train_observations": 135,
+          "n_validation_observations": 45,
+          "splitter": "sklearn.model_selection.GroupKFold"
+        },
+        "train_sample_ids": [
+          "sample:005",
+          "sample:006",
+          "sample:007",
+          "sample:008",
+          "sample:009",
+          "sample:010",
+          "sample:011",
+          "sample:012",
+          "sample:013",
+          "sample:014",
+          "sample:015",
+          "sample:016",
+          "sample:017",
+          "sample:018",
+          "sample:019",
+          "sample:020",
+          "sample:021",
+          "sample:022",
+          "sample:023",
+          "sample:024",
+          "sample:030",
+          "sample:031",
+          "sample:032",
+          "sample:033",
+          "sample:034",
+          "sample:035",
+          "sample:036",
+          "sample:037",
+          "sample:038",
+          "sample:039",
+          "sample:040",
+          "sample:041",
+          "sample:042",
+          "sample:043",
+          "sample:044",
+          "sample:045",
+          "sample:046",
+          "sample:047",
+          "sample:048",
+          "sample:049",
+          "sample:055",
+          "sample:056",
+          "sample:057",
+          "sample:058",
+          "sample:059"
+        ],
+        "validation_sample_ids": [
+          "sample:000",
+          "sample:001",
+          "sample:002",
+          "sample:003",
+          "sample:004",
+          "sample:025",
+          "sample:026",
+          "sample:027",
+          "sample:028",
+          "sample:029",
+          "sample:050",
+          "sample:051",
+          "sample:052",
+          "sample:053",
+          "sample:054"
+        ]
+      },
+      {
+        "fold_id": "fold:2",
+        "metadata": {
+          "n_train_augmented_observations": 150,
+          "n_train_observations": 150,
+          "n_validation_observations": 30,
+          "splitter": "sklearn.model_selection.GroupKFold"
+        },
+        "train_sample_ids": [
+          "sample:000",
+          "sample:001",
+          "sample:002",
+          "sample:003",
+          "sample:004",
+          "sample:005",
+          "sample:006",
+          "sample:007",
+          "sample:008",
+          "sample:009",
+          "sample:010",
+          "sample:011",
+          "sample:012",
+          "sample:013",
+          "sample:014",
+          "sample:015",
+          "sample:016",
+          "sample:017",
+          "sample:018",
+          "sample:019",
+          "sample:025",
+          "sample:026",
+          "sample:027",
+          "sample:028",
+          "sample:029",
+          "sample:030",
+          "sample:031",
+          "sample:032",
+          "sample:033",
+          "sample:034",
+          "sample:035",
+          "sample:036",
+          "sample:037",
+          "sample:038",
+          "sample:039",
+          "sample:040",
+          "sample:041",
+          "sample:042",
+          "sample:043",
+          "sample:044",
+          "sample:050",
+          "sample:051",
+          "sample:052",
+          "sample:053",
+          "sample:054",
+          "sample:055",
+          "sample:056",
+          "sample:057",
+          "sample:058",
+          "sample:059"
+        ],
+        "validation_sample_ids": [
+          "sample:020",
+          "sample:021",
+          "sample:022",
+          "sample:023",
+          "sample:024",
+          "sample:045",
+          "sample:046",
+          "sample:047",
+          "sample:048",
+          "sample:049"
+        ]
+      },
+      {
+        "fold_id": "fold:3",
+        "metadata": {
+          "n_train_augmented_observations": 150,
+          "n_train_observations": 150,
+          "n_validation_observations": 30,
+          "splitter": "sklearn.model_selection.GroupKFold"
+        },
+        "train_sample_ids": [
+          "sample:000",
+          "sample:001",
+          "sample:002",
+          "sample:003",
+          "sample:004",
+          "sample:005",
+          "sample:006",
+          "sample:007",
+          "sample:008",
+          "sample:009",
+          "sample:010",
+          "sample:011",
+          "sample:012",
+          "sample:013",
+          "sample:014",
+          "sample:020",
+          "sample:021",
+          "sample:022",
+          "sample:023",
+          "sample:024",
+          "sample:025",
+          "sample:026",
+          "sample:027",
+          "sample:028",
+          "sample:029",
+          "sample:030",
+          "sample:031",
+          "sample:032",
+          "sample:033",
+          "sample:034",
+          "sample:035",
+          "sample:036",
+          "sample:037",
+          "sample:038",
+          "sample:039",
+          "sample:045",
+          "sample:046",
+          "sample:047",
+          "sample:048",
+          "sample:049",
+          "sample:050",
+          "sample:051",
+          "sample:052",
+          "sample:053",
+          "sample:054",
+          "sample:055",
+          "sample:056",
+          "sample:057",
+          "sample:058",
+          "sample:059"
+        ],
+        "validation_sample_ids": [
+          "sample:015",
+          "sample:016",
+          "sample:017",
+          "sample:018",
+          "sample:019",
+          "sample:040",
+          "sample:041",
+          "sample:042",
+          "sample:043",
+          "sample:044"
+        ]
+      },
+      {
+        "fold_id": "fold:4",
+        "metadata": {
+          "n_train_augmented_observations": 150,
+          "n_train_observations": 150,
+          "n_validation_observations": 30,
+          "splitter": "sklearn.model_selection.GroupKFold"
+        },
+        "train_sample_ids": [
+          "sample:000",
+          "sample:001",
+          "sample:002",
+          "sample:003",
+          "sample:004",
+          "sample:005",
+          "sample:006",
+          "sample:007",
+          "sample:008",
+          "sample:009",
+          "sample:015",
+          "sample:016",
+          "sample:017",
+          "sample:018",
+          "sample:019",
+          "sample:020",
+          "sample:021",
+          "sample:022",
+          "sample:023",
+          "sample:024",
+          "sample:025",
+          "sample:026",
+          "sample:027",
+          "sample:028",
+          "sample:029",
+          "sample:030",
+          "sample:031",
+          "sample:032",
+          "sample:033",
+          "sample:034",
+          "sample:040",
+          "sample:041",
+          "sample:042",
+          "sample:043",
+          "sample:044",
+          "sample:045",
+          "sample:046",
+          "sample:047",
+          "sample:048",
+          "sample:049",
+          "sample:050",
+          "sample:051",
+          "sample:052",
+          "sample:053",
+          "sample:054",
+          "sample:055",
+          "sample:056",
+          "sample:057",
+          "sample:058",
+          "sample:059"
+        ],
+        "validation_sample_ids": [
+          "sample:010",
+          "sample:011",
+          "sample:012",
+          "sample:013",
+          "sample:014",
+          "sample:035",
+          "sample:036",
+          "sample:037",
+          "sample:038",
+          "sample:039"
+        ]
+      }
+    ],
+    "id": "sklearn_complex_group_oof",
+    "sample_groups": {
+      "sample:000": "group:00",
+      "sample:001": "group:00",
+      "sample:002": "group:00",
+      "sample:003": "group:00",
+      "sample:004": "group:00",
+      "sample:005": "group:01",
+      "sample:006": "group:01",
+      "sample:007": "group:01",
+      "sample:008": "group:01",
+      "sample:009": "group:01",
+      "sample:010": "group:02",
+      "sample:011": "group:02",
+      "sample:012": "group:02",
+      "sample:013": "group:02",
+      "sample:014": "group:02",
+      "sample:015": "group:03",
+      "sample:016": "group:03",
+      "sample:017": "group:03",
+      "sample:018": "group:03",
+      "sample:019": "group:03",
+      "sample:020": "group:04",
+      "sample:021": "group:04",
+      "sample:022": "group:04",
+      "sample:023": "group:04",
+      "sample:024": "group:04",
+      "sample:025": "group:05",
+      "sample:026": "group:05",
+      "sample:027": "group:05",
+      "sample:028": "group:05",
+      "sample:029": "group:05",
+      "sample:030": "group:06",
+      "sample:031": "group:06",
+      "sample:032": "group:06",
+      "sample:033": "group:06",
+      "sample:034": "group:06",
+      "sample:035": "group:07",
+      "sample:036": "group:07",
+      "sample:037": "group:07",
+      "sample:038": "group:07",
+      "sample:039": "group:07",
+      "sample:040": "group:08",
+      "sample:041": "group:08",
+      "sample:042": "group:08",
+      "sample:043": "group:08",
+      "sample:044": "group:08",
+      "sample:045": "group:09",
+      "sample:046": "group:09",
+      "sample:047": "group:09",
+      "sample:048": "group:09",
+      "sample:049": "group:09",
+      "sample:050": "group:10",
+      "sample:051": "group:10",
+      "sample:052": "group:10",
+      "sample:053": "group:10",
+      "sample:054": "group:10",
+      "sample:055": "group:11",
+      "sample:056": "group:11",
+      "sample:057": "group:11",
+      "sample:058": "group:11",
+      "sample:059": "group:11"
+    },
+    "sample_ids": [
+      "sample:000",
+      "sample:001",
+      "sample:002",
+      "sample:003",
+      "sample:004",
+      "sample:005",
+      "sample:006",
+      "sample:007",
+      "sample:008",
+      "sample:009",
+      "sample:010",
+      "sample:011",
+      "sample:012",
+      "sample:013",
+      "sample:014",
+      "sample:015",
+      "sample:016",
+      "sample:017",
+      "sample:018",
+      "sample:019",
+      "sample:020",
+      "sample:021",
+      "sample:022",
+      "sample:023",
+      "sample:024",
+      "sample:025",
+      "sample:026",
+      "sample:027",
+      "sample:028",
+      "sample:029",
+      "sample:030",
+      "sample:031",
+      "sample:032",
+      "sample:033",
+      "sample:034",
+      "sample:035",
+      "sample:036",
+      "sample:037",
+      "sample:038",
+      "sample:039",
+      "sample:040",
+      "sample:041",
+      "sample:042",
+      "sample:043",
+      "sample:044",
+      "sample:045",
+      "sample:046",
+      "sample:047",
+      "sample:048",
+      "sample:049",
+      "sample:050",
+      "sample:051",
+      "sample:052",
+      "sample:053",
+      "sample:054",
+      "sample:055",
+      "sample:056",
+      "sample:057",
+      "sample:058",
+      "sample:059"
+    ]
+  },
+  "join_policy": {
+    "allow_train_predictions_as_features": false,
+    "include_partitions": [
+      "validation"
+    ],
+    "join_on": "sample_id",
+    "node_id": "merge:heterogeneous_stack_features"
+  },
+  "prediction_blocks": [
+    {
+      "fold_id": "fold:0",
+      "partition": "validation",
+      "prediction_id": "branch:b0.variant:pca10_ridge_a03:fold:0",
+      "producer_node": "branch:b0.variant:pca10_ridge_a03",
+      "sample_ids": [
+        "sample:005",
+        "sample:006",
+        "sample:007",
+        "sample:008",
+        "sample:009",
+        "sample:030",
+        "sample:031",
+        "sample:032",
+        "sample:033",
+        "sample:034",
+        "sample:055",
+        "sample:056",
+        "sample:057",
+        "sample:058",
+        "sample:059"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          2.995709564145223
+        ],
+        [
+          0.9461177232311521
+        ],
+        [
+          1.4756423561810976
+        ],
+        [
+          0.6686785258874868
+        ],
+        [
+          0.5401878831950487
+        ],
+        [
+          1.3842232664187772
+        ],
+        [
+          -0.1115411220102908
+        ],
+        [
+          2.0470161126044335
+        ],
+        [
+          1.1895044050818449
+        ],
+        [
+          -0.5985765814960372
+        ],
+        [
+          4.231801144053256
+        ],
+        [
+          2.974771334442718
+        ],
+        [
+          1.1022086904306094
+        ],
+        [
+          2.320686948460994
+        ],
+        [
+          4.35513862067098
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:0",
+      "partition": "validation",
+      "prediction_id": "branch:b0.variant:pca16_ridge_a12:fold:0",
+      "producer_node": "branch:b0.variant:pca16_ridge_a12",
+      "sample_ids": [
+        "sample:005",
+        "sample:006",
+        "sample:007",
+        "sample:008",
+        "sample:009",
+        "sample:030",
+        "sample:031",
+        "sample:032",
+        "sample:033",
+        "sample:034",
+        "sample:055",
+        "sample:056",
+        "sample:057",
+        "sample:058",
+        "sample:059"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          3.231292382496943
+        ],
+        [
+          0.017176633583557293
+        ],
+        [
+          1.3353896293560428
+        ],
+        [
+          0.612745311280619
+        ],
+        [
+          -0.23550285576724536
+        ],
+        [
+          1.9807485247475414
+        ],
+        [
+          0.6483414138611073
+        ],
+        [
+          0.7043650762985565
+        ],
+        [
+          -0.8961005864623054
+        ],
+        [
+          0.07128534103953514
+        ],
+        [
+          4.700076960248221
+        ],
+        [
+          3.8881424104965867
+        ],
+        [
+          2.803641241409455
+        ],
+        [
+          4.1596386507947365
+        ],
+        [
+          4.502424511705754
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:0",
+      "partition": "validation",
+      "prediction_id": "branch:b1.variant:rf_select_k28:fold:0",
+      "producer_node": "branch:b1.variant:rf_select_k28",
+      "sample_ids": [
+        "sample:005",
+        "sample:006",
+        "sample:007",
+        "sample:008",
+        "sample:009",
+        "sample:030",
+        "sample:031",
+        "sample:032",
+        "sample:033",
+        "sample:034",
+        "sample:055",
+        "sample:056",
+        "sample:057",
+        "sample:058",
+        "sample:059"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.0362891470875988
+        ],
+        [
+          0.15608145507489732
+        ],
+        [
+          1.5545852667757263
+        ],
+        [
+          -0.5638119272922645
+        ],
+        [
+          -0.42102665628056996
+        ],
+        [
+          0.7216747424232177
+        ],
+        [
+          -0.6657312186605753
+        ],
+        [
+          0.9676339818212168
+        ],
+        [
+          0.13279633993086862
+        ],
+        [
+          -1.5060237767037714
+        ],
+        [
+          1.6657022871421578
+        ],
+        [
+          0.4645758832769804
+        ],
+        [
+          2.362280180858676
+        ],
+        [
+          0.8515163159621911
+        ],
+        [
+          1.9287722069315982
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:0",
+      "partition": "validation",
+      "prediction_id": "branch:b1.variant:rf_select_k40:fold:0",
+      "producer_node": "branch:b1.variant:rf_select_k40",
+      "sample_ids": [
+        "sample:005",
+        "sample:006",
+        "sample:007",
+        "sample:008",
+        "sample:009",
+        "sample:030",
+        "sample:031",
+        "sample:032",
+        "sample:033",
+        "sample:034",
+        "sample:055",
+        "sample:056",
+        "sample:057",
+        "sample:058",
+        "sample:059"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.6006042226815551
+        ],
+        [
+          -0.16650466459759383
+        ],
+        [
+          1.1391102199508032
+        ],
+        [
+          0.08739928212248517
+        ],
+        [
+          0.09919184691592754
+        ],
+        [
+          1.1288441383247674
+        ],
+        [
+          -0.8013608378081082
+        ],
+        [
+          0.8283531979646845
+        ],
+        [
+          0.513997865614793
+        ],
+        [
+          -1.3999456530309164
+        ],
+        [
+          1.7712529191011963
+        ],
+        [
+          0.7287514247748766
+        ],
+        [
+          1.708335049938453
+        ],
+        [
+          1.2088280796767823
+        ],
+        [
+          1.643673938862359
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:0",
+      "partition": "validation",
+      "prediction_id": "branch:b2.variant:poly_extra_k45:fold:0",
+      "producer_node": "branch:b2.variant:poly_extra_k45",
+      "sample_ids": [
+        "sample:005",
+        "sample:006",
+        "sample:007",
+        "sample:008",
+        "sample:009",
+        "sample:030",
+        "sample:031",
+        "sample:032",
+        "sample:033",
+        "sample:034",
+        "sample:055",
+        "sample:056",
+        "sample:057",
+        "sample:058",
+        "sample:059"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -1.4821252912260758
+        ],
+        [
+          -2.255908495862718
+        ],
+        [
+          -1.1972114091793806
+        ],
+        [
+          1.075337594241043
+        ],
+        [
+          0.4301243057408664
+        ],
+        [
+          1.103457007518746
+        ],
+        [
+          -0.646837947780718
+        ],
+        [
+          -0.4714402662183103
+        ],
+        [
+          1.5328247454552082
+        ],
+        [
+          0.6230156746066101
+        ],
+        [
+          0.5473200484429678
+        ],
+        [
+          0.6288128472179523
+        ],
+        [
+          1.9940990371696337
+        ],
+        [
+          1.748216222233989
+        ],
+        [
+          2.2585931323585218
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:0",
+      "partition": "validation",
+      "prediction_id": "branch:b2.variant:poly_extra_k80:fold:0",
+      "producer_node": "branch:b2.variant:poly_extra_k80",
+      "sample_ids": [
+        "sample:005",
+        "sample:006",
+        "sample:007",
+        "sample:008",
+        "sample:009",
+        "sample:030",
+        "sample:031",
+        "sample:032",
+        "sample:033",
+        "sample:034",
+        "sample:055",
+        "sample:056",
+        "sample:057",
+        "sample:058",
+        "sample:059"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -1.712116269643171
+        ],
+        [
+          -3.0619758905693986
+        ],
+        [
+          -0.9033439830994063
+        ],
+        [
+          0.4068880113074392
+        ],
+        [
+          0.3747570591825496
+        ],
+        [
+          1.073850268302224
+        ],
+        [
+          -0.16201485226041082
+        ],
+        [
+          -0.18291156820432844
+        ],
+        [
+          1.4718461347448966
+        ],
+        [
+          0.4019440527351426
+        ],
+        [
+          0.9418825647600721
+        ],
+        [
+          0.5417124238472959
+        ],
+        [
+          2.0259645758533797
+        ],
+        [
+          2.0553629048703326
+        ],
+        [
+          2.016072141361401
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:1",
+      "partition": "validation",
+      "prediction_id": "branch:b0.variant:pca10_ridge_a03:fold:1",
+      "producer_node": "branch:b0.variant:pca10_ridge_a03",
+      "sample_ids": [
+        "sample:000",
+        "sample:001",
+        "sample:002",
+        "sample:003",
+        "sample:004",
+        "sample:025",
+        "sample:026",
+        "sample:027",
+        "sample:028",
+        "sample:029",
+        "sample:050",
+        "sample:051",
+        "sample:052",
+        "sample:053",
+        "sample:054"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -0.03854774016038263
+        ],
+        [
+          -2.2379606033216675
+        ],
+        [
+          -0.25779173416989193
+        ],
+        [
+          1.048335906744978
+        ],
+        [
+          -2.8440485501573303
+        ],
+        [
+          -1.1362027959674421
+        ],
+        [
+          2.068633682864745
+        ],
+        [
+          0.7465430190011899
+        ],
+        [
+          0.35955419098452995
+        ],
+        [
+          0.7796543777777473
+        ],
+        [
+          0.15382359843324045
+        ],
+        [
+          1.4048712029392822
+        ],
+        [
+          0.7489683453309284
+        ],
+        [
+          4.454798104699447
+        ],
+        [
+          0.6398582112258664
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:1",
+      "partition": "validation",
+      "prediction_id": "branch:b0.variant:pca16_ridge_a12:fold:1",
+      "producer_node": "branch:b0.variant:pca16_ridge_a12",
+      "sample_ids": [
+        "sample:000",
+        "sample:001",
+        "sample:002",
+        "sample:003",
+        "sample:004",
+        "sample:025",
+        "sample:026",
+        "sample:027",
+        "sample:028",
+        "sample:029",
+        "sample:050",
+        "sample:051",
+        "sample:052",
+        "sample:053",
+        "sample:054"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -0.8970596976347135
+        ],
+        [
+          -2.7438401139747786
+        ],
+        [
+          -0.1872295947492929
+        ],
+        [
+          0.6661242907417058
+        ],
+        [
+          -4.443252841788438
+        ],
+        [
+          -1.3253907279113293
+        ],
+        [
+          1.8661365584204113
+        ],
+        [
+          0.8437826511571549
+        ],
+        [
+          0.28740789935606187
+        ],
+        [
+          1.0070537852094792
+        ],
+        [
+          0.390679832456784
+        ],
+        [
+          1.2555332856666823
+        ],
+        [
+          0.33432872440201794
+        ],
+        [
+          4.279642317818557
+        ],
+        [
+          -0.02219651482037342
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:1",
+      "partition": "validation",
+      "prediction_id": "branch:b1.variant:rf_select_k28:fold:1",
+      "producer_node": "branch:b1.variant:rf_select_k28",
+      "sample_ids": [
+        "sample:000",
+        "sample:001",
+        "sample:002",
+        "sample:003",
+        "sample:004",
+        "sample:025",
+        "sample:026",
+        "sample:027",
+        "sample:028",
+        "sample:029",
+        "sample:050",
+        "sample:051",
+        "sample:052",
+        "sample:053",
+        "sample:054"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -1.882030399591147
+        ],
+        [
+          0.511307375467066
+        ],
+        [
+          -0.5141778055047547
+        ],
+        [
+          1.585665344131954
+        ],
+        [
+          -0.9157253934180424
+        ],
+        [
+          -1.6502802706387192
+        ],
+        [
+          1.4712459669256408
+        ],
+        [
+          2.3923140483220213
+        ],
+        [
+          1.0813528059658362
+        ],
+        [
+          1.3513209918725106
+        ],
+        [
+          0.04058387843295584
+        ],
+        [
+          0.8917587925014989
+        ],
+        [
+          0.9924138130161954
+        ],
+        [
+          2.6103686786137152
+        ],
+        [
+          -1.402874124418603
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:1",
+      "partition": "validation",
+      "prediction_id": "branch:b1.variant:rf_select_k40:fold:1",
+      "producer_node": "branch:b1.variant:rf_select_k40",
+      "sample_ids": [
+        "sample:000",
+        "sample:001",
+        "sample:002",
+        "sample:003",
+        "sample:004",
+        "sample:025",
+        "sample:026",
+        "sample:027",
+        "sample:028",
+        "sample:029",
+        "sample:050",
+        "sample:051",
+        "sample:052",
+        "sample:053",
+        "sample:054"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -1.2770320622709266
+        ],
+        [
+          0.052362395930676604
+        ],
+        [
+          0.05605920712838186
+        ],
+        [
+          1.4279111923660528
+        ],
+        [
+          -1.0986985975536354
+        ],
+        [
+          -2.228498778660741
+        ],
+        [
+          1.5104214475439752
+        ],
+        [
+          2.414946368167602
+        ],
+        [
+          0.82368132228599
+        ],
+        [
+          1.2500407930328523
+        ],
+        [
+          -0.027823157887742533
+        ],
+        [
+          1.0582407446167161
+        ],
+        [
+          0.6126549858585421
+        ],
+        [
+          2.3733573933688934
+        ],
+        [
+          -0.32966329721703147
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:1",
+      "partition": "validation",
+      "prediction_id": "branch:b2.variant:poly_extra_k45:fold:1",
+      "producer_node": "branch:b2.variant:poly_extra_k45",
+      "sample_ids": [
+        "sample:000",
+        "sample:001",
+        "sample:002",
+        "sample:003",
+        "sample:004",
+        "sample:025",
+        "sample:026",
+        "sample:027",
+        "sample:028",
+        "sample:029",
+        "sample:050",
+        "sample:051",
+        "sample:052",
+        "sample:053",
+        "sample:054"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -0.16580169876951825
+        ],
+        [
+          1.3890258375242528
+        ],
+        [
+          0.5539948033048855
+        ],
+        [
+          1.6003093429728892
+        ],
+        [
+          -1.2491931893628243
+        ],
+        [
+          -1.2343603485263694
+        ],
+        [
+          1.5081347165480732
+        ],
+        [
+          2.420885430792483
+        ],
+        [
+          1.1959714545747941
+        ],
+        [
+          1.3009272740868552
+        ],
+        [
+          -2.8290728719500513
+        ],
+        [
+          2.4969443588436238
+        ],
+        [
+          0.7955014069674905
+        ],
+        [
+          1.5409888814337176
+        ],
+        [
+          1.618872879951707
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:1",
+      "partition": "validation",
+      "prediction_id": "branch:b2.variant:poly_extra_k80:fold:1",
+      "producer_node": "branch:b2.variant:poly_extra_k80",
+      "sample_ids": [
+        "sample:000",
+        "sample:001",
+        "sample:002",
+        "sample:003",
+        "sample:004",
+        "sample:025",
+        "sample:026",
+        "sample:027",
+        "sample:028",
+        "sample:029",
+        "sample:050",
+        "sample:051",
+        "sample:052",
+        "sample:053",
+        "sample:054"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -1.1996016174870643
+        ],
+        [
+          1.4435197231610442
+        ],
+        [
+          0.22586727829974387
+        ],
+        [
+          0.6635992400173009
+        ],
+        [
+          -1.2240961978831286
+        ],
+        [
+          -1.2123591459464416
+        ],
+        [
+          1.4494592022318262
+        ],
+        [
+          2.350270808911548
+        ],
+        [
+          1.5366557043956137
+        ],
+        [
+          1.7120662737867132
+        ],
+        [
+          -2.490802283823522
+        ],
+        [
+          2.8168741252672684
+        ],
+        [
+          0.9175377984735597
+        ],
+        [
+          1.4698243743710275
+        ],
+        [
+          1.5008186992291968
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:2",
+      "partition": "validation",
+      "prediction_id": "branch:b0.variant:pca10_ridge_a03:fold:2",
+      "producer_node": "branch:b0.variant:pca10_ridge_a03",
+      "sample_ids": [
+        "sample:020",
+        "sample:021",
+        "sample:022",
+        "sample:023",
+        "sample:024",
+        "sample:045",
+        "sample:046",
+        "sample:047",
+        "sample:048",
+        "sample:049"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.35325574125458337
+        ],
+        [
+          0.19982077526932418
+        ],
+        [
+          2.8650923446805745
+        ],
+        [
+          0.20036280709058027
+        ],
+        [
+          0.588620492760468
+        ],
+        [
+          1.5340690454510097
+        ],
+        [
+          0.6751250755983617
+        ],
+        [
+          1.4988086472933582
+        ],
+        [
+          1.2472970895264905
+        ],
+        [
+          0.6775563492799993
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:2",
+      "partition": "validation",
+      "prediction_id": "branch:b0.variant:pca16_ridge_a12:fold:2",
+      "producer_node": "branch:b0.variant:pca16_ridge_a12",
+      "sample_ids": [
+        "sample:020",
+        "sample:021",
+        "sample:022",
+        "sample:023",
+        "sample:024",
+        "sample:045",
+        "sample:046",
+        "sample:047",
+        "sample:048",
+        "sample:049"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.6385140220137132
+        ],
+        [
+          -0.36987001201228137
+        ],
+        [
+          2.484577161058604
+        ],
+        [
+          -0.2968125103704273
+        ],
+        [
+          0.32230761428396965
+        ],
+        [
+          1.02099994690471
+        ],
+        [
+          0.6155977767969526
+        ],
+        [
+          1.2710750665809607
+        ],
+        [
+          1.1259772055821937
+        ],
+        [
+          0.7306819388760614
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:2",
+      "partition": "validation",
+      "prediction_id": "branch:b1.variant:rf_select_k28:fold:2",
+      "producer_node": "branch:b1.variant:rf_select_k28",
+      "sample_ids": [
+        "sample:020",
+        "sample:021",
+        "sample:022",
+        "sample:023",
+        "sample:024",
+        "sample:045",
+        "sample:046",
+        "sample:047",
+        "sample:048",
+        "sample:049"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -4.177069590976886
+        ],
+        [
+          1.5695336476640627
+        ],
+        [
+          1.67621430289753
+        ],
+        [
+          1.9549135158503066
+        ],
+        [
+          2.0137337420510186
+        ],
+        [
+          1.581774252355028
+        ],
+        [
+          -0.6749426165508859
+        ],
+        [
+          1.2365498699423456
+        ],
+        [
+          2.0019974046747873
+        ],
+        [
+          -0.881737859325602
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:2",
+      "partition": "validation",
+      "prediction_id": "branch:b1.variant:rf_select_k40:fold:2",
+      "producer_node": "branch:b1.variant:rf_select_k40",
+      "sample_ids": [
+        "sample:020",
+        "sample:021",
+        "sample:022",
+        "sample:023",
+        "sample:024",
+        "sample:045",
+        "sample:046",
+        "sample:047",
+        "sample:048",
+        "sample:049"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.015943310077629586
+        ],
+        [
+          -0.49517391645239855
+        ],
+        [
+          1.5070025689786561
+        ],
+        [
+          -0.6047455498040986
+        ],
+        [
+          1.8488848799847766
+        ],
+        [
+          2.023068388568466
+        ],
+        [
+          -0.402762604952575
+        ],
+        [
+          1.5849181197944266
+        ],
+        [
+          2.0396974169704176
+        ],
+        [
+          -0.5260883962344306
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:2",
+      "partition": "validation",
+      "prediction_id": "branch:b2.variant:poly_extra_k45:fold:2",
+      "producer_node": "branch:b2.variant:poly_extra_k45",
+      "sample_ids": [
+        "sample:020",
+        "sample:021",
+        "sample:022",
+        "sample:023",
+        "sample:024",
+        "sample:045",
+        "sample:046",
+        "sample:047",
+        "sample:048",
+        "sample:049"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.756068704277095
+        ],
+        [
+          1.1351836079834328
+        ],
+        [
+          0.7708281855775261
+        ],
+        [
+          1.4178454787129173
+        ],
+        [
+          2.037498637471316
+        ],
+        [
+          1.8147483475938946
+        ],
+        [
+          2.138425641528116
+        ],
+        [
+          1.5775227594027685
+        ],
+        [
+          1.6722824294788918
+        ],
+        [
+          1.8783359588704325
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:2",
+      "partition": "validation",
+      "prediction_id": "branch:b2.variant:poly_extra_k80:fold:2",
+      "producer_node": "branch:b2.variant:poly_extra_k80",
+      "sample_ids": [
+        "sample:020",
+        "sample:021",
+        "sample:022",
+        "sample:023",
+        "sample:024",
+        "sample:045",
+        "sample:046",
+        "sample:047",
+        "sample:048",
+        "sample:049"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.7457893605218409
+        ],
+        [
+          0.8839337145708596
+        ],
+        [
+          0.9847300114686336
+        ],
+        [
+          1.337045948559927
+        ],
+        [
+          2.810483814877699
+        ],
+        [
+          2.3655045300521302
+        ],
+        [
+          0.8946819361914039
+        ],
+        [
+          0.7205039516113884
+        ],
+        [
+          2.238677096528675
+        ],
+        [
+          1.0697673699320702
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:3",
+      "partition": "validation",
+      "prediction_id": "branch:b0.variant:pca10_ridge_a03:fold:3",
+      "producer_node": "branch:b0.variant:pca10_ridge_a03",
+      "sample_ids": [
+        "sample:015",
+        "sample:016",
+        "sample:017",
+        "sample:018",
+        "sample:019",
+        "sample:040",
+        "sample:041",
+        "sample:042",
+        "sample:043",
+        "sample:044"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.4655144374807512
+        ],
+        [
+          1.8992547606491084
+        ],
+        [
+          1.5168880618824165
+        ],
+        [
+          0.01750917033077622
+        ],
+        [
+          -0.0007251833315911801
+        ],
+        [
+          0.10535780991211445
+        ],
+        [
+          1.8532722433136124
+        ],
+        [
+          -0.6693667104079665
+        ],
+        [
+          -0.72622666900389
+        ],
+        [
+          2.6337850618287235
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:3",
+      "partition": "validation",
+      "prediction_id": "branch:b0.variant:pca16_ridge_a12:fold:3",
+      "producer_node": "branch:b0.variant:pca16_ridge_a12",
+      "sample_ids": [
+        "sample:015",
+        "sample:016",
+        "sample:017",
+        "sample:018",
+        "sample:019",
+        "sample:040",
+        "sample:041",
+        "sample:042",
+        "sample:043",
+        "sample:044"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.37914688237698324
+        ],
+        [
+          4.452775325775176
+        ],
+        [
+          0.5385369916387508
+        ],
+        [
+          -0.3124935553989446
+        ],
+        [
+          0.25792943615330644
+        ],
+        [
+          -0.36562819224968574
+        ],
+        [
+          1.1422020975996572
+        ],
+        [
+          -1.2134003949376975
+        ],
+        [
+          -0.6700741321378535
+        ],
+        [
+          2.413603159269286
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:3",
+      "partition": "validation",
+      "prediction_id": "branch:b1.variant:rf_select_k28:fold:3",
+      "producer_node": "branch:b1.variant:rf_select_k28",
+      "sample_ids": [
+        "sample:015",
+        "sample:016",
+        "sample:017",
+        "sample:018",
+        "sample:019",
+        "sample:040",
+        "sample:041",
+        "sample:042",
+        "sample:043",
+        "sample:044"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          2.196498600457804
+        ],
+        [
+          1.782525872530252
+        ],
+        [
+          1.8059308309019155
+        ],
+        [
+          1.5181684745228778
+        ],
+        [
+          -0.6022973821121248
+        ],
+        [
+          1.6562148179315936
+        ],
+        [
+          2.21469920658882
+        ],
+        [
+          -2.2457117134732
+        ],
+        [
+          -0.5375648133699164
+        ],
+        [
+          3.981709177832545
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:3",
+      "partition": "validation",
+      "prediction_id": "branch:b1.variant:rf_select_k40:fold:3",
+      "producer_node": "branch:b1.variant:rf_select_k40",
+      "sample_ids": [
+        "sample:015",
+        "sample:016",
+        "sample:017",
+        "sample:018",
+        "sample:019",
+        "sample:040",
+        "sample:041",
+        "sample:042",
+        "sample:043",
+        "sample:044"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          2.5558476804229784
+        ],
+        [
+          2.7222021699308563
+        ],
+        [
+          2.0194817154059144
+        ],
+        [
+          0.8118215025701686
+        ],
+        [
+          0.18457655580187549
+        ],
+        [
+          1.341898267988525
+        ],
+        [
+          1.0229331489538815
+        ],
+        [
+          -1.919830158128323
+        ],
+        [
+          -0.810793525718695
+        ],
+        [
+          3.637572343921058
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:3",
+      "partition": "validation",
+      "prediction_id": "branch:b2.variant:poly_extra_k45:fold:3",
+      "producer_node": "branch:b2.variant:poly_extra_k45",
+      "sample_ids": [
+        "sample:015",
+        "sample:016",
+        "sample:017",
+        "sample:018",
+        "sample:019",
+        "sample:040",
+        "sample:041",
+        "sample:042",
+        "sample:043",
+        "sample:044"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.6290307317435913
+        ],
+        [
+          2.9918087572328393
+        ],
+        [
+          1.9143704125942118
+        ],
+        [
+          1.1259688596798092
+        ],
+        [
+          0.7317109040162482
+        ],
+        [
+          2.3972871124168935
+        ],
+        [
+          1.9035997179548596
+        ],
+        [
+          -0.8464495603228116
+        ],
+        [
+          -0.8508438952766019
+        ],
+        [
+          2.891622046308356
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:3",
+      "partition": "validation",
+      "prediction_id": "branch:b2.variant:poly_extra_k80:fold:3",
+      "producer_node": "branch:b2.variant:poly_extra_k80",
+      "sample_ids": [
+        "sample:015",
+        "sample:016",
+        "sample:017",
+        "sample:018",
+        "sample:019",
+        "sample:040",
+        "sample:041",
+        "sample:042",
+        "sample:043",
+        "sample:044"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.6943758968080387
+        ],
+        [
+          2.8306014848587844
+        ],
+        [
+          2.1012844117124527
+        ],
+        [
+          1.2876518151551355
+        ],
+        [
+          0.49989399650146754
+        ],
+        [
+          2.2392180775700177
+        ],
+        [
+          2.4897896820475576
+        ],
+        [
+          -1.5344787243620563
+        ],
+        [
+          -1.330430702390344
+        ],
+        [
+          2.861224908047891
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:4",
+      "partition": "validation",
+      "prediction_id": "branch:b0.variant:pca10_ridge_a03:fold:4",
+      "producer_node": "branch:b0.variant:pca10_ridge_a03",
+      "sample_ids": [
+        "sample:010",
+        "sample:011",
+        "sample:012",
+        "sample:013",
+        "sample:014",
+        "sample:035",
+        "sample:036",
+        "sample:037",
+        "sample:038",
+        "sample:039"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.6247985904724115
+        ],
+        [
+          0.0038801467300637236
+        ],
+        [
+          -0.2995568125183173
+        ],
+        [
+          -0.6235601562376835
+        ],
+        [
+          0.7782368482998541
+        ],
+        [
+          0.6321087477690156
+        ],
+        [
+          -0.4738130806759921
+        ],
+        [
+          -1.0305245174697537
+        ],
+        [
+          0.6611945554240162
+        ],
+        [
+          -0.5820093424708402
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:4",
+      "partition": "validation",
+      "prediction_id": "branch:b0.variant:pca16_ridge_a12:fold:4",
+      "producer_node": "branch:b0.variant:pca16_ridge_a12",
+      "sample_ids": [
+        "sample:010",
+        "sample:011",
+        "sample:012",
+        "sample:013",
+        "sample:014",
+        "sample:035",
+        "sample:036",
+        "sample:037",
+        "sample:038",
+        "sample:039"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.61484939121755
+        ],
+        [
+          -0.44508169013799287
+        ],
+        [
+          -0.5273420123869433
+        ],
+        [
+          -0.010201280575159788
+        ],
+        [
+          0.6023513666998265
+        ],
+        [
+          1.784419891589643
+        ],
+        [
+          0.5870019037709878
+        ],
+        [
+          -0.49508769213956044
+        ],
+        [
+          0.7257697258982816
+        ],
+        [
+          -1.2674884515964422
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:4",
+      "partition": "validation",
+      "prediction_id": "branch:b1.variant:rf_select_k28:fold:4",
+      "producer_node": "branch:b1.variant:rf_select_k28",
+      "sample_ids": [
+        "sample:010",
+        "sample:011",
+        "sample:012",
+        "sample:013",
+        "sample:014",
+        "sample:035",
+        "sample:036",
+        "sample:037",
+        "sample:038",
+        "sample:039"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -0.7372218731938228
+        ],
+        [
+          1.246241510329381
+        ],
+        [
+          0.8574558710058892
+        ],
+        [
+          0.5206250932669123
+        ],
+        [
+          0.7303462920509981
+        ],
+        [
+          2.0927458160675205
+        ],
+        [
+          -0.435806931915883
+        ],
+        [
+          -3.0119422442356227
+        ],
+        [
+          2.7863227648039377
+        ],
+        [
+          -0.5714629589189091
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:4",
+      "partition": "validation",
+      "prediction_id": "branch:b1.variant:rf_select_k40:fold:4",
+      "producer_node": "branch:b1.variant:rf_select_k40",
+      "sample_ids": [
+        "sample:010",
+        "sample:011",
+        "sample:012",
+        "sample:013",
+        "sample:014",
+        "sample:035",
+        "sample:036",
+        "sample:037",
+        "sample:038",
+        "sample:039"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -0.8720669863219089
+        ],
+        [
+          0.9604247392761041
+        ],
+        [
+          0.8492777133871995
+        ],
+        [
+          0.6763691330419254
+        ],
+        [
+          0.7152717313337421
+        ],
+        [
+          1.1662985958043612
+        ],
+        [
+          -0.6195132136095932
+        ],
+        [
+          -1.488973158350812
+        ],
+        [
+          1.9465946595467765
+        ],
+        [
+          -0.06901793475480882
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:4",
+      "partition": "validation",
+      "prediction_id": "branch:b2.variant:poly_extra_k45:fold:4",
+      "producer_node": "branch:b2.variant:poly_extra_k45",
+      "sample_ids": [
+        "sample:010",
+        "sample:011",
+        "sample:012",
+        "sample:013",
+        "sample:014",
+        "sample:035",
+        "sample:036",
+        "sample:037",
+        "sample:038",
+        "sample:039"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.22160750197453857
+        ],
+        [
+          1.391103232757356
+        ],
+        [
+          0.6395469798531367
+        ],
+        [
+          1.09754153179437
+        ],
+        [
+          -1.8512178358004803
+        ],
+        [
+          0.6244831120117416
+        ],
+        [
+          1.1466554792180064
+        ],
+        [
+          0.8471775803403219
+        ],
+        [
+          2.8711207547955993
+        ],
+        [
+          -1.4664533288976644
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:4",
+      "partition": "validation",
+      "prediction_id": "branch:b2.variant:poly_extra_k80:fold:4",
+      "producer_node": "branch:b2.variant:poly_extra_k80",
+      "sample_ids": [
+        "sample:010",
+        "sample:011",
+        "sample:012",
+        "sample:013",
+        "sample:014",
+        "sample:035",
+        "sample:036",
+        "sample:037",
+        "sample:038",
+        "sample:039"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -0.06218192753378551
+        ],
+        [
+          1.0691607387389694
+        ],
+        [
+          0.5376416324528089
+        ],
+        [
+          0.6846909427546066
+        ],
+        [
+          -1.4319451019794365
+        ],
+        [
+          -0.027108854463021997
+        ],
+        [
+          0.9917190104756215
+        ],
+        [
+          -0.13173243456620654
+        ],
+        [
+          3.092936605190021
+        ],
+        [
+          -1.0802774303017875
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:0",
+      "partition": "validation",
+      "prediction_id": "merge:m0.pred_only.meta:ridge:fold:0",
+      "producer_node": "merge:m0.pred_only.meta:ridge",
+      "sample_ids": [
+        "sample:005",
+        "sample:006",
+        "sample:007",
+        "sample:008",
+        "sample:009",
+        "sample:030",
+        "sample:031",
+        "sample:032",
+        "sample:033",
+        "sample:034",
+        "sample:055",
+        "sample:056",
+        "sample:057",
+        "sample:058",
+        "sample:059"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.0915872207227726
+        ],
+        [
+          0.28375428486361315
+        ],
+        [
+          1.1191288264181256
+        ],
+        [
+          0.37627285039301744
+        ],
+        [
+          0.359523990766405
+        ],
+        [
+          1.0962789894115912
+        ],
+        [
+          -0.26909879586006635
+        ],
+        [
+          1.0472470578745847
+        ],
+        [
+          0.7125839381863261
+        ],
+        [
+          -0.6969244496665333
+        ],
+        [
+          1.97930437578583
+        ],
+        [
+          1.1599055663082938
+        ],
+        [
+          1.3727695928068337
+        ],
+        [
+          1.312155474709074
+        ],
+        [
+          1.9293647457423266
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:1",
+      "partition": "validation",
+      "prediction_id": "merge:m0.pred_only.meta:ridge:fold:1",
+      "producer_node": "merge:m0.pred_only.meta:ridge",
+      "sample_ids": [
+        "sample:000",
+        "sample:001",
+        "sample:002",
+        "sample:003",
+        "sample:004",
+        "sample:025",
+        "sample:026",
+        "sample:027",
+        "sample:028",
+        "sample:029",
+        "sample:050",
+        "sample:051",
+        "sample:052",
+        "sample:053",
+        "sample:054"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -0.8753737597676333
+        ],
+        [
+          -1.3806318701189508
+        ],
+        [
+          -0.25729973686300733
+        ],
+        [
+          1.2757345374797429
+        ],
+        [
+          -1.6888304350010883
+        ],
+        [
+          -2.107736893541148
+        ],
+        [
+          1.4311771789971175
+        ],
+        [
+          1.463193328440567
+        ],
+        [
+          0.1870186993033644
+        ],
+        [
+          0.6546252052530301
+        ],
+        [
+          0.7642574224210124
+        ],
+        [
+          0.3141200750636732
+        ],
+        [
+          0.3512990544500557
+        ],
+        [
+          3.0324837137740177
+        ],
+        [
+          -0.7359132541318428
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:2",
+      "partition": "validation",
+      "prediction_id": "merge:m0.pred_only.meta:ridge:fold:2",
+      "producer_node": "merge:m0.pred_only.meta:ridge",
+      "sample_ids": [
+        "sample:020",
+        "sample:021",
+        "sample:022",
+        "sample:023",
+        "sample:024",
+        "sample:045",
+        "sample:046",
+        "sample:047",
+        "sample:048",
+        "sample:049"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.5613186820819063
+        ],
+        [
+          0.24709882669721517
+        ],
+        [
+          2.1312384823297745
+        ],
+        [
+          0.20767317094124327
+        ],
+        [
+          1.525069789718251
+        ],
+        [
+          1.9318506480656175
+        ],
+        [
+          0.4597430483445466
+        ],
+        [
+          1.6740303675627288
+        ],
+        [
+          1.8342217866900605
+        ],
+        [
+          0.4076052027756506
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:3",
+      "partition": "validation",
+      "prediction_id": "merge:m0.pred_only.meta:ridge:fold:3",
+      "producer_node": "merge:m0.pred_only.meta:ridge",
+      "sample_ids": [
+        "sample:015",
+        "sample:016",
+        "sample:017",
+        "sample:018",
+        "sample:019",
+        "sample:040",
+        "sample:041",
+        "sample:042",
+        "sample:043",
+        "sample:044"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          2.0390027094459806
+        ],
+        [
+          2.155445176201486
+        ],
+        [
+          1.6636984601495892
+        ],
+        [
+          0.41130594773983276
+        ],
+        [
+          0.12397098613640711
+        ],
+        [
+          0.6421594372932318
+        ],
+        [
+          1.1180093041373864
+        ],
+        [
+          -1.1761112552311408
+        ],
+        [
+          -0.5317766776694394
+        ],
+        [
+          3.025924835601633
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:4",
+      "partition": "validation",
+      "prediction_id": "merge:m0.pred_only.meta:ridge:fold:4",
+      "producer_node": "merge:m0.pred_only.meta:ridge",
+      "sample_ids": [
+        "sample:010",
+        "sample:011",
+        "sample:012",
+        "sample:013",
+        "sample:014",
+        "sample:035",
+        "sample:036",
+        "sample:037",
+        "sample:038",
+        "sample:039"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.2317776826569754
+        ],
+        [
+          0.6674624131313365
+        ],
+        [
+          0.5090430584859647
+        ],
+        [
+          0.3064303336457719
+        ],
+        [
+          0.9339009282423876
+        ],
+        [
+          1.0242824036446068
+        ],
+        [
+          -0.1397405144660171
+        ],
+        [
+          -0.6857871454814501
+        ],
+        [
+          1.284386030342467
+        ],
+        [
+          0.065278182771496
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:0",
+      "partition": "validation",
+      "prediction_id": "merge:m1.pred_meta_original.meta:ridge:fold:0",
+      "producer_node": "merge:m1.pred_meta_original.meta:ridge",
+      "sample_ids": [
+        "sample:005",
+        "sample:006",
+        "sample:007",
+        "sample:008",
+        "sample:009",
+        "sample:030",
+        "sample:031",
+        "sample:032",
+        "sample:033",
+        "sample:034",
+        "sample:055",
+        "sample:056",
+        "sample:057",
+        "sample:058",
+        "sample:059"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          2.765578804406292
+        ],
+        [
+          0.12859072777223723
+        ],
+        [
+          1.996723976149629
+        ],
+        [
+          1.7042451215700938
+        ],
+        [
+          0.9877935134148732
+        ],
+        [
+          0.08243916647986493
+        ],
+        [
+          -3.357707221934419
+        ],
+        [
+          5.4124301414831155
+        ],
+        [
+          4.700405931876032
+        ],
+        [
+          -1.8140688728011303
+        ],
+        [
+          1.2734533399112453
+        ],
+        [
+          1.6537671281181971
+        ],
+        [
+          1.8906218858293655
+        ],
+        [
+          1.3808055270963906
+        ],
+        [
+          -0.0384836317182059
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:1",
+      "partition": "validation",
+      "prediction_id": "merge:m1.pred_meta_original.meta:ridge:fold:1",
+      "producer_node": "merge:m1.pred_meta_original.meta:ridge",
+      "sample_ids": [
+        "sample:000",
+        "sample:001",
+        "sample:002",
+        "sample:003",
+        "sample:004",
+        "sample:025",
+        "sample:026",
+        "sample:027",
+        "sample:028",
+        "sample:029",
+        "sample:050",
+        "sample:051",
+        "sample:052",
+        "sample:053",
+        "sample:054"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          0.08602570594258224
+        ],
+        [
+          -0.3354894358695284
+        ],
+        [
+          2.176019376011607
+        ],
+        [
+          2.799490345188671
+        ],
+        [
+          -3.457276982218225
+        ],
+        [
+          -0.4034422151857405
+        ],
+        [
+          3.167578556036225
+        ],
+        [
+          0.9905358242151512
+        ],
+        [
+          1.950677695845456
+        ],
+        [
+          0.7113916474264705
+        ],
+        [
+          -2.3488470988645176
+        ],
+        [
+          0.41736591303665416
+        ],
+        [
+          1.1707216874115054
+        ],
+        [
+          2.1818765080837945
+        ],
+        [
+          2.397109165852451
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:2",
+      "partition": "validation",
+      "prediction_id": "merge:m1.pred_meta_original.meta:ridge:fold:2",
+      "producer_node": "merge:m1.pred_meta_original.meta:ridge",
+      "sample_ids": [
+        "sample:020",
+        "sample:021",
+        "sample:022",
+        "sample:023",
+        "sample:024",
+        "sample:045",
+        "sample:046",
+        "sample:047",
+        "sample:048",
+        "sample:049"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -1.154009638871691
+        ],
+        [
+          0.05222161089359567
+        ],
+        [
+          4.284909295279063
+        ],
+        [
+          -1.5863092529773364
+        ],
+        [
+          2.1823102351265895
+        ],
+        [
+          1.1491053078221922
+        ],
+        [
+          0.7339500436247853
+        ],
+        [
+          -0.3926905235763213
+        ],
+        [
+          3.2020976753404615
+        ],
+        [
+          -2.5198621501423193
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:3",
+      "partition": "validation",
+      "prediction_id": "merge:m1.pred_meta_original.meta:ridge:fold:3",
+      "producer_node": "merge:m1.pred_meta_original.meta:ridge",
+      "sample_ids": [
+        "sample:015",
+        "sample:016",
+        "sample:017",
+        "sample:018",
+        "sample:019",
+        "sample:040",
+        "sample:041",
+        "sample:042",
+        "sample:043",
+        "sample:044"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.1436141227898862
+        ],
+        [
+          0.008832036177279567
+        ],
+        [
+          0.12740227882887667
+        ],
+        [
+          -0.06722367944448993
+        ],
+        [
+          2.529479803384401
+        ],
+        [
+          3.306778876935672
+        ],
+        [
+          0.426543143811731
+        ],
+        [
+          -0.9119342046780367
+        ],
+        [
+          -0.0884518099396463
+        ],
+        [
+          -1.3862659869756837
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:4",
+      "partition": "validation",
+      "prediction_id": "merge:m1.pred_meta_original.meta:ridge:fold:4",
+      "producer_node": "merge:m1.pred_meta_original.meta:ridge",
+      "sample_ids": [
+        "sample:010",
+        "sample:011",
+        "sample:012",
+        "sample:013",
+        "sample:014",
+        "sample:035",
+        "sample:036",
+        "sample:037",
+        "sample:038",
+        "sample:039"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -0.2672512837135169
+        ],
+        [
+          3.4592445662935627
+        ],
+        [
+          -1.0241444339498997
+        ],
+        [
+          -1.0442693597366435
+        ],
+        [
+          0.3041916037414516
+        ],
+        [
+          2.6094233455397347
+        ],
+        [
+          -1.9748946060442996
+        ],
+        [
+          -2.778535428532172
+        ],
+        [
+          0.48562815542235066
+        ],
+        [
+          0.820916647390743
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:0",
+      "partition": "validation",
+      "prediction_id": "merge:m2.pred_raw_select.meta:extra:fold:0",
+      "producer_node": "merge:m2.pred_raw_select.meta:extra",
+      "sample_ids": [
+        "sample:005",
+        "sample:006",
+        "sample:007",
+        "sample:008",
+        "sample:009",
+        "sample:030",
+        "sample:031",
+        "sample:032",
+        "sample:033",
+        "sample:034",
+        "sample:055",
+        "sample:056",
+        "sample:057",
+        "sample:058",
+        "sample:059"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.793920222307935
+        ],
+        [
+          -0.05311654697198225
+        ],
+        [
+          1.6547642852543218
+        ],
+        [
+          1.2899586589065202
+        ],
+        [
+          0.825583962254107
+        ],
+        [
+          1.163444709970157
+        ],
+        [
+          -2.069000444704287
+        ],
+        [
+          2.9037084446525747
+        ],
+        [
+          2.3713829381667115
+        ],
+        [
+          -1.5793763761471984
+        ],
+        [
+          1.6225704915741848
+        ],
+        [
+          0.39900130935350614
+        ],
+        [
+          1.9080552884844202
+        ],
+        [
+          1.4449746698170782
+        ],
+        [
+          1.1665193391987247
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:1",
+      "partition": "validation",
+      "prediction_id": "merge:m2.pred_raw_select.meta:extra:fold:1",
+      "producer_node": "merge:m2.pred_raw_select.meta:extra",
+      "sample_ids": [
+        "sample:000",
+        "sample:001",
+        "sample:002",
+        "sample:003",
+        "sample:004",
+        "sample:025",
+        "sample:026",
+        "sample:027",
+        "sample:028",
+        "sample:029",
+        "sample:050",
+        "sample:051",
+        "sample:052",
+        "sample:053",
+        "sample:054"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.0416291682967598
+        ],
+        [
+          1.2992370542123106
+        ],
+        [
+          2.4288007230484676
+        ],
+        [
+          1.65225357563358
+        ],
+        [
+          -1.889765503236699
+        ],
+        [
+          -0.6274886735389111
+        ],
+        [
+          1.7009553374185984
+        ],
+        [
+          0.7794126783767577
+        ],
+        [
+          1.879837462614126
+        ],
+        [
+          0.620310420917134
+        ],
+        [
+          -2.993658965842272
+        ],
+        [
+          0.8138059545360798
+        ],
+        [
+          1.048260706870994
+        ],
+        [
+          1.8165068055676865
+        ],
+        [
+          2.215139911206041
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:2",
+      "partition": "validation",
+      "prediction_id": "merge:m2.pred_raw_select.meta:extra:fold:2",
+      "producer_node": "merge:m2.pred_raw_select.meta:extra",
+      "sample_ids": [
+        "sample:020",
+        "sample:021",
+        "sample:022",
+        "sample:023",
+        "sample:024",
+        "sample:045",
+        "sample:046",
+        "sample:047",
+        "sample:048",
+        "sample:049"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -0.6614934181170175
+        ],
+        [
+          0.8150914224080988
+        ],
+        [
+          3.20844169229986
+        ],
+        [
+          -0.6632147120819726
+        ],
+        [
+          2.345712440561656
+        ],
+        [
+          1.3217661468229065
+        ],
+        [
+          0.5746606791904262
+        ],
+        [
+          1.076993963190184
+        ],
+        [
+          2.180400515116736
+        ],
+        [
+          -1.3601629835388496
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:3",
+      "partition": "validation",
+      "prediction_id": "merge:m2.pred_raw_select.meta:extra:fold:3",
+      "producer_node": "merge:m2.pred_raw_select.meta:extra",
+      "sample_ids": [
+        "sample:015",
+        "sample:016",
+        "sample:017",
+        "sample:018",
+        "sample:019",
+        "sample:040",
+        "sample:041",
+        "sample:042",
+        "sample:043",
+        "sample:044"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          1.0548810056767388
+        ],
+        [
+          3.3043153489676675
+        ],
+        [
+          0.31542095624082184
+        ],
+        [
+          -0.4824555661986329
+        ],
+        [
+          1.9501347698067344
+        ],
+        [
+          2.7741994579335736
+        ],
+        [
+          1.1623064692540683
+        ],
+        [
+          -0.49367614774261176
+        ],
+        [
+          -0.17468772079635597
+        ],
+        [
+          1.151815892315679
+        ]
+      ]
+    },
+    {
+      "fold_id": "fold:4",
+      "partition": "validation",
+      "prediction_id": "merge:m2.pred_raw_select.meta:extra:fold:4",
+      "producer_node": "merge:m2.pred_raw_select.meta:extra",
+      "sample_ids": [
+        "sample:010",
+        "sample:011",
+        "sample:012",
+        "sample:013",
+        "sample:014",
+        "sample:035",
+        "sample:036",
+        "sample:037",
+        "sample:038",
+        "sample:039"
+      ],
+      "target_names": [
+        "y"
+      ],
+      "values": [
+        [
+          -1.3405284668402044
+        ],
+        [
+          2.461067487480324
+        ],
+        [
+          0.41207027667958895
+        ],
+        [
+          -0.10286961342166094
+        ],
+        [
+          0.5782801312164714
+        ],
+        [
+          1.9984851214511785
+        ],
+        [
+          -2.3749771712074295
+        ],
+        [
+          -2.6334935505811075
+        ],
+        [
+          0.3742834119014473
+        ],
+        [
+          0.5206238856431825
+        ]
+      ]
+    }
+  ],
+  "requested_sample_order": [
+    "sample:000",
+    "sample:001",
+    "sample:002",
+    "sample:003",
+    "sample:004",
+    "sample:005",
+    "sample:006",
+    "sample:007",
+    "sample:008",
+    "sample:009",
+    "sample:010",
+    "sample:011",
+    "sample:012",
+    "sample:013",
+    "sample:014",
+    "sample:015",
+    "sample:016",
+    "sample:017",
+    "sample:018",
+    "sample:019",
+    "sample:020",
+    "sample:021",
+    "sample:022",
+    "sample:023",
+    "sample:024",
+    "sample:025",
+    "sample:026",
+    "sample:027",
+    "sample:028",
+    "sample:029",
+    "sample:030",
+    "sample:031",
+    "sample:032",
+    "sample:033",
+    "sample:034",
+    "sample:035",
+    "sample:036",
+    "sample:037",
+    "sample:038",
+    "sample:039",
+    "sample:040",
+    "sample:041",
+    "sample:042",
+    "sample:043",
+    "sample:044",
+    "sample:045",
+    "sample:046",
+    "sample:047",
+    "sample:048",
+    "sample:049",
+    "sample:050",
+    "sample:051",
+    "sample:052",
+    "sample:053",
+    "sample:054",
+    "sample:055",
+    "sample:056",
+    "sample:057",
+    "sample:058",
+    "sample:059"
+  ]
+}
