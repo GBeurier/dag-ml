@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::campaign::stable_json_fingerprint;
 use crate::error::{DagMlError, OofLeakageReport, OofLeakageViolation, Result};
 use crate::fold::FoldSet;
 use crate::ids::{FoldId, NodeId, SampleId};
@@ -308,6 +309,16 @@ pub fn validate_oof_campaign(campaign: &OofCampaign) -> Result<OofMatrix> {
     )
 }
 
+pub fn oof_campaign_fingerprint(campaign: &OofCampaign) -> Result<String> {
+    campaign.fold_set.validate()?;
+    validate_requested_samples_match_fold_set(
+        &campaign.requested_sample_order,
+        &campaign.fold_set,
+    )?;
+    validate_prediction_blocks_against_folds(&campaign.fold_set, &campaign.prediction_blocks)?;
+    stable_json_fingerprint(campaign)
+}
+
 pub fn validate_prediction_blocks_against_folds(
     fold_set: &FoldSet,
     blocks: &[PredictionBlock],
@@ -587,6 +598,10 @@ mod tests {
         ));
 
         let joined = validate_oof_campaign(&fixture).unwrap();
+        assert_eq!(
+            oof_campaign_fingerprint(&fixture).unwrap(),
+            oof_campaign_fingerprint(&fixture).unwrap()
+        );
 
         assert_eq!(joined.columns.len(), 3);
         assert_eq!(joined.values[0], vec![1.0, 10.0, 100.0]);

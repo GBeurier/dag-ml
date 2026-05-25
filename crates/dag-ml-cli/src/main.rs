@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use dag_ml_core::{validate_oof_campaign, DagMlError, GraphSpec, OofCampaign};
+use dag_ml_core::{
+    oof_campaign_fingerprint, validate_oof_campaign, DagMlError, GraphSpec, OofCampaign,
+};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -20,6 +22,9 @@ enum Command {
         path: PathBuf,
         #[arg(long)]
         expect_leakage: bool,
+    },
+    FingerprintOofCampaign {
+        path: PathBuf,
     },
 }
 
@@ -69,6 +74,12 @@ fn main() -> Result<()> {
                         .with_context(|| format!("invalid OOF campaign at {}", path.display()));
                 }
             }
+        }
+        Command::FingerprintOofCampaign { path } => {
+            let campaign: OofCampaign = read_json(&path, "OOF campaign")?;
+            let fingerprint = oof_campaign_fingerprint(&campaign)
+                .with_context(|| format!("invalid OOF campaign at {}", path.display()))?;
+            println!("{fingerprint}");
         }
     }
 
