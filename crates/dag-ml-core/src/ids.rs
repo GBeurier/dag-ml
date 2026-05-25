@@ -73,6 +73,7 @@ define_id!(NodeId);
 define_id!(SampleId);
 define_id!(FoldId);
 define_id!(TargetId);
+define_id!(GroupId);
 
 #[cfg(test)]
 mod tests {
