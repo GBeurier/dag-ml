@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::campaign::stable_json_fingerprint;
 use crate::controller::{ControllerManifest, ControllerRegistry};
+use crate::data::DataBinding;
 use crate::error::{DagMlError, Result};
 use crate::fold::FoldSet;
 use crate::generation::{enumerate_variants, GenerationSpec, VariantPlan};
@@ -55,6 +56,8 @@ pub struct CampaignSpec {
     #[serde(default)]
     pub shape_plans: BTreeMap<NodeId, DataModelShapePlan>,
     #[serde(default)]
+    pub data_bindings: BTreeMap<NodeId, Vec<DataBinding>>,
+    #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
@@ -79,6 +82,17 @@ impl CampaignSpec {
                 )));
             }
             shape_plan.validate()?;
+        }
+        for (node_id, bindings) in &self.data_bindings {
+            for binding in bindings {
+                if node_id != &binding.node_id {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "data binding key `{node_id}` does not match node_id `{}`",
+                        binding.node_id
+                    )));
+                }
+                binding.validate()?;
+            }
         }
         Ok(())
     }
@@ -110,6 +124,8 @@ pub struct NodePlan {
     pub input_nodes: Vec<NodeId>,
     pub output_nodes: Vec<NodeId>,
     pub shape_plan: Option<DataModelShapePlan>,
+    #[serde(default)]
+    pub data_bindings: Vec<DataBinding>,
     pub params_fingerprint: String,
 }
 
@@ -155,6 +171,15 @@ impl ExecutionPlan {
                     manifest.controller_id
                 )));
             }
+            for binding in &plan.data_bindings {
+                if binding.node_id != *node_id {
+                    return Err(DagMlError::Planning(format!(
+                        "node plan `{node_id}` contains data binding for `{}`",
+                        binding.node_id
+                    )));
+                }
+                binding.validate()?;
+            }
         }
         if let Some(fold_set) = &self.fold_set {
             fold_set.validate()?;
@@ -185,7 +210,7 @@ pub fn build_execution_plan(
     }
     campaign.validate()?;
     let graph_plan = GraphPlan::from_graph(graph)?;
-    validate_shape_plan_targets(&graph_plan.graph, &campaign)?;
+    validate_campaign_node_targets(&graph_plan.graph, &campaign)?;
 
     let mut node_plans = BTreeMap::new();
     let mut controller_manifests = BTreeMap::new();
@@ -199,6 +224,11 @@ pub fn build_execution_plan(
         let manifest = registry.resolve_for_node(node)?;
         let params_fingerprint = stable_json_fingerprint(&node.params)?;
         let shape_plan = campaign.shape_plans.get(&node.id).cloned();
+        let data_bindings = campaign
+            .data_bindings
+            .get(&node.id)
+            .cloned()
+            .unwrap_or_default();
         node_plans.insert(
             node.id.clone(),
             NodePlan {
@@ -210,6 +240,7 @@ pub fn build_execution_plan(
                 input_nodes: graph_plan.graph.upstream_nodes(&node.id),
                 output_nodes: graph_plan.graph.downstream_nodes(&node.id),
                 shape_plan,
+                data_bindings,
                 params_fingerprint,
             },
         );
@@ -240,7 +271,7 @@ pub fn build_execution_plan(
     Ok(plan)
 }
 
-fn validate_shape_plan_targets(graph: &GraphSpec, campaign: &CampaignSpec) -> Result<()> {
+fn validate_campaign_node_targets(graph: &GraphSpec, campaign: &CampaignSpec) -> Result<()> {
     let node_ids = graph
         .nodes
         .iter()
@@ -250,6 +281,13 @@ fn validate_shape_plan_targets(graph: &GraphSpec, campaign: &CampaignSpec) -> Re
         if !node_ids.contains(node_id) {
             return Err(DagMlError::Planning(format!(
                 "shape plan references unknown node `{node_id}`"
+            )));
+        }
+    }
+    for node_id in campaign.data_bindings.keys() {
+        if !node_ids.contains(node_id) {
+            return Err(DagMlError::Planning(format!(
+                "data binding references unknown node `{node_id}`"
             )));
         }
     }
@@ -264,6 +302,7 @@ mod tests {
     use crate::controller::{
         ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest, RngPolicy,
     };
+    use crate::data::DataBinding;
     use crate::graph::{
         EdgeContract, EdgeSpec, GraphInterface, NodeSpec, PortCardinality, PortKind, PortRef,
         PortSchema, PortSpec,
@@ -362,6 +401,26 @@ mod tests {
         registry
     }
 
+    fn data_binding(node_id: &NodeId) -> DataBinding {
+        DataBinding {
+            node_id: node_id.clone(),
+            input_name: "x".to_string(),
+            request_id: "nir-to-tabular".to_string(),
+            schema_fingerprint: "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b"
+                .to_string(),
+            plan_fingerprint: "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d"
+                .to_string(),
+            relation_fingerprint: Some(
+                "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10".to_string(),
+            ),
+            output_representation: "tabular_numeric".to_string(),
+            source_ids: vec!["nir".to_string()],
+            require_relations: true,
+            view_policy: Default::default(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
     #[test]
     fn builds_execution_plan_with_shape_and_fold_contracts() {
         let model_id = NodeId::new("model:pls").unwrap();
@@ -416,6 +475,7 @@ mod tests {
                     }
                 },
             )]),
+            data_bindings: BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]),
             metadata: BTreeMap::new(),
         };
 
@@ -437,6 +497,10 @@ mod tests {
                 .controller_id
                 .as_str(),
             "controller:model"
+        );
+        assert_eq!(
+            plan.node_plans.get(&model_id).unwrap().data_bindings.len(),
+            1
         );
     }
 
@@ -465,6 +529,7 @@ mod tests {
                     selection_policy: crate::policy::FeatureSelectionPolicy::default(),
                 },
             )]),
+            data_bindings: BTreeMap::new(),
             metadata: BTreeMap::new(),
         };
 

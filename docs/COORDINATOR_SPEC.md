@@ -127,6 +127,22 @@ Controller inputs:
 - data-plan/fingerprint refs;
 - controller params.
 
+Data-plan references are `DataBinding` contracts owned by the coordinator:
+
+- node id and input name;
+- `dag-ml-data` request id;
+- schema fingerprint;
+- data-plan fingerprint;
+- optional relation fingerprint;
+- output representation;
+- source ids;
+- view policy for fold train, fold validation, refit and predict.
+
+The actual data plan and relation table remain external. `dag-ml-data` can emit
+a coordinator envelope containing these fingerprints plus coordinator relation
+records; `dag-ml` validates that an execution campaign binds to the exact
+envelope before a controller receives any handle.
+
 Controller outputs:
 
 - opaque data/model/artifact handles;

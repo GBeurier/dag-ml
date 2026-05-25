@@ -221,6 +221,21 @@ impl NodeResult {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DataMaterializationRequest {
+    pub run_id: RunId,
+    pub node_id: NodeId,
+    pub input_name: String,
+    pub phase: Phase,
+    pub variant_id: Option<VariantId>,
+    pub fold_id: Option<FoldId>,
+    pub binding: crate::data::DataBinding,
+}
+
+pub trait RuntimeDataProvider {
+    fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef>;
+}
+
 pub trait RuntimeController {
     fn controller_id(&self) -> &ControllerId;
     fn invoke(&self, task: &NodeTask) -> Result<NodeResult>;
@@ -304,6 +319,32 @@ impl SequentialScheduler {
                 fold_id: None,
                 seed_root,
             },
+            None,
+        )
+    }
+
+    pub fn execute_phase_with_data_provider(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+        phase: Phase,
+    ) -> Result<Vec<NodeResult>> {
+        plan.validate()?;
+        let variant_id = ctx.variant_id.clone();
+        let seed_root = ctx.root_seed;
+        self.execute_phase_scope(
+            plan,
+            controllers,
+            ctx,
+            PhaseScope {
+                phase,
+                variant_id,
+                fold_id: None,
+                seed_root,
+            },
+            Some(data_provider),
         )
     }
 
@@ -350,6 +391,58 @@ impl SequentialScheduler {
                         fold_id: fold_id.clone(),
                         seed_root,
                     },
+                    None,
+                )?);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn execute_campaign_phase_with_data_provider(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+        phase: Phase,
+    ) -> Result<Vec<NodeResult>> {
+        plan.validate()?;
+        let mut results = Vec::new();
+        let fold_ids = if phase == Phase::FitCv {
+            plan.fold_set
+                .as_ref()
+                .map(|fold_set| {
+                    fold_set
+                        .folds
+                        .iter()
+                        .map(|fold| Some(fold.fold_id.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![None])
+        } else {
+            vec![None]
+        };
+        for variant in &plan.variants {
+            if ctx
+                .variant_id
+                .as_ref()
+                .is_some_and(|requested| requested != &variant.variant_id)
+            {
+                continue;
+            }
+            for fold_id in &fold_ids {
+                let seed_root = variant.seed.or(ctx.root_seed);
+                results.extend(self.execute_phase_scope(
+                    plan,
+                    controllers,
+                    ctx,
+                    PhaseScope {
+                        phase,
+                        variant_id: Some(variant.variant_id.clone()),
+                        fold_id: fold_id.clone(),
+                        seed_root,
+                    },
+                    Some(data_provider),
                 )?);
             }
         }
@@ -362,6 +455,7 @@ impl SequentialScheduler {
         controllers: &RuntimeControllerRegistry,
         ctx: &mut RunContext,
         scope: PhaseScope,
+        data_provider: Option<&dyn RuntimeDataProvider>,
     ) -> Result<Vec<NodeResult>> {
         let mut results = Vec::new();
         let mut output_handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
@@ -388,7 +482,13 @@ impl SequentialScheduler {
                 variant_id: scope.variant_id.clone(),
                 fold_id: scope.fold_id.clone(),
                 branch_path: Vec::new(),
-                input_handles: collect_input_handles(node_plan, &output_handles),
+                input_handles: collect_input_handles(
+                    node_plan,
+                    &output_handles,
+                    data_provider,
+                    ctx,
+                    &scope,
+                )?,
                 seed: derive_task_seed(
                     scope.seed_root,
                     scope.variant_id.as_ref(),
@@ -415,7 +515,10 @@ impl SequentialScheduler {
 fn collect_input_handles(
     node_plan: &NodePlan,
     output_handles: &BTreeMap<NodeId, BTreeMap<String, HandleRef>>,
-) -> BTreeMap<String, HandleRef> {
+    data_provider: Option<&dyn RuntimeDataProvider>,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+) -> Result<BTreeMap<String, HandleRef>> {
     let mut inputs = BTreeMap::new();
     for upstream in &node_plan.input_nodes {
         if let Some(handles) = output_handles.get(upstream) {
@@ -424,7 +527,28 @@ fn collect_input_handles(
             }
         }
     }
-    inputs
+    if !node_plan.data_bindings.is_empty() && data_provider.is_none() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "node `{}` requires {} data binding(s) but no runtime data provider is registered",
+            node_plan.node_id,
+            node_plan.data_bindings.len()
+        )));
+    }
+    if let Some(data_provider) = data_provider {
+        for binding in &node_plan.data_bindings {
+            let handle = data_provider.materialize(&DataMaterializationRequest {
+                run_id: ctx.run_id.clone(),
+                node_id: node_plan.node_id.clone(),
+                input_name: binding.input_name.clone(),
+                phase: scope.phase,
+                variant_id: scope.variant_id.clone(),
+                fold_id: scope.fold_id.clone(),
+                binding: binding.clone(),
+            })?;
+            inputs.insert(format!("data:{}", binding.input_name), handle);
+        }
+    }
+    Ok(inputs)
 }
 
 fn derive_task_seed(
@@ -451,6 +575,7 @@ fn derive_task_seed(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
@@ -474,6 +599,21 @@ mod tests {
         id: ControllerId,
         handle: u64,
         emit_prediction: bool,
+    }
+
+    struct RecordingDataProvider {
+        requests: RefCell<Vec<DataMaterializationRequest>>,
+    }
+
+    impl RuntimeDataProvider for RecordingDataProvider {
+        fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+            self.requests.borrow_mut().push(request.clone());
+            Ok(HandleRef {
+                handle: 99,
+                kind: HandleKind::Data,
+                owner_controller: ControllerId::new("controller:data.provider").unwrap(),
+            })
+        }
     }
 
     impl RuntimeController for MockController {
@@ -663,8 +803,27 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sequential_scheduler_invokes_mock_controllers_in_topological_order() {
+    fn data_binding(node_id: &NodeId) -> crate::data::DataBinding {
+        crate::data::DataBinding {
+            node_id: node_id.clone(),
+            input_name: "x".to_string(),
+            request_id: "nir-to-tabular".to_string(),
+            schema_fingerprint: "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b"
+                .to_string(),
+            plan_fingerprint: "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d"
+                .to_string(),
+            relation_fingerprint: Some(
+                "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10".to_string(),
+            ),
+            output_representation: "tabular_numeric".to_string(),
+            source_ids: vec!["nir".to_string()],
+            require_relations: true,
+            view_policy: Default::default(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn manifests() -> crate::controller::ControllerRegistry {
         let mut manifests = crate::controller::ControllerRegistry::new();
         manifests
             .register(controller_manifest(
@@ -675,6 +834,11 @@ mod tests {
         manifests
             .register(controller_manifest("controller:model", NodeKind::Model))
             .unwrap();
+        manifests
+    }
+
+    #[test]
+    fn sequential_scheduler_invokes_mock_controllers_in_topological_order() {
         let plan = build_execution_plan(
             "plan:fitcv",
             simple_graph(),
@@ -686,9 +850,10 @@ mod tests {
                 split_invocation: None,
                 generation: Default::default(),
                 shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::new(),
                 metadata: BTreeMap::new(),
             },
-            &manifests,
+            &manifests(),
         )
         .unwrap();
         let controllers = runtime_controllers();
@@ -706,16 +871,6 @@ mod tests {
 
     #[test]
     fn campaign_scheduler_expands_variants_and_cv_folds() {
-        let mut manifests = crate::controller::ControllerRegistry::new();
-        manifests
-            .register(controller_manifest(
-                "controller:transform",
-                NodeKind::Transform,
-            ))
-            .unwrap();
-        manifests
-            .register(controller_manifest("controller:model", NodeKind::Model))
-            .unwrap();
         let plan = build_execution_plan(
             "plan:campaign",
             simple_graph(),
@@ -749,9 +904,10 @@ mod tests {
                     max_variants: Some(2),
                 },
                 shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::new(),
                 metadata: BTreeMap::new(),
             },
-            &manifests,
+            &manifests(),
         )
         .unwrap();
         let controllers = runtime_controllers();
@@ -776,5 +932,51 @@ mod tests {
                 .len(),
             8
         );
+    }
+
+    #[test]
+    fn data_bindings_require_runtime_provider_and_materialize_handles() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let plan = build_execution_plan(
+            "plan:data",
+            simple_graph(),
+            CampaignSpec {
+                id: "campaign:data".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: None,
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]),
+                metadata: BTreeMap::new(),
+            },
+            &manifests(),
+        )
+        .unwrap();
+        let controllers = runtime_controllers();
+        let mut ctx = RunContext::new(RunId::new("run:data").unwrap(), Some(11));
+
+        assert!(SequentialScheduler
+            .execute_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+            .is_err());
+
+        let provider = RecordingDataProvider {
+            requests: RefCell::new(Vec::new()),
+        };
+        let mut ctx = RunContext::new(RunId::new("run:data.provider").unwrap(), Some(11));
+        let results = SequentialScheduler
+            .execute_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(provider.requests.borrow().len(), 1);
+        assert_eq!(provider.requests.borrow()[0].input_name, "x");
     }
 }

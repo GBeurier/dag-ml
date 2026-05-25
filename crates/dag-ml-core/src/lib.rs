@@ -7,6 +7,7 @@
 pub mod aggregation;
 pub mod campaign;
 pub mod controller;
+pub mod data;
 pub mod error;
 pub mod fold;
 pub mod generation;
@@ -23,6 +24,7 @@ pub mod runtime;
 pub use aggregation::*;
 pub use campaign::*;
 pub use controller::*;
+pub use data::*;
 pub use error::{DagMlError, Result};
 pub use fold::*;
 pub use generation::*;

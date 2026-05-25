@@ -4,7 +4,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_core::{
     build_execution_plan, oof_campaign_fingerprint, validate_oof_campaign, CampaignSpec,
-    ControllerManifest, ControllerRegistry, DagMlError, GraphSpec, OofCampaign,
+    ControllerManifest, ControllerRegistry, DagMlError, ExternalDataPlanEnvelope, GraphSpec,
+    NodeId, OofCampaign,
 };
 
 #[derive(Debug, Parser)]
@@ -36,6 +37,16 @@ enum Command {
         controllers: PathBuf,
         #[arg(long, default_value = "plan:cli")]
         plan_id: String,
+    },
+    ValidateDataBinding {
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        node: String,
+        #[arg(long)]
+        input: String,
     },
 }
 
@@ -117,6 +128,28 @@ fn main() -> Result<()> {
                     .as_ref()
                     .map(|fold_set| fold_set.id.as_str())
                     .unwrap_or("none")
+            );
+        }
+        Command::ValidateDataBinding {
+            campaign,
+            envelope,
+            node,
+            input,
+        } => {
+            let campaign_spec: CampaignSpec = read_json(&campaign, "campaign")?;
+            campaign_spec.validate()?;
+            let node_id = NodeId::new(node)?;
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let binding = campaign_spec
+                .data_bindings
+                .get(&node_id)
+                .and_then(|bindings| bindings.iter().find(|binding| binding.input_name == input))
+                .with_context(|| format!("no data binding for node `{node_id}` input `{input}`"))?;
+            binding.validate_envelope(&envelope)?;
+            println!(
+                "valid data binding: {}.{} -> {}",
+                node_id, binding.input_name, binding.plan_fingerprint
             );
         }
     }

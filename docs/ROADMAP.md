@@ -49,6 +49,11 @@ Definition of done:
 - schema fingerprint checks at predict/replay;
 - UC6 stacking fixture passes end to end.
 
+Status: JSON/fingerprint contract started. `dag-ml-data` now emits a
+coordinator envelope, `dag-ml` validates node data bindings against it, and the
+scheduler can request opaque data handles through `RuntimeDataProvider`.
+Next missing piece is a concrete `dag-ml-data` provider/handle arena.
+
 ## Phase 4: Parallelism
 
 Definition of done:

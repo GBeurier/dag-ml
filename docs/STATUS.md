@@ -22,13 +22,20 @@ Implemented:
 - aggregation policy plus mean aggregation from observation predictions to
   sample predictions;
 - data/model shape plans and runtime shape deltas;
+- data bindings from node inputs to external `dag-ml-data` plan envelopes;
+- external data-plan envelope validation by schema, plan and relation
+  fingerprints;
+- runtime data-provider trait and materialization requests that turn data
+  bindings into opaque task handles;
 - in-memory prediction store and lineage recorder;
 - sequential scheduler for DAG order plus campaign execution over
   variant x CV-fold scopes;
 - mock controller conformance tests;
 - CLI execution-plan validation from graph/campaign/controller JSON fixtures;
+- CLI data-binding validation against a coordinator data-plan envelope;
 - C ABI graph validation entry point;
-- `dag-ml-data` fixture integration through data-plan fingerprints;
+- `dag-ml-data` fixture integration through schema, plan and relation
+  fingerprints;
 - coordinator graph/campaign/controller fixtures;
 - CI workflow.
 
@@ -40,11 +47,11 @@ Not implemented yet:
 - artifact/cache stores;
 - Arrow prediction storage;
 - host controller adapters;
-- integration with `dag-ml-data` runtime plans.
+- concrete `dag-ml-data` provider implementation and handle lifecycle arena.
 
 Next recommended task:
 
-Implement the first host-controller path:
-Python/sklearn mock adapter or native C++ shim, backed by `dag-ml-data` relation
-and data-plan requests, then run an end-to-end OOF stacking fixture through the
-new `ExecutionPlan` and scheduler.
+Implement the first concrete provider/controller pair: a `dag-ml-data`
+in-memory provider that backs the `RuntimeDataProvider` trait, plus a
+sklearn-style mock controller consuming the resulting handles through the
+scheduler.
