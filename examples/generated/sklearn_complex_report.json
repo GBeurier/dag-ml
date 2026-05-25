@@ -1,0 +1,162 @@
+{
+  "augmentation_counts": {
+    "fold:0": 135,
+    "fold:1": 135,
+    "fold:2": 150,
+    "fold:3": 150,
+    "fold:4": 150
+  },
+  "branch_variant_metrics": {
+    "branch:b0.variant:pca10_ridge_a03": {
+      "mae": 1.6431955214157363,
+      "r2": 0.12085687693967617,
+      "rmse": 2.0650849969388356
+    },
+    "branch:b0.variant:pca16_ridge_a12": {
+      "mae": 1.8762207993101268,
+      "r2": -0.1004921563147323,
+      "rmse": 2.310476819128033
+    },
+    "branch:b1.variant:rf_select_k28": {
+      "mae": 1.7349422625780269,
+      "r2": 0.024493417406025064,
+      "rmse": 2.1753204469952587
+    },
+    "branch:b1.variant:rf_select_k40": {
+      "mae": 1.5568698020169254,
+      "r2": 0.16399470879490918,
+      "rmse": 2.0137829196054966
+    },
+    "branch:b2.variant:poly_extra_k45": {
+      "mae": 1.859101443259098,
+      "r2": -0.15422278637349485,
+      "rmse": 2.3662082365971644
+    },
+    "branch:b2.variant:poly_extra_k80": {
+      "mae": 1.8544549919325164,
+      "r2": -0.13508221873590553,
+      "rmse": 2.346506708094814
+    }
+  },
+  "final_refit": {
+    "base_refit_augmented_observations": 180,
+    "base_refit_training_observations": 360,
+    "merge_refit_features": 7,
+    "merge_refit_samples": 60,
+    "meta_training_features": "OOF base predictions from selected branches plus original metadata features",
+    "selected_base_nodes": [
+      "branch:b0.variant:pca10_ridge_a03",
+      "branch:b1.variant:rf_select_k40",
+      "branch:b2.variant:poly_extra_k80"
+    ],
+    "selected_merge_node": "merge:m1.pred_meta_original.meta:ridge"
+  },
+  "leakage_controls": {
+    "aggregation": "mean prediction over repeated observations per sample",
+    "branch_selection": "OOF sample RMSE only",
+    "group_boundary": "GroupKFold over sample groups",
+    "heterogeneous_merge": "selected OOF predictions plus original sample features; supervised merge steps fit only on fold train",
+    "merge_selection": "OOF sample RMSE only",
+    "refit": "base models refit on full train; merge model refit on OOF meta-features and selected score policy",
+    "split_unit": "sample",
+    "stacking_features": "base model validation OOF predictions only",
+    "validation_augmentation": "disabled"
+  },
+  "merge_variant_metrics": {
+    "merge:m0.pred_only.meta:ridge": {
+      "mae": 1.6343693630227052,
+      "r2": 0.08059704696410919,
+      "rmse": 2.1118403672578228
+    },
+    "merge:m1.pred_meta_original.meta:ridge": {
+      "mae": 1.1186227576576009,
+      "r2": 0.6099693601361709,
+      "rmse": 1.3754902067143315
+    },
+    "merge:m2.pred_raw_select.meta:extra": {
+      "mae": 1.2201086734892252,
+      "r2": 0.5364669775010131,
+      "rmse": 1.4995069376992687
+    }
+  },
+  "observation_count": 180,
+  "original_sample_feature_shape": [
+    60,
+    68
+  ],
+  "sample_count": 60,
+  "seed": 20260526,
+  "selected_branch_variants": {
+    "branch:b0": {
+      "producer_node": "branch:b0.variant:pca10_ridge_a03",
+      "score": {
+        "mae": 1.6431955214157363,
+        "r2": 0.12085687693967617,
+        "rmse": 2.0650849969388356
+      },
+      "selection_metric": "sample_oof_rmse"
+    },
+    "branch:b1": {
+      "producer_node": "branch:b1.variant:rf_select_k40",
+      "score": {
+        "mae": 1.5568698020169254,
+        "r2": 0.16399470879490918,
+        "rmse": 2.0137829196054966
+      },
+      "selection_metric": "sample_oof_rmse"
+    },
+    "branch:b2": {
+      "producer_node": "branch:b2.variant:poly_extra_k80",
+      "score": {
+        "mae": 1.8544549919325164,
+        "r2": -0.13508221873590553,
+        "rmse": 2.346506708094814
+      },
+      "selection_metric": "sample_oof_rmse"
+    }
+  },
+  "selected_merge_variant": {
+    "original_feature_mode": "metadata",
+    "producer_node": "merge:m1.pred_meta_original.meta:ridge",
+    "score": {
+      "mae": 1.1186227576576009,
+      "r2": 0.6099693601361709,
+      "rmse": 1.3754902067143315
+    },
+    "selection_metric": "sample_oof_rmse"
+  },
+  "sklearn_workflow": {
+    "augmentation": "train_only_gaussian_noise_one_copy_per_train_observation",
+    "branch_input": "spectral source only",
+    "branch_variants": {
+      "branch:b0": [
+        "branch:b0.variant:pca10_ridge_a03",
+        "branch:b0.variant:pca16_ridge_a12"
+      ],
+      "branch:b1": [
+        "branch:b1.variant:rf_select_k28",
+        "branch:b1.variant:rf_select_k40"
+      ],
+      "branch:b2": [
+        "branch:b2.variant:poly_extra_k45",
+        "branch:b2.variant:poly_extra_k80"
+      ]
+    },
+    "heterogeneous_merge_variants": [
+      {
+        "inputs": "selected_oof_predictions",
+        "producer_node": "merge:m0.pred_only.meta:ridge"
+      },
+      {
+        "inputs": "selected_oof_predictions+original_metadata_features",
+        "producer_node": "merge:m1.pred_meta_original.meta:ridge"
+      },
+      {
+        "inputs": "selected_oof_predictions+original_sample_features",
+        "producer_node": "merge:m2.pred_raw_select.meta:extra"
+      }
+    ],
+    "repetitions_per_sample": 3,
+    "splitter": "GroupKFold(n_splits=5)"
+  }
+}

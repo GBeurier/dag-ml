@@ -37,6 +37,10 @@ Implemented:
 - CLI data-binding validation against a coordinator data-plan envelope;
 - CLI mock campaign execution through controller manifests, data bindings,
   in-memory data provider and mock runtime controllers;
+- standalone sklearn complex OOF demonstrator with repeated observations,
+  group-aware splits, train-only augmentation, branch model variants,
+  heterogeneous prediction+raw-data merge variants, OOF-based selection and
+  final refit report;
 - C ABI graph validation entry point;
 - `dag-ml-data` fixture integration through schema, plan and relation
   fingerprints;
@@ -56,6 +60,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Implement the first real buffer-backed provider/controller pair: materialize
-`dag-ml-data` views into opaque handles, then connect a sklearn-style controller
-that reads those handles and emits fold-aligned predictions.
+Turn the sklearn demonstrator into the first controller adapter smoke: replace
+the Python-side orchestration loop with `dag-ml` scheduler tasks while keeping
+the same OOF campaign, heterogeneous merge and refit score policy.

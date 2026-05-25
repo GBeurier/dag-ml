@@ -10,6 +10,7 @@
 | RNG | same path gives same seed, different labels split streams |
 | Data binding | validates envelope fingerprints, refuses mismatches, materializes in-memory handles |
 | Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths |
+| sklearn demonstrator | group OOF, repeated observations, train-only augmentation, branch variant selection, heterogeneous merge selection, refit report |
 | ABI | null pointer handling, invalid JSON, valid graph |
 
 ## Conformance Tests
@@ -28,6 +29,8 @@ Current CLI smoke commands:
 cargo run -p dag-ml-cli -- validate-execution-plan --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json
 cargo run -p dag-ml-cli -- validate-data-binding --campaign examples/campaign_oof_generation.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_nir.json --node model:base --input x
 cargo run -p dag-ml-cli -- run-mock-campaign --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_nir.json
+python examples/sklearn_complex_oof_demo.py
+cargo run -p dag-ml-cli -- validate-oof-campaign examples/generated/sklearn_complex_oof_campaign.json
 ```
 
 ## ABI Tests
