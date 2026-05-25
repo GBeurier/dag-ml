@@ -10,6 +10,8 @@ Use this as a validation map before development starts.
 | ABI | `docs/ABI.md` | C ABI shape, handles, vtables, ownership | No host object crosses as a Rust-owned value |
 | Rationale | `docs/RATIONALE.md` | Technical decisions and non-goals | Rust/C ABI split is justified and scoped |
 | MVP acceptance | `docs/MVP_ACCEPTANCE.md` | First executable target and no-leakage gates | UC6 succeeds and UC11 fails for the right reason |
+| Capability matrix | `docs/CAPABILITY_MATRIX.md` | Full nirs4all replacement surface | Every feature maps to an owner and an invariant |
+| OOF fixtures | `docs/OOF_FIXTURES.md` | Shared tiny campaign fixtures | UC6 joins and UC11 refuses leakage from file-backed tests |
 | Roadmap | `docs/ROADMAP.md` | Sequenced delivery phases | Every phase has an observable definition of done |
 | Status | `docs/STATUS.md` | Current scaffold state and next actions | No hidden implementation claims |
 | Test plan | `docs/TEST_PLAN.md` | Invariant, ABI and conformance tests | OOF/leakage tests are first-class |
