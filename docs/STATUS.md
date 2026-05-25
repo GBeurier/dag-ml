@@ -27,12 +27,16 @@ Implemented:
   fingerprints;
 - runtime data-provider trait and materialization requests that turn data
   bindings into opaque task handles;
+- in-memory runtime data provider with handle records for schema/plan/relation
+  traceability;
 - in-memory prediction store and lineage recorder;
 - sequential scheduler for DAG order plus campaign execution over
   variant x CV-fold scopes;
 - mock controller conformance tests;
 - CLI execution-plan validation from graph/campaign/controller JSON fixtures;
 - CLI data-binding validation against a coordinator data-plan envelope;
+- CLI mock campaign execution through controller manifests, data bindings,
+  in-memory data provider and mock runtime controllers;
 - C ABI graph validation entry point;
 - `dag-ml-data` fixture integration through schema, plan and relation
   fingerprints;
@@ -47,11 +51,11 @@ Not implemented yet:
 - artifact/cache stores;
 - Arrow prediction storage;
 - host controller adapters;
-- concrete `dag-ml-data` provider implementation and handle lifecycle arena.
+- concrete `dag-ml-data` provider implementation with real buffers and handle
+  lifecycle arena.
 
 Next recommended task:
 
-Implement the first concrete provider/controller pair: a `dag-ml-data`
-in-memory provider that backs the `RuntimeDataProvider` trait, plus a
-sklearn-style mock controller consuming the resulting handles through the
-scheduler.
+Implement the first real buffer-backed provider/controller pair: materialize
+`dag-ml-data` views into opaque handles, then connect a sklearn-style controller
+that reads those handles and emits fold-aligned predictions.

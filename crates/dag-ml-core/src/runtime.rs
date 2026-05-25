@@ -575,13 +575,13 @@ fn derive_task_seed(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
     use crate::controller::{
         ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest, RngPolicy,
     };
+    use crate::data::{ExternalDataPlanEnvelope, InMemoryDataProvider};
     use crate::fold::{FoldAssignment, FoldSet};
     use crate::generation::{
         GenerationChoice, GenerationDimension, GenerationSpec, GenerationStrategy,
@@ -601,27 +601,27 @@ mod tests {
         emit_prediction: bool,
     }
 
-    struct RecordingDataProvider {
-        requests: RefCell<Vec<DataMaterializationRequest>>,
-    }
-
-    impl RuntimeDataProvider for RecordingDataProvider {
-        fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
-            self.requests.borrow_mut().push(request.clone());
-            Ok(HandleRef {
-                handle: 99,
-                kind: HandleKind::Data,
-                owner_controller: ControllerId::new("controller:data.provider").unwrap(),
-            })
-        }
-    }
-
     impl RuntimeController for MockController {
         fn controller_id(&self) -> &ControllerId {
             &self.id
         }
 
         fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            for binding in &task.node_plan.data_bindings {
+                let key = format!("data:{}", binding.input_name);
+                let handle = task.input_handles.get(&key).ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "node `{}` did not receive data handle `{key}`",
+                        task.node_plan.node_id
+                    ))
+                })?;
+                if handle.kind != HandleKind::Data {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received non-data handle for `{key}`",
+                        task.node_plan.node_id
+                    )));
+                }
+            }
             let variant_label = task
                 .variant_id
                 .as_ref()
@@ -961,9 +961,15 @@ mod tests {
             .execute_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
             .is_err());
 
-        let provider = RecordingDataProvider {
-            requests: RefCell::new(Vec::new()),
-        };
+        let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        let provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider").unwrap(),
+            envelope,
+        )
+        .unwrap();
         let mut ctx = RunContext::new(RunId::new("run:data.provider").unwrap(), Some(11));
         let results = SequentialScheduler
             .execute_phase_with_data_provider(
@@ -976,7 +982,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 2);
-        assert_eq!(provider.requests.borrow().len(), 1);
-        assert_eq!(provider.requests.borrow()[0].input_name, "x");
+        assert_eq!(provider.handle_records().len(), 1);
+        assert_eq!(provider.handle_records()[0].input_name, "x");
+        assert_eq!(provider.handle_records()[0].relation_record_count, Some(4));
     }
 }
