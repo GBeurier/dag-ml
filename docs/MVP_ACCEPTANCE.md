@@ -54,4 +54,6 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
+cargo run -p dag-ml-cli -- validate-oof-campaign examples/fixtures/oof_campaign/uc6_oof_success_predictions.json
+cargo run -p dag-ml-cli -- validate-oof-campaign examples/fixtures/oof_campaign/uc11_train_prediction_refusal.json --expect-leakage
 ```

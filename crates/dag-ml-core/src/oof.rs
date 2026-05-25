@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, OofLeakageReport, OofLeakageViolation, Result};
+use crate::fold::FoldSet;
 use crate::ids::{FoldId, NodeId, SampleId};
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -26,6 +27,8 @@ fn default_prediction_join_key() -> PredictionJoinKey {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PredictionBlock {
+    #[serde(default)]
+    pub prediction_id: Option<String>,
     pub producer_node: NodeId,
     pub partition: PredictionPartition,
     pub fold_id: Option<FoldId>,
@@ -75,6 +78,14 @@ pub struct OofMatrix {
     pub sample_ids: Vec<SampleId>,
     pub columns: Vec<String>,
     pub values: Vec<Vec<f64>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OofCampaign {
+    pub fold_set: FoldSet,
+    pub join_policy: PredictionJoinPolicy,
+    pub requested_sample_order: Vec<SampleId>,
+    pub prediction_blocks: Vec<PredictionBlock>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -283,6 +294,63 @@ pub fn join_oof_campaign_features(
     })
 }
 
+pub fn validate_oof_campaign(campaign: &OofCampaign) -> Result<OofMatrix> {
+    campaign.fold_set.validate()?;
+    validate_requested_samples_match_fold_set(
+        &campaign.requested_sample_order,
+        &campaign.fold_set,
+    )?;
+    validate_prediction_blocks_against_folds(&campaign.fold_set, &campaign.prediction_blocks)?;
+    join_oof_campaign_features(
+        &campaign.join_policy,
+        &campaign.prediction_blocks,
+        &campaign.requested_sample_order,
+    )
+}
+
+pub fn validate_prediction_blocks_against_folds(
+    fold_set: &FoldSet,
+    blocks: &[PredictionBlock],
+) -> Result<()> {
+    fold_set.validate()?;
+    let folds = fold_set
+        .folds
+        .iter()
+        .map(|fold| (&fold.fold_id, fold))
+        .collect::<BTreeMap<_, _>>();
+    for block in blocks {
+        block.validate_shape()?;
+        let Some(fold_id) = &block.fold_id else {
+            if matches!(
+                block.partition,
+                PredictionPartition::Train | PredictionPartition::Validation
+            ) {
+                return Err(DagMlError::OofValidation(format!(
+                    "producer `{}` emitted {:?} predictions without fold_id",
+                    block.producer_node, block.partition
+                )));
+            }
+            continue;
+        };
+        let fold = folds.get(fold_id).ok_or_else(|| {
+            DagMlError::OofValidation(format!(
+                "producer `{}` references unknown fold `{fold_id}`",
+                block.producer_node
+            ))
+        })?;
+        match block.partition {
+            PredictionPartition::Train => {
+                assert_exact_partition_samples(block, &fold.train_sample_ids, "train")?
+            }
+            PredictionPartition::Validation => {
+                assert_exact_partition_samples(block, &fold.validation_sample_ids, "validation")?
+            }
+            PredictionPartition::Test | PredictionPartition::Final => {}
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_prediction_blocks_are_oof(
     policy: &PredictionJoinPolicy,
     blocks: &[PredictionBlock],
@@ -309,6 +377,53 @@ pub fn validate_prediction_blocks_are_oof(
             remediation: "Use only OOF validation predictions as training features, or explicitly set allow_train_predictions_as_features=true for an unsafe run.".to_string(),
         })))
     }
+}
+
+fn validate_requested_samples_match_fold_set(
+    requested_sample_order: &[SampleId],
+    fold_set: &FoldSet,
+) -> Result<()> {
+    ensure_required_samples(requested_sample_order)?;
+    let requested = requested_sample_order.iter().collect::<BTreeSet<_>>();
+    let expected = fold_set.sample_ids.iter().collect::<BTreeSet<_>>();
+    if requested != expected {
+        return Err(DagMlError::OofValidation(
+            "requested sample order does not match fold-set sample universe".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn assert_exact_partition_samples(
+    block: &PredictionBlock,
+    expected_samples: &[SampleId],
+    partition_name: &str,
+) -> Result<()> {
+    let actual = unique_block_samples(block)?;
+    let expected = expected_samples.iter().collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(DagMlError::OofValidation(format!(
+            "producer `{}` fold `{}` {} predictions do not match fold {} samples",
+            block.producer_node,
+            block.fold_id.as_ref().expect("fold id exists"),
+            partition_name,
+            partition_name
+        )));
+    }
+    Ok(())
+}
+
+fn unique_block_samples(block: &PredictionBlock) -> Result<BTreeSet<&SampleId>> {
+    let mut seen = BTreeSet::new();
+    for sample_id in &block.sample_ids {
+        if !seen.insert(sample_id) {
+            return Err(DagMlError::OofValidation(format!(
+                "producer `{}` emitted duplicate prediction for sample `{sample_id}`",
+                block.producer_node
+            )));
+        }
+    }
+    Ok(seen)
 }
 
 fn ensure_required_samples(required_samples: &[SampleId]) -> Result<()> {
@@ -347,16 +462,6 @@ fn normalized_targets(block: &PredictionBlock, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fold::FoldSet;
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    struct CampaignFixture {
-        fold_set: FoldSet,
-        join_policy: PredictionJoinPolicy,
-        requested_sample_order: Vec<SampleId>,
-        prediction_blocks: Vec<PredictionBlock>,
-    }
 
     fn sid(value: &str) -> SampleId {
         SampleId::new(value).unwrap()
@@ -368,6 +473,7 @@ mod tests {
 
     fn block(partition: PredictionPartition) -> PredictionBlock {
         PredictionBlock {
+            prediction_id: None,
             producer_node: producer(),
             partition,
             fold_id: Some(FoldId::new("fold0").unwrap()),
@@ -379,6 +485,7 @@ mod tests {
 
     fn campaign_block(producer_node: &str, fold_id: &str, samples: &[&str]) -> PredictionBlock {
         PredictionBlock {
+            prediction_id: None,
             producer_node: NodeId::new(producer_node).unwrap(),
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new(fold_id).unwrap()),
@@ -394,7 +501,7 @@ mod tests {
         }
     }
 
-    fn load_fixture(source: &str) -> CampaignFixture {
+    fn load_fixture(source: &str) -> OofCampaign {
         serde_json::from_str(source).unwrap()
     }
 
@@ -479,13 +586,7 @@ mod tests {
             "../../../examples/fixtures/oof_campaign/uc6_oof_success_predictions.json"
         ));
 
-        fixture.fold_set.validate().unwrap();
-        let joined = join_oof_campaign_features(
-            &fixture.join_policy,
-            &fixture.prediction_blocks,
-            &fixture.requested_sample_order,
-        )
-        .unwrap();
+        let joined = validate_oof_campaign(&fixture).unwrap();
 
         assert_eq!(joined.columns.len(), 3);
         assert_eq!(joined.values[0], vec![1.0, 10.0, 100.0]);
@@ -498,13 +599,7 @@ mod tests {
             "../../../examples/fixtures/oof_campaign/uc11_train_prediction_refusal.json"
         ));
 
-        fixture.fold_set.validate().unwrap();
-        let err = join_oof_campaign_features(
-            &fixture.join_policy,
-            &fixture.prediction_blocks,
-            &fixture.requested_sample_order,
-        )
-        .unwrap_err();
+        let err = validate_oof_campaign(&fixture).unwrap_err();
 
         match err {
             DagMlError::OofLeakage(report) => {
@@ -515,5 +610,19 @@ mod tests {
             }
             other => panic!("expected OOF leakage error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn fold_validation_rejects_wrong_validation_partition_samples() {
+        let mut fixture = load_fixture(include_str!(
+            "../../../examples/fixtures/oof_campaign/uc6_oof_success_predictions.json"
+        ));
+        fixture.prediction_blocks[0].sample_ids = vec![sid("S001"), sid("S002")];
+
+        let err = validate_oof_campaign(&fixture).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("do not match fold validation samples"));
     }
 }
