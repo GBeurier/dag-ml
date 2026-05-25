@@ -1,0 +1,9 @@
+/target/
+**/*.rs.bk
+.DS_Store
+.idea/
+.vscode/
+.env
+.venv/
+__pycache__/
+.pytest_cache/

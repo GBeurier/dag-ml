@@ -1,0 +1,55 @@
+{
+  "id": "minimal-stacking-smoke",
+  "interface": {
+    "inputs": [
+      { "name": "x", "kind": "data", "representation": "tabular_numeric", "cardinality": "one", "description": "input features" }
+    ],
+    "outputs": [
+      { "name": "prediction", "kind": "prediction", "representation": null, "cardinality": "one", "description": "final prediction" }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "split:cv",
+      "kind": "split",
+      "operator": { "type": "GroupKFold", "n_splits": 5 },
+      "params": {},
+      "ports": {
+        "inputs": [
+          { "name": "x", "kind": "data", "representation": "tabular_numeric", "cardinality": "one", "description": "" }
+        ],
+        "outputs": [
+          { "name": "folds", "kind": "control", "representation": null, "cardinality": "one", "description": "" }
+        ]
+      },
+      "metadata": {},
+      "seed_label": "cv"
+    },
+    {
+      "id": "model:base",
+      "kind": "model",
+      "operator": { "type": "RandomForestRegressor" },
+      "params": { "n_estimators": 100 },
+      "ports": {
+        "inputs": [
+          { "name": "x", "kind": "data", "representation": "tabular_numeric", "cardinality": "one", "description": "" },
+          { "name": "folds", "kind": "control", "representation": null, "cardinality": "one", "description": "" }
+        ],
+        "outputs": [
+          { "name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": "" }
+        ]
+      },
+      "metadata": {},
+      "seed_label": "base"
+    }
+  ],
+  "edges": [
+    {
+      "source": { "node_id": "split:cv", "port_name": "folds" },
+      "target": { "node_id": "model:base", "port_name": "folds" },
+      "contract": { "kind": "control", "representation": null, "requires_oof": false, "requires_fold_alignment": true, "propagates_lineage": true }
+    }
+  ],
+  "search_space_fingerprint": null,
+  "metadata": {}
+}
