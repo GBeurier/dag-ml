@@ -8,6 +8,8 @@
 | OOF | rejects train predictions, aligns by sample id, duplicate detection |
 | OOF campaign fixtures | UC6 joins, UC11 refuses, fold prediction samples match fold partitions, campaign fingerprint is stable |
 | RNG | same path gives same seed, different labels split streams |
+| Data binding | validates envelope fingerprints, refuses mismatches, materializes in-memory handles |
+| Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths |
 | ABI | null pointer handling, invalid JSON, valid graph |
 
 ## Conformance Tests
@@ -18,6 +20,15 @@ Add after the executor exists:
 - UC11 train-prediction leakage refusal;
 - group-aware split where no group crosses train/validation;
 - replay rejects schema fingerprint mismatch.
+- mock campaign run materializes data handles before invoking controllers.
+
+Current CLI smoke commands:
+
+```bash
+cargo run -p dag-ml-cli -- validate-execution-plan --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json
+cargo run -p dag-ml-cli -- validate-data-binding --campaign examples/campaign_oof_generation.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_nir.json --node model:base --input x
+cargo run -p dag-ml-cli -- run-mock-campaign --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_nir.json
+```
 
 ## ABI Tests
 

@@ -1,11 +1,14 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_core::{
     build_execution_plan, oof_campaign_fingerprint, validate_oof_campaign, CampaignSpec,
-    ControllerManifest, ControllerRegistry, DagMlError, ExternalDataPlanEnvelope, GraphSpec,
-    NodeId, OofCampaign,
+    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, ExternalDataPlanEnvelope,
+    GraphSpec, HandleKind, HandleRef, InMemoryDataProvider, LineageId, LineageRecord, NodeId,
+    NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock, PredictionPartition, RunContext,
+    RunId, RuntimeController, RuntimeControllerRegistry, SampleId, SequentialScheduler,
 };
 
 #[derive(Debug, Parser)]
@@ -47,6 +50,22 @@ enum Command {
         node: String,
         #[arg(long)]
         input: String,
+    },
+    RunMockCampaign {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long, default_value = "plan:cli.mock")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.mock")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
     },
 }
 
@@ -152,9 +171,157 @@ fn main() -> Result<()> {
                 node_id, binding.input_name, binding.plan_fingerprint
             );
         }
+        Command::RunMockCampaign {
+            graph,
+            campaign,
+            controllers,
+            envelope,
+            plan_id,
+            run_id,
+            root_seed,
+        } => {
+            let graph_spec: GraphSpec = read_json(&graph, "graph")?;
+            let campaign_spec: CampaignSpec = read_json(&campaign, "campaign")?;
+            let controller_manifests: Vec<ControllerManifest> =
+                read_json(&controllers, "controller manifest list")?;
+            let mut registry = ControllerRegistry::new();
+            for manifest in controller_manifests {
+                registry.register(manifest)?;
+            }
+            let plan = build_execution_plan(plan_id, graph_spec, campaign_spec, &registry)
+                .with_context(|| "failed to build execution plan")?;
+
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let data_provider = InMemoryDataProvider::with_envelope(
+                ControllerId::new("controller:data.provider")?,
+                envelope,
+            )?;
+            let runtime_controllers = mock_runtime_controllers(&plan)?;
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
+            let results = SequentialScheduler
+                .execute_campaign_phase_with_data_provider(
+                    &plan,
+                    &runtime_controllers,
+                    &data_provider,
+                    &mut ctx,
+                    Phase::FitCv,
+                )
+                .with_context(|| "mock campaign execution failed")?;
+            println!(
+                "mock campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s)",
+                results.len(),
+                ctx.lineage.len(),
+                ctx.prediction_store.blocks().len(),
+                data_provider.handle_records().len()
+            );
+        }
     }
 
     Ok(())
+}
+
+struct CliMockController {
+    id: ControllerId,
+}
+
+impl RuntimeController for CliMockController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
+        for binding in &task.node_plan.data_bindings {
+            let key = format!("data:{}", binding.input_name);
+            let handle = task.input_handles.get(&key).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "node `{}` did not receive data handle `{key}`",
+                    task.node_plan.node_id
+                ))
+            })?;
+            if handle.kind != HandleKind::Data {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` received non-data handle for `{key}`",
+                    task.node_plan.node_id
+                )));
+            }
+        }
+
+        let output = HandleRef {
+            handle: stable_handle(task.node_plan.node_id.as_str()),
+            kind: HandleKind::Data,
+            owner_controller: self.id.clone(),
+        };
+        let predictions = if matches!(task.node_plan.kind, dag_ml_core::NodeKind::Model) {
+            vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: task.fold_id.clone(),
+                sample_ids: vec![SampleId::new("sample:mock")?],
+                values: vec![vec![stable_handle(task.node_plan.node_id.as_str()) as f64]],
+                target_names: vec!["y".to_string()],
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([("out".to_string(), output)]),
+            predictions,
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{:?}:{}:{}",
+                    task.node_plan.node_id,
+                    task.phase,
+                    task.variant_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "base".to_string()),
+                    task.fold_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "nofold".to_string())
+                ))?,
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
+fn mock_runtime_controllers(
+    plan: &dag_ml_core::ExecutionPlan,
+) -> Result<RuntimeControllerRegistry> {
+    let mut registry = RuntimeControllerRegistry::new();
+    for controller_id in plan.controller_manifests.keys() {
+        registry.register(Box::new(CliMockController {
+            id: controller_id.clone(),
+        }))?;
+    }
+    Ok(registry)
+}
+
+fn stable_handle(value: &str) -> u64 {
+    value.bytes().fold(17u64, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(byte as u64)
+    })
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Result<T> {

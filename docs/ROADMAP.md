@@ -51,8 +51,10 @@ Definition of done:
 
 Status: JSON/fingerprint contract started. `dag-ml-data` now emits a
 coordinator envelope, `dag-ml` validates node data bindings against it, and the
-scheduler can request opaque data handles through `RuntimeDataProvider`.
-Next missing piece is a concrete `dag-ml-data` provider/handle arena.
+scheduler can request opaque data handles through `RuntimeDataProvider`. A
+core in-memory provider records handle materialization for smoke tests.
+Next missing piece is a concrete buffer-backed `dag-ml-data` provider/handle
+arena.
 
 ## Phase 4: Parallelism
 

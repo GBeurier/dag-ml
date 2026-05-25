@@ -1,10 +1,13 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, Result};
-use crate::ids::NodeId;
+use crate::ids::{ControllerId, FoldId, NodeId, RunId, VariantId};
+use crate::phase::Phase;
 use crate::relation::SampleRelationSet;
+use crate::runtime::{DataMaterializationRequest, HandleKind, HandleRef, RuntimeDataProvider};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -184,6 +187,158 @@ pub fn validate_data_binding_envelope(
     binding.validate_envelope(envelope)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+struct DataEnvelopeKey {
+    schema_fingerprint: String,
+    plan_fingerprint: String,
+    relation_fingerprint: Option<String>,
+}
+
+impl DataEnvelopeKey {
+    fn from_binding(binding: &DataBinding) -> Self {
+        Self {
+            schema_fingerprint: binding.schema_fingerprint.clone(),
+            plan_fingerprint: binding.plan_fingerprint.clone(),
+            relation_fingerprint: binding.relation_fingerprint.clone(),
+        }
+    }
+
+    fn from_envelope(envelope: &ExternalDataPlanEnvelope) -> Self {
+        Self {
+            schema_fingerprint: envelope.schema_fingerprint.clone(),
+            plan_fingerprint: envelope.plan_fingerprint.clone(),
+            relation_fingerprint: envelope.relation_fingerprint.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DataHandleRecord {
+    pub handle: HandleRef,
+    pub run_id: RunId,
+    pub node_id: NodeId,
+    pub input_name: String,
+    pub phase: Phase,
+    pub variant_id: Option<VariantId>,
+    pub fold_id: Option<FoldId>,
+    pub request_id: String,
+    pub schema_fingerprint: String,
+    pub plan_fingerprint: String,
+    pub relation_fingerprint: Option<String>,
+    pub output_representation: String,
+    #[serde(default)]
+    pub source_ids: Vec<String>,
+    pub relation_record_count: Option<usize>,
+}
+
+#[derive(Debug)]
+pub struct InMemoryDataProvider {
+    owner_controller: ControllerId,
+    envelopes: BTreeMap<DataEnvelopeKey, ExternalDataPlanEnvelope>,
+    next_handle: RefCell<u64>,
+    records: RefCell<BTreeMap<u64, DataHandleRecord>>,
+}
+
+impl InMemoryDataProvider {
+    pub fn new(owner_controller: ControllerId) -> Self {
+        Self {
+            owner_controller,
+            envelopes: BTreeMap::new(),
+            next_handle: RefCell::new(1),
+            records: RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn with_envelope(
+        owner_controller: ControllerId,
+        envelope: ExternalDataPlanEnvelope,
+    ) -> Result<Self> {
+        let mut provider = Self::new(owner_controller);
+        provider.register_envelope(envelope)?;
+        Ok(provider)
+    }
+
+    pub fn register_envelope(&mut self, envelope: ExternalDataPlanEnvelope) -> Result<()> {
+        envelope.validate()?;
+        let key = DataEnvelopeKey::from_envelope(&envelope);
+        if self.envelopes.insert(key, envelope).is_some() {
+            return Err(DagMlError::RuntimeValidation(
+                "duplicate external data-plan envelope".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn handle_record(&self, handle: u64) -> Option<DataHandleRecord> {
+        self.records.borrow().get(&handle).cloned()
+    }
+
+    pub fn handle_records(&self) -> Vec<DataHandleRecord> {
+        self.records.borrow().values().cloned().collect()
+    }
+
+    fn next_handle(&self) -> u64 {
+        let mut next = self.next_handle.borrow_mut();
+        let handle = *next;
+        *next += 1;
+        handle
+    }
+}
+
+impl RuntimeDataProvider for InMemoryDataProvider {
+    fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+        if request.node_id != request.binding.node_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data materialization request node `{}` does not match binding node `{}`",
+                request.node_id, request.binding.node_id
+            )));
+        }
+        if request.input_name != request.binding.input_name {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data materialization request input `{}` does not match binding input `{}`",
+                request.input_name, request.binding.input_name
+            )));
+        }
+        let envelope = self
+            .envelopes
+            .get(&DataEnvelopeKey::from_binding(&request.binding))
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "no external data-plan envelope registered for binding `{}` on `{}`",
+                    request.binding.input_name, request.binding.node_id
+                ))
+            })?;
+        request.binding.validate_envelope(envelope)?;
+
+        let handle = HandleRef {
+            handle: self.next_handle(),
+            kind: HandleKind::Data,
+            owner_controller: self.owner_controller.clone(),
+        };
+        let record = DataHandleRecord {
+            handle: handle.clone(),
+            run_id: request.run_id.clone(),
+            node_id: request.node_id.clone(),
+            input_name: request.input_name.clone(),
+            phase: request.phase,
+            variant_id: request.variant_id.clone(),
+            fold_id: request.fold_id.clone(),
+            request_id: request.binding.request_id.clone(),
+            schema_fingerprint: request.binding.schema_fingerprint.clone(),
+            plan_fingerprint: request.binding.plan_fingerprint.clone(),
+            relation_fingerprint: request.binding.relation_fingerprint.clone(),
+            output_representation: request.binding.output_representation.clone(),
+            source_ids: request.binding.source_ids.clone(),
+            relation_record_count: envelope
+                .coordinator_relations
+                .as_ref()
+                .map(|relations| relations.records.len()),
+        };
+        self.records.borrow_mut().insert(handle.handle, record);
+        Ok(handle)
+    }
+}
+
 fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(DagMlError::CampaignValidation(format!(
@@ -197,6 +352,7 @@ fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::ids::NodeId;
+    use crate::runtime::DataMaterializationRequest;
 
     fn binding() -> DataBinding {
         DataBinding {
@@ -242,5 +398,53 @@ mod tests {
         envelope.plan_fingerprint = "0".repeat(64);
 
         assert!(binding().validate_envelope(&envelope).is_err());
+    }
+
+    #[test]
+    fn in_memory_provider_materializes_validated_data_handles() {
+        let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        let provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider").unwrap(),
+            envelope,
+        )
+        .unwrap();
+
+        let handle = provider
+            .materialize(&DataMaterializationRequest {
+                run_id: RunId::new("run:data").unwrap(),
+                node_id: NodeId::new("model:base").unwrap(),
+                input_name: "x".to_string(),
+                phase: Phase::FitCv,
+                variant_id: Some(VariantId::new("variant:base").unwrap()),
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                binding: binding(),
+            })
+            .unwrap();
+
+        let record = provider.handle_record(handle.handle).unwrap();
+        assert_eq!(record.input_name, "x");
+        assert_eq!(record.relation_record_count, Some(4));
+        assert_eq!(provider.handle_records().len(), 1);
+    }
+
+    #[test]
+    fn in_memory_provider_refuses_unknown_envelope() {
+        let provider =
+            InMemoryDataProvider::new(ControllerId::new("controller:data.provider").unwrap());
+
+        assert!(provider
+            .materialize(&DataMaterializationRequest {
+                run_id: RunId::new("run:data").unwrap(),
+                node_id: NodeId::new("model:base").unwrap(),
+                input_name: "x".to_string(),
+                phase: Phase::FitCv,
+                variant_id: None,
+                fold_id: None,
+                binding: binding(),
+            })
+            .is_err());
     }
 }
