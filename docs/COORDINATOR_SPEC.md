@@ -192,6 +192,7 @@ The compiled DAG of dependency semantics:
 - aggregators;
 - filters;
 - augmentation nodes;
+- generator nodes;
 - tuners;
 - explain nodes.
 
@@ -211,6 +212,23 @@ The experimental execution plan around the graph:
 - refit policy;
 - predict/explain replay policy;
 - scheduler/resource policy.
+
+### Generation Ownership
+
+Generation has two different meanings and the ownership must stay explicit:
+
+- compile-time generation of variants/search spaces belongs to `dag-ml`, because
+  it changes campaign fingerprints, variant ids, seeds, lineage and selection;
+- runtime generation of data, features, models or synthetic samples is an
+  external operator capability. The payload lives in controllers or
+  `dag-ml-data`, while `dag-ml` validates seeds, origin/sample relations,
+  shape deltas, fold boundaries and lineage.
+
+The current core represents compile-time generation through `GenerationSpec`
+and `VariantPlan`. Runtime generators are graph nodes/controllers with explicit
+capabilities such as `generates_data`, `generates_model` or
+`expands_variants`; they are not allowed to mutate identity or training
+boundaries without emitting relation and shape deltas.
 
 ### Splitters
 

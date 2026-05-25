@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,7 @@ pub enum NodeKind {
     Augmentation,
     Adapter,
     Aggregator,
+    Generator,
     Restructure,
     Tuner,
     Subgraph,
@@ -219,6 +220,58 @@ impl GraphSpec {
 
         ensure_acyclic(adjacency, indegree)
     }
+
+    pub fn topological_order(&self) -> Result<Vec<NodeId>> {
+        self.validate()?;
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut adjacency = nodes
+            .iter()
+            .cloned()
+            .map(|id| (id, Vec::new()))
+            .collect::<BTreeMap<_, _>>();
+        let mut indegree: BTreeMap<NodeId, usize> =
+            nodes.iter().cloned().map(|id| (id, 0usize)).collect();
+        for edge in &self.edges {
+            adjacency
+                .get_mut(&edge.source.node_id)
+                .expect("source exists after validate")
+                .push(edge.target.node_id.clone());
+            *indegree
+                .get_mut(&edge.target.node_id)
+                .expect("target exists after validate") += 1;
+        }
+        topological_order(adjacency, indegree)
+    }
+
+    pub fn upstream_nodes(&self, node_id: &NodeId) -> Vec<NodeId> {
+        let mut upstream = self
+            .edges
+            .iter()
+            .filter_map(|edge| {
+                (edge.target.node_id == *node_id).then_some(edge.source.node_id.clone())
+            })
+            .collect::<Vec<_>>();
+        upstream.sort();
+        upstream.dedup();
+        upstream
+    }
+
+    pub fn downstream_nodes(&self, node_id: &NodeId) -> Vec<NodeId> {
+        let mut downstream = self
+            .edges
+            .iter()
+            .filter_map(|edge| {
+                (edge.source.node_id == *node_id).then_some(edge.target.node_id.clone())
+            })
+            .collect::<Vec<_>>();
+        downstream.sort();
+        downstream.dedup();
+        downstream
+    }
 }
 
 fn validate_unique_ports(node_id: &NodeId, direction: &str, ports: &[PortSpec]) -> Result<()> {
@@ -246,29 +299,36 @@ fn find_port<'a>(ports: &'a [PortSpec], name: &str) -> Option<&'a PortSpec> {
 
 fn ensure_acyclic(
     adjacency: BTreeMap<NodeId, Vec<NodeId>>,
-    mut indegree: BTreeMap<NodeId, usize>,
+    indegree: BTreeMap<NodeId, usize>,
 ) -> Result<()> {
+    topological_order(adjacency, indegree).map(|_| ())
+}
+
+fn topological_order(
+    adjacency: BTreeMap<NodeId, Vec<NodeId>>,
+    mut indegree: BTreeMap<NodeId, usize>,
+) -> Result<Vec<NodeId>> {
     let mut queue = indegree
         .iter()
         .filter_map(|(id, degree)| (*degree == 0).then_some(id.clone()))
-        .collect::<VecDeque<_>>();
-    let mut visited = 0usize;
+        .collect::<BTreeSet<_>>();
+    let mut order = Vec::with_capacity(indegree.len());
 
-    while let Some(node) = queue.pop_front() {
-        visited += 1;
+    while let Some(node) = queue.pop_first() {
+        order.push(node.clone());
         if let Some(next_nodes) = adjacency.get(&node) {
             for next in next_nodes {
                 let degree = indegree.get_mut(next).expect("node exists");
                 *degree -= 1;
                 if *degree == 0 {
-                    queue.push_back(next.clone());
+                    queue.insert(next.clone());
                 }
             }
         }
     }
 
-    if visited == indegree.len() {
-        Ok(())
+    if order.len() == indegree.len() {
+        Ok(order)
     } else {
         Err(DagMlError::GraphValidation(
             "graph contains at least one cycle".to_string(),

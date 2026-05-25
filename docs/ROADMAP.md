@@ -27,6 +27,10 @@ Definition of done:
 - `PredictionStore` and OOF join with leakage rejection;
 - deterministic `SeedContext`.
 
+Status: implemented as the first core slice. Remaining Phase 1 hardening is
+mostly API tightening, richer fixtures and replacing mock controllers with host
+adapter smoke tests.
+
 ## Phase 2: Host Controllers
 
 Definition of done:

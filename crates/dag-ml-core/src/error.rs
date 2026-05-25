@@ -24,6 +24,18 @@ pub enum DagMlError {
     #[error("graph validation failed: {0}")]
     GraphValidation(String),
 
+    #[error("controller validation failed: {0}")]
+    ControllerValidation(String),
+
+    #[error("campaign validation failed: {0}")]
+    CampaignValidation(String),
+
+    #[error("planning failed: {0}")]
+    Planning(String),
+
+    #[error("runtime validation failed: {0}")]
+    RuntimeValidation(String),
+
     #[error("OOF validation failed: {0}")]
     OofValidation(String),
 
