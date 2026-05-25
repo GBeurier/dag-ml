@@ -13,4 +13,5 @@ homepage.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 dag-ml-core.workspace = true
+serde.workspace = true
 serde_json.workspace = true
