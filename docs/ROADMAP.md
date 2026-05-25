@@ -13,10 +13,15 @@ Definition of done:
 
 Definition of done:
 
-- canonical `GraphSpec` JSON accepted through Rust and C ABI;
+- coordinator contract from `docs/COORDINATOR_SPEC.md` represented in Rust;
+- controller manifest and registry validation;
+- `GraphPlan`, `CampaignPlan`, `ExecutionPlan`, `NodePlan`, `NodeTask`,
+  `NodeResult` and `RunContext`;
 - search-space enumeration scaffold;
-- identity-only splitters;
+- split invocation model: splitters produce `FoldSet` through the campaign plan,
+  not through ordinary data-transform nodes;
 - sequential fold/variant executor;
+- mock controllers proving external operator orchestration;
 - `PredictionStore` and OOF join with leakage rejection;
 - deterministic `SeedContext`.
 
