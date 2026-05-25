@@ -3,6 +3,10 @@
 `dag-ml` is a control engine. It coordinates ML execution without owning the
 heavy data buffers or fitted model objects.
 
+For the short normative product contract, read `docs/COORDINATOR_SPEC.md` first.
+That document resolves the controller/splitter boundary and is the alignment
+source for implementation work.
+
 ## Layers
 
 | Layer | Owned here | Not owned here |

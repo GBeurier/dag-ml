@@ -7,6 +7,7 @@ Use this as a validation map before development starts.
 | Entry point | `README.md` | Project scope, layout and quick start | The repo can be understood in under five minutes |
 | Agent handoff | `AGENTS.md` | Rules for autonomous implementation work | A new agent knows boundaries and green gate |
 | Architecture | `docs/ARCHITECTURE.md` | Runtime layers, crate responsibilities, phase flow | DAG-ML owns control only, not data buffers |
+| Coordinator spec | `docs/COORDINATOR_SPEC.md` | Short normative product and coordinator contract | Controllers stay external; Rust owns orchestration and invariants |
 | ABI | `docs/ABI.md` | C ABI shape, handles, vtables, ownership | No host object crosses as a Rust-owned value |
 | Rationale | `docs/RATIONALE.md` | Technical decisions and non-goals | Rust/C ABI split is justified and scoped |
 | MVP acceptance | `docs/MVP_ACCEPTANCE.md` | First executable target and no-leakage gates | UC6 succeeds and UC11 fails for the right reason |
