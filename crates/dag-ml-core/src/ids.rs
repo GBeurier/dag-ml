@@ -70,10 +70,17 @@ macro_rules! define_id {
 }
 
 define_id!(NodeId);
+define_id!(ObservationId);
 define_id!(SampleId);
 define_id!(FoldId);
 define_id!(TargetId);
 define_id!(GroupId);
+define_id!(ControllerId);
+define_id!(VariantId);
+define_id!(RunId);
+define_id!(ArtifactId);
+define_id!(LineageId);
+define_id!(BranchId);
 
 #[cfg(test)]
 mod tests {

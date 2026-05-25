@@ -1,0 +1,780 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::{DagMlError, Result};
+use crate::ids::{ArtifactId, BranchId, ControllerId, FoldId, LineageId, NodeId, RunId, VariantId};
+use crate::oof::PredictionBlock;
+use crate::phase::Phase;
+use crate::plan::{ExecutionPlan, NodePlan};
+use crate::policy::ShapeDelta;
+use crate::rng::SeedContext;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleKind {
+    Data,
+    Model,
+    Artifact,
+    Prediction,
+    Relation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct HandleRef {
+    pub handle: u64,
+    pub kind: HandleKind,
+    pub owner_controller: ControllerId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArtifactRef {
+    pub id: ArtifactId,
+    pub kind: String,
+    pub controller_id: ControllerId,
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LineageRecord {
+    pub record_id: LineageId,
+    pub run_id: RunId,
+    pub node_id: NodeId,
+    pub phase: Phase,
+    pub controller_id: ControllerId,
+    pub controller_version: String,
+    pub variant_id: Option<VariantId>,
+    pub fold_id: Option<FoldId>,
+    #[serde(default)]
+    pub branch_path: Vec<BranchId>,
+    #[serde(default)]
+    pub input_lineage: Vec<LineageId>,
+    #[serde(default)]
+    pub artifact_refs: Vec<ArtifactRef>,
+    pub params_fingerprint: String,
+    pub data_model_shape_fingerprint: Option<String>,
+    pub aggregation_policy_fingerprint: Option<String>,
+    pub seed: Option<u64>,
+    #[serde(default)]
+    pub unsafe_flags: BTreeSet<String>,
+    #[serde(default)]
+    pub metrics: BTreeMap<String, f64>,
+}
+
+impl LineageRecord {
+    pub fn validate(&self) -> Result<()> {
+        if self.params_fingerprint.trim().is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage `{}` has empty params fingerprint",
+                self.record_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InMemoryLineageRecorder {
+    records: BTreeMap<LineageId, LineageRecord>,
+}
+
+impl InMemoryLineageRecorder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record(&mut self, record: LineageRecord) -> Result<()> {
+        record.validate()?;
+        if self
+            .records
+            .insert(record.record_id.clone(), record)
+            .is_some()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "duplicate lineage record id".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn get(&self, id: &LineageId) -> Option<&LineageRecord> {
+        self.records.get(id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    pub fn records(&self) -> impl Iterator<Item = &LineageRecord> {
+        self.records.values()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InMemoryPredictionStore {
+    blocks: Vec<PredictionBlock>,
+}
+
+impl InMemoryPredictionStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn append(&mut self, block: PredictionBlock) -> Result<()> {
+        block.validate_shape()?;
+        self.blocks.push(block);
+        Ok(())
+    }
+
+    pub fn blocks(&self) -> &[PredictionBlock] {
+        &self.blocks
+    }
+
+    pub fn find(
+        &self,
+        producer_node: Option<&NodeId>,
+        phase_partition: Option<&crate::oof::PredictionPartition>,
+        fold_id: Option<&FoldId>,
+    ) -> Vec<&PredictionBlock> {
+        self.blocks
+            .iter()
+            .filter(|block| {
+                producer_node.is_none_or(|node_id| &block.producer_node == node_id)
+                    && phase_partition.is_none_or(|partition| &block.partition == partition)
+                    && fold_id.is_none_or(|requested| block.fold_id.as_ref() == Some(requested))
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeTask {
+    pub run_id: RunId,
+    pub node_plan: NodePlan,
+    pub phase: Phase,
+    pub variant_id: Option<VariantId>,
+    pub fold_id: Option<FoldId>,
+    #[serde(default)]
+    pub branch_path: Vec<BranchId>,
+    #[serde(default)]
+    pub input_handles: BTreeMap<String, HandleRef>,
+    pub seed: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeResult {
+    pub node_id: NodeId,
+    #[serde(default)]
+    pub outputs: BTreeMap<String, HandleRef>,
+    #[serde(default)]
+    pub predictions: Vec<PredictionBlock>,
+    #[serde(default)]
+    pub shape_deltas: Vec<ShapeDelta>,
+    #[serde(default)]
+    pub artifacts: Vec<ArtifactRef>,
+    pub lineage: LineageRecord,
+}
+
+impl NodeResult {
+    pub fn validate_for_task(&self, task: &NodeTask) -> Result<()> {
+        if self.node_id != task.node_plan.node_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "task for `{}` returned result for `{}`",
+                task.node_plan.node_id, self.node_id
+            )));
+        }
+        if self.lineage.node_id != task.node_plan.node_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for task `{}` references node `{}`",
+                task.node_plan.node_id, self.lineage.node_id
+            )));
+        }
+        if self.lineage.phase != task.phase {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has phase {:?}, expected {:?}",
+                task.node_plan.node_id, self.lineage.phase, task.phase
+            )));
+        }
+        for prediction in &self.predictions {
+            prediction.validate_shape()?;
+            if prediction.producer_node != task.node_plan.node_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted prediction for producer `{}`",
+                    task.node_plan.node_id, prediction.producer_node
+                )));
+            }
+        }
+        for delta in &self.shape_deltas {
+            delta.validate()?;
+            if delta.node_id != task.node_plan.node_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted shape delta for `{}`",
+                    task.node_plan.node_id, delta.node_id
+                )));
+            }
+        }
+        self.lineage.validate()
+    }
+}
+
+pub trait RuntimeController {
+    fn controller_id(&self) -> &ControllerId;
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult>;
+}
+
+#[derive(Default)]
+pub struct RuntimeControllerRegistry {
+    controllers: BTreeMap<ControllerId, Box<dyn RuntimeController>>,
+}
+
+impl RuntimeControllerRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&mut self, controller: Box<dyn RuntimeController>) -> Result<()> {
+        let id = controller.controller_id().clone();
+        if self.controllers.insert(id.clone(), controller).is_some() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "duplicate runtime controller `{id}`"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn get(&self, controller_id: &ControllerId) -> Option<&dyn RuntimeController> {
+        self.controllers.get(controller_id).map(Box::as_ref)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RunContext {
+    pub run_id: RunId,
+    pub root_seed: Option<u64>,
+    pub variant_id: Option<VariantId>,
+    pub prediction_store: InMemoryPredictionStore,
+    pub lineage: InMemoryLineageRecorder,
+}
+
+impl RunContext {
+    pub fn new(run_id: RunId, root_seed: Option<u64>) -> Self {
+        Self {
+            run_id,
+            root_seed,
+            variant_id: None,
+            prediction_store: InMemoryPredictionStore::new(),
+            lineage: InMemoryLineageRecorder::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SequentialScheduler;
+
+#[derive(Clone, Debug)]
+struct PhaseScope {
+    phase: Phase,
+    variant_id: Option<VariantId>,
+    fold_id: Option<FoldId>,
+    seed_root: Option<u64>,
+}
+
+impl SequentialScheduler {
+    pub fn execute_phase(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        ctx: &mut RunContext,
+        phase: Phase,
+    ) -> Result<Vec<NodeResult>> {
+        plan.validate()?;
+        let variant_id = ctx.variant_id.clone();
+        let seed_root = ctx.root_seed;
+        self.execute_phase_scope(
+            plan,
+            controllers,
+            ctx,
+            PhaseScope {
+                phase,
+                variant_id,
+                fold_id: None,
+                seed_root,
+            },
+        )
+    }
+
+    pub fn execute_campaign_phase(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        ctx: &mut RunContext,
+        phase: Phase,
+    ) -> Result<Vec<NodeResult>> {
+        plan.validate()?;
+        let mut results = Vec::new();
+        let fold_ids = if phase == Phase::FitCv {
+            plan.fold_set
+                .as_ref()
+                .map(|fold_set| {
+                    fold_set
+                        .folds
+                        .iter()
+                        .map(|fold| Some(fold.fold_id.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![None])
+        } else {
+            vec![None]
+        };
+        for variant in &plan.variants {
+            if ctx
+                .variant_id
+                .as_ref()
+                .is_some_and(|requested| requested != &variant.variant_id)
+            {
+                continue;
+            }
+            for fold_id in &fold_ids {
+                let seed_root = variant.seed.or(ctx.root_seed);
+                results.extend(self.execute_phase_scope(
+                    plan,
+                    controllers,
+                    ctx,
+                    PhaseScope {
+                        phase,
+                        variant_id: Some(variant.variant_id.clone()),
+                        fold_id: fold_id.clone(),
+                        seed_root,
+                    },
+                )?);
+            }
+        }
+        Ok(results)
+    }
+
+    fn execute_phase_scope(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        ctx: &mut RunContext,
+        scope: PhaseScope,
+    ) -> Result<Vec<NodeResult>> {
+        let mut results = Vec::new();
+        let mut output_handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
+        let mut input_lineage = BTreeMap::<NodeId, LineageId>::new();
+
+        for node_id in &plan.graph_plan.topological_order {
+            let node_plan = plan
+                .node_plans
+                .get(node_id)
+                .expect("execution plan was validated");
+            if !node_plan.supported_phases.contains(&scope.phase) {
+                continue;
+            }
+            let controller = controllers.get(&node_plan.controller_id).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "runtime controller `{}` is not registered",
+                    node_plan.controller_id
+                ))
+            })?;
+            let task = NodeTask {
+                run_id: ctx.run_id.clone(),
+                node_plan: node_plan.clone(),
+                phase: scope.phase,
+                variant_id: scope.variant_id.clone(),
+                fold_id: scope.fold_id.clone(),
+                branch_path: Vec::new(),
+                input_handles: collect_input_handles(node_plan, &output_handles),
+                seed: derive_task_seed(
+                    scope.seed_root,
+                    scope.variant_id.as_ref(),
+                    scope.fold_id.as_ref(),
+                    node_plan,
+                    scope.phase,
+                ),
+            };
+            let result = controller.invoke(&task)?;
+            result.validate_for_task(&task)?;
+            for prediction in &result.predictions {
+                ctx.prediction_store.append(prediction.clone())?;
+            }
+            ctx.lineage.record(result.lineage.clone())?;
+            output_handles.insert(node_id.clone(), result.outputs.clone());
+            input_lineage.insert(node_id.clone(), result.lineage.record_id.clone());
+            results.push(result);
+        }
+
+        Ok(results)
+    }
+}
+
+fn collect_input_handles(
+    node_plan: &NodePlan,
+    output_handles: &BTreeMap<NodeId, BTreeMap<String, HandleRef>>,
+) -> BTreeMap<String, HandleRef> {
+    let mut inputs = BTreeMap::new();
+    for upstream in &node_plan.input_nodes {
+        if let Some(handles) = output_handles.get(upstream) {
+            for (port, handle) in handles {
+                inputs.insert(format!("{upstream}.{port}"), handle.clone());
+            }
+        }
+    }
+    inputs
+}
+
+fn derive_task_seed(
+    root_seed: Option<u64>,
+    variant_id: Option<&VariantId>,
+    fold_id: Option<&FoldId>,
+    node_plan: &NodePlan,
+    phase: Phase,
+) -> Option<u64> {
+    root_seed.map(|root| {
+        let mut context = SeedContext::root(root);
+        if let Some(variant_id) = variant_id {
+            context = context.child(format!("variant:{variant_id}"));
+        }
+        if let Some(fold_id) = fold_id {
+            context = context.child(format!("fold:{fold_id}"));
+        }
+        context
+            .child(format!("node:{}", node_plan.node_id))
+            .child(format!("phase:{phase:?}"))
+            .derive_u64("task")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::*;
+    use crate::controller::{
+        ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest, RngPolicy,
+    };
+    use crate::fold::{FoldAssignment, FoldSet};
+    use crate::generation::{
+        GenerationChoice, GenerationDimension, GenerationSpec, GenerationStrategy,
+    };
+    use crate::graph::{
+        EdgeContract, EdgeSpec, GraphInterface, GraphSpec, NodeKind, NodeSpec, PortCardinality,
+        PortKind, PortRef, PortSchema, PortSpec,
+    };
+    use crate::ids::{ControllerId, FoldId, NodeId, SampleId};
+    use crate::oof::{PredictionBlock, PredictionPartition};
+    use crate::plan::{build_execution_plan, CampaignSpec, SplitInvocation};
+    use serde_json::json;
+
+    struct MockController {
+        id: ControllerId,
+        handle: u64,
+        emit_prediction: bool,
+    }
+
+    impl RuntimeController for MockController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            let variant_label = task
+                .variant_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "base".to_string());
+            let fold_label = task
+                .fold_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "nofold".to_string());
+            let output = HandleRef {
+                handle: self.handle,
+                kind: HandleKind::Data,
+                owner_controller: self.id.clone(),
+            };
+            let predictions = self
+                .emit_prediction
+                .then(|| PredictionBlock {
+                    prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                    producer_node: task.node_plan.node_id.clone(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: None,
+                    sample_ids: vec![SampleId::new("s1").unwrap()],
+                    values: vec![vec![1.0]],
+                    target_names: vec!["y".to_string()],
+                })
+                .into_iter()
+                .collect::<Vec<_>>();
+            Ok(NodeResult {
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([("out".to_string(), output)]),
+                predictions,
+                shape_deltas: Vec::new(),
+                artifacts: Vec::new(),
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:{}:{:?}:{variant_label}:{fold_label}",
+                        task.node_plan.node_id, task.phase
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
+    fn port(name: &str, kind: PortKind) -> PortSpec {
+        PortSpec {
+            name: name.to_string(),
+            kind,
+            representation: None,
+            cardinality: PortCardinality::One,
+            description: String::new(),
+        }
+    }
+
+    fn node(id: &str, kind: NodeKind, inputs: Vec<PortSpec>, outputs: Vec<PortSpec>) -> NodeSpec {
+        NodeSpec {
+            id: NodeId::new(id).unwrap(),
+            kind,
+            operator: None,
+            params: BTreeMap::new(),
+            ports: PortSchema { inputs, outputs },
+            metadata: BTreeMap::new(),
+            seed_label: None,
+        }
+    }
+
+    fn controller_manifest(id: &str, kind: NodeKind) -> ControllerManifest {
+        ControllerManifest {
+            controller_id: ControllerId::new(id).unwrap(),
+            controller_version: "0.1.0".to_string(),
+            operator_kind: kind,
+            priority: 0,
+            supported_phases: BTreeSet::from([Phase::FitCv]),
+            input_ports: Vec::new(),
+            output_ports: Vec::new(),
+            data_requirements: None,
+            capabilities: BTreeSet::from([ControllerCapability::Deterministic]),
+            fit_scope: ControllerFitScope::FoldTrain,
+            rng_policy: RngPolicy::UsesCoreSeed,
+            artifact_policy: ArtifactPolicy::Serializable,
+        }
+    }
+
+    fn simple_graph() -> GraphSpec {
+        GraphSpec {
+            id: "g".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    "transform:snv",
+                    NodeKind::Transform,
+                    vec![],
+                    vec![port("x", PortKind::Data)],
+                ),
+                node(
+                    "model:pls",
+                    NodeKind::Model,
+                    vec![port("x", PortKind::Data)],
+                    vec![port("pred", PortKind::Prediction)],
+                ),
+            ],
+            edges: vec![EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new("transform:snv").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new("model:pls").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                contract: EdgeContract {
+                    kind: PortKind::Data,
+                    representation: None,
+                    requires_oof: false,
+                    requires_fold_alignment: false,
+                    propagates_lineage: true,
+                },
+            }],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn runtime_controllers() -> RuntimeControllerRegistry {
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(MockController {
+                id: ControllerId::new("controller:transform").unwrap(),
+                handle: 1,
+                emit_prediction: false,
+            }))
+            .unwrap();
+        controllers
+            .register(Box::new(MockController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 2,
+                emit_prediction: true,
+            }))
+            .unwrap();
+        controllers
+    }
+
+    fn two_fold_set() -> FoldSet {
+        FoldSet {
+            id: "outer".to_string(),
+            sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
+            folds: vec![
+                FoldAssignment {
+                    fold_id: FoldId::new("fold:0").unwrap(),
+                    train_sample_ids: vec![SampleId::new("s2").unwrap()],
+                    validation_sample_ids: vec![SampleId::new("s1").unwrap()],
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("fold:1").unwrap(),
+                    train_sample_ids: vec![SampleId::new("s1").unwrap()],
+                    validation_sample_ids: vec![SampleId::new("s2").unwrap()],
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            sample_groups: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn sequential_scheduler_invokes_mock_controllers_in_topological_order() {
+        let mut manifests = crate::controller::ControllerRegistry::new();
+        manifests
+            .register(controller_manifest(
+                "controller:transform",
+                NodeKind::Transform,
+            ))
+            .unwrap();
+        manifests
+            .register(controller_manifest("controller:model", NodeKind::Model))
+            .unwrap();
+        let plan = build_execution_plan(
+            "plan:fitcv",
+            simple_graph(),
+            CampaignSpec {
+                id: "campaign:fitcv".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: None,
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+            &manifests,
+        )
+        .unwrap();
+        let controllers = runtime_controllers();
+        let mut ctx = RunContext::new(RunId::new("run:1").unwrap(), Some(11));
+
+        let results = SequentialScheduler
+            .execute_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(ctx.lineage.len(), 2);
+        assert_eq!(ctx.prediction_store.blocks().len(), 1);
+        assert_eq!(results[1].node_id.as_str(), "model:pls");
+    }
+
+    #[test]
+    fn campaign_scheduler_expands_variants_and_cv_folds() {
+        let mut manifests = crate::controller::ControllerRegistry::new();
+        manifests
+            .register(controller_manifest(
+                "controller:transform",
+                NodeKind::Transform,
+            ))
+            .unwrap();
+        manifests
+            .register(controller_manifest("controller:model", NodeKind::Model))
+            .unwrap();
+        let plan = build_execution_plan(
+            "plan:campaign",
+            simple_graph(),
+            CampaignSpec {
+                id: "campaign:fitcv".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: Some(SplitInvocation {
+                    id: "split:outer".to_string(),
+                    controller_id: None,
+                    leakage_policy: Default::default(),
+                    params: BTreeMap::new(),
+                    fold_set: Some(two_fold_set()),
+                }),
+                generation: GenerationSpec {
+                    strategy: GenerationStrategy::Cartesian,
+                    dimensions: vec![GenerationDimension {
+                        name: "model_family".to_string(),
+                        choices: vec![
+                            GenerationChoice {
+                                label: "pls".to_string(),
+                                value: json!("pls"),
+                            },
+                            GenerationChoice {
+                                label: "rf".to_string(),
+                                value: json!("rf"),
+                            },
+                        ],
+                    }],
+                    max_variants: Some(2),
+                },
+                shape_plans: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+            &manifests,
+        )
+        .unwrap();
+        let controllers = runtime_controllers();
+        let mut ctx = RunContext::new(RunId::new("run:campaign").unwrap(), Some(11));
+
+        let results = SequentialScheduler
+            .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+            .unwrap();
+
+        assert_eq!(results.len(), 8);
+        assert_eq!(ctx.lineage.len(), 8);
+        assert_eq!(ctx.prediction_store.blocks().len(), 4);
+        assert!(ctx
+            .lineage
+            .records()
+            .all(|record| record.variant_id.is_some() && record.fold_id.is_some()));
+        assert_eq!(
+            ctx.lineage
+                .records()
+                .filter_map(|record| record.seed)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            8
+        );
+    }
+}

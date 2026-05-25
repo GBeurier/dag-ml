@@ -1,0 +1,148 @@
+{
+  "id": "campaign:oof.generation.smoke",
+  "root_seed": 12345,
+  "leakage_policy": {
+    "split_unit": "sample",
+    "forbid_origin_cross_fold": true,
+    "allow_observation_split_with_shared_target": false,
+    "require_group_ids": false,
+    "unsafe_flags": []
+  },
+  "aggregation_policy": {
+    "aggregation_level": "sample",
+    "method": "mean",
+    "weights": "none",
+    "emit_parallel_metrics": true,
+    "selection_metric_level": "sample",
+    "store_raw_predictions": true,
+    "store_aggregated_predictions": true
+  },
+  "split_invocation": {
+    "id": "split:outer",
+    "controller_id": null,
+    "leakage_policy": {
+      "split_unit": "sample",
+      "forbid_origin_cross_fold": true,
+      "allow_observation_split_with_shared_target": false,
+      "require_group_ids": false,
+      "unsafe_flags": []
+    },
+    "params": {
+      "kind": "kfold",
+      "n_splits": 2,
+      "shuffle": false
+    },
+    "fold_set": {
+      "id": "outer",
+      "sample_ids": ["sample:1", "sample:2", "sample:3", "sample:4"],
+      "folds": [
+        {
+          "fold_id": "fold:0",
+          "train_sample_ids": ["sample:3", "sample:4"],
+          "validation_sample_ids": ["sample:1", "sample:2"],
+          "metadata": {}
+        },
+        {
+          "fold_id": "fold:1",
+          "train_sample_ids": ["sample:1", "sample:2"],
+          "validation_sample_ids": ["sample:3", "sample:4"],
+          "metadata": {}
+        }
+      ],
+      "sample_groups": {}
+    }
+  },
+  "generation": {
+    "strategy": "cartesian",
+    "dimensions": [
+      {
+        "name": "model_family",
+        "choices": [
+          {
+            "label": "rf",
+            "value": { "operator": "RandomForestRegressor" }
+          },
+          {
+            "label": "pls",
+            "value": { "operator": "PLSRegression" }
+          }
+        ]
+      },
+      {
+        "name": "preprocessing",
+        "choices": [
+          {
+            "label": "snv",
+            "value": { "operator": "StandardNormalVariate" }
+          }
+        ]
+      }
+    ],
+    "max_variants": 8
+  },
+  "shape_plans": {
+    "transform:snv": {
+      "node_id": "transform:snv",
+      "input_granularity": "sample",
+      "target_granularity": "sample",
+      "fit_rows": "fold_train",
+      "predict_rows": "fold_validation",
+      "feature_namespace": "snv",
+      "feature_schema_fingerprint": null,
+      "target_space": "raw",
+      "aggregation_policy": {
+        "aggregation_level": "sample",
+        "method": "mean",
+        "weights": "none",
+        "emit_parallel_metrics": true,
+        "selection_metric_level": "sample",
+        "store_raw_predictions": true,
+        "store_aggregated_predictions": true
+      },
+      "augmentation_policy": {
+        "sample_scope": "train_only",
+        "feature_scope": "train_only",
+        "require_origin_id": true,
+        "inherit_group": true,
+        "inherit_target": true
+      },
+      "selection_policy": {
+        "scope": "none",
+        "store_masks": true,
+        "allow_schema_mismatch_on_join": false
+      }
+    },
+    "model:base": {
+      "node_id": "model:base",
+      "input_granularity": "sample",
+      "target_granularity": "sample",
+      "fit_rows": "fold_train",
+      "predict_rows": "fold_validation",
+      "feature_namespace": "model_input",
+      "feature_schema_fingerprint": null,
+      "target_space": "raw",
+      "aggregation_policy": {
+        "aggregation_level": "sample",
+        "method": "mean",
+        "weights": "none",
+        "emit_parallel_metrics": true,
+        "selection_metric_level": "sample",
+        "store_raw_predictions": true,
+        "store_aggregated_predictions": true
+      },
+      "augmentation_policy": {
+        "sample_scope": "train_only",
+        "feature_scope": "train_only",
+        "require_origin_id": true,
+        "inherit_group": true,
+        "inherit_target": true
+      },
+      "selection_policy": {
+        "scope": "none",
+        "store_masks": true,
+        "allow_schema_mismatch_on_join": false
+      }
+    }
+  },
+  "metadata": {}
+}
