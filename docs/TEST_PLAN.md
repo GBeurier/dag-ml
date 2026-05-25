@@ -6,7 +6,7 @@
 |---|---|
 | Graph | missing endpoints, port-kind mismatch, cycles, valid graph |
 | OOF | rejects train predictions, aligns by sample id, duplicate detection |
-| OOF campaign fixtures | UC6 joins, UC11 refuses, fold prediction samples match fold partitions |
+| OOF campaign fixtures | UC6 joins, UC11 refuses, fold prediction samples match fold partitions, campaign fingerprint is stable |
 | RNG | same path gives same seed, different labels split streams |
 | ABI | null pointer handling, invalid JSON, valid graph |
 
