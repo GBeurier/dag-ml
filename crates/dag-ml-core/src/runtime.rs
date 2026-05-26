@@ -1788,6 +1788,51 @@ mod tests {
     }
 
     #[test]
+    fn campaign_refit_data_bindings_create_full_train_views() {
+        let plan = fixture_plan("plan:refit.views");
+        let provider = replay_data_provider();
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(ReplayMockController {
+                id: ControllerId::new("controller:transform.mock").unwrap(),
+                handle: 11,
+                require_artifact: false,
+                emit_prediction: false,
+            }))
+            .unwrap();
+        controllers
+            .register(Box::new(ReplayMockController {
+                id: ControllerId::new("controller:model.mock").unwrap(),
+                handle: 22,
+                require_artifact: false,
+                emit_prediction: true,
+            }))
+            .unwrap();
+        let mut ctx = RunContext::new(RunId::new("run:refit.views").unwrap(), Some(11));
+        ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+
+        let results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &provider,
+                &mut ctx,
+                Phase::Refit,
+            )
+            .unwrap();
+
+        assert!(!results.is_empty());
+        let views = provider.view_records();
+        assert_eq!(views.len(), 1);
+        let full_train_ids = plan.fold_set.as_ref().unwrap().sample_ids.clone();
+        assert!(views.iter().all(|view| {
+            view.view.partition == DataRequestPartition::FullTrain
+                && view.view.sample_ids == Some(full_train_ids.clone())
+                && view.fold_id.is_none()
+        }));
+    }
+
+    #[test]
     fn node_result_validation_rejects_external_conformance_mismatches() {
         let plan = build_execution_plan(
             "plan:result.validation",
