@@ -13,6 +13,9 @@ the host owns the underlying object behind each handle.
 - selection policy/decision validation and candidate selection JSON helpers;
 - execution bundle validation, replay-envelope validation, replay-request
   validation and prediction-cache payload validation helpers;
+- vtable replay execution helper that composes host controllers, host data
+  provider, host artifact store and optional host prediction-cache store while
+  Rust owns scheduling and validation;
 - replay-request validation can optionally include an OOF prediction-cache
   payload set, which is required for OOF-dependent `REFIT` replay;
 - mock replay execution helper that returns a JSON summary while exercising
@@ -25,6 +28,8 @@ the host owns the underlying object behind each handle.
   release;
 - `DagMlDataVTable` for host data providers, including `materialize`,
   `make_view`, `view_identity`, `target_arrow` and `feature_arrow`.
+- `DagMlArtifactStoreVTable` for host replay artifact stores, returning typed
+  `DagMlHandleRef` values for model/artifact handles.
 - `DagMlPredictionCacheVTable` for host prediction-cache stores, including
   `load_blocks`, `materialize` and explicit returned-byte release.
 
@@ -46,6 +51,7 @@ Rust adapters do not claim ownership of the host context.
 | Host data block | Host | `DataVTable.release` |
 | Host controller result JSON | Host allocation returned through controller vtable | `ControllerVTable.release_bytes` |
 | Host fitted model | Host | `ControllerVTable.release` |
+| Host replay artifact handle | Host | `ArtifactStoreVTable.release` |
 | Host prediction cache handle | Host | `PredictionCacheVTable.release` |
 | Rust error string | Rust allocation returned through ABI | `dagml_string_free` |
 | Rust JSON byte output | Rust allocation returned through ABI | `dagml_owned_bytes_free` |
@@ -59,6 +65,6 @@ Rust adapters do not claim ownership of the host context.
 2. Add canonical JSON schemas for `describe`, `GraphSpec`, `ModelInputSpec` and
    `DataPlan` blobs.
 3. Add conformance tests that call the C ABI from a small C program.
-4. Replace the mock replay helper with host-controller replay through the
-   vtable surface.
-5. Add host adapters for Python and native C++ controllers.
+4. Add C conformance tests that drive non-mock replay through the vtable
+   surface.
+5. Add host adapters for Python and native C++ controllers and artifact stores.

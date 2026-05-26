@@ -4,18 +4,25 @@ use std::os::raw::c_char;
 use std::slice;
 
 use dag_ml_core::{
-    select_candidate, select_candidate_groups, BundlePredictionCachePayloadSet,
-    BundleReplayExecution, CandidateScore, ControllerId, DagMlError, DataMaterializationRequest,
-    DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
-    ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
-    InMemoryDataProvider, LineageId, LineageRecord, NodeResult, NodeTask, Phase, PredictionBlock,
-    PredictionCacheMaterializationRequest, PredictionPartition, ReplayPhaseRequest, RunContext,
-    RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
-    RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionPolicy, SequentialScheduler,
+    select_candidate, select_candidate_groups, ArtifactMaterializationRequest,
+    BundlePredictionCachePayloadSet, BundleReplayExecution, CandidateScore, ControllerId,
+    DagMlError, DataMaterializationRequest, DataRequestPartition, DataViewRequest, ExecutionBundle,
+    ExecutionPlan, ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef,
+    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeResult, NodeTask,
+    Phase, PredictionBlock, PredictionCacheMaterializationRequest, PredictionPartition,
+    ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
+    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
+    SelectionDecision, SelectionPolicy, SequentialScheduler,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
 pub type DagMlHandle = u64;
+pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
+pub const DAG_ML_HANDLE_KIND_DATA_VIEW: u32 = 2;
+pub const DAG_ML_HANDLE_KIND_MODEL: u32 = 3;
+pub const DAG_ML_HANDLE_KIND_ARTIFACT: u32 = 4;
+pub const DAG_ML_HANDLE_KIND_PREDICTION: u32 = 5;
+pub const DAG_ML_HANDLE_KIND_RELATION: u32 = 6;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +33,12 @@ impl DagMlStatusCode {
     pub const INVALID_ARGUMENT: Self = Self(1);
     pub const VALIDATION_ERROR: Self = Self(2);
     pub const PANIC: Self = Self(255);
+}
+
+impl Default for DagMlStatusCode {
+    fn default() -> Self {
+        Self::OK
+    }
 }
 
 #[repr(C)]
@@ -57,6 +70,13 @@ impl Default for DagMlString {
 pub struct DagMlBytesView {
     pub ptr: *const u8,
     pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DagMlHandleRef {
+    pub handle: DagMlHandle,
+    pub kind: u32,
 }
 
 #[repr(C)]
@@ -227,6 +247,29 @@ pub struct DagMlPredictionCacheVTable {
     pub release_bytes: Option<unsafe extern "C" fn(user_data: *mut c_void, bytes: DagMlOwnedBytes)>,
     pub release: Option<unsafe extern "C" fn(user_data: *mut c_void, handle: DagMlHandle)>,
     pub destroy: Option<unsafe extern "C" fn(user_data: *mut c_void)>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DagMlArtifactStoreVTable {
+    pub abi_version: u32,
+    pub user_data: *mut c_void,
+    pub materialize: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            request_json: DagMlBytesView,
+            out_handle: *mut DagMlHandleRef,
+        ) -> DagMlStatusCode,
+    >,
+    pub release: Option<unsafe extern "C" fn(user_data: *mut c_void, handle: DagMlHandle)>,
+    pub destroy: Option<unsafe extern "C" fn(user_data: *mut c_void)>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DagMlControllerBinding {
+    pub controller_id: DagMlBytesView,
+    pub vtable: DagMlControllerVTable,
 }
 
 #[no_mangle]
@@ -674,6 +717,190 @@ pub unsafe extern "C" fn dagml_mock_replay_execute_json(
     }
 }
 
+/// Executes replay from JSON contracts through host-provided runtime vtables.
+///
+/// Rust keeps control over bundle/replay validation, data-view construction,
+/// OOF cache preloading, artifact handle materialization, scheduler ordering
+/// and `NodeResult` conformance. Host bindings provide the operator,
+/// data-provider, artifact-store and optional prediction-cache implementations.
+///
+/// # Safety
+///
+/// Input JSON pointers follow the same rules as `dagml_graph_validate_json`.
+/// `controller_bindings` must point to `controller_binding_count` readable
+/// entries when the count is non-zero. `prediction_cache_store` may be null
+/// when the bundle does not require OOF cache replay. Returned bytes must be
+/// released with `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_replay_execute_json(
+    plan_ptr: *const u8,
+    plan_len: usize,
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+    envelopes_ptr: *const u8,
+    envelopes_len: usize,
+    data_owner_controller_id: DagMlBytesView,
+    dataset: DagMlHandle,
+    data_provider: DagMlDataVTable,
+    artifact_store: DagMlArtifactStoreVTable,
+    prediction_cache_store: *const DagMlPredictionCacheVTable,
+    controller_bindings: *const DagMlControllerBinding,
+    controller_binding_count: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dagml_replay_execute_json_impl(CAbiReplayExecuteArgs {
+            plan_ptr,
+            plan_len,
+            bundle_ptr,
+            bundle_len,
+            request_ptr,
+            request_len,
+            envelopes_ptr,
+            envelopes_len,
+            data_owner_controller_id,
+            dataset,
+            data_provider,
+            artifact_store,
+            prediction_cache_store,
+            controller_bindings,
+            controller_binding_count,
+            out_json,
+            error_out,
+        })
+    })) {
+        Ok(status) => status,
+        Err(_) => {
+            clear_error(error_out);
+            clear_owned_bytes(out_json);
+            set_error(error_out, "panic while executing replay through C ABI");
+            DagMlStatusCode::PANIC
+        }
+    }
+}
+
+struct CAbiReplayExecuteArgs {
+    plan_ptr: *const u8,
+    plan_len: usize,
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+    envelopes_ptr: *const u8,
+    envelopes_len: usize,
+    data_owner_controller_id: DagMlBytesView,
+    dataset: DagMlHandle,
+    data_provider: DagMlDataVTable,
+    artifact_store: DagMlArtifactStoreVTable,
+    prediction_cache_store: *const DagMlPredictionCacheVTable,
+    controller_bindings: *const DagMlControllerBinding,
+    controller_binding_count: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+}
+
+unsafe fn dagml_replay_execute_json_impl(args: CAbiReplayExecuteArgs) -> DagMlStatusCode {
+    let CAbiReplayExecuteArgs {
+        plan_ptr,
+        plan_len,
+        bundle_ptr,
+        bundle_len,
+        request_ptr,
+        request_len,
+        envelopes_ptr,
+        envelopes_len,
+        data_owner_controller_id,
+        dataset,
+        data_provider,
+        artifact_store,
+        prediction_cache_store,
+        controller_bindings,
+        controller_binding_count,
+        out_json,
+        error_out,
+    } = args;
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let plan =
+        match parse_json_ptr::<ExecutionPlan>(plan_ptr, plan_len, error_out, "execution plan") {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+    let bundle =
+        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+    let request = match parse_json_ptr::<ReplayPhaseRequest>(
+        request_ptr,
+        request_len,
+        error_out,
+        "replay request",
+    ) {
+        Ok(request) => request,
+        Err(status) => return status,
+    };
+    let envelopes = match parse_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+        envelopes_ptr,
+        envelopes_len,
+        error_out,
+        "replay envelopes",
+    ) {
+        Ok(envelopes) => envelopes,
+        Err(status) => return status,
+    };
+    let data_owner = match parse_controller_id_view(
+        data_owner_controller_id,
+        error_out,
+        "data owner controller id",
+    ) {
+        Ok(controller_id) => controller_id,
+        Err(status) => return status,
+    };
+    let data_provider = match CAbiRuntimeDataProvider::new(data_owner, dataset, data_provider) {
+        Ok(provider) => provider,
+        Err(error) => return validation_error(error_out, error),
+    };
+    let artifact_store = match CAbiRuntimeArtifactStore::new(artifact_store) {
+        Ok(store) => store,
+        Err(error) => return validation_error(error_out, error),
+    };
+    let prediction_cache = if prediction_cache_store.is_null() {
+        None
+    } else {
+        match CAbiRuntimePredictionCacheStore::new(*prediction_cache_store) {
+            Ok(store) => Some(store),
+            Err(error) => return validation_error(error_out, error),
+        }
+    };
+    let controllers =
+        match build_controller_registry(controller_bindings, controller_binding_count, error_out) {
+            Ok(controllers) => controllers,
+            Err(status) => return status,
+        };
+    let prediction_cache_ref = prediction_cache
+        .as_ref()
+        .map(|store| store as &dyn RuntimePredictionCacheStore);
+    match execute_vtable_replay(
+        &plan,
+        &bundle,
+        &request,
+        &envelopes,
+        VtableReplayRuntime {
+            data_provider: &data_provider,
+            artifact_store: &artifact_store,
+            prediction_cache_store: prediction_cache_ref,
+            controllers: &controllers,
+        },
+    ) {
+        Ok(summary) => write_owned_json(out_json, error_out, &summary),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
 unsafe fn clear_error(error_out: *mut DagMlString) {
     if !error_out.is_null() {
         *error_out = DagMlString::default();
@@ -774,6 +1001,62 @@ where
             DagMlStatusCode::VALIDATION_ERROR
         }
     }
+}
+
+unsafe fn validation_error(error_out: *mut DagMlString, error: DagMlError) -> DagMlStatusCode {
+    set_error(error_out, error.to_string());
+    DagMlStatusCode::VALIDATION_ERROR
+}
+
+unsafe fn parse_controller_id_view(
+    view: DagMlBytesView,
+    error_out: *mut DagMlString,
+    label: &str,
+) -> Result<ControllerId, DagMlStatusCode> {
+    if view.ptr.is_null() {
+        set_error(error_out, format!("{label} pointer is null"));
+        return Err(DagMlStatusCode::INVALID_ARGUMENT);
+    }
+    let bytes = slice::from_raw_parts(view.ptr, view.len);
+    let raw = std::str::from_utf8(bytes).map_err(|error| {
+        set_error(error_out, format!("{label} is not valid UTF-8: {error}"));
+        DagMlStatusCode::VALIDATION_ERROR
+    })?;
+    ControllerId::new(raw).map_err(|error| {
+        set_error(error_out, error.to_string());
+        DagMlStatusCode::VALIDATION_ERROR
+    })
+}
+
+unsafe fn build_controller_registry(
+    controller_bindings: *const DagMlControllerBinding,
+    controller_binding_count: usize,
+    error_out: *mut DagMlString,
+) -> Result<RuntimeControllerRegistry, DagMlStatusCode> {
+    if controller_binding_count > 0 && controller_bindings.is_null() {
+        set_error(error_out, "controller bindings pointer is null");
+        return Err(DagMlStatusCode::INVALID_ARGUMENT);
+    }
+    let mut registry = RuntimeControllerRegistry::new();
+    let bindings = if controller_binding_count == 0 {
+        &[][..]
+    } else {
+        slice::from_raw_parts(controller_bindings, controller_binding_count)
+    };
+    for binding in bindings {
+        let controller_id =
+            parse_controller_id_view(binding.controller_id, error_out, "controller id")?;
+        let controller =
+            CAbiRuntimeController::new(controller_id, binding.vtable).map_err(|error| {
+                set_error(error_out, error.to_string());
+                DagMlStatusCode::VALIDATION_ERROR
+            })?;
+        registry.register(Box::new(controller)).map_err(|error| {
+            set_error(error_out, error.to_string());
+            DagMlStatusCode::VALIDATION_ERROR
+        })?;
+    }
+    Ok(registry)
 }
 
 #[derive(Clone)]
@@ -967,6 +1250,102 @@ fn controller_status(status: DagMlStatusCode, action: &str) -> dag_ml_core::Resu
     } else {
         Err(DagMlError::RuntimeValidation(format!(
             "controller {action} returned unknown status code {}",
+            status.0
+        )))
+    }
+}
+
+#[derive(Clone)]
+pub struct CAbiRuntimeArtifactStore {
+    vtable: DagMlArtifactStoreVTable,
+}
+
+impl CAbiRuntimeArtifactStore {
+    pub fn new(vtable: DagMlArtifactStoreVTable) -> dag_ml_core::Result<Self> {
+        if vtable.abi_version < 1 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact store ABI version {} is unsupported",
+                vtable.abi_version
+            )));
+        }
+        if vtable.materialize.is_none() {
+            return Err(DagMlError::RuntimeValidation(
+                "artifact store vtable is missing materialize".to_string(),
+            ));
+        }
+        Ok(Self { vtable })
+    }
+}
+
+impl RuntimeArtifactStore for CAbiRuntimeArtifactStore {
+    fn materialize(
+        &self,
+        request: &ArtifactMaterializationRequest,
+    ) -> dag_ml_core::Result<HandleRef> {
+        let materialize = self.vtable.materialize.ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "artifact store vtable is missing materialize".to_string(),
+            )
+        })?;
+        let request_json = serde_json::to_vec(request).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to serialize artifact materialization request: {error}"
+            ))
+        })?;
+        let mut out_handle = DagMlHandleRef::default();
+        let status = unsafe {
+            materialize(
+                self.vtable.user_data,
+                bytes_view(&request_json),
+                &mut out_handle,
+            )
+        };
+        artifact_store_status(status, "materialize")?;
+        if out_handle.handle == 0 {
+            return Err(DagMlError::RuntimeValidation(
+                "artifact store materialize returned empty handle".to_string(),
+            ));
+        }
+        Ok(HandleRef {
+            handle: out_handle.handle,
+            kind: handle_kind_from_abi(out_handle.kind)?,
+            owner_controller: request.controller_id.clone(),
+        })
+    }
+}
+
+fn handle_kind_from_abi(kind: u32) -> dag_ml_core::Result<HandleKind> {
+    match kind {
+        DAG_ML_HANDLE_KIND_DATA => Ok(HandleKind::Data),
+        DAG_ML_HANDLE_KIND_DATA_VIEW => Ok(HandleKind::DataView),
+        DAG_ML_HANDLE_KIND_MODEL => Ok(HandleKind::Model),
+        DAG_ML_HANDLE_KIND_ARTIFACT => Ok(HandleKind::Artifact),
+        DAG_ML_HANDLE_KIND_PREDICTION => Ok(HandleKind::Prediction),
+        DAG_ML_HANDLE_KIND_RELATION => Ok(HandleKind::Relation),
+        _ => Err(DagMlError::RuntimeValidation(format!(
+            "unknown ABI handle kind {kind}"
+        ))),
+    }
+}
+
+fn artifact_store_status(status: DagMlStatusCode, action: &str) -> dag_ml_core::Result<()> {
+    if status == DagMlStatusCode::OK {
+        Ok(())
+    } else if status == DagMlStatusCode::INVALID_ARGUMENT {
+        Err(DagMlError::RuntimeValidation(format!(
+            "artifact store {action} rejected invalid arguments"
+        )))
+    } else if status == DagMlStatusCode::VALIDATION_ERROR {
+        Err(DagMlError::RuntimeValidation(format!(
+            "artifact store {action} rejected request"
+        )))
+    } else if status == DagMlStatusCode::PANIC {
+        Err(DagMlError::RuntimeValidation(format!(
+            "artifact store {action} reported panic"
+        )))
+    } else {
+        Err(DagMlError::RuntimeValidation(format!(
+            "artifact store {action} returned unknown status code {}",
             status.0
         )))
     }
@@ -1192,6 +1571,57 @@ struct MockReplaySummary {
     data_handle_count: usize,
     data_view_count: usize,
     artifact_handle_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ReplayExecutionSummary {
+    bundle_id: String,
+    phase: Phase,
+    result_count: usize,
+    lineage_record_count: usize,
+    prediction_block_count: usize,
+    controller_count: usize,
+    prediction_cache_store: bool,
+}
+
+struct VtableReplayRuntime<'a> {
+    data_provider: &'a dyn RuntimeDataProvider,
+    artifact_store: &'a dyn RuntimeArtifactStore,
+    prediction_cache_store: Option<&'a dyn RuntimePredictionCacheStore>,
+    controllers: &'a RuntimeControllerRegistry,
+}
+
+fn execute_vtable_replay(
+    plan: &ExecutionPlan,
+    bundle: &ExecutionBundle,
+    request: &ReplayPhaseRequest,
+    envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+    runtime: VtableReplayRuntime<'_>,
+) -> dag_ml_core::Result<ReplayExecutionSummary> {
+    let prediction_cache_store = runtime.prediction_cache_store;
+    let mut ctx = RunContext::new(RunId::new("run:capi.replay")?, None);
+    let results = SequentialScheduler.execute_bundle_replay(
+        BundleReplayExecution {
+            plan,
+            bundle,
+            replay_request: request,
+            prediction_cache_store,
+            controllers: runtime.controllers,
+            data_provider: runtime.data_provider,
+            artifact_store: runtime.artifact_store,
+            data_envelopes: envelopes,
+        },
+        &mut ctx,
+    )?;
+    Ok(ReplayExecutionSummary {
+        bundle_id: bundle.bundle_id.to_string(),
+        phase: request.phase,
+        result_count: results.len(),
+        lineage_record_count: ctx.lineage.len(),
+        prediction_block_count: ctx.prediction_store.blocks().len(),
+        controller_count: plan.controller_manifests.len(),
+        prediction_cache_store: prediction_cache_store.is_some(),
+    })
 }
 
 fn execute_mock_replay(
@@ -1456,9 +1886,10 @@ fn stable_handle(value: &str) -> u64 {
 mod tests {
     use super::*;
     use dag_ml_core::{
-        build_execution_plan, build_prediction_cache_record, BundleId, BundlePredictionRequirement,
-        CampaignSpec, ControllerManifest, ControllerRegistry, DataBinding, DataProviderViewSpec,
-        DataRequestPartition, DataViewPolicy, FoldId, NodeId, NodeKind, NodePlan, VariantId,
+        build_execution_plan, build_prediction_cache_record, ArtifactId, ArtifactRef, BundleId,
+        BundlePredictionRequirement, CampaignSpec, ControllerManifest, ControllerRegistry,
+        DataBinding, DataProviderViewSpec, DataRequestPartition, DataViewPolicy, FoldId, NodeId,
+        NodeKind, NodePlan, VariantId,
     };
     use std::ffi::CStr;
 
@@ -1473,8 +1904,17 @@ mod tests {
     #[derive(Default)]
     struct ControllerStub {
         task_json: Vec<u8>,
+        task_node_ids: Vec<String>,
         result_json: Vec<u8>,
         release_count: usize,
+        invocation_count: usize,
+    }
+
+    #[derive(Default)]
+    struct ArtifactStoreStub {
+        materialize_json: Vec<u8>,
+        handle: DagMlHandleRef,
+        status: DagMlStatusCode,
     }
 
     #[derive(Default)]
@@ -1543,7 +1983,96 @@ mod tests {
         }
         let state = &mut *(user_data.cast::<ControllerStub>());
         state.task_json = slice::from_raw_parts(task_json.ptr, task_json.len).to_vec();
+        state.invocation_count += 1;
         let mut data = state.result_json.clone();
+        *out_result_json = DagMlOwnedBytes {
+            ptr: data.as_mut_ptr(),
+            len: data.len(),
+            capacity: data.capacity(),
+        };
+        std::mem::forget(data);
+        DagMlStatusCode::OK
+    }
+
+    unsafe extern "C" fn replay_controller_invoke_stub(
+        user_data: *mut c_void,
+        task_json: DagMlBytesView,
+        out_result_json: *mut DagMlOwnedBytes,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || task_json.ptr.is_null() || out_result_json.is_null() {
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let state = &mut *(user_data.cast::<ControllerStub>());
+        state.task_json = slice::from_raw_parts(task_json.ptr, task_json.len).to_vec();
+        let task = match serde_json::from_slice::<NodeTask>(&state.task_json) {
+            Ok(task) => task,
+            Err(_) => return DagMlStatusCode::VALIDATION_ERROR,
+        };
+        state.task_node_ids.push(task.node_plan.node_id.to_string());
+        state.invocation_count += 1;
+        let sample_ids = task
+            .data_views
+            .values()
+            .find_map(|view| view.sample_ids.clone())
+            .unwrap_or_else(|| vec![SampleId::new("sample:cabi.replay").unwrap()]);
+        let predictions = if matches!(task.node_plan.kind, NodeKind::Model) {
+            vec![PredictionBlock {
+                prediction_id: Some(format!("prediction:{}", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                partition: PredictionPartition::Final,
+                fold_id: None,
+                sample_ids: sample_ids.clone(),
+                values: vec![vec![0.7]; sample_ids.len()],
+                target_names: vec!["y".to_string()],
+            }]
+        } else {
+            Vec::new()
+        };
+        let result = NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([(
+                "out".to_string(),
+                HandleRef {
+                    handle: stable_handle(task.node_plan.node_id.as_str()),
+                    kind: HandleKind::Data,
+                    owner_controller: task.node_plan.controller_id.clone(),
+                },
+            )]),
+            predictions,
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:cabi.replay:{}",
+                    task.node_plan.node_id
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: task.node_plan.controller_id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        };
+        if result.validate_for_task(&task).is_err() {
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+        let mut data = match serde_json::to_vec(&result) {
+            Ok(data) => data,
+            Err(_) => return DagMlStatusCode::VALIDATION_ERROR,
+        };
         *out_result_json = DagMlOwnedBytes {
             ptr: data.as_mut_ptr(),
             len: data.len(),
@@ -1596,6 +2125,20 @@ mod tests {
         let state = &mut *(user_data.cast::<ControllerStub>());
         state.release_count += 1;
         drop(Vec::from_raw_parts(bytes.ptr, bytes.len, bytes.capacity));
+    }
+
+    unsafe extern "C" fn artifact_store_materialize_stub(
+        user_data: *mut c_void,
+        request_json: DagMlBytesView,
+        out_handle: *mut DagMlHandleRef,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || request_json.ptr.is_null() || out_handle.is_null() {
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let state = &mut *(user_data.cast::<ArtifactStoreStub>());
+        state.materialize_json = slice::from_raw_parts(request_json.ptr, request_json.len).to_vec();
+        *out_handle = state.handle;
+        state.status
     }
 
     unsafe extern "C" fn prediction_cache_load_blocks_stub(
@@ -1739,6 +2282,24 @@ mod tests {
         };
         result.validate_for_task(&task).unwrap();
         (controller_id, task, result)
+    }
+
+    fn artifact_materialization_request_fixture() -> ArtifactMaterializationRequest {
+        ArtifactMaterializationRequest {
+            run_id: RunId::new("run:cabi.artifact").unwrap(),
+            bundle_id: BundleId::new("bundle:cabi.artifact").unwrap(),
+            node_id: NodeId::new("model:base").unwrap(),
+            phase: Phase::Predict,
+            variant_id: Some(VariantId::new("variant:selected").unwrap()),
+            controller_id: ControllerId::new("controller:model").unwrap(),
+            artifact: ArtifactRef {
+                id: ArtifactId::new("artifact:model.base").unwrap(),
+                kind: "sklearn_pickle".to_string(),
+                controller_id: ControllerId::new("controller:model").unwrap(),
+                size_bytes: Some(1024),
+            },
+            params_fingerprint: "params:artifact-fixture".to_string(),
+        }
     }
 
     #[test]
@@ -1931,6 +2492,77 @@ mod tests {
 
         let task_json: serde_json::Value = serde_json::from_slice(&state.task_json).unwrap();
         assert_eq!(task_json["node_plan"]["node_id"], "transform:scale");
+    }
+
+    #[test]
+    fn c_abi_artifact_store_materializes_typed_handles() {
+        let request = artifact_materialization_request_fixture();
+        let mut state = ArtifactStoreStub {
+            handle: DagMlHandleRef {
+                handle: 99,
+                kind: DAG_ML_HANDLE_KIND_MODEL,
+            },
+            ..Default::default()
+        };
+        let table = DagMlArtifactStoreVTable {
+            abi_version: 1,
+            user_data: (&mut state as *mut ArtifactStoreStub).cast::<c_void>(),
+            materialize: Some(artifact_store_materialize_stub),
+            release: None,
+            destroy: None,
+        };
+        let store = CAbiRuntimeArtifactStore::new(table).unwrap();
+        let handle = store.materialize(&request).unwrap();
+        assert_eq!(handle.handle, 99);
+        assert_eq!(handle.kind, HandleKind::Model);
+        assert_eq!(handle.owner_controller, request.controller_id);
+
+        let request_json: serde_json::Value =
+            serde_json::from_slice(&state.materialize_json).unwrap();
+        assert_eq!(request_json["artifact"]["id"], "artifact:model.base");
+        assert_eq!(request_json["controller_id"], "controller:model");
+        assert_eq!(request_json["phase"], "PREDICT");
+    }
+
+    #[test]
+    fn c_abi_artifact_store_rejects_unknown_handle_kind() {
+        let request = artifact_materialization_request_fixture();
+        let mut state = ArtifactStoreStub {
+            handle: DagMlHandleRef {
+                handle: 99,
+                kind: 999,
+            },
+            ..Default::default()
+        };
+        let table = DagMlArtifactStoreVTable {
+            abi_version: 1,
+            user_data: (&mut state as *mut ArtifactStoreStub).cast::<c_void>(),
+            materialize: Some(artifact_store_materialize_stub),
+            release: None,
+            destroy: None,
+        };
+        let store = CAbiRuntimeArtifactStore::new(table).unwrap();
+        let error = store.materialize(&request).unwrap_err();
+        assert!(format!("{error}").contains("unknown ABI handle kind 999"));
+    }
+
+    #[test]
+    fn c_abi_artifact_store_rejects_unknown_status_codes() {
+        let request = artifact_materialization_request_fixture();
+        let mut state = ArtifactStoreStub {
+            status: DagMlStatusCode(997),
+            ..Default::default()
+        };
+        let table = DagMlArtifactStoreVTable {
+            abi_version: 1,
+            user_data: (&mut state as *mut ArtifactStoreStub).cast::<c_void>(),
+            materialize: Some(artifact_store_materialize_stub),
+            release: None,
+            destroy: None,
+        };
+        let store = CAbiRuntimeArtifactStore::new(table).unwrap();
+        let error = store.materialize(&request).unwrap_err();
+        assert!(format!("{error}").contains("unknown status code 997"));
     }
 
     #[test]
@@ -2223,6 +2855,122 @@ mod tests {
         assert_eq!(summary["data_handle_count"], 1);
         assert_eq!(summary["data_view_count"], 1);
         assert_eq!(summary["artifact_handle_count"], 1);
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn executes_vtable_replay_over_abi() {
+        let plan = fixture_plan_json();
+        let bundle = include_bytes!("../../../examples/generated/execution_bundle_minimal.json");
+        let request =
+            include_bytes!("../../../examples/fixtures/bundle/replay_request_predict.json");
+        let envelope =
+            include_str!("../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json");
+        let envelopes = format!(r#"{{"model:base.x":{envelope}}}"#);
+        let mut data_state = DataProviderStub::default();
+        let data_provider = DagMlDataVTable {
+            abi_version: 2,
+            user_data: (&mut data_state as *mut DataProviderStub).cast::<c_void>(),
+            materialize: Some(materialize_stub),
+            make_view: Some(make_view_stub),
+            view_identity: None,
+            target_arrow: None,
+            feature_arrow: None,
+            release: None,
+            destroy: None,
+        };
+        let mut artifact_state = ArtifactStoreStub {
+            handle: DagMlHandleRef {
+                handle: 700,
+                kind: DAG_ML_HANDLE_KIND_MODEL,
+            },
+            ..Default::default()
+        };
+        let artifact_store = DagMlArtifactStoreVTable {
+            abi_version: 1,
+            user_data: (&mut artifact_state as *mut ArtifactStoreStub).cast::<c_void>(),
+            materialize: Some(artifact_store_materialize_stub),
+            release: None,
+            destroy: None,
+        };
+        let mut transform_state = ControllerStub::default();
+        let mut model_state = ControllerStub::default();
+        let transform_controller_id = b"controller:transform.mock";
+        let model_controller_id = b"controller:model.mock";
+        let bindings = [
+            DagMlControllerBinding {
+                controller_id: bytes_view(transform_controller_id),
+                vtable: DagMlControllerVTable {
+                    abi_version: 2,
+                    user_data: (&mut transform_state as *mut ControllerStub).cast::<c_void>(),
+                    clone_with: None,
+                    describe: None,
+                    fit: None,
+                    predict: None,
+                    invoke: Some(replay_controller_invoke_stub),
+                    release_bytes: Some(controller_release_bytes_stub),
+                    release: None,
+                    destroy: None,
+                },
+            },
+            DagMlControllerBinding {
+                controller_id: bytes_view(model_controller_id),
+                vtable: DagMlControllerVTable {
+                    abi_version: 2,
+                    user_data: (&mut model_state as *mut ControllerStub).cast::<c_void>(),
+                    clone_with: None,
+                    describe: None,
+                    fit: None,
+                    predict: None,
+                    invoke: Some(replay_controller_invoke_stub),
+                    release_bytes: Some(controller_release_bytes_stub),
+                    release: None,
+                    destroy: None,
+                },
+            },
+        ];
+        let data_owner = b"controller:data.provider";
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_replay_execute_json(
+                plan.as_ptr(),
+                plan.len(),
+                bundle.as_ptr(),
+                bundle.len(),
+                request.as_ptr(),
+                request.len(),
+                envelopes.as_ptr(),
+                envelopes.len(),
+                bytes_view(data_owner),
+                7,
+                data_provider,
+                artifact_store,
+                std::ptr::null(),
+                bindings.as_ptr(),
+                bindings.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK);
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let summary: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(summary["bundle_id"], "bundle:cli.demo");
+        assert_eq!(summary["result_count"], 2);
+        assert_eq!(summary["prediction_block_count"], 1);
+        assert_eq!(summary["controller_count"], 2);
+        assert_eq!(summary["prediction_cache_store"], false);
+        assert_eq!(data_state.materialize_dataset, 7);
+        assert_eq!(artifact_state.handle.handle, 700);
+        assert_eq!(transform_state.task_node_ids, vec!["transform:snv"]);
+        assert_eq!(model_state.task_node_ids, vec!["model:base"]);
+        assert_eq!(transform_state.release_count, 1);
+        assert_eq!(model_state.release_count, 1);
         unsafe { dagml_owned_bytes_free(out) };
     }
 

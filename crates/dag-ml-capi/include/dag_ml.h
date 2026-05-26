@@ -10,6 +10,15 @@ extern "C" {
 
 typedef uint64_t DagMlHandle;
 
+enum {
+    DAG_ML_HANDLE_KIND_DATA = 1,
+    DAG_ML_HANDLE_KIND_DATA_VIEW = 2,
+    DAG_ML_HANDLE_KIND_MODEL = 3,
+    DAG_ML_HANDLE_KIND_ARTIFACT = 4,
+    DAG_ML_HANDLE_KIND_PREDICTION = 5,
+    DAG_ML_HANDLE_KIND_RELATION = 6
+};
+
 typedef uint32_t DagMlStatusCode;
 
 enum {
@@ -34,6 +43,11 @@ typedef struct DagMlBytesView {
     const uint8_t *ptr;
     size_t len;
 } DagMlBytesView;
+
+typedef struct DagMlHandleRef {
+    DagMlHandle handle;
+    uint32_t kind;
+} DagMlHandleRef;
 
 typedef struct DagMlOwnedBytes {
     uint8_t *ptr;
@@ -106,6 +120,19 @@ typedef struct DagMlPredictionCacheVTable {
     void (*destroy)(void *user_data);
 } DagMlPredictionCacheVTable;
 
+typedef struct DagMlArtifactStoreVTable {
+    uint32_t abi_version;
+    void *user_data;
+    DagMlStatusCode (*materialize)(void *user_data, DagMlBytesView request_json, DagMlHandleRef *out_handle);
+    void (*release)(void *user_data, DagMlHandle handle);
+    void (*destroy)(void *user_data);
+} DagMlArtifactStoreVTable;
+
+typedef struct DagMlControllerBinding {
+    DagMlBytesView controller_id;
+    DagMlControllerVTable vtable;
+} DagMlControllerBinding;
+
 DagMlVersion dagml_version(void);
 void dagml_string_free(DagMlString value);
 void dagml_owned_bytes_free(DagMlOwnedBytes value);
@@ -120,6 +147,7 @@ DagMlStatusCode dagml_replay_request_validate_for_bundle_json(const uint8_t *bun
 DagMlStatusCode dagml_prediction_cache_payload_validate_for_bundle_json(const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *payload_ptr, size_t payload_len, DagMlString *error_out);
 DagMlStatusCode dagml_replay_request_validate_for_bundle_with_prediction_cache_payload_json(const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, const uint8_t *payload_ptr, size_t payload_len, DagMlString *error_out);
 DagMlStatusCode dagml_mock_replay_execute_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, const uint8_t *envelopes_ptr, size_t envelopes_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_replay_execute_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, const uint8_t *envelopes_ptr, size_t envelopes_len, DagMlBytesView data_owner_controller_id, DagMlHandle dataset, DagMlDataVTable data_provider, DagMlArtifactStoreVTable artifact_store, const DagMlPredictionCacheVTable *prediction_cache_store, const DagMlControllerBinding *controller_bindings, size_t controller_binding_count, DagMlOwnedBytes *out_json, DagMlString *error_out);
 
 #ifdef __cplusplus
 }
