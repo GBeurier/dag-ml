@@ -25,6 +25,8 @@ Definition of done:
 - sequential fold/variant executor;
 - mock controllers proving external operator orchestration;
 - `PredictionStore` and OOF join with leakage rejection;
+- runtime enforcement of `requires_oof` prediction edges before downstream
+  training controllers can consume upstream prediction inputs;
 - deterministic `SeedContext`.
 
 Status: implemented as the first core slice. Remaining Phase 1 hardening is

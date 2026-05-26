@@ -3,9 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::bundle::{ExecutionBundle, RefitArtifactRecord, ReplayPhaseRequest};
+use crate::campaign::stable_json_fingerprint;
 use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::fold::{FoldAssignment, FoldSet};
+use crate::graph::{EdgeSpec, PortKind};
 use crate::ids::{
     ArtifactId, BranchId, BundleId, ControllerId, FoldId, LineageId, NodeId, RunId, SampleId,
     VariantId,
@@ -1084,11 +1086,29 @@ fn collect_input_handles(
 ) -> Result<CollectedInputs> {
     let mut inputs = BTreeMap::new();
     let mut data_views = BTreeMap::new();
+    let training_oof_edges = incoming_training_oof_edges(plan, node_plan, scope)?;
+    let training_oof_sources = training_oof_edges
+        .iter()
+        .map(|edge| edge.source.node_id.clone())
+        .collect::<BTreeSet<_>>();
     for upstream in &node_plan.input_nodes {
+        if training_oof_sources.contains(upstream) {
+            continue;
+        }
         if let Some(handles) = output_handles.get(upstream) {
             for (port, handle) in handles {
                 inputs.insert(format!("{upstream}.{port}"), handle.clone());
             }
+        }
+    }
+    for edge in training_oof_edges {
+        let key = format!("{}.{}", edge.source.node_id, edge.source.port_name);
+        let handle = collect_oof_prediction_input(plan, edge, ctx, scope)?;
+        if inputs.insert(key.clone(), handle).is_some() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` received duplicate OOF prediction input `{key}`",
+                node_plan.node_id
+            )));
         }
     }
     if !node_plan.data_bindings.is_empty() && data_provider.is_none() {
@@ -1145,6 +1165,279 @@ fn collect_input_handles(
         handles: inputs,
         data_views,
     })
+}
+
+fn incoming_training_oof_edges<'a>(
+    plan: &'a ExecutionPlan,
+    node_plan: &NodePlan,
+    scope: &PhaseScope,
+) -> Result<Vec<&'a EdgeSpec>> {
+    if !scope.phase.is_training() {
+        return Ok(Vec::new());
+    }
+    plan.graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == node_plan.node_id && edge.contract.requires_oof)
+        .map(|edge| {
+            if edge.contract.kind != PortKind::Prediction {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "edge `{}.{}` -> `{}.{}` requires OOF but is not a prediction edge",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name
+                )));
+            }
+            Ok(edge)
+        })
+        .collect()
+}
+
+fn collect_oof_prediction_input(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+) -> Result<HandleRef> {
+    match scope.phase {
+        Phase::FitCv => validate_fit_cv_oof_edge(plan, edge, ctx, scope)?,
+        Phase::Refit => validate_refit_oof_edge(plan, edge, ctx)?,
+        _ => {}
+    }
+    let source_plan = plan
+        .node_plans
+        .get(&edge.source.node_id)
+        .expect("edge source has a node plan");
+    Ok(HandleRef {
+        handle: deterministic_oof_handle(plan, edge, ctx, scope)?,
+        kind: HandleKind::Prediction,
+        owner_controller: source_plan.controller_id.clone(),
+    })
+}
+
+fn validate_fit_cv_oof_edge(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+) -> Result<()> {
+    let fold_id = scope.fold_id.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "edge `{}.{}` -> `{}.{}` requires OOF predictions but FIT_CV has no fold scope",
+            edge.source.node_id, edge.source.port_name, edge.target.node_id, edge.target.port_name
+        ))
+    })?;
+    let blocks = ctx.prediction_store.find(
+        Some(&edge.source.node_id),
+        Some(&PredictionPartition::Validation),
+        Some(fold_id),
+    );
+    if blocks.is_empty() {
+        return Err(missing_oof_edge_error(edge, Some(fold_id)));
+    }
+    if edge.contract.requires_fold_alignment {
+        let fold_set = required_fold_set_for_oof(plan, edge)?;
+        validate_oof_blocks_match_fold(edge, fold_set, fold_id, &blocks)?;
+    }
+    Ok(())
+}
+
+fn validate_refit_oof_edge(plan: &ExecutionPlan, edge: &EdgeSpec, ctx: &RunContext) -> Result<()> {
+    let blocks = ctx.prediction_store.find(
+        Some(&edge.source.node_id),
+        Some(&PredictionPartition::Validation),
+        None,
+    );
+    if blocks.is_empty() {
+        return Err(missing_oof_edge_error(edge, None));
+    }
+    if edge.contract.requires_fold_alignment {
+        let fold_set = required_fold_set_for_oof(plan, edge)?;
+        validate_oof_blocks_cover_fold_set(edge, fold_set, &blocks)?;
+    }
+    Ok(())
+}
+
+fn missing_oof_edge_error(edge: &EdgeSpec, fold_id: Option<&FoldId>) -> DagMlError {
+    DagMlError::RuntimeValidation(format!(
+        "edge `{}.{}` -> `{}.{}` requires OOF validation predictions from `{}`{}",
+        edge.source.node_id,
+        edge.source.port_name,
+        edge.target.node_id,
+        edge.target.port_name,
+        edge.source.node_id,
+        fold_id
+            .map(|fold_id| format!(" for fold `{fold_id}`"))
+            .unwrap_or_default()
+    ))
+}
+
+fn required_fold_set_for_oof<'a>(plan: &'a ExecutionPlan, edge: &EdgeSpec) -> Result<&'a FoldSet> {
+    plan.fold_set.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "edge `{}.{}` -> `{}.{}` requires fold-aligned OOF predictions but the plan has no fold set",
+            edge.source.node_id,
+            edge.source.port_name,
+            edge.target.node_id,
+            edge.target.port_name
+        ))
+    })
+}
+
+fn validate_oof_blocks_match_fold(
+    edge: &EdgeSpec,
+    fold_set: &FoldSet,
+    fold_id: &FoldId,
+    blocks: &[&PredictionBlock],
+) -> Result<()> {
+    let fold = fold_set
+        .folds
+        .iter()
+        .find(|fold| &fold.fold_id == fold_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` references unknown fold `{fold_id}`",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            ))
+        })?;
+    let actual = collect_unique_oof_samples(edge, blocks)?;
+    let expected = fold
+        .validation_sample_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "edge `{}.{}` -> `{}.{}` OOF predictions do not match validation samples for fold `{fold_id}`",
+            edge.source.node_id,
+            edge.source.port_name,
+            edge.target.node_id,
+            edge.target.port_name
+        )));
+    }
+    Ok(())
+}
+
+fn validate_oof_blocks_cover_fold_set(
+    edge: &EdgeSpec,
+    fold_set: &FoldSet,
+    blocks: &[&PredictionBlock],
+) -> Result<()> {
+    let folds = fold_set
+        .folds
+        .iter()
+        .map(|fold| (&fold.fold_id, fold))
+        .collect::<BTreeMap<_, _>>();
+    let mut all_samples = BTreeSet::new();
+    for block in blocks {
+        let fold_id = block.fold_id.as_ref().ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` has OOF predictions without a fold id",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            ))
+        })?;
+        let fold = folds.get(fold_id).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` references unknown fold `{fold_id}`",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            ))
+        })?;
+        let block_samples = collect_unique_oof_samples(edge, &[*block])?;
+        let expected = fold
+            .validation_sample_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if block_samples != expected {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` OOF predictions do not match validation samples for fold `{fold_id}`",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+        for sample_id in block_samples {
+            if !all_samples.insert(sample_id.clone()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "edge `{}.{}` -> `{}.{}` has duplicate OOF prediction for sample `{sample_id}`",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name
+                )));
+            }
+        }
+    }
+    let expected_all = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    if all_samples != expected_all {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "edge `{}.{}` -> `{}.{}` OOF predictions do not cover the refit sample universe",
+            edge.source.node_id, edge.source.port_name, edge.target.node_id, edge.target.port_name
+        )));
+    }
+    Ok(())
+}
+
+fn collect_unique_oof_samples(
+    edge: &EdgeSpec,
+    blocks: &[&PredictionBlock],
+) -> Result<BTreeSet<SampleId>> {
+    let mut samples = BTreeSet::new();
+    for block in blocks {
+        if block.partition != PredictionPartition::Validation {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` selected non-validation predictions",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+        for sample_id in &block.sample_ids {
+            if !samples.insert(sample_id.clone()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "edge `{}.{}` -> `{}.{}` has duplicate OOF prediction for sample `{sample_id}`",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name
+                )));
+            }
+        }
+    }
+    Ok(samples)
+}
+
+fn deterministic_oof_handle(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+) -> Result<u64> {
+    let fingerprint = stable_json_fingerprint(&(
+        &plan.id,
+        &ctx.run_id,
+        &edge.source.node_id,
+        &edge.source.port_name,
+        &edge.target.node_id,
+        &edge.target.port_name,
+        scope.phase,
+        &scope.variant_id,
+        &scope.fold_id,
+    ))?;
+    Ok(u64::from_str_radix(&fingerprint[..16], 16).expect("sha256 hex prefix should fit into u64"))
 }
 
 struct CollectedInputs {
@@ -1654,6 +1947,134 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum OofSampleMode {
+        Aligned,
+        Swapped,
+    }
+
+    struct OofEdgeController {
+        id: ControllerId,
+        base_partition: Option<PredictionPartition>,
+        sample_mode: OofSampleMode,
+    }
+
+    impl RuntimeController for OofEdgeController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            if task.node_plan.node_id.as_str() == "model:meta" {
+                let handle = task.input_handles.get("model:base.pred").ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "meta node did not receive OOF prediction input".to_string(),
+                    )
+                })?;
+                if handle.kind != HandleKind::Prediction {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "meta node received {:?} instead of OOF prediction input",
+                        handle.kind
+                    )));
+                }
+            }
+
+            let predictions = if task.node_plan.node_id.as_str() == "model:base" {
+                self.base_partition
+                    .clone()
+                    .map(|partition| {
+                        let sample_ids = match self.sample_mode {
+                            OofSampleMode::Aligned => aligned_validation_samples(task),
+                            OofSampleMode::Swapped => swapped_validation_samples(task),
+                        };
+                        let fold_id = matches!(
+                            partition,
+                            PredictionPartition::Train | PredictionPartition::Validation
+                        )
+                        .then(|| task.fold_id.clone())
+                        .flatten();
+                        PredictionBlock {
+                            prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                            producer_node: task.node_plan.node_id.clone(),
+                            partition,
+                            fold_id,
+                            sample_ids: sample_ids.clone(),
+                            values: vec![vec![0.5]; sample_ids.len()],
+                            target_names: vec!["y".to_string()],
+                        }
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+
+            let handle_id = if task.node_plan.node_id.as_str() == "model:base" {
+                101
+            } else {
+                202
+            };
+            Ok(NodeResult {
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([(
+                    "pred".to_string(),
+                    HandleRef {
+                        handle: handle_id,
+                        kind: HandleKind::Data,
+                        owner_controller: self.id.clone(),
+                    },
+                )]),
+                predictions,
+                shape_deltas: Vec::new(),
+                artifacts: Vec::new(),
+                artifact_handles: BTreeMap::new(),
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:oof:{}:{}",
+                        task.node_plan.node_id,
+                        task.fold_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "nofold".to_string())
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
+    fn aligned_validation_samples(task: &NodeTask) -> Vec<SampleId> {
+        match task.fold_id.as_ref().map(ToString::to_string).as_deref() {
+            Some("fold:0") => vec![SampleId::new("s1").unwrap()],
+            Some("fold:1") => vec![SampleId::new("s2").unwrap()],
+            _ => vec![SampleId::new("s1").unwrap()],
+        }
+    }
+
+    fn swapped_validation_samples(task: &NodeTask) -> Vec<SampleId> {
+        match task.fold_id.as_ref().map(ToString::to_string).as_deref() {
+            Some("fold:0") => vec![SampleId::new("s2").unwrap()],
+            Some("fold:1") => vec![SampleId::new("s1").unwrap()],
+            _ => vec![SampleId::new("s2").unwrap()],
+        }
+    }
+
     fn port(name: &str, kind: PortKind) -> PortSpec {
         PortSpec {
             name: name.to_string(),
@@ -1733,6 +2154,46 @@ mod tests {
         }
     }
 
+    fn oof_edge_graph() -> GraphSpec {
+        GraphSpec {
+            id: "g:oof.edge".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    "model:base",
+                    NodeKind::Model,
+                    vec![],
+                    vec![port("pred", PortKind::Prediction)],
+                ),
+                node(
+                    "model:meta",
+                    NodeKind::Model,
+                    vec![port("pred", PortKind::Prediction)],
+                    vec![port("pred", PortKind::Prediction)],
+                ),
+            ],
+            edges: vec![EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new("model:base").unwrap(),
+                    port_name: "pred".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new("model:meta").unwrap(),
+                    port_name: "pred".to_string(),
+                },
+                contract: EdgeContract {
+                    kind: PortKind::Prediction,
+                    representation: None,
+                    requires_oof: true,
+                    requires_fold_alignment: true,
+                    propagates_lineage: true,
+                },
+            }],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
     fn runtime_controllers() -> RuntimeControllerRegistry {
         let mut controllers = RuntimeControllerRegistry::new();
         controllers
@@ -1747,6 +2208,21 @@ mod tests {
                 id: ControllerId::new("controller:model").unwrap(),
                 handle: 2,
                 emit_prediction: true,
+            }))
+            .unwrap();
+        controllers
+    }
+
+    fn oof_edge_runtime_controllers(
+        base_partition: Option<PredictionPartition>,
+        sample_mode: OofSampleMode,
+    ) -> RuntimeControllerRegistry {
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(OofEdgeController {
+                id: ControllerId::new("controller:model").unwrap(),
+                base_partition,
+                sample_mode,
             }))
             .unwrap();
         controllers
@@ -1814,6 +2290,26 @@ mod tests {
             source_ids: vec!["nir".to_string()],
             require_relations: true,
             view_policy: Default::default(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn oof_edge_campaign() -> CampaignSpec {
+        CampaignSpec {
+            id: "campaign:oof.edge".to_string(),
+            root_seed: Some(11),
+            leakage_policy: Default::default(),
+            aggregation_policy: Default::default(),
+            split_invocation: Some(SplitInvocation {
+                id: "split:outer".to_string(),
+                controller_id: None,
+                leakage_policy: Default::default(),
+                params: BTreeMap::new(),
+                fold_set: Some(two_fold_set()),
+            }),
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
             metadata: BTreeMap::new(),
         }
     }
@@ -2012,6 +2508,101 @@ mod tests {
                 .len(),
             8
         );
+    }
+
+    #[test]
+    fn requires_oof_prediction_edge_supplies_validated_prediction_handle() {
+        let plan = build_execution_plan(
+            "plan:oof.edge.success",
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &manifests(),
+        )
+        .unwrap();
+        let controllers = oof_edge_runtime_controllers(
+            Some(PredictionPartition::Validation),
+            OofSampleMode::Aligned,
+        );
+        let mut ctx = RunContext::new(RunId::new("run:oof.edge.success").unwrap(), Some(11));
+
+        let results = SequentialScheduler
+            .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+            .unwrap();
+
+        assert_eq!(results.len(), 4);
+        assert_eq!(ctx.prediction_store.blocks().len(), 2);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.node_id.as_str() == "model:meta")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn requires_oof_prediction_edge_rejects_missing_validation_predictions() {
+        let plan = build_execution_plan(
+            "plan:oof.edge.missing",
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &manifests(),
+        )
+        .unwrap();
+        let controllers = oof_edge_runtime_controllers(None, OofSampleMode::Aligned);
+        let mut ctx = RunContext::new(RunId::new("run:oof.edge.missing").unwrap(), Some(11));
+
+        let error = SequentialScheduler
+            .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("requires OOF validation predictions"));
+        assert!(error.contains("model:base"));
+    }
+
+    #[test]
+    fn requires_oof_prediction_edge_rejects_train_predictions_as_features() {
+        let plan = build_execution_plan(
+            "plan:oof.edge.train",
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &manifests(),
+        )
+        .unwrap();
+        let controllers =
+            oof_edge_runtime_controllers(Some(PredictionPartition::Train), OofSampleMode::Aligned);
+        let mut ctx = RunContext::new(RunId::new("run:oof.edge.train").unwrap(), Some(11));
+
+        let error = SequentialScheduler
+            .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("requires OOF validation predictions"));
+    }
+
+    #[test]
+    fn requires_oof_prediction_edge_rejects_fold_misalignment() {
+        let plan = build_execution_plan(
+            "plan:oof.edge.misaligned",
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &manifests(),
+        )
+        .unwrap();
+        let controllers = oof_edge_runtime_controllers(
+            Some(PredictionPartition::Validation),
+            OofSampleMode::Swapped,
+        );
+        let mut ctx = RunContext::new(RunId::new("run:oof.edge.misaligned").unwrap(), Some(11));
+
+        let error = SequentialScheduler
+            .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("do not match validation samples"));
     }
 
     #[test]
