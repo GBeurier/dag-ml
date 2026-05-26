@@ -58,6 +58,20 @@ enum Command {
         #[arg(long, default_value = "plan:cli")]
         plan_id: String,
     },
+    PrintExecutionSchedule {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long, default_value = "FIT_CV")]
+        phase: String,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = "plan:cli")]
+        plan_id: String,
+    },
     ValidateDataBinding {
         #[arg(long)]
         campaign: PathBuf,
@@ -409,6 +423,19 @@ fn main() -> Result<()> {
                     .map(|fold_set| fold_set.id.as_str())
                     .unwrap_or("none")
             );
+        }
+        Command::PrintExecutionSchedule {
+            graph,
+            campaign,
+            controllers,
+            phase,
+            output,
+            plan_id,
+        } => {
+            let phase = parse_phase(&phase)?;
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let schedule = plan.campaign_phase_schedule(phase)?;
+            emit_json(output.as_ref(), &schedule, "execution schedule")?;
         }
         Command::ValidateDataBinding {
             campaign,
@@ -2206,6 +2233,19 @@ fn mock_artifact_store(
         )?;
     }
     Ok(store)
+}
+
+fn parse_phase(value: &str) -> Result<Phase> {
+    match value {
+        "COMPILE" => Ok(Phase::Compile),
+        "PLAN" => Ok(Phase::Plan),
+        "FIT_CV" => Ok(Phase::FitCv),
+        "SELECT" => Ok(Phase::Select),
+        "REFIT" => Ok(Phase::Refit),
+        "PREDICT" => Ok(Phase::Predict),
+        "EXPLAIN" => Ok(Phase::Explain),
+        _ => bail!("unsupported phase `{value}`"),
+    }
 }
 
 fn prediction_partition_for_phase(phase: Phase) -> PredictionPartition {

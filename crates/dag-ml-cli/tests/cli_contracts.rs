@@ -66,6 +66,11 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_schedule = std::env::temp_dir().join(format!(
+        "dag_ml_cli_schedule_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
     let temp_sklearn_demo_dir = std::env::temp_dir().join(format!(
         "dag_ml_cli_sklearn_complex_{}_{}",
         std::process::id(),
@@ -91,6 +96,41 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         select.status.success(),
         "select-candidates failed: {}",
         String::from_utf8_lossy(&select.stderr)
+    );
+
+    let schedule = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "print-execution-schedule",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--phase",
+            "FIT_CV",
+            "--output",
+            temp_schedule.to_str().expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.schedule",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli print-execution-schedule");
+    assert!(
+        schedule.status.success(),
+        "print-execution-schedule failed: {}",
+        String::from_utf8_lossy(&schedule.stderr)
+    );
+    let schedule_json = std::fs::read_to_string(&temp_schedule).expect("schedule was written");
+    assert!(
+        schedule_json.contains("\"phase\": \"FIT_CV\"")
+            && schedule_json.contains("\"node_levels\"")
+            && schedule_json.contains("transform:snv")
+            && schedule_json.contains("model:base")
+            && schedule_json.contains("fold:0"),
+        "unexpected print-execution-schedule JSON: {}",
+        schedule_json
     );
 
     let build = Command::new(cli())
@@ -1098,6 +1138,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     let _ = std::fs::remove_file(temp_process_refit_request);
     let _ = std::fs::remove_file(temp_branch_merge_replay_request);
     let _ = std::fs::remove_file(temp_selection);
+    let _ = std::fs::remove_file(temp_schedule);
     let _ = std::fs::remove_dir_all(temp_sklearn_demo_dir);
 }
 
