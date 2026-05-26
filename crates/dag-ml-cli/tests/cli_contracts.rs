@@ -363,6 +363,8 @@ fn cli_selects_builds_and_validates_replay_bundle() {
                 .contains("artifact:merge:stack.pred_plus_original.meta:ridge:refit")
             && branch_merge_cv_refit_bundle_json.contains("fit_cv_result_count")
             && branch_merge_cv_refit_bundle_json.contains("fit_cv_oof_prediction_block_count")
+            && branch_merge_cv_refit_bundle_json.contains("oof_prediction_summary")
+            && branch_merge_cv_refit_bundle_json.contains("\"block_count\": 2")
             && branch_merge_cv_refit_bundle_json.contains("refit_prediction_block_count"),
         "unexpected branch/merge CV+refit bundle JSON: {}",
         branch_merge_cv_refit_bundle_json

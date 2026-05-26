@@ -85,6 +85,62 @@
     "fit_cv_lineage_count": 6,
     "fit_cv_oof_prediction_block_count": 6,
     "fit_cv_result_count": 6,
+    "oof_prediction_summary": [
+      {
+        "block_count": 2,
+        "fold_ids": [
+          "fold:0",
+          "fold:1"
+        ],
+        "prediction_width": 1,
+        "producer_node": "branch:b0.model:ridge",
+        "sample_ids": [
+          "sample:1",
+          "sample:2",
+          "sample:3",
+          "sample:4"
+        ],
+        "target_names": [
+          "y"
+        ]
+      },
+      {
+        "block_count": 2,
+        "fold_ids": [
+          "fold:0",
+          "fold:1"
+        ],
+        "prediction_width": 1,
+        "producer_node": "branch:b1.model:rf",
+        "sample_ids": [
+          "sample:1",
+          "sample:2",
+          "sample:3",
+          "sample:4"
+        ],
+        "target_names": [
+          "y"
+        ]
+      },
+      {
+        "block_count": 2,
+        "fold_ids": [
+          "fold:0",
+          "fold:1"
+        ],
+        "prediction_width": 1,
+        "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+        "sample_ids": [
+          "sample:1",
+          "sample:2",
+          "sample:3",
+          "sample:4"
+        ],
+        "target_names": [
+          "y"
+        ]
+      }
+    ],
     "refit_lineage_count": 3,
     "refit_prediction_block_count": 3,
     "refit_result_count": 3,
