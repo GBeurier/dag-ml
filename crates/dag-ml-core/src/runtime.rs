@@ -5073,6 +5073,81 @@ mod tests {
         }
     }
 
+    fn parallel_stress_graph() -> GraphSpec {
+        const WIDTH: usize = 6;
+
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut merge_inputs = Vec::new();
+        for idx in 0..WIDTH {
+            let transform_id = format!("transform:stress.{idx}");
+            let model_id = format!("model:stress.{idx}");
+            let merge_port = format!("pred{idx}");
+            nodes.push(node(
+                &transform_id,
+                NodeKind::Transform,
+                vec![],
+                vec![port("x", PortKind::Data)],
+            ));
+            nodes.push(node(
+                &model_id,
+                NodeKind::Model,
+                vec![port("x", PortKind::Data)],
+                vec![port("pred", PortKind::Prediction)],
+            ));
+            merge_inputs.push(port(&merge_port, PortKind::Prediction));
+            edges.push(EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new(transform_id).unwrap(),
+                    port_name: "x".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new(&model_id).unwrap(),
+                    port_name: "x".to_string(),
+                },
+                contract: EdgeContract {
+                    kind: PortKind::Data,
+                    representation: None,
+                    requires_oof: false,
+                    requires_fold_alignment: false,
+                    propagates_lineage: true,
+                },
+            });
+            edges.push(EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new(model_id).unwrap(),
+                    port_name: "pred".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new("merge:stress").unwrap(),
+                    port_name: merge_port,
+                },
+                contract: EdgeContract {
+                    kind: PortKind::Prediction,
+                    representation: None,
+                    requires_oof: false,
+                    requires_fold_alignment: true,
+                    propagates_lineage: true,
+                },
+            });
+        }
+        nodes.push(node(
+            "merge:stress",
+            NodeKind::MixedJoin,
+            merge_inputs,
+            vec![port("merged", PortKind::Data)],
+        ));
+
+        GraphSpec {
+            id: "g:parallel.stress".to_string(),
+            interface: GraphInterface::default(),
+            nodes,
+            edges,
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
     fn oof_edge_graph() -> GraphSpec {
         GraphSpec {
             id: "g:oof.edge".to_string(),
@@ -5205,6 +5280,40 @@ mod tests {
                     metadata: BTreeMap::new(),
                 },
             ],
+            sample_groups: BTreeMap::new(),
+        }
+    }
+
+    fn three_fold_stress_set() -> FoldSet {
+        let samples = (0..6)
+            .map(|idx| SampleId::new(format!("s{idx}")).unwrap())
+            .collect::<Vec<_>>();
+        let folds = (0..3)
+            .map(|fold_idx| {
+                let validation_sample_ids = samples
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, sample_id)| {
+                        (idx % 3 == fold_idx).then_some(sample_id.clone())
+                    })
+                    .collect::<Vec<_>>();
+                let train_sample_ids = samples
+                    .iter()
+                    .filter(|sample_id| !validation_sample_ids.contains(sample_id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                FoldAssignment {
+                    fold_id: FoldId::new(format!("fold:{fold_idx}")).unwrap(),
+                    train_sample_ids,
+                    validation_sample_ids,
+                    metadata: BTreeMap::new(),
+                }
+            })
+            .collect::<Vec<_>>();
+        FoldSet {
+            id: "outer:stress".to_string(),
+            sample_ids: samples,
+            folds,
             sample_groups: BTreeMap::new(),
         }
     }
@@ -5396,6 +5505,60 @@ mod tests {
             data_bindings: BTreeMap::new(),
             metadata: BTreeMap::new(),
         }
+    }
+
+    fn parallel_stress_campaign() -> CampaignSpec {
+        CampaignSpec {
+            id: "campaign:parallel.stress".to_string(),
+            root_seed: Some(31),
+            leakage_policy: Default::default(),
+            aggregation_policy: Default::default(),
+            split_invocation: Some(SplitInvocation {
+                id: "split:parallel.stress".to_string(),
+                controller_id: None,
+                leakage_policy: Default::default(),
+                params: BTreeMap::new(),
+                fold_set: Some(three_fold_stress_set()),
+            }),
+            generation: GenerationSpec {
+                strategy: GenerationStrategy::Cartesian,
+                dimensions: vec![GenerationDimension {
+                    name: "model_family".to_string(),
+                    choices: ["linear", "tree", "kernel"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(rank, label)| GenerationChoice {
+                            label: label.to_string(),
+                            value: json!(label),
+                            param_overrides: (0..6)
+                                .map(|idx| crate::generation::GenerationParamOverride {
+                                    node_id: NodeId::new(format!("model:stress.{idx}")).unwrap(),
+                                    params: BTreeMap::from([
+                                        ("family".to_string(), json!(label)),
+                                        ("variant_rank".to_string(), json!(rank)),
+                                    ]),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                }],
+                max_variants: Some(3),
+            },
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn parallel_stress_manifests() -> crate::controller::ControllerRegistry {
+        let mut registry = manifests();
+        registry
+            .register(controller_manifest(
+                "controller:mixed_join",
+                NodeKind::MixedJoin,
+            ))
+            .unwrap();
+        registry
     }
 
     fn manifests() -> crate::controller::ControllerRegistry {
@@ -5662,6 +5825,321 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(ctx.lineage.len(), 2);
         assert!(max_active.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[test]
+    fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_folds() {
+        struct StressProbeController {
+            id: ControllerId,
+            active: Arc<AtomicUsize>,
+            max_active: Arc<AtomicUsize>,
+            invocations: Arc<Mutex<Vec<String>>>,
+            pause: bool,
+        }
+
+        impl RuntimeController for StressProbeController {
+            fn controller_id(&self) -> &ControllerId {
+                &self.id
+            }
+
+            fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+                assert_stress_inputs(task)?;
+                let task_key = stress_task_key(task);
+                self.invocations.lock().unwrap().push(task_key.clone());
+                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                update_max_active(&self.max_active, active);
+                if self.pause {
+                    std::thread::sleep(std::time::Duration::from_millis(8));
+                }
+                self.active.fetch_sub(1, Ordering::SeqCst);
+
+                let (output_name, output_kind) = match &task.node_plan.kind {
+                    NodeKind::Model => ("pred", HandleKind::Prediction),
+                    NodeKind::MixedJoin => ("merged", HandleKind::Data),
+                    _ => ("x", HandleKind::Data),
+                };
+                let prediction_value = (stable_test_handle(&task_key) % 10_000) as f64 / 100.0;
+                let predictions = matches!(&task.node_plan.kind, NodeKind::Model)
+                    .then(|| {
+                        let sample_ids = stress_validation_samples(task.fold_id.as_ref());
+                        PredictionBlock {
+                            prediction_id: Some(format!(
+                                "prediction:{}:{}:{}",
+                                task.node_plan.node_id,
+                                task.variant_id
+                                    .as_ref()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_else(|| "variant:base".to_string()),
+                                task.fold_id
+                                    .as_ref()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_else(|| "nofold".to_string())
+                            )),
+                            producer_node: task.node_plan.node_id.clone(),
+                            partition: PredictionPartition::Validation,
+                            fold_id: task.fold_id.clone(),
+                            values: sample_ids
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, _)| vec![prediction_value + idx as f64])
+                                .collect(),
+                            sample_ids,
+                            target_names: vec!["y".to_string()],
+                        }
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                Ok(NodeResult {
+                    node_id: task.node_plan.node_id.clone(),
+                    outputs: BTreeMap::from([(
+                        output_name.to_string(),
+                        HandleRef {
+                            handle: stable_test_handle(&task_key),
+                            kind: output_kind,
+                            owner_controller: self.id.clone(),
+                        },
+                    )]),
+                    predictions,
+                    shape_deltas: Vec::new(),
+                    artifacts: Vec::new(),
+                    artifact_handles: BTreeMap::new(),
+                    lineage: LineageRecord {
+                        record_id: LineageId::new(format!(
+                            "lineage:stress:{}:{}:{}",
+                            task.node_plan.node_id,
+                            task.variant_id
+                                .as_ref()
+                                .map(ToString::to_string)
+                                .unwrap_or_else(|| "variant:base".to_string()),
+                            task.fold_id
+                                .as_ref()
+                                .map(ToString::to_string)
+                                .unwrap_or_else(|| "nofold".to_string())
+                        ))
+                        .unwrap(),
+                        run_id: task.run_id.clone(),
+                        node_id: task.node_plan.node_id.clone(),
+                        phase: task.phase,
+                        controller_id: self.id.clone(),
+                        controller_version: task.node_plan.controller_version.clone(),
+                        variant_id: task.variant_id.clone(),
+                        fold_id: task.fold_id.clone(),
+                        branch_path: task.branch_path.clone(),
+                        input_lineage: Vec::new(),
+                        artifact_refs: Vec::new(),
+                        params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                        data_model_shape_fingerprint: None,
+                        aggregation_policy_fingerprint: None,
+                        seed: task.seed,
+                        unsafe_flags: BTreeSet::new(),
+                        metrics: BTreeMap::new(),
+                    },
+                })
+            }
+        }
+
+        fn stress_runtime_controllers(
+            active: Arc<AtomicUsize>,
+            max_active: Arc<AtomicUsize>,
+            invocations: Arc<Mutex<Vec<String>>>,
+            pause: bool,
+        ) -> RuntimeControllerRegistry {
+            let mut controllers = RuntimeControllerRegistry::new();
+            for id in [
+                "controller:transform",
+                "controller:model",
+                "controller:mixed_join",
+            ] {
+                controllers
+                    .register(Box::new(StressProbeController {
+                        id: ControllerId::new(id).unwrap(),
+                        active: Arc::clone(&active),
+                        max_active: Arc::clone(&max_active),
+                        invocations: Arc::clone(&invocations),
+                        pause,
+                    }))
+                    .unwrap();
+            }
+            controllers
+        }
+
+        fn update_max_active(max_active: &AtomicUsize, active: usize) {
+            let mut observed = max_active.load(Ordering::SeqCst);
+            while active > observed
+                && max_active
+                    .compare_exchange(observed, active, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+            {
+                observed = max_active.load(Ordering::SeqCst);
+            }
+        }
+
+        fn stress_task_key(task: &NodeTask) -> String {
+            format!(
+                "{}|{}|{}|{}|{}",
+                task.node_plan.node_id,
+                task.variant_id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "variant:base".to_string()),
+                task.fold_id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "nofold".to_string()),
+                task.seed
+                    .map(|seed| seed.to_string())
+                    .unwrap_or_else(|| "noseed".to_string()),
+                task.node_plan.params_fingerprint,
+            )
+        }
+
+        fn stable_test_handle(label: &str) -> u64 {
+            label
+                .bytes()
+                .fold(14_695_981_039_346_656_037, |hash, byte| {
+                    (hash ^ byte as u64).wrapping_mul(1_099_511_628_211)
+                })
+        }
+
+        fn stress_validation_samples(fold_id: Option<&FoldId>) -> Vec<SampleId> {
+            match fold_id.map(FoldId::as_str) {
+                Some("fold:0") => vec![SampleId::new("s0").unwrap(), SampleId::new("s3").unwrap()],
+                Some("fold:1") => vec![SampleId::new("s1").unwrap(), SampleId::new("s4").unwrap()],
+                Some("fold:2") => vec![SampleId::new("s2").unwrap(), SampleId::new("s5").unwrap()],
+                _ => vec![SampleId::new("s0").unwrap()],
+            }
+        }
+
+        fn assert_stress_inputs(task: &NodeTask) -> Result<()> {
+            let node_id = task.node_plan.node_id.as_str();
+            if node_id.starts_with("transform:stress.") && !task.input_handles.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "source node `{node_id}` received unexpected inputs"
+                )));
+            }
+            if node_id.starts_with("model:stress.")
+                && !task
+                    .input_handles
+                    .keys()
+                    .any(|key| key.starts_with("transform:stress.") && key.ends_with(".x"))
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "model node `{node_id}` did not receive its transform input"
+                )));
+            }
+            if node_id == "merge:stress" {
+                let model_inputs = task
+                    .input_handles
+                    .keys()
+                    .filter(|key| key.starts_with("model:stress.") && key.ends_with(".pred"))
+                    .count();
+                if model_inputs != 6 {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "merge node received {model_inputs} model inputs, expected 6"
+                    )));
+                }
+            }
+            Ok(())
+        }
+
+        fn lineage_records(ctx: &RunContext) -> Vec<LineageRecord> {
+            ctx.lineage.records().cloned().collect::<Vec<_>>()
+        }
+
+        let plan = build_execution_plan(
+            "plan:parallel.stress",
+            parallel_stress_graph(),
+            parallel_stress_campaign(),
+            &parallel_stress_manifests(),
+        )
+        .unwrap();
+        let levels = plan.node_parallel_levels_for_phase(Phase::FitCv).unwrap();
+        assert_eq!(
+            levels.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![6, 6, 1]
+        );
+        assert_eq!(plan.variants.len(), 3);
+        assert_eq!(plan.fold_set.as_ref().unwrap().folds.len(), 3);
+
+        let sequential_active = Arc::new(AtomicUsize::new(0));
+        let sequential_max_active = Arc::new(AtomicUsize::new(0));
+        let sequential_invocations = Arc::new(Mutex::new(Vec::new()));
+        let sequential_controllers = stress_runtime_controllers(
+            Arc::clone(&sequential_active),
+            Arc::clone(&sequential_max_active),
+            Arc::clone(&sequential_invocations),
+            false,
+        );
+        let mut sequential_ctx =
+            RunContext::new(RunId::new("run:parallel.stress").unwrap(), Some(31));
+        let sequential_results = SequentialScheduler
+            .execute_campaign_phase(
+                &plan,
+                &sequential_controllers,
+                &mut sequential_ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+
+        let parallel_active = Arc::new(AtomicUsize::new(0));
+        let parallel_max_active = Arc::new(AtomicUsize::new(0));
+        let parallel_invocations = Arc::new(Mutex::new(Vec::new()));
+        let parallel_controllers = stress_runtime_controllers(
+            Arc::clone(&parallel_active),
+            Arc::clone(&parallel_max_active),
+            Arc::clone(&parallel_invocations),
+            true,
+        );
+        let mut parallel_ctx =
+            RunContext::new(RunId::new("run:parallel.stress").unwrap(), Some(31));
+        let parallel_results = ParallelScheduler::new(4)
+            .unwrap()
+            .execute_campaign_phase(
+                &plan,
+                &parallel_controllers,
+                &mut parallel_ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+
+        assert_eq!(sequential_results.len(), 117);
+        assert_eq!(parallel_results, sequential_results);
+        assert_eq!(
+            parallel_ctx.prediction_store.blocks(),
+            sequential_ctx.prediction_store.blocks()
+        );
+        assert_eq!(
+            lineage_records(&parallel_ctx),
+            lineage_records(&sequential_ctx)
+        );
+        assert_eq!(parallel_ctx.prediction_store.blocks().len(), 54);
+        assert_eq!(parallel_ctx.lineage.len(), 117);
+        assert_eq!(
+            parallel_results
+                .iter()
+                .filter_map(|result| result.lineage.seed)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            parallel_results.len()
+        );
+        assert_eq!(
+            parallel_invocations
+                .lock()
+                .unwrap()
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            sequential_invocations
+                .lock()
+                .unwrap()
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        );
+        let observed_parallelism = parallel_max_active.load(Ordering::SeqCst);
+        assert!((2..=4).contains(&observed_parallelism));
+        assert_eq!(parallel_active.load(Ordering::SeqCst), 0);
+        assert_eq!(sequential_max_active.load(Ordering::SeqCst), 1);
     }
 
     #[test]
