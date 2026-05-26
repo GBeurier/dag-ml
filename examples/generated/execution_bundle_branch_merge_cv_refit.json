@@ -20,7 +20,8 @@
       "params_fingerprint": "5f3bf651255bd175f356b47f47342573d6a3e617f87b37d4b6f35f3b33ddcf9b",
       "data_requirement_keys": [
         "branch:b0.model:ridge.x"
-      ]
+      ],
+      "prediction_requirement_keys": []
     },
     {
       "node_id": "branch:b1.model:rf",
@@ -34,7 +35,8 @@
       "params_fingerprint": "693cb21e8c02f513121138dddbe13a5577fb308cb63c74dcb05ff5928b99b989",
       "data_requirement_keys": [
         "branch:b1.model:rf.x"
-      ]
+      ],
+      "prediction_requirement_keys": []
     },
     {
       "node_id": "merge:stack.pred_plus_original.meta:ridge",
@@ -48,6 +50,54 @@
       "params_fingerprint": "79422a3be0aaab9e972b5297e644fdc60ea435bab8c7788b9b71cae7ed6a9c98",
       "data_requirement_keys": [
         "merge:stack.pred_plus_original.meta:ridge.x_original"
+      ],
+      "prediction_requirement_keys": [
+        "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
+        "branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof"
+      ]
+    }
+  ],
+  "prediction_requirements": [
+    {
+      "producer_node": "branch:b0.model:ridge",
+      "source_port": "oof",
+      "consumer_node": "merge:stack.pred_plus_original.meta:ridge",
+      "target_port": "b0_oof",
+      "partition": "validation",
+      "fold_ids": [
+        "fold:0",
+        "fold:1"
+      ],
+      "sample_ids": [
+        "sample:1",
+        "sample:2",
+        "sample:3",
+        "sample:4"
+      ],
+      "prediction_width": 1,
+      "target_names": [
+        "y"
+      ]
+    },
+    {
+      "producer_node": "branch:b1.model:rf",
+      "source_port": "oof",
+      "consumer_node": "merge:stack.pred_plus_original.meta:ridge",
+      "target_port": "b1_oof",
+      "partition": "validation",
+      "fold_ids": [
+        "fold:0",
+        "fold:1"
+      ],
+      "sample_ids": [
+        "sample:1",
+        "sample:2",
+        "sample:3",
+        "sample:4"
+      ],
+      "prediction_width": 1,
+      "target_names": [
+        "y"
       ]
     }
   ],

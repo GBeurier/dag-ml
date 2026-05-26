@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::data::ExternalDataPlanEnvelope;
 use crate::error::{DagMlError, Result};
-use crate::ids::{BundleId, ControllerId, NodeId, VariantId};
+use crate::ids::{BundleId, ControllerId, FoldId, NodeId, SampleId, VariantId};
+use crate::oof::PredictionPartition;
 use crate::phase::Phase;
 use crate::plan::ExecutionPlan;
 use crate::runtime::ArtifactRef;
@@ -65,6 +66,75 @@ impl BundleDataRequirement {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BundlePredictionRequirement {
+    pub producer_node: NodeId,
+    pub source_port: String,
+    pub consumer_node: NodeId,
+    pub target_port: String,
+    pub partition: PredictionPartition,
+    #[serde(default)]
+    pub fold_ids: Vec<FoldId>,
+    pub sample_ids: Vec<SampleId>,
+    pub prediction_width: usize,
+    pub target_names: Vec<String>,
+}
+
+impl BundlePredictionRequirement {
+    pub fn key(&self) -> String {
+        bundle_prediction_requirement_key(
+            &self.producer_node,
+            &self.source_port,
+            &self.consumer_node,
+            &self.target_port,
+        )
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_non_empty("source_port", &self.source_port)?;
+        validate_non_empty("target_port", &self.target_port)?;
+        if self.partition != PredictionPartition::Validation {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle prediction requirement `{}` must use validation OOF predictions",
+                self.key()
+            )));
+        }
+        validate_unique_ids("fold id", &self.fold_ids)?;
+        validate_unique_ids("sample id", &self.sample_ids)?;
+        if self.sample_ids.is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle prediction requirement `{}` has no sample ids",
+                self.key()
+            )));
+        }
+        if self.prediction_width == 0 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle prediction requirement `{}` has zero prediction width",
+                self.key()
+            )));
+        }
+        if self.target_names.len() != self.prediction_width {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle prediction requirement `{}` target name count does not match prediction width",
+                self.key()
+            )));
+        }
+        for target_name in &self.target_names {
+            validate_non_empty("target_name", target_name)?;
+        }
+        Ok(())
+    }
+}
+
+pub fn bundle_prediction_requirement_key(
+    producer_node: &NodeId,
+    source_port: &str,
+    consumer_node: &NodeId,
+    target_port: &str,
+) -> String {
+    format!("{producer_node}.{source_port}->{consumer_node}.{target_port}")
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RefitArtifactRecord {
     pub node_id: NodeId,
     pub controller_id: ControllerId,
@@ -72,6 +142,8 @@ pub struct RefitArtifactRecord {
     pub params_fingerprint: String,
     #[serde(default)]
     pub data_requirement_keys: Vec<String>,
+    #[serde(default)]
+    pub prediction_requirement_keys: Vec<String>,
 }
 
 impl RefitArtifactRecord {
@@ -110,6 +182,21 @@ impl RefitArtifactRecord {
                 )));
             }
         }
+        let mut seen_prediction_keys = BTreeSet::new();
+        for key in &self.prediction_requirement_keys {
+            if key.trim().is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "refit artifact `{}` has empty prediction requirement key",
+                    self.artifact.id
+                )));
+            }
+            if !seen_prediction_keys.insert(key.as_str()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "refit artifact `{}` has duplicate prediction requirement key `{key}`",
+                    self.artifact.id
+                )));
+            }
+        }
         Ok(())
     }
 }
@@ -129,6 +216,8 @@ pub struct ExecutionBundle {
     pub selections: BTreeMap<String, SelectionDecision>,
     #[serde(default)]
     pub refit_artifacts: Vec<RefitArtifactRecord>,
+    #[serde(default)]
+    pub prediction_requirements: Vec<BundlePredictionRequirement>,
     #[serde(default)]
     pub data_requirements: Vec<BundleDataRequirement>,
     #[serde(default)]
@@ -174,12 +263,31 @@ impl ExecutionBundle {
                 )));
             }
         }
+        let mut prediction_keys = BTreeSet::new();
+        for requirement in &self.prediction_requirements {
+            requirement.validate()?;
+            if !prediction_keys.insert(requirement.key()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` has duplicate prediction requirement `{}`",
+                    self.bundle_id,
+                    requirement.key()
+                )));
+            }
+        }
         for artifact in &self.refit_artifacts {
             artifact.validate()?;
             for key in &artifact.data_requirement_keys {
                 if !data_keys.contains(key) {
                     return Err(DagMlError::RuntimeValidation(format!(
                         "refit artifact `{}` references unknown data requirement `{key}`",
+                        artifact.artifact.id
+                    )));
+                }
+            }
+            for key in &artifact.prediction_requirement_keys {
+                if !prediction_keys.contains(key) {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "refit artifact `{}` references unknown prediction requirement `{key}`",
                         artifact.artifact.id
                     )));
                 }
@@ -253,6 +361,22 @@ impl ExecutionBundle {
                 )));
             }
         }
+        for requirement in &self.prediction_requirements {
+            let edge_exists = plan.graph_plan.graph.edges.iter().any(|edge| {
+                edge.source.node_id == requirement.producer_node
+                    && edge.source.port_name == requirement.source_port
+                    && edge.target.node_id == requirement.consumer_node
+                    && edge.target.port_name == requirement.target_port
+                    && edge.contract.requires_oof
+            });
+            if !edge_exists {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` prediction requirement `{}` does not match an OOF edge in the plan",
+                    self.bundle_id,
+                    requirement.key()
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -289,6 +413,24 @@ pub fn build_execution_bundle(
     selections: BTreeMap<String, SelectionDecision>,
     refit_artifacts: Vec<RefitArtifactRecord>,
 ) -> Result<ExecutionBundle> {
+    build_execution_bundle_with_prediction_requirements(
+        bundle_id,
+        plan,
+        selected_variant_id,
+        selections,
+        refit_artifacts,
+        Vec::new(),
+    )
+}
+
+pub fn build_execution_bundle_with_prediction_requirements(
+    bundle_id: BundleId,
+    plan: &ExecutionPlan,
+    selected_variant_id: Option<VariantId>,
+    selections: BTreeMap<String, SelectionDecision>,
+    refit_artifacts: Vec<RefitArtifactRecord>,
+    prediction_requirements: Vec<BundlePredictionRequirement>,
+) -> Result<ExecutionBundle> {
     plan.validate()?;
     let bundle = ExecutionBundle {
         bundle_id,
@@ -300,6 +442,7 @@ pub fn build_execution_bundle(
         selected_variant_id,
         selections,
         refit_artifacts,
+        prediction_requirements,
         data_requirements: collect_data_requirements(plan)?,
         unsafe_flags: BTreeSet::new(),
         metadata: BTreeMap::new(),
@@ -335,6 +478,29 @@ fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
         return Err(DagMlError::RuntimeValidation(format!(
             "{label} fingerprint must be a 64-character hex digest"
         )));
+    }
+    Ok(())
+}
+
+fn validate_non_empty(label: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!("{label} is empty")));
+    }
+    Ok(())
+}
+
+fn validate_unique_ids<T>(label: &str, values: &[T]) -> Result<()>
+where
+    T: Ord + ToString,
+{
+    let mut seen = BTreeSet::new();
+    for value in values {
+        if !seen.insert(value) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "duplicate {label} `{}`",
+                value.to_string()
+            )));
+        }
     }
     Ok(())
 }
@@ -402,7 +568,7 @@ mod tests {
     use super::*;
     use crate::controller::{ControllerManifest, ControllerRegistry};
     use crate::graph::GraphSpec;
-    use crate::ids::ArtifactId;
+    use crate::ids::{ArtifactId, FoldId, SampleId};
     use crate::plan::{build_execution_plan, CampaignSpec};
     use crate::selection::{
         select_candidate, CandidateScore, MetricObjective, SelectionMetric, SelectionPolicy,
@@ -423,6 +589,25 @@ mod tests {
             registry.register(manifest).unwrap();
         }
         build_execution_plan("plan:bundle", graph, campaign, &registry).unwrap()
+    }
+
+    fn branch_merge_plan() -> ExecutionPlan {
+        let graph: GraphSpec = serde_json::from_str(include_str!(
+            "../../../examples/branch_merge_oof_graph.json"
+        ))
+        .unwrap();
+        let campaign: CampaignSpec = serde_json::from_str(include_str!(
+            "../../../examples/campaign_branch_merge_oof.json"
+        ))
+        .unwrap();
+        let manifests: Vec<ControllerManifest> =
+            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
+                .unwrap();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        build_execution_plan("plan:branch.merge.bundle", graph, campaign, &registry).unwrap()
     }
 
     fn decision() -> SelectionDecision {
@@ -469,6 +654,7 @@ mod tests {
             },
             params_fingerprint: model_plan.params_fingerprint.clone(),
             data_requirement_keys: vec!["model:base.x".to_string()],
+            prediction_requirement_keys: Vec::new(),
         };
 
         let bundle = build_execution_bundle(
@@ -482,6 +668,76 @@ mod tests {
 
         bundle.validate_against_plan(&plan).unwrap();
         assert_eq!(bundle.data_requirements.len(), 1);
+    }
+
+    #[test]
+    fn prediction_requirements_are_typed_and_validate_against_oof_edges() {
+        let plan = branch_merge_plan();
+        let meta_plan = plan
+            .node_plans
+            .get(&NodeId::new("merge:stack.pred_plus_original.meta:ridge").unwrap())
+            .unwrap();
+        let requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("branch:b0.model:ridge").unwrap(),
+            source_port: "oof".to_string(),
+            consumer_node: meta_plan.node_id.clone(),
+            target_port: "b0_oof".to_string(),
+            partition: PredictionPartition::Validation,
+            fold_ids: vec![
+                FoldId::new("fold:0").unwrap(),
+                FoldId::new("fold:1").unwrap(),
+            ],
+            sample_ids: vec![
+                SampleId::new("sample:1").unwrap(),
+                SampleId::new("sample:2").unwrap(),
+                SampleId::new("sample:3").unwrap(),
+                SampleId::new("sample:4").unwrap(),
+            ],
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let prediction_key = requirement.key();
+        let artifact = RefitArtifactRecord {
+            node_id: meta_plan.node_id.clone(),
+            controller_id: meta_plan.controller_id.clone(),
+            artifact: ArtifactRef {
+                id: ArtifactId::new("artifact:merge:stack.pred_plus_original.meta:ridge:refit")
+                    .unwrap(),
+                kind: "mock_model".to_string(),
+                controller_id: meta_plan.controller_id.clone(),
+                size_bytes: Some(128),
+            },
+            params_fingerprint: meta_plan.params_fingerprint.clone(),
+            data_requirement_keys: vec![
+                "merge:stack.pred_plus_original.meta:ridge.x_original".to_string()
+            ],
+            prediction_requirement_keys: vec![prediction_key],
+        };
+
+        assert!(build_execution_bundle(
+            BundleId::new("bundle:missing.prediction.requirement").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            vec![artifact.clone()],
+        )
+        .is_err());
+
+        let bundle = build_execution_bundle_with_prediction_requirements(
+            BundleId::new("bundle:typed.prediction.requirement").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            vec![artifact],
+            vec![requirement],
+        )
+        .unwrap();
+        bundle.validate_against_plan(&plan).unwrap();
+        assert_eq!(bundle.prediction_requirements.len(), 1);
+        assert_eq!(
+            bundle.refit_artifacts[0].prediction_requirement_keys,
+            vec!["branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof"]
+        );
     }
 
     #[test]

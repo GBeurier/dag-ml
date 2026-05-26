@@ -397,6 +397,14 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_cv_refit_bundle_json.contains("artifact:branch:b1.model:rf:refit")
             && branch_merge_cv_refit_bundle_json
                 .contains("artifact:merge:stack.pred_plus_original.meta:ridge:refit")
+            && branch_merge_cv_refit_bundle_json.contains("prediction_requirements")
+            && branch_merge_cv_refit_bundle_json.contains("prediction_requirement_keys")
+            && branch_merge_cv_refit_bundle_json.contains(
+                "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof"
+            )
+            && branch_merge_cv_refit_bundle_json.contains(
+                "branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof"
+            )
             && branch_merge_cv_refit_bundle_json.contains("fit_cv_result_count")
             && branch_merge_cv_refit_bundle_json.contains("fit_cv_oof_prediction_block_count")
             && branch_merge_cv_refit_bundle_json.contains("oof_prediction_summary")
