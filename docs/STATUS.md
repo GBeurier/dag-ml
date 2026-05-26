@@ -67,7 +67,8 @@ Implemented:
 - C ABI validation and JSON output helpers for graph, selection decisions,
   grouped selection, execution bundles, replay envelopes and replay requests;
 - C ABI data-provider vtable shape aligned with `dag-ml-data`
-  identity/target/feature Arrow exports;
+  materialize/view/identity/target/feature exports plus a tested Rust runtime
+  adapter over the vtable;
 - C ABI mock replay execution helper that exercises execution-plan, bundle,
   replay request, data envelope and refit artifact handle materialization and
   returns a JSON summary including data view counts;
