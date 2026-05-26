@@ -1296,7 +1296,10 @@ fn process_adapters_describe_supported_protocol_modes() {
                 && stdout.contains("\"jsonl\"")
                 && stdout.contains("\"control_frames_v1\"")
                 && stdout.contains("\"node_task_json_v1\"")
-                && stdout.contains("\"node_result_json_v1\""),
+                && stdout.contains("\"node_result_json_v1\"")
+                && stdout.contains("\"parallel_invocation_v1\"")
+                && stdout.contains("\"persistent_workers\"")
+                && stdout.contains("\"worker_env\""),
             "unexpected adapter `{adapter}` describe output: {}",
             stdout
         );

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, Result};
-use crate::graph::{NodeKind, NodeSpec, PortSpec};
+use crate::graph::{NodeKind, NodeSpec, PortKind, PortSpec};
 use crate::ids::ControllerId;
 use crate::phase::Phase;
 
@@ -15,6 +15,9 @@ pub enum ControllerCapability {
     ProcessSafe,
     NeedsPythonGil,
     EmitsPredictions,
+    ConsumesOofPredictions,
+    EmitsArtifacts,
+    Stateful,
     EmitsRelation,
     UsesCoreRng,
     ShapeChanging,
@@ -98,11 +101,65 @@ impl ControllerManifest {
                 self.controller_id
             )));
         }
+        if self.fit_scope == ControllerFitScope::InferenceOnly
+            && (self.supported_phases.contains(&Phase::FitCv)
+                || self.supported_phases.contains(&Phase::Refit))
+        {
+            return Err(DagMlError::ControllerValidation(format!(
+                "controller `{}` is inference_only but supports training phases",
+                self.controller_id
+            )));
+        }
+        if self.supported_phases.contains(&Phase::FitCv)
+            && matches!(
+                self.fit_scope,
+                ControllerFitScope::FullTrain | ControllerFitScope::InferenceOnly
+            )
+        {
+            return Err(DagMlError::ControllerValidation(format!(
+                "controller `{}` supports FIT_CV but has fit_scope {:?}",
+                self.controller_id, self.fit_scope
+            )));
+        }
+        if self
+            .output_ports
+            .iter()
+            .any(|port| port.kind == PortKind::Prediction)
+            && !self
+                .capabilities
+                .contains(&ControllerCapability::EmitsPredictions)
+        {
+            return Err(DagMlError::ControllerValidation(format!(
+                "controller `{}` has prediction output ports but lacks emits_predictions",
+                self.controller_id
+            )));
+        }
+        if self
+            .output_ports
+            .iter()
+            .any(|port| port.kind == PortKind::Artifact)
+            && !self
+                .capabilities
+                .contains(&ControllerCapability::EmitsArtifacts)
+        {
+            return Err(DagMlError::ControllerValidation(format!(
+                "controller `{}` has artifact output ports but lacks emits_artifacts",
+                self.controller_id
+            )));
+        }
         Ok(())
     }
 
     pub fn supports_phase(&self, phase: Phase) -> bool {
         self.supported_phases.contains(&phase)
+    }
+
+    pub fn supports_parallel_invocation(&self) -> bool {
+        self.capabilities
+            .contains(&ControllerCapability::ThreadSafe)
+            || self
+                .capabilities
+                .contains(&ControllerCapability::ProcessSafe)
     }
 }
 
@@ -224,7 +281,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::graph::{NodeSpec, PortSchema};
+    use crate::graph::{NodeSpec, PortCardinality, PortSchema};
     use crate::ids::NodeId;
 
     fn manifest(id: &str, kind: NodeKind, priority: u32) -> ControllerManifest {
@@ -300,5 +357,41 @@ mod tests {
             .unwrap();
 
         assert!(registry.resolve_for_node(&node(NodeKind::Model)).is_err());
+    }
+
+    #[test]
+    fn manifest_rejects_prediction_output_without_capability() {
+        let mut manifest = manifest("controller:predictor", NodeKind::Model, 0);
+        manifest.output_ports.push(PortSpec {
+            name: "pred".to_string(),
+            kind: PortKind::Prediction,
+            representation: None,
+            cardinality: PortCardinality::One,
+            description: String::new(),
+        });
+
+        let error = manifest.validate().unwrap_err().to_string();
+
+        assert!(error.contains("lacks emits_predictions"));
+    }
+
+    #[test]
+    fn manifest_rejects_training_phases_for_inference_only_controller() {
+        let mut manifest = manifest("controller:predict-only", NodeKind::Model, 0);
+        manifest.fit_scope = ControllerFitScope::InferenceOnly;
+
+        let error = manifest.validate().unwrap_err().to_string();
+
+        assert!(error.contains("inference_only"));
+    }
+
+    #[test]
+    fn manifest_reports_parallel_invocation_support() {
+        let mut manifest = manifest("controller:parallel", NodeKind::Model, 0);
+        assert!(!manifest.supports_parallel_invocation());
+        manifest
+            .capabilities
+            .insert(ControllerCapability::ProcessSafe);
+        assert!(manifest.supports_parallel_invocation());
     }
 }

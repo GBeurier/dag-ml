@@ -16,6 +16,7 @@ PROCESS_ADAPTER_CAPABILITIES = [
     "control_frames_v1",
     "node_task_json_v1",
     "node_result_json_v1",
+    "parallel_invocation_v1",
     "persistent_workers",
     "worker_env",
     "stateful_refit_artifacts",

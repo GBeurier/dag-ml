@@ -4,7 +4,7 @@
   "plan_id": "plan:generated.branch.merge.cv.refit",
   "graph_fingerprint": "0a6253653e9edf0375d279026f22d1b0c0e389f367d8a9ad1fc84cf4c809f59b",
   "campaign_fingerprint": "d35b2864593b601569b0bddd45b3115515e907b3d2085cc2c3e25d2cc79162f4",
-  "controller_fingerprint": "2a229d039415856f2c61e7c5efe0369f385f15bbd2c432f26bc5eb20bbfb7fb5",
+  "controller_fingerprint": "8673d2559e1f0f61897cb0ff00388bad59e5529ecda153e6073967928d8f1f1f",
   "selected_variant_id": "variant:base",
   "selections": {
     "branch:b0": {
