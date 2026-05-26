@@ -141,7 +141,8 @@ Implemented:
 - C ABI non-mock replay execution helper that composes host controller,
   data-provider, artifact-store and optional prediction-cache vtables while
   Rust owns bundle validation, replay envelope validation, DAG scheduling,
-  data-view construction and `NodeResult` conformance;
+  data-view construction and `NodeResult` conformance, with branch/merge
+  `REFIT` replay covered through a host OOF prediction-cache vtable;
 - C ABI mock replay execution helper that exercises execution-plan, bundle,
   replay request, data envelope and refit artifact handle materialization and
   returns a JSON summary including data view counts;

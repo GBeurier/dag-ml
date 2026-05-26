@@ -1920,9 +1920,12 @@ mod tests {
     #[derive(Default)]
     struct PredictionCacheStub {
         load_key: Vec<u8>,
+        load_keys: Vec<String>,
         blocks_json: Vec<u8>,
+        blocks_by_key: BTreeMap<String, Vec<u8>>,
         release_count: usize,
         materialize_json: Vec<u8>,
+        materialize_count: usize,
     }
 
     unsafe extern "C" fn materialize_stub(
@@ -2151,7 +2154,13 @@ mod tests {
         }
         let state = &mut *(user_data.cast::<PredictionCacheStub>());
         state.load_key = slice::from_raw_parts(requirement_key.ptr, requirement_key.len).to_vec();
-        let mut data = state.blocks_json.clone();
+        let key = String::from_utf8_lossy(&state.load_key).to_string();
+        state.load_keys.push(key.clone());
+        let mut data = state
+            .blocks_by_key
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| state.blocks_json.clone());
         *out_json = DagMlOwnedBytes {
             ptr: data.as_mut_ptr(),
             len: data.len(),
@@ -2204,6 +2213,7 @@ mod tests {
         }
         let state = &mut *(user_data.cast::<PredictionCacheStub>());
         state.materialize_json = slice::from_raw_parts(request_json.ptr, request_json.len).to_vec();
+        state.materialize_count += 1;
         *out_handle = 77;
         DagMlStatusCode::OK
     }
@@ -2975,6 +2985,144 @@ mod tests {
     }
 
     #[test]
+    fn executes_vtable_refit_replay_with_prediction_cache_over_abi() {
+        let plan = fixture_branch_merge_plan_json();
+        let bundle = include_bytes!(
+            "../../../examples/generated/execution_bundle_branch_merge_cv_refit.json"
+        );
+        let request = include_bytes!(
+            "../../../examples/fixtures/bundle/replay_request_branch_merge_refit.json"
+        );
+        let envelope =
+            include_str!("../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json");
+        let envelopes = format!(
+            r#"{{
+                "branch:b0.model:ridge.x":{envelope},
+                "branch:b1.model:rf.x":{envelope},
+                "merge:stack.pred_plus_original.meta:ridge.x_original":{envelope}
+            }}"#
+        );
+        let payloads: BundlePredictionCachePayloadSet = serde_json::from_slice(include_bytes!(
+            "../../../examples/generated/prediction_cache_branch_merge_cv_refit.json"
+        ))
+        .unwrap();
+        let mut blocks_by_key = BTreeMap::new();
+        for payload in payloads.caches {
+            blocks_by_key.insert(
+                payload.requirement_key.clone(),
+                serde_json::to_vec(&payload.blocks).unwrap(),
+            );
+        }
+        let mut prediction_cache_state = PredictionCacheStub {
+            blocks_by_key,
+            ..Default::default()
+        };
+        let prediction_cache = DagMlPredictionCacheVTable {
+            abi_version: 1,
+            user_data: (&mut prediction_cache_state as *mut PredictionCacheStub).cast::<c_void>(),
+            load_blocks: Some(prediction_cache_load_blocks_stub),
+            materialize: Some(prediction_cache_materialize_stub),
+            release_bytes: Some(prediction_cache_release_bytes_stub),
+            release: None,
+            destroy: None,
+        };
+        let mut data_state = DataProviderStub::default();
+        let data_provider = DagMlDataVTable {
+            abi_version: 2,
+            user_data: (&mut data_state as *mut DataProviderStub).cast::<c_void>(),
+            materialize: Some(materialize_stub),
+            make_view: Some(make_view_stub),
+            view_identity: None,
+            target_arrow: None,
+            feature_arrow: None,
+            release: None,
+            destroy: None,
+        };
+        let mut artifact_state = ArtifactStoreStub {
+            handle: DagMlHandleRef {
+                handle: 701,
+                kind: DAG_ML_HANDLE_KIND_MODEL,
+            },
+            ..Default::default()
+        };
+        let artifact_store = DagMlArtifactStoreVTable {
+            abi_version: 1,
+            user_data: (&mut artifact_state as *mut ArtifactStoreStub).cast::<c_void>(),
+            materialize: Some(artifact_store_materialize_stub),
+            release: None,
+            destroy: None,
+        };
+        let mut model_state = ControllerStub::default();
+        let model_controller_id = b"controller:model.mock";
+        let bindings = [DagMlControllerBinding {
+            controller_id: bytes_view(model_controller_id),
+            vtable: DagMlControllerVTable {
+                abi_version: 2,
+                user_data: (&mut model_state as *mut ControllerStub).cast::<c_void>(),
+                clone_with: None,
+                describe: None,
+                fit: None,
+                predict: None,
+                invoke: Some(replay_controller_invoke_stub),
+                release_bytes: Some(controller_release_bytes_stub),
+                release: None,
+                destroy: None,
+            },
+        }];
+        let data_owner = b"controller:data.provider";
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_replay_execute_json(
+                plan.as_ptr(),
+                plan.len(),
+                bundle.as_ptr(),
+                bundle.len(),
+                request.as_ptr(),
+                request.len(),
+                envelopes.as_ptr(),
+                envelopes.len(),
+                bytes_view(data_owner),
+                7,
+                data_provider,
+                artifact_store,
+                &prediction_cache,
+                bindings.as_ptr(),
+                bindings.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK);
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let summary: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(
+            summary["bundle_id"],
+            "bundle:generated.branch.merge.cv.refit"
+        );
+        assert_eq!(summary["phase"], "REFIT");
+        assert_eq!(summary["result_count"], 3);
+        assert_eq!(summary["prediction_cache_store"], true);
+        assert_eq!(prediction_cache_state.load_keys.len(), 2);
+        assert_eq!(prediction_cache_state.materialize_count, 2);
+        assert_eq!(prediction_cache_state.release_count, 2);
+        assert_eq!(
+            model_state.task_node_ids,
+            vec![
+                "branch:b0.model:ridge".to_string(),
+                "branch:b1.model:rf".to_string(),
+                "merge:stack.pred_plus_original.meta:ridge".to_string()
+            ]
+        );
+        assert_eq!(model_state.release_count, 3);
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
     fn invalid_bundle_returns_error_string() {
         let invalid = br#"{"bundle_id":"bundle:bad"}"#;
         let mut error = DagMlString::default();
@@ -3018,6 +3166,32 @@ mod tests {
             registry.register(manifest).unwrap();
         }
         let plan = build_execution_plan("plan:cli.bundle", graph, campaign, &registry).unwrap();
+        serde_json::to_vec(&plan).unwrap()
+    }
+
+    fn fixture_branch_merge_plan_json() -> Vec<u8> {
+        let graph: GraphSpec = serde_json::from_str(include_str!(
+            "../../../examples/branch_merge_oof_graph.json"
+        ))
+        .unwrap();
+        let campaign: CampaignSpec = serde_json::from_str(include_str!(
+            "../../../examples/campaign_branch_merge_oof.json"
+        ))
+        .unwrap();
+        let manifests: Vec<ControllerManifest> =
+            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
+                .unwrap();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        let plan = build_execution_plan(
+            "plan:generated.branch.merge.cv.refit",
+            graph,
+            campaign,
+            &registry,
+        )
+        .unwrap();
         serde_json::to_vec(&plan).unwrap()
     }
 }
