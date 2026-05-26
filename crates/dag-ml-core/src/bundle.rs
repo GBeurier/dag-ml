@@ -252,44 +252,62 @@ impl ExecutionBundle {
             }
             decision.validate()?;
         }
-        let mut data_keys = BTreeSet::new();
+        let mut data_keys = BTreeMap::new();
         for requirement in &self.data_requirements {
             requirement.validate()?;
-            if !data_keys.insert(requirement.key()) {
+            let key = requirement.key();
+            if data_keys.insert(key.clone(), requirement).is_some() {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "bundle `{}` has duplicate data requirement `{}`",
-                    self.bundle_id,
-                    requirement.key()
+                    self.bundle_id, key
                 )));
             }
         }
-        let mut prediction_keys = BTreeSet::new();
+        let mut prediction_keys = BTreeMap::new();
         for requirement in &self.prediction_requirements {
             requirement.validate()?;
-            if !prediction_keys.insert(requirement.key()) {
+            let key = requirement.key();
+            if prediction_keys.insert(key.clone(), requirement).is_some() {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "bundle `{}` has duplicate prediction requirement `{}`",
-                    self.bundle_id,
-                    requirement.key()
+                    self.bundle_id, key
                 )));
             }
         }
         for artifact in &self.refit_artifacts {
             artifact.validate()?;
             for key in &artifact.data_requirement_keys {
-                if !data_keys.contains(key) {
-                    return Err(DagMlError::RuntimeValidation(format!(
-                        "refit artifact `{}` references unknown data requirement `{key}`",
-                        artifact.artifact.id
-                    )));
+                match data_keys.get(key) {
+                    Some(requirement) if requirement.node_id == artifact.node_id => {}
+                    Some(requirement) => {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "refit artifact `{}` for `{}` references data requirement `{key}` owned by `{}`",
+                            artifact.artifact.id, artifact.node_id, requirement.node_id
+                        )));
+                    }
+                    None => {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "refit artifact `{}` references unknown data requirement `{key}`",
+                            artifact.artifact.id
+                        )));
+                    }
                 }
             }
             for key in &artifact.prediction_requirement_keys {
-                if !prediction_keys.contains(key) {
-                    return Err(DagMlError::RuntimeValidation(format!(
-                        "refit artifact `{}` references unknown prediction requirement `{key}`",
-                        artifact.artifact.id
-                    )));
+                match prediction_keys.get(key) {
+                    Some(requirement) if requirement.consumer_node == artifact.node_id => {}
+                    Some(requirement) => {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "refit artifact `{}` for `{}` references prediction requirement `{key}` consumed by `{}`",
+                            artifact.artifact.id, artifact.node_id, requirement.consumer_node
+                        )));
+                    }
+                    None => {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "refit artifact `{}` references unknown prediction requirement `{key}`",
+                            artifact.artifact.id
+                        )));
+                    }
                 }
             }
         }
@@ -738,6 +756,19 @@ mod tests {
             bundle.refit_artifacts[0].prediction_requirement_keys,
             vec!["branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof"]
         );
+
+        let mut wrong_data_owner = bundle.clone();
+        wrong_data_owner.refit_artifacts[0].data_requirement_keys =
+            vec!["branch:b0.model:ridge.x".to_string()];
+        assert!(wrong_data_owner.validate().is_err());
+
+        let mut wrong_prediction_consumer = bundle;
+        wrong_prediction_consumer.refit_artifacts[0].node_id =
+            NodeId::new("branch:b0.model:ridge").unwrap();
+        wrong_prediction_consumer.refit_artifacts[0]
+            .data_requirement_keys
+            .clear();
+        assert!(wrong_prediction_consumer.validate().is_err());
     }
 
     #[test]
