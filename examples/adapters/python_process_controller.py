@@ -36,8 +36,8 @@ def require_data_handles(task: dict[str, Any]) -> None:
         handle = input_handles.get(key)
         if handle is None:
             fail(f"node `{node_plan['node_id']}` did not receive data handle `{key}`")
-        if handle.get("kind") != "data":
-            fail(f"node `{node_plan['node_id']}` received non-data handle `{key}`")
+        if handle.get("kind") not in {"data", "data_view"}:
+            fail(f"node `{node_plan['node_id']}` received non-data/data-view handle `{key}`")
 
 
 def require_replay_artifact(task: dict[str, Any]) -> None:

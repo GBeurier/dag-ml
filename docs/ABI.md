@@ -14,7 +14,8 @@ the host owns the underlying object behind each handle.
 - execution bundle validation, replay-envelope validation and replay-request
   validation helpers;
 - mock replay execution helper that returns a JSON summary while exercising
-  Rust-side data and artifact handle materialization;
+  Rust-side data handle materialization, data view creation and artifact handle
+  materialization;
 - Arrow C Data `ArrowArray` and `ArrowSchema` structs for controller
   predictions and data-provider identity/target/feature exports;
 - `DagMlControllerVTable` for host operator controllers;

@@ -26,10 +26,11 @@ Implemented:
   including explicit feature-set ids for provider `feature_arrow` calls;
 - external data-plan envelope validation by schema, plan and relation
   fingerprints;
-- runtime data-provider trait and materialization requests that turn data
-  bindings into opaque task handles;
+- runtime data-provider trait with materialization plus fold/refit/predict view
+  requests that turn data bindings into scoped opaque task handles;
 - in-memory runtime data provider with handle records for schema/plan/relation
-  traceability;
+  traceability and child data-view records for sample partition, source and
+  feature-set traceability;
 - runtime artifact-store trait plus in-memory refit artifact handle records;
 - bundle replay executor that validates plan/bundle/request/data envelopes,
   materializes data and refit artifact handles, and invokes eligible runtime
@@ -50,12 +51,12 @@ Implemented:
 - CLI execution-plan validation from graph/campaign/controller JSON fixtures;
 - CLI data-binding validation against a coordinator data-plan envelope;
 - CLI mock campaign execution through controller manifests, data bindings,
-  in-memory data provider and mock runtime controllers;
+  in-memory data provider, fold-aware data views and mock runtime controllers;
 - CLI selection, bundle build and bundle replay validation commands with
   fixture-backed integration tests;
 - CLI mock replay execution through execution bundles, data envelopes,
-  in-memory data provider, in-memory artifact store and mock runtime
-  controllers;
+  in-memory data provider, predict-scoped data views, in-memory artifact store
+  and mock runtime controllers;
 - CLI process campaign and replay execution that sends `NodeTask` JSON to an
   external adapter process over stdin, reads `NodeResult` JSON from stdout and
   validates the result through the scheduler;
@@ -69,7 +70,7 @@ Implemented:
   identity/target/feature Arrow exports;
 - C ABI mock replay execution helper that exercises execution-plan, bundle,
   replay request, data envelope and refit artifact handle materialization and
-  returns a JSON summary;
+  returns a JSON summary including data view counts;
 - standalone sklearn complex OOF demonstrator with repeated observations,
   group-aware splits, train-only augmentation, branch model variants,
   heterogeneous prediction+raw-data merge variants, OOF-based selection and

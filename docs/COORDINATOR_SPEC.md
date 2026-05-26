@@ -145,6 +145,15 @@ a coordinator envelope containing these fingerprints plus coordinator relation
 records; `dag-ml` validates that an execution campaign binds to the exact
 envelope before a controller receives any handle.
 
+At execution time, the scheduler does not give the controller the raw
+materialized data handle directly. It asks the data provider for a scoped view
+derived from the active phase and `DataViewPolicy`: fold-train views carry the
+fold training sample ids, fold-validation views carry the validation sample ids,
+refit/full-train views carry the full training sample ids, and replay predict
+views are marked as predict partitions. The handle visible in `TaskRequest` is
+the scoped data-view handle; the parent handle remains traceability state owned
+by the provider.
+
 Controller outputs:
 
 - opaque data/model/artifact handles;
@@ -538,6 +547,7 @@ Before dispatch, the Rust core checks:
 - required ports exist;
 - phase is allowed by controller manifest;
 - data plan fingerprint matches;
+- requested data views match the active phase, fold id and partition;
 - view sample ids are in the active fold/partition;
 - leakage unit membership is compatible with the active fold;
 - task data/model shape plan matches the phase and controller manifest;

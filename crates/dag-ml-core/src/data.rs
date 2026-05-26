@@ -7,7 +7,10 @@ use crate::error::{DagMlError, Result};
 use crate::ids::{ControllerId, FoldId, NodeId, RunId, VariantId};
 use crate::phase::Phase;
 use crate::relation::SampleRelationSet;
-use crate::runtime::{DataMaterializationRequest, HandleKind, HandleRef, RuntimeDataProvider};
+use crate::runtime::{
+    DataMaterializationRequest, DataProviderViewSpec, DataViewRequest, HandleKind, HandleRef,
+    RuntimeDataProvider,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -247,12 +250,28 @@ pub struct DataHandleRecord {
     pub relation_record_count: Option<usize>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DataViewHandleRecord {
+    pub handle: HandleRef,
+    pub parent_handle: HandleRef,
+    pub run_id: RunId,
+    pub node_id: NodeId,
+    pub input_name: String,
+    pub phase: Phase,
+    pub variant_id: Option<VariantId>,
+    pub fold_id: Option<FoldId>,
+    pub request_id: String,
+    pub feature_set_id: String,
+    pub view: DataProviderViewSpec,
+}
+
 #[derive(Debug)]
 pub struct InMemoryDataProvider {
     owner_controller: ControllerId,
     envelopes: BTreeMap<DataEnvelopeKey, ExternalDataPlanEnvelope>,
     next_handle: RefCell<u64>,
     records: RefCell<BTreeMap<u64, DataHandleRecord>>,
+    view_records: RefCell<BTreeMap<u64, DataViewHandleRecord>>,
 }
 
 impl InMemoryDataProvider {
@@ -262,6 +281,7 @@ impl InMemoryDataProvider {
             envelopes: BTreeMap::new(),
             next_handle: RefCell::new(1),
             records: RefCell::new(BTreeMap::new()),
+            view_records: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -291,6 +311,14 @@ impl InMemoryDataProvider {
 
     pub fn handle_records(&self) -> Vec<DataHandleRecord> {
         self.records.borrow().values().cloned().collect()
+    }
+
+    pub fn view_record(&self, handle: u64) -> Option<DataViewHandleRecord> {
+        self.view_records.borrow().get(&handle).cloned()
+    }
+
+    pub fn view_records(&self) -> Vec<DataViewHandleRecord> {
+        self.view_records.borrow().values().cloned().collect()
     }
 
     fn next_handle(&self) -> u64 {
@@ -352,6 +380,65 @@ impl RuntimeDataProvider for InMemoryDataProvider {
                 .map(|relations| relations.records.len()),
         };
         self.records.borrow_mut().insert(handle.handle, record);
+        Ok(handle)
+    }
+
+    fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+        if request.node_id != request.binding.node_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data view request node `{}` does not match binding node `{}`",
+                request.node_id, request.binding.node_id
+            )));
+        }
+        if request.input_name != request.binding.input_name {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data view request input `{}` does not match binding input `{}`",
+                request.input_name, request.binding.input_name
+            )));
+        }
+        if request.data_handle.kind != HandleKind::Data {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data view request for `{}` on `{}` received non-data parent handle",
+                request.input_name, request.node_id
+            )));
+        }
+        let parent = self
+            .records
+            .borrow()
+            .get(&request.data_handle.handle)
+            .cloned()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "unknown data handle `{}` for view request `{}` on `{}`",
+                    request.data_handle.handle, request.input_name, request.node_id
+                ))
+            })?;
+        if parent.handle != request.data_handle {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data view request parent handle `{}` does not match provider record",
+                request.data_handle.handle
+            )));
+        }
+        request.binding.validate()?;
+        let handle = HandleRef {
+            handle: self.next_handle(),
+            kind: HandleKind::DataView,
+            owner_controller: self.owner_controller.clone(),
+        };
+        let record = DataViewHandleRecord {
+            handle: handle.clone(),
+            parent_handle: request.data_handle.clone(),
+            run_id: request.run_id.clone(),
+            node_id: request.node_id.clone(),
+            input_name: request.input_name.clone(),
+            phase: request.phase,
+            variant_id: request.variant_id.clone(),
+            fold_id: request.fold_id.clone(),
+            request_id: request.binding.request_id.clone(),
+            feature_set_id: request.binding.feature_set_id().to_string(),
+            view: request.view.clone(),
+        };
+        self.view_records.borrow_mut().insert(handle.handle, record);
         Ok(handle)
     }
 }
