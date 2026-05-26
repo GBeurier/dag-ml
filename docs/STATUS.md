@@ -277,6 +277,9 @@ Implemented:
   `ResearchProvenanceExport` JSON as the Rust core/CLI path, including
   optional lineage, replay envelopes, prediction-cache manifest and artifact
   manifest inputs for non-Rust bindings;
+- C ABI OpenLineage `RunEvent` export helper over the same validated plan,
+  bundle, lineage, envelope and manifest inputs used by the Rust provenance
+  export path;
 - C ABI data-provider vtable shape aligned with `dag-ml-data`
   materialize/view/identity/target/feature exports plus a tested Rust runtime
   adapter over the vtable;
