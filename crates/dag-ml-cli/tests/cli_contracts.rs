@@ -859,12 +859,31 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     let branch_merge_ro_crate_json =
         std::fs::read_to_string(temp_branch_merge_provenance_dir.join("ro-crate-metadata.json"))
             .expect("branch/merge RO-Crate metadata was written");
+    for path in [
+        "execution_plan.json",
+        "execution_bundle.json",
+        "lineage_records.json",
+        "lineage.prov.jsonld",
+        "ro-crate-metadata.json",
+        "prediction_cache_manifest.json",
+        "artifact_manifest.json",
+        "data_envelopes/branch:b0.model:ridge.x.json",
+        "data_envelopes/branch:b1.model:rf.x.json",
+        "data_envelopes/merge:stack.pred_plus_original.meta:ridge.x_original.json",
+    ] {
+        assert!(
+            temp_branch_merge_provenance_dir.join(path).exists(),
+            "research provenance package is missing {path}"
+        );
+    }
     assert!(
         branch_merge_ro_crate_json.contains("ComputationalWorkflow")
             && branch_merge_ro_crate_json.contains("prediction_cache_manifest.json")
             && branch_merge_ro_crate_json.contains("artifact_manifest.json")
             && branch_merge_ro_crate_json.contains("data_envelopes/branch:b0.model:ridge.x.json")
-            && branch_merge_ro_crate_json.contains("lineage.prov.jsonld"),
+            && branch_merge_ro_crate_json.contains("lineage.prov.jsonld")
+            && branch_merge_ro_crate_json.contains("\"sha256\"")
+            && branch_merge_ro_crate_json.contains("\"contentSize\""),
         "unexpected branch/merge RO-Crate metadata: {}",
         branch_merge_ro_crate_json
     );
@@ -1844,11 +1863,25 @@ fn cli_exports_research_provenance_bundle() {
     );
     let ro_crate_json = std::fs::read_to_string(temp_provenance_dir.join("ro-crate-metadata.json"))
         .expect("RO-Crate metadata export was written");
+    for path in [
+        "execution_plan.json",
+        "execution_bundle.json",
+        "lineage_records.json",
+        "lineage.prov.jsonld",
+        "ro-crate-metadata.json",
+        "artifact_manifest.json",
+    ] {
+        assert!(
+            temp_provenance_dir.join(path).exists(),
+            "research provenance package is missing {path}"
+        );
+    }
     assert!(
         ro_crate_json.contains("ComputationalWorkflow")
             && ro_crate_json.contains("execution_bundle.json")
             && ro_crate_json.contains("artifact_manifest.json")
-            && ro_crate_json.contains("lineage.prov.jsonld"),
+            && ro_crate_json.contains("lineage.prov.jsonld")
+            && ro_crate_json.contains("\"sha256\""),
         "unexpected RO-Crate metadata export: {}",
         ro_crate_json
     );

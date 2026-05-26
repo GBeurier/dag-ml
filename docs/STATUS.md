@@ -201,8 +201,10 @@ Implemented:
   reads, writes or deserializes artifact payloads;
 - first research provenance export layer: core validates the execution plan,
   bundle, optional lineage records, data envelopes, prediction-cache manifest
-  and artifact manifest before emitting `lineage.prov.jsonld` plus
-  `ro-crate-metadata.json`; this is a standards-facing export target for W3C
+  and artifact manifest before emitting a checksum-rich RO-Crate package with
+  `execution_plan.json`, `execution_bundle.json`, `lineage_records.json`,
+  `lineage.prov.jsonld`, `ro-crate-metadata.json`, optional data envelopes and
+  optional manifest files; this is a standards-facing export target for W3C
   PROV/Workflow Run RO-Crate and keeps DAG-ML's stricter OOF, replay and
   artifact contracts as the canonical internal model;
 - coordinator-owned lineage propagation: schedulers infer `input_lineage` from

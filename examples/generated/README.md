@@ -93,6 +93,9 @@ revalidate it against the bundle, refusing tampered, mismatched or non-portable
 entries. This path is manifest-only: it never reads, writes or deserializes
 artifact payloads, and persistent artifact payload stores remain future work.
 The research provenance export validates the same plan/bundle/manifest inputs
-and writes `lineage.prov.jsonld` plus `ro-crate-metadata.json` as a
-standards-facing publication view; DAG-ML's internal fingerprints, replay
-requirements and leakage-safety contracts remain the source of truth.
+and writes a standards-facing RO-Crate package. The package includes
+`execution_plan.json`, `execution_bundle.json`, `lineage_records.json`,
+`lineage.prov.jsonld`, `ro-crate-metadata.json`, optional data envelopes and
+optional prediction-cache/artifact manifests, with checksums recorded in the
+RO-Crate metadata. DAG-ML's internal fingerprints, replay requirements and
+leakage-safety contracts remain the source of truth.
