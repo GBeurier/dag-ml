@@ -22,6 +22,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Python adapter dependencies
+        run: python3 -m pip install numpy scikit-learn
       - name: Shared contract
         run: python3 scripts/validate_contracts.py
       - name: Format
