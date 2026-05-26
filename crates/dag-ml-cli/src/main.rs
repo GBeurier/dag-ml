@@ -73,6 +73,24 @@ enum Command {
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
     },
+    RunProcessCampaign {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long, default_value = "plan:cli.process")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.process")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
+    },
     SelectCandidates {
         #[arg(long)]
         policy: PathBuf,
@@ -284,6 +302,42 @@ fn main() -> Result<()> {
                 .with_context(|| "mock campaign execution failed")?;
             println!(
                 "mock campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s)",
+                results.len(),
+                ctx.lineage.len(),
+                ctx.prediction_store.blocks().len(),
+                data_provider.handle_records().len()
+            );
+        }
+        Command::RunProcessCampaign {
+            graph,
+            campaign,
+            controllers,
+            envelope,
+            adapter,
+            plan_id,
+            run_id,
+            root_seed,
+        } => {
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let data_provider = InMemoryDataProvider::with_envelope(
+                ControllerId::new("controller:data.provider")?,
+                envelope,
+            )?;
+            let runtime_controllers = process_runtime_controllers(&plan, adapter)?;
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
+            let results = SequentialScheduler
+                .execute_campaign_phase_with_data_provider(
+                    &plan,
+                    &runtime_controllers,
+                    &data_provider,
+                    &mut ctx,
+                    Phase::FitCv,
+                )
+                .with_context(|| "process campaign execution failed")?;
+            println!(
+                "process campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s)",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),

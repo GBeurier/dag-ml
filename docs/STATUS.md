@@ -55,11 +55,11 @@ Implemented:
 - CLI mock replay execution through execution bundles, data envelopes,
   in-memory data provider, in-memory artifact store and mock runtime
   controllers;
-- CLI process replay execution that sends `NodeTask` JSON to an external
-  adapter process over stdin, reads `NodeResult` JSON from stdout and validates
-  the result through the scheduler;
-- Python process-controller adapter fixture for replay smoke tests, including
-  replay data-handle and refit-artifact-handle checks;
+- CLI process campaign and replay execution that sends `NodeTask` JSON to an
+  external adapter process over stdin, reads `NodeResult` JSON from stdout and
+  validates the result through the scheduler;
+- Python process-controller adapter fixture for campaign/replay smoke tests,
+  including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph, selection decisions,
   grouped selection, execution bundles, replay envelopes and replay requests;
 - C ABI mock replay execution helper that exercises execution-plan, bundle,
@@ -90,6 +90,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Turn the process adapter smoke into a real sklearn controller adapter:
-replace the Python-side orchestration loop with `dag-ml` scheduler tasks while
-keeping the same OOF campaign, heterogeneous merge and refit score policy.
+Turn the process adapter smoke into a real sklearn controller adapter with
+stateful fit/predict/refit artifact exchange while keeping the same OOF
+campaign, heterogeneous merge and refit score policy.
