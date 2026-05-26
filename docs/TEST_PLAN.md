@@ -8,10 +8,10 @@
 | OOF | rejects train predictions, aligns by sample id, duplicate detection |
 | OOF campaign fixtures | UC6 joins, UC11 refuses, fold prediction samples match fold partitions, campaign fingerprint is stable |
 | RNG | same path gives same seed, different labels split streams |
-| Data binding | validates envelope fingerprints, feature-set ids, refuses mismatches, materializes in-memory handles |
+| Data binding | validates envelope fingerprints, feature-set ids, refuses mismatches, materializes in-memory handles and creates scoped data views |
 | Selection | deterministic metric ranking, stable tie-breaking, grouped branch selection, sklearn demo merge selection |
 | Bundle/replay | bundle matches execution plan fingerprints, refit artifacts match node plans, replay envelopes match data requirements, unsupported bundle schema version refused |
-| Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths, replay materializes data and refit artifact handles, external controller result conformance |
+| Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths, fold-aware data view routing, replay materializes predict views and refit artifact handles, external controller result conformance |
 | CLI contracts | selection command, bundle build command, bundle validation with replay request and data envelope, mock replay execution, process adapter campaign/replay execution, persistent JSONL process campaign |
 | sklearn demonstrator | group OOF, repeated observations, train-only augmentation, branch variant selection, heterogeneous merge selection, refit report |
 | ABI | null pointer handling, invalid JSON, valid graph, grouped selection output, bundle/replay validation, mock replay execution summary |
@@ -26,7 +26,8 @@ Add after the executor exists:
 - replay rejects schema fingerprint mismatch;
 - replay rejects missing refit artifacts and unsupported phases;
 - selected branch/merge candidates are reproducible from persisted metrics;
-- mock campaign run materializes data handles before invoking controllers.
+- mock campaign run materializes data handles and fold-aware data views before
+  invoking controllers.
 - process adapter replay refuses malformed `NodeResult` lineage or output
   ownership.
 

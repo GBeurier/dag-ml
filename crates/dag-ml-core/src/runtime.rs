@@ -3,10 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::bundle::{ExecutionBundle, RefitArtifactRecord, ReplayPhaseRequest};
-use crate::data::ExternalDataPlanEnvelope;
+use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
+use crate::fold::{FoldAssignment, FoldSet};
 use crate::ids::{
-    ArtifactId, BranchId, BundleId, ControllerId, FoldId, LineageId, NodeId, RunId, VariantId,
+    ArtifactId, BranchId, BundleId, ControllerId, FoldId, LineageId, NodeId, RunId, SampleId,
+    VariantId,
 };
 use crate::oof::PredictionBlock;
 use crate::phase::Phase;
@@ -18,6 +20,7 @@ use crate::rng::SeedContext;
 #[serde(rename_all = "snake_case")]
 pub enum HandleKind {
     Data,
+    DataView,
     Model,
     Artifact,
     Prediction,
@@ -449,8 +452,39 @@ pub struct DataMaterializationRequest {
     pub binding: crate::data::DataBinding,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DataProviderViewSpec {
+    #[serde(default)]
+    pub sample_ids: Option<Vec<SampleId>>,
+    pub partition: DataRequestPartition,
+    #[serde(default)]
+    pub fold_id: Option<FoldId>,
+    #[serde(default)]
+    pub source_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub columns: Option<Vec<String>>,
+    pub include_augmented: bool,
+    pub include_excluded: bool,
+    #[serde(default)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DataViewRequest {
+    pub run_id: RunId,
+    pub node_id: NodeId,
+    pub input_name: String,
+    pub phase: Phase,
+    pub variant_id: Option<VariantId>,
+    pub fold_id: Option<FoldId>,
+    pub binding: crate::data::DataBinding,
+    pub data_handle: HandleRef,
+    pub view: DataProviderViewSpec,
+}
+
 pub trait RuntimeDataProvider {
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef>;
+    fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef>;
 }
 
 pub trait RuntimeController {
@@ -753,8 +787,14 @@ impl SequentialScheduler {
                     node_plan.controller_id
                 ))
             })?;
-            let mut input_handles =
-                collect_input_handles(node_plan, &output_handles, data_provider, ctx, &scope)?;
+            let mut input_handles = collect_input_handles(
+                plan,
+                node_plan,
+                &output_handles,
+                data_provider,
+                ctx,
+                &scope,
+            )?;
             if let Some(node_artifact_handles) =
                 replay_artifact_handles.and_then(|handles| handles.get(node_id))
             {
@@ -798,6 +838,7 @@ impl SequentialScheduler {
 }
 
 fn collect_input_handles(
+    plan: &ExecutionPlan,
     node_plan: &NodePlan,
     output_handles: &BTreeMap<NodeId, BTreeMap<String, HandleRef>>,
     data_provider: Option<&dyn RuntimeDataProvider>,
@@ -821,7 +862,7 @@ fn collect_input_handles(
     }
     if let Some(data_provider) = data_provider {
         for binding in &node_plan.data_bindings {
-            let handle = data_provider.materialize(&DataMaterializationRequest {
+            let materialized = data_provider.materialize(&DataMaterializationRequest {
                 run_id: ctx.run_id.clone(),
                 node_id: node_plan.node_id.clone(),
                 input_name: binding.input_name.clone(),
@@ -830,10 +871,116 @@ fn collect_input_handles(
                 fold_id: scope.fold_id.clone(),
                 binding: binding.clone(),
             })?;
-            inputs.insert(format!("data:{}", binding.input_name), handle);
+            let view = data_view_for_scope(binding, plan.fold_set.as_ref(), scope)?;
+            let view_handle = data_provider.make_view(&DataViewRequest {
+                run_id: ctx.run_id.clone(),
+                node_id: node_plan.node_id.clone(),
+                input_name: binding.input_name.clone(),
+                phase: scope.phase,
+                variant_id: scope.variant_id.clone(),
+                fold_id: scope.fold_id.clone(),
+                binding: binding.clone(),
+                data_handle: materialized,
+                view,
+            })?;
+            inputs.insert(format!("data:{}", binding.input_name), view_handle);
         }
     }
     Ok(inputs)
+}
+
+fn data_view_for_scope(
+    binding: &DataBinding,
+    fold_set: Option<&FoldSet>,
+    scope: &PhaseScope,
+) -> Result<DataProviderViewSpec> {
+    let partition = data_partition_for_scope(binding, scope);
+    let fold = fold_for_scope(fold_set, scope.fold_id.as_ref())?;
+    let sample_ids = sample_ids_for_partition(partition, fold_set, fold);
+    if binding.view_policy.require_sample_ids
+        && matches!(
+            partition,
+            DataRequestPartition::FoldTrain | DataRequestPartition::FoldValidation
+        )
+        && scope.fold_id.is_some()
+        && sample_ids.as_ref().is_none_or(Vec::is_empty)
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "data binding `{}` on `{}` requires sample ids for {:?}",
+            binding.input_name, binding.node_id, partition
+        )));
+    }
+    let include_augmented = match partition {
+        DataRequestPartition::FoldTrain | DataRequestPartition::FullTrain => {
+            binding.view_policy.include_augmented_train
+        }
+        DataRequestPartition::FoldValidation | DataRequestPartition::Predict => {
+            binding.view_policy.include_augmented_validation
+        }
+    };
+    let mut extra = BTreeMap::new();
+    extra.insert(
+        "feature_set_id".to_string(),
+        serde_json::Value::String(binding.feature_set_id().to_string()),
+    );
+    Ok(DataProviderViewSpec {
+        sample_ids,
+        partition,
+        fold_id: scope.fold_id.clone(),
+        source_ids: (!binding.source_ids.is_empty()).then(|| binding.source_ids.clone()),
+        columns: None,
+        include_augmented,
+        include_excluded: binding.view_policy.include_excluded,
+        extra,
+    })
+}
+
+fn data_partition_for_scope(binding: &DataBinding, scope: &PhaseScope) -> DataRequestPartition {
+    match scope.phase {
+        Phase::FitCv => binding.view_policy.fit_partition,
+        Phase::Refit => DataRequestPartition::FullTrain,
+        Phase::Predict | Phase::Explain if scope.fold_id.is_none() => DataRequestPartition::Predict,
+        Phase::Predict | Phase::Explain => binding.view_policy.predict_partition,
+        Phase::Compile | Phase::Plan | Phase::Select => DataRequestPartition::FullTrain,
+    }
+}
+
+fn fold_for_scope<'a>(
+    fold_set: Option<&'a FoldSet>,
+    fold_id: Option<&FoldId>,
+) -> Result<Option<&'a FoldAssignment>> {
+    let Some(fold_id) = fold_id else {
+        return Ok(None);
+    };
+    let fold_set = fold_set.ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "fold `{fold_id}` requested but execution plan has no fold set"
+        ))
+    })?;
+    fold_set
+        .folds
+        .iter()
+        .find(|fold| &fold.fold_id == fold_id)
+        .map(Some)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "fold `{fold_id}` requested but is not present in fold set `{}`",
+                fold_set.id
+            ))
+        })
+}
+
+fn sample_ids_for_partition(
+    partition: DataRequestPartition,
+    fold_set: Option<&FoldSet>,
+    fold: Option<&FoldAssignment>,
+) -> Option<Vec<SampleId>> {
+    match partition {
+        DataRequestPartition::FoldTrain => fold.map(|fold| fold.train_sample_ids.clone()),
+        DataRequestPartition::FoldValidation => fold.map(|fold| fold.validation_sample_ids.clone()),
+        DataRequestPartition::FullTrain => fold_set.map(|fold_set| fold_set.sample_ids.clone()),
+        DataRequestPartition::Predict => None,
+    }
 }
 
 fn materialize_replay_artifact_handles(
@@ -962,9 +1109,9 @@ mod tests {
                         task.node_plan.node_id
                     ))
                 })?;
-                if handle.kind != HandleKind::Data {
+                if !matches!(handle.kind, HandleKind::Data | HandleKind::DataView) {
                     return Err(DagMlError::RuntimeValidation(format!(
-                        "node `{}` received non-data handle for `{key}`",
+                        "node `{}` received non-data/data-view handle for `{key}`",
                         task.node_plan.node_id
                     )));
                 }
@@ -1051,9 +1198,9 @@ mod tests {
                         task.node_plan.node_id
                     ))
                 })?;
-                if handle.kind != HandleKind::Data {
+                if !matches!(handle.kind, HandleKind::Data | HandleKind::DataView) {
                     return Err(DagMlError::RuntimeValidation(format!(
-                        "node `{}` received non-data handle for `{key}`",
+                        "node `{}` received non-data/data-view handle for `{key}`",
                         task.node_plan.node_id
                     )));
                 }
@@ -1533,8 +1680,84 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         assert_eq!(provider.handle_records().len(), 1);
+        assert_eq!(provider.view_records().len(), 1);
         assert_eq!(provider.handle_records()[0].input_name, "x");
         assert_eq!(provider.handle_records()[0].relation_record_count, Some(4));
+        assert_eq!(provider.view_records()[0].handle.kind, HandleKind::DataView);
+        assert_eq!(
+            provider.view_records()[0].parent_handle,
+            provider.handle_records()[0].handle
+        );
+    }
+
+    #[test]
+    fn campaign_data_bindings_create_fold_train_views() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let plan = build_execution_plan(
+            "plan:data.folds",
+            simple_graph(),
+            CampaignSpec {
+                id: "campaign:data.folds".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: Some(SplitInvocation {
+                    id: "split:outer".to_string(),
+                    controller_id: None,
+                    leakage_policy: Default::default(),
+                    params: BTreeMap::new(),
+                    fold_set: Some(two_fold_set()),
+                }),
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::from([(
+                    model_id,
+                    vec![data_binding(&NodeId::new("model:pls").unwrap())],
+                )]),
+                metadata: BTreeMap::new(),
+            },
+            &manifests(),
+        )
+        .unwrap();
+        let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        let provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider").unwrap(),
+            envelope,
+        )
+        .unwrap();
+        let controllers = runtime_controllers();
+        let mut ctx = RunContext::new(RunId::new("run:data.folds").unwrap(), Some(11));
+
+        let results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 4);
+        assert_eq!(provider.handle_records().len(), 2);
+        let views = provider.view_records();
+        assert_eq!(views.len(), 2);
+        assert!(views
+            .iter()
+            .all(|view| view.handle.kind == HandleKind::DataView));
+        assert_eq!(views[0].view.partition, DataRequestPartition::FoldTrain);
+        assert_eq!(
+            views[0].view.sample_ids,
+            Some(vec![SampleId::new("s2").unwrap()])
+        );
+        assert_eq!(views[1].view.partition, DataRequestPartition::FoldTrain);
+        assert_eq!(
+            views[1].view.sample_ids,
+            Some(vec![SampleId::new("s1").unwrap()])
+        );
     }
 
     #[test]
@@ -1678,6 +1901,11 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         assert_eq!(provider.handle_records().len(), 1);
+        assert_eq!(provider.view_records().len(), 1);
+        assert_eq!(
+            provider.view_records()[0].view.partition,
+            DataRequestPartition::Predict
+        );
         assert_eq!(ctx.prediction_store.blocks().len(), 1);
         assert_eq!(
             ctx.prediction_store.blocks()[0].partition,

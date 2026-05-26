@@ -652,6 +652,7 @@ struct MockReplaySummary {
     lineage_record_count: usize,
     prediction_block_count: usize,
     data_handle_count: usize,
+    data_view_count: usize,
     artifact_handle_count: usize,
 }
 
@@ -693,6 +694,7 @@ fn execute_mock_replay(
         lineage_record_count: ctx.lineage.len(),
         prediction_block_count: ctx.prediction_store.blocks().len(),
         data_handle_count: data_provider.handle_records().len(),
+        data_view_count: data_provider.view_records().len(),
         artifact_handle_count: artifact_store.len(),
     })
 }
@@ -757,9 +759,9 @@ impl RuntimeController for CapiMockController {
                     task.node_plan.node_id
                 ))
             })?;
-            if handle.kind != HandleKind::Data {
+            if !matches!(handle.kind, HandleKind::Data | HandleKind::DataView) {
                 return Err(DagMlError::RuntimeValidation(format!(
-                    "node `{}` received non-data handle for `{key}`",
+                    "node `{}` received non-data/data-view handle for `{key}`",
                     task.node_plan.node_id
                 )));
             }
@@ -1025,6 +1027,7 @@ mod tests {
         assert_eq!(summary["result_count"], 2);
         assert_eq!(summary["prediction_block_count"], 1);
         assert_eq!(summary["data_handle_count"], 1);
+        assert_eq!(summary["data_view_count"], 1);
         assert_eq!(summary["artifact_handle_count"], 1);
         unsafe { dagml_owned_bytes_free(out) };
     }

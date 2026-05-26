@@ -306,11 +306,12 @@ fn main() -> Result<()> {
                 )
                 .with_context(|| "mock campaign execution failed")?;
             println!(
-                "mock campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s)",
+                "mock campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s)",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
-                data_provider.handle_records().len()
+                data_provider.handle_records().len(),
+                data_provider.view_records().len()
             );
         }
         Command::RunProcessCampaign {
@@ -347,11 +348,12 @@ fn main() -> Result<()> {
                 )
                 .with_context(|| "process campaign execution failed")?;
             println!(
-                "process campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s)",
+                "process campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s)",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
-                data_provider.handle_records().len()
+                data_provider.handle_records().len(),
+                data_provider.view_records().len()
             );
         }
         Command::SelectCandidates {
@@ -474,11 +476,12 @@ fn main() -> Result<()> {
                 )
                 .with_context(|| "mock replay execution failed")?;
             println!(
-                "mock replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} artifact handle(s)",
+                "mock replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s)",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
                 data_provider.handle_records().len(),
+                data_provider.view_records().len(),
                 artifact_store.len()
             );
         }
@@ -531,11 +534,12 @@ fn main() -> Result<()> {
                 )
                 .with_context(|| "process replay execution failed")?;
             println!(
-                "process replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} artifact handle(s)",
+                "process replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s)",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
                 data_provider.handle_records().len(),
+                data_provider.view_records().len(),
                 artifact_store.len()
             );
         }
@@ -768,9 +772,9 @@ impl RuntimeController for CliMockController {
                     task.node_plan.node_id
                 ))
             })?;
-            if handle.kind != HandleKind::Data {
+            if !matches!(handle.kind, HandleKind::Data | HandleKind::DataView) {
                 return Err(DagMlError::RuntimeValidation(format!(
-                    "node `{}` received non-data handle for `{key}`",
+                    "node `{}` received non-data/data-view handle for `{key}`",
                     task.node_plan.node_id
                 )));
             }

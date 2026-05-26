@@ -57,10 +57,11 @@ Definition of done:
 
 Status: JSON/fingerprint contract started. `dag-ml-data` now emits a
 coordinator envelope, `dag-ml` validates node data bindings against it, and the
-scheduler can request opaque data handles through `RuntimeDataProvider`. The C
-ABI data-provider vtable is aligned on identity, sample-level target and
-observation-level feature Arrow exports. A core in-memory provider records
-handle materialization for smoke tests. Next missing piece is a concrete
+scheduler requests an opaque parent data handle plus a fold/refit/predict
+provider view through `RuntimeDataProvider`. The C ABI data-provider vtable is
+aligned on identity, sample-level target and observation-level feature Arrow
+exports. A core in-memory provider records both materialized handles and scoped
+data-view handles for smoke tests. Next missing piece is a concrete
 buffer-backed `dag-ml-data` provider/handle arena.
 
 ## Phase 4: Parallelism
@@ -87,9 +88,10 @@ replay. The CLI can select candidates, build a bundle, and validate that a
 bundle plus replay request matches a rebuilt plan and external data envelopes.
 Bundles carry an explicit schema version and reject unsupported versions. The C
 ABI exposes the same selection and replay-validation contracts over JSON. The
-runtime can now materialize replay data and refit artifact handles, then invoke
-eligible controllers for replay phases without CV folds. The CLI has both mock
-and external-process execution smokes for campaign and replay paths, and the C
-ABI exposes a mock replay execution helper returning a JSON summary. The
+runtime can now materialize replay data, create predict-scoped data views and
+materialize refit artifact handles, then invoke eligible controllers for replay
+phases without CV folds. The CLI has both mock and external-process execution
+smokes for campaign and replay paths, and the C ABI exposes a mock replay
+execution helper returning a JSON summary. The
 remaining work is schema migration policy, production host adapters and
 persistent artifact/data stores.
