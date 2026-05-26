@@ -266,6 +266,11 @@ pub fn enumerate_variants(
         .collect()
 }
 
+pub fn generation_spec_fingerprint(spec: &GenerationSpec) -> Result<String> {
+    spec.validate()?;
+    stable_json_fingerprint(spec)
+}
+
 fn cartesian_choices(
     dimensions: &[GenerationDimension],
 ) -> Vec<BTreeMap<String, GenerationChoice>> {
@@ -385,6 +390,14 @@ mod tests {
 
         assert_eq!(left.len(), 4);
         assert_eq!(left, right);
+        let fingerprint = generation_spec_fingerprint(&spec).unwrap();
+        let mut changed_spec = spec.clone();
+        changed_spec.dimensions[0].choices[0].value = json!("changed");
+        assert_eq!(fingerprint, generation_spec_fingerprint(&spec).unwrap());
+        assert_ne!(
+            fingerprint,
+            generation_spec_fingerprint(&changed_spec).unwrap()
+        );
         assert_ne!(left[0].variant_id, left[1].variant_id);
         assert_eq!(left[0].choices["model"].label, "pls");
         assert_eq!(left[0].choices["window"].label, "short");

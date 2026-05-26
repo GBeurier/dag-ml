@@ -10,7 +10,9 @@ use crate::controller::{
 use crate::data::{DataBinding, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::fold::FoldSet;
-use crate::generation::{enumerate_variants, GenerationSpec, VariantPlan};
+use crate::generation::{
+    enumerate_variants, generation_spec_fingerprint, GenerationSpec, VariantPlan,
+};
 use crate::graph::{GraphSpec, NodeKind};
 use crate::ids::{ControllerId, FoldId, NodeId, VariantId};
 use crate::phase::Phase;
@@ -515,6 +517,7 @@ pub fn build_execution_plan(
         .split_invocation
         .as_ref()
         .and_then(|split| split.fold_set.clone());
+    validate_search_space_fingerprint(&graph_plan.graph, &campaign)?;
     let variants = enumerate_variants(&campaign.generation, campaign.root_seed)?;
     validate_generation_override_targets(&graph_plan.graph, &variants)?;
     let graph_fingerprint = stable_json_fingerprint(&graph_plan.graph)?;
@@ -534,6 +537,26 @@ pub fn build_execution_plan(
     };
     plan.validate()?;
     Ok(plan)
+}
+
+fn validate_search_space_fingerprint(graph: &GraphSpec, campaign: &CampaignSpec) -> Result<()> {
+    let Some(expected_fingerprint) = &graph.search_space_fingerprint else {
+        return Ok(());
+    };
+    if expected_fingerprint.trim().is_empty() {
+        return Err(DagMlError::Planning(format!(
+            "graph `{}` has empty search_space_fingerprint",
+            graph.id
+        )));
+    }
+    let actual_fingerprint = generation_spec_fingerprint(&campaign.generation)?;
+    if expected_fingerprint != &actual_fingerprint {
+        return Err(DagMlError::Planning(format!(
+            "graph `{}` search_space_fingerprint does not match campaign generation spec",
+            graph.id
+        )));
+    }
+    Ok(())
 }
 
 fn validate_generation_override_targets(graph: &GraphSpec, variants: &[VariantPlan]) -> Result<()> {
@@ -1046,5 +1069,55 @@ mod tests {
             .to_string();
 
         assert!(error.contains("overrides params for unknown node"));
+    }
+
+    #[test]
+    fn planning_validates_declared_search_space_fingerprint() {
+        let campaign = CampaignSpec {
+            id: "campaign:search.fingerprint".to_string(),
+            root_seed: Some(7),
+            leakage_policy: LeakageUnitPolicy::default(),
+            aggregation_policy: AggregationPolicy::default(),
+            split_invocation: None,
+            generation: GenerationSpec {
+                strategy: GenerationStrategy::Cartesian,
+                dimensions: vec![GenerationDimension {
+                    name: "model_family".to_string(),
+                    choices: vec![GenerationChoice {
+                        label: "pls".to_string(),
+                        value: serde_json::json!("pls"),
+                        param_overrides: vec![GenerationParamOverride {
+                            node_id: NodeId::new("model:pls").unwrap(),
+                            params: BTreeMap::from([(
+                                "n_components".to_string(),
+                                serde_json::json!(8),
+                            )]),
+                        }],
+                    }],
+                }],
+                max_variants: Some(1),
+            },
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        };
+        let mut graph = graph();
+        graph.search_space_fingerprint =
+            Some(generation_spec_fingerprint(&campaign.generation).unwrap());
+
+        let plan = build_execution_plan(
+            "plan:search.fingerprint",
+            graph.clone(),
+            campaign.clone(),
+            &registry(),
+        )
+        .unwrap();
+        assert_eq!(plan.variants.len(), 1);
+
+        graph.search_space_fingerprint = Some("sha256:not-the-generation-spec".to_string());
+        let error = build_execution_plan("plan:search.fingerprint", graph, campaign, &registry())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("search_space_fingerprint"));
     }
 }

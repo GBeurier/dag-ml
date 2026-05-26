@@ -146,6 +146,14 @@ impl GraphSpec {
                 "graph must contain at least one node".to_string(),
             ));
         }
+        if let Some(fingerprint) = &self.search_space_fingerprint {
+            if fingerprint.trim().is_empty() {
+                return Err(DagMlError::GraphValidation(format!(
+                    "graph `{}` has empty search_space_fingerprint",
+                    self.id
+                )));
+            }
+        }
 
         let mut nodes = BTreeMap::new();
         for node in &self.nodes {
