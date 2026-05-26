@@ -700,20 +700,30 @@ impl ExecutionBundle {
             }
         }
         for requirement in &self.prediction_requirements {
-            let edge_exists = plan.graph_plan.graph.edges.iter().any(|edge| {
-                edge.source.node_id == requirement.producer_node
+            let edge = plan
+                .graph_plan
+                .graph
+                .edges
+                .iter()
+                .find(|edge| {
+                    edge.source.node_id == requirement.producer_node
                     && edge.source.port_name == requirement.source_port
                     && edge.target.node_id == requirement.consumer_node
                     && edge.target.port_name == requirement.target_port
                     && edge.contract.requires_oof
-            });
-            if !edge_exists {
-                return Err(DagMlError::RuntimeValidation(format!(
-                    "bundle `{}` prediction requirement `{}` does not match an OOF edge in the plan",
-                    self.bundle_id,
-                    requirement.key()
-                )));
-            }
+                })
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "bundle `{}` prediction requirement `{}` does not match an OOF edge in the plan",
+                        self.bundle_id,
+                        requirement.key()
+                    ))
+                })?;
+            let cache = self
+                .prediction_caches
+                .iter()
+                .find(|cache| cache.requirement_key == requirement.key());
+            validate_prediction_requirement_against_plan(self, plan, edge, requirement, cache)?;
         }
         Ok(())
     }
@@ -782,6 +792,135 @@ impl ExecutionBundle {
         }
         Ok(())
     }
+}
+
+fn validate_prediction_requirement_against_plan(
+    bundle: &ExecutionBundle,
+    plan: &ExecutionPlan,
+    edge: &crate::graph::EdgeSpec,
+    requirement: &BundlePredictionRequirement,
+    cache: Option<&BundlePredictionCacheRecord>,
+) -> Result<()> {
+    if !edge.contract.requires_fold_alignment {
+        return Ok(());
+    }
+    let fold_set = plan.fold_set.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "bundle `{}` prediction requirement `{}` needs fold alignment but plan `{}` has no fold set",
+            bundle.bundle_id,
+            requirement.key(),
+            plan.id
+        ))
+    })?;
+    let expected_fold_ids = fold_set
+        .folds
+        .iter()
+        .map(|fold| fold.fold_id.clone())
+        .collect::<BTreeSet<_>>();
+    let requirement_fold_ids = requirement
+        .fold_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if requirement_fold_ids != expected_fold_ids {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` prediction requirement `{}` fold ids do not match plan fold set",
+            bundle.bundle_id,
+            requirement.key()
+        )));
+    }
+    let expected_sample_ids = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let requirement_sample_ids = requirement
+        .sample_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if requirement_sample_ids != expected_sample_ids {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` prediction requirement `{}` sample ids do not match plan fold set",
+            bundle.bundle_id,
+            requirement.key()
+        )));
+    }
+    if let Some(cache) = cache {
+        validate_prediction_cache_blocks_match_fold_set(bundle, requirement, cache, fold_set)?;
+    }
+    Ok(())
+}
+
+fn validate_prediction_cache_blocks_match_fold_set(
+    bundle: &ExecutionBundle,
+    requirement: &BundlePredictionRequirement,
+    cache: &BundlePredictionCacheRecord,
+    fold_set: &crate::fold::FoldSet,
+) -> Result<()> {
+    let folds = fold_set
+        .folds
+        .iter()
+        .map(|fold| (&fold.fold_id, fold))
+        .collect::<BTreeMap<_, _>>();
+    let expected_fold_ids = fold_set
+        .folds
+        .iter()
+        .map(|fold| fold.fold_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut covered_fold_ids = BTreeSet::new();
+    let mut covered_sample_ids = BTreeSet::new();
+    for block in &cache.blocks {
+        let fold_id = block.fold_id.as_ref().ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "bundle `{}` prediction cache `{}` has an OOF block without a fold id",
+                bundle.bundle_id, cache.cache_id
+            ))
+        })?;
+        covered_fold_ids.insert(fold_id.clone());
+        let fold = folds.get(fold_id).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "bundle `{}` prediction cache `{}` references unknown fold `{fold_id}`",
+                bundle.bundle_id, cache.cache_id
+            ))
+        })?;
+        let block_samples = block.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+        let expected_samples = fold
+            .validation_sample_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if block_samples != expected_samples {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle `{}` prediction cache `{}` block for fold `{fold_id}` does not match validation samples for requirement `{}`",
+                bundle.bundle_id,
+                cache.cache_id,
+                requirement.key()
+            )));
+        }
+        for sample_id in block_samples {
+            if !covered_sample_ids.insert(sample_id.clone()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` prediction cache `{}` has duplicate OOF sample `{sample_id}`",
+                    bundle.bundle_id, cache.cache_id
+                )));
+            }
+        }
+    }
+    if covered_fold_ids != expected_fold_ids {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` prediction cache `{}` does not cover all folds for requirement `{}`",
+            bundle.bundle_id,
+            cache.cache_id,
+            requirement.key()
+        )));
+    }
+    let expected_sample_ids = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    if covered_sample_ids != expected_sample_ids {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` prediction cache `{}` does not cover the full OOF sample universe for requirement `{}`",
+            bundle.bundle_id,
+            cache.cache_id,
+            requirement.key()
+        )));
+    }
+    Ok(())
 }
 
 pub fn build_execution_bundle(
@@ -1258,6 +1397,90 @@ mod tests {
         build_execution_plan("plan:branch.merge.bundle", graph, campaign, &registry).unwrap()
     }
 
+    fn branch_merge_selection_decisions() -> BTreeMap<String, SelectionDecision> {
+        serde_json::from_str(include_str!(
+            "../../../examples/fixtures/bundle/selection_decisions_branch_merge.json"
+        ))
+        .unwrap()
+    }
+
+    fn refit_artifact(
+        plan: &ExecutionPlan,
+        node_id: &str,
+        data_requirement_keys: Vec<String>,
+        prediction_requirement_keys: Vec<String>,
+    ) -> RefitArtifactRecord {
+        let node_id = NodeId::new(node_id).unwrap();
+        let node_plan = plan.node_plans.get(&node_id).unwrap();
+        RefitArtifactRecord {
+            node_id: node_plan.node_id.clone(),
+            controller_id: node_plan.controller_id.clone(),
+            artifact: ArtifactRef {
+                id: ArtifactId::new(format!("artifact:{}:refit", node_plan.node_id)).unwrap(),
+                kind: "mock_model".to_string(),
+                controller_id: node_plan.controller_id.clone(),
+                size_bytes: Some(128),
+            },
+            params_fingerprint: node_plan.params_fingerprint.clone(),
+            data_requirement_keys,
+            prediction_requirement_keys,
+        }
+    }
+
+    fn branch_merge_samples() -> Vec<SampleId> {
+        vec![
+            SampleId::new("sample:1").unwrap(),
+            SampleId::new("sample:2").unwrap(),
+            SampleId::new("sample:3").unwrap(),
+            SampleId::new("sample:4").unwrap(),
+        ]
+    }
+
+    fn branch_merge_requirement(
+        producer_node: &str,
+        target_port: &str,
+    ) -> BundlePredictionRequirement {
+        BundlePredictionRequirement {
+            producer_node: NodeId::new(producer_node).unwrap(),
+            source_port: "oof".to_string(),
+            consumer_node: NodeId::new("merge:stack.pred_plus_original.meta:ridge").unwrap(),
+            target_port: target_port.to_string(),
+            partition: PredictionPartition::Validation,
+            fold_ids: vec![
+                FoldId::new("fold:0").unwrap(),
+                FoldId::new("fold:1").unwrap(),
+            ],
+            sample_ids: branch_merge_samples(),
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        }
+    }
+
+    fn branch_merge_prediction_blocks(producer_node: &str, offset: f64) -> Vec<PredictionBlock> {
+        let producer_node = NodeId::new(producer_node).unwrap();
+        let samples = branch_merge_samples();
+        vec![
+            PredictionBlock {
+                prediction_id: Some(format!("prediction:{producer_node}:fold0")),
+                producer_node: producer_node.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                sample_ids: samples[0..2].to_vec(),
+                values: vec![vec![offset + 0.1], vec![offset + 0.2]],
+                target_names: vec!["y".to_string()],
+            },
+            PredictionBlock {
+                prediction_id: Some(format!("prediction:{producer_node}:fold1")),
+                producer_node,
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:1").unwrap()),
+                sample_ids: samples[2..4].to_vec(),
+                values: vec![vec![offset + 0.3], vec![offset + 0.4]],
+                target_names: vec!["y".to_string()],
+            },
+        ]
+    }
+
     fn decision() -> SelectionDecision {
         select_candidate(
             &SelectionPolicy {
@@ -1360,6 +1583,102 @@ mod tests {
             vec![artifact],
         )
         .is_err());
+    }
+
+    #[test]
+    fn branch_merge_bundle_links_selected_refits_and_fold_aligned_oof_caches() {
+        let plan = branch_merge_plan();
+        let b0_requirement = branch_merge_requirement("branch:b0.model:ridge", "b0_oof");
+        let b1_requirement = branch_merge_requirement("branch:b1.model:rf", "b1_oof");
+        let b0_cache = build_prediction_cache_record(
+            &b0_requirement,
+            &branch_merge_prediction_blocks("branch:b0.model:ridge", 0.0),
+        )
+        .unwrap();
+        let b1_cache = build_prediction_cache_record(
+            &b1_requirement,
+            &branch_merge_prediction_blocks("branch:b1.model:rf", 1.0),
+        )
+        .unwrap();
+        let b0_artifact = refit_artifact(
+            &plan,
+            "branch:b0.model:ridge",
+            vec!["branch:b0.model:ridge.x".to_string()],
+            Vec::new(),
+        );
+        let b1_artifact = refit_artifact(
+            &plan,
+            "branch:b1.model:rf",
+            vec!["branch:b1.model:rf.x".to_string()],
+            Vec::new(),
+        );
+        let merge_artifact = refit_artifact(
+            &plan,
+            "merge:stack.pred_plus_original.meta:ridge",
+            vec!["merge:stack.pred_plus_original.meta:ridge.x_original".to_string()],
+            vec![b0_requirement.key(), b1_requirement.key()],
+        );
+
+        let bundle = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:branch.merge.selected.refit").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            branch_merge_selection_decisions(),
+            vec![
+                b0_artifact.clone(),
+                b1_artifact.clone(),
+                merge_artifact.clone(),
+            ],
+            vec![b0_requirement.clone(), b1_requirement.clone()],
+            vec![b0_cache.clone(), b1_cache.clone()],
+        )
+        .unwrap();
+        bundle.validate_against_plan(&plan).unwrap();
+        assert_eq!(bundle.selections.len(), 3);
+        assert_eq!(bundle.prediction_requirements.len(), 2);
+        assert_eq!(
+            bundle.refit_artifacts[2].data_requirement_keys,
+            vec!["merge:stack.pred_plus_original.meta:ridge.x_original"]
+        );
+        assert_eq!(
+            bundle.refit_artifacts[2].prediction_requirement_keys,
+            vec![
+                "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
+                "branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof",
+            ]
+        );
+
+        assert!(build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:branch.merge.missing.branch.refit").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            branch_merge_selection_decisions(),
+            vec![b0_artifact.clone(), merge_artifact.clone()],
+            vec![b0_requirement.clone(), b1_requirement.clone()],
+            vec![b0_cache.clone(), b1_cache.clone()],
+        )
+        .is_err());
+
+        let mut misaligned_cache = b0_cache;
+        misaligned_cache.blocks[0].sample_ids = vec![
+            SampleId::new("sample:1").unwrap(),
+            SampleId::new("sample:3").unwrap(),
+        ];
+        let error = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:branch.merge.misaligned.oof.cache").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            branch_merge_selection_decisions(),
+            vec![b0_artifact, b1_artifact, merge_artifact],
+            vec![b0_requirement, b1_requirement],
+            vec![misaligned_cache, b1_cache],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("does not match validation samples"),
+            "unexpected fold-alignment error: {error}"
+        );
     }
 
     #[test]
