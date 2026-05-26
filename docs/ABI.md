@@ -39,7 +39,9 @@ the host owns the underlying object behind each handle.
   predictions and data-provider identity/target/feature exports;
 - `DagMlControllerVTable` for host operator controllers, including generic
   `invoke` over `NodeTask`/`NodeResult` JSON and explicit returned-byte
-  release;
+  release. Controller vtable ABI v2 keeps borrowed `user_data` semantics; v3 is
+  opt-in owned semantics where Rust calls `destroy(user_data)` after releasing
+  controller-owned result handles;
 - `DagMlDataVTable` for host data providers, including `materialize`,
   `make_view`, `view_identity`, `target_arrow` and `feature_arrow`.
   `feature_arrow` remains ABI-compatible: hosts may receive either a plain
@@ -68,11 +70,13 @@ ownership and naming before full execution is implemented.
 boundary type. Unknown host status codes are treated as runtime validation
 errors instead of being decoded as Rust enum discriminants.
 
-Vtable `user_data` lifetime remains host-owned in this scaffold. Rust releases
-controller-result, data/view, replay-artifact and prediction-cache handles that
-it receives or materializes through the vtables. `destroy` callbacks define the
-future ownership shape for bindings, but the current borrowed-vtable replay API
-does not claim ownership of the host context.
+Vtable `user_data` lifetime is explicit per ABI surface. Controller vtable v2 is
+borrowed for backwards compatibility, while controller vtable v3 opts into
+Rust-owned lifecycle and calls `destroy(user_data)` after handle release on drop.
+Data-provider, artifact-store and prediction-cache vtables remain borrowed in
+the current replay API. Rust releases controller-result, data/view,
+replay-artifact and prediction-cache handles that it receives or materializes
+through the vtables.
 
 ## Ownership Rules
 

@@ -85,6 +85,14 @@ typedef struct ArrowSchema {
 
 #endif
 
+#ifndef DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION
+#define DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION 2u
+#endif
+
+#ifndef DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION
+#define DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION 3u
+#endif
+
 typedef struct DagMlControllerVTable {
     uint32_t abi_version;
     void *user_data;

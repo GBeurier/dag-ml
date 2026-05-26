@@ -23,6 +23,8 @@ use dag_ml_core::{
 use serde::{de::DeserializeOwned, Serialize};
 
 pub type DagMlHandle = u64;
+pub const DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION: u32 = 2;
+pub const DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION: u32 = 3;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
 pub const DAG_ML_HANDLE_KIND_DATA_VIEW: u32 = 2;
@@ -1760,7 +1762,7 @@ unsafe impl Sync for CAbiRuntimeController {}
 
 impl CAbiRuntimeController {
     pub fn new(id: ControllerId, vtable: DagMlControllerVTable) -> dag_ml_core::Result<Self> {
-        if vtable.abi_version < 2 {
+        if vtable.abi_version < DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION {
             return Err(DagMlError::RuntimeValidation(format!(
                 "controller ABI version {} is unsupported for generic invoke",
                 vtable.abi_version
@@ -1835,6 +1837,11 @@ impl Drop for CAbiRuntimeController {
                 unsafe { release(self.vtable.user_data, *handle) };
             }
             handles.clear();
+        }
+        if self.vtable.abi_version >= DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION {
+            if let Some(destroy) = self.vtable.destroy {
+                unsafe { destroy(self.vtable.user_data) };
+            }
         }
     }
 }
@@ -2662,6 +2669,7 @@ mod tests {
         release_count: usize,
         release_handles: Vec<DagMlHandle>,
         invocation_count: usize,
+        destroy_count: usize,
     }
 
     #[derive(Default)]
@@ -2909,6 +2917,14 @@ mod tests {
         }
         let state = &mut *(user_data.cast::<ControllerStub>());
         state.release_handles.push(handle);
+    }
+
+    unsafe extern "C" fn controller_destroy_stub(user_data: *mut c_void) {
+        if user_data.is_null() {
+            return;
+        }
+        let state = &mut *(user_data.cast::<ControllerStub>());
+        state.destroy_count += 1;
     }
 
     unsafe extern "C" fn artifact_store_materialize_stub(
@@ -3290,7 +3306,7 @@ mod tests {
                 invoke: Some(controller_invoke_stub),
                 release_bytes: Some(controller_release_bytes_stub),
                 release: Some(controller_release_stub),
-                destroy: None,
+                destroy: Some(controller_destroy_stub),
             };
             let controller = CAbiRuntimeController::new(controller_id, table).unwrap();
             let actual = controller.invoke(&task).unwrap();
@@ -3298,6 +3314,37 @@ mod tests {
             assert!(state.release_handles.is_empty());
         }
         assert_eq!(state.release_handles, vec![88]);
+        assert_eq!(state.destroy_count, 0);
+    }
+
+    #[test]
+    fn c_abi_runtime_controller_owned_vtable_destroys_user_data_after_handles() {
+        let (controller_id, task, expected) = controller_task_result_fixture();
+        let mut state = ControllerStub {
+            result_json: serde_json::to_vec(&expected).unwrap(),
+            ..Default::default()
+        };
+        {
+            let table = DagMlControllerVTable {
+                abi_version: DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION,
+                user_data: (&mut state as *mut ControllerStub).cast::<c_void>(),
+                clone_with: None,
+                describe: None,
+                fit: None,
+                predict: None,
+                invoke: Some(controller_invoke_stub),
+                release_bytes: Some(controller_release_bytes_stub),
+                release: Some(controller_release_stub),
+                destroy: Some(controller_destroy_stub),
+            };
+            let controller = CAbiRuntimeController::new(controller_id, table).unwrap();
+            let actual = controller.invoke(&task).unwrap();
+            assert_eq!(actual.outputs["out"].handle, 88);
+            assert!(state.release_handles.is_empty());
+            assert_eq!(state.destroy_count, 0);
+        }
+        assert_eq!(state.release_handles, vec![88]);
+        assert_eq!(state.destroy_count, 1);
     }
 
     #[test]
