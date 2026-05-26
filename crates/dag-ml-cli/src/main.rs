@@ -25,6 +25,12 @@ use dag_ml_core::{
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_PROCESS_TIMEOUT_MS: u64 = 30_000;
+const PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION: u32 = 1;
+const PROCESS_ADAPTER_PROTOCOL: &str = "dag-ml-process-adapter";
+const PROCESS_ADAPTER_MODE_ONE_SHOT: &str = "one_shot";
+const PROCESS_ADAPTER_MODE_JSONL: &str = "jsonl";
+const PROCESS_ADAPTER_CAP_NODE_TASK_JSON: &str = "node_task_json_v1";
+const PROCESS_ADAPTER_CAP_NODE_RESULT_JSON: &str = "node_result_json_v1";
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -1931,6 +1937,15 @@ struct ProcessRuntimeController {
     adapter: PathBuf,
 }
 
+#[derive(Debug, Deserialize)]
+struct ProcessAdapterDescription {
+    schema_version: u32,
+    protocol: String,
+    adapter_id: String,
+    supported_modes: BTreeSet<String>,
+    capabilities: BTreeSet<String>,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ProcessAdapterRuntimeConfig {
     process_workers: usize,
@@ -2456,6 +2471,7 @@ fn process_runtime_controllers(
     plan: &dag_ml_core::ExecutionPlan,
     adapter: PathBuf,
 ) -> Result<RuntimeControllerRegistry> {
+    validate_process_adapter_description(&adapter, ProcessAdapterMode::OneShot)?;
     let mut registry = RuntimeControllerRegistry::new();
     for controller_id in plan.controller_manifests.keys() {
         registry.register(Box::new(ProcessRuntimeController {
@@ -2486,6 +2502,7 @@ fn persistent_process_runtime_controllers(
     config: ProcessAdapterRuntimeConfig,
 ) -> Result<RuntimeControllerRegistry> {
     validate_process_runtime_config(true, &config)?;
+    validate_process_adapter_description(&adapter, ProcessAdapterMode::Jsonl)?;
     let mut registry = RuntimeControllerRegistry::new();
     for controller_id in plan.controller_manifests.keys() {
         let mut sessions = Vec::with_capacity(config.process_workers);
@@ -2541,6 +2558,84 @@ fn validate_process_runtime_config(
     Ok(())
 }
 
+fn validate_process_adapter_description(
+    adapter: &Path,
+    mode: ProcessAdapterMode,
+) -> Result<ProcessAdapterDescription> {
+    let output = process_adapter_command(adapter, ProcessAdapterMode::Describe)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run adapter `{}` describe handshake",
+                adapter.display()
+            )
+        })?;
+    if !output.status.success() {
+        bail!(
+            "adapter `{}` describe handshake exited with status {}: {}",
+            adapter.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    if output.stdout.is_empty() {
+        bail!(
+            "adapter `{}` describe handshake returned empty stdout",
+            adapter.display()
+        );
+    }
+    let description: ProcessAdapterDescription = serde_json::from_slice(&output.stdout)
+        .with_context(|| {
+            format!(
+                "adapter `{}` describe handshake returned invalid JSON",
+                adapter.display()
+            )
+        })?;
+    if description.schema_version != PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION {
+        bail!(
+            "adapter `{}` has unsupported description schema version {}",
+            adapter.display(),
+            description.schema_version
+        );
+    }
+    if description.protocol != PROCESS_ADAPTER_PROTOCOL {
+        bail!(
+            "adapter `{}` has unsupported protocol `{}`",
+            adapter.display(),
+            description.protocol
+        );
+    }
+    if description.adapter_id.trim().is_empty() {
+        bail!(
+            "adapter `{}` returned an empty adapter_id",
+            adapter.display()
+        );
+    }
+    let mode_name = mode.describe_name();
+    if !description.supported_modes.contains(mode_name) {
+        bail!(
+            "adapter `{}` does not support required mode `{}`",
+            adapter.display(),
+            mode_name
+        );
+    }
+    for capability in [
+        PROCESS_ADAPTER_CAP_NODE_TASK_JSON,
+        PROCESS_ADAPTER_CAP_NODE_RESULT_JSON,
+    ] {
+        if !description.capabilities.contains(capability) {
+            bail!(
+                "adapter `{}` is missing required capability `{}`",
+                adapter.display(),
+                capability
+            );
+        }
+    }
+    Ok(description)
+}
+
 fn process_worker_index_for_task(task: &NodeTask, worker_count: usize) -> usize {
     debug_assert!(worker_count > 0);
     let variant = task
@@ -2593,6 +2688,17 @@ fn observed_persistent_process_worker_count(persistent: bool, ctx: &RunContext) 
 enum ProcessAdapterMode {
     OneShot,
     Jsonl,
+    Describe,
+}
+
+impl ProcessAdapterMode {
+    fn describe_name(self) -> &'static str {
+        match self {
+            Self::OneShot => PROCESS_ADAPTER_MODE_ONE_SHOT,
+            Self::Jsonl => PROCESS_ADAPTER_MODE_JSONL,
+            Self::Describe => "describe",
+        }
+    }
 }
 
 fn process_adapter_command(adapter: &Path, mode: ProcessAdapterMode) -> ProcessCommand {
@@ -2604,8 +2710,14 @@ fn process_adapter_command(adapter: &Path, mode: ProcessAdapterMode) -> ProcessC
     } else {
         ProcessCommand::new(adapter.as_os_str())
     };
-    if mode == ProcessAdapterMode::Jsonl {
-        command.arg("--jsonl");
+    match mode {
+        ProcessAdapterMode::OneShot => {}
+        ProcessAdapterMode::Jsonl => {
+            command.arg("--jsonl");
+        }
+        ProcessAdapterMode::Describe => {
+            command.arg("--describe");
+        }
     }
     command
 }

@@ -1271,6 +1271,38 @@ fn cli_selects_builds_and_validates_replay_bundle() {
 }
 
 #[test]
+fn process_adapters_describe_supported_protocol_modes() {
+    let root = repo_root();
+    for adapter in [
+        "examples/adapters/python_process_controller.py",
+        "examples/adapters/sklearn_process_controller.py",
+        "examples/adapters/flaky_process_controller.py",
+    ] {
+        let describe = Command::new("python3")
+            .current_dir(&root)
+            .args([adapter, "--describe"])
+            .output()
+            .expect("failed to run process adapter describe handshake");
+        assert!(
+            describe.status.success(),
+            "adapter `{adapter}` describe failed: {}",
+            String::from_utf8_lossy(&describe.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&describe.stdout);
+        assert!(
+            stdout.contains("\"protocol\": \"dag-ml-process-adapter\"")
+                && stdout.contains("\"schema_version\": 1")
+                && stdout.contains("\"one_shot\"")
+                && stdout.contains("\"jsonl\"")
+                && stdout.contains("\"node_task_json_v1\"")
+                && stdout.contains("\"node_result_json_v1\""),
+            "unexpected adapter `{adapter}` describe output: {}",
+            stdout
+        );
+    }
+}
+
+#[test]
 fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() {
     let root = repo_root();
     let timeout_marker_dir = std::env::temp_dir().join(format!(

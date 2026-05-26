@@ -47,12 +47,14 @@ The CLI can invoke an external Python script per `NodeTask` either one-shot,
 as a single persistent JSONL process, or as a prewarmed persistent worker pool
 per controller. Pool routing spreads `FIT_CV` by node/variant/fold while keeping
 `REFIT` and `PREDICT` sticky by node/variant so stateful artifact handles replay
-on the worker that produced them. Persistent workers are guarded by
-coordinator-side timeouts and opt-in retry/restart, with a flaky adapter fixture
-covering timeout refusal and recovery. A stateful sklearn smoke now fits a real
-sklearn pipeline during `REFIT`, stores it behind an opaque model handle, and
-replays `PREDICT` through that handle in the same persistent pool. This is
-intentionally not yet a production Python binding or native worker runtime.
+on the worker that produced them. Process adapters must expose a `--describe`
+JSON handshake so the CLI can reject unsupported protocol versions or modes
+before a campaign starts. Persistent workers are guarded by coordinator-side
+timeouts and opt-in retry/restart, with a flaky adapter fixture covering timeout
+refusal and recovery. A stateful sklearn smoke now fits a real sklearn pipeline
+during `REFIT`, stores it behind an opaque model handle, and replays `PREDICT`
+through that handle in the same persistent pool. This is intentionally not yet a
+production Python binding or native worker runtime.
 
 ## Phase 3: Integration With `dag-ml-data`
 
