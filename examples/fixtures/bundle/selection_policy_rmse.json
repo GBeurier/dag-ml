@@ -4,5 +4,6 @@
     "name": "rmse",
     "objective": "minimize"
   },
+  "required_metric_level": "sample",
   "require_finite": true
 }

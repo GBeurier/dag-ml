@@ -99,7 +99,8 @@ Implemented:
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate
-  selection and stable tie-breaking;
+  selection, stable tie-breaking and optional metric-level guards that reject
+  sample/target/group score mismatches before ranking;
 - identity-aligned regression metric reports over validated sample, target and
   group prediction blocks (`mse`, `rmse`, `mae`, `r2`), with finite score
   validation, prediction origin traceability and direct conversion to
