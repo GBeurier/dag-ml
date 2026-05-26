@@ -97,6 +97,9 @@ Implemented:
   group-aware splits, train-only augmentation, branch model variants,
   heterogeneous prediction+raw-data merge variants, OOF-based selection and
   final refit report;
+- CLI validator for the sklearn complex demonstrator that revalidates the OOF
+  campaign in Rust, recomputes branch/merge selections from report metrics and
+  checks final-refit feature/sample contracts;
 - C ABI graph validation entry point;
 - `dag-ml-data` fixture integration through schema, plan and relation
   fingerprints;
@@ -118,6 +121,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Extend the sklearn adapter smoke from the minimal graph to the complex
-branch/merge demonstrator so OOF selection, refit artifacts and replay are
-validated together.
+Move the sklearn complex branch/merge path from report-level validation toward
+runtime `NodeTask`/`NodeResult` execution so OOF selection, refit artifacts and
+replay are validated together inside the scheduler.

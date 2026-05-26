@@ -46,6 +46,11 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_sklearn_demo_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_sklearn_complex_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
 
     let select = Command::new(cli())
         .current_dir(&root)
@@ -467,6 +472,56 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             "unexpected run-process-refit-replay output: {}",
             sklearn_stdout
         );
+
+        let sklearn_demo = Command::new("python3")
+            .current_dir(&root)
+            .args([
+                "examples/sklearn_complex_oof_demo.py",
+                "--out-dir",
+                temp_sklearn_demo_dir
+                    .to_str()
+                    .expect("temp path is valid utf-8"),
+                "--seed",
+                "20260526",
+            ])
+            .output()
+            .expect("failed to run sklearn complex demo");
+        assert!(
+            sklearn_demo.status.success(),
+            "sklearn complex demo failed: {}",
+            String::from_utf8_lossy(&sklearn_demo.stderr)
+        );
+        let sklearn_demo_campaign = temp_sklearn_demo_dir.join("sklearn_complex_oof_campaign.json");
+        let sklearn_demo_report = temp_sklearn_demo_dir.join("sklearn_complex_report.json");
+        let validate_sklearn_demo = Command::new(cli())
+            .current_dir(&root)
+            .args([
+                "validate-sklearn-complex-demo",
+                "--campaign",
+                sklearn_demo_campaign
+                    .to_str()
+                    .expect("temp path is valid utf-8"),
+                "--report",
+                sklearn_demo_report
+                    .to_str()
+                    .expect("temp path is valid utf-8"),
+            ])
+            .output()
+            .expect("failed to run validate-sklearn-complex-demo");
+        assert!(
+            validate_sklearn_demo.status.success(),
+            "validate-sklearn-complex-demo failed: {}",
+            String::from_utf8_lossy(&validate_sklearn_demo.stderr)
+        );
+        let validate_sklearn_stdout = String::from_utf8_lossy(&validate_sklearn_demo.stdout);
+        assert!(
+            validate_sklearn_stdout.contains("valid sklearn complex demo: 60 sample(s)")
+                && validate_sklearn_stdout.contains("9 OOF column(s)")
+                && validate_sklearn_stdout.contains("3 branch selection(s)")
+                && validate_sklearn_stdout.contains("merge:m1.pred_meta_original.meta:ridge"),
+            "unexpected validate-sklearn-complex-demo output: {}",
+            validate_sklearn_stdout
+        );
     }
 
     let _ = std::fs::remove_file(temp_bundle);
@@ -475,6 +530,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     let _ = std::fs::remove_file(temp_refit_request);
     let _ = std::fs::remove_file(temp_process_refit_request);
     let _ = std::fs::remove_file(temp_selection);
+    let _ = std::fs::remove_dir_all(temp_sklearn_demo_dir);
 }
 
 fn unique_suffix() -> u128 {

@@ -11,11 +11,11 @@ use dag_ml_core::{
     select_candidate_groups, validate_oof_campaign, ArtifactId, BundleId, CampaignSpec,
     CandidateScore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
     DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, GraphSpec, HandleKind,
-    HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeId,
-    NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock, PredictionPartition,
-    RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId, RuntimeController,
-    RuntimeControllerRegistry, SampleId, SelectionDecision, SelectionPolicy, SequentialScheduler,
-    VariantId,
+    HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
+    MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock,
+    PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId,
+    RuntimeController, RuntimeControllerRegistry, SampleId, SelectionDecision, SelectionMetric,
+    SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +38,12 @@ enum Command {
     },
     FingerprintOofCampaign {
         path: PathBuf,
+    },
+    ValidateSklearnComplexDemo {
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        report: PathBuf,
     },
     ValidateExecutionPlan {
         #[arg(long)]
@@ -303,6 +309,19 @@ fn main() -> Result<()> {
             let fingerprint = oof_campaign_fingerprint(&campaign)
                 .with_context(|| format!("invalid OOF campaign at {}", path.display()))?;
             println!("{fingerprint}");
+        }
+        Command::ValidateSklearnComplexDemo { campaign, report } => {
+            let campaign: OofCampaign = read_json(&campaign, "sklearn complex OOF campaign")?;
+            let report: serde_json::Value = read_json(&report, "sklearn complex report")?;
+            let summary = validate_sklearn_complex_demo(&campaign, &report)
+                .with_context(|| "sklearn complex demo validation failed")?;
+            println!(
+                "valid sklearn complex demo: {} sample(s), {} OOF column(s), {} branch selection(s), merge={}",
+                summary.sample_count,
+                summary.oof_column_count,
+                summary.branch_selection_count,
+                summary.selected_merge_node
+            );
         }
         Command::ValidateExecutionPlan {
             graph,
@@ -770,6 +789,315 @@ struct BundleBuildSpec {
     pub refit_artifacts: Vec<RefitArtifactRecord>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+struct SklearnComplexDemoSummary {
+    sample_count: usize,
+    oof_column_count: usize,
+    branch_selection_count: usize,
+    selected_merge_node: String,
+}
+
+fn validate_sklearn_complex_demo(
+    campaign: &OofCampaign,
+    report: &serde_json::Value,
+) -> Result<SklearnComplexDemoSummary> {
+    let matrix = validate_oof_campaign(campaign)?;
+    let sample_count = json_usize(report, "sample_count")?;
+    if sample_count != matrix.sample_ids.len() {
+        bail!(
+            "report sample_count={} but OOF campaign has {} sample(s)",
+            sample_count,
+            matrix.sample_ids.len()
+        );
+    }
+    if json_usize(report, "observation_count")? < sample_count {
+        bail!("observation_count must be greater than or equal to sample_count");
+    }
+
+    let policy = SelectionPolicy {
+        id: "select:sklearn_complex.rmse".to_string(),
+        metric: SelectionMetric {
+            name: "rmse".to_string(),
+            objective: MetricObjective::Minimize,
+        },
+        require_finite: true,
+    };
+    let branch_candidates = metric_candidates(report, "branch_variant_metrics")?;
+    let branch_groups = branch_groups_from_report(report)?;
+    let branch_decisions = select_candidate_groups(&policy, &branch_candidates, &branch_groups)?;
+    assert_report_branch_selections(report, &branch_decisions)?;
+
+    let merge_candidates = metric_candidates(report, "merge_variant_metrics")?;
+    let merge_decision = select_candidate(&policy, &merge_candidates)?;
+    assert_report_merge_selection(report, &merge_decision)?;
+    assert_report_refit_contract(report, &branch_decisions, &merge_decision)?;
+    assert_report_leakage_controls(report)?;
+
+    Ok(SklearnComplexDemoSummary {
+        sample_count,
+        oof_column_count: matrix.columns.len(),
+        branch_selection_count: branch_decisions.len(),
+        selected_merge_node: merge_decision.selected_candidate_id,
+    })
+}
+
+fn metric_candidates(report: &serde_json::Value, key: &str) -> Result<Vec<CandidateScore>> {
+    let metrics = report
+        .get(key)
+        .and_then(serde_json::Value::as_object)
+        .with_context(|| format!("report `{key}` must be an object"))?;
+    metrics
+        .iter()
+        .map(|(candidate_id, metrics)| {
+            let metrics = metrics.as_object().with_context(|| {
+                format!("report `{key}.{candidate_id}` must be a metric object")
+            })?;
+            Ok(CandidateScore {
+                candidate_id: candidate_id.clone(),
+                metrics: metrics
+                    .iter()
+                    .map(|(name, value)| {
+                        let value = value.as_f64().with_context(|| {
+                            format!("metric `{key}.{candidate_id}.{name}` must be numeric")
+                        })?;
+                        Ok((name.clone(), value))
+                    })
+                    .collect::<Result<BTreeMap<_, _>>>()?,
+                metadata: BTreeMap::new(),
+            })
+        })
+        .collect()
+}
+
+fn branch_groups_from_report(report: &serde_json::Value) -> Result<BTreeMap<String, Vec<String>>> {
+    let groups = report
+        .pointer("/sklearn_workflow/branch_variants")
+        .and_then(serde_json::Value::as_object)
+        .with_context(|| "report sklearn_workflow.branch_variants must be an object")?;
+    groups
+        .iter()
+        .map(|(group_id, candidates)| {
+            let candidates = candidates.as_array().with_context(|| {
+                format!("report sklearn_workflow.branch_variants.{group_id} must be an array")
+            })?;
+            Ok((
+                group_id.clone(),
+                candidates
+                    .iter()
+                    .map(|candidate| {
+                        candidate
+                            .as_str()
+                            .map(ToString::to_string)
+                            .with_context(|| {
+                                format!(
+                                    "report sklearn_workflow.branch_variants.{group_id} must contain strings"
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ))
+        })
+        .collect()
+}
+
+fn assert_report_branch_selections(
+    report: &serde_json::Value,
+    decisions: &BTreeMap<String, SelectionDecision>,
+) -> Result<()> {
+    let selected = report
+        .get("selected_branch_variants")
+        .and_then(serde_json::Value::as_object)
+        .with_context(|| "report selected_branch_variants must be an object")?;
+    if selected.len() != decisions.len() {
+        bail!(
+            "report has {} branch selection(s), core recomputed {}",
+            selected.len(),
+            decisions.len()
+        );
+    }
+    for (branch_id, decision) in decisions {
+        let reported = selected
+            .get(branch_id)
+            .with_context(|| format!("report missing selected branch `{branch_id}`"))?;
+        let reported_node = json_string_at(reported, "producer_node")?;
+        if reported_node != decision.selected_candidate_id {
+            bail!(
+                "branch `{branch_id}` selected `{reported_node}` in report but core selected `{}`",
+                decision.selected_candidate_id
+            );
+        }
+        let reported_score = json_f64_at(reported, "/score/rmse")?;
+        assert_close(
+            reported_score,
+            decision.selected_score,
+            &format!("branch `{branch_id}` selected rmse"),
+        )?;
+    }
+    Ok(())
+}
+
+fn assert_report_merge_selection(
+    report: &serde_json::Value,
+    decision: &SelectionDecision,
+) -> Result<()> {
+    let selected = report
+        .get("selected_merge_variant")
+        .with_context(|| "report missing selected_merge_variant")?;
+    let reported_node = json_string_at(selected, "producer_node")?;
+    if reported_node != decision.selected_candidate_id {
+        bail!(
+            "report selected merge `{reported_node}` but core selected `{}`",
+            decision.selected_candidate_id
+        );
+    }
+    let reported_score = json_f64_at(selected, "/score/rmse")?;
+    assert_close(
+        reported_score,
+        decision.selected_score,
+        "merge selected rmse",
+    )
+}
+
+fn assert_report_refit_contract(
+    report: &serde_json::Value,
+    branch_decisions: &BTreeMap<String, SelectionDecision>,
+    merge_decision: &SelectionDecision,
+) -> Result<()> {
+    let final_refit = report
+        .get("final_refit")
+        .with_context(|| "report missing final_refit")?;
+    let reported_base_nodes = final_refit
+        .get("selected_base_nodes")
+        .and_then(serde_json::Value::as_array)
+        .with_context(|| "report final_refit.selected_base_nodes must be an array")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(ToString::to_string)
+                .with_context(|| "final_refit.selected_base_nodes must contain strings")
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    let expected_base_nodes = branch_decisions
+        .values()
+        .map(|decision| decision.selected_candidate_id.clone())
+        .collect::<BTreeSet<_>>();
+    if reported_base_nodes != expected_base_nodes {
+        bail!("final_refit selected_base_nodes do not match core branch selections");
+    }
+    let selected_merge_node = json_string_at(final_refit, "selected_merge_node")?;
+    if selected_merge_node != merge_decision.selected_candidate_id {
+        bail!(
+            "final_refit selected merge `{selected_merge_node}` but core selected `{}`",
+            merge_decision.selected_candidate_id
+        );
+    }
+    let sample_count = json_usize(report, "sample_count")?;
+    let merge_refit_samples = json_usize_at(final_refit, "merge_refit_samples")?;
+    if merge_refit_samples != sample_count {
+        bail!(
+            "final_refit merge_refit_samples={} but sample_count={sample_count}",
+            merge_refit_samples
+        );
+    }
+
+    let raw_shape = report
+        .get("original_sample_feature_shape")
+        .and_then(serde_json::Value::as_array)
+        .with_context(|| "report original_sample_feature_shape must be an array")?;
+    let raw_width = raw_shape
+        .get(1)
+        .and_then(serde_json::Value::as_u64)
+        .with_context(|| "report original_sample_feature_shape[1] must be an integer")?
+        as usize;
+    let original_mode = report
+        .pointer("/selected_merge_variant/original_feature_mode")
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| "report selected_merge_variant.original_feature_mode must be a string")?;
+    let expected_width = match original_mode {
+        "none" => branch_decisions.len(),
+        "metadata" => branch_decisions.len() + 4,
+        "all" => branch_decisions.len() + raw_width,
+        other => bail!("unknown selected merge original_feature_mode `{other}`"),
+    };
+    let reported_width = json_usize_at(final_refit, "merge_refit_features")?;
+    if reported_width != expected_width {
+        bail!(
+            "final_refit merge_refit_features={} but expected {expected_width}",
+            reported_width
+        );
+    }
+    Ok(())
+}
+
+fn assert_report_leakage_controls(report: &serde_json::Value) -> Result<()> {
+    let controls = report
+        .get("leakage_controls")
+        .and_then(serde_json::Value::as_object)
+        .with_context(|| "report leakage_controls must be an object")?;
+    for key in [
+        "split_unit",
+        "group_boundary",
+        "validation_augmentation",
+        "branch_selection",
+        "merge_selection",
+        "stacking_features",
+        "heterogeneous_merge",
+        "aggregation",
+        "refit",
+    ] {
+        if !controls.contains_key(key) {
+            bail!("report leakage_controls missing `{key}`");
+        }
+    }
+    if controls
+        .get("validation_augmentation")
+        .and_then(serde_json::Value::as_str)
+        != Some("disabled")
+    {
+        bail!("report leakage_controls.validation_augmentation must be disabled");
+    }
+    Ok(())
+}
+
+fn json_usize(value: &serde_json::Value, key: &str) -> Result<usize> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .with_context(|| format!("report `{key}` must be an integer"))
+}
+
+fn json_usize_at(value: &serde_json::Value, key: &str) -> Result<usize> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .with_context(|| format!("report field `{key}` must be an integer"))
+}
+
+fn json_string_at(value: &serde_json::Value, key: &str) -> Result<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .with_context(|| format!("report field `{key}` must be a string"))
+}
+
+fn json_f64_at(value: &serde_json::Value, pointer: &str) -> Result<f64> {
+    value
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_f64)
+        .with_context(|| format!("report field `{pointer}` must be numeric"))
+}
+
+fn assert_close(actual: f64, expected: f64, label: &str) -> Result<()> {
+    let tolerance = 1.0e-12_f64.max(expected.abs() * 1.0e-12);
+    if (actual - expected).abs() > tolerance {
+        bail!("{label} mismatch: report={actual}, core={expected}");
+    }
+    Ok(())
 }
 
 struct CapturedRefitBundleInput<'a> {
