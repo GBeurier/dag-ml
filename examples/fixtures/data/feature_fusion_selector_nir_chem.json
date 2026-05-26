@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "feature_set_id": "fused",
+  "sources": [
+    {
+      "source_id": "nir",
+      "feature_set_id": "nir_x"
+    },
+    {
+      "source_id": "chem",
+      "feature_set_id": "chem_x"
+    }
+  ],
+  "alignment": {
+    "mode": "inner",
+    "sample_ids": ["S001", "S002"],
+    "masks": [
+      {
+        "source_id": "nir",
+        "sample_ids": ["S001", "S002"],
+        "present": [true, true]
+      },
+      {
+        "source_id": "chem",
+        "sample_ids": ["S001", "S002"],
+        "present": [true, true]
+      }
+    ]
+  },
+  "policy": {
+    "namespace_columns": true
+  }
+}

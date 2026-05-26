@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/feature_fusion_selector.v1.schema.json",
+  "title": "DAG-ML Data Feature Fusion Selector v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "feature_set_id", "sources", "alignment"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "feature_set_id": {
+      "$ref": "#/$defs/non_empty_id"
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "alignment": {
+      "$ref": "#/$defs/alignment"
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace_columns": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "non_empty_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "feature_set_id"],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/non_empty_id"
+        },
+        "feature_set_id": {
+          "$ref": "#/$defs/non_empty_id"
+        },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "alignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "sample_ids", "masks"],
+      "properties": {
+        "mode": {
+          "enum": ["inner", "left", "outer"]
+        },
+        "sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/non_empty_id"
+          }
+        },
+        "masks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/presence_mask"
+          }
+        }
+      }
+    },
+    "presence_mask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "sample_ids", "present"],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/non_empty_id"
+        },
+        "sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/non_empty_id"
+          }
+        },
+        "present": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}
