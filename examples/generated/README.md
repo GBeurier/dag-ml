@@ -48,6 +48,7 @@ cargo run -p dag-ml-cli -- run-process-cv-refit-replay --graph examples/branch_m
 cargo run -p dag-ml-cli -- build-bundle --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --bundle-spec examples/fixtures/bundle/bundle_build_spec_minimal.json --output examples/generated/execution_bundle_minimal.json --plan-id plan:cli.bundle
 cargo run -p dag-ml-cli -- export-artifact-manifest --bundle examples/generated/execution_bundle_minimal.json --output-dir examples/generated/artifact_manifest_minimal
 cargo run -p dag-ml-cli -- validate-artifact-manifest --bundle examples/generated/execution_bundle_minimal.json --manifest-dir examples/generated/artifact_manifest_minimal
+cargo run -p dag-ml-cli -- export-research-provenance --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --bundle examples/generated/execution_bundle_minimal.json --artifact-manifest examples/generated/artifact_manifest_minimal --output-dir examples/generated/research_provenance_minimal --plan-id plan:cli.bundle
 cargo run -p dag-ml-cli -- run-mock-refit-bundle --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_sample12.json --bundle-id bundle:cli.refit.capture --output examples/generated/execution_bundle_refit_capture.json --plan-id plan:cli.refit.capture
 cargo run -p dag-ml-cli -- run-process-refit-bundle --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_sample12.json --adapter examples/adapters/python_process_controller.py --persistent --bundle-id bundle:cli.process.refit.capture --output examples/generated/execution_bundle_process_refit_capture.json --plan-id plan:cli.process.refit.capture
 cargo run -p dag-ml-cli -- run-process-refit-replay --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_sample12.json --adapter examples/adapters/sklearn_process_controller.py --bundle-id bundle:cli.sklearn.refit.replay --plan-id plan:cli.sklearn.refit.replay
@@ -86,3 +87,7 @@ persistent adapter process. The artifact manifest export writes a portable
 revalidate it against the bundle, refusing tampered, mismatched or non-portable
 entries. This path is manifest-only: it never reads, writes or deserializes
 artifact payloads, and persistent artifact payload stores remain future work.
+The research provenance export validates the same plan/bundle/manifest inputs
+and writes `lineage.prov.jsonld` plus `ro-crate-metadata.json` as a
+standards-facing publication view; DAG-ML's internal fingerprints, replay
+requirements and leakage-safety contracts remain the source of truth.

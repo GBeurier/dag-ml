@@ -12,7 +12,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use dag_ml_core::{
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
-    build_prediction_cache_payload, build_prediction_cache_record, oof_campaign_fingerprint,
+    build_prediction_cache_payload, build_prediction_cache_record,
+    build_research_provenance_export, oof_campaign_fingerprint,
     regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
     validate_oof_campaign, AggregatedPredictionBlock, ArtifactId, BundleId,
@@ -26,7 +27,7 @@ use dag_ml_core::{
     RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
     ReplayPhaseRequest, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
     RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric,
-    SelectionPolicy, SequentialScheduler, VariantId,
+    SelectionPolicy, SequentialScheduler, VariantId, PROV_JSONLD_FILE, RO_CRATE_METADATA_FILE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -539,6 +540,28 @@ enum Command {
         bundle: PathBuf,
         #[arg(long)]
         manifest_dir: PathBuf,
+    },
+    ExportResearchProvenance {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        lineage: Option<PathBuf>,
+        #[arg(long)]
+        artifact_manifest: Option<PathBuf>,
+        #[arg(long)]
+        prediction_cache_store: Option<PathBuf>,
+        #[arg(long = "envelope")]
+        envelopes: Vec<String>,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long, default_value = "plan:cli.bundle")]
+        plan_id: String,
     },
     RunMockReplay {
         #[arg(long)]
@@ -1376,6 +1399,74 @@ fn main() -> Result<()> {
                 store.manifest().bundle_id,
                 store.manifest().artifacts.len(),
                 manifest_dir.display()
+            );
+        }
+        Command::ExportResearchProvenance {
+            graph,
+            campaign,
+            controllers,
+            bundle,
+            lineage,
+            artifact_manifest,
+            prediction_cache_store,
+            envelopes,
+            output_dir,
+            plan_id,
+        } => {
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let lineage_records: Vec<LineageRecord> = lineage
+                .as_ref()
+                .map(|path| read_json(path, "lineage record list"))
+                .transpose()?
+                .unwrap_or_default();
+            let envelope_map = read_replay_envelopes(&envelopes)?;
+            let prediction_cache_store = prediction_cache_store
+                .as_ref()
+                .map(|store_dir| validate_file_prediction_cache_store(&bundle, store_dir))
+                .transpose()?;
+            let artifact_manifest_store = artifact_manifest
+                .as_ref()
+                .map(|manifest_dir| validate_file_artifact_manifest_store(&bundle, manifest_dir))
+                .transpose()?;
+            let export = build_research_provenance_export(
+                &plan,
+                &bundle,
+                &lineage_records,
+                &envelope_map,
+                prediction_cache_store
+                    .as_ref()
+                    .map(|store| store.manifest()),
+                artifact_manifest_store
+                    .as_ref()
+                    .map(|store| store.manifest()),
+            )
+            .with_context(|| "failed to build research provenance export")?;
+
+            std::fs::create_dir_all(&output_dir).with_context(|| {
+                format!(
+                    "failed to create research provenance output dir {}",
+                    output_dir.display()
+                )
+            })?;
+            emit_json(
+                Some(&output_dir.join(PROV_JSONLD_FILE)),
+                &export.prov_jsonld,
+                "research provenance PROV",
+            )?;
+            emit_json(
+                Some(&output_dir.join(RO_CRATE_METADATA_FILE)),
+                &export.ro_crate_metadata,
+                "research provenance RO-Crate metadata",
+            )?;
+            println!(
+                "wrote research provenance export: bundle={}, lineage record(s)={}, data envelope(s)={}, prediction cache manifest={}, artifact manifest={}, dir={}",
+                bundle.bundle_id,
+                lineage_records.len(),
+                envelope_map.len(),
+                prediction_cache_store.is_some(),
+                artifact_manifest_store.is_some(),
+                output_dir.display()
             );
         }
         Command::RunMockReplay {

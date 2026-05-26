@@ -199,6 +199,12 @@ Implemented:
   --artifact-manifest` reports the manifest entry count while refusing
   mismatched or non-portable entries; this path is manifest-only and never
   reads, writes or deserializes artifact payloads;
+- first research provenance export layer: core validates the execution plan,
+  bundle, optional lineage records, data envelopes, prediction-cache manifest
+  and artifact manifest before emitting `lineage.prov.jsonld` plus
+  `ro-crate-metadata.json`; this is a standards-facing export target for W3C
+  PROV/Workflow Run RO-Crate and keeps DAG-ML's stricter OOF, replay and
+  artifact contracts as the canonical internal model;
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;
