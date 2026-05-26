@@ -1550,6 +1550,7 @@ fn validate_sklearn_complex_demo(
             name: "rmse".to_string(),
             objective: MetricObjective::Minimize,
         },
+        required_metric_level: None,
         require_finite: true,
     };
     let branch_candidates = metric_candidates(report, "branch_variant_metrics")?;

@@ -387,7 +387,9 @@ FIT_CV requirements:
    prediction blocks (`mse`, `rmse`, `mae`, `r2`) and refuses positional-only
    or mismatched unit sets. Metric reports preserve the scored prediction
    origin: producer node, partition, optional fold and optional prediction id.
-5. Selection must declare which metric level is authoritative.
+5. Selection must declare which metric level is authoritative. Selection
+   policies can require a `metric_level`, and candidates whose metric metadata
+   is missing or comes from another level are rejected before ranking.
 6. OOF joins use the declared aggregation level and must not mix raw and
    aggregated predictions implicitly.
 

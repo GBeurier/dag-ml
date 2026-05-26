@@ -1592,6 +1592,7 @@ mod tests {
                     name: "rmse".to_string(),
                     objective: MetricObjective::Minimize,
                 },
+                required_metric_level: None,
                 require_finite: true,
             },
             &[

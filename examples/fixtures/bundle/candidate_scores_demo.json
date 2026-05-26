@@ -6,7 +6,8 @@
       "r2": 0.51
     },
     "metadata": {
-      "branch": "branch:b0"
+      "branch": "branch:b0",
+      "metric_level": "sample"
     }
   },
   {
@@ -16,7 +17,8 @@
       "r2": 0.59
     },
     "metadata": {
-      "branch": "branch:b0"
+      "branch": "branch:b0",
+      "metric_level": "sample"
     }
   },
   {
@@ -26,7 +28,8 @@
       "r2": 0.56
     },
     "metadata": {
-      "merge": "predictions"
+      "merge": "predictions",
+      "metric_level": "sample"
     }
   },
   {
@@ -36,7 +39,8 @@
       "r2": 0.64
     },
     "metadata": {
-      "merge": "predictions+original"
+      "merge": "predictions+original",
+      "metric_level": "sample"
     }
   }
 ]

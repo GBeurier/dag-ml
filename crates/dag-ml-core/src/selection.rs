@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, Result};
+use crate::policy::PredictionLevel;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +68,8 @@ impl CandidateScore {
 pub struct SelectionPolicy {
     pub id: String,
     pub metric: SelectionMetric,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_metric_level: Option<PredictionLevel>,
     #[serde(default = "default_true")]
     pub require_finite: bool,
 }
@@ -99,6 +102,8 @@ pub struct SelectionDecision {
     pub selected_candidate_id: String,
     pub metric_name: String,
     pub objective: MetricObjective,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_level: Option<PredictionLevel>,
     pub selected_score: f64,
     #[serde(default)]
     pub ranked_candidates: Vec<RankedCandidate>,
@@ -183,6 +188,7 @@ pub fn select_candidate(
                 policy.id, candidate.candidate_id
             )));
         }
+        validate_candidate_metric_level(policy, candidate)?;
         let score = candidate
             .metrics
             .get(&policy.metric.name)
@@ -220,6 +226,7 @@ pub fn select_candidate(
         selected_candidate_id: selected.candidate_id.clone(),
         metric_name: policy.metric.name.clone(),
         objective: policy.metric.objective,
+        metric_level: policy.required_metric_level,
         selected_score: selected.score,
         ranked_candidates,
     };
@@ -292,6 +299,64 @@ fn compare_scores(
     score_order.then_with(|| left.0.cmp(&right.0))
 }
 
+fn validate_candidate_metric_level(
+    policy: &SelectionPolicy,
+    candidate: &CandidateScore,
+) -> Result<()> {
+    let Some(required_level) = policy.required_metric_level else {
+        return Ok(());
+    };
+    let Some(raw_level) = candidate.metadata.get("metric_level") else {
+        return Err(DagMlError::CampaignValidation(format!(
+            "candidate `{}` is missing required metric_level `{}`",
+            candidate.candidate_id,
+            prediction_level_name(required_level)
+        )));
+    };
+    let actual_level = match raw_level {
+        serde_json::Value::String(value) => parse_prediction_level(value).ok_or_else(|| {
+            DagMlError::CampaignValidation(format!(
+                "candidate `{}` has invalid metric_level `{value}`",
+                candidate.candidate_id
+            ))
+        })?,
+        _ => {
+            return Err(DagMlError::CampaignValidation(format!(
+                "candidate `{}` metric_level must be a string",
+                candidate.candidate_id
+            )));
+        }
+    };
+    if actual_level != required_level {
+        return Err(DagMlError::CampaignValidation(format!(
+            "candidate `{}` metric_level `{}` does not match required `{}`",
+            candidate.candidate_id,
+            prediction_level_name(actual_level),
+            prediction_level_name(required_level)
+        )));
+    }
+    Ok(())
+}
+
+fn parse_prediction_level(value: &str) -> Option<PredictionLevel> {
+    match value {
+        "observation" => Some(PredictionLevel::Observation),
+        "sample" => Some(PredictionLevel::Sample),
+        "target" => Some(PredictionLevel::Target),
+        "group" => Some(PredictionLevel::Group),
+        _ => None,
+    }
+}
+
+fn prediction_level_name(level: PredictionLevel) -> &'static str {
+    match level {
+        PredictionLevel::Observation => "observation",
+        PredictionLevel::Sample => "sample",
+        PredictionLevel::Target => "target",
+        PredictionLevel::Group => "group",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,6 +368,7 @@ mod tests {
                 name: "rmse".to_string(),
                 objective: MetricObjective::Minimize,
             },
+            required_metric_level: None,
             require_finite: true,
         }
     }
@@ -312,6 +378,17 @@ mod tests {
             candidate_id: id.to_string(),
             metrics: BTreeMap::from([("rmse".to_string(), rmse)]),
             metadata: BTreeMap::new(),
+        }
+    }
+
+    fn candidate_with_level(id: &str, rmse: f64, level: &str) -> CandidateScore {
+        CandidateScore {
+            candidate_id: id.to_string(),
+            metrics: BTreeMap::from([("rmse".to_string(), rmse)]),
+            metadata: BTreeMap::from([(
+                "metric_level".to_string(),
+                serde_json::Value::String(level.to_string()),
+            )]),
         }
     }
 
@@ -339,6 +416,33 @@ mod tests {
             &BTreeMap::from([("branch:b0".to_string(), vec!["model:a".to_string()])]),
         )
         .is_err());
+    }
+
+    #[test]
+    fn selection_policy_can_require_metric_level() {
+        let mut policy = rmse_policy();
+        policy.required_metric_level = Some(PredictionLevel::Sample);
+
+        let decision = select_candidate(
+            &policy,
+            &[
+                candidate_with_level("model:a", 1.0, "sample"),
+                candidate_with_level("model:b", 2.0, "sample"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(decision.selected_candidate_id, "model:a");
+        assert_eq!(decision.metric_level, Some(PredictionLevel::Sample));
+
+        assert!(select_candidate(
+            &policy,
+            &[
+                candidate_with_level("model:a", 1.0, "sample"),
+                candidate_with_level("model:b", 2.0, "target"),
+            ],
+        )
+        .is_err());
+        assert!(select_candidate(&policy, &[candidate("model:a", 1.0)]).is_err());
     }
 
     #[test]

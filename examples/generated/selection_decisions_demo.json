@@ -4,6 +4,7 @@
     "selected_candidate_id": "branch:b0.variant:pls",
     "metric_name": "rmse",
     "objective": "minimize",
+    "metric_level": "sample",
     "selected_score": 1.04,
     "ranked_candidates": [
       {
@@ -23,6 +24,7 @@
     "selected_candidate_id": "merge:m1.predictions_plus_original",
     "metric_name": "rmse",
     "objective": "minimize",
+    "metric_level": "sample",
     "selected_score": 0.98,
     "ranked_candidates": [
       {
