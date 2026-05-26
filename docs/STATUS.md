@@ -120,7 +120,7 @@ Implemented:
   metadata across `NodeTask.prediction_inputs`, bundle prediction
   requirements, cache records, payloads and file/columnar cache manifests;
   target/group cache records and payloads carry typed `PredictionUnitId`
-  `unit_ids`, and file/in-memory cache stores can validate, load and
+  `unit_ids`, and file/in-memory/columnar cache stores can validate, load and
   materialize aggregated replay handles without preloading them into the
   sample-level OOF store;
 - execution-bundle validation now checks selected candidates against the
@@ -160,17 +160,19 @@ Implemented:
   selection decisions for branch and merge choices, and keeps an OOF summary
   (producer, folds, samples, prediction width and targets) in bundle metadata;
 - materialized OOF prediction-cache payload sets for CV+refit bundles: payload
-  JSON stores the actual validation `PredictionBlock` values, validates by
-  cache id, requirement key, format, row/block counts and content fingerprints
-  against the bundle manifest, and refuses tampered payload values;
+  JSON stores the actual validation `PredictionBlock` or
+  `AggregatedPredictionBlock` values, validates by cache id, requirement key,
+  format, row/block counts and content fingerprints against the bundle
+  manifest, and refuses tampered payload values;
 - runtime prediction-cache store contract plus in-memory payload-backed store:
   replay loads exact validation OOF blocks through the store, validates them
   against bundle cache records, and asks the store to materialize controller
   prediction handles for OOF-dependent refit inputs;
 - columnar f64 prediction-cache store behind the same
-  `RuntimePredictionCacheStore` contract: validated payloads are converted once
-  into typed column buffers, exposed through deterministic manifests and used by
-  the CLI payload-backed replay path before controller handles are materialized;
+  `RuntimePredictionCacheStore` contract: validated sample and target/group
+  payloads are converted once into typed column buffers, exposed through
+  deterministic manifests and used by the CLI payload-backed replay path before
+  controller handles are materialized;
 - file-backed prediction-cache store: validated payload sets can be exported to
   a cache directory with a manifest plus one payload file per OOF requirement,
   reopened for replay, fully revalidated against the bundle and rejected if a
@@ -289,8 +291,8 @@ Not implemented yet:
 - full DSL compiler;
 - advanced search-space compiler/lowering beyond typed node-parameter
   overrides;
-- custom aggregation controllers and production typed/Arrow replay backends
-  for non-sample aggregated prediction blocks;
+- custom aggregation controllers and production persistent/Arrow replay
+  backends for non-sample aggregated prediction blocks;
 - persistent artifact stores and non-JSON/non-file-cache backends;
 - Arrow prediction storage and ABI-owned prediction tensors;
 - production host controller adapters with native libraries or

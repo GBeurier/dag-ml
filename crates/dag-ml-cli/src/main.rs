@@ -20,13 +20,13 @@ use dag_ml_core::{
     BundlePredictionRequirement, BundleReplayExecution, CampaignSpec, CandidateScore,
     ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
     DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, FilePredictionCacheStore,
-    GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
-    InMemoryPredictionCacheStore, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult,
-    NodeTask, OofCampaign, ParallelScheduler, Phase, PredictionBlock, PredictionLevel,
-    PredictionPartition, RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport,
-    RegressionTargetBlock, ReplayPhaseRequest, RunContext, RunId, RuntimeController,
-    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
-    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
+    GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId,
+    LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, ParallelScheduler,
+    Phase, PredictionBlock, PredictionLevel, PredictionPartition, RefitArtifactRecord,
+    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
+    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
+    RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric, SelectionPolicy,
+    SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -3437,7 +3437,6 @@ fn read_optional_prediction_cache_payload(
 enum CliPredictionCacheStore {
     Columnar(ColumnarPredictionCacheStore),
     File(FilePredictionCacheStore),
-    InMemory(InMemoryPredictionCacheStore),
 }
 
 impl CliPredictionCacheStore {
@@ -3445,7 +3444,6 @@ impl CliPredictionCacheStore {
         match self {
             Self::Columnar(store) => store.materialization_records().len(),
             Self::File(store) => store.materialization_records().len(),
-            Self::InMemory(store) => store.materialization_records().len(),
         }
     }
 }
@@ -3455,7 +3453,6 @@ impl RuntimePredictionCacheStore for CliPredictionCacheStore {
         match self {
             Self::Columnar(store) => store.load_blocks(requirement_key),
             Self::File(store) => store.load_blocks(requirement_key),
-            Self::InMemory(store) => store.load_blocks(requirement_key),
         }
     }
 
@@ -3466,7 +3463,6 @@ impl RuntimePredictionCacheStore for CliPredictionCacheStore {
         match self {
             Self::Columnar(store) => store.load_aggregated_blocks(requirement_key),
             Self::File(store) => store.load_aggregated_blocks(requirement_key),
-            Self::InMemory(store) => store.load_aggregated_blocks(requirement_key),
         }
     }
 
@@ -3477,7 +3473,6 @@ impl RuntimePredictionCacheStore for CliPredictionCacheStore {
         match self {
             Self::Columnar(store) => store.materialize(request),
             Self::File(store) => store.materialize(request),
-            Self::InMemory(store) => store.materialize(request),
         }
     }
 }
@@ -3491,16 +3486,6 @@ fn optional_prediction_cache_store(
         bail!("use either --prediction-cache-payload or --prediction-cache-store, not both");
     }
     if let Some(payloads) = payloads {
-        let has_aggregated_payloads = payloads
-            .caches
-            .iter()
-            .any(|payload| payload.prediction_level != PredictionLevel::Sample);
-        if has_aggregated_payloads {
-            return InMemoryPredictionCacheStore::from_payloads(bundle, payloads)
-                .map(CliPredictionCacheStore::InMemory)
-                .map(Some)
-                .with_context(|| "prediction cache payload set does not match bundle");
-        }
         return ColumnarPredictionCacheStore::from_payloads(bundle, payloads)
             .map(CliPredictionCacheStore::Columnar)
             .map(Some)
