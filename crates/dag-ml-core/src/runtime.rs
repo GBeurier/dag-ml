@@ -24,7 +24,7 @@ use crate::ids::{
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::{ExecutionPlan, NodePlan};
-use crate::policy::ShapeDelta;
+use crate::policy::{ShapeDelta, ShapeDeltaKind};
 use crate::rng::SeedContext;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -1464,6 +1464,7 @@ impl NodeResult {
                 task.node_plan.params_fingerprint
             )));
         }
+        validate_lineage_shape_fingerprints(&self.lineage, task)?;
         for (port, handle) in &self.outputs {
             if handle.owner_controller != task.node_plan.controller_id {
                 return Err(DagMlError::RuntimeValidation(format!(
@@ -1566,9 +1567,61 @@ impl NodeResult {
                     task.node_plan.node_id, delta.node_id
                 )));
             }
+            validate_shape_delta_for_task(delta, task)?;
         }
         self.lineage.validate()
     }
+}
+
+fn validate_lineage_shape_fingerprints(lineage: &LineageRecord, task: &NodeTask) -> Result<()> {
+    let Some(shape_plan) = &task.node_plan.shape_plan else {
+        if lineage.data_model_shape_fingerprint.is_some()
+            || lineage.aggregation_policy_fingerprint.is_some()
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` carries shape fingerprints but the node has no shape plan",
+                task.node_plan.node_id
+            )));
+        }
+        return Ok(());
+    };
+
+    if let Some(actual) = &lineage.data_model_shape_fingerprint {
+        let expected = stable_json_fingerprint(shape_plan)?;
+        if actual != &expected {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has data/model shape fingerprint `{actual}`, expected `{expected}`",
+                task.node_plan.node_id
+            )));
+        }
+    }
+    if let Some(actual) = &lineage.aggregation_policy_fingerprint {
+        let expected = stable_json_fingerprint(&shape_plan.aggregation_policy)?;
+        if actual != &expected {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has aggregation policy fingerprint `{actual}`, expected `{expected}`",
+                task.node_plan.node_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_shape_delta_for_task(delta: &ShapeDelta, task: &NodeTask) -> Result<()> {
+    let Some(shape_plan) = &task.node_plan.shape_plan else {
+        return Ok(());
+    };
+    if delta.kind == ShapeDeltaKind::Feature {
+        if let Some(expected) = &shape_plan.feature_schema_fingerprint {
+            if &delta.before_fingerprint != expected {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted feature shape delta from `{}`, expected current schema `{expected}`",
+                    task.node_plan.node_id, delta.before_fingerprint
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_prediction_scope(prediction: &PredictionBlock, task: &NodeTask) -> Result<()> {
@@ -3542,7 +3595,10 @@ mod tests {
     };
     use crate::oof::{PredictionBlock, PredictionPartition};
     use crate::plan::{build_execution_plan, CampaignSpec, SplitInvocation};
-    use crate::policy::{AggregationPolicy, LeakageUnitPolicy, SplitUnit};
+    use crate::policy::{
+        AggregationPolicy, DataModelShapePlan, FitBoundary, Granularity, LeakageUnitPolicy,
+        ShapeDelta, ShapeDeltaKind, SplitUnit,
+    };
     use crate::relation::{SampleRelation, SampleRelationSet};
     use serde_json::json;
 
@@ -6044,6 +6100,102 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("output `out`"));
+    }
+
+    #[test]
+    fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let initial_feature_schema = "a".repeat(64);
+        let updated_feature_schema = "b".repeat(64);
+        let shape_plan = DataModelShapePlan {
+            node_id: model_id.clone(),
+            input_granularity: Granularity::Sample,
+            target_granularity: Granularity::Sample,
+            fit_rows: FitBoundary::FoldTrain,
+            predict_rows: FitBoundary::FoldValidation,
+            feature_namespace: Some("raw.x".to_string()),
+            feature_schema_fingerprint: Some(initial_feature_schema.clone()),
+            target_space: "raw".to_string(),
+            aggregation_policy: AggregationPolicy::default(),
+            augmentation_policy: Default::default(),
+            selection_policy: Default::default(),
+        };
+        let plan = build_execution_plan(
+            "plan:result.validation.shape",
+            simple_graph(),
+            CampaignSpec {
+                id: "campaign:result.validation.shape".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: None,
+                generation: Default::default(),
+                shape_plans: BTreeMap::from([(model_id.clone(), shape_plan.clone())]),
+                data_bindings: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+            &manifests(),
+        )
+        .unwrap();
+        let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
+        let task = NodeTask {
+            run_id: RunId::new("run:result.validation.shape").unwrap(),
+            node_plan: node_plan.clone(),
+            phase: Phase::FitCv,
+            variant_id: None,
+            variant: None,
+            fold_id: None,
+            branch_path: Vec::new(),
+            input_handles: BTreeMap::new(),
+            data_views: BTreeMap::new(),
+            prediction_inputs: BTreeMap::new(),
+            seed: Some(99),
+        };
+        let controller = MockController {
+            id: node_plan.controller_id.clone(),
+            handle: 2,
+            emit_prediction: false,
+        };
+        let mut result = controller.invoke(&task).unwrap();
+        result.lineage.data_model_shape_fingerprint =
+            Some(stable_json_fingerprint(&shape_plan).unwrap());
+        result.lineage.aggregation_policy_fingerprint =
+            Some(stable_json_fingerprint(&shape_plan.aggregation_policy).unwrap());
+        result.shape_deltas = vec![ShapeDelta {
+            node_id: model_id.clone(),
+            kind: ShapeDeltaKind::Feature,
+            before_fingerprint: initial_feature_schema.clone(),
+            after_fingerprint: updated_feature_schema.clone(),
+            metadata: BTreeMap::from([(
+                "feature_namespace".to_string(),
+                serde_json::Value::String("selected.x".to_string()),
+            )]),
+        }];
+        result.validate_for_task(&task).unwrap();
+
+        let mut wrong_shape_fingerprint = result.clone();
+        wrong_shape_fingerprint.lineage.data_model_shape_fingerprint = Some("0".repeat(64));
+        assert!(wrong_shape_fingerprint
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("data/model shape fingerprint"));
+
+        let mut wrong_feature_delta = result.clone();
+        wrong_feature_delta.shape_deltas[0].before_fingerprint = "c".repeat(64);
+        assert!(wrong_feature_delta
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("expected current schema"));
+
+        let mut unchanged_delta = result;
+        unchanged_delta.shape_deltas[0].after_fingerprint = initial_feature_schema;
+        assert!(unchanged_delta
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("does not change fingerprint"));
     }
 
     #[test]

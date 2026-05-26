@@ -423,6 +423,10 @@ Shape-changing controllers must return a shape delta:
 | `prediction_delta` | probability output, repetition aggregation | prediction columns and aggregation level are recorded |
 
 The core validates deltas before downstream tasks can consume them.
+Feature deltas are checked against any declared
+`feature_schema_fingerprint`; lineage may also echo the data/model shape and
+aggregation-policy fingerprints, and when present those fingerprints must match
+the compiled `NodePlan`.
 
 ## Augmentation, Selection, Filtering And Fusion
 
@@ -439,6 +443,9 @@ Sample augmentation creates new observations or samples. Default policy:
 - an augmented row inherits target, group and fold boundary from its origin;
 - OOF and scoring are reported on original identities unless policy opts into
   augmented reporting.
+The default Rust contract rejects sample augmentation across all partitions, or
+sample augmentation without origin/target/group inheritance, unless the
+corresponding `AugmentationPolicy.unsafe_flags` entry is present.
 
 Forbidden by default:
 
@@ -470,6 +477,8 @@ Rules:
 
 - supervised feature selection fits only inside the current train boundary;
 - selected feature masks are artifacts with fold/refit lineage;
+- supervised feature selection must store masks so CV/refit replay can audit
+  which features were fitted inside each train boundary;
 - validation/test/final data only receive `apply`, never `fit`;
 - downstream feature joins must verify compatible selected schemas or use an
   explicit missing-feature policy;

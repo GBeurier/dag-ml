@@ -195,6 +195,8 @@ pub struct AugmentationPolicy {
     pub inherit_group: bool,
     #[serde(default = "default_true")]
     pub inherit_target: bool,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub unsafe_flags: BTreeSet<String>,
 }
 
 impl Default for AugmentationPolicy {
@@ -205,7 +207,68 @@ impl Default for AugmentationPolicy {
             require_origin_id: true,
             inherit_group: true,
             inherit_target: true,
+            unsafe_flags: BTreeSet::new(),
         }
+    }
+}
+
+impl AugmentationPolicy {
+    pub const ALLOW_SAMPLE_AUGMENTATION_ALL_PARTITIONS: &'static str =
+        "allow_sample_augmentation_all_partitions";
+    pub const ALLOW_SAMPLE_AUGMENTATION_WITHOUT_ORIGIN: &'static str =
+        "allow_sample_augmentation_without_origin";
+    pub const ALLOW_SAMPLE_AUGMENTATION_WITHOUT_GROUP_INHERITANCE: &'static str =
+        "allow_sample_augmentation_without_group_inheritance";
+    pub const ALLOW_SAMPLE_AUGMENTATION_WITHOUT_TARGET_INHERITANCE: &'static str =
+        "allow_sample_augmentation_without_target_inheritance";
+
+    pub fn validate(&self) -> Result<()> {
+        for unsafe_flag in &self.unsafe_flags {
+            if unsafe_flag.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(
+                    "augmentation policy contains an empty unsafe flag".to_string(),
+                ));
+            }
+        }
+        if self.sample_scope == AugmentationScope::AllPartitions
+            && !self
+                .unsafe_flags
+                .contains(Self::ALLOW_SAMPLE_AUGMENTATION_ALL_PARTITIONS)
+        {
+            return Err(DagMlError::CampaignValidation(
+                "sample augmentation over all partitions can leak validation/test origins; add explicit unsafe flag allow_sample_augmentation_all_partitions".to_string(),
+            ));
+        }
+        if self.sample_scope != AugmentationScope::None {
+            if !self.require_origin_id
+                && !self
+                    .unsafe_flags
+                    .contains(Self::ALLOW_SAMPLE_AUGMENTATION_WITHOUT_ORIGIN)
+            {
+                return Err(DagMlError::CampaignValidation(
+                    "sample augmentation requires origin ids unless explicit unsafe flag allow_sample_augmentation_without_origin is present".to_string(),
+                ));
+            }
+            if !self.inherit_group
+                && !self
+                    .unsafe_flags
+                    .contains(Self::ALLOW_SAMPLE_AUGMENTATION_WITHOUT_GROUP_INHERITANCE)
+            {
+                return Err(DagMlError::CampaignValidation(
+                    "sample augmentation must inherit groups unless explicit unsafe flag allow_sample_augmentation_without_group_inheritance is present".to_string(),
+                ));
+            }
+            if !self.inherit_target
+                && !self
+                    .unsafe_flags
+                    .contains(Self::ALLOW_SAMPLE_AUGMENTATION_WITHOUT_TARGET_INHERITANCE)
+            {
+                return Err(DagMlError::CampaignValidation(
+                    "sample augmentation must inherit targets unless explicit unsafe flag allow_sample_augmentation_without_target_inheritance is present".to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -238,6 +301,17 @@ impl Default for FeatureSelectionPolicy {
             store_masks: true,
             allow_schema_mismatch_on_join: false,
         }
+    }
+}
+
+impl FeatureSelectionPolicy {
+    pub fn validate(&self) -> Result<()> {
+        if self.scope == FeatureSelectionScope::SupervisedFoldTrain && !self.store_masks {
+            return Err(DagMlError::CampaignValidation(
+                "supervised feature selection must store fold/refit masks for replay and leakage audit".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -278,7 +352,29 @@ impl DataModelShapePlan {
                 self.node_id
             )));
         }
+        if self
+            .feature_namespace
+            .as_ref()
+            .is_some_and(|namespace| namespace.trim().is_empty())
+        {
+            return Err(DagMlError::CampaignValidation(format!(
+                "shape plan for `{}` has empty feature_namespace",
+                self.node_id
+            )));
+        }
+        if self
+            .feature_schema_fingerprint
+            .as_ref()
+            .is_some_and(|fingerprint| !is_hex_fingerprint(fingerprint))
+        {
+            return Err(DagMlError::CampaignValidation(format!(
+                "shape plan for `{}` has invalid feature_schema_fingerprint",
+                self.node_id
+            )));
+        }
         self.aggregation_policy.validate()?;
+        self.augmentation_policy.validate()?;
+        self.selection_policy.validate()?;
         if self.selection_policy.scope == FeatureSelectionScope::SupervisedFoldTrain
             && self.fit_rows != FitBoundary::FoldTrain
         {
@@ -289,6 +385,10 @@ impl DataModelShapePlan {
         }
         Ok(())
     }
+}
+
+fn is_hex_fingerprint(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn default_granularity() -> Granularity {
@@ -333,6 +433,20 @@ impl ShapeDelta {
                 "shape delta for `{}` has empty fingerprint",
                 self.node_id
             )));
+        }
+        if self.before_fingerprint == self.after_fingerprint {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "shape delta for `{}` does not change fingerprint",
+                self.node_id
+            )));
+        }
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "shape delta for `{}` contains an empty metadata key",
+                    self.node_id
+                )));
+            }
         }
         Ok(())
     }
@@ -388,5 +502,79 @@ mod tests {
         };
 
         assert!(plan.validate().is_err());
+    }
+
+    #[test]
+    fn augmentation_policy_requires_explicit_unsafe_flags_for_leaky_sample_augmentation() {
+        let policy = AugmentationPolicy {
+            sample_scope: AugmentationScope::AllPartitions,
+            ..AugmentationPolicy::default()
+        };
+        assert!(policy.validate().is_err());
+
+        let mut allowed = policy;
+        allowed.unsafe_flags = BTreeSet::from([
+            AugmentationPolicy::ALLOW_SAMPLE_AUGMENTATION_ALL_PARTITIONS.to_string(),
+        ]);
+        allowed.validate().unwrap();
+
+        let no_origin = AugmentationPolicy {
+            require_origin_id: false,
+            ..AugmentationPolicy::default()
+        };
+        assert!(no_origin.validate().is_err());
+    }
+
+    #[test]
+    fn shape_plan_validates_feature_and_selection_audit_contracts() {
+        let node_id = NodeId::new("model:pls").unwrap();
+        let base = DataModelShapePlan {
+            node_id: node_id.clone(),
+            input_granularity: Granularity::Sample,
+            target_granularity: Granularity::Sample,
+            fit_rows: FitBoundary::FoldTrain,
+            predict_rows: FitBoundary::FoldValidation,
+            feature_namespace: None,
+            feature_schema_fingerprint: None,
+            target_space: "raw".to_string(),
+            aggregation_policy: AggregationPolicy::default(),
+            augmentation_policy: AugmentationPolicy::default(),
+            selection_policy: FeatureSelectionPolicy::default(),
+        };
+
+        let mut empty_namespace = base.clone();
+        empty_namespace.feature_namespace = Some(" ".to_string());
+        assert!(empty_namespace.validate().is_err());
+
+        let mut bad_fingerprint = base.clone();
+        bad_fingerprint.feature_schema_fingerprint = Some("short".to_string());
+        assert!(bad_fingerprint.validate().is_err());
+
+        let mut supervised_without_masks = base;
+        supervised_without_masks.selection_policy = FeatureSelectionPolicy {
+            scope: FeatureSelectionScope::SupervisedFoldTrain,
+            store_masks: false,
+            allow_schema_mismatch_on_join: false,
+        };
+        assert!(supervised_without_masks.validate().is_err());
+    }
+
+    #[test]
+    fn shape_delta_requires_a_real_fingerprint_change() {
+        let delta = ShapeDelta {
+            node_id: NodeId::new("transform:select").unwrap(),
+            kind: ShapeDeltaKind::Feature,
+            before_fingerprint: "a".repeat(64),
+            after_fingerprint: "a".repeat(64),
+            metadata: BTreeMap::new(),
+        };
+        assert!(delta.validate().is_err());
+
+        let mut bad_metadata = delta;
+        bad_metadata.after_fingerprint = "b".repeat(64);
+        bad_metadata
+            .metadata
+            .insert(" ".to_string(), serde_json::Value::Bool(true));
+        assert!(bad_metadata.validate().is_err());
     }
 }

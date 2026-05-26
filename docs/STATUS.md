@@ -39,6 +39,9 @@ Implemented:
 - aggregation policy plus mean aggregation from observation predictions to
   sample predictions;
 - data/model shape plans and runtime shape deltas;
+- shape-policy hardening for sample augmentation, supervised feature-selection
+  mask audit, optional lineage shape fingerprints and feature-delta schema
+  continuity checks;
 - data bindings from node inputs to external `dag-ml-data` plan envelopes,
   including explicit feature-set ids and ABI-compatible fusion selectors for
   provider `feature_arrow` calls;
