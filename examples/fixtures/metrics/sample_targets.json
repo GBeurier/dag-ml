@@ -1,0 +1,24 @@
+{
+  "level": "sample",
+  "unit_ids": [
+    {
+      "level": "sample",
+      "id": "sample:2"
+    },
+    {
+      "level": "sample",
+      "id": "sample:1"
+    }
+  ],
+  "values": [
+    [
+      5.0
+    ],
+    [
+      1.0
+    ]
+  ],
+  "target_names": [
+    "y"
+  ]
+}
