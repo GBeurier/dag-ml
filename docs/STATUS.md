@@ -20,6 +20,8 @@ Implemented:
   lowers them into the controller-facing `NodePlan.params` and
   `params_fingerprint` for each variant while refusing conflicting overrides
   and unknown target nodes;
+- process controller smoke adapters now assert that generated param overrides
+  targeting their node are present in the effective `NodeTask.node_plan.params`;
 - controller-facing `NodeTask.variant` context with generated choices,
   fingerprint and variant seed, so external bindings can apply model,
   augmentation or processing variants without guessing from `variant_id`;

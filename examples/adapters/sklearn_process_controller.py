@@ -174,6 +174,26 @@ def require_prediction_inputs(task: dict[str, Any]) -> None:
             fail(f"node `{node_plan['node_id']}` received fold-scoped prediction spec during REFIT `{key}`")
 
 
+def require_variant_param_overrides(task: dict[str, Any]) -> None:
+    node_plan = task["node_plan"]
+    node_id = node_plan["node_id"]
+    params = node_plan.get("params", {})
+    variant = task.get("variant")
+    if variant is None:
+        return
+    for dimension_name, choice in variant.get("choices", {}).items():
+        choice_label = choice.get("label", "<unknown>")
+        for override in choice.get("param_overrides", []):
+            if override.get("node_id") != node_id:
+                continue
+            for key, value in override.get("params", {}).items():
+                if params.get(key) != value:
+                    fail(
+                        f"node `{node_id}` missing generated param override "
+                        f"`{dimension_name}.{choice_label}.{key}`"
+                    )
+
+
 def model_result(task: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     phase = task["phase"]
     node_id = task["node_plan"]["node_id"]
@@ -284,6 +304,7 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
 def emit_result(task: dict[str, Any]) -> None:
     require_data_handles(task)
     require_prediction_inputs(task)
+    require_variant_param_overrides(task)
     result = build_result(task)
     json.dump(result, sys.stdout, sort_keys=True)
     sys.stdout.write("\n")
