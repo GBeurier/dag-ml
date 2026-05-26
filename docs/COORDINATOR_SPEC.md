@@ -395,9 +395,10 @@ FIT_CV requirements:
 6. OOF joins use the declared aggregation level and must not mix raw and
    aggregated predictions implicitly.
 7. Replay-facing prediction contracts carry `prediction_level` explicitly.
-   The current OOF replay cache contract is intentionally sample-level only;
-   target/group blocks are scored through the aggregated metric APIs until
-   aggregated replay materialization has its own unit-id contract.
+   Sample-level replay caches carry `sample_ids`; target/group replay caches
+   carry `unit_ids` typed as `PredictionUnitId`, validated in bundle records,
+   payloads and file/in-memory stores. Aggregated caches are not preloaded into
+   the sample OOF store.
 
 REFIT requirements:
 

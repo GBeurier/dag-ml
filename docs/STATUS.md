@@ -119,8 +119,10 @@ Implemented:
 - replay-facing prediction contracts now carry explicit `prediction_level`
   metadata across `NodeTask.prediction_inputs`, bundle prediction
   requirements, cache records, payloads and file/columnar cache manifests;
-  current replay caches are guarded as sample-level OOF only, preventing
-  target/group score or cache drift from being hidden as sample-level replay;
+  target/group cache records and payloads carry typed `PredictionUnitId`
+  `unit_ids`, and file/in-memory cache stores can validate, load and
+  materialize aggregated replay handles without preloading them into the
+  sample-level OOF store;
 - execution-bundle validation now checks selected candidates against the
   rebuilt plan and requires refit artifacts for selected refittable nodes;
 - explicit execution-bundle schema version with unsupported-version refusal;
@@ -287,9 +289,8 @@ Not implemented yet:
 - full DSL compiler;
 - advanced search-space compiler/lowering beyond typed node-parameter
   overrides;
-- custom aggregation controllers and full replay materialization for
-  non-sample aggregated prediction blocks; prediction-level metadata is now
-  explicit, but target/group replay still needs a unit-id cache contract;
+- custom aggregation controllers and production typed/Arrow replay backends
+  for non-sample aggregated prediction blocks;
 - persistent artifact stores and non-JSON/non-file-cache backends;
 - Arrow prediction storage and ABI-owned prediction tensors;
 - production host controller adapters with native libraries or

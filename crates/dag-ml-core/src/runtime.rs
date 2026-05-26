@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::aggregation::{AggregatedPredictionBlock, PredictionUnitId};
 use crate::bundle::{
-    build_prediction_cache_payload, bundle_prediction_requirement_key,
-    validate_prediction_cache_payload_matches_record, BundlePredictionCachePayload,
-    BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
-    ExecutionBundle, RefitArtifactRecord, ReplayPhaseRequest,
+    build_aggregated_prediction_cache_payload, build_prediction_cache_payload,
+    bundle_prediction_requirement_key, validate_prediction_cache_payload_matches_record,
+    BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
+    BundlePredictionRequirement, ExecutionBundle, RefitArtifactRecord, ReplayPhaseRequest,
 };
 use crate::campaign::stable_json_fingerprint;
 use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
@@ -393,6 +394,14 @@ pub struct PredictionCacheMaterializationRecord {
 
 pub trait RuntimePredictionCacheStore {
     fn load_blocks(&self, requirement_key: &str) -> Result<Vec<PredictionBlock>>;
+    fn load_aggregated_blocks(
+        &self,
+        requirement_key: &str,
+    ) -> Result<Vec<AggregatedPredictionBlock>> {
+        Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache store does not support aggregated requirement `{requirement_key}`"
+        )))
+    }
     fn materialize(&self, request: &PredictionCacheMaterializationRequest) -> Result<HandleRef>;
 }
 
@@ -410,6 +419,8 @@ pub struct FilePredictionCacheEntry {
     pub file_name: String,
     #[serde(default = "default_runtime_prediction_level")]
     pub prediction_level: PredictionLevel,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unit_ids: Vec<PredictionUnitId>,
     pub block_count: usize,
     pub row_count: usize,
     pub content_fingerprint: String,
@@ -433,11 +444,20 @@ impl FilePredictionCacheEntry {
                 self.cache_id
             )));
         }
-        if self.prediction_level != PredictionLevel::Sample {
+        if self.prediction_level != PredictionLevel::Sample && self.unit_ids.is_empty() {
             return Err(DagMlError::RuntimeValidation(format!(
-                "file prediction cache `{}` uses {:?} predictions, but file replay caches currently require sample-level OOF predictions",
-                self.cache_id,
-                self.prediction_level
+                "file prediction cache `{}` has no aggregated unit ids",
+                self.cache_id
+            )));
+        }
+        if self
+            .unit_ids
+            .iter()
+            .any(|unit_id| unit_id.level() != self.prediction_level)
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache `{}` has unit ids outside {:?}",
+                self.cache_id, self.prediction_level
             )));
         }
         validate_runtime_fingerprint("prediction cache content", &self.content_fingerprint)
@@ -449,6 +469,11 @@ impl FilePredictionCacheEntry {
             cache_id: payload.cache_id.clone(),
             file_name: prediction_cache_payload_file_name(payload)?,
             prediction_level: payload.prediction_level,
+            unit_ids: payload
+                .aggregated_blocks
+                .iter()
+                .flat_map(|block| block.unit_ids.iter().cloned())
+                .collect(),
             block_count: payload.block_count,
             row_count: payload.row_count,
             content_fingerprint: payload.content_fingerprint.clone(),
@@ -459,6 +484,7 @@ impl FilePredictionCacheEntry {
         self.requirement_key == record.requirement_key
             && self.cache_id == record.cache_id
             && self.prediction_level == record.prediction_level
+            && self.unit_ids == record.unit_ids
             && self.block_count == record.block_count
             && self.row_count == record.row_count
             && self.content_fingerprint == record.content_fingerprint
@@ -675,7 +701,27 @@ impl FilePredictionCacheStore {
 
 impl RuntimePredictionCacheStore for FilePredictionCacheStore {
     fn load_blocks(&self, requirement_key: &str) -> Result<Vec<PredictionBlock>> {
-        Ok(self.payload_for_requirement(requirement_key)?.blocks)
+        let payload = self.payload_for_requirement(requirement_key)?;
+        if payload.prediction_level != PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache store requirement `{requirement_key}` contains {:?} predictions, not sample blocks",
+                payload.prediction_level
+            )));
+        }
+        Ok(payload.blocks)
+    }
+
+    fn load_aggregated_blocks(
+        &self,
+        requirement_key: &str,
+    ) -> Result<Vec<AggregatedPredictionBlock>> {
+        let payload = self.payload_for_requirement(requirement_key)?;
+        if payload.prediction_level == PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache store requirement `{requirement_key}` contains sample predictions, not aggregated blocks"
+            )));
+        }
+        Ok(payload.aggregated_blocks)
     }
 
     fn materialize(&self, request: &PredictionCacheMaterializationRequest) -> Result<HandleRef> {
@@ -962,6 +1008,7 @@ impl ColumnarPredictionCacheEntry {
             row_count: self.cache.row_count,
             content_fingerprint: self.cache.content_fingerprint.clone(),
             blocks: self.to_blocks()?,
+            aggregated_blocks: Vec::new(),
         };
         validate_prediction_cache_payload_matches_record(&payload, cache)
     }
@@ -1188,7 +1235,31 @@ impl RuntimePredictionCacheStore for InMemoryPredictionCacheStore {
             ))
         })?;
         payload.validate()?;
+        if payload.prediction_level != PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache store requirement `{requirement_key}` contains {:?} predictions, not sample blocks",
+                payload.prediction_level
+            )));
+        }
         Ok(payload.blocks.clone())
+    }
+
+    fn load_aggregated_blocks(
+        &self,
+        requirement_key: &str,
+    ) -> Result<Vec<AggregatedPredictionBlock>> {
+        let payload = self.payloads.get(requirement_key).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "prediction cache store is missing requirement `{requirement_key}`"
+            ))
+        })?;
+        payload.validate()?;
+        if payload.prediction_level == PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache store requirement `{requirement_key}` contains sample predictions, not aggregated blocks"
+            )));
+        }
+        Ok(payload.aggregated_blocks.clone())
     }
 
     fn materialize(&self, request: &PredictionCacheMaterializationRequest) -> Result<HandleRef> {
@@ -1254,6 +1325,8 @@ pub struct PredictionInputSpec {
     pub fold_id: Option<FoldId>,
     #[serde(default)]
     pub fold_ids: Vec<FoldId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unit_ids: Vec<PredictionUnitId>,
     #[serde(default)]
     pub sample_ids: Vec<SampleId>,
     pub prediction_width: usize,
@@ -2894,6 +2967,28 @@ fn collect_oof_prediction_input(
     scope: &PhaseScope,
     resources: &PhaseScopeResources<'_>,
 ) -> Result<CollectedPredictionInput> {
+    if scope.phase == Phase::Refit {
+        if let Some(contract) = replay_prediction_cache_contract_for_edge(resources, edge) {
+            if contract.requirement.prediction_level != PredictionLevel::Sample {
+                let source_plan = plan
+                    .node_plans
+                    .get(&edge.source.node_id)
+                    .expect("edge source has a node plan");
+                let handle = materialize_oof_prediction_handle(
+                    plan,
+                    edge,
+                    ctx,
+                    scope,
+                    resources,
+                    &source_plan.controller_id,
+                )?;
+                return Ok(CollectedPredictionInput {
+                    handle,
+                    spec: prediction_input_spec_from_requirement(&contract.requirement, scope)?,
+                });
+            }
+        }
+    }
     let blocks = match scope.phase {
         Phase::FitCv => validate_fit_cv_oof_edge(plan, edge, ctx, scope)?,
         Phase::Refit => validate_refit_oof_edge(plan, edge, ctx)?,
@@ -2915,6 +3010,20 @@ fn collect_oof_prediction_input(
         handle,
         spec: prediction_input_spec(edge, scope, &blocks)?,
     })
+}
+
+fn replay_prediction_cache_contract_for_edge<'a>(
+    resources: &'a PhaseScopeResources<'_>,
+    edge: &EdgeSpec,
+) -> Option<&'a ReplayPredictionCacheContract> {
+    let contracts = resources.prediction_cache_contracts?;
+    let key = bundle_prediction_requirement_key(
+        &edge.source.node_id,
+        &edge.source.port_name,
+        &edge.target.node_id,
+        &edge.target.port_name,
+    );
+    contracts.get(&key)
 }
 
 fn materialize_oof_prediction_handle(
@@ -3077,9 +3186,34 @@ fn prediction_input_spec(
         prediction_level: PredictionLevel::Sample,
         fold_id: scope.fold_id.clone(),
         fold_ids,
+        unit_ids: sample_ids
+            .iter()
+            .cloned()
+            .map(PredictionUnitId::Sample)
+            .collect(),
         sample_ids,
         prediction_width: prediction_width.unwrap_or_default(),
         target_names: target_names.unwrap_or_default(),
+    })
+}
+
+fn prediction_input_spec_from_requirement(
+    requirement: &BundlePredictionRequirement,
+    scope: &PhaseScope,
+) -> Result<PredictionInputSpec> {
+    requirement.validate()?;
+    Ok(PredictionInputSpec {
+        producer_node: requirement.producer_node.clone(),
+        source_port: requirement.source_port.clone(),
+        target_port: requirement.target_port.clone(),
+        partition: requirement.partition.clone(),
+        prediction_level: requirement.prediction_level,
+        fold_id: scope.fold_id.clone(),
+        fold_ids: requirement.fold_ids.clone(),
+        unit_ids: requirement.unit_ids.clone(),
+        sample_ids: requirement.sample_ids.clone(),
+        prediction_width: requirement.prediction_width,
+        target_names: requirement.target_names.clone(),
     })
 }
 
@@ -3453,20 +3587,37 @@ fn preload_replay_prediction_cache_store(
     }
     let contracts = replay_prediction_cache_contracts(bundle)?;
     for contract in contracts.values() {
-        let blocks = store.load_blocks(&contract.cache.requirement_key)?;
-        if blocks.iter().any(|block| {
-            block.producer_node != contract.requirement.producer_node
-                || block.partition != contract.requirement.partition
-        }) {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "prediction cache store returned blocks outside requirement `{}`",
-                contract.cache.requirement_key
-            )));
-        }
-        let payload = build_prediction_cache_payload(&contract.requirement, &blocks)?;
-        validate_prediction_cache_payload_matches_record(&payload, &contract.cache)?;
-        for block in &payload.blocks {
-            ctx.prediction_store.append(block.clone())?;
+        if contract.requirement.prediction_level == PredictionLevel::Sample {
+            let blocks = store.load_blocks(&contract.cache.requirement_key)?;
+            if blocks.iter().any(|block| {
+                block.producer_node != contract.requirement.producer_node
+                    || block.partition != contract.requirement.partition
+            }) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache store returned blocks outside requirement `{}`",
+                    contract.cache.requirement_key
+                )));
+            }
+            let payload = build_prediction_cache_payload(&contract.requirement, &blocks)?;
+            validate_prediction_cache_payload_matches_record(&payload, &contract.cache)?;
+            for block in &payload.blocks {
+                ctx.prediction_store.append(block.clone())?;
+            }
+        } else {
+            let blocks = store.load_aggregated_blocks(&contract.cache.requirement_key)?;
+            if blocks.iter().any(|block| {
+                block.producer_node != contract.requirement.producer_node
+                    || block.partition != contract.requirement.partition
+                    || block.level != contract.requirement.prediction_level
+            }) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache store returned aggregated blocks outside requirement `{}`",
+                    contract.cache.requirement_key
+                )));
+            }
+            let payload =
+                build_aggregated_prediction_cache_payload(&contract.requirement, &blocks)?;
+            validate_prediction_cache_payload_matches_record(&payload, &contract.cache)?;
         }
     }
     Ok(())
@@ -3597,6 +3748,7 @@ mod tests {
     use super::*;
     use crate::aggregation::{aggregate_observation_predictions, ObservationPredictionBlock};
     use crate::bundle::{
+        build_aggregated_prediction_cache_payload, build_aggregated_prediction_cache_record,
         build_execution_bundle, build_execution_bundle_with_prediction_contracts,
         build_prediction_cache_payload, build_prediction_cache_record,
         BundlePredictionCachePayloadSet, BundlePredictionRequirement, RefitArtifactRecord,
@@ -5371,6 +5523,7 @@ mod tests {
                 FoldId::new("fold:0").unwrap(),
                 FoldId::new("fold:1").unwrap(),
             ],
+            unit_ids: Vec::new(),
             sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
             prediction_width: 1,
             target_names: vec!["y".to_string()],
@@ -5429,6 +5582,112 @@ mod tests {
     }
 
     #[test]
+    fn prediction_cache_stores_load_and_materialize_aggregated_payloads() {
+        let plan = build_execution_plan(
+            "plan:oof.edge.aggregated.cache.store",
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+        )
+        .unwrap();
+        let target_a = PredictionUnitId::Target(TargetId::new("target:a").unwrap());
+        let target_b = PredictionUnitId::Target(TargetId::new("target:b").unwrap());
+        let requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("model:base").unwrap(),
+            source_port: "pred".to_string(),
+            consumer_node: NodeId::new("model:meta").unwrap(),
+            target_port: "pred".to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Target,
+            fold_ids: vec![
+                FoldId::new("fold:0").unwrap(),
+                FoldId::new("fold:1").unwrap(),
+            ],
+            unit_ids: vec![target_a.clone(), target_b.clone()],
+            sample_ids: Vec::new(),
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let aggregated_blocks = vec![
+            AggregatedPredictionBlock {
+                prediction_id: Some("prediction:model:base.target.fold0".to_string()),
+                producer_node: requirement.producer_node.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                level: PredictionLevel::Target,
+                unit_ids: vec![target_a],
+                values: vec![vec![0.5]],
+                target_names: vec!["y".to_string()],
+            },
+            AggregatedPredictionBlock {
+                prediction_id: Some("prediction:model:base.target.fold1".to_string()),
+                producer_node: requirement.producer_node.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:1").unwrap()),
+                level: PredictionLevel::Target,
+                unit_ids: vec![target_b],
+                values: vec![vec![0.7]],
+                target_names: vec!["y".to_string()],
+            },
+        ];
+        let cache =
+            build_aggregated_prediction_cache_record(&requirement, &aggregated_blocks).unwrap();
+        let payload =
+            build_aggregated_prediction_cache_payload(&requirement, &aggregated_blocks).unwrap();
+        let bundle = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:aggregated.prediction.cache").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            Vec::new(),
+            vec![requirement.clone()],
+            vec![cache.clone()],
+        )
+        .unwrap();
+        let payload_set = BundlePredictionCachePayloadSet {
+            bundle_id: bundle.bundle_id.clone(),
+            schema_version: PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+            caches: vec![payload.clone()],
+        };
+
+        let in_memory =
+            InMemoryPredictionCacheStore::from_payloads(&bundle, payload_set.clone()).unwrap();
+        assert!(in_memory.load_blocks(&requirement.key()).is_err());
+        assert_eq!(
+            in_memory
+                .load_aggregated_blocks(&requirement.key())
+                .unwrap(),
+            aggregated_blocks
+        );
+        let handle = in_memory
+            .materialize(&PredictionCacheMaterializationRequest {
+                run_id: RunId::new("run:oof.edge.aggregated.cache.store.replay").unwrap(),
+                bundle_id: bundle.bundle_id.clone(),
+                phase: Phase::Refit,
+                variant_id: bundle.selected_variant_id.clone(),
+                requirement: requirement.clone(),
+                cache: cache.clone(),
+                producer_controller_id: ControllerId::new("controller:model").unwrap(),
+            })
+            .unwrap();
+        assert_eq!(handle.kind, HandleKind::Prediction);
+
+        let root = temp_prediction_cache_dir("dag_ml_aggregated_prediction_cache_store");
+        let manifest =
+            FilePredictionCacheStore::write_payload_set(&root, &bundle, &payload_set).unwrap();
+        assert_eq!(manifest.caches[0].prediction_level, PredictionLevel::Target);
+        assert_eq!(manifest.caches[0].unit_ids, requirement.unit_ids);
+        let file_store = FilePredictionCacheStore::open(root.clone(), &bundle).unwrap();
+        assert_eq!(
+            file_store
+                .load_aggregated_blocks(&requirement.key())
+                .unwrap(),
+            aggregated_blocks
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn columnar_prediction_cache_block_round_trips_multi_target_rows() {
         let block = PredictionBlock {
             prediction_id: Some("pred:wide".to_string()),
@@ -5480,6 +5739,7 @@ mod tests {
                 FoldId::new("fold:0").unwrap(),
                 FoldId::new("fold:1").unwrap(),
             ],
+            unit_ids: Vec::new(),
             sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
             prediction_width: 1,
             target_names: vec!["y".to_string()],
@@ -5567,6 +5827,7 @@ mod tests {
                 FoldId::new("fold:0").unwrap(),
                 FoldId::new("fold:1").unwrap(),
             ],
+            unit_ids: Vec::new(),
             sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
             prediction_width: 1,
             target_names: vec!["y".to_string()],
