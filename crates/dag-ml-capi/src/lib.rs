@@ -2387,6 +2387,7 @@ mod tests {
                 output_nodes: Vec::new(),
                 shape_plan: None,
                 data_bindings: Vec::new(),
+                params: BTreeMap::new(),
                 params_fingerprint: "params:controller-fixture".to_string(),
             },
             phase: Phase::FitCv,

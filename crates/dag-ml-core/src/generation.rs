@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::campaign::stable_json_fingerprint;
 use crate::error::{DagMlError, Result};
-use crate::ids::VariantId;
+use crate::ids::{NodeId, VariantId};
 use crate::rng::SeedContext;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -20,6 +20,15 @@ pub enum GenerationStrategy {
 pub struct GenerationChoice {
     pub label: String,
     pub value: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_overrides: Vec<GenerationParamOverride>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GenerationParamOverride {
+    pub node_id: NodeId,
+    #[serde(default)]
+    pub params: BTreeMap<String, serde_json::Value>,
 }
 
 impl GenerationChoice {
@@ -28,6 +37,29 @@ impl GenerationChoice {
             return Err(DagMlError::CampaignValidation(format!(
                 "generation dimension `{dimension_name}` has an empty choice label"
             )));
+        }
+        for override_spec in &self.param_overrides {
+            override_spec.validate(dimension_name, &self.label)?;
+        }
+        Ok(())
+    }
+}
+
+impl GenerationParamOverride {
+    fn validate(&self, dimension_name: &str, choice_label: &str) -> Result<()> {
+        if self.params.is_empty() {
+            return Err(DagMlError::CampaignValidation(format!(
+                "generation choice `{choice_label}` in dimension `{dimension_name}` has an empty param override for node `{}`",
+                self.node_id
+            )));
+        }
+        for key in self.params.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "generation choice `{choice_label}` in dimension `{dimension_name}` has an empty param override key for node `{}`",
+                    self.node_id
+                )));
+            }
         }
         Ok(())
     }
@@ -155,7 +187,57 @@ impl VariantPlan {
         for (dimension_name, choice) in &self.choices {
             choice.validate(dimension_name)?;
         }
+        self.param_overrides_by_node()?;
         Ok(())
+    }
+
+    pub fn effective_params_for_node(
+        &self,
+        node_id: &NodeId,
+        base_params: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<BTreeMap<String, serde_json::Value>> {
+        let overrides_by_node = self.param_overrides_by_node()?;
+        let Some(overrides) = overrides_by_node.get(node_id) else {
+            return Ok(base_params.clone());
+        };
+        let mut params = base_params.clone();
+        params.extend(overrides.clone());
+        Ok(params)
+    }
+
+    pub fn param_override_targets(&self) -> Result<BTreeSet<NodeId>> {
+        Ok(self.param_overrides_by_node()?.into_keys().collect())
+    }
+
+    fn param_overrides_by_node(
+        &self,
+    ) -> Result<BTreeMap<NodeId, BTreeMap<String, serde_json::Value>>> {
+        let mut overrides = BTreeMap::<NodeId, BTreeMap<String, serde_json::Value>>::new();
+        let mut owners = BTreeMap::<(NodeId, String), String>::new();
+        for (dimension_name, choice) in &self.choices {
+            for override_spec in &choice.param_overrides {
+                for (param_key, value) in &override_spec.params {
+                    let owner_key = (override_spec.node_id.clone(), param_key.clone());
+                    if let Some(previous) =
+                        owners.insert(owner_key, format!("{dimension_name}:{}", choice.label))
+                    {
+                        return Err(DagMlError::CampaignValidation(format!(
+                            "variant `{}` has conflicting generation overrides for `{}.{}` from `{previous}` and `{}:{}`",
+                            self.variant_id,
+                            override_spec.node_id,
+                            param_key,
+                            dimension_name,
+                            choice.label
+                        )));
+                    }
+                    overrides
+                        .entry(override_spec.node_id.clone())
+                        .or_default()
+                        .insert(param_key.clone(), value.clone());
+                }
+            }
+        }
+        Ok(overrides)
     }
 }
 
@@ -232,12 +314,14 @@ fn variant_from_choices(
             .child(format!("variant:{variant_id}"))
             .derive_u64("variant")
     });
-    Ok(VariantPlan {
+    let variant = VariantPlan {
         variant_id,
         choices,
         fingerprint,
         seed,
-    })
+    };
+    variant.validate()?;
+    Ok(variant)
 }
 
 #[cfg(test)]
@@ -250,6 +334,22 @@ mod tests {
         GenerationChoice {
             label: label.to_string(),
             value,
+            param_overrides: Vec::new(),
+        }
+    }
+
+    fn override_choice(
+        label: &str,
+        node_id: &str,
+        params: BTreeMap<String, serde_json::Value>,
+    ) -> GenerationChoice {
+        GenerationChoice {
+            label: label.to_string(),
+            value: json!(label),
+            param_overrides: vec![GenerationParamOverride {
+                node_id: NodeId::new(node_id).unwrap(),
+                params,
+            }],
         }
     }
 
@@ -322,5 +422,60 @@ mod tests {
         };
 
         assert!(enumerate_variants(&spec, None).is_err());
+    }
+
+    #[test]
+    fn variant_applies_node_param_overrides() {
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: vec![GenerationDimension {
+                name: "model_family".to_string(),
+                choices: vec![override_choice(
+                    "pls",
+                    "model:base",
+                    BTreeMap::from([("n_components".to_string(), json!(8))]),
+                )],
+            }],
+            max_variants: Some(1),
+        };
+        let variants = enumerate_variants(&spec, Some(7)).unwrap();
+        let base = BTreeMap::from([("scale".to_string(), json!(true))]);
+
+        let params = variants[0]
+            .effective_params_for_node(&NodeId::new("model:base").unwrap(), &base)
+            .unwrap();
+
+        assert_eq!(params["scale"], json!(true));
+        assert_eq!(params["n_components"], json!(8));
+    }
+
+    #[test]
+    fn variant_rejects_conflicting_param_overrides() {
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: vec![
+                GenerationDimension {
+                    name: "family".to_string(),
+                    choices: vec![override_choice(
+                        "pls",
+                        "model:base",
+                        BTreeMap::from([("alpha".to_string(), json!(1))]),
+                    )],
+                },
+                GenerationDimension {
+                    name: "regularization".to_string(),
+                    choices: vec![override_choice(
+                        "ridge",
+                        "model:base",
+                        BTreeMap::from([("alpha".to_string(), json!(2))]),
+                    )],
+                },
+            ],
+            max_variants: Some(1),
+        };
+
+        let error = enumerate_variants(&spec, None).unwrap_err().to_string();
+
+        assert!(error.contains("conflicting generation overrides"));
     }
 }

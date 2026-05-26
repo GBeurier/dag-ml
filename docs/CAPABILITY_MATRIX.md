@@ -22,7 +22,7 @@ leakage guarantees.
 | Merging | feature/prediction/source join nodes | feature/source alignment and concatenation | prediction merges validate OOF; feature/source merges validate identity alignment |
 | Concatenation | declare merge intent and downstream contracts | feature joiner and namespace policy | row order is canonical by sample id; no positional join |
 | Finetuning | phase/fold control and leakage flags | stateful controller/adapter fit implementation | any learned transform/model is fitted on fold train only during CV |
-| Generation | search-space expansion and variant fingerprints | adapter/model params as serializable JSON | each variant has deterministic seeds, fingerprints and lineage |
+| Generation | search-space expansion, variant fingerprints, typed node-param override lowering | adapter/model params as serializable JSON | each variant has deterministic seeds, fingerprints, effective params and lineage |
 | Tuning | tuner node phase control and nested split policy | tuner/controller execution | tuner observations respect nested CV boundaries |
 | Prediction replay | bundle validation and phase restrictions | schema fingerprint and data plan replay | predict never reuses CV validation labels/features in training mode |
 | Explainability | replay hooks and opaque outputs | controller-specific explanations | explanation payloads do not alter fit/predict lineage |

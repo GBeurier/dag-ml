@@ -562,8 +562,70 @@ impl VariantExecutionSpec {
                     self.variant_id
                 )));
             }
+            for override_spec in &choice.param_overrides {
+                if override_spec.params.is_empty() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "variant `{}` has an empty param override for node `{}`",
+                        self.variant_id, override_spec.node_id
+                    )));
+                }
+                for param_key in override_spec.params.keys() {
+                    if param_key.trim().is_empty() {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "variant `{}` has an empty param override key for node `{}`",
+                            self.variant_id, override_spec.node_id
+                        )));
+                    }
+                }
+            }
         }
+        self.param_overrides_by_node()?;
         Ok(())
+    }
+
+    pub fn effective_params_for_node(
+        &self,
+        node_id: &NodeId,
+        base_params: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<BTreeMap<String, serde_json::Value>> {
+        let overrides_by_node = self.param_overrides_by_node()?;
+        let Some(overrides) = overrides_by_node.get(node_id) else {
+            return Ok(base_params.clone());
+        };
+        let mut params = base_params.clone();
+        params.extend(overrides.clone());
+        Ok(params)
+    }
+
+    fn param_overrides_by_node(
+        &self,
+    ) -> Result<BTreeMap<NodeId, BTreeMap<String, serde_json::Value>>> {
+        let mut overrides = BTreeMap::<NodeId, BTreeMap<String, serde_json::Value>>::new();
+        let mut owners = BTreeMap::<(NodeId, String), String>::new();
+        for (dimension_name, choice) in &self.choices {
+            for override_spec in &choice.param_overrides {
+                for (param_key, value) in &override_spec.params {
+                    let owner_key = (override_spec.node_id.clone(), param_key.clone());
+                    if let Some(previous) =
+                        owners.insert(owner_key, format!("{dimension_name}:{}", choice.label))
+                    {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "variant `{}` has conflicting generation overrides for `{}.{}` from `{previous}` and `{}:{}`",
+                            self.variant_id,
+                            override_spec.node_id,
+                            param_key,
+                            dimension_name,
+                            choice.label
+                        )));
+                    }
+                    overrides
+                        .entry(override_spec.node_id.clone())
+                        .or_default()
+                        .insert(param_key.clone(), value.clone());
+                }
+            }
+        }
+        Ok(overrides)
     }
 }
 
@@ -1292,9 +1354,10 @@ impl SequentialScheduler {
                     }
                 }
             }
+            let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
             let task = NodeTask {
                 run_id: ctx.run_id.clone(),
-                node_plan: node_plan.clone(),
+                node_plan: task_node_plan.clone(),
                 phase: scope.phase,
                 variant_id: scope.variant_id.clone(),
                 variant: scope.variant.clone(),
@@ -1307,7 +1370,7 @@ impl SequentialScheduler {
                     scope.seed_root,
                     scope.variant_id.as_ref(),
                     scope.fold_id.as_ref(),
-                    node_plan,
+                    &task_node_plan,
                     scope.phase,
                 ),
             };
@@ -1428,6 +1491,20 @@ fn collect_input_handles(
         data_views,
         prediction_inputs,
     })
+}
+
+fn effective_node_plan_for_scope(node_plan: &NodePlan, scope: &PhaseScope) -> Result<NodePlan> {
+    let Some(variant) = &scope.variant else {
+        return Ok(node_plan.clone());
+    };
+    let params = variant.effective_params_for_node(&node_plan.node_id, &node_plan.params)?;
+    if params == node_plan.params {
+        return Ok(node_plan.clone());
+    }
+    let mut node_plan = node_plan.clone();
+    node_plan.params = params;
+    node_plan.params_fingerprint = stable_json_fingerprint(&node_plan.params)?;
+    Ok(node_plan)
 }
 
 fn incoming_training_oof_edges<'a>(
@@ -2178,6 +2255,7 @@ mod tests {
         id: ControllerId,
         handle: u64,
         variants: Rc<RefCell<Vec<Option<VariantExecutionSpec>>>>,
+        node_plans: Rc<RefCell<Vec<NodePlan>>>,
     }
 
     impl RuntimeController for VariantProbeController {
@@ -2187,6 +2265,7 @@ mod tests {
 
         fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
             self.variants.borrow_mut().push(task.variant.clone());
+            self.node_plans.borrow_mut().push(task.node_plan.clone());
             let variant_label = task
                 .variant_id
                 .as_ref()
@@ -3057,10 +3136,12 @@ mod tests {
                             GenerationChoice {
                                 label: "pls".to_string(),
                                 value: json!("pls"),
+                                param_overrides: Vec::new(),
                             },
                             GenerationChoice {
                                 label: "rf".to_string(),
                                 value: json!("rf"),
+                                param_overrides: Vec::new(),
                             },
                         ],
                     }],
@@ -3115,11 +3196,22 @@ mod tests {
                         choices: vec![
                             GenerationChoice {
                                 label: "pls".to_string(),
-                                value: json!({"n_components": 4}),
+                                value: json!("pls"),
+                                param_overrides: vec![crate::generation::GenerationParamOverride {
+                                    node_id: NodeId::new("model:pls").unwrap(),
+                                    params: BTreeMap::from([(
+                                        "n_components".to_string(),
+                                        json!(4),
+                                    )]),
+                                }],
                             },
                             GenerationChoice {
                                 label: "rf".to_string(),
-                                value: json!({"trees": 64}),
+                                value: json!("rf"),
+                                param_overrides: vec![crate::generation::GenerationParamOverride {
+                                    node_id: NodeId::new("model:pls").unwrap(),
+                                    params: BTreeMap::from([("trees".to_string(), json!(64))]),
+                                }],
                             },
                         ],
                     }],
@@ -3133,6 +3225,7 @@ mod tests {
         )
         .unwrap();
         let observed_variants = Rc::new(RefCell::new(Vec::new()));
+        let observed_node_plans = Rc::new(RefCell::new(Vec::new()));
         let mut controllers = RuntimeControllerRegistry::new();
         controllers
             .register(Box::new(MockController {
@@ -3146,6 +3239,7 @@ mod tests {
                 id: ControllerId::new("controller:model").unwrap(),
                 handle: 2,
                 variants: Rc::clone(&observed_variants),
+                node_plans: Rc::clone(&observed_node_plans),
             }))
             .unwrap();
         let mut ctx = RunContext::new(RunId::new("run:generation.task.context").unwrap(), Some(23));
@@ -3171,6 +3265,21 @@ mod tests {
             labels.insert(variant.choices["model_family"].label.as_str());
         }
         assert_eq!(labels, BTreeSet::from(["pls", "rf"]));
+        let observed_plans = observed_node_plans.borrow();
+        assert_eq!(observed_plans.len(), 2);
+        let base_plan = plan
+            .node_plans
+            .get(&NodeId::new("model:pls").unwrap())
+            .unwrap();
+        assert!(observed_plans
+            .iter()
+            .all(|node_plan| node_plan.params_fingerprint != base_plan.params_fingerprint));
+        assert!(observed_plans
+            .iter()
+            .any(|node_plan| node_plan.params.get("n_components") == Some(&json!(4))));
+        assert!(observed_plans
+            .iter()
+            .any(|node_plan| node_plan.params.get("trees") == Some(&json!(64))));
     }
 
     #[test]
