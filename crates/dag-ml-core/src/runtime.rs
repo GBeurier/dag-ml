@@ -24,7 +24,7 @@ use crate::ids::{
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::{ExecutionPlan, NodePlan};
-use crate::policy::{ShapeDelta, ShapeDeltaKind};
+use crate::policy::{PredictionLevel, ShapeDelta, ShapeDeltaKind};
 use crate::rng::SeedContext;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -408,6 +408,8 @@ pub struct FilePredictionCacheEntry {
     pub requirement_key: String,
     pub cache_id: String,
     pub file_name: String,
+    #[serde(default = "default_runtime_prediction_level")]
+    pub prediction_level: PredictionLevel,
     pub block_count: usize,
     pub row_count: usize,
     pub content_fingerprint: String,
@@ -431,6 +433,13 @@ impl FilePredictionCacheEntry {
                 self.cache_id
             )));
         }
+        if self.prediction_level != PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache `{}` uses {:?} predictions, but file replay caches currently require sample-level OOF predictions",
+                self.cache_id,
+                self.prediction_level
+            )));
+        }
         validate_runtime_fingerprint("prediction cache content", &self.content_fingerprint)
     }
 
@@ -439,6 +448,7 @@ impl FilePredictionCacheEntry {
             requirement_key: payload.requirement_key.clone(),
             cache_id: payload.cache_id.clone(),
             file_name: prediction_cache_payload_file_name(payload)?,
+            prediction_level: payload.prediction_level,
             block_count: payload.block_count,
             row_count: payload.row_count,
             content_fingerprint: payload.content_fingerprint.clone(),
@@ -448,6 +458,7 @@ impl FilePredictionCacheEntry {
     fn matches_record(&self, record: &BundlePredictionCacheRecord) -> bool {
         self.requirement_key == record.requirement_key
             && self.cache_id == record.cache_id
+            && self.prediction_level == record.prediction_level
             && self.block_count == record.block_count
             && self.row_count == record.row_count
             && self.content_fingerprint == record.content_fingerprint
@@ -693,6 +704,7 @@ impl RuntimePredictionCacheStore for FilePredictionCacheStore {
             &request.variant_id,
             &request.cache.requirement_key,
             &request.cache.cache_id,
+            request.cache.prediction_level,
             &request.cache.content_fingerprint,
         ))?;
         let handle = HandleRef {
@@ -722,6 +734,7 @@ fn prediction_cache_payload_file_name(
     let fingerprint = stable_json_fingerprint(&(
         &payload.requirement_key,
         &payload.cache_id,
+        payload.prediction_level,
         &payload.content_fingerprint,
         payload.block_count,
         payload.row_count,
@@ -845,6 +858,7 @@ impl ColumnarPredictionCacheBlock {
 pub struct ColumnarPredictionCacheManifest {
     pub requirement_key: String,
     pub cache_id: String,
+    pub prediction_level: PredictionLevel,
     pub block_count: usize,
     pub row_count: usize,
     pub prediction_width: usize,
@@ -943,6 +957,7 @@ impl ColumnarPredictionCacheEntry {
             cache_id: self.cache.cache_id.clone(),
             format: self.cache.format.clone(),
             partition: self.cache.partition.clone(),
+            prediction_level: self.cache.prediction_level,
             block_count: self.cache.block_count,
             row_count: self.cache.row_count,
             content_fingerprint: self.cache.content_fingerprint.clone(),
@@ -960,6 +975,7 @@ impl ColumnarPredictionCacheEntry {
         ColumnarPredictionCacheManifest {
             requirement_key: self.cache.requirement_key.clone(),
             cache_id: self.cache.cache_id.clone(),
+            prediction_level: self.cache.prediction_level,
             block_count: self.cache.block_count,
             row_count: self.cache.row_count,
             prediction_width: self.cache.prediction_width,
@@ -1062,6 +1078,7 @@ impl RuntimePredictionCacheStore for ColumnarPredictionCacheStore {
             &request.variant_id,
             &request.cache.requirement_key,
             &request.cache.cache_id,
+            request.cache.prediction_level,
             &request.cache.content_fingerprint,
         ))?;
         let handle = HandleRef {
@@ -1202,6 +1219,7 @@ impl RuntimePredictionCacheStore for InMemoryPredictionCacheStore {
             &request.variant_id,
             &request.cache.requirement_key,
             &request.cache.cache_id,
+            request.cache.prediction_level,
             &request.cache.content_fingerprint,
         ))?;
         let handle = HandleRef {
@@ -1231,6 +1249,8 @@ pub struct PredictionInputSpec {
     pub source_port: String,
     pub target_port: String,
     pub partition: PredictionPartition,
+    #[serde(default = "default_runtime_prediction_level")]
+    pub prediction_level: PredictionLevel,
     pub fold_id: Option<FoldId>,
     #[serde(default)]
     pub fold_ids: Vec<FoldId>,
@@ -1239,6 +1259,10 @@ pub struct PredictionInputSpec {
     pub prediction_width: usize,
     #[serde(default)]
     pub target_names: Vec<String>,
+}
+
+fn default_runtime_prediction_level() -> PredictionLevel {
+    PredictionLevel::Sample
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -3050,6 +3074,7 @@ fn prediction_input_spec(
         source_port: edge.source.port_name.clone(),
         target_port: edge.target.port_name.clone(),
         partition: PredictionPartition::Validation,
+        prediction_level: PredictionLevel::Sample,
         fold_id: scope.fold_id.clone(),
         fold_ids,
         sample_ids,
@@ -3959,6 +3984,7 @@ mod tests {
                         })?;
                 if prediction_input.producer_node.as_str() != "model:base"
                     || prediction_input.partition != PredictionPartition::Validation
+                    || prediction_input.prediction_level != PredictionLevel::Sample
                     || prediction_input.prediction_width != 1
                 {
                     return Err(DagMlError::RuntimeValidation(
@@ -4111,6 +4137,7 @@ mod tests {
                     || prediction_input.source_port != "pred"
                     || prediction_input.target_port != "pred"
                     || prediction_input.partition != PredictionPartition::Validation
+                    || prediction_input.prediction_level != PredictionLevel::Sample
                     || prediction_input.fold_id.is_some()
                     || prediction_input.fold_ids != self.expected_fold_ids
                     || prediction_input.sample_ids != self.expected_sample_ids
@@ -5339,6 +5366,7 @@ mod tests {
             consumer_node: NodeId::new("model:meta").unwrap(),
             target_port: "pred".to_string(),
             partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
             fold_ids: vec![
                 FoldId::new("fold:0").unwrap(),
                 FoldId::new("fold:1").unwrap(),
@@ -5447,6 +5475,7 @@ mod tests {
             consumer_node: NodeId::new("model:meta").unwrap(),
             target_port: "pred".to_string(),
             partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
             fold_ids: vec![
                 FoldId::new("fold:0").unwrap(),
                 FoldId::new("fold:1").unwrap(),
@@ -5479,6 +5508,7 @@ mod tests {
         let manifest = store.manifests();
         assert_eq!(manifest.len(), 1);
         assert_eq!(manifest[0].requirement_key, requirement.key());
+        assert_eq!(manifest[0].prediction_level, PredictionLevel::Sample);
         assert_eq!(manifest[0].value_count, 2);
         assert_eq!(manifest[0].estimated_value_bytes, 16);
         assert_eq!(store.load_blocks(&requirement.key()).unwrap().len(), 2);
@@ -5532,6 +5562,7 @@ mod tests {
             consumer_node: NodeId::new("model:meta").unwrap(),
             target_port: "pred".to_string(),
             partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
             fold_ids: vec![
                 FoldId::new("fold:0").unwrap(),
                 FoldId::new("fold:1").unwrap(),
@@ -5564,6 +5595,7 @@ mod tests {
         let manifest =
             FilePredictionCacheStore::write_payload_set(&root, &bundle, &payload_set).unwrap();
         assert_eq!(manifest.caches.len(), 1);
+        assert_eq!(manifest.caches[0].prediction_level, PredictionLevel::Sample);
         assert!(root.join(FILE_PREDICTION_CACHE_MANIFEST_FILE).exists());
         assert!(root.join(&manifest.caches[0].file_name).exists());
 

@@ -22,10 +22,11 @@ use dag_ml_core::{
     DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, FilePredictionCacheStore,
     GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId,
     LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, ParallelScheduler,
-    Phase, PredictionBlock, PredictionPartition, RefitArtifactRecord, RegressionMetricKind,
-    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, RunContext, RunId,
-    RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
-    SampleId, SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
+    Phase, PredictionBlock, PredictionLevel, PredictionPartition, RefitArtifactRecord,
+    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
+    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
+    RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric, SelectionPolicy,
+    SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2090,6 +2091,7 @@ fn oof_prediction_requirements(
             consumer_node: edge.target.node_id.clone(),
             target_port: edge.target.port_name.clone(),
             partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
             fold_ids: summary
                 .fold_ids
                 .into_iter()
