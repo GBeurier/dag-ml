@@ -14,10 +14,11 @@ use dag_ml_core::{
     BundlePredictionRequirement, CampaignSpec, CandidateScore, ControllerId, ControllerManifest,
     ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle,
     ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
-    InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
-    OofCampaign, Phase, PredictionBlock, PredictionPartition, RefitArtifactRecord,
-    ReplayPhaseRequest, RunContext, RunId, RuntimeController, RuntimeControllerRegistry, SampleId,
-    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
+    InMemoryDataProvider, InMemoryPredictionCacheStore, LineageId, LineageRecord, MetricObjective,
+    NodeId, NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock, PredictionPartition,
+    RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId, RuntimeController,
+    RuntimeControllerRegistry, RuntimePredictionCacheStore, SampleId, SelectionDecision,
+    SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -735,7 +736,7 @@ fn main() -> Result<()> {
                         plan: &plan,
                         bundle: &captured.bundle,
                         replay_request: &replay_request,
-                        prediction_cache_payloads: None,
+                        prediction_cache_store: None,
                         controllers: &runtime_controllers,
                         data_provider: &data_provider,
                         artifact_store: &captured.artifact_store,
@@ -800,7 +801,7 @@ fn main() -> Result<()> {
                         plan: &plan,
                         bundle: &captured.bundle,
                         replay_request: &replay_request,
-                        prediction_cache_payloads: None,
+                        prediction_cache_store: None,
                         controllers: &runtime_controllers,
                         data_provider: &data_provider,
                         artifact_store: &captured.artifact_store,
@@ -900,6 +901,8 @@ fn main() -> Result<()> {
                 read_json(&replay_request, "replay phase request")?;
             let prediction_cache_payloads =
                 read_optional_prediction_cache_payload(prediction_cache_payload.as_ref())?;
+            let prediction_cache_store =
+                optional_prediction_cache_store(&bundle, prediction_cache_payloads)?;
             let envelope_map = read_replay_envelopes(&envelopes)?;
             if envelope_map.is_empty() {
                 bail!("run-mock-replay requires at least one --envelope KEY=PATH argument");
@@ -919,7 +922,9 @@ fn main() -> Result<()> {
                         plan: &plan,
                         bundle: &bundle,
                         replay_request: &replay_request,
-                        prediction_cache_payloads: prediction_cache_payloads.as_ref(),
+                        prediction_cache_store: prediction_cache_store
+                            .as_ref()
+                            .map(|store| store as &dyn RuntimePredictionCacheStore),
                         controllers: &runtime_controllers,
                         data_provider: &data_provider,
                         artifact_store: &artifact_store,
@@ -929,13 +934,17 @@ fn main() -> Result<()> {
                 )
                 .with_context(|| "mock replay execution failed")?;
             println!(
-                "mock replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s)",
+                "mock replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s), {} prediction cache handle(s)",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
                 data_provider.handle_records().len(),
                 data_provider.view_records().len(),
-                artifact_store.len()
+                artifact_store.len(),
+                prediction_cache_store
+                    .as_ref()
+                    .map(|store| store.materialization_records().len())
+                    .unwrap_or(0)
             );
         }
         Command::RunProcessReplay {
@@ -958,6 +967,8 @@ fn main() -> Result<()> {
                 read_json(&replay_request, "replay phase request")?;
             let prediction_cache_payloads =
                 read_optional_prediction_cache_payload(prediction_cache_payload.as_ref())?;
+            let prediction_cache_store =
+                optional_prediction_cache_store(&bundle, prediction_cache_payloads)?;
             let envelope_map = read_replay_envelopes(&envelopes)?;
             if envelope_map.is_empty() {
                 bail!("run-process-replay requires at least one --envelope KEY=PATH argument");
@@ -981,7 +992,9 @@ fn main() -> Result<()> {
                         plan: &plan,
                         bundle: &bundle,
                         replay_request: &replay_request,
-                        prediction_cache_payloads: prediction_cache_payloads.as_ref(),
+                        prediction_cache_store: prediction_cache_store
+                            .as_ref()
+                            .map(|store| store as &dyn RuntimePredictionCacheStore),
                         controllers: &runtime_controllers,
                         data_provider: &data_provider,
                         artifact_store: &artifact_store,
@@ -991,13 +1004,17 @@ fn main() -> Result<()> {
                 )
                 .with_context(|| "process replay execution failed")?;
             println!(
-                "process replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s)",
+                "process replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s), {} prediction cache handle(s)",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
                 data_provider.handle_records().len(),
                 data_provider.view_records().len(),
-                artifact_store.len()
+                artifact_store.len(),
+                prediction_cache_store
+                    .as_ref()
+                    .map(|store| store.materialization_records().len())
+                    .unwrap_or(0)
             );
         }
     }
@@ -2289,6 +2306,16 @@ fn read_optional_prediction_cache_payload(
 ) -> Result<Option<BundlePredictionCachePayloadSet>> {
     path.map(|path| read_json(path, "prediction cache payload set"))
         .transpose()
+}
+
+fn optional_prediction_cache_store(
+    bundle: &ExecutionBundle,
+    payloads: Option<BundlePredictionCachePayloadSet>,
+) -> Result<Option<InMemoryPredictionCacheStore>> {
+    payloads
+        .map(|payloads| InMemoryPredictionCacheStore::from_payloads(bundle, payloads))
+        .transpose()
+        .with_context(|| "prediction cache payload set does not match bundle")
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Result<T> {

@@ -1122,13 +1122,32 @@ pub struct ReplayPhaseRequest {
 
 impl ReplayPhaseRequest {
     pub fn validate_for_bundle(&self, bundle: &ExecutionBundle) -> Result<()> {
-        self.validate_for_bundle_with_prediction_cache_payloads(bundle, None)
+        self.validate_for_bundle_with_prediction_cache_store(bundle, false)
+    }
+
+    pub fn validate_for_bundle_with_prediction_cache_store(
+        &self,
+        bundle: &ExecutionBundle,
+        prediction_cache_available: bool,
+    ) -> Result<()> {
+        self.validate_for_bundle_internal(bundle, prediction_cache_available)
     }
 
     pub fn validate_for_bundle_with_prediction_cache_payloads(
         &self,
         bundle: &ExecutionBundle,
         prediction_cache_payloads: Option<&BundlePredictionCachePayloadSet>,
+    ) -> Result<()> {
+        if let Some(payloads) = prediction_cache_payloads {
+            payloads.validate_against_bundle(bundle)?;
+        }
+        self.validate_for_bundle_internal(bundle, prediction_cache_payloads.is_some())
+    }
+
+    fn validate_for_bundle_internal(
+        &self,
+        bundle: &ExecutionBundle,
+        prediction_cache_available: bool,
     ) -> Result<()> {
         bundle.validate()?;
         if self.bundle_id != bundle.bundle_id {
@@ -1143,11 +1162,8 @@ impl ReplayPhaseRequest {
                 self.phase
             )));
         }
-        if let Some(payloads) = prediction_cache_payloads {
-            payloads.validate_against_bundle(bundle)?;
-        }
         if self.phase == Phase::Refit && !bundle.prediction_requirements.is_empty() {
-            if prediction_cache_payloads.is_some() {
+            if prediction_cache_available {
                 return self.validate_data_envelope_keys(bundle);
             }
             return Err(DagMlError::RuntimeValidation(format!(

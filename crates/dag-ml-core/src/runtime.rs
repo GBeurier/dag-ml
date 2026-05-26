@@ -1,10 +1,13 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::bundle::{
-    bundle_prediction_requirement_key, BundlePredictionCachePayloadSet, ExecutionBundle,
-    RefitArtifactRecord, ReplayPhaseRequest,
+    build_prediction_cache_payload, bundle_prediction_requirement_key,
+    validate_prediction_cache_payload_matches_record, BundlePredictionCachePayloadSet,
+    BundlePredictionCacheRecord, BundlePredictionRequirement, ExecutionBundle, RefitArtifactRecord,
+    ReplayPhaseRequest,
 };
 use crate::campaign::stable_json_fingerprint;
 use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
@@ -364,6 +367,126 @@ impl InMemoryPredictionStore {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PredictionCacheMaterializationRequest {
+    pub run_id: RunId,
+    pub bundle_id: BundleId,
+    pub phase: Phase,
+    pub variant_id: Option<VariantId>,
+    pub requirement: BundlePredictionRequirement,
+    pub cache: BundlePredictionCacheRecord,
+    pub producer_controller_id: ControllerId,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PredictionCacheMaterializationRecord {
+    pub run_id: RunId,
+    pub bundle_id: BundleId,
+    pub phase: Phase,
+    pub variant_id: Option<VariantId>,
+    pub requirement_key: String,
+    pub cache_id: String,
+    pub handle: HandleRef,
+}
+
+pub trait RuntimePredictionCacheStore {
+    fn load_blocks(&self, requirement_key: &str) -> Result<Vec<PredictionBlock>>;
+    fn materialize(&self, request: &PredictionCacheMaterializationRequest) -> Result<HandleRef>;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InMemoryPredictionCacheStore {
+    payloads: BTreeMap<String, crate::bundle::BundlePredictionCachePayload>,
+    materialization_records: RefCell<Vec<PredictionCacheMaterializationRecord>>,
+}
+
+impl InMemoryPredictionCacheStore {
+    pub fn from_payloads(
+        bundle: &ExecutionBundle,
+        payloads: BundlePredictionCachePayloadSet,
+    ) -> Result<Self> {
+        payloads.validate_against_bundle(bundle)?;
+        Ok(Self {
+            payloads: payloads
+                .caches
+                .into_iter()
+                .map(|payload| (payload.requirement_key.clone(), payload))
+                .collect(),
+            materialization_records: RefCell::new(Vec::new()),
+        })
+    }
+
+    pub fn payload_count(&self) -> usize {
+        self.payloads.len()
+    }
+
+    pub fn materialization_records(&self) -> Vec<PredictionCacheMaterializationRecord> {
+        self.materialization_records.borrow().clone()
+    }
+}
+
+impl RuntimePredictionCacheStore for InMemoryPredictionCacheStore {
+    fn load_blocks(&self, requirement_key: &str) -> Result<Vec<PredictionBlock>> {
+        let payload = self.payloads.get(requirement_key).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "prediction cache store is missing requirement `{requirement_key}`"
+            ))
+        })?;
+        payload.validate()?;
+        Ok(payload.blocks.clone())
+    }
+
+    fn materialize(&self, request: &PredictionCacheMaterializationRequest) -> Result<HandleRef> {
+        request.requirement.validate()?;
+        request.cache.validate()?;
+        if request.requirement.key() != request.cache.requirement_key {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache materialization request for `{}` uses cache `{}` with mismatched requirement `{}`",
+                request.requirement.key(),
+                request.cache.cache_id,
+                request.cache.requirement_key
+            )));
+        }
+        let payload = self
+            .payloads
+            .get(&request.cache.requirement_key)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "prediction cache store is missing requirement `{}`",
+                    request.cache.requirement_key
+                ))
+            })?;
+        validate_prediction_cache_payload_matches_record(payload, &request.cache)?;
+        let fingerprint = stable_json_fingerprint(&(
+            &request.run_id,
+            &request.bundle_id,
+            request.phase,
+            &request.variant_id,
+            &request.cache.requirement_key,
+            &request.cache.cache_id,
+            &request.cache.content_fingerprint,
+        ))?;
+        let handle = HandleRef {
+            handle: u64::from_str_radix(&fingerprint[..16], 16)
+                .expect("sha256 hex prefix should fit into u64"),
+            kind: HandleKind::Prediction,
+            owner_controller: request.producer_controller_id.clone(),
+        };
+        self.materialization_records
+            .borrow_mut()
+            .push(PredictionCacheMaterializationRecord {
+                run_id: request.run_id.clone(),
+                bundle_id: request.bundle_id.clone(),
+                phase: request.phase,
+                variant_id: request.variant_id.clone(),
+                requirement_key: request.cache.requirement_key.clone(),
+                cache_id: request.cache.cache_id.clone(),
+                handle: handle.clone(),
+            });
+        Ok(handle)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PredictionInputSpec {
     pub producer_node: NodeId,
     pub source_port: String,
@@ -693,7 +816,7 @@ pub struct BundleReplayExecution<'a> {
     pub plan: &'a ExecutionPlan,
     pub bundle: &'a ExecutionBundle,
     pub replay_request: &'a ReplayPhaseRequest,
-    pub prediction_cache_payloads: Option<&'a BundlePredictionCachePayloadSet>,
+    pub prediction_cache_store: Option<&'a dyn RuntimePredictionCacheStore>,
     pub controllers: &'a RuntimeControllerRegistry,
     pub data_provider: &'a dyn RuntimeDataProvider,
     pub artifact_store: &'a dyn RuntimeArtifactStore,
@@ -757,10 +880,19 @@ struct PhaseScope {
     seed_root: Option<u64>,
 }
 
+#[derive(Clone, Debug)]
+struct ReplayPredictionCacheContract {
+    requirement: BundlePredictionRequirement,
+    cache: BundlePredictionCacheRecord,
+}
+
 #[derive(Default)]
 struct PhaseScopeResources<'a> {
     data_provider: Option<&'a dyn RuntimeDataProvider>,
     replay_artifact_handles: Option<&'a BTreeMap<NodeId, BTreeMap<String, HandleRef>>>,
+    replay_bundle_id: Option<&'a BundleId>,
+    prediction_cache_store: Option<&'a dyn RuntimePredictionCacheStore>,
+    prediction_cache_contracts: Option<&'a BTreeMap<String, ReplayPredictionCacheContract>>,
     artifact_store: Option<&'a mut InMemoryArtifactStore>,
 }
 
@@ -985,17 +1117,22 @@ impl SequentialScheduler {
         replay.bundle.validate_against_plan(replay.plan)?;
         replay
             .replay_request
-            .validate_for_bundle_with_prediction_cache_payloads(
+            .validate_for_bundle_with_prediction_cache_store(
                 replay.bundle,
-                replay.prediction_cache_payloads,
+                replay.prediction_cache_store.is_some(),
             )?;
         replay
             .bundle
             .validate_replay_envelopes(replay.data_envelopes)?;
+        let prediction_cache_contracts = if replay.replay_request.phase == Phase::Refit {
+            Some(replay_prediction_cache_contracts(replay.bundle)?)
+        } else {
+            None
+        };
         if replay.replay_request.phase == Phase::Refit {
-            preload_replay_prediction_cache_payloads(
+            preload_replay_prediction_cache_store(
                 replay.bundle,
-                replay.prediction_cache_payloads,
+                replay.prediction_cache_store,
                 ctx,
             )?;
         }
@@ -1033,6 +1170,9 @@ impl SequentialScheduler {
             PhaseScopeResources {
                 data_provider: Some(replay.data_provider),
                 replay_artifact_handles: Some(&replay_artifacts),
+                replay_bundle_id: Some(&replay.bundle.bundle_id),
+                prediction_cache_store: replay.prediction_cache_store,
+                prediction_cache_contracts: prediction_cache_contracts.as_ref(),
                 ..Default::default()
             },
         )
@@ -1064,14 +1204,8 @@ impl SequentialScheduler {
                     node_plan.controller_id
                 ))
             })?;
-            let collected_inputs = collect_input_handles(
-                plan,
-                node_plan,
-                &output_handles,
-                resources.data_provider,
-                ctx,
-                &scope,
-            )?;
+            let collected_inputs =
+                collect_input_handles(plan, node_plan, &output_handles, &resources, ctx, &scope)?;
             let mut input_handles = collected_inputs.handles;
             if let Some(node_artifact_handles) = resources
                 .replay_artifact_handles
@@ -1127,7 +1261,7 @@ fn collect_input_handles(
     plan: &ExecutionPlan,
     node_plan: &NodePlan,
     output_handles: &BTreeMap<NodeId, BTreeMap<String, HandleRef>>,
-    data_provider: Option<&dyn RuntimeDataProvider>,
+    resources: &PhaseScopeResources<'_>,
     ctx: &RunContext,
     scope: &PhaseScope,
 ) -> Result<CollectedInputs> {
@@ -1151,7 +1285,7 @@ fn collect_input_handles(
     }
     for edge in training_oof_edges {
         let key = format!("{}.{}", edge.source.node_id, edge.source.port_name);
-        let input = collect_oof_prediction_input(plan, edge, ctx, scope)?;
+        let input = collect_oof_prediction_input(plan, edge, ctx, scope, resources)?;
         if inputs.insert(key.clone(), input.handle).is_some() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "node `{}` received duplicate OOF prediction input `{key}`",
@@ -1165,14 +1299,14 @@ fn collect_input_handles(
             )));
         }
     }
-    if !node_plan.data_bindings.is_empty() && data_provider.is_none() {
+    if !node_plan.data_bindings.is_empty() && resources.data_provider.is_none() {
         return Err(DagMlError::RuntimeValidation(format!(
             "node `{}` requires {} data binding(s) but no runtime data provider is registered",
             node_plan.node_id,
             node_plan.data_bindings.len()
         )));
     }
-    if let Some(data_provider) = data_provider {
+    if let Some(data_provider) = resources.data_provider {
         for binding in &node_plan.data_bindings {
             let materialized = data_provider.materialize(&DataMaterializationRequest {
                 run_id: ctx.run_id.clone(),
@@ -1260,6 +1394,7 @@ fn collect_oof_prediction_input(
     edge: &EdgeSpec,
     ctx: &RunContext,
     scope: &PhaseScope,
+    resources: &PhaseScopeResources<'_>,
 ) -> Result<CollectedPredictionInput> {
     let blocks = match scope.phase {
         Phase::FitCv => validate_fit_cv_oof_edge(plan, edge, ctx, scope)?,
@@ -1270,13 +1405,73 @@ fn collect_oof_prediction_input(
         .node_plans
         .get(&edge.source.node_id)
         .expect("edge source has a node plan");
+    let handle = materialize_oof_prediction_handle(
+        plan,
+        edge,
+        ctx,
+        scope,
+        resources,
+        &source_plan.controller_id,
+    )?;
     Ok(CollectedPredictionInput {
-        handle: HandleRef {
-            handle: deterministic_oof_handle(plan, edge, ctx, scope)?,
-            kind: HandleKind::Prediction,
-            owner_controller: source_plan.controller_id.clone(),
-        },
+        handle,
         spec: prediction_input_spec(edge, scope, &blocks)?,
+    })
+}
+
+fn materialize_oof_prediction_handle(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+    resources: &PhaseScopeResources<'_>,
+    producer_controller_id: &ControllerId,
+) -> Result<HandleRef> {
+    if scope.phase == Phase::Refit {
+        if let (Some(store), Some(bundle_id), Some(contracts)) = (
+            resources.prediction_cache_store,
+            resources.replay_bundle_id,
+            resources.prediction_cache_contracts,
+        ) {
+            let key = bundle_prediction_requirement_key(
+                &edge.source.node_id,
+                &edge.source.port_name,
+                &edge.target.node_id,
+                &edge.target.port_name,
+            );
+            let contract = contracts.get(&key).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "replay prediction cache store cannot materialize missing requirement `{key}`"
+                ))
+            })?;
+            let handle = store.materialize(&PredictionCacheMaterializationRequest {
+                run_id: ctx.run_id.clone(),
+                bundle_id: bundle_id.clone(),
+                phase: scope.phase,
+                variant_id: scope.variant_id.clone(),
+                requirement: contract.requirement.clone(),
+                cache: contract.cache.clone(),
+                producer_controller_id: producer_controller_id.clone(),
+            })?;
+            if handle.kind != HandleKind::Prediction {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache store materialized requirement `{key}` as {:?}",
+                    handle.kind
+                )));
+            }
+            if &handle.owner_controller != producer_controller_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache store materialized requirement `{key}` for controller `{}`, expected `{}`",
+                    handle.owner_controller, producer_controller_id
+                )));
+            }
+            return Ok(handle);
+        }
+    }
+    Ok(HandleRef {
+        handle: deterministic_oof_handle(plan, edge, ctx, scope)?,
+        kind: HandleKind::Prediction,
+        owner_controller: producer_controller_id.clone(),
     })
 }
 
@@ -1715,33 +1910,73 @@ fn sample_ids_for_partition(
     }
 }
 
-fn preload_replay_prediction_cache_payloads(
+fn preload_replay_prediction_cache_store(
     bundle: &ExecutionBundle,
-    prediction_cache_payloads: Option<&BundlePredictionCachePayloadSet>,
+    prediction_cache_store: Option<&dyn RuntimePredictionCacheStore>,
     ctx: &mut RunContext,
 ) -> Result<()> {
     if bundle.prediction_requirements.is_empty() {
         return Ok(());
     }
-    let payloads = prediction_cache_payloads.ok_or_else(|| {
+    let store = prediction_cache_store.ok_or_else(|| {
         DagMlError::RuntimeValidation(format!(
-            "bundle `{}` cannot preload OOF prediction caches without payloads",
+            "bundle `{}` cannot preload OOF prediction caches without a prediction cache store",
             bundle.bundle_id
         ))
     })?;
-    payloads.validate_against_bundle(bundle)?;
     if !ctx.prediction_store.blocks().is_empty() {
         return Err(DagMlError::RuntimeValidation(format!(
             "bundle `{}` cannot preload OOF prediction caches into a non-empty prediction store",
             bundle.bundle_id
         )));
     }
-    for payload in &payloads.caches {
+    let contracts = replay_prediction_cache_contracts(bundle)?;
+    for contract in contracts.values() {
+        let blocks = store.load_blocks(&contract.cache.requirement_key)?;
+        if blocks.iter().any(|block| {
+            block.producer_node != contract.requirement.producer_node
+                || block.partition != contract.requirement.partition
+        }) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache store returned blocks outside requirement `{}`",
+                contract.cache.requirement_key
+            )));
+        }
+        let payload = build_prediction_cache_payload(&contract.requirement, &blocks)?;
+        validate_prediction_cache_payload_matches_record(&payload, &contract.cache)?;
         for block in &payload.blocks {
             ctx.prediction_store.append(block.clone())?;
         }
     }
     Ok(())
+}
+
+fn replay_prediction_cache_contracts(
+    bundle: &ExecutionBundle,
+) -> Result<BTreeMap<String, ReplayPredictionCacheContract>> {
+    bundle.validate()?;
+    let requirements = bundle
+        .prediction_requirements
+        .iter()
+        .map(|requirement| (requirement.key(), requirement))
+        .collect::<BTreeMap<_, _>>();
+    let mut contracts = BTreeMap::new();
+    for cache in &bundle.prediction_caches {
+        let requirement = requirements.get(&cache.requirement_key).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "prediction cache `{}` references unknown prediction requirement `{}`",
+                cache.cache_id, cache.requirement_key
+            ))
+        })?;
+        contracts.insert(
+            cache.requirement_key.clone(),
+            ReplayPredictionCacheContract {
+                requirement: (*requirement).clone(),
+                cache: cache.clone(),
+            },
+        );
+    }
+    Ok(contracts)
 }
 
 fn materialize_replay_artifact_handles(
@@ -1831,7 +2066,12 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
-    use crate::bundle::{build_execution_bundle, RefitArtifactRecord, ReplayPhaseRequest};
+    use crate::bundle::{
+        build_execution_bundle, build_execution_bundle_with_prediction_contracts,
+        build_prediction_cache_payload, build_prediction_cache_record,
+        BundlePredictionCachePayloadSet, BundlePredictionRequirement, RefitArtifactRecord,
+        ReplayPhaseRequest, PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+    };
     use crate::controller::{
         ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
         ControllerRegistry, RngPolicy,
@@ -2850,6 +3090,91 @@ mod tests {
     }
 
     #[test]
+    fn in_memory_prediction_cache_store_loads_and_materializes_oof_payloads() {
+        let plan = build_execution_plan(
+            "plan:oof.edge.cache.store",
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+        )
+        .unwrap();
+        let fit_controllers = oof_edge_runtime_controllers(
+            Some(PredictionPartition::Validation),
+            OofSampleMode::Aligned,
+        );
+        let mut ctx = RunContext::new(RunId::new("run:oof.edge.cache.store").unwrap(), Some(11));
+        SequentialScheduler
+            .execute_campaign_phase(&plan, &fit_controllers, &mut ctx, Phase::FitCv)
+            .unwrap();
+
+        let requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("model:base").unwrap(),
+            source_port: "pred".to_string(),
+            consumer_node: NodeId::new("model:meta").unwrap(),
+            target_port: "pred".to_string(),
+            partition: PredictionPartition::Validation,
+            fold_ids: vec![
+                FoldId::new("fold:0").unwrap(),
+                FoldId::new("fold:1").unwrap(),
+            ],
+            sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let cache =
+            build_prediction_cache_record(&requirement, ctx.prediction_store.blocks()).unwrap();
+        let payload =
+            build_prediction_cache_payload(&requirement, ctx.prediction_store.blocks()).unwrap();
+        let bundle = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:oof.edge.cache.store").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            Vec::new(),
+            vec![requirement.clone()],
+            vec![cache.clone()],
+        )
+        .unwrap();
+        let payload_set = BundlePredictionCachePayloadSet {
+            bundle_id: bundle.bundle_id.clone(),
+            schema_version: PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+            caches: vec![payload],
+        };
+        let store = InMemoryPredictionCacheStore::from_payloads(&bundle, payload_set).unwrap();
+        assert_eq!(store.payload_count(), 1);
+        assert_eq!(store.load_blocks(&requirement.key()).unwrap().len(), 2);
+
+        ReplayPhaseRequest {
+            bundle_id: bundle.bundle_id.clone(),
+            phase: Phase::Refit,
+            data_envelope_keys: Vec::new(),
+        }
+        .validate_for_bundle_with_prediction_cache_store(&bundle, true)
+        .unwrap();
+
+        let handle = store
+            .materialize(&PredictionCacheMaterializationRequest {
+                run_id: RunId::new("run:oof.edge.cache.store.replay").unwrap(),
+                bundle_id: bundle.bundle_id.clone(),
+                phase: Phase::Refit,
+                variant_id: bundle.selected_variant_id.clone(),
+                requirement: requirement.clone(),
+                cache,
+                producer_controller_id: ControllerId::new("controller:model").unwrap(),
+            })
+            .unwrap();
+        assert_eq!(handle.kind, HandleKind::Prediction);
+        assert_eq!(
+            handle.owner_controller,
+            ControllerId::new("controller:model").unwrap()
+        );
+        let records = store.materialization_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].requirement_key, requirement.key());
+        assert_eq!(records[0].handle, handle);
+    }
+
+    #[test]
     fn requires_oof_prediction_edge_refit_rejects_incomplete_oof_coverage() {
         let plan = build_execution_plan(
             "plan:oof.edge.refit.incomplete",
@@ -3495,7 +3820,7 @@ mod tests {
                     plan: &plan,
                     bundle: &bundle,
                     replay_request: &request,
-                    prediction_cache_payloads: None,
+                    prediction_cache_store: None,
                     controllers: &controllers,
                     data_provider: &provider,
                     artifact_store: &store,
@@ -3541,7 +3866,7 @@ mod tests {
                     plan: &plan,
                     bundle: &bundle,
                     replay_request: &request,
-                    prediction_cache_payloads: None,
+                    prediction_cache_store: None,
                     controllers: &controllers,
                     data_provider: &provider,
                     artifact_store: &InMemoryArtifactStore::new(),
@@ -3558,7 +3883,7 @@ mod tests {
                     plan: &plan,
                     bundle: &bundle,
                     replay_request: &replay_request(&bundle, Phase::FitCv),
-                    prediction_cache_payloads: None,
+                    prediction_cache_store: None,
                     controllers: &controllers,
                     data_provider: &provider,
                     artifact_store: &store,
@@ -3579,7 +3904,7 @@ mod tests {
                     plan: &plan,
                     bundle: &bundle,
                     replay_request: &request,
-                    prediction_cache_payloads: None,
+                    prediction_cache_store: None,
                     controllers: &controllers,
                     data_provider: &provider,
                     artifact_store: &store,
