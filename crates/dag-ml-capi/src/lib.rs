@@ -2366,6 +2366,7 @@ mod tests {
             },
             phase: Phase::FitCv,
             variant_id: Some(VariantId::new("variant:controller").unwrap()),
+            variant: None,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             branch_path: Vec::new(),
             input_handles: BTreeMap::new(),

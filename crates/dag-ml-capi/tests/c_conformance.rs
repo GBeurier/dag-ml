@@ -97,7 +97,16 @@ static int extract_string(
 
 static int extract_seed(const char *json, size_t len, char *out, size_t out_len) {
     const char *end = json + len;
-    const char *start = strstr(json, "\"seed\":");
+    const char *start = NULL;
+    const char *search = json;
+    while (search < end) {
+        const char *candidate = strstr(search, "\"seed\":");
+        if (!candidate || candidate >= end) {
+            break;
+        }
+        start = candidate;
+        search = candidate + 1;
+    }
     if (!start) {
         return 0;
     }
