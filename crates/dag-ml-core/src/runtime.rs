@@ -1663,7 +1663,7 @@ pub trait RuntimeDataProvider {
     fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef>;
 }
 
-pub trait RuntimeController {
+pub trait RuntimeController: Send + Sync {
     fn controller_id(&self) -> &ControllerId;
     fn invoke(&self, task: &NodeTask) -> Result<NodeResult>;
 }
@@ -1727,6 +1727,26 @@ impl RunContext {
 
 #[derive(Clone, Debug, Default)]
 pub struct SequentialScheduler;
+
+#[derive(Clone, Debug)]
+pub struct ParallelScheduler {
+    max_workers: usize,
+}
+
+impl ParallelScheduler {
+    pub fn new(max_workers: usize) -> Result<Self> {
+        if max_workers == 0 {
+            return Err(DagMlError::RuntimeValidation(
+                "parallel scheduler max_workers must be at least 1".to_string(),
+            ));
+        }
+        Ok(Self { max_workers })
+    }
+
+    pub fn max_workers(&self) -> usize {
+        self.max_workers
+    }
+}
 
 #[derive(Clone, Debug)]
 struct PhaseScope {
@@ -2135,6 +2155,292 @@ impl SequentialScheduler {
 
         Ok(results)
     }
+}
+
+impl ParallelScheduler {
+    pub fn execute_phase(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        ctx: &mut RunContext,
+        phase: Phase,
+    ) -> Result<Vec<NodeResult>> {
+        plan.validate()?;
+        let variant_id = ctx.variant_id.clone();
+        let seed_root = ctx.root_seed;
+        self.execute_phase_scope(
+            plan,
+            controllers,
+            ctx,
+            PhaseScope {
+                phase,
+                variant_id,
+                variant: None,
+                fold_id: None,
+                seed_root,
+            },
+            PhaseScopeResources::default(),
+        )
+    }
+
+    pub fn execute_phase_with_data_provider(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+        phase: Phase,
+    ) -> Result<Vec<NodeResult>> {
+        plan.validate()?;
+        let variant_id = ctx.variant_id.clone();
+        let seed_root = ctx.root_seed;
+        self.execute_phase_scope(
+            plan,
+            controllers,
+            ctx,
+            PhaseScope {
+                phase,
+                variant_id,
+                variant: None,
+                fold_id: None,
+                seed_root,
+            },
+            PhaseScopeResources {
+                data_provider: Some(data_provider),
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn execute_campaign_phase(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        ctx: &mut RunContext,
+        phase: Phase,
+    ) -> Result<Vec<NodeResult>> {
+        plan.validate()?;
+        let mut results = Vec::new();
+        let fold_ids = if phase == Phase::FitCv {
+            plan.fold_set
+                .as_ref()
+                .map(|fold_set| {
+                    fold_set
+                        .folds
+                        .iter()
+                        .map(|fold| Some(fold.fold_id.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![None])
+        } else {
+            vec![None]
+        };
+        for variant in &plan.variants {
+            if ctx
+                .variant_id
+                .as_ref()
+                .is_some_and(|requested| requested != &variant.variant_id)
+            {
+                continue;
+            }
+            for fold_id in &fold_ids {
+                let seed_root = variant.seed.or(ctx.root_seed);
+                results.extend(self.execute_phase_scope(
+                    plan,
+                    controllers,
+                    ctx,
+                    PhaseScope {
+                        phase,
+                        variant_id: Some(variant.variant_id.clone()),
+                        variant: Some(VariantExecutionSpec::from_plan(variant)),
+                        fold_id: fold_id.clone(),
+                        seed_root,
+                    },
+                    PhaseScopeResources::default(),
+                )?);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn execute_campaign_phase_with_data_provider(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+        phase: Phase,
+    ) -> Result<Vec<NodeResult>> {
+        plan.validate()?;
+        let mut results = Vec::new();
+        let fold_ids = if phase == Phase::FitCv {
+            plan.fold_set
+                .as_ref()
+                .map(|fold_set| {
+                    fold_set
+                        .folds
+                        .iter()
+                        .map(|fold| Some(fold.fold_id.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![None])
+        } else {
+            vec![None]
+        };
+        for variant in &plan.variants {
+            if ctx
+                .variant_id
+                .as_ref()
+                .is_some_and(|requested| requested != &variant.variant_id)
+            {
+                continue;
+            }
+            for fold_id in &fold_ids {
+                let seed_root = variant.seed.or(ctx.root_seed);
+                results.extend(self.execute_phase_scope(
+                    plan,
+                    controllers,
+                    ctx,
+                    PhaseScope {
+                        phase,
+                        variant_id: Some(variant.variant_id.clone()),
+                        variant: Some(VariantExecutionSpec::from_plan(variant)),
+                        fold_id: fold_id.clone(),
+                        seed_root,
+                    },
+                    PhaseScopeResources {
+                        data_provider: Some(data_provider),
+                        ..Default::default()
+                    },
+                )?);
+            }
+        }
+        Ok(results)
+    }
+
+    fn execute_phase_scope(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        ctx: &mut RunContext,
+        scope: PhaseScope,
+        mut resources: PhaseScopeResources<'_>,
+    ) -> Result<Vec<NodeResult>> {
+        let mut results = Vec::new();
+        let mut output_handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
+        let mut input_lineage = BTreeMap::<NodeId, LineageId>::new();
+
+        for level in plan.node_parallel_levels_for_phase(scope.phase)? {
+            let mut prepared = Vec::<PreparedNodeTask>::new();
+            for node_id in &level {
+                let node_plan = plan
+                    .node_plans
+                    .get(node_id)
+                    .expect("execution plan was validated");
+                let collected_inputs = collect_input_handles(
+                    plan,
+                    node_plan,
+                    &output_handles,
+                    &resources,
+                    ctx,
+                    &scope,
+                )?;
+                let mut input_handles = collected_inputs.handles;
+                if let Some(node_artifact_handles) = resources
+                    .replay_artifact_handles
+                    .and_then(|handles| handles.get(node_id))
+                {
+                    for (key, handle) in node_artifact_handles {
+                        if input_handles.insert(key.clone(), handle.clone()).is_some() {
+                            return Err(DagMlError::RuntimeValidation(format!(
+                                "node `{node_id}` received duplicate replay artifact input `{key}`"
+                            )));
+                        }
+                    }
+                }
+                let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
+                prepared.push(PreparedNodeTask {
+                    node_id: node_id.clone(),
+                    task: NodeTask {
+                        run_id: ctx.run_id.clone(),
+                        node_plan: task_node_plan.clone(),
+                        phase: scope.phase,
+                        variant_id: scope.variant_id.clone(),
+                        variant: scope.variant.clone(),
+                        fold_id: scope.fold_id.clone(),
+                        branch_path: Vec::new(),
+                        input_handles,
+                        data_views: collected_inputs.data_views,
+                        prediction_inputs: collected_inputs.prediction_inputs,
+                        seed: derive_task_seed(
+                            scope.seed_root,
+                            scope.variant_id.as_ref(),
+                            scope.fold_id.as_ref(),
+                            &task_node_plan,
+                            scope.phase,
+                        ),
+                    },
+                });
+            }
+
+            for chunk in prepared.chunks(self.max_workers) {
+                let chunk_results =
+                    std::thread::scope(|thread_scope| -> Result<Vec<NodeResult>> {
+                        let mut handles = Vec::with_capacity(chunk.len());
+                        for prepared_task in chunk {
+                            let controller = controllers
+                                .get(&prepared_task.task.node_plan.controller_id)
+                                .ok_or_else(|| {
+                                    DagMlError::RuntimeValidation(format!(
+                                        "runtime controller `{}` is not registered",
+                                        prepared_task.task.node_plan.controller_id
+                                    ))
+                                })?;
+                            handles.push(thread_scope.spawn(move || {
+                                let result = controller.invoke(&prepared_task.task)?;
+                                result.validate_for_task(&prepared_task.task)?;
+                                Ok(result)
+                            }));
+                        }
+                        handles
+                            .into_iter()
+                            .map(|handle| {
+                                handle.join().map_err(|_| {
+                                    DagMlError::RuntimeValidation(
+                                        "parallel scheduler worker panicked".to_string(),
+                                    )
+                                })?
+                            })
+                            .collect()
+                    })?;
+
+                for (prepared_task, result) in chunk.iter().zip(chunk_results) {
+                    if let Some(store) = resources.artifact_store.as_deref_mut() {
+                        if scope.phase == Phase::Refit {
+                            store.capture_refit_artifacts(&prepared_task.task, &result)?;
+                        }
+                    }
+                    for prediction in &result.predictions {
+                        ctx.prediction_store.append(prediction.clone())?;
+                    }
+                    ctx.lineage.record(result.lineage.clone())?;
+                    output_handles.insert(prepared_task.node_id.clone(), result.outputs.clone());
+                    input_lineage.insert(
+                        prepared_task.node_id.clone(),
+                        result.lineage.record_id.clone(),
+                    );
+                    results.push(result);
+                }
+            }
+        }
+
+        Ok(results)
+    }
+}
+
+struct PreparedNodeTask {
+    node_id: NodeId,
+    task: NodeTask,
 }
 
 fn collect_input_handles(
@@ -2958,11 +3264,13 @@ fn derive_task_seed(
 #[cfg(test)]
 mod tests {
     use std::{
-        cell::RefCell,
         collections::{BTreeMap, BTreeSet},
         fs,
         path::PathBuf,
-        rc::Rc,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+        },
     };
 
     use super::*;
@@ -2999,8 +3307,8 @@ mod tests {
     struct VariantProbeController {
         id: ControllerId,
         handle: u64,
-        variants: Rc<RefCell<Vec<Option<VariantExecutionSpec>>>>,
-        node_plans: Rc<RefCell<Vec<NodePlan>>>,
+        variants: Arc<Mutex<Vec<Option<VariantExecutionSpec>>>>,
+        node_plans: Arc<Mutex<Vec<NodePlan>>>,
     }
 
     impl RuntimeController for VariantProbeController {
@@ -3009,8 +3317,8 @@ mod tests {
         }
 
         fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
-            self.variants.borrow_mut().push(task.variant.clone());
-            self.node_plans.borrow_mut().push(task.node_plan.clone());
+            self.variants.lock().unwrap().push(task.variant.clone());
+            self.node_plans.lock().unwrap().push(task.node_plan.clone());
             let variant_label = task
                 .variant_id
                 .as_ref()
@@ -3564,6 +3872,30 @@ mod tests {
         }
     }
 
+    fn independent_parallel_graph() -> GraphSpec {
+        GraphSpec {
+            id: "g:parallel".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    "transform:left",
+                    NodeKind::Transform,
+                    vec![],
+                    vec![port("x", PortKind::Data)],
+                ),
+                node(
+                    "transform:right",
+                    NodeKind::Transform,
+                    vec![],
+                    vec![port("x", PortKind::Data)],
+                ),
+            ],
+            edges: Vec::new(),
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
     fn oof_edge_graph() -> GraphSpec {
         GraphSpec {
             id: "g:oof.edge".to_string(),
@@ -3865,6 +4197,113 @@ mod tests {
     }
 
     #[test]
+    fn parallel_scheduler_invokes_independent_level_concurrently() {
+        struct ConcurrencyProbeController {
+            id: ControllerId,
+            active: Arc<AtomicUsize>,
+            max_active: Arc<AtomicUsize>,
+        }
+
+        impl RuntimeController for ConcurrencyProbeController {
+            fn controller_id(&self) -> &ControllerId {
+                &self.id
+            }
+
+            fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut observed = self.max_active.load(Ordering::SeqCst);
+                while active > observed
+                    && self
+                        .max_active
+                        .compare_exchange(observed, active, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_err()
+                {
+                    observed = self.max_active.load(Ordering::SeqCst);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                Ok(NodeResult {
+                    node_id: task.node_plan.node_id.clone(),
+                    outputs: BTreeMap::from([(
+                        "x".to_string(),
+                        HandleRef {
+                            handle: task.node_plan.node_id.as_str().len() as u64,
+                            kind: HandleKind::Data,
+                            owner_controller: self.id.clone(),
+                        },
+                    )]),
+                    predictions: Vec::new(),
+                    shape_deltas: Vec::new(),
+                    artifacts: Vec::new(),
+                    artifact_handles: BTreeMap::new(),
+                    lineage: LineageRecord {
+                        record_id: LineageId::new(format!(
+                            "lineage:parallel:{}",
+                            task.node_plan.node_id
+                        ))
+                        .unwrap(),
+                        run_id: task.run_id.clone(),
+                        node_id: task.node_plan.node_id.clone(),
+                        phase: task.phase,
+                        controller_id: self.id.clone(),
+                        controller_version: task.node_plan.controller_version.clone(),
+                        variant_id: task.variant_id.clone(),
+                        fold_id: task.fold_id.clone(),
+                        branch_path: task.branch_path.clone(),
+                        input_lineage: Vec::new(),
+                        artifact_refs: Vec::new(),
+                        params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                        data_model_shape_fingerprint: None,
+                        aggregation_policy_fingerprint: None,
+                        seed: task.seed,
+                        unsafe_flags: BTreeSet::new(),
+                        metrics: BTreeMap::new(),
+                    },
+                })
+            }
+        }
+
+        assert!(ParallelScheduler::new(0).is_err());
+        let plan = build_execution_plan(
+            "plan:parallel",
+            independent_parallel_graph(),
+            CampaignSpec {
+                id: "campaign:parallel".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: None,
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+            &manifests(),
+        )
+        .unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(ConcurrencyProbeController {
+                id: ControllerId::new("controller:transform").unwrap(),
+                active: Arc::clone(&active),
+                max_active: Arc::clone(&max_active),
+            }))
+            .unwrap();
+        let mut ctx = RunContext::new(RunId::new("run:parallel").unwrap(), Some(11));
+
+        let results = ParallelScheduler::new(2)
+            .unwrap()
+            .execute_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(ctx.lineage.len(), 2);
+        assert!(max_active.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[test]
     fn campaign_scheduler_expands_variants_and_cv_folds() {
         let plan = build_execution_plan(
             "plan:campaign",
@@ -3977,8 +4416,8 @@ mod tests {
             &manifests(),
         )
         .unwrap();
-        let observed_variants = Rc::new(RefCell::new(Vec::new()));
-        let observed_node_plans = Rc::new(RefCell::new(Vec::new()));
+        let observed_variants = Arc::new(Mutex::new(Vec::new()));
+        let observed_node_plans = Arc::new(Mutex::new(Vec::new()));
         let mut controllers = RuntimeControllerRegistry::new();
         controllers
             .register(Box::new(MockController {
@@ -3991,8 +4430,8 @@ mod tests {
             .register(Box::new(VariantProbeController {
                 id: ControllerId::new("controller:model").unwrap(),
                 handle: 2,
-                variants: Rc::clone(&observed_variants),
-                node_plans: Rc::clone(&observed_node_plans),
+                variants: Arc::clone(&observed_variants),
+                node_plans: Arc::clone(&observed_node_plans),
             }))
             .unwrap();
         let mut ctx = RunContext::new(RunId::new("run:generation.task.context").unwrap(), Some(23));
@@ -4002,7 +4441,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 4);
-        let observed = observed_variants.borrow();
+        let observed = observed_variants.lock().unwrap();
         assert_eq!(observed.len(), 2);
         let mut labels = BTreeSet::new();
         for variant in observed.iter().map(|variant| variant.as_ref().unwrap()) {
@@ -4018,7 +4457,7 @@ mod tests {
             labels.insert(variant.choices["model_family"].label.as_str());
         }
         assert_eq!(labels, BTreeSet::from(["pls", "rf"]));
-        let observed_plans = observed_node_plans.borrow();
+        let observed_plans = observed_node_plans.lock().unwrap();
         assert_eq!(observed_plans.len(), 2);
         let base_plan = plan
             .node_plans

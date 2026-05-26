@@ -58,6 +58,16 @@ handle, and replays `PREDICT` through that handle in the same persistent pool.
 This is intentionally not yet a production Python binding or native worker
 runtime.
 
+## Phase 2b: Parallel Execution
+
+Status: `dag-ml-core` exposes a bounded `ParallelScheduler` that runs
+independent nodes from the same compiled DAG level concurrently and commits
+their outputs, predictions and lineage in deterministic order. Runtime
+controllers are now `Send + Sync`; the persistent process adapter pool locks per
+worker, so parallel scheduler threads can use distinct workers instead of
+serializing on the whole pool. CLI integration and broader stress tests remain
+to do.
+
 ## Phase 3: Integration With `dag-ml-data`
 
 Definition of done:

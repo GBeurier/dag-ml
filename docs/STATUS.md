@@ -179,6 +179,10 @@ Implemented:
   explicit `init`, framed `task`, and `close` JSONL messages and return typed
   `ack`, `result`, or `error` frames, giving the coordinator a stable lifecycle
   and error surface before native bindings exist;
+- `dag-ml-core` now has a bounded `ParallelScheduler` for parallel DAG levels:
+  controllers are `Send + Sync`, independent nodes in the same compiled level
+  are invoked concurrently, and results are committed back into prediction,
+  lineage and handle stores in deterministic level order;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph validation,
