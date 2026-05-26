@@ -78,5 +78,6 @@ plan/controller fingerprints, selected variants, deterministic selection
 decisions, refit artifacts and the external data requirements needed for
 replay. The CLI can select candidates, build a bundle, and validate that a
 bundle plus replay request matches a rebuilt plan and external data envelopes.
-The C ABI exposes the same selection and replay-validation contracts over JSON.
-The remaining work is schema versioning and host adapter replay execution.
+Bundles carry an explicit schema version and reject unsupported versions. The C
+ABI exposes the same selection and replay-validation contracts over JSON. The
+remaining work is schema migration policy and host adapter replay execution.

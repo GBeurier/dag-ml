@@ -36,6 +36,7 @@ Implemented:
   selection and stable tie-breaking;
 - refit execution bundle contracts that bind selected variants, selected
   candidates, refit artifacts, plan fingerprints and replay data requirements;
+- explicit execution-bundle schema version with unsupported-version refusal;
 - replay request validation for predict, explain and refit phases;
 - mock controller conformance tests;
 - CLI execution-plan validation from graph/campaign/controller JSON fixtures;
@@ -64,8 +65,7 @@ Not implemented yet:
 - artifact/cache stores;
 - Arrow prediction storage;
 - host controller adapters;
-- stable bundle schema versioning and host-binding replay execution entry
-  points;
+- bundle schema migration policy and host-binding replay execution entry points;
 - concrete `dag-ml-data` provider implementation with real buffers and handle
   lifecycle arena.
 
