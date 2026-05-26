@@ -152,6 +152,12 @@ DagMlStatusCode dagml_execution_plan_build_json(
     DagMlBytesView plan_id,
     DagMlOwnedBytes *out_json,
     DagMlString *error_out);
+DagMlStatusCode dagml_execution_plan_schedule_json(
+    const uint8_t *plan_ptr,
+    size_t plan_len,
+    DagMlBytesView phase,
+    DagMlOwnedBytes *out_json,
+    DagMlString *error_out);
 DagMlStatusCode dagml_selection_policy_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_selection_decision_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, DagMlOwnedBytes *out_json, DagMlString *error_out);

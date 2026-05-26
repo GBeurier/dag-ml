@@ -14,6 +14,8 @@ the host owns the underlying object behind each handle.
   bindings can use to prepare parallel schedulers;
 - `dagml_execution_plan_build_json` for compiling graph/campaign/controller
   manifests into an `ExecutionPlan` while Rust owns planner validation;
+- `dagml_execution_plan_schedule_json` for exporting deterministic
+  phase/variant/fold node-level schedules from a compiled `ExecutionPlan`;
 - selection policy/decision validation and candidate selection JSON helpers;
 - execution bundle validation, replay-envelope validation, replay-request
   validation and prediction-cache payload validation helpers;
