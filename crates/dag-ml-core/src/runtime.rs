@@ -2328,6 +2328,14 @@ mod tests {
         manifests
     }
 
+    fn oof_edge_manifests(phases: BTreeSet<Phase>) -> crate::controller::ControllerRegistry {
+        let mut manifest = controller_manifest("controller:model", NodeKind::Model);
+        manifest.supported_phases = phases;
+        let mut manifests = crate::controller::ControllerRegistry::new();
+        manifests.register(manifest).unwrap();
+        manifests
+    }
+
     fn fixture_plan(plan_id: &str) -> ExecutionPlan {
         let graph: GraphSpec =
             serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
@@ -2603,6 +2611,74 @@ mod tests {
             .to_string();
 
         assert!(error.contains("do not match validation samples"));
+    }
+
+    #[test]
+    fn requires_oof_prediction_edge_refit_uses_cv_oof_coverage() {
+        let plan = build_execution_plan(
+            "plan:oof.edge.refit",
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+        )
+        .unwrap();
+        let fit_controllers = oof_edge_runtime_controllers(
+            Some(PredictionPartition::Validation),
+            OofSampleMode::Aligned,
+        );
+        let mut ctx = RunContext::new(RunId::new("run:oof.edge.refit").unwrap(), Some(11));
+        SequentialScheduler
+            .execute_campaign_phase(&plan, &fit_controllers, &mut ctx, Phase::FitCv)
+            .unwrap();
+        assert_eq!(ctx.prediction_store.blocks().len(), 2);
+
+        let refit_controllers = oof_edge_runtime_controllers(None, OofSampleMode::Aligned);
+        let refit_results = SequentialScheduler
+            .execute_campaign_phase(&plan, &refit_controllers, &mut ctx, Phase::Refit)
+            .unwrap();
+
+        assert_eq!(refit_results.len(), 2);
+        assert_eq!(
+            refit_results
+                .iter()
+                .filter(|result| result.node_id.as_str() == "model:meta")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn requires_oof_prediction_edge_refit_rejects_incomplete_oof_coverage() {
+        let plan = build_execution_plan(
+            "plan:oof.edge.refit.incomplete",
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+        )
+        .unwrap();
+        let mut ctx = RunContext::new(
+            RunId::new("run:oof.edge.refit.incomplete").unwrap(),
+            Some(11),
+        );
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: Some("pred:model:base:fold0".to_string()),
+                producer_node: NodeId::new("model:base").unwrap(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                sample_ids: vec![SampleId::new("s1").unwrap()],
+                values: vec![vec![0.5]],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+        let controllers = oof_edge_runtime_controllers(None, OofSampleMode::Aligned);
+
+        let error = SequentialScheduler
+            .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::Refit)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("do not cover the refit sample universe"));
     }
 
     #[test]

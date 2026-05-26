@@ -33,8 +33,9 @@ Implemented:
   the validation identity set;
 - runtime `requires_oof` edge enforcement for training phases: downstream
   nodes receive a validated opaque prediction handle only when the upstream
-  producer has emitted validation predictions for the current fold, and
-  fold-aligned edges are checked against the `FoldSet`;
+  producer has emitted validation predictions for the current fold, while
+  `REFIT` requires full CV OOF coverage; fold-aligned edges are checked against
+  the `FoldSet`;
 - controller-facing `NodeTask.data_views` map carrying the scoped view spec
   beside each data-view handle;
 - in-memory runtime data provider with handle records for schema/plan/relation
