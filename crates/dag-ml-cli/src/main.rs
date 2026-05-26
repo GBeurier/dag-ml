@@ -141,6 +141,32 @@ enum Command {
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
     },
+    RunProcessRefitBundle {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long)]
+        persistent: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = "bundle:cli.process.refit")]
+        bundle_id: String,
+        #[arg(long)]
+        variant_id: Option<String>,
+        #[arg(long, default_value = "plan:cli.process.refit")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.process.refit")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
+    },
     ValidateBundle {
         #[arg(long)]
         bundle: PathBuf,
@@ -433,25 +459,6 @@ fn main() -> Result<()> {
             root_seed,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
-            let selected_variant_id = match variant_id {
-                Some(variant_id) => VariantId::new(variant_id)?,
-                None => plan
-                    .variants
-                    .first()
-                    .map(|variant| variant.variant_id.clone())
-                    .with_context(|| "execution plan has no variants to refit")?,
-            };
-            if !plan
-                .variants
-                .iter()
-                .any(|variant| variant.variant_id == selected_variant_id)
-            {
-                bail!(
-                    "unknown variant `{selected_variant_id}` for plan `{}`",
-                    plan.id
-                );
-            }
-
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = InMemoryDataProvider::with_envelope(
@@ -459,40 +466,54 @@ fn main() -> Result<()> {
                 envelope,
             )?;
             let runtime_controllers = mock_runtime_controllers_with_refit_artifacts(&plan)?;
-            let mut artifact_store = InMemoryArtifactStore::new();
-            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
-            ctx.variant_id = Some(selected_variant_id.clone());
-
-            let results = SequentialScheduler
-                .execute_campaign_phase_with_data_provider_and_artifact_store(
-                    &plan,
-                    &runtime_controllers,
-                    &data_provider,
-                    &mut artifact_store,
-                    &mut ctx,
-                    Phase::Refit,
-                )
-                .with_context(|| "mock refit execution failed")?;
-            if artifact_store.is_empty() {
-                bail!("mock refit did not capture any refit artifacts");
-            }
-
-            let mut bundle = build_execution_bundle(
-                BundleId::new(bundle_id)?,
-                &plan,
-                Some(selected_variant_id),
-                BTreeMap::new(),
-                artifact_store.refit_artifacts(),
-            )
-            .with_context(|| "failed to build execution bundle from refit artifacts")?;
-            bundle.metadata.insert(
-                "refit_result_count".to_string(),
-                serde_json::json!(results.len()),
-            );
-            bundle.metadata.insert(
-                "refit_lineage_count".to_string(),
-                serde_json::json!(ctx.lineage.len()),
-            );
+            let bundle = build_bundle_from_captured_refit(CapturedRefitBundleInput {
+                plan: &plan,
+                data_provider: &data_provider,
+                runtime_controllers: &runtime_controllers,
+                bundle_id,
+                variant_id,
+                run_id,
+                root_seed,
+            })
+            .with_context(|| "mock refit bundle capture failed")?;
+            emit_json(output.as_ref(), &bundle, "execution bundle")?;
+        }
+        Command::RunProcessRefitBundle {
+            graph,
+            campaign,
+            controllers,
+            envelope,
+            adapter,
+            persistent,
+            output,
+            bundle_id,
+            variant_id,
+            plan_id,
+            run_id,
+            root_seed,
+        } => {
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let data_provider = InMemoryDataProvider::with_envelope(
+                ControllerId::new("controller:data.provider")?,
+                envelope,
+            )?;
+            let runtime_controllers = if persistent {
+                persistent_process_runtime_controllers(&plan, adapter)?
+            } else {
+                process_runtime_controllers(&plan, adapter)?
+            };
+            let bundle = build_bundle_from_captured_refit(CapturedRefitBundleInput {
+                plan: &plan,
+                data_provider: &data_provider,
+                runtime_controllers: &runtime_controllers,
+                bundle_id,
+                variant_id,
+                run_id,
+                root_seed,
+            })
+            .with_context(|| "process refit bundle capture failed")?;
             emit_json(output.as_ref(), &bundle, "execution bundle")?;
         }
         Command::ValidateBundle {
@@ -657,6 +678,77 @@ struct BundleBuildSpec {
     pub refit_artifacts: Vec<RefitArtifactRecord>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+struct CapturedRefitBundleInput<'a> {
+    plan: &'a dag_ml_core::ExecutionPlan,
+    data_provider: &'a InMemoryDataProvider,
+    runtime_controllers: &'a RuntimeControllerRegistry,
+    bundle_id: String,
+    variant_id: Option<String>,
+    run_id: String,
+    root_seed: u64,
+}
+
+fn build_bundle_from_captured_refit(
+    input: CapturedRefitBundleInput<'_>,
+) -> Result<ExecutionBundle> {
+    let selected_variant_id = match input.variant_id {
+        Some(variant_id) => VariantId::new(variant_id)?,
+        None => input
+            .plan
+            .variants
+            .first()
+            .map(|variant| variant.variant_id.clone())
+            .with_context(|| "execution plan has no variants to refit")?,
+    };
+    if !input
+        .plan
+        .variants
+        .iter()
+        .any(|variant| variant.variant_id == selected_variant_id)
+    {
+        bail!(
+            "unknown variant `{selected_variant_id}` for plan `{}`",
+            input.plan.id
+        );
+    }
+
+    let mut artifact_store = InMemoryArtifactStore::new();
+    let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
+    ctx.variant_id = Some(selected_variant_id.clone());
+
+    let results = SequentialScheduler
+        .execute_campaign_phase_with_data_provider_and_artifact_store(
+            input.plan,
+            input.runtime_controllers,
+            input.data_provider,
+            &mut artifact_store,
+            &mut ctx,
+            Phase::Refit,
+        )
+        .with_context(|| "refit execution failed")?;
+    if artifact_store.is_empty() {
+        bail!("refit did not capture any refit artifacts");
+    }
+
+    let mut bundle = build_execution_bundle(
+        BundleId::new(input.bundle_id)?,
+        input.plan,
+        Some(selected_variant_id),
+        BTreeMap::new(),
+        artifact_store.refit_artifacts(),
+    )
+    .with_context(|| "failed to build execution bundle from refit artifacts")?;
+    bundle.metadata.insert(
+        "refit_result_count".to_string(),
+        serde_json::json!(results.len()),
+    );
+    bundle.metadata.insert(
+        "refit_lineage_count".to_string(),
+        serde_json::json!(ctx.lineage.len()),
+    );
+    Ok(bundle)
 }
 
 struct CliMockController {

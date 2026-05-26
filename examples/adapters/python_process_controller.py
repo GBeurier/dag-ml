@@ -117,6 +117,23 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    artifacts = []
+    artifact_handles = {}
+    if phase == "REFIT" and node_plan.get("kind") == "model":
+        artifact_id = f"artifact:{node_id}:refit"
+        artifact = {
+            "id": artifact_id,
+            "kind": "mock_model",
+            "controller_id": controller_id,
+            "size_bytes": 128,
+        }
+        artifacts.append(artifact)
+        artifact_handles[artifact_id] = {
+            "handle": stable_handle(artifact_id),
+            "kind": "model",
+            "owner_controller": controller_id,
+        }
+
     return {
         "node_id": node_id,
         "outputs": {
@@ -128,8 +145,8 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
         },
         "predictions": predictions,
         "shape_deltas": [],
-        "artifacts": [],
-        "artifact_handles": {},
+        "artifacts": artifacts,
+        "artifact_handles": artifact_handles,
         "lineage": {
             "record_id": f"lineage:{node_id}:{phase}:{variant_label}:{fold_label}",
             "run_id": task["run_id"],
@@ -141,7 +158,7 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
             "fold_id": fold_id,
             "branch_path": task.get("branch_path", []),
             "input_lineage": [],
-            "artifact_refs": [],
+            "artifact_refs": artifacts,
             "params_fingerprint": node_plan["params_fingerprint"],
             "data_model_shape_fingerprint": None,
             "aggregation_policy_fingerprint": None,

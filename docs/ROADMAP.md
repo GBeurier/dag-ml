@@ -92,9 +92,9 @@ ABI exposes the same selection and replay-validation contracts over JSON. The
 runtime can now capture refit artifact handles emitted by controllers,
 materialize replay data, create predict-scoped data views and materialize refit
 artifact handles, then invoke eligible controllers for replay phases without CV
-folds. The CLI can also build a mock refit bundle directly from captured refit
-artifact records. It has both mock and external-process execution smokes for
-campaign and replay paths, and the C ABI exposes a mock replay execution helper
-returning a JSON summary. The
+folds. The CLI can also build mock and external-process refit bundles directly
+from captured refit artifact records. It has both mock and external-process
+execution smokes for campaign, refit-bundle and replay paths, and the C ABI
+exposes a mock replay execution helper returning a JSON summary. The
 remaining work is schema migration policy, production host adapters and
 persistent artifact/data stores.

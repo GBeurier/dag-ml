@@ -26,8 +26,18 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_process_refit_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_process_refit_bundle_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
     let temp_refit_request = std::env::temp_dir().join(format!(
         "dag_ml_cli_refit_request_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_process_refit_request = std::env::temp_dir().join(format!(
+        "dag_ml_cli_process_refit_request_{}_{}.json",
         std::process::id(),
         unique_suffix()
     ));
@@ -129,6 +139,56 @@ fn cli_selects_builds_and_validates_replay_bundle() {
 "#,
     )
     .expect("refit replay request was written");
+
+    let process_refit_bundle = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-refit-bundle",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--bundle-id",
+            "bundle:cli.process.refit.capture",
+            "--output",
+            temp_process_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.process.refit.capture",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli run-process-refit-bundle");
+    assert!(
+        process_refit_bundle.status.success(),
+        "run-process-refit-bundle failed: {}",
+        String::from_utf8_lossy(&process_refit_bundle.stderr)
+    );
+    let process_refit_bundle_json = std::fs::read_to_string(&temp_process_refit_bundle)
+        .expect("process refit bundle was written");
+    assert!(
+        process_refit_bundle_json.contains("artifact:model:base:refit")
+            && process_refit_bundle_json.contains("refit_result_count"),
+        "unexpected run-process-refit-bundle JSON: {}",
+        process_refit_bundle_json
+    );
+    std::fs::write(
+        &temp_process_refit_request,
+        r#"{
+  "bundle_id": "bundle:cli.process.refit.capture",
+  "phase": "PREDICT",
+  "data_envelope_keys": ["model:base.x"]
+}
+"#,
+    )
+    .expect("process refit replay request was written");
 
     let process_campaign = Command::new(cli())
         .current_dir(&root)
@@ -267,6 +327,43 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         String::from_utf8_lossy(&validate_refit.stdout)
     );
 
+    let validate_process_refit = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-bundle",
+            "--bundle",
+            temp_process_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--replay-request",
+            temp_process_refit_request
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.process.refit.capture",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli validate-bundle for process refit bundle");
+    assert!(
+        validate_process_refit.status.success(),
+        "validate process refit bundle failed: {}",
+        String::from_utf8_lossy(&validate_process_refit.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_process_refit.stdout)
+            .contains("valid bundle: bundle:cli.process.refit.capture"),
+        "unexpected validate process refit bundle output: {}",
+        String::from_utf8_lossy(&validate_process_refit.stdout)
+    );
+
     let replay = Command::new(cli())
         .current_dir(&root)
         .args([
@@ -337,7 +434,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
 
     let _ = std::fs::remove_file(temp_bundle);
     let _ = std::fs::remove_file(temp_refit_bundle);
+    let _ = std::fs::remove_file(temp_process_refit_bundle);
     let _ = std::fs::remove_file(temp_refit_request);
+    let _ = std::fs::remove_file(temp_process_refit_request);
     let _ = std::fs::remove_file(temp_selection);
 }
 
