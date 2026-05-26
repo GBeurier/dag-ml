@@ -165,7 +165,11 @@ replay predict views are marked as predict partitions. The handles visible in
 `TaskRequest` are scoped data-view handles, and the same request carries a
 `data_views` map keyed like `input_handles` so bindings can inspect the selected
 partition without guessing from the handle. The parent handle remains
-traceability state owned by the provider.
+traceability state owned by the provider. Unsafe data views are rejected unless
+declared explicitly: `FIT_CV` fitting cannot use full-train or validation
+partitions, validation/predict views cannot include augmented rows, and excluded
+rows cannot be included unless the corresponding `DataViewPolicy.unsafe_flags`
+entry is present.
 
 Controller outputs:
 
@@ -440,6 +444,8 @@ Forbidden by default:
 
 - validation-origin augmentation appearing in train;
 - augmented rows counted as independent samples for group/sample metrics;
+- augmented validation/test rows entering view requests without an explicit
+  unsafe flag;
 - sample augmentation after a prediction join unless explicitly declared safe.
 
 ### Feature Augmentation
