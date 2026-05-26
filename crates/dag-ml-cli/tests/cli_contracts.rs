@@ -46,6 +46,11 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_branch_merge_replay_request = std::env::temp_dir().join(format!(
+        "dag_ml_cli_branch_merge_replay_request_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
     let temp_selection = std::env::temp_dir().join(format!(
         "dag_ml_cli_selection_{}_{}.json",
         std::process::id(),
@@ -362,6 +367,70 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         "unexpected branch/merge CV+refit bundle JSON: {}",
         branch_merge_cv_refit_bundle_json
     );
+    std::fs::write(
+        &temp_branch_merge_replay_request,
+        r#"{
+  "bundle_id": "bundle:cli.branch.merge.cv.refit",
+  "phase": "PREDICT",
+  "data_envelope_keys": [
+    "branch:b0.model:ridge.x",
+    "branch:b1.model:rf.x",
+    "merge:stack.pred_plus_original.meta:ridge.x_original"
+  ]
+}
+"#,
+    )
+    .expect("branch/merge replay request was written");
+
+    let branch_merge_replay = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-replay",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "branch:b0.model:ridge.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--envelope",
+            "branch:b1.model:rf.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--envelope",
+            "merge:stack.pred_plus_original.meta:ridge.x_original=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--replay-request",
+            temp_branch_merge_replay_request
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--plan-id",
+            "plan:cli.branch.merge.cv.refit",
+            "--run-id",
+            "run:cli.branch.merge.replay",
+        ])
+        .output()
+        .expect("failed to run branch/merge process replay");
+    assert!(
+        branch_merge_replay.status.success(),
+        "branch/merge process replay failed: {}",
+        String::from_utf8_lossy(&branch_merge_replay.stderr)
+    );
+    let branch_merge_replay_stdout = String::from_utf8_lossy(&branch_merge_replay.stdout);
+    assert!(
+        branch_merge_replay_stdout.contains("process replay run: 3 result(s)")
+            && branch_merge_replay_stdout.contains("3 prediction block(s)")
+            && branch_merge_replay_stdout.contains("3 data handle(s)")
+            && branch_merge_replay_stdout.contains("3 data view(s)")
+            && branch_merge_replay_stdout.contains("3 artifact handle(s)"),
+        "unexpected branch/merge process replay output: {}",
+        branch_merge_replay_stdout
+    );
 
     let validate = Command::new(cli())
         .current_dir(&root)
@@ -630,6 +699,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     let _ = std::fs::remove_file(temp_branch_merge_cv_refit_bundle);
     let _ = std::fs::remove_file(temp_refit_request);
     let _ = std::fs::remove_file(temp_process_refit_request);
+    let _ = std::fs::remove_file(temp_branch_merge_replay_request);
     let _ = std::fs::remove_file(temp_selection);
     let _ = std::fs::remove_dir_all(temp_sklearn_demo_dir);
 }

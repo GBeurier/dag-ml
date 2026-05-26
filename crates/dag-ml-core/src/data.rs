@@ -297,11 +297,15 @@ impl InMemoryDataProvider {
     pub fn register_envelope(&mut self, envelope: ExternalDataPlanEnvelope) -> Result<()> {
         envelope.validate()?;
         let key = DataEnvelopeKey::from_envelope(&envelope);
-        if self.envelopes.insert(key, envelope).is_some() {
+        if let Some(existing) = self.envelopes.get(&key) {
+            if existing == &envelope {
+                return Ok(());
+            }
             return Err(DagMlError::RuntimeValidation(
-                "duplicate external data-plan envelope".to_string(),
+                "duplicate external data-plan envelope with different payload".to_string(),
             ));
         }
+        self.envelopes.insert(key, envelope);
         Ok(())
     }
 
@@ -535,6 +539,19 @@ mod tests {
         assert_eq!(record.input_name, "x");
         assert_eq!(record.relation_record_count, Some(4));
         assert_eq!(provider.handle_records().len(), 1);
+    }
+
+    #[test]
+    fn in_memory_provider_registration_is_idempotent_for_same_envelope() {
+        let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        let mut provider =
+            InMemoryDataProvider::new(ControllerId::new("controller:data.provider").unwrap());
+
+        provider.register_envelope(envelope.clone()).unwrap();
+        provider.register_envelope(envelope).unwrap();
     }
 
     #[test]
