@@ -1,7 +1,8 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
-use std::path::PathBuf;
-use std::process::{Command as ProcessCommand, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -84,6 +85,8 @@ enum Command {
         envelope: PathBuf,
         #[arg(long)]
         adapter: PathBuf,
+        #[arg(long)]
+        persistent: bool,
         #[arg(long, default_value = "plan:cli.process")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.process")]
@@ -166,6 +169,8 @@ enum Command {
         envelopes: Vec<String>,
         #[arg(long)]
         adapter: PathBuf,
+        #[arg(long)]
+        persistent: bool,
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.process.replay")]
@@ -314,6 +319,7 @@ fn main() -> Result<()> {
             controllers,
             envelope,
             adapter,
+            persistent,
             plan_id,
             run_id,
             root_seed,
@@ -325,7 +331,11 @@ fn main() -> Result<()> {
                 ControllerId::new("controller:data.provider")?,
                 envelope,
             )?;
-            let runtime_controllers = process_runtime_controllers(&plan, adapter)?;
+            let runtime_controllers = if persistent {
+                persistent_process_runtime_controllers(&plan, adapter)?
+            } else {
+                process_runtime_controllers(&plan, adapter)?
+            };
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let results = SequentialScheduler
                 .execute_campaign_phase_with_data_provider(
@@ -480,6 +490,7 @@ fn main() -> Result<()> {
             replay_request,
             envelopes,
             adapter,
+            persistent,
             plan_id,
             run_id,
             root_seed,
@@ -499,7 +510,11 @@ fn main() -> Result<()> {
                 data_provider.register_envelope(envelope.clone())?;
             }
             let artifact_store = mock_artifact_store(&plan, &bundle)?;
-            let runtime_controllers = process_runtime_controllers(&plan, adapter)?;
+            let runtime_controllers = if persistent {
+                persistent_process_runtime_controllers(&plan, adapter)?
+            } else {
+                process_runtime_controllers(&plan, adapter)?
+            };
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let results = SequentialScheduler
                 .execute_bundle_replay(
@@ -551,13 +566,111 @@ struct ProcessRuntimeController {
     adapter: PathBuf,
 }
 
+struct PersistentProcessRuntimeController {
+    id: ControllerId,
+    adapter: PathBuf,
+    session: RefCell<Option<PersistentProcessSession>>,
+}
+
+struct PersistentProcessSession {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl PersistentProcessSession {
+    fn spawn(controller_id: &ControllerId, adapter: &Path) -> dag_ml_core::Result<Self> {
+        let mut command = process_adapter_command(adapter, ProcessAdapterMode::Jsonl);
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::inherit());
+        let mut child = command.spawn().map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` failed to spawn persistent adapter `{}`: {err}",
+                adapter.display()
+            ))
+        })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` persistent adapter stdin was not available"
+            ))
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` persistent adapter stdout was not available"
+            ))
+        })?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        })
+    }
+
+    fn invoke(
+        &mut self,
+        controller_id: &ControllerId,
+        adapter: &Path,
+        task: &NodeTask,
+    ) -> dag_ml_core::Result<NodeResult> {
+        serde_json::to_writer(&mut self.stdin, task).map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` failed to serialize persistent task JSON: {err}"
+            ))
+        })?;
+        self.stdin.write_all(b"\n").map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` failed to write persistent task JSON: {err}"
+            ))
+        })?;
+        self.stdin.flush().map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` failed to flush persistent task JSON: {err}"
+            ))
+        })?;
+
+        let mut line = String::new();
+        let bytes = self.stdout.read_line(&mut line).map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` failed to read persistent adapter `{}`: {err}",
+                adapter.display()
+            ))
+        })?;
+        if bytes == 0 {
+            let status = self
+                .child
+                .try_wait()
+                .map(|status| status.map(|status| status.to_string()))
+                .unwrap_or_else(|err| Some(format!("status unavailable: {err}")))
+                .unwrap_or_else(|| "still running".to_string());
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` persistent adapter `{}` returned EOF ({status})",
+                adapter.display()
+            )));
+        }
+        serde_json::from_str(&line).map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` persistent adapter `{}` returned invalid NodeResult JSON: {err}",
+                adapter.display()
+            ))
+        })
+    }
+}
+
+impl Drop for PersistentProcessSession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 impl RuntimeController for ProcessRuntimeController {
     fn controller_id(&self) -> &ControllerId {
         &self.id
     }
 
     fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
-        let mut command = process_adapter_command(&self.adapter);
+        let mut command = process_adapter_command(&self.adapter, ProcessAdapterMode::OneShot);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -621,6 +734,23 @@ impl RuntimeController for ProcessRuntimeController {
                 self.adapter.display()
             ))
         })
+    }
+}
+
+impl RuntimeController for PersistentProcessRuntimeController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
+        let mut session = self.session.borrow_mut();
+        if session.is_none() {
+            *session = Some(PersistentProcessSession::spawn(&self.id, &self.adapter)?);
+        }
+        session
+            .as_mut()
+            .expect("session was initialized")
+            .invoke(&self.id, &self.adapter, task)
     }
 }
 
@@ -755,14 +885,40 @@ fn process_runtime_controllers(
     Ok(registry)
 }
 
-fn process_adapter_command(adapter: &PathBuf) -> ProcessCommand {
-    if adapter.extension().and_then(|extension| extension.to_str()) == Some("py") {
+fn persistent_process_runtime_controllers(
+    plan: &dag_ml_core::ExecutionPlan,
+    adapter: PathBuf,
+) -> Result<RuntimeControllerRegistry> {
+    let mut registry = RuntimeControllerRegistry::new();
+    for controller_id in plan.controller_manifests.keys() {
+        registry.register(Box::new(PersistentProcessRuntimeController {
+            id: controller_id.clone(),
+            adapter: adapter.clone(),
+            session: RefCell::new(None),
+        }))?;
+    }
+    Ok(registry)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessAdapterMode {
+    OneShot,
+    Jsonl,
+}
+
+fn process_adapter_command(adapter: &Path, mode: ProcessAdapterMode) -> ProcessCommand {
+    let mut command = if adapter.extension().and_then(|extension| extension.to_str()) == Some("py")
+    {
         let mut command = ProcessCommand::new("python3");
         command.arg(adapter);
         command
     } else {
         ProcessCommand::new(adapter.as_os_str())
+    };
+    if mode == ProcessAdapterMode::Jsonl {
+        command.arg("--jsonl");
     }
+    command
 }
 
 fn mock_artifact_store(

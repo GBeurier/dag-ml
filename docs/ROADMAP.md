@@ -41,10 +41,10 @@ Definition of done:
 - artifact handle release tests.
 
 Status: first process adapter smoke implemented for campaign and replay. The
-CLI can invoke an external Python script per `NodeTask`, parse a returned
-`NodeResult`, and let the scheduler enforce lineage/result conformance across
-OOF folds, variants and replay. This is intentionally not yet a production
-Python binding or process pool.
+CLI can invoke an external Python script per `NodeTask` either one-shot or as a
+persistent JSONL process, parse a returned `NodeResult`, and let the scheduler
+enforce lineage/result conformance across OOF folds, variants and replay. This
+is intentionally not yet a production Python binding or worker pool.
 
 ## Phase 3: Integration With `dag-ml-data`
 

@@ -116,14 +116,33 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--jsonl":
+        run_jsonl()
+        return
     try:
         task = json.load(sys.stdin)
     except json.JSONDecodeError as exc:
         fail(f"invalid NodeTask JSON: {exc}")
+    emit_result(task)
+
+
+def run_jsonl() -> None:
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            task = json.loads(line)
+        except json.JSONDecodeError as exc:
+            fail(f"invalid NodeTask JSON line: {exc}")
+        emit_result(task)
+
+
+def emit_result(task: dict[str, Any]) -> None:
     require_data_handles(task)
     require_replay_artifact(task)
     json.dump(build_result(task), sys.stdout, sort_keys=True)
     sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":
