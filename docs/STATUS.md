@@ -28,6 +28,8 @@ Implemented:
   fingerprints;
 - runtime data-provider trait with materialization plus fold/refit/predict view
   requests that turn data bindings into scoped opaque task handles;
+- controller-facing `NodeTask.data_views` map carrying the scoped view spec
+  beside each data-view handle;
 - in-memory runtime data provider with handle records for schema/plan/relation
   traceability and child data-view records for sample partition, source and
   feature-set traceability;

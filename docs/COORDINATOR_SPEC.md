@@ -151,8 +151,10 @@ derived from the active phase and `DataViewPolicy`: fold-train views carry the
 fold training sample ids, fold-validation views carry the validation sample ids,
 refit/full-train views carry the full training sample ids, and replay predict
 views are marked as predict partitions. The handle visible in `TaskRequest` is
-the scoped data-view handle; the parent handle remains traceability state owned
-by the provider.
+the scoped data-view handle, and the same request carries a `data_views` map
+keyed like `input_handles` so bindings can inspect the selected partition
+without guessing from the handle. The parent handle remains traceability state
+owned by the provider.
 
 Controller outputs:
 

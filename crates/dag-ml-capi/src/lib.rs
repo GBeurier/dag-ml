@@ -951,6 +951,12 @@ impl RuntimeController for CapiMockController {
                     task.node_plan.node_id
                 )));
             }
+            if !task.data_views.contains_key(&key) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` did not receive data view spec for `{key}`",
+                    task.node_plan.node_id
+                )));
+            }
         }
 
         if task.phase == Phase::Predict
