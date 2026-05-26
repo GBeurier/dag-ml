@@ -866,6 +866,7 @@ fn execute_mock_replay(
             plan,
             bundle,
             replay_request: request,
+            prediction_cache_payloads: None,
             controllers: &controllers,
             data_provider: &data_provider,
             artifact_store: &artifact_store,

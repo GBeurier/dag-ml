@@ -639,6 +639,108 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         String::from_utf8_lossy(&validate_branch_merge_refit_replay.stderr)
     );
 
+    let validate_branch_merge_refit_replay_with_payload = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-bundle",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "branch:b0.model:ridge.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--envelope",
+            "branch:b1.model:rf.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--envelope",
+            "merge:stack.pred_plus_original.meta:ridge.x_original=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--replay-request",
+            temp_branch_merge_replay_request
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--prediction-cache-payload",
+            temp_branch_merge_prediction_cache
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.branch.merge.cv.refit",
+        ])
+        .output()
+        .expect("failed to validate branch/merge refit replay request with payload");
+    assert!(
+        validate_branch_merge_refit_replay_with_payload
+            .status
+            .success(),
+        "branch/merge REFIT replay with payload failed validation: {}",
+        String::from_utf8_lossy(&validate_branch_merge_refit_replay_with_payload.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_branch_merge_refit_replay_with_payload.stdout)
+            .contains("prediction cache payload(s)=2"),
+        "unexpected branch/merge REFIT replay validation with payload output: {}",
+        String::from_utf8_lossy(&validate_branch_merge_refit_replay_with_payload.stdout)
+    );
+
+    let branch_merge_refit_replay_with_payload = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-replay",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "branch:b0.model:ridge.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--envelope",
+            "branch:b1.model:rf.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--envelope",
+            "merge:stack.pred_plus_original.meta:ridge.x_original=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--replay-request",
+            temp_branch_merge_replay_request
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--prediction-cache-payload",
+            temp_branch_merge_prediction_cache
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--plan-id",
+            "plan:cli.branch.merge.cv.refit",
+            "--run-id",
+            "run:cli.branch.merge.refit.replay.with.payload",
+        ])
+        .output()
+        .expect("failed to run branch/merge refit replay with prediction cache payload");
+    assert!(
+        branch_merge_refit_replay_with_payload.status.success(),
+        "branch/merge REFIT replay with payload failed: {}",
+        String::from_utf8_lossy(&branch_merge_refit_replay_with_payload.stderr)
+    );
+    let branch_merge_refit_replay_with_payload_stdout =
+        String::from_utf8_lossy(&branch_merge_refit_replay_with_payload.stdout);
+    assert!(
+        branch_merge_refit_replay_with_payload_stdout.contains("process replay run: 3 result(s)")
+            && branch_merge_refit_replay_with_payload_stdout.contains("7 prediction block(s)")
+            && branch_merge_refit_replay_with_payload_stdout.contains("3 data handle(s)")
+            && branch_merge_refit_replay_with_payload_stdout.contains("3 data view(s)")
+            && branch_merge_refit_replay_with_payload_stdout.contains("3 artifact handle(s)"),
+        "unexpected branch/merge REFIT replay with payload output: {}",
+        branch_merge_refit_replay_with_payload_stdout
+    );
+
     let branch_merge_sklearn_cv_refit_replay = Command::new(cli())
         .current_dir(&root)
         .args([

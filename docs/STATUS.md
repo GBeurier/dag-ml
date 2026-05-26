@@ -100,8 +100,9 @@ Implemented:
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;
 - bundle replay validation refuses `REFIT` replay when the bundle depends on
-  OOF prediction requirements but only carries cache manifests, avoiding a
-  false refit path until a persistent prediction cache store exists;
+  OOF prediction requirements but only carries cache manifests; when a validated
+  prediction-cache payload set is supplied, replay preloads the validation OOF
+  blocks into the `PredictionStore` before running `REFIT`;
 - CLI contract proving direct branch/merge `REFIT` without a preceding
   in-context `FIT_CV` is refused because OOF validation predictions are absent;
 - process-controller replay fixtures now verify that a model receives its own
@@ -152,6 +153,5 @@ Not implemented yet:
 
 Next recommended task:
 
-Load validated prediction-cache payloads back into the replay `PredictionStore`
-so OOF-dependent `REFIT` replay can be enabled without weakening the current
-manifest-only refusal.
+Replace JSON cache payload side-files with a persistent prediction-cache store
+interface that can materialize OOF handles for native and foreign controllers.

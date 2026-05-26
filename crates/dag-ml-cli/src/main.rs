@@ -264,6 +264,8 @@ enum Command {
         envelopes: Vec<String>,
         #[arg(long)]
         replay_request: Option<PathBuf>,
+        #[arg(long)]
+        prediction_cache_payload: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
     },
@@ -284,6 +286,8 @@ enum Command {
         bundle: PathBuf,
         #[arg(long)]
         replay_request: PathBuf,
+        #[arg(long)]
+        prediction_cache_payload: Option<PathBuf>,
         #[arg(long = "envelope")]
         envelopes: Vec<String>,
         #[arg(long, default_value = "plan:cli.bundle")]
@@ -304,6 +308,8 @@ enum Command {
         bundle: PathBuf,
         #[arg(long)]
         replay_request: PathBuf,
+        #[arg(long)]
+        prediction_cache_payload: Option<PathBuf>,
         #[arg(long = "envelope")]
         envelopes: Vec<String>,
         #[arg(long)]
@@ -729,6 +735,7 @@ fn main() -> Result<()> {
                         plan: &plan,
                         bundle: &captured.bundle,
                         replay_request: &replay_request,
+                        prediction_cache_payloads: None,
                         controllers: &runtime_controllers,
                         data_provider: &data_provider,
                         artifact_store: &captured.artifact_store,
@@ -793,6 +800,7 @@ fn main() -> Result<()> {
                         plan: &plan,
                         bundle: &captured.bundle,
                         replay_request: &replay_request,
+                        prediction_cache_payloads: None,
                         controllers: &runtime_controllers,
                         data_provider: &data_provider,
                         artifact_store: &captured.artifact_store,
@@ -816,6 +824,7 @@ fn main() -> Result<()> {
             controllers,
             envelopes,
             replay_request,
+            prediction_cache_payload,
             plan_id,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
@@ -829,20 +838,33 @@ fn main() -> Result<()> {
                     .validate_replay_envelopes(&envelope_map)
                     .with_context(|| "replay envelopes do not match bundle")?;
             }
+            let prediction_cache_payloads =
+                read_optional_prediction_cache_payload(prediction_cache_payload.as_ref())?;
+            if let Some(payloads) = prediction_cache_payloads.as_ref() {
+                payloads
+                    .validate_against_bundle(&bundle)
+                    .with_context(|| "prediction cache payload set does not match bundle")?;
+            }
             if let Some(replay_request) = replay_request {
                 let request: ReplayPhaseRequest =
                     read_json(&replay_request, "replay phase request")?;
                 request
-                    .validate_for_bundle(&bundle)
+                    .validate_for_bundle_with_prediction_cache_payloads(
+                        &bundle,
+                        prediction_cache_payloads.as_ref(),
+                    )
                     .with_context(|| "replay request does not match bundle")?;
             }
             println!(
-                "valid bundle: {}, selection(s)={}, artifact(s)={}, prediction requirement(s)={}, prediction cache(s)={}, data requirement(s)={}, replay envelope(s)={}",
+                "valid bundle: {}, selection(s)={}, artifact(s)={}, prediction requirement(s)={}, prediction cache(s)={}, prediction cache payload(s)={}, data requirement(s)={}, replay envelope(s)={}",
                 bundle.bundle_id,
                 bundle.selections.len(),
                 bundle.refit_artifacts.len(),
                 bundle.prediction_requirements.len(),
                 bundle.prediction_caches.len(),
+                prediction_cache_payloads
+                    .as_ref()
+                    .map_or(0, |payloads| payloads.caches.len()),
                 bundle.data_requirements.len(),
                 envelope_map.len()
             );
@@ -866,6 +888,7 @@ fn main() -> Result<()> {
             controllers,
             bundle,
             replay_request,
+            prediction_cache_payload,
             envelopes,
             plan_id,
             run_id,
@@ -875,6 +898,8 @@ fn main() -> Result<()> {
             let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
             let replay_request: ReplayPhaseRequest =
                 read_json(&replay_request, "replay phase request")?;
+            let prediction_cache_payloads =
+                read_optional_prediction_cache_payload(prediction_cache_payload.as_ref())?;
             let envelope_map = read_replay_envelopes(&envelopes)?;
             if envelope_map.is_empty() {
                 bail!("run-mock-replay requires at least one --envelope KEY=PATH argument");
@@ -894,6 +919,7 @@ fn main() -> Result<()> {
                         plan: &plan,
                         bundle: &bundle,
                         replay_request: &replay_request,
+                        prediction_cache_payloads: prediction_cache_payloads.as_ref(),
                         controllers: &runtime_controllers,
                         data_provider: &data_provider,
                         artifact_store: &artifact_store,
@@ -918,6 +944,7 @@ fn main() -> Result<()> {
             controllers,
             bundle,
             replay_request,
+            prediction_cache_payload,
             envelopes,
             adapter,
             persistent,
@@ -929,6 +956,8 @@ fn main() -> Result<()> {
             let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
             let replay_request: ReplayPhaseRequest =
                 read_json(&replay_request, "replay phase request")?;
+            let prediction_cache_payloads =
+                read_optional_prediction_cache_payload(prediction_cache_payload.as_ref())?;
             let envelope_map = read_replay_envelopes(&envelopes)?;
             if envelope_map.is_empty() {
                 bail!("run-process-replay requires at least one --envelope KEY=PATH argument");
@@ -952,6 +981,7 @@ fn main() -> Result<()> {
                         plan: &plan,
                         bundle: &bundle,
                         replay_request: &replay_request,
+                        prediction_cache_payloads: prediction_cache_payloads.as_ref(),
                         controllers: &runtime_controllers,
                         data_provider: &data_provider,
                         artifact_store: &artifact_store,
@@ -2252,6 +2282,13 @@ fn read_selection_decisions(path: Option<&PathBuf>) -> Result<BTreeMap<String, S
             .with_context(|| format!("invalid selection decision `{key}`"))?;
     }
     Ok(decisions)
+}
+
+fn read_optional_prediction_cache_payload(
+    path: Option<&PathBuf>,
+) -> Result<Option<BundlePredictionCachePayloadSet>> {
+    path.map(|path| read_json(path, "prediction cache payload set"))
+        .transpose()
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Result<T> {

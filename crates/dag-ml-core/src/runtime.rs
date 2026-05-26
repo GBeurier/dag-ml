@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::bundle::{
-    bundle_prediction_requirement_key, ExecutionBundle, RefitArtifactRecord, ReplayPhaseRequest,
+    bundle_prediction_requirement_key, BundlePredictionCachePayloadSet, ExecutionBundle,
+    RefitArtifactRecord, ReplayPhaseRequest,
 };
 use crate::campaign::stable_json_fingerprint;
 use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
@@ -692,6 +693,7 @@ pub struct BundleReplayExecution<'a> {
     pub plan: &'a ExecutionPlan,
     pub bundle: &'a ExecutionBundle,
     pub replay_request: &'a ReplayPhaseRequest,
+    pub prediction_cache_payloads: Option<&'a BundlePredictionCachePayloadSet>,
     pub controllers: &'a RuntimeControllerRegistry,
     pub data_provider: &'a dyn RuntimeDataProvider,
     pub artifact_store: &'a dyn RuntimeArtifactStore,
@@ -981,10 +983,22 @@ impl SequentialScheduler {
         ctx: &mut RunContext,
     ) -> Result<Vec<NodeResult>> {
         replay.bundle.validate_against_plan(replay.plan)?;
-        replay.replay_request.validate_for_bundle(replay.bundle)?;
+        replay
+            .replay_request
+            .validate_for_bundle_with_prediction_cache_payloads(
+                replay.bundle,
+                replay.prediction_cache_payloads,
+            )?;
         replay
             .bundle
             .validate_replay_envelopes(replay.data_envelopes)?;
+        if replay.replay_request.phase == Phase::Refit {
+            preload_replay_prediction_cache_payloads(
+                replay.bundle,
+                replay.prediction_cache_payloads,
+                ctx,
+            )?;
+        }
         let replay_artifacts = materialize_replay_artifact_handles(
             replay.plan,
             replay.bundle,
@@ -1699,6 +1713,35 @@ fn sample_ids_for_partition(
         DataRequestPartition::FullTrain => fold_set.map(|fold_set| fold_set.sample_ids.clone()),
         DataRequestPartition::Predict => None,
     }
+}
+
+fn preload_replay_prediction_cache_payloads(
+    bundle: &ExecutionBundle,
+    prediction_cache_payloads: Option<&BundlePredictionCachePayloadSet>,
+    ctx: &mut RunContext,
+) -> Result<()> {
+    if bundle.prediction_requirements.is_empty() {
+        return Ok(());
+    }
+    let payloads = prediction_cache_payloads.ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "bundle `{}` cannot preload OOF prediction caches without payloads",
+            bundle.bundle_id
+        ))
+    })?;
+    payloads.validate_against_bundle(bundle)?;
+    if !ctx.prediction_store.blocks().is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` cannot preload OOF prediction caches into a non-empty prediction store",
+            bundle.bundle_id
+        )));
+    }
+    for payload in &payloads.caches {
+        for block in &payload.blocks {
+            ctx.prediction_store.append(block.clone())?;
+        }
+    }
+    Ok(())
 }
 
 fn materialize_replay_artifact_handles(
@@ -3452,6 +3495,7 @@ mod tests {
                     plan: &plan,
                     bundle: &bundle,
                     replay_request: &request,
+                    prediction_cache_payloads: None,
                     controllers: &controllers,
                     data_provider: &provider,
                     artifact_store: &store,
@@ -3497,6 +3541,7 @@ mod tests {
                     plan: &plan,
                     bundle: &bundle,
                     replay_request: &request,
+                    prediction_cache_payloads: None,
                     controllers: &controllers,
                     data_provider: &provider,
                     artifact_store: &InMemoryArtifactStore::new(),
@@ -3513,6 +3558,7 @@ mod tests {
                     plan: &plan,
                     bundle: &bundle,
                     replay_request: &replay_request(&bundle, Phase::FitCv),
+                    prediction_cache_payloads: None,
                     controllers: &controllers,
                     data_provider: &provider,
                     artifact_store: &store,
@@ -3533,6 +3579,7 @@ mod tests {
                     plan: &plan,
                     bundle: &bundle,
                     replay_request: &request,
+                    prediction_cache_payloads: None,
                     controllers: &controllers,
                     data_provider: &provider,
                     artifact_store: &store,

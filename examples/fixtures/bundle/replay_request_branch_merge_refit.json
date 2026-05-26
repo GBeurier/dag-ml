@@ -1,0 +1,9 @@
+{
+  "bundle_id": "bundle:generated.branch.merge.cv.refit",
+  "phase": "REFIT",
+  "data_envelope_keys": [
+    "branch:b0.model:ridge.x",
+    "branch:b1.model:rf.x",
+    "merge:stack.pred_plus_original.meta:ridge.x_original"
+  ]
+}
