@@ -173,6 +173,32 @@ enum Command {
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
     },
+    RunProcessCvRefitBundle {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long)]
+        persistent: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = "bundle:cli.process.cv.refit")]
+        bundle_id: String,
+        #[arg(long)]
+        variant_id: Option<String>,
+        #[arg(long, default_value = "plan:cli.process.cv.refit")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.process.cv.refit")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
+    },
     RunProcessRefitReplay {
         #[arg(long)]
         graph: PathBuf,
@@ -555,6 +581,51 @@ fn main() -> Result<()> {
                 root_seed,
             })
             .with_context(|| "process refit bundle capture failed")?;
+            emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
+        }
+        Command::RunProcessCvRefitBundle {
+            graph,
+            campaign,
+            controllers,
+            envelope,
+            adapter,
+            persistent,
+            output,
+            bundle_id,
+            variant_id,
+            plan_id,
+            run_id,
+            root_seed,
+        } => {
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let data_provider = InMemoryDataProvider::with_envelope(
+                ControllerId::new("controller:data.provider")?,
+                envelope,
+            )?;
+            let runtime_controllers = if persistent {
+                persistent_process_runtime_controllers(&plan, adapter)?
+            } else {
+                process_runtime_controllers(&plan, adapter)?
+            };
+            let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
+                plan: &plan,
+                data_provider: &data_provider,
+                runtime_controllers: &runtime_controllers,
+                bundle_id,
+                variant_id,
+                run_id,
+                root_seed,
+            })
+            .with_context(|| "process CV+refit bundle capture failed")?;
+            println!(
+                "process cv refit bundle run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} captured artifact handle(s)",
+                captured.fit_cv_result_count,
+                captured.fit_cv_oof_prediction_block_count,
+                captured.refit_result_count,
+                captured.artifact_store.len()
+            );
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
         }
         Command::RunProcessRefitReplay {
@@ -1113,32 +1184,40 @@ struct CapturedRefitBundleInput<'a> {
 struct CapturedRefitBundle {
     bundle: ExecutionBundle,
     artifact_store: InMemoryArtifactStore,
+    fit_cv_result_count: usize,
+    fit_cv_oof_prediction_block_count: usize,
     refit_result_count: usize,
 }
 
-fn build_bundle_from_captured_refit(
-    input: CapturedRefitBundleInput<'_>,
-) -> Result<CapturedRefitBundle> {
-    let selected_variant_id = match input.variant_id {
+fn selected_refit_variant(
+    plan: &dag_ml_core::ExecutionPlan,
+    variant_id: Option<String>,
+) -> Result<VariantId> {
+    let selected_variant_id = match variant_id {
         Some(variant_id) => VariantId::new(variant_id)?,
-        None => input
-            .plan
+        None => plan
             .variants
             .first()
             .map(|variant| variant.variant_id.clone())
             .with_context(|| "execution plan has no variants to refit")?,
     };
-    if !input
-        .plan
+    if !plan
         .variants
         .iter()
         .any(|variant| variant.variant_id == selected_variant_id)
     {
         bail!(
             "unknown variant `{selected_variant_id}` for plan `{}`",
-            input.plan.id
+            plan.id
         );
     }
+    Ok(selected_variant_id)
+}
+
+fn build_bundle_from_captured_refit(
+    input: CapturedRefitBundleInput<'_>,
+) -> Result<CapturedRefitBundle> {
+    let selected_variant_id = selected_refit_variant(input.plan, input.variant_id)?;
 
     let mut artifact_store = InMemoryArtifactStore::new();
     let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
@@ -1177,7 +1256,104 @@ fn build_bundle_from_captured_refit(
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
+        fit_cv_result_count: 0,
+        fit_cv_oof_prediction_block_count: 0,
         refit_result_count: results.len(),
+    })
+}
+
+fn build_bundle_from_cv_then_captured_refit(
+    input: CapturedRefitBundleInput<'_>,
+) -> Result<CapturedRefitBundle> {
+    let selected_variant_id = selected_refit_variant(input.plan, input.variant_id)?;
+
+    let mut artifact_store = InMemoryArtifactStore::new();
+    let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
+    ctx.variant_id = Some(selected_variant_id.clone());
+
+    let fit_cv_results = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            input.plan,
+            input.runtime_controllers,
+            input.data_provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .with_context(|| "FIT_CV execution before refit failed")?;
+    let fit_cv_lineage_count = ctx.lineage.len();
+    let fit_cv_oof_prediction_block_count = ctx
+        .prediction_store
+        .blocks()
+        .iter()
+        .filter(|block| block.partition == PredictionPartition::Validation)
+        .count();
+    if fit_cv_oof_prediction_block_count == 0 {
+        bail!("FIT_CV did not produce any validation OOF prediction blocks before refit");
+    }
+
+    let refit_results = SequentialScheduler
+        .execute_campaign_phase_with_data_provider_and_artifact_store(
+            input.plan,
+            input.runtime_controllers,
+            input.data_provider,
+            &mut artifact_store,
+            &mut ctx,
+            Phase::Refit,
+        )
+        .with_context(|| "refit execution after FIT_CV failed")?;
+    if artifact_store.is_empty() {
+        bail!("refit did not capture any refit artifacts");
+    }
+    let refit_lineage_count = ctx.lineage.len().saturating_sub(fit_cv_lineage_count);
+    let refit_prediction_block_count = ctx
+        .prediction_store
+        .blocks()
+        .iter()
+        .filter(|block| block.partition == PredictionPartition::Final)
+        .count();
+
+    let mut bundle = build_execution_bundle(
+        BundleId::new(input.bundle_id)?,
+        input.plan,
+        Some(selected_variant_id),
+        BTreeMap::new(),
+        artifact_store.refit_artifacts(),
+    )
+    .with_context(|| "failed to build execution bundle from CV+refit artifacts")?;
+    bundle.metadata.insert(
+        "fit_cv_result_count".to_string(),
+        serde_json::json!(fit_cv_results.len()),
+    );
+    bundle.metadata.insert(
+        "fit_cv_lineage_count".to_string(),
+        serde_json::json!(fit_cv_lineage_count),
+    );
+    bundle.metadata.insert(
+        "fit_cv_oof_prediction_block_count".to_string(),
+        serde_json::json!(fit_cv_oof_prediction_block_count),
+    );
+    bundle.metadata.insert(
+        "refit_result_count".to_string(),
+        serde_json::json!(refit_results.len()),
+    );
+    bundle.metadata.insert(
+        "refit_lineage_count".to_string(),
+        serde_json::json!(refit_lineage_count),
+    );
+    bundle.metadata.insert(
+        "refit_prediction_block_count".to_string(),
+        serde_json::json!(refit_prediction_block_count),
+    );
+    bundle.metadata.insert(
+        "total_lineage_count".to_string(),
+        serde_json::json!(ctx.lineage.len()),
+    );
+    Ok(CapturedRefitBundle {
+        bundle,
+        artifact_store,
+        fit_cv_result_count: fit_cv_results.len(),
+        fit_cv_oof_prediction_block_count,
+        refit_result_count: refit_results.len(),
     })
 }
 
