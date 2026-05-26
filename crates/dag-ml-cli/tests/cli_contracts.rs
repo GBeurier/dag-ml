@@ -41,6 +41,11 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_branch_merge_prediction_cache_store = std::env::temp_dir().join(format!(
+        "dag_ml_cli_branch_merge_prediction_cache_store_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
     let temp_branch_merge_prediction_cache_tampered = std::env::temp_dir().join(format!(
         "dag_ml_cli_branch_merge_prediction_cache_tampered_{}_{}.json",
         std::process::id(),
@@ -559,6 +564,64 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         "unexpected validate-prediction-cache output: {}",
         String::from_utf8_lossy(&validate_prediction_cache.stdout)
     );
+    let export_prediction_cache_store = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "export-prediction-cache-store",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--payload",
+            temp_branch_merge_prediction_cache
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--output-dir",
+            temp_branch_merge_prediction_cache_store
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to export branch/merge prediction cache store");
+    assert!(
+        export_prediction_cache_store.status.success(),
+        "export-prediction-cache-store failed: {}",
+        String::from_utf8_lossy(&export_prediction_cache_store.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&export_prediction_cache_store.stdout).contains(
+            "wrote prediction cache store: bundle=bundle:cli.branch.merge.cv.refit, cache(s)=2"
+        ),
+        "unexpected export-prediction-cache-store output: {}",
+        String::from_utf8_lossy(&export_prediction_cache_store.stdout)
+    );
+    let validate_prediction_cache_store = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-prediction-cache-store",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--store-dir",
+            temp_branch_merge_prediction_cache_store
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to validate branch/merge prediction cache store");
+    assert!(
+        validate_prediction_cache_store.status.success(),
+        "validate-prediction-cache-store failed: {}",
+        String::from_utf8_lossy(&validate_prediction_cache_store.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_prediction_cache_store.stdout).contains(
+            "valid prediction cache store: bundle=bundle:cli.branch.merge.cv.refit, cache(s)=2"
+        ),
+        "unexpected validate-prediction-cache-store output: {}",
+        String::from_utf8_lossy(&validate_prediction_cache_store.stdout)
+    );
     let mut tampered_prediction_cache: serde_json::Value =
         serde_json::from_str(&branch_merge_prediction_cache_json)
             .expect("prediction cache payload JSON parses");
@@ -761,6 +824,56 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             .contains("prediction cache payload(s)=2"),
         "unexpected branch/merge REFIT replay validation with payload output: {}",
         String::from_utf8_lossy(&validate_branch_merge_refit_replay_with_payload.stdout)
+    );
+
+    let branch_merge_refit_mock_replay_with_store = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-mock-replay",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "branch:b0.model:ridge.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--envelope",
+            "branch:b1.model:rf.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--envelope",
+            "merge:stack.pred_plus_original.meta:ridge.x_original=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--replay-request",
+            temp_branch_merge_replay_request
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--prediction-cache-store",
+            temp_branch_merge_prediction_cache_store
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.branch.merge.cv.refit",
+            "--run-id",
+            "run:cli.branch.merge.refit.mock.replay.with.store",
+        ])
+        .output()
+        .expect("failed to run branch/merge refit mock replay with prediction cache store");
+    assert!(
+        branch_merge_refit_mock_replay_with_store.status.success(),
+        "branch/merge REFIT mock replay with store failed: {}",
+        String::from_utf8_lossy(&branch_merge_refit_mock_replay_with_store.stderr)
+    );
+    let branch_merge_refit_mock_replay_with_store_stdout =
+        String::from_utf8_lossy(&branch_merge_refit_mock_replay_with_store.stdout);
+    assert!(
+        branch_merge_refit_mock_replay_with_store_stdout.contains("mock replay run: 3 result(s)")
+            && branch_merge_refit_mock_replay_with_store_stdout
+                .contains("2 prediction cache handle(s)"),
+        "unexpected branch/merge REFIT mock replay with store output: {}",
+        branch_merge_refit_mock_replay_with_store_stdout
     );
 
     let branch_merge_refit_replay_with_payload = Command::new(cli())
@@ -1134,12 +1247,57 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     let _ = std::fs::remove_file(temp_refit_bundle);
     let _ = std::fs::remove_file(temp_process_refit_bundle);
     let _ = std::fs::remove_file(temp_branch_merge_cv_refit_bundle);
+    let _ = std::fs::remove_dir_all(temp_branch_merge_prediction_cache_store);
     let _ = std::fs::remove_file(temp_refit_request);
     let _ = std::fs::remove_file(temp_process_refit_request);
     let _ = std::fs::remove_file(temp_branch_merge_replay_request);
     let _ = std::fs::remove_file(temp_selection);
     let _ = std::fs::remove_file(temp_schedule);
     let _ = std::fs::remove_dir_all(temp_sklearn_demo_dir);
+}
+
+#[test]
+fn cli_validates_sibling_dag_ml_data_coordinator_fixture_when_available() {
+    let root = repo_root();
+    let Some(workspace_parent) = root.parent() else {
+        return;
+    };
+    let dag_ml_data_envelope = workspace_parent
+        .join("dag-ml-data")
+        .join("examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json");
+    if !dag_ml_data_envelope.exists() {
+        return;
+    }
+
+    let validate = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-data-binding",
+            "--campaign",
+            "examples/campaign_data_contract_nir_s001.json",
+            "--envelope",
+            dag_ml_data_envelope
+                .to_str()
+                .expect("dag-ml-data fixture path is valid utf-8"),
+            "--node",
+            "model:base",
+            "--input",
+            "x",
+        ])
+        .output()
+        .expect("failed to run dag-ml-data coordinator fixture validation");
+    assert!(
+        validate.status.success(),
+        "dag-ml-data coordinator fixture failed dag-ml validation\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&validate.stdout),
+        String::from_utf8_lossy(&validate.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate.stdout)
+            .contains("valid data binding: model:base.x -> 7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d"),
+        "unexpected dag-ml-data coordinator fixture validation output: {}",
+        String::from_utf8_lossy(&validate.stdout)
+    );
 }
 
 fn unique_suffix() -> u128 {

@@ -1,5 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -392,6 +394,396 @@ pub struct PredictionCacheMaterializationRecord {
 pub trait RuntimePredictionCacheStore {
     fn load_blocks(&self, requirement_key: &str) -> Result<Vec<PredictionBlock>>;
     fn materialize(&self, request: &PredictionCacheMaterializationRequest) -> Result<HandleRef>;
+}
+
+pub const FILE_PREDICTION_CACHE_STORE_SCHEMA_VERSION: u32 = 1;
+pub const FILE_PREDICTION_CACHE_MANIFEST_FILE: &str = "prediction_cache_manifest.json";
+
+fn default_file_prediction_cache_store_schema_version() -> u32 {
+    FILE_PREDICTION_CACHE_STORE_SCHEMA_VERSION
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilePredictionCacheEntry {
+    pub requirement_key: String,
+    pub cache_id: String,
+    pub file_name: String,
+    pub block_count: usize,
+    pub row_count: usize,
+    pub content_fingerprint: String,
+}
+
+impl FilePredictionCacheEntry {
+    pub fn validate(&self) -> Result<()> {
+        validate_runtime_non_empty("requirement_key", &self.requirement_key)?;
+        validate_runtime_non_empty("cache_id", &self.cache_id)?;
+        validate_runtime_non_empty("file_name", &self.file_name)?;
+        validate_prediction_cache_file_name(&self.file_name)?;
+        if self.block_count == 0 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache `{}` has zero block_count",
+                self.cache_id
+            )));
+        }
+        if self.row_count == 0 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache `{}` has zero row_count",
+                self.cache_id
+            )));
+        }
+        validate_runtime_fingerprint("prediction cache content", &self.content_fingerprint)
+    }
+
+    fn from_payload(payload: &crate::bundle::BundlePredictionCachePayload) -> Result<Self> {
+        Ok(Self {
+            requirement_key: payload.requirement_key.clone(),
+            cache_id: payload.cache_id.clone(),
+            file_name: prediction_cache_payload_file_name(payload)?,
+            block_count: payload.block_count,
+            row_count: payload.row_count,
+            content_fingerprint: payload.content_fingerprint.clone(),
+        })
+    }
+
+    fn matches_record(&self, record: &BundlePredictionCacheRecord) -> bool {
+        self.requirement_key == record.requirement_key
+            && self.cache_id == record.cache_id
+            && self.block_count == record.block_count
+            && self.row_count == record.row_count
+            && self.content_fingerprint == record.content_fingerprint
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilePredictionCacheManifest {
+    pub bundle_id: BundleId,
+    #[serde(default = "default_file_prediction_cache_store_schema_version")]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub caches: Vec<FilePredictionCacheEntry>,
+}
+
+impl FilePredictionCacheManifest {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != FILE_PREDICTION_CACHE_STORE_SCHEMA_VERSION {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache manifest for bundle `{}` uses unsupported schema_version {}, expected {}",
+                self.bundle_id,
+                self.schema_version,
+                FILE_PREDICTION_CACHE_STORE_SCHEMA_VERSION
+            )));
+        }
+        let mut requirement_keys = BTreeSet::new();
+        let mut cache_ids = BTreeSet::new();
+        let mut file_names = BTreeSet::new();
+        for entry in &self.caches {
+            entry.validate()?;
+            if !requirement_keys.insert(entry.requirement_key.as_str()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "file prediction cache manifest for bundle `{}` has duplicate requirement `{}`",
+                    self.bundle_id, entry.requirement_key
+                )));
+            }
+            if !cache_ids.insert(entry.cache_id.as_str()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "file prediction cache manifest for bundle `{}` has duplicate cache id `{}`",
+                    self.bundle_id, entry.cache_id
+                )));
+            }
+            if !file_names.insert(entry.file_name.as_str()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "file prediction cache manifest for bundle `{}` has duplicate file `{}`",
+                    self.bundle_id, entry.file_name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_against_bundle(&self, bundle: &ExecutionBundle) -> Result<()> {
+        self.validate()?;
+        bundle.validate()?;
+        if self.bundle_id != bundle.bundle_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache manifest bundle `{}` does not match bundle `{}`",
+                self.bundle_id, bundle.bundle_id
+            )));
+        }
+        if self.caches.len() != bundle.prediction_caches.len() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache manifest for bundle `{}` has {} cache(s) for {} bundle cache record(s)",
+                self.bundle_id,
+                self.caches.len(),
+                bundle.prediction_caches.len()
+            )));
+        }
+        let entries_by_requirement = self
+            .caches
+            .iter()
+            .map(|entry| (entry.requirement_key.as_str(), entry))
+            .collect::<BTreeMap<_, _>>();
+        for record in &bundle.prediction_caches {
+            let entry = entries_by_requirement
+                .get(record.requirement_key.as_str())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "file prediction cache manifest for bundle `{}` is missing requirement `{}`",
+                        self.bundle_id, record.requirement_key
+                    ))
+                })?;
+            if !entry.matches_record(record) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "file prediction cache manifest entry `{}` does not match bundle cache record",
+                    entry.cache_id
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FilePredictionCacheStore {
+    root: PathBuf,
+    manifest: FilePredictionCacheManifest,
+    records_by_requirement: BTreeMap<String, BundlePredictionCacheRecord>,
+    materialization_records: RefCell<Vec<PredictionCacheMaterializationRecord>>,
+}
+
+impl FilePredictionCacheStore {
+    pub fn write_payload_set(
+        root: impl AsRef<Path>,
+        bundle: &ExecutionBundle,
+        payloads: &BundlePredictionCachePayloadSet,
+    ) -> Result<FilePredictionCacheManifest> {
+        payloads.validate_against_bundle(bundle)?;
+        let root = root.as_ref();
+        fs::create_dir_all(root).map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to create prediction cache store `{}`: {err}",
+                root.display()
+            ))
+        })?;
+
+        let mut entries = Vec::new();
+        let records_by_requirement = bundle
+            .prediction_caches
+            .iter()
+            .map(|record| (record.requirement_key.as_str(), record))
+            .collect::<BTreeMap<_, _>>();
+        for payload in &payloads.caches {
+            let record = records_by_requirement
+                .get(payload.requirement_key.as_str())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "prediction cache payload `{}` references unknown requirement `{}`",
+                        payload.cache_id, payload.requirement_key
+                    ))
+                })?;
+            validate_prediction_cache_payload_matches_record(payload, record)?;
+            let entry = FilePredictionCacheEntry::from_payload(payload)?;
+            let payload_path = root.join(&entry.file_name);
+            write_prediction_cache_json(&payload_path, payload, "prediction cache payload")?;
+            entries.push(entry);
+        }
+        entries.sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
+        let manifest = FilePredictionCacheManifest {
+            bundle_id: bundle.bundle_id.clone(),
+            schema_version: FILE_PREDICTION_CACHE_STORE_SCHEMA_VERSION,
+            caches: entries,
+        };
+        manifest.validate_against_bundle(bundle)?;
+        write_prediction_cache_json(
+            &root.join(FILE_PREDICTION_CACHE_MANIFEST_FILE),
+            &manifest,
+            "prediction cache manifest",
+        )?;
+        Ok(manifest)
+    }
+
+    pub fn open(root: impl Into<PathBuf>, bundle: &ExecutionBundle) -> Result<Self> {
+        bundle.validate()?;
+        let root = root.into();
+        let manifest: FilePredictionCacheManifest = read_prediction_cache_json(
+            &root.join(FILE_PREDICTION_CACHE_MANIFEST_FILE),
+            "prediction cache manifest",
+        )?;
+        manifest.validate_against_bundle(bundle)?;
+        let records_by_requirement = bundle
+            .prediction_caches
+            .iter()
+            .cloned()
+            .map(|record| (record.requirement_key.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        Ok(Self {
+            root,
+            manifest,
+            records_by_requirement,
+            materialization_records: RefCell::new(Vec::new()),
+        })
+    }
+
+    pub fn manifest(&self) -> &FilePredictionCacheManifest {
+        &self.manifest
+    }
+
+    pub fn materialization_records(&self) -> Vec<PredictionCacheMaterializationRecord> {
+        self.materialization_records.borrow().clone()
+    }
+
+    fn payload_for_requirement(
+        &self,
+        requirement_key: &str,
+    ) -> Result<crate::bundle::BundlePredictionCachePayload> {
+        let entry = self
+            .manifest
+            .caches
+            .iter()
+            .find(|entry| entry.requirement_key == requirement_key)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "file prediction cache store is missing requirement `{requirement_key}`"
+                ))
+            })?;
+        let record = self
+            .records_by_requirement
+            .get(requirement_key)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "file prediction cache store has no bundle record for requirement `{requirement_key}`"
+                ))
+            })?;
+        let payload: crate::bundle::BundlePredictionCachePayload = read_prediction_cache_json(
+            &self.root.join(&entry.file_name),
+            "prediction cache payload",
+        )?;
+        validate_prediction_cache_payload_matches_record(&payload, record)?;
+        Ok(payload)
+    }
+}
+
+impl RuntimePredictionCacheStore for FilePredictionCacheStore {
+    fn load_blocks(&self, requirement_key: &str) -> Result<Vec<PredictionBlock>> {
+        Ok(self.payload_for_requirement(requirement_key)?.blocks)
+    }
+
+    fn materialize(&self, request: &PredictionCacheMaterializationRequest) -> Result<HandleRef> {
+        request.requirement.validate()?;
+        request.cache.validate()?;
+        let requirement_key = request.requirement.key();
+        let record = self
+            .records_by_requirement
+            .get(&requirement_key)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "file prediction cache store is missing requirement `{requirement_key}`"
+                ))
+            })?;
+        if record != &request.cache {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache materialization request for `{requirement_key}` does not match bundle cache record"
+            )));
+        }
+        let payload = self.payload_for_requirement(&requirement_key)?;
+        validate_prediction_cache_payload_matches_record(&payload, record)?;
+        let fingerprint = stable_json_fingerprint(&(
+            &request.run_id,
+            &request.bundle_id,
+            request.phase,
+            &request.variant_id,
+            &request.cache.requirement_key,
+            &request.cache.cache_id,
+            &request.cache.content_fingerprint,
+        ))?;
+        let handle = HandleRef {
+            handle: u64::from_str_radix(&fingerprint[..16], 16)
+                .expect("sha256 hex prefix should fit into u64"),
+            kind: HandleKind::Prediction,
+            owner_controller: request.producer_controller_id.clone(),
+        };
+        self.materialization_records
+            .borrow_mut()
+            .push(PredictionCacheMaterializationRecord {
+                run_id: request.run_id.clone(),
+                bundle_id: request.bundle_id.clone(),
+                phase: request.phase,
+                variant_id: request.variant_id.clone(),
+                requirement_key,
+                cache_id: request.cache.cache_id.clone(),
+                handle: handle.clone(),
+            });
+        Ok(handle)
+    }
+}
+
+fn prediction_cache_payload_file_name(
+    payload: &crate::bundle::BundlePredictionCachePayload,
+) -> Result<String> {
+    let fingerprint = stable_json_fingerprint(&(
+        &payload.requirement_key,
+        &payload.cache_id,
+        &payload.content_fingerprint,
+        payload.block_count,
+        payload.row_count,
+    ))?;
+    Ok(format!("prediction-cache-{}.json", &fingerprint[..16]))
+}
+
+fn validate_prediction_cache_file_name(file_name: &str) -> Result<()> {
+    if file_name == "." || file_name == ".." || file_name.contains('/') || file_name.contains('\\')
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache file name `{file_name}` must be a plain file name"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_runtime_non_empty(label: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!("{label} is empty")));
+    }
+    Ok(())
+}
+
+fn validate_runtime_fingerprint(label: &str, value: &str) -> Result<()> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "{label} fingerprint must be a 64-character hex digest"
+        )));
+    }
+    Ok(())
+}
+
+fn read_prediction_cache_json<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    label: &str,
+) -> Result<T> {
+    let data = fs::read(path).map_err(|err| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to read {label} at {}: {err}",
+            path.display()
+        ))
+    })?;
+    serde_json::from_slice(&data).map_err(|err| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to parse {label} at {}: {err}",
+            path.display()
+        ))
+    })
+}
+
+fn write_prediction_cache_json<T: Serialize>(path: &Path, value: &T, label: &str) -> Result<()> {
+    let mut data = serde_json::to_vec_pretty(value).map_err(|err| {
+        DagMlError::RuntimeValidation(format!("failed to serialize {label}: {err}"))
+    })?;
+    data.push(b'\n');
+    fs::write(path, data).map_err(|err| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to write {label} at {}: {err}",
+            path.display()
+        ))
+    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2222,6 +2614,8 @@ mod tests {
     use std::{
         cell::RefCell,
         collections::{BTreeMap, BTreeSet},
+        fs,
+        path::PathBuf,
         rc::Rc,
     };
 
@@ -2735,6 +3129,14 @@ mod tests {
             Some("fold:1") => vec![SampleId::new("s1").unwrap()],
             _ => vec![SampleId::new("s2").unwrap()],
         }
+    }
+
+    fn temp_prediction_cache_dir(label: &str) -> PathBuf {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after UNIX_EPOCH")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{label}_{}_{}", std::process::id(), suffix))
     }
 
     fn port(name: &str, kind: PortKind) -> PortSpec {
@@ -3499,6 +3901,99 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].requirement_key, requirement.key());
         assert_eq!(records[0].handle, handle);
+    }
+
+    #[test]
+    fn file_prediction_cache_store_round_trips_oof_payloads_and_detects_tampering() {
+        let plan = build_execution_plan(
+            "plan:oof.edge.file.cache.store",
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+        )
+        .unwrap();
+        let fit_controllers = oof_edge_runtime_controllers(
+            Some(PredictionPartition::Validation),
+            OofSampleMode::Aligned,
+        );
+        let mut ctx = RunContext::new(
+            RunId::new("run:oof.edge.file.cache.store").unwrap(),
+            Some(11),
+        );
+        SequentialScheduler
+            .execute_campaign_phase(&plan, &fit_controllers, &mut ctx, Phase::FitCv)
+            .unwrap();
+
+        let requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("model:base").unwrap(),
+            source_port: "pred".to_string(),
+            consumer_node: NodeId::new("model:meta").unwrap(),
+            target_port: "pred".to_string(),
+            partition: PredictionPartition::Validation,
+            fold_ids: vec![
+                FoldId::new("fold:0").unwrap(),
+                FoldId::new("fold:1").unwrap(),
+            ],
+            sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let cache =
+            build_prediction_cache_record(&requirement, ctx.prediction_store.blocks()).unwrap();
+        let payload =
+            build_prediction_cache_payload(&requirement, ctx.prediction_store.blocks()).unwrap();
+        let bundle = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:oof.edge.file.cache.store").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            Vec::new(),
+            vec![requirement.clone()],
+            vec![cache.clone()],
+        )
+        .unwrap();
+        let payload_set = BundlePredictionCachePayloadSet {
+            bundle_id: bundle.bundle_id.clone(),
+            schema_version: PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+            caches: vec![payload],
+        };
+        let root = temp_prediction_cache_dir("dag_ml_file_prediction_cache_store");
+
+        let manifest =
+            FilePredictionCacheStore::write_payload_set(&root, &bundle, &payload_set).unwrap();
+        assert_eq!(manifest.caches.len(), 1);
+        assert!(root.join(FILE_PREDICTION_CACHE_MANIFEST_FILE).exists());
+        assert!(root.join(&manifest.caches[0].file_name).exists());
+
+        let store = FilePredictionCacheStore::open(root.clone(), &bundle).unwrap();
+        assert_eq!(store.manifest().caches, manifest.caches);
+        assert_eq!(store.load_blocks(&requirement.key()).unwrap().len(), 2);
+        let handle = store
+            .materialize(&PredictionCacheMaterializationRequest {
+                run_id: RunId::new("run:oof.edge.file.cache.store.replay").unwrap(),
+                bundle_id: bundle.bundle_id.clone(),
+                phase: Phase::Refit,
+                variant_id: bundle.selected_variant_id.clone(),
+                requirement: requirement.clone(),
+                cache: cache.clone(),
+                producer_controller_id: ControllerId::new("controller:model").unwrap(),
+            })
+            .unwrap();
+        assert_eq!(handle.kind, HandleKind::Prediction);
+        assert_eq!(store.materialization_records().len(), 1);
+
+        let payload_path = root.join(&manifest.caches[0].file_name);
+        let mut tampered: serde_json::Value =
+            serde_json::from_slice(&fs::read(&payload_path).unwrap()).unwrap();
+        tampered["blocks"][0]["values"][0][0] = json!(123456.0);
+        fs::write(&payload_path, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
+        let err = store.load_blocks(&requirement.key()).unwrap_err();
+        assert!(
+            err.to_string().contains("content fingerprint"),
+            "unexpected tamper error: {err}"
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

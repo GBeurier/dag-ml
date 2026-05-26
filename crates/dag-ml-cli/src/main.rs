@@ -13,12 +13,12 @@ use dag_ml_core::{
     BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
     BundlePredictionRequirement, CampaignSpec, CandidateScore, ControllerId, ControllerManifest,
     ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle,
-    ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
-    InMemoryDataProvider, InMemoryPredictionCacheStore, LineageId, LineageRecord, MetricObjective,
-    NodeId, NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock, PredictionPartition,
-    RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId, RuntimeController,
-    RuntimeControllerRegistry, RuntimePredictionCacheStore, SampleId, SelectionDecision,
-    SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
+    ExternalDataPlanEnvelope, FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef,
+    InMemoryArtifactStore, InMemoryDataProvider, InMemoryPredictionCacheStore, LineageId,
+    LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, Phase,
+    PredictionBlock, PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest, RunContext,
+    RunId, RuntimeController, RuntimeControllerRegistry, RuntimePredictionCacheStore, SampleId,
+    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -281,6 +281,8 @@ enum Command {
         replay_request: Option<PathBuf>,
         #[arg(long)]
         prediction_cache_payload: Option<PathBuf>,
+        #[arg(long)]
+        prediction_cache_store: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
     },
@@ -289,6 +291,20 @@ enum Command {
         bundle: PathBuf,
         #[arg(long)]
         payload: PathBuf,
+    },
+    ExportPredictionCacheStore {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        payload: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    ValidatePredictionCacheStore {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        store_dir: PathBuf,
     },
     RunMockReplay {
         #[arg(long)]
@@ -303,6 +319,8 @@ enum Command {
         replay_request: PathBuf,
         #[arg(long)]
         prediction_cache_payload: Option<PathBuf>,
+        #[arg(long)]
+        prediction_cache_store: Option<PathBuf>,
         #[arg(long = "envelope")]
         envelopes: Vec<String>,
         #[arg(long, default_value = "plan:cli.bundle")]
@@ -325,6 +343,8 @@ enum Command {
         replay_request: PathBuf,
         #[arg(long)]
         prediction_cache_payload: Option<PathBuf>,
+        #[arg(long)]
+        prediction_cache_store: Option<PathBuf>,
         #[arg(long = "envelope")]
         envelopes: Vec<String>,
         #[arg(long)]
@@ -835,6 +855,7 @@ fn main() -> Result<()> {
             envelopes,
             replay_request,
             prediction_cache_payload,
+            prediction_cache_store,
             plan_id,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
@@ -855,18 +876,36 @@ fn main() -> Result<()> {
                     .validate_against_bundle(&bundle)
                     .with_context(|| "prediction cache payload set does not match bundle")?;
             }
+            let file_prediction_cache_store = prediction_cache_store
+                .as_ref()
+                .map(|store_dir| validate_file_prediction_cache_store(&bundle, store_dir))
+                .transpose()?;
+            if prediction_cache_payloads.is_some() && file_prediction_cache_store.is_some() {
+                bail!(
+                    "use either --prediction-cache-payload or --prediction-cache-store, not both"
+                );
+            }
             if let Some(replay_request) = replay_request {
                 let request: ReplayPhaseRequest =
                     read_json(&replay_request, "replay phase request")?;
-                request
-                    .validate_for_bundle_with_prediction_cache_payloads(
-                        &bundle,
-                        prediction_cache_payloads.as_ref(),
-                    )
-                    .with_context(|| "replay request does not match bundle")?;
+                if prediction_cache_payloads.is_some() {
+                    request
+                        .validate_for_bundle_with_prediction_cache_payloads(
+                            &bundle,
+                            prediction_cache_payloads.as_ref(),
+                        )
+                        .with_context(|| "replay request does not match bundle")?;
+                } else {
+                    request
+                        .validate_for_bundle_with_prediction_cache_store(
+                            &bundle,
+                            file_prediction_cache_store.is_some(),
+                        )
+                        .with_context(|| "replay request does not match bundle")?;
+                }
             }
             println!(
-                "valid bundle: {}, selection(s)={}, artifact(s)={}, prediction requirement(s)={}, prediction cache(s)={}, prediction cache payload(s)={}, data requirement(s)={}, replay envelope(s)={}",
+                "valid bundle: {}, selection(s)={}, artifact(s)={}, prediction requirement(s)={}, prediction cache(s)={}, prediction cache payload(s)={}, prediction cache store cache(s)={}, data requirement(s)={}, replay envelope(s)={}",
                 bundle.bundle_id,
                 bundle.selections.len(),
                 bundle.refit_artifacts.len(),
@@ -875,6 +914,9 @@ fn main() -> Result<()> {
                 prediction_cache_payloads
                     .as_ref()
                     .map_or(0, |payloads| payloads.caches.len()),
+                file_prediction_cache_store
+                    .as_ref()
+                    .map_or(0, |store| store.manifest().caches.len()),
                 bundle.data_requirements.len(),
                 envelope_map.len()
             );
@@ -892,6 +934,34 @@ fn main() -> Result<()> {
                 payload.caches.len()
             );
         }
+        Command::ExportPredictionCacheStore {
+            bundle,
+            payload,
+            output_dir,
+        } => {
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let payload: BundlePredictionCachePayloadSet =
+                read_json(&payload, "prediction cache payload set")?;
+            let manifest =
+                FilePredictionCacheStore::write_payload_set(&output_dir, &bundle, &payload)
+                    .with_context(|| "failed to export prediction cache store")?;
+            println!(
+                "wrote prediction cache store: bundle={}, cache(s)={}, dir={}",
+                manifest.bundle_id,
+                manifest.caches.len(),
+                output_dir.display()
+            );
+        }
+        Command::ValidatePredictionCacheStore { bundle, store_dir } => {
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let store = validate_file_prediction_cache_store(&bundle, &store_dir)?;
+            println!(
+                "valid prediction cache store: bundle={}, cache(s)={}, dir={}",
+                store.manifest().bundle_id,
+                store.manifest().caches.len(),
+                store_dir.display()
+            );
+        }
         Command::RunMockReplay {
             graph,
             campaign,
@@ -899,6 +969,7 @@ fn main() -> Result<()> {
             bundle,
             replay_request,
             prediction_cache_payload,
+            prediction_cache_store,
             envelopes,
             plan_id,
             run_id,
@@ -910,8 +981,11 @@ fn main() -> Result<()> {
                 read_json(&replay_request, "replay phase request")?;
             let prediction_cache_payloads =
                 read_optional_prediction_cache_payload(prediction_cache_payload.as_ref())?;
-            let prediction_cache_store =
-                optional_prediction_cache_store(&bundle, prediction_cache_payloads)?;
+            let prediction_cache_store = optional_prediction_cache_store(
+                &bundle,
+                prediction_cache_payloads,
+                prediction_cache_store.as_ref(),
+            )?;
             let envelope_map = read_replay_envelopes(&envelopes)?;
             if envelope_map.is_empty() {
                 bail!("run-mock-replay requires at least one --envelope KEY=PATH argument");
@@ -952,7 +1026,7 @@ fn main() -> Result<()> {
                 artifact_store.len(),
                 prediction_cache_store
                     .as_ref()
-                    .map(|store| store.materialization_records().len())
+                    .map(CliPredictionCacheStore::materialization_record_count)
                     .unwrap_or(0)
             );
         }
@@ -963,6 +1037,7 @@ fn main() -> Result<()> {
             bundle,
             replay_request,
             prediction_cache_payload,
+            prediction_cache_store,
             envelopes,
             adapter,
             persistent,
@@ -976,8 +1051,11 @@ fn main() -> Result<()> {
                 read_json(&replay_request, "replay phase request")?;
             let prediction_cache_payloads =
                 read_optional_prediction_cache_payload(prediction_cache_payload.as_ref())?;
-            let prediction_cache_store =
-                optional_prediction_cache_store(&bundle, prediction_cache_payloads)?;
+            let prediction_cache_store = optional_prediction_cache_store(
+                &bundle,
+                prediction_cache_payloads,
+                prediction_cache_store.as_ref(),
+            )?;
             let envelope_map = read_replay_envelopes(&envelopes)?;
             if envelope_map.is_empty() {
                 bail!("run-process-replay requires at least one --envelope KEY=PATH argument");
@@ -1022,7 +1100,7 @@ fn main() -> Result<()> {
                 artifact_store.len(),
                 prediction_cache_store
                     .as_ref()
-                    .map(|store| store.materialization_records().len())
+                    .map(CliPredictionCacheStore::materialization_record_count)
                     .unwrap_or(0)
             );
         }
@@ -2341,14 +2419,79 @@ fn read_optional_prediction_cache_payload(
         .transpose()
 }
 
+enum CliPredictionCacheStore {
+    InMemory(InMemoryPredictionCacheStore),
+    File(FilePredictionCacheStore),
+}
+
+impl CliPredictionCacheStore {
+    fn materialization_record_count(&self) -> usize {
+        match self {
+            Self::InMemory(store) => store.materialization_records().len(),
+            Self::File(store) => store.materialization_records().len(),
+        }
+    }
+}
+
+impl RuntimePredictionCacheStore for CliPredictionCacheStore {
+    fn load_blocks(&self, requirement_key: &str) -> dag_ml_core::Result<Vec<PredictionBlock>> {
+        match self {
+            Self::InMemory(store) => store.load_blocks(requirement_key),
+            Self::File(store) => store.load_blocks(requirement_key),
+        }
+    }
+
+    fn materialize(
+        &self,
+        request: &dag_ml_core::PredictionCacheMaterializationRequest,
+    ) -> dag_ml_core::Result<HandleRef> {
+        match self {
+            Self::InMemory(store) => store.materialize(request),
+            Self::File(store) => store.materialize(request),
+        }
+    }
+}
+
 fn optional_prediction_cache_store(
     bundle: &ExecutionBundle,
     payloads: Option<BundlePredictionCachePayloadSet>,
-) -> Result<Option<InMemoryPredictionCacheStore>> {
-    payloads
-        .map(|payloads| InMemoryPredictionCacheStore::from_payloads(bundle, payloads))
+    file_store_dir: Option<&PathBuf>,
+) -> Result<Option<CliPredictionCacheStore>> {
+    if payloads.is_some() && file_store_dir.is_some() {
+        bail!("use either --prediction-cache-payload or --prediction-cache-store, not both");
+    }
+    if let Some(payloads) = payloads {
+        return InMemoryPredictionCacheStore::from_payloads(bundle, payloads)
+            .map(CliPredictionCacheStore::InMemory)
+            .map(Some)
+            .with_context(|| "prediction cache payload set does not match bundle");
+    }
+    file_store_dir
+        .map(|store_dir| validate_file_prediction_cache_store(bundle, store_dir))
         .transpose()
-        .with_context(|| "prediction cache payload set does not match bundle")
+        .map(|store| store.map(CliPredictionCacheStore::File))
+}
+
+fn validate_file_prediction_cache_store(
+    bundle: &ExecutionBundle,
+    store_dir: &Path,
+) -> Result<FilePredictionCacheStore> {
+    let store =
+        FilePredictionCacheStore::open(store_dir.to_path_buf(), bundle).with_context(|| {
+            format!(
+                "prediction cache store is invalid at {}",
+                store_dir.display()
+            )
+        })?;
+    for entry in &store.manifest().caches {
+        store.load_blocks(&entry.requirement_key).with_context(|| {
+            format!(
+                "prediction cache store cannot load `{}`",
+                entry.requirement_key
+            )
+        })?;
+    }
+    Ok(store)
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Result<T> {
