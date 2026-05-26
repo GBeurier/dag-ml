@@ -16,18 +16,19 @@ use dag_ml_core::{
     build_research_provenance_package, oof_campaign_fingerprint,
     regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
-    validate_oof_campaign, AggregatedPredictionBlock, ArtifactId, BundleId,
-    BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
-    BundlePredictionRequirement, BundleReplayExecution, CampaignSpec, CandidateScore,
-    ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
-    DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, FileArtifactManifestStore,
-    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
-    InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
-    OofCampaign, ParallelScheduler, Phase, PredictionBlock, PredictionLevel, PredictionPartition,
-    RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
-    ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId, RuntimeController,
-    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
-    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
+    validate_oof_campaign, validate_research_provenance_package_files, AggregatedPredictionBlock,
+    ArtifactId, BundleId, BundlePredictionCachePayload, BundlePredictionCachePayloadSet,
+    BundlePredictionCacheRecord, BundlePredictionRequirement, BundleReplayExecution, CampaignSpec,
+    CandidateScore, ColumnarPredictionCacheStore, ControllerId, ControllerManifest,
+    ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle,
+    ExternalDataPlanEnvelope, FileArtifactManifestStore, FilePredictionCacheStore, GraphSpec,
+    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
+    MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, ParallelScheduler, Phase,
+    PredictionBlock, PredictionLevel, PredictionPartition, RefitArtifactRecord,
+    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
+    ResearchProvenancePackage, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
+    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric,
+    SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -568,6 +569,10 @@ enum Command {
         output_dir: PathBuf,
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
+    },
+    ValidateResearchProvenance {
+        #[arg(long)]
+        input_dir: PathBuf,
     },
     RunMockReplay {
         #[arg(long)]
@@ -1477,6 +1482,23 @@ fn main() -> Result<()> {
                 artifact_manifest_store.is_some(),
                 package.files.len(),
                 output_dir.display()
+            );
+        }
+        Command::ValidateResearchProvenance { input_dir } => {
+            let files = read_research_provenance_package_dir(&input_dir)?;
+            let validation = validate_research_provenance_package_files(&files)
+                .with_context(|| "failed to validate research provenance package")?;
+            println!(
+                "valid research provenance package: bundle={}, plan={}, file(s)={}, checksummed file(s)={}, lineage record(s)={}, data envelope(s)={}, prediction cache manifest={}, artifact manifest={}, dir={}",
+                validation.bundle_id,
+                validation.plan_id,
+                validation.file_count,
+                validation.checksummed_file_count,
+                validation.lineage_record_count,
+                validation.data_envelope_count,
+                validation.has_prediction_cache_manifest,
+                validation.has_artifact_manifest,
+                input_dir.display()
             );
         }
         Command::RunMockReplay {
@@ -3732,6 +3754,108 @@ fn write_research_provenance_package(
         })?;
     }
     Ok(())
+}
+
+fn read_research_provenance_package_dir(input_dir: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+    if !input_dir.is_dir() {
+        bail!(
+            "research provenance package dir `{}` is not a directory",
+            input_dir.display()
+        );
+    }
+    let mut files = BTreeMap::new();
+    read_research_provenance_package_dir_inner(input_dir, input_dir, &mut files)?;
+    if files.is_empty() {
+        bail!(
+            "research provenance package dir `{}` contains no files",
+            input_dir.display()
+        );
+    }
+    Ok(files)
+}
+
+fn read_research_provenance_package_dir_inner(
+    root: &Path,
+    current: &Path,
+    files: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<()> {
+    let mut entries = std::fs::read_dir(current)
+        .with_context(|| {
+            format!(
+                "failed to read research provenance package directory {}",
+                current.display()
+            )
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| {
+            format!(
+                "failed to enumerate research provenance package directory {}",
+                current.display()
+            )
+        })?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let entry_path = entry.path();
+        let file_type = entry.file_type().with_context(|| {
+            format!(
+                "failed to inspect research provenance package path {}",
+                entry_path.display()
+            )
+        })?;
+        if file_type.is_dir() {
+            read_research_provenance_package_dir_inner(root, &entry_path, files)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            bail!(
+                "research provenance package path `{}` is not a regular file",
+                entry_path.display()
+            );
+        }
+        let relative = entry_path.strip_prefix(root).with_context(|| {
+            format!(
+                "failed to relativize research provenance package file {}",
+                entry_path.display()
+            )
+        })?;
+        let package_path = package_relative_path(relative)?;
+        let previous = files.insert(
+            package_path.clone(),
+            std::fs::read(&entry_path).with_context(|| {
+                format!(
+                    "failed to read research provenance package file {}",
+                    entry_path.display()
+                )
+            })?,
+        );
+        if previous.is_some() {
+            bail!("duplicate research provenance package file `{package_path}`");
+        }
+    }
+    Ok(())
+}
+
+fn package_relative_path(path: &Path) -> Result<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(part) = component else {
+            bail!(
+                "research provenance package contains unsafe relative path `{}`",
+                path.display()
+            );
+        };
+        let part = part.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "research provenance package path `{}` is not valid UTF-8",
+                path.display()
+            )
+        })?;
+        parts.push(part.to_string());
+    }
+    if parts.is_empty() {
+        bail!("research provenance package contains empty relative path");
+    }
+    Ok(parts.join("/"))
 }
 
 fn emit_json<T: Serialize>(output: Option<&PathBuf>, value: &T, label: &str) -> Result<()> {
