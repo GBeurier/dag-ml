@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
 from typing import Any
@@ -93,6 +94,10 @@ def stable_handle(value: str) -> int:
     for byte in value.encode("utf-8"):
         acc = ((acc * 31) + byte) & ((1 << 64) - 1)
     return acc
+
+
+def content_fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def prediction_partition(phase: str) -> str:
@@ -255,7 +260,12 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
             "id": artifact_id,
             "kind": "mock_model",
             "controller_id": controller_id,
+            "backend": "json",
+            "uri": f"artifacts/{content_fingerprint(artifact_id)}.json",
+            "content_fingerprint": content_fingerprint(f"{artifact_id}:{variant_label}"),
             "size_bytes": 128,
+            "plugin": "dagml.python_process",
+            "plugin_version": "1.0.0",
         }
         artifacts.append(artifact)
         artifact_handles[artifact_id] = {

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import sys
@@ -96,6 +97,10 @@ def stable_handle(value: str) -> int:
     for byte in value.encode("utf-8"):
         acc = ((acc * 31) + byte) & ((1 << 64) - 1)
     return acc
+
+
+def content_fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def sample_scalar(sample_id: str) -> float:
@@ -303,7 +308,12 @@ def model_result(task: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[
             "id": artifact_id,
             "kind": "sklearn_pipeline",
             "controller_id": controller_id,
+            "backend": "joblib",
+            "uri": f"artifacts/{content_fingerprint(artifact_id)}.joblib",
+            "content_fingerprint": content_fingerprint(f"{artifact_id}:{variant_label}"),
             "size_bytes": 256,
+            "plugin": "dagml.sklearn_process",
+            "plugin_version": "1.0.0",
         }
         artifacts.append(artifact)
         artifact_handles[artifact_id] = {

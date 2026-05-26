@@ -2892,8 +2892,14 @@ impl SequentialScheduler {
                         scope.phase,
                     ),
                 };
-                let result = controller.invoke(&task)?;
+                let mut result = controller.invoke(&task)?;
                 result.validate_for_task(&task)?;
+                attach_coordinator_input_lineage(
+                    &mut result,
+                    plan,
+                    &task.node_plan.node_id,
+                    &input_lineage,
+                )?;
                 if let Some(store) = resources.artifact_store.as_deref_mut() {
                     if scope.phase == Phase::Refit {
                         store.capture_refit_artifacts(&task, &result)?;
@@ -3308,7 +3314,13 @@ impl ParallelScheduler {
                             .collect()
                     })?;
 
-                for (prepared_task, result) in chunk.iter().zip(chunk_results) {
+                for (prepared_task, mut result) in chunk.iter().zip(chunk_results) {
+                    attach_coordinator_input_lineage(
+                        &mut result,
+                        plan,
+                        &prepared_task.task.node_plan.node_id,
+                        &input_lineage,
+                    )?;
                     if let Some(store) = resources.artifact_store.as_deref_mut() {
                         if scope.phase == Phase::Refit {
                             store.capture_refit_artifacts(&prepared_task.task, &result)?;
@@ -3335,6 +3347,52 @@ impl ParallelScheduler {
 struct PreparedNodeTask {
     node_id: NodeId,
     task: NodeTask,
+}
+
+fn attach_coordinator_input_lineage(
+    result: &mut NodeResult,
+    plan: &ExecutionPlan,
+    node_id: &NodeId,
+    upstream_lineage: &BTreeMap<NodeId, LineageId>,
+) -> Result<()> {
+    let inferred = inferred_input_lineage_for_node(plan, node_id, upstream_lineage);
+    if result.lineage.input_lineage.is_empty() {
+        result.lineage.input_lineage = inferred;
+        return Ok(());
+    }
+
+    let declared = result
+        .lineage
+        .input_lineage
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if declared != inferred {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "lineage for node `{}` declared input lineage {:?}, expected {:?}",
+            result.node_id, declared, inferred
+        )));
+    }
+    result.lineage.input_lineage = declared;
+    Ok(())
+}
+
+fn inferred_input_lineage_for_node(
+    plan: &ExecutionPlan,
+    node_id: &NodeId,
+    upstream_lineage: &BTreeMap<NodeId, LineageId>,
+) -> Vec<LineageId> {
+    plan.graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| &edge.target.node_id == node_id && edge.contract.propagates_lineage)
+        .filter_map(|edge| upstream_lineage.get(&edge.source.node_id).cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn collect_input_handles(
@@ -5483,6 +5541,20 @@ mod tests {
         assert_eq!(ctx.lineage.len(), 2);
         assert_eq!(ctx.prediction_store.blocks().len(), 1);
         assert_eq!(results[1].node_id.as_str(), "model:pls");
+        let transform_lineage = ctx
+            .lineage
+            .records()
+            .find(|record| record.node_id.as_str() == "transform:snv")
+            .expect("transform lineage exists");
+        let model_lineage = ctx
+            .lineage
+            .records()
+            .find(|record| record.node_id.as_str() == "model:pls")
+            .expect("model lineage exists");
+        assert_eq!(
+            model_lineage.input_lineage,
+            vec![transform_lineage.record_id.clone()]
+        );
     }
 
     #[test]
