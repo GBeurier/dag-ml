@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn validates_external_data_envelope_subset() {
         let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
 
@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn refuses_unsupported_external_data_envelope_schema_version() {
         let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION + 1;
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn refuses_envelope_fingerprint_mismatch() {
         let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         envelope.plan_fingerprint = "0".repeat(64);
@@ -561,7 +561,7 @@ mod tests {
     #[test]
     fn in_memory_provider_materializes_validated_data_handles() {
         let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         let provider = InMemoryDataProvider::with_envelope(
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn in_memory_provider_registration_is_idempotent_for_same_envelope() {
         let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         let mut provider =

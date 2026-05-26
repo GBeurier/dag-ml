@@ -419,7 +419,7 @@ fn c_program_executes_vtable_replay_against_c_abi() {
     let exe_path = temp.join("conformance");
     fs::write(&c_path, C_CONFORMANCE_SOURCE).expect("write C conformance source");
     let envelope = fs::read_to_string(
-        workspace.join("examples/fixtures/data/coordinator_data_plan_envelope_nir.json"),
+        workspace.join("examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"),
     )
     .expect("read data envelope fixture");
     fs::write(&envelopes_path, format!(r#"{{"model:base.x":{envelope}}}"#))

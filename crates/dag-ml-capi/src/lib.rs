@@ -2992,8 +2992,9 @@ mod tests {
         let bundle = include_bytes!("../../../examples/generated/execution_bundle_minimal.json");
         let request =
             include_bytes!("../../../examples/fixtures/bundle/replay_request_predict.json");
-        let envelope =
-            include_str!("../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json");
+        let envelope = include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        );
         let envelopes = format!(r#"{{"model:base.x":{envelope}}}"#);
         let mut error = DagMlString::default();
 
@@ -3088,8 +3089,9 @@ mod tests {
         let bundle = include_bytes!("../../../examples/generated/execution_bundle_minimal.json");
         let request =
             include_bytes!("../../../examples/fixtures/bundle/replay_request_predict.json");
-        let envelope =
-            include_str!("../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json");
+        let envelope = include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        );
         let envelopes = format!(r#"{{"model:base.x":{envelope}}}"#);
         let mut out = DagMlOwnedBytes::default();
         let mut error = DagMlString::default();
@@ -3129,8 +3131,9 @@ mod tests {
         let bundle = include_bytes!("../../../examples/generated/execution_bundle_minimal.json");
         let request =
             include_bytes!("../../../examples/fixtures/bundle/replay_request_predict.json");
-        let envelope =
-            include_str!("../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json");
+        let envelope = include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        );
         let envelopes = format!(r#"{{"model:base.x":{envelope}}}"#);
         let mut data_state = DataProviderStub::default();
         let data_provider = DagMlDataVTable {
@@ -3248,8 +3251,9 @@ mod tests {
         let request = include_bytes!(
             "../../../examples/fixtures/bundle/replay_request_branch_merge_refit.json"
         );
-        let envelope =
-            include_str!("../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json");
+        let envelope = include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        );
         let envelopes = format!(
             r#"{{
                 "branch:b0.model:ridge.x":{envelope},
