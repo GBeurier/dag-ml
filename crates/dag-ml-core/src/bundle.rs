@@ -858,6 +858,13 @@ impl ReplayPhaseRequest {
                 self.phase
             )));
         }
+        if self.phase == Phase::Refit && !bundle.prediction_requirements.is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle `{}` cannot replay REFIT because it depends on {} OOF prediction requirement(s) but stores only prediction cache manifests",
+                bundle.bundle_id,
+                bundle.prediction_requirements.len()
+            )));
+        }
         let expected = bundle
             .data_requirements
             .iter()
@@ -1149,6 +1156,17 @@ mod tests {
             bundle.refit_artifacts[0].prediction_requirement_keys,
             vec!["branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof"]
         );
+        assert!(ReplayPhaseRequest {
+            bundle_id: bundle.bundle_id.clone(),
+            phase: Phase::Refit,
+            data_envelope_keys: bundle
+                .data_requirements
+                .iter()
+                .map(BundleDataRequirement::key)
+                .collect(),
+        }
+        .validate_for_bundle(&bundle)
+        .is_err());
 
         let mut wrong_data_owner = bundle.clone();
         wrong_data_owner.refit_artifacts[0].data_requirement_keys =
@@ -1223,6 +1241,13 @@ mod tests {
         ReplayPhaseRequest {
             bundle_id: bundle.bundle_id.clone(),
             phase: Phase::Predict,
+            data_envelope_keys: vec!["model:base.x".to_string()],
+        }
+        .validate_for_bundle(&bundle)
+        .unwrap();
+        ReplayPhaseRequest {
+            bundle_id: bundle.bundle_id.clone(),
+            phase: Phase::Refit,
             data_envelope_keys: vec!["model:base.x".to_string()],
         }
         .validate_for_bundle(&bundle)

@@ -95,6 +95,9 @@ Implemented:
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;
+- bundle replay validation refuses `REFIT` replay when the bundle depends on
+  OOF prediction requirements but only carries cache manifests, avoiding a
+  false refit path until a persistent prediction cache store exists;
 - CLI contract proving direct branch/merge `REFIT` without a preceding
   in-context `FIT_CV` is refused because OOF validation predictions are absent;
 - process-controller replay fixtures now verify that a model receives its own

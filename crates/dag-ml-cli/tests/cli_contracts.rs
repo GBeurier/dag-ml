@@ -488,6 +488,61 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         branch_merge_replay_stdout
     );
 
+    std::fs::write(
+        &temp_branch_merge_replay_request,
+        r#"{
+  "bundle_id": "bundle:cli.branch.merge.cv.refit",
+  "phase": "REFIT",
+  "data_envelope_keys": [
+    "branch:b0.model:ridge.x",
+    "branch:b1.model:rf.x",
+    "merge:stack.pred_plus_original.meta:ridge.x_original"
+  ]
+}
+"#,
+    )
+    .expect("branch/merge refit replay request was written");
+    let validate_branch_merge_refit_replay = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-bundle",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "branch:b0.model:ridge.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--envelope",
+            "branch:b1.model:rf.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--envelope",
+            "merge:stack.pred_plus_original.meta:ridge.x_original=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--replay-request",
+            temp_branch_merge_replay_request
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.branch.merge.cv.refit",
+        ])
+        .output()
+        .expect("failed to validate branch/merge refit replay request");
+    assert!(
+        !validate_branch_merge_refit_replay.status.success(),
+        "branch/merge REFIT replay unexpectedly validated: {}",
+        String::from_utf8_lossy(&validate_branch_merge_refit_replay.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_branch_merge_refit_replay.stderr)
+            .contains("cannot replay REFIT"),
+        "unexpected branch/merge REFIT replay validation error: {}",
+        String::from_utf8_lossy(&validate_branch_merge_refit_replay.stderr)
+    );
+
     let branch_merge_sklearn_cv_refit_replay = Command::new(cli())
         .current_dir(&root)
         .args([
