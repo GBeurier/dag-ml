@@ -59,6 +59,8 @@ Implemented:
   selection and stable tie-breaking;
 - refit execution bundle contracts that bind selected variants, selected
   candidates, refit artifacts, plan fingerprints and replay data requirements;
+- execution-bundle validation now checks selected candidates against the
+  rebuilt plan and requires refit artifacts for selected refittable nodes;
 - explicit execution-bundle schema version with unsupported-version refusal;
 - replay request validation for predict, explain and refit phases;
 - mock controller conformance tests;

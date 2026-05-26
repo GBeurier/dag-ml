@@ -485,6 +485,7 @@ impl ExecutionBundle {
                 )));
             }
         }
+        self.validate_selections_against_plan(plan)?;
         let expected_requirements = collect_data_requirements(plan)?;
         if self.data_requirements != expected_requirements {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -527,6 +528,46 @@ impl ExecutionBundle {
                     requirement.key()
                 )));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_selections_against_plan(&self, plan: &ExecutionPlan) -> Result<()> {
+        if self.selections.is_empty() {
+            return Ok(());
+        }
+        let artifact_node_ids = self
+            .refit_artifacts
+            .iter()
+            .map(|artifact| artifact.node_id.clone())
+            .collect::<BTreeSet<_>>();
+        for (selection_key, decision) in &self.selections {
+            let selected_candidate_id = decision.selected_candidate_id.as_str();
+            if let Ok(selected_node_id) = NodeId::new(selected_candidate_id) {
+                if let Some(node_plan) = plan.node_plans.get(&selected_node_id) {
+                    if node_plan.supported_phases.contains(&Phase::Refit)
+                        && !artifact_node_ids.contains(&node_plan.node_id)
+                    {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "bundle `{}` selection `{selection_key}` chose refittable node `{}` without a matching refit artifact",
+                            self.bundle_id, node_plan.node_id
+                        )));
+                    }
+                    continue;
+                }
+            }
+            if VariantId::new(selected_candidate_id).is_ok()
+                && plan
+                    .variants
+                    .iter()
+                    .any(|variant| variant.variant_id.as_str() == selected_candidate_id)
+            {
+                continue;
+            }
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle `{}` selection `{selection_key}` chose unknown candidate `{selected_candidate_id}` for plan `{}`",
+                self.bundle_id, plan.id
+            )));
         }
         Ok(())
     }
@@ -911,13 +952,13 @@ mod tests {
             },
             &[
                 CandidateScore {
-                    candidate_id: "merge:a".to_string(),
-                    metrics: BTreeMap::from([("rmse".to_string(), 2.0)]),
+                    candidate_id: "model:base".to_string(),
+                    metrics: BTreeMap::from([("rmse".to_string(), 1.0)]),
                     metadata: BTreeMap::new(),
                 },
                 CandidateScore {
-                    candidate_id: "merge:b".to_string(),
-                    metrics: BTreeMap::from([("rmse".to_string(), 1.0)]),
+                    candidate_id: "model:other".to_string(),
+                    metrics: BTreeMap::from([("rmse".to_string(), 2.0)]),
                     metadata: BTreeMap::new(),
                 },
             ],
@@ -925,14 +966,16 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn builds_bundle_from_execution_plan() {
-        let plan = plan();
+    fn selected_model_base_decision() -> SelectionDecision {
+        decision()
+    }
+
+    fn model_base_refit_artifact(plan: &ExecutionPlan) -> RefitArtifactRecord {
         let model_plan = plan
             .node_plans
             .get(&NodeId::new("model:base").unwrap())
             .unwrap();
-        let artifact = RefitArtifactRecord {
+        RefitArtifactRecord {
             node_id: model_plan.node_id.clone(),
             controller_id: model_plan.controller_id.clone(),
             artifact: ArtifactRef {
@@ -944,7 +987,13 @@ mod tests {
             params_fingerprint: model_plan.params_fingerprint.clone(),
             data_requirement_keys: vec!["model:base.x".to_string()],
             prediction_requirement_keys: Vec::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn builds_bundle_from_execution_plan() {
+        let plan = plan();
+        let artifact = model_base_refit_artifact(&plan);
 
         let bundle = build_execution_bundle(
             BundleId::new("bundle:demo").unwrap(),
@@ -957,6 +1006,42 @@ mod tests {
 
         bundle.validate_against_plan(&plan).unwrap();
         assert_eq!(bundle.data_requirements.len(), 1);
+    }
+
+    #[test]
+    fn bundle_selections_must_match_plan_and_refit_artifacts() {
+        let plan = plan();
+        let artifact = model_base_refit_artifact(&plan);
+        let valid = build_execution_bundle(
+            BundleId::new("bundle:selected.model").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::from([("model".to_string(), selected_model_base_decision())]),
+            vec![artifact.clone()],
+        )
+        .unwrap();
+        valid.validate_against_plan(&plan).unwrap();
+
+        assert!(build_execution_bundle(
+            BundleId::new("bundle:selected.model.missing.artifact").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::from([("model".to_string(), selected_model_base_decision())]),
+            Vec::new(),
+        )
+        .is_err());
+
+        let mut unknown = selected_model_base_decision();
+        unknown.selected_candidate_id = "model:missing".to_string();
+        unknown.ranked_candidates[0].candidate_id = "model:missing".to_string();
+        assert!(build_execution_bundle(
+            BundleId::new("bundle:selected.unknown").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::from([("model".to_string(), unknown)]),
+            vec![artifact],
+        )
+        .is_err());
     }
 
     #[test]
@@ -1086,7 +1171,7 @@ mod tests {
             BundleId::new("bundle:demo").unwrap(),
             &plan,
             None,
-            BTreeMap::from([("merge".to_string(), decision())]),
+            BTreeMap::new(),
             Vec::new(),
         )
         .unwrap();
@@ -1115,7 +1200,7 @@ mod tests {
             BundleId::new("bundle:demo").unwrap(),
             &plan(),
             None,
-            BTreeMap::from([("merge".to_string(), decision())]),
+            BTreeMap::new(),
             Vec::new(),
         )
         .unwrap();
@@ -1130,7 +1215,7 @@ mod tests {
             BundleId::new("bundle:demo").unwrap(),
             &plan(),
             None,
-            BTreeMap::from([("merge".to_string(), decision())]),
+            BTreeMap::new(),
             Vec::new(),
         )
         .unwrap();
