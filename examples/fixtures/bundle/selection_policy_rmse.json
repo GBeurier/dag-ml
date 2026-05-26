@@ -1,0 +1,8 @@
+{
+  "id": "select:rmse",
+  "metric": {
+    "name": "rmse",
+    "objective": "minimize"
+  },
+  "require_finite": true
+}

@@ -9,8 +9,8 @@ buffers; those contracts live in the companion `dag-ml-data` repository.
 > Status: active core scaffold. The project has executable Rust crates, C ABI
 > graph validation, CLI validation, coordinator planning/runtime contracts,
 > data-plan fingerprints, OOF leakage checks, deterministic selection and first
-> refit/replay bundle contracts. Host bindings and real controller adapters are
-> still pending.
+> refit/replay bundle contracts with CLI build/validate commands. Host bindings
+> and real controller adapters are still pending.
 
 ## Repository Layout
 
@@ -39,6 +39,7 @@ examples/
 cargo fmt --all --check
 cargo test --workspace
 cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
+cargo run -p dag-ml-cli -- validate-bundle --bundle examples/generated/execution_bundle_minimal.json --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json --replay-request examples/fixtures/bundle/replay_request_predict.json --plan-id plan:cli.bundle
 ```
 
 ## First Implementation Target

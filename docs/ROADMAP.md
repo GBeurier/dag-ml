@@ -73,7 +73,10 @@ Definition of done:
 - `PREDICT` replay works on new data;
 - `EXPLAIN` hooks can pass opaque explanation payloads.
 
-Status: core contract started. `ExecutionBundle` now records plan/controller
-fingerprints, selected variants, deterministic selection decisions, refit
-artifacts and the external data requirements needed for replay. The remaining
-work is CLI/C ABI exposure, import/export persistence and host adapter replay.
+Status: core and CLI contract started. `ExecutionBundle` now records
+plan/controller fingerprints, selected variants, deterministic selection
+decisions, refit artifacts and the external data requirements needed for
+replay. The CLI can select candidates, build a bundle, and validate that a
+bundle plus replay request matches a rebuilt plan and external data envelopes.
+The remaining work is C ABI exposure, schema versioning and host adapter
+replay.
