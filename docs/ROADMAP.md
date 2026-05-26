@@ -89,10 +89,11 @@ replay. The CLI can select candidates, build a bundle, and validate that a
 bundle plus replay request matches a rebuilt plan and external data envelopes.
 Bundles carry an explicit schema version and reject unsupported versions. The C
 ABI exposes the same selection and replay-validation contracts over JSON. The
-runtime can now materialize replay data, create predict-scoped data views and
-materialize refit artifact handles, then invoke eligible controllers for replay
-phases without CV folds. The CLI has both mock and external-process execution
-smokes for campaign and replay paths, and the C ABI exposes a mock replay
-execution helper returning a JSON summary. The
+runtime can now capture refit artifact handles emitted by controllers,
+materialize replay data, create predict-scoped data views and materialize refit
+artifact handles, then invoke eligible controllers for replay phases without CV
+folds. The CLI has both mock and external-process execution smokes for campaign
+and replay paths, and the C ABI exposes a mock replay execution helper returning
+a JSON summary. The
 remaining work is schema migration policy, production host adapters and
 persistent artifact/data stores.

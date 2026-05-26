@@ -857,6 +857,7 @@ impl RuntimeController for CliMockController {
             predictions,
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{}:{}",

@@ -104,6 +104,7 @@ pub trait RuntimeArtifactStore {
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryArtifactStore {
     records: BTreeMap<ArtifactId, ArtifactHandleRecord>,
+    refit_artifacts: BTreeMap<ArtifactId, RefitArtifactRecord>,
 }
 
 impl InMemoryArtifactStore {
@@ -121,17 +122,58 @@ impl InMemoryArtifactStore {
             params_fingerprint: artifact.params_fingerprint.clone(),
         };
         record.validate()?;
-        if self
-            .records
-            .insert(record.artifact.id.clone(), record)
-            .is_some()
+        if self.records.contains_key(&record.artifact.id)
+            || self.refit_artifacts.contains_key(&record.artifact.id)
         {
             return Err(DagMlError::RuntimeValidation(format!(
                 "duplicate artifact handle for `{}`",
                 artifact.artifact.id
             )));
         }
+        let previous_record = self.records.insert(record.artifact.id.clone(), record);
+        debug_assert!(previous_record.is_none());
+        let previous_artifact = self
+            .refit_artifacts
+            .insert(artifact.artifact.id.clone(), artifact.clone());
+        debug_assert!(previous_artifact.is_none());
         Ok(())
+    }
+
+    pub fn capture_refit_artifacts(
+        &mut self,
+        task: &NodeTask,
+        result: &NodeResult,
+    ) -> Result<Vec<RefitArtifactRecord>> {
+        if task.phase != Phase::Refit {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "cannot capture refit artifacts from phase {:?}",
+                task.phase
+            )));
+        }
+        let mut records = Vec::new();
+        for artifact in &result.artifacts {
+            let handle = result.artifact_handles.get(&artifact.id).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted artifact `{}` without artifact handle",
+                    task.node_plan.node_id, artifact.id
+                ))
+            })?;
+            let record = RefitArtifactRecord {
+                node_id: task.node_plan.node_id.clone(),
+                controller_id: task.node_plan.controller_id.clone(),
+                artifact: artifact.clone(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_requirement_keys: task
+                    .node_plan
+                    .data_bindings
+                    .iter()
+                    .map(|binding| format!("{}.{}", binding.node_id, binding.input_name))
+                    .collect(),
+            };
+            self.register(&record, handle.clone())?;
+            records.push(record);
+        }
+        Ok(records)
     }
 
     pub fn get(&self, artifact_id: &ArtifactId) -> Option<&ArtifactHandleRecord> {
@@ -144,6 +186,10 @@ impl InMemoryArtifactStore {
 
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+    }
+
+    pub fn refit_artifacts(&self) -> Vec<RefitArtifactRecord> {
+        self.refit_artifacts.values().cloned().collect()
     }
 }
 
@@ -327,6 +373,8 @@ pub struct NodeResult {
     pub shape_deltas: Vec<ShapeDelta>,
     #[serde(default)]
     pub artifacts: Vec<ArtifactRef>,
+    #[serde(default)]
+    pub artifact_handles: BTreeMap<ArtifactId, HandleRef>,
     pub lineage: LineageRecord,
 }
 
@@ -410,7 +458,14 @@ impl NodeResult {
                 )));
             }
         }
+        let mut artifact_ids = BTreeSet::new();
         for artifact in &self.artifacts {
+            if !artifact_ids.insert(artifact.id.clone()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted duplicate artifact `{}`",
+                    task.node_plan.node_id, artifact.id
+                )));
+            }
             if artifact.controller_id != task.node_plan.controller_id {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "node `{}` emitted artifact `{}` for controller `{}`, expected `{}`",
@@ -418,6 +473,64 @@ impl NodeResult {
                     artifact.id,
                     artifact.controller_id,
                     task.node_plan.controller_id
+                )));
+            }
+            let handle = self.artifact_handles.get(&artifact.id).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted artifact `{}` without artifact handle",
+                    task.node_plan.node_id, artifact.id
+                ))
+            })?;
+            if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted artifact `{}` with non-artifact/model handle kind {:?}",
+                    task.node_plan.node_id, artifact.id, handle.kind
+                )));
+            }
+            if handle.owner_controller != task.node_plan.controller_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted artifact `{}` owned by `{}`, expected `{}`",
+                    task.node_plan.node_id,
+                    artifact.id,
+                    handle.owner_controller,
+                    task.node_plan.controller_id
+                )));
+            }
+        }
+        for artifact_id in self.artifact_handles.keys() {
+            if !self
+                .artifacts
+                .iter()
+                .any(|artifact| &artifact.id == artifact_id)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted artifact handle for undeclared artifact `{artifact_id}`",
+                    task.node_plan.node_id
+                )));
+            }
+        }
+        for artifact in &self.artifacts {
+            if !self
+                .lineage
+                .artifact_refs
+                .iter()
+                .any(|lineage_artifact| lineage_artifact == artifact)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted artifact `{}` without matching lineage artifact ref",
+                    task.node_plan.node_id, artifact.id
+                )));
+            }
+        }
+        for artifact in &self.lineage.artifact_refs {
+            if !self
+                .artifacts
+                .iter()
+                .any(|emitted_artifact| emitted_artifact == artifact)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` lineage references undeclared artifact `{}`",
+                    task.node_plan.node_id, artifact.id
                 )));
             }
         }
@@ -608,6 +721,13 @@ struct PhaseScope {
     seed_root: Option<u64>,
 }
 
+#[derive(Default)]
+struct PhaseScopeResources<'a> {
+    data_provider: Option<&'a dyn RuntimeDataProvider>,
+    replay_artifact_handles: Option<&'a BTreeMap<NodeId, BTreeMap<String, HandleRef>>>,
+    artifact_store: Option<&'a mut InMemoryArtifactStore>,
+}
+
 impl SequentialScheduler {
     pub fn execute_phase(
         &self,
@@ -629,8 +749,7 @@ impl SequentialScheduler {
                 fold_id: None,
                 seed_root,
             },
-            None,
-            None,
+            PhaseScopeResources::default(),
         )
     }
 
@@ -655,8 +774,10 @@ impl SequentialScheduler {
                 fold_id: None,
                 seed_root,
             },
-            Some(data_provider),
-            None,
+            PhaseScopeResources {
+                data_provider: Some(data_provider),
+                ..Default::default()
+            },
         )
     }
 
@@ -703,8 +824,7 @@ impl SequentialScheduler {
                         fold_id: fold_id.clone(),
                         seed_root,
                     },
-                    None,
-                    None,
+                    PhaseScopeResources::default(),
                 )?);
             }
         }
@@ -755,8 +875,66 @@ impl SequentialScheduler {
                         fold_id: fold_id.clone(),
                         seed_root,
                     },
-                    Some(data_provider),
-                    None,
+                    PhaseScopeResources {
+                        data_provider: Some(data_provider),
+                        ..Default::default()
+                    },
+                )?);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn execute_campaign_phase_with_data_provider_and_artifact_store(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        artifact_store: &mut InMemoryArtifactStore,
+        ctx: &mut RunContext,
+        phase: Phase,
+    ) -> Result<Vec<NodeResult>> {
+        plan.validate()?;
+        let mut results = Vec::new();
+        let fold_ids = if phase == Phase::FitCv {
+            plan.fold_set
+                .as_ref()
+                .map(|fold_set| {
+                    fold_set
+                        .folds
+                        .iter()
+                        .map(|fold| Some(fold.fold_id.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![None])
+        } else {
+            vec![None]
+        };
+        for variant in &plan.variants {
+            if ctx
+                .variant_id
+                .as_ref()
+                .is_some_and(|requested| requested != &variant.variant_id)
+            {
+                continue;
+            }
+            for fold_id in &fold_ids {
+                let seed_root = variant.seed.or(ctx.root_seed);
+                results.extend(self.execute_phase_scope(
+                    plan,
+                    controllers,
+                    ctx,
+                    PhaseScope {
+                        phase,
+                        variant_id: Some(variant.variant_id.clone()),
+                        fold_id: fold_id.clone(),
+                        seed_root,
+                    },
+                    PhaseScopeResources {
+                        data_provider: Some(data_provider),
+                        artifact_store: Some(&mut *artifact_store),
+                        ..Default::default()
+                    },
                 )?);
             }
         }
@@ -804,8 +982,11 @@ impl SequentialScheduler {
                 fold_id: None,
                 seed_root,
             },
-            Some(replay.data_provider),
-            Some(&replay_artifacts),
+            PhaseScopeResources {
+                data_provider: Some(replay.data_provider),
+                replay_artifact_handles: Some(&replay_artifacts),
+                ..Default::default()
+            },
         )
     }
 
@@ -815,8 +996,7 @@ impl SequentialScheduler {
         controllers: &RuntimeControllerRegistry,
         ctx: &mut RunContext,
         scope: PhaseScope,
-        data_provider: Option<&dyn RuntimeDataProvider>,
-        replay_artifact_handles: Option<&BTreeMap<NodeId, BTreeMap<String, HandleRef>>>,
+        mut resources: PhaseScopeResources<'_>,
     ) -> Result<Vec<NodeResult>> {
         let mut results = Vec::new();
         let mut output_handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
@@ -840,13 +1020,14 @@ impl SequentialScheduler {
                 plan,
                 node_plan,
                 &output_handles,
-                data_provider,
+                resources.data_provider,
                 ctx,
                 &scope,
             )?;
             let mut input_handles = collected_inputs.handles;
-            if let Some(node_artifact_handles) =
-                replay_artifact_handles.and_then(|handles| handles.get(node_id))
+            if let Some(node_artifact_handles) = resources
+                .replay_artifact_handles
+                .and_then(|handles| handles.get(node_id))
             {
                 for (key, handle) in node_artifact_handles {
                     if input_handles.insert(key.clone(), handle.clone()).is_some() {
@@ -875,6 +1056,11 @@ impl SequentialScheduler {
             };
             let result = controller.invoke(&task)?;
             result.validate_for_task(&task)?;
+            if let Some(store) = resources.artifact_store.as_deref_mut() {
+                if scope.phase == Phase::Refit {
+                    store.capture_refit_artifacts(&task, &result)?;
+                }
+            }
             for prediction in &result.predictions {
                 ctx.prediction_store.append(prediction.clone())?;
             }
@@ -1297,6 +1483,7 @@ mod tests {
                 predictions,
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
+                artifact_handles: BTreeMap::new(),
                 lineage: LineageRecord {
                     record_id: LineageId::new(format!(
                         "lineage:{}:{:?}:{variant_label}:{fold_label}",
@@ -1329,6 +1516,7 @@ mod tests {
         handle: u64,
         require_artifact: bool,
         emit_prediction: bool,
+        emit_refit_artifact: bool,
     }
 
     impl RuntimeController for ReplayMockController {
@@ -1408,12 +1596,37 @@ mod tests {
                 })
                 .into_iter()
                 .collect::<Vec<_>>();
+            let artifacts = if self.emit_refit_artifact && task.phase == Phase::Refit {
+                vec![ArtifactRef {
+                    id: ArtifactId::new(format!("artifact:{}:refit", task.node_plan.node_id))
+                        .unwrap(),
+                    kind: "mock_model".to_string(),
+                    controller_id: self.id.clone(),
+                    size_bytes: Some(128),
+                }]
+            } else {
+                Vec::new()
+            };
+            let artifact_handles = artifacts
+                .iter()
+                .map(|artifact| {
+                    (
+                        artifact.id.clone(),
+                        HandleRef {
+                            handle: self.handle + 10_000,
+                            kind: HandleKind::Model,
+                            owner_controller: self.id.clone(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
             Ok(NodeResult {
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([("out".to_string(), output)]),
                 predictions,
                 shape_deltas: Vec::new(),
-                artifacts: Vec::new(),
+                artifacts: artifacts.clone(),
+                artifact_handles,
                 lineage: LineageRecord {
                     record_id: LineageId::new(format!(
                         "lineage:replay:{}:{:?}",
@@ -1429,7 +1642,7 @@ mod tests {
                     fold_id: task.fold_id.clone(),
                     branch_path: task.branch_path.clone(),
                     input_lineage: Vec::new(),
-                    artifact_refs: Vec::new(),
+                    artifact_refs: artifacts,
                     params_fingerprint: task.node_plan.params_fingerprint.clone(),
                     data_model_shape_fingerprint: None,
                     aggregation_policy_fingerprint: None,
@@ -1547,6 +1760,7 @@ mod tests {
                 handle: 11,
                 require_artifact: false,
                 emit_prediction: false,
+                emit_refit_artifact: false,
             }))
             .unwrap();
         controllers
@@ -1555,6 +1769,7 @@ mod tests {
                 handle: 22,
                 require_artifact: true,
                 emit_prediction: true,
+                emit_refit_artifact: false,
             }))
             .unwrap();
         controllers
@@ -1955,6 +2170,7 @@ mod tests {
                 handle: 11,
                 require_artifact: false,
                 emit_prediction: false,
+                emit_refit_artifact: false,
             }))
             .unwrap();
         controllers
@@ -1963,6 +2179,7 @@ mod tests {
                 handle: 22,
                 require_artifact: false,
                 emit_prediction: true,
+                emit_refit_artifact: false,
             }))
             .unwrap();
         let mut ctx = RunContext::new(RunId::new("run:refit.views").unwrap(), Some(11));
@@ -1987,6 +2204,84 @@ mod tests {
                 && view.view.sample_ids == Some(full_train_ids.clone())
                 && view.fold_id.is_none()
         }));
+    }
+
+    #[test]
+    fn campaign_refit_captures_emitted_artifact_handles() {
+        let plan = fixture_plan("plan:refit.artifact.capture");
+        let provider = replay_data_provider();
+        let mut artifact_store = InMemoryArtifactStore::new();
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(ReplayMockController {
+                id: ControllerId::new("controller:transform.mock").unwrap(),
+                handle: 11,
+                require_artifact: false,
+                emit_prediction: false,
+                emit_refit_artifact: false,
+            }))
+            .unwrap();
+        controllers
+            .register(Box::new(ReplayMockController {
+                id: ControllerId::new("controller:model.mock").unwrap(),
+                handle: 22,
+                require_artifact: false,
+                emit_prediction: true,
+                emit_refit_artifact: true,
+            }))
+            .unwrap();
+        let mut ctx = RunContext::new(RunId::new("run:refit.artifact.capture").unwrap(), Some(11));
+        ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+
+        let results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                &plan,
+                &controllers,
+                &provider,
+                &mut artifact_store,
+                &mut ctx,
+                Phase::Refit,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| !result.artifacts.is_empty())
+                .count(),
+            1
+        );
+        assert_eq!(artifact_store.len(), 1);
+        let records = artifact_store.refit_artifacts();
+        assert_eq!(records.len(), 1);
+        let artifact = &records[0];
+        artifact.validate().unwrap();
+        assert_eq!(artifact.node_id.as_str(), "model:base");
+        assert_eq!(artifact.controller_id.as_str(), "controller:model.mock");
+        assert_eq!(artifact.artifact.id.as_str(), "artifact:model:base:refit");
+        assert_eq!(artifact.data_requirement_keys, vec!["model:base.x"]);
+
+        let handle = artifact_store
+            .materialize(&ArtifactMaterializationRequest {
+                run_id: ctx.run_id.clone(),
+                bundle_id: crate::ids::BundleId::new("bundle:refit.capture").unwrap(),
+                node_id: artifact.node_id.clone(),
+                phase: Phase::Predict,
+                variant_id: ctx.variant_id.clone(),
+                controller_id: artifact.controller_id.clone(),
+                artifact: artifact.artifact.clone(),
+                params_fingerprint: artifact.params_fingerprint.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            handle,
+            HandleRef {
+                handle: 10_022,
+                kind: HandleKind::Model,
+                owner_controller: ControllerId::new("controller:model.mock").unwrap(),
+            }
+        );
     }
 
     #[test]
@@ -2062,6 +2357,118 @@ mod tests {
     }
 
     #[test]
+    fn node_result_validation_rejects_bad_artifact_handles() {
+        let plan = build_execution_plan(
+            "plan:result.validation.artifacts",
+            simple_graph(),
+            CampaignSpec {
+                id: "campaign:result.validation.artifacts".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: None,
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+            &manifests(),
+        )
+        .unwrap();
+        let node_plan = plan
+            .node_plans
+            .get(&NodeId::new("model:pls").unwrap())
+            .unwrap()
+            .clone();
+        let task = NodeTask {
+            run_id: RunId::new("run:result.validation.artifacts").unwrap(),
+            node_plan: node_plan.clone(),
+            phase: Phase::Refit,
+            variant_id: None,
+            fold_id: None,
+            branch_path: Vec::new(),
+            input_handles: BTreeMap::new(),
+            data_views: BTreeMap::new(),
+            seed: Some(99),
+        };
+        let controller = MockController {
+            id: node_plan.controller_id.clone(),
+            handle: 2,
+            emit_prediction: false,
+        };
+        let base = controller.invoke(&task).unwrap();
+        let artifact = ArtifactRef {
+            id: ArtifactId::new("artifact:model:pls:refit").unwrap(),
+            kind: "mock_model".to_string(),
+            controller_id: node_plan.controller_id.clone(),
+            size_bytes: Some(128),
+        };
+        let handle = HandleRef {
+            handle: 77,
+            kind: HandleKind::Model,
+            owner_controller: node_plan.controller_id.clone(),
+        };
+        let mut valid = base.clone();
+        valid.artifacts = vec![artifact.clone()];
+        valid
+            .artifact_handles
+            .insert(artifact.id.clone(), handle.clone());
+        valid.lineage.artifact_refs = vec![artifact.clone()];
+        valid.validate_for_task(&task).unwrap();
+
+        let mut missing_handle = valid.clone();
+        missing_handle.artifact_handles.clear();
+        assert!(missing_handle
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("without artifact handle"));
+
+        let mut wrong_kind = valid.clone();
+        wrong_kind
+            .artifact_handles
+            .get_mut(&artifact.id)
+            .unwrap()
+            .kind = HandleKind::Data;
+        assert!(wrong_kind
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("non-artifact/model handle kind"));
+
+        let mut wrong_owner = valid.clone();
+        wrong_owner
+            .artifact_handles
+            .get_mut(&artifact.id)
+            .unwrap()
+            .owner_controller = ControllerId::new("controller:wrong").unwrap();
+        assert!(wrong_owner
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("owned by"));
+
+        let mut undeclared_handle = base.clone();
+        undeclared_handle.artifact_handles.insert(
+            ArtifactId::new("artifact:model:pls:extra").unwrap(),
+            handle.clone(),
+        );
+        assert!(undeclared_handle
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("undeclared artifact"));
+
+        let mut missing_lineage_ref = valid;
+        missing_lineage_ref.lineage.artifact_refs.clear();
+        assert!(missing_lineage_ref
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("lineage artifact ref"));
+    }
+
+    #[test]
     fn node_result_validation_rejects_predictions_outside_validation_view() {
         let model_id = NodeId::new("model:pls").unwrap();
         let plan = build_execution_plan(
@@ -2132,6 +2539,7 @@ mod tests {
             }],
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new("lineage:bad.sample").unwrap(),
                 run_id: task.run_id.clone(),
