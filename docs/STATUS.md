@@ -121,9 +121,9 @@ Implemented:
   avoiding one process spawn per task and preparing stateful host adapters;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
-- C ABI validation and JSON output helpers for graph, selection decisions,
-  grouped selection, execution bundles, replay envelopes, replay requests and
-  prediction-cache payload sets;
+- C ABI validation and JSON output helpers for graph, execution-plan build,
+  selection decisions, grouped selection, execution bundles, replay envelopes,
+  replay requests and prediction-cache payload sets;
 - C ABI data-provider vtable shape aligned with `dag-ml-data`
   materialize/view/identity/target/feature exports plus a tested Rust runtime
   adapter over the vtable;
@@ -144,8 +144,9 @@ Implemented:
   data-view construction and `NodeResult` conformance, with branch/merge
   `REFIT` replay covered through a host OOF prediction-cache vtable;
 - C ABI C-language conformance test that compiles and runs a small C program
-  against `dag_ml.h` and `libdag_ml_capi`, driving non-mock replay through
-  controller, data-provider and artifact-store vtables;
+  against `dag_ml.h` and `libdag_ml_capi`, builds an execution plan through
+  the ABI, then drives non-mock replay through controller, data-provider and
+  artifact-store vtables;
 - C ABI mock replay execution helper that exercises execution-plan, bundle,
   replay request, data envelope and refit artifact handle materialization and
   returns a JSON summary including data view counts;
