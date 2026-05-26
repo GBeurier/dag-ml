@@ -58,6 +58,8 @@ Implemented:
 - in-memory prediction store and lineage recorder;
 - sequential scheduler for DAG order plus campaign execution over
   variant x CV-fold scopes;
+- deterministic graph parallel-level planner for future node-batch execution
+  without changing topological semantics;
 - deterministic metric selection contracts, including grouped candidate
   selection and stable tie-breaking;
 - refit execution bundle contracts that bind selected variants, selected
