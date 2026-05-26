@@ -9,6 +9,41 @@ import os
 import sys
 from typing import Any
 
+PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION = 1
+PROCESS_ADAPTER_PROTOCOL = "dag-ml-process-adapter"
+PROCESS_ADAPTER_MODES = ["one_shot", "jsonl"]
+PROCESS_ADAPTER_CAPABILITIES = [
+    "node_task_json_v1",
+    "node_result_json_v1",
+    "persistent_workers",
+    "worker_env",
+    "stateful_refit_artifacts",
+    "sklearn_smoke",
+]
+
+
+def emit_description() -> None:
+    json.dump(
+        {
+            "schema_version": PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION,
+            "protocol": PROCESS_ADAPTER_PROTOCOL,
+            "adapter_id": "dag-ml-sklearn-process-controller",
+            "supported_modes": PROCESS_ADAPTER_MODES,
+            "capabilities": sorted(set(PROCESS_ADAPTER_CAPABILITIES)),
+        },
+        sys.stdout,
+        sort_keys=True,
+    )
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+# Keep the coordinator handshake cheap; runtime modes import sklearn below.
+if len(sys.argv) > 1 and sys.argv[1] == "--describe":
+    emit_description()
+    raise SystemExit(0)
+
+
 import numpy as np
 from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
@@ -330,6 +365,9 @@ def run_jsonl() -> None:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--describe":
+        emit_description()
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "--jsonl":
         run_jsonl()
         return

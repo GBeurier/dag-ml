@@ -9,6 +9,46 @@ import sys
 from typing import Any
 
 
+PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION = 1
+PROCESS_ADAPTER_PROTOCOL = "dag-ml-process-adapter"
+PROCESS_ADAPTER_MODES = ["one_shot", "jsonl"]
+PROCESS_ADAPTER_CAPABILITIES = [
+    "node_task_json_v1",
+    "node_result_json_v1",
+    "persistent_workers",
+    "worker_env",
+]
+
+
+def adapter_description(
+    adapter_id: str = "dag-ml-python-process-controller",
+    extra_capabilities: list[str] | None = None,
+) -> dict[str, Any]:
+    capabilities = list(PROCESS_ADAPTER_CAPABILITIES)
+    if extra_capabilities:
+        capabilities.extend(extra_capabilities)
+    return {
+        "schema_version": PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION,
+        "protocol": PROCESS_ADAPTER_PROTOCOL,
+        "adapter_id": adapter_id,
+        "supported_modes": PROCESS_ADAPTER_MODES,
+        "capabilities": sorted(set(capabilities)),
+    }
+
+
+def emit_description(
+    adapter_id: str = "dag-ml-python-process-controller",
+    extra_capabilities: list[str] | None = None,
+) -> None:
+    json.dump(
+        adapter_description(adapter_id, extra_capabilities),
+        sys.stdout,
+        sort_keys=True,
+    )
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
     raise SystemExit(2)
@@ -232,6 +272,9 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--describe":
+        emit_description()
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "--jsonl":
         run_jsonl()
         return

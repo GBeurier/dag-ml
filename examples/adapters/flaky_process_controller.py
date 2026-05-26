@@ -54,6 +54,12 @@ def run_jsonl() -> None:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--describe":
+        base.emit_description(
+            adapter_id="dag-ml-flaky-process-controller",
+            extra_capabilities=["test_flaky_timeout_once"],
+        )
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "--jsonl":
         run_jsonl()
         return

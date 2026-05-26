@@ -171,6 +171,10 @@ Implemented:
   kills, replaces and replays a task on the targeted worker after timeout, EOF
   or transport failure; the flaky adapter fixture proves both timeout refusal
   and timeout/restart/retry recovery;
+- process adapters now expose a required `--describe` JSON handshake declaring
+  the adapter protocol version, supported modes and JSON task/result
+  capabilities; the CLI validates this contract before one-shot or JSONL
+  execution;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph validation,
