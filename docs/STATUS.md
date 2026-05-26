@@ -36,13 +36,14 @@ Implemented:
 - in-memory runtime data provider with handle records for schema/plan/relation
   traceability and child data-view records for sample partition, source and
   feature-set traceability;
-- runtime artifact-store trait plus in-memory refit artifact handle records;
+- runtime artifact-store trait plus in-memory refit artifact handle records,
+  including capture of controller-emitted refit artifact handles during `REFIT`;
 - bundle replay executor that validates plan/bundle/request/data envelopes,
   materializes data and refit artifact handles, and invokes eligible runtime
   controllers for replay phases without CV folds;
 - stricter `NodeResult` conformance validation for externally returned run,
   controller, version, variant, fold, branch, seed, params fingerprint, output
-  owner and artifact controller fields;
+  owner, artifact controller fields and artifact handle ownership;
 - in-memory prediction store and lineage recorder;
 - sequential scheduler for DAG order plus campaign execution over
   variant x CV-fold scopes;

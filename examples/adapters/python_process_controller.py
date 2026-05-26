@@ -129,6 +129,7 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
         "predictions": predictions,
         "shape_deltas": [],
         "artifacts": [],
+        "artifact_handles": {},
         "lineage": {
             "record_id": f"lineage:{node_id}:{phase}:{variant_label}:{fold_label}",
             "run_id": task["run_id"],
