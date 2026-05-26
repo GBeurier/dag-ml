@@ -205,6 +205,15 @@ Implemented:
   `ro-crate-metadata.json`; this is a standards-facing export target for W3C
   PROV/Workflow Run RO-Crate and keeps DAG-ML's stricter OOF, replay and
   artifact contracts as the canonical internal model;
+- coordinator-owned lineage propagation: schedulers infer `input_lineage` from
+  compiled DAG edges marked `propagates_lineage`, reject adapter-declared
+  mismatches and expose `--lineage-output` on refit bundle capture commands so
+  provenance exports can be generated from real run records;
+- branch/merge research provenance conformance path: the CLI can capture a
+  branch/merge CV+refit bundle, export its lineage, OOF prediction-cache store
+  and portable artifact manifest, then export a validated PROV/RO-Crate view
+  that preserves OOF dependencies, data envelopes, controller agents and model
+  artifacts;
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;

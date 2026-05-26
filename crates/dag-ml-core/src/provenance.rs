@@ -267,6 +267,28 @@ fn build_prov_jsonld(
             }),
         );
     }
+    for record in lineage {
+        entity.insert(
+            lineage_record_entity_id(&record.record_id),
+            json!({
+                "prov:type": ["prov:Entity", "dagml:LineageRecord"],
+                "dagml:lineage_id": record.record_id,
+                "dagml:run_id": record.run_id,
+                "dagml:node_id": record.node_id,
+                "dagml:phase": record.phase,
+                "dagml:controller_id": record.controller_id,
+                "dagml:variant_id": record.variant_id,
+                "dagml:fold_id": record.fold_id,
+                "dagml:branch_path": record.branch_path,
+                "dagml:input_lineage": record.input_lineage,
+                "dagml:artifact_refs": record
+                    .artifact_refs
+                    .iter()
+                    .map(|artifact| artifact.id.clone())
+                    .collect::<Vec<_>>(),
+            }),
+        );
+    }
 
     let mut agent = BTreeMap::<String, Value>::new();
     agent.insert(
@@ -341,7 +363,7 @@ fn build_prov_jsonld(
                 format!("dagml:used:{}:{}", record.record_id, input_id),
                 json!({
                     "prov:activity": lineage_activity_id(record),
-                    "prov:entity": format!("dagml:activity:{input_id}"),
+                    "prov:entity": lineage_record_entity_id(input_id),
                     "dagml:input_lineage_id": input_id,
                 }),
             );
@@ -357,6 +379,15 @@ fn build_prov_jsonld(
             "prov:activity": packaging_activity_id,
         }),
     );
+    for record in lineage {
+        was_generated_by.insert(
+            format!("dagml:generated:lineage:{}", record.record_id),
+            json!({
+                "prov:entity": lineage_record_entity_id(&record.record_id),
+                "prov:activity": lineage_activity_id(record),
+            }),
+        );
+    }
     for record in &bundle.refit_artifacts {
         let activity_id = lineage_by_artifact
             .get(&record.artifact.id)
@@ -410,6 +441,18 @@ fn build_prov_jsonld(
                 "prov:usedEntity": prediction_requirement_entity_id(&cache.requirement_key),
             }),
         );
+    }
+    for record in lineage {
+        for input_id in &record.input_lineage {
+            was_derived_from.insert(
+                format!("dagml:derived:lineage:{}:{input_id}", record.record_id),
+                json!({
+                    "prov:generatedEntity": lineage_record_entity_id(&record.record_id),
+                    "prov:usedEntity": lineage_record_entity_id(input_id),
+                    "dagml:lineage_dependency": true,
+                }),
+            );
+        }
     }
 
     let mut was_associated_with = BTreeMap::<String, Value>::new();
@@ -602,6 +645,10 @@ fn controller_agent_id(controller_id: &str) -> String {
 
 fn artifact_entity_id(artifact_id: &ArtifactId) -> String {
     format!("dagml:artifact:{artifact_id}")
+}
+
+fn lineage_record_entity_id(lineage_id: &LineageId) -> String {
+    format!("dagml:lineage-record:{lineage_id}")
 }
 
 fn data_requirement_entity_id(key: &str) -> String {

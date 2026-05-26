@@ -330,6 +330,8 @@ enum Command {
         envelope: PathBuf,
         #[arg(long)]
         output: Option<PathBuf>,
+        #[arg(long)]
+        lineage_output: Option<PathBuf>,
         #[arg(long, default_value = "bundle:cli.refit")]
         bundle_id: String,
         #[arg(long)]
@@ -366,6 +368,8 @@ enum Command {
         process_retries: usize,
         #[arg(long)]
         output: Option<PathBuf>,
+        #[arg(long)]
+        lineage_output: Option<PathBuf>,
         #[arg(long, default_value = "bundle:cli.process.refit")]
         bundle_id: String,
         #[arg(long)]
@@ -402,6 +406,8 @@ enum Command {
         process_retries: usize,
         #[arg(long)]
         output: Option<PathBuf>,
+        #[arg(long)]
+        lineage_output: Option<PathBuf>,
         #[arg(long)]
         prediction_cache_output: Option<PathBuf>,
         #[arg(long, default_value = "bundle:cli.process.cv.refit")]
@@ -937,6 +943,7 @@ fn main() -> Result<()> {
             controllers,
             envelope,
             output,
+            lineage_output,
             bundle_id,
             variant_id,
             plan_id,
@@ -964,6 +971,11 @@ fn main() -> Result<()> {
             })
             .with_context(|| "mock refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
+            emit_json(
+                lineage_output.as_ref(),
+                &captured.lineage_records,
+                "lineage records",
+            )?;
         }
         Command::RunProcessRefitBundle {
             graph,
@@ -976,6 +988,7 @@ fn main() -> Result<()> {
             process_timeout_ms,
             process_retries,
             output,
+            lineage_output,
             bundle_id,
             variant_id,
             plan_id,
@@ -1014,6 +1027,11 @@ fn main() -> Result<()> {
             })
             .with_context(|| "process refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
+            emit_json(
+                lineage_output.as_ref(),
+                &captured.lineage_records,
+                "lineage records",
+            )?;
         }
         Command::RunProcessCvRefitBundle {
             graph,
@@ -1026,6 +1044,7 @@ fn main() -> Result<()> {
             process_timeout_ms,
             process_retries,
             output,
+            lineage_output,
             prediction_cache_output,
             bundle_id,
             variant_id,
@@ -1083,6 +1102,11 @@ fn main() -> Result<()> {
                 }
             );
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
+            emit_json(
+                lineage_output.as_ref(),
+                &captured.lineage_records,
+                "lineage records",
+            )?;
             if let Some(path) = prediction_cache_output.as_ref() {
                 let payload_set = BundlePredictionCachePayloadSet {
                     bundle_id: captured.bundle.bundle_id.clone(),
@@ -1986,6 +2010,7 @@ struct CapturedRefitBundleInput<'a> {
 struct CapturedRefitBundle {
     bundle: ExecutionBundle,
     artifact_store: InMemoryArtifactStore,
+    lineage_records: Vec<LineageRecord>,
     prediction_cache_payloads: Vec<BundlePredictionCachePayload>,
     fit_cv_result_count: usize,
     fit_cv_oof_prediction_block_count: usize,
@@ -2060,6 +2085,7 @@ fn build_bundle_from_captured_refit(
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
+        lineage_records: ctx.lineage.records().cloned().collect(),
         prediction_cache_payloads: Vec::new(),
         fit_cv_result_count: 0,
         fit_cv_oof_prediction_block_count: 0,
@@ -2171,6 +2197,7 @@ fn build_bundle_from_cv_then_captured_refit(
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
+        lineage_records: ctx.lineage.records().cloned().collect(),
         prediction_cache_payloads,
         fit_cv_result_count: fit_cv_results.len(),
         fit_cv_oof_prediction_block_count,

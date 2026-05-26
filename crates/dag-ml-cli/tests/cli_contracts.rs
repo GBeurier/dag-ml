@@ -123,6 +123,11 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_branch_merge_lineage = std::env::temp_dir().join(format!(
+        "dag_ml_cli_branch_merge_lineage_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
     let temp_branch_merge_prediction_cache = std::env::temp_dir().join(format!(
         "dag_ml_cli_branch_merge_prediction_cache_{}_{}.json",
         std::process::id(),
@@ -130,6 +135,16 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     ));
     let temp_branch_merge_prediction_cache_store = std::env::temp_dir().join(format!(
         "dag_ml_cli_branch_merge_prediction_cache_store_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_branch_merge_artifact_manifest_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_branch_merge_artifact_manifest_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_branch_merge_provenance_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_branch_merge_research_provenance_{}_{}",
         std::process::id(),
         unique_suffix()
     ));
@@ -556,6 +571,10 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             temp_branch_merge_cv_refit_bundle
                 .to_str()
                 .expect("temp path is valid utf-8"),
+            "--lineage-output",
+            temp_branch_merge_lineage
+                .to_str()
+                .expect("temp path is valid utf-8"),
             "--prediction-cache-output",
             temp_branch_merge_prediction_cache
                 .to_str()
@@ -615,6 +634,31 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_cv_refit_bundle_json.contains("refit_prediction_block_count"),
         "unexpected branch/merge CV+refit bundle JSON: {}",
         branch_merge_cv_refit_bundle_json
+    );
+    let branch_merge_lineage_json = std::fs::read_to_string(&temp_branch_merge_lineage)
+        .expect("branch/merge lineage records were written");
+    let branch_merge_lineage: serde_json::Value =
+        serde_json::from_str(&branch_merge_lineage_json).expect("lineage JSON parses");
+    let branch_merge_lineage_records = branch_merge_lineage
+        .as_array()
+        .expect("lineage export is an array");
+    assert_eq!(branch_merge_lineage_records.len(), 9);
+    assert!(
+        branch_merge_lineage_records.iter().any(|record| {
+            record["node_id"] == "merge:stack.pred_plus_original.meta:ridge"
+                && record["phase"] == "FIT_CV"
+                && record["input_lineage"]
+                    .as_array()
+                    .is_some_and(|lineage| lineage.len() == 2)
+        }) && branch_merge_lineage_records.iter().any(|record| {
+            record["node_id"] == "merge:stack.pred_plus_original.meta:ridge"
+                && record["phase"] == "REFIT"
+                && record["input_lineage"]
+                    .as_array()
+                    .is_some_and(|lineage| lineage.len() == 2)
+        }),
+        "unexpected branch/merge lineage JSON: {}",
+        branch_merge_lineage_json
     );
     let branch_merge_prediction_cache_json =
         std::fs::read_to_string(&temp_branch_merge_prediction_cache)
@@ -718,6 +762,111 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         ),
         "unexpected validate-prediction-cache-store output: {}",
         String::from_utf8_lossy(&validate_prediction_cache_store.stdout)
+    );
+    let export_branch_merge_artifact_manifest = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "export-artifact-manifest",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--output-dir",
+            temp_branch_merge_artifact_manifest_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to export branch/merge artifact manifest");
+    assert!(
+        export_branch_merge_artifact_manifest.status.success(),
+        "export branch/merge artifact manifest failed: {}",
+        String::from_utf8_lossy(&export_branch_merge_artifact_manifest.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&export_branch_merge_artifact_manifest.stdout).contains(
+            "wrote artifact manifest: bundle=bundle:cli.branch.merge.cv.refit, artifact(s)=3"
+        ),
+        "unexpected branch/merge artifact manifest output: {}",
+        String::from_utf8_lossy(&export_branch_merge_artifact_manifest.stdout)
+    );
+    let export_branch_merge_research_provenance = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "export-research-provenance",
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--lineage",
+            temp_branch_merge_lineage
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--prediction-cache-store",
+            temp_branch_merge_prediction_cache_store
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--artifact-manifest",
+            temp_branch_merge_artifact_manifest_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--envelope",
+            "branch:b0.model:ridge.x=examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--envelope",
+            "branch:b1.model:rf.x=examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--envelope",
+            "merge:stack.pred_plus_original.meta:ridge.x_original=examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--output-dir",
+            temp_branch_merge_provenance_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.branch.merge.cv.refit",
+        ])
+        .output()
+        .expect("failed to export branch/merge research provenance");
+    assert!(
+        export_branch_merge_research_provenance.status.success(),
+        "export branch/merge research provenance failed: {}",
+        String::from_utf8_lossy(&export_branch_merge_research_provenance.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&export_branch_merge_research_provenance.stdout).contains(
+            "wrote research provenance export: bundle=bundle:cli.branch.merge.cv.refit, lineage record(s)=9, data envelope(s)=3, prediction cache manifest=true, artifact manifest=true"
+        ),
+        "unexpected branch/merge research provenance output: {}",
+        String::from_utf8_lossy(&export_branch_merge_research_provenance.stdout)
+    );
+    let branch_merge_prov_json =
+        std::fs::read_to_string(temp_branch_merge_provenance_dir.join("lineage.prov.jsonld"))
+            .expect("branch/merge PROV JSON-LD was written");
+    assert!(
+        branch_merge_prov_json.contains("dagml:LineageRecord")
+            && branch_merge_prov_json.contains("dagml:PredictionCacheManifest")
+            && branch_merge_prov_json.contains("dagml:ArtifactManifest")
+            && branch_merge_prov_json.contains("dagml:oof_dependency")
+            && branch_merge_prov_json.contains("dagml:lineage_dependency")
+            && branch_merge_prov_json.contains("merge:stack.pred_plus_original.meta:ridge"),
+        "unexpected branch/merge PROV JSON-LD: {}",
+        branch_merge_prov_json
+    );
+    let branch_merge_ro_crate_json =
+        std::fs::read_to_string(temp_branch_merge_provenance_dir.join("ro-crate-metadata.json"))
+            .expect("branch/merge RO-Crate metadata was written");
+    assert!(
+        branch_merge_ro_crate_json.contains("ComputationalWorkflow")
+            && branch_merge_ro_crate_json.contains("prediction_cache_manifest.json")
+            && branch_merge_ro_crate_json.contains("artifact_manifest.json")
+            && branch_merge_ro_crate_json.contains("data_envelopes/branch:b0.model:ridge.x.json")
+            && branch_merge_ro_crate_json.contains("lineage.prov.jsonld"),
+        "unexpected branch/merge RO-Crate metadata: {}",
+        branch_merge_ro_crate_json
     );
     let mut tampered_prediction_cache: serde_json::Value =
         serde_json::from_str(&branch_merge_prediction_cache_json)
@@ -1348,7 +1497,12 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     let _ = std::fs::remove_file(temp_refit_bundle);
     let _ = std::fs::remove_file(temp_process_refit_bundle);
     let _ = std::fs::remove_file(temp_branch_merge_cv_refit_bundle);
+    let _ = std::fs::remove_file(temp_branch_merge_lineage);
+    let _ = std::fs::remove_file(temp_branch_merge_prediction_cache);
+    let _ = std::fs::remove_file(temp_branch_merge_prediction_cache_tampered);
     let _ = std::fs::remove_dir_all(temp_branch_merge_prediction_cache_store);
+    let _ = std::fs::remove_dir_all(temp_branch_merge_artifact_manifest_dir);
+    let _ = std::fs::remove_dir_all(temp_branch_merge_provenance_dir);
     let _ = std::fs::remove_file(temp_refit_request);
     let _ = std::fs::remove_file(temp_process_refit_request);
     let _ = std::fs::remove_file(temp_branch_merge_replay_request);

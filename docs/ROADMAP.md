@@ -195,11 +195,14 @@ Definition of done:
   - OpenLineage for data-platform/job lineage;
   - MLMD for ML experiment stores.
 
-Status: first slice implemented. The core now builds a validated export bundle
-containing `lineage.prov.jsonld` and `ro-crate-metadata.json`, and the CLI
-exposes `export-research-provenance` over validated plans, bundles, optional
-lineage records, data envelopes, prediction-cache stores and artifact
-manifests. Remaining work is conformance fixtures for the full branch/merge
-sklearn campaign, checksum-rich RO-Crate packaging and optional OpenLineage or
-MLMD adapters. This remains a publication/export layer and must not replace the
-Rust coordinator's stricter internal validation model.
+Status: branch/merge conformance slice implemented. The core now builds a
+validated export bundle containing `lineage.prov.jsonld` and
+`ro-crate-metadata.json`, the schedulers attach coordinator-owned input
+lineage from compiled DAG edges, and the CLI exposes `export-research-provenance`
+over validated plans, bundles, real lineage records, data envelopes,
+prediction-cache stores and artifact manifests. A branch/merge CV+refit
+contract test exports lineage, OOF cache store, portable artifact manifest and
+research provenance from the same captured bundle. Remaining work is
+checksum-rich packaged RO-Crate directories and optional OpenLineage or MLMD
+adapters. This remains a publication/export layer and must not replace the Rust
+coordinator's stricter internal validation model.
