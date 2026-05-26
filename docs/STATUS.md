@@ -100,6 +100,9 @@ Implemented:
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate
   selection and stable tie-breaking;
+- identity-aligned regression metric reports over validated sample, target and
+  group prediction blocks (`mse`, `rmse`, `mae`, `r2`), with finite score
+  validation and direct conversion to `CandidateScore` for selection;
 - refit execution bundle contracts that bind selected variants, selected
   candidates, refit artifacts, plan fingerprints and replay data requirements;
 - execution-bundle validation now checks selected candidates against the
@@ -268,8 +271,8 @@ Not implemented yet:
 - full DSL compiler;
 - advanced search-space compiler/lowering beyond typed node-parameter
   overrides;
-- custom aggregation controllers and downstream metric/replay integration for
-  non-sample aggregated prediction blocks;
+- custom aggregation controllers and replay integration for non-sample
+  aggregated prediction blocks;
 - persistent artifact stores and non-JSON/non-file-cache backends;
 - Arrow prediction storage and ABI-owned prediction tensors;
 - production host controller adapters with native libraries or

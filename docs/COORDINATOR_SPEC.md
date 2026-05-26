@@ -382,8 +382,10 @@ FIT_CV requirements:
 1. Models may fit on observation-level rows if the data plan says so.
 2. Validation predictions are first captured at the controller-emitted level.
 3. The Rust core aggregates predictions by identity according to policy.
-4. Metrics are computed in parallel when requested: raw observation metrics and
-   aggregated sample/target metrics.
+4. Metrics are computed in parallel when requested. The core provides
+   identity-aligned regression scoring for validated sample/target/group
+   prediction blocks (`mse`, `rmse`, `mae`, `r2`) and refuses positional-only
+   or mismatched unit sets.
 5. Selection must declare which metric level is authoritative.
 6. OOF joins use the declared aggregation level and must not mix raw and
    aggregated predictions implicitly.
