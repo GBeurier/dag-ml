@@ -111,6 +111,8 @@ enum Command {
         adapter: PathBuf,
         #[arg(long)]
         persistent: bool,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
         #[arg(long, default_value = "plan:cli.process")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.process")]
@@ -177,6 +179,8 @@ enum Command {
         adapter: PathBuf,
         #[arg(long)]
         persistent: bool,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long, default_value = "bundle:cli.process.refit")]
@@ -203,6 +207,8 @@ enum Command {
         adapter: PathBuf,
         #[arg(long)]
         persistent: bool,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long)]
@@ -231,6 +237,8 @@ enum Command {
         envelope: PathBuf,
         #[arg(long)]
         adapter: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
         #[arg(long, default_value = "bundle:cli.process.cv.refit.replay")]
         bundle_id: String,
         #[arg(long)]
@@ -255,6 +263,8 @@ enum Command {
         envelope: PathBuf,
         #[arg(long)]
         adapter: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
         #[arg(long, default_value = "bundle:cli.process.refit.replay")]
         bundle_id: String,
         #[arg(long)]
@@ -351,6 +361,8 @@ enum Command {
         adapter: PathBuf,
         #[arg(long)]
         persistent: bool,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.process.replay")]
@@ -527,6 +539,7 @@ fn main() -> Result<()> {
             envelope,
             adapter,
             persistent,
+            process_workers,
             plan_id,
             run_id,
             root_seed,
@@ -535,11 +548,8 @@ fn main() -> Result<()> {
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
-            let runtime_controllers = if persistent {
-                persistent_process_runtime_controllers(&plan, adapter)?
-            } else {
-                process_runtime_controllers(&plan, adapter)?
-            };
+            let runtime_controllers =
+                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_workers)?;
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let results = SequentialScheduler
                 .execute_campaign_phase_with_data_provider(
@@ -551,12 +561,14 @@ fn main() -> Result<()> {
                 )
                 .with_context(|| "process campaign execution failed")?;
             println!(
-                "process campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s)",
+                "process campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), configured process worker(s)={}, observed process worker(s)={}",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
                 data_provider.handle_records().len(),
-                data_provider.view_records().len()
+                data_provider.view_records().len(),
+                configured_persistent_process_workers(persistent, process_workers),
+                observed_persistent_process_worker_count(persistent, &ctx)
             );
         }
         Command::SelectCandidates {
@@ -637,6 +649,7 @@ fn main() -> Result<()> {
             envelope,
             adapter,
             persistent,
+            process_workers,
             output,
             bundle_id,
             variant_id,
@@ -648,11 +661,8 @@ fn main() -> Result<()> {
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
-            let runtime_controllers = if persistent {
-                persistent_process_runtime_controllers(&plan, adapter)?
-            } else {
-                process_runtime_controllers(&plan, adapter)?
-            };
+            let runtime_controllers =
+                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_workers)?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -673,6 +683,7 @@ fn main() -> Result<()> {
             envelope,
             adapter,
             persistent,
+            process_workers,
             output,
             prediction_cache_output,
             bundle_id,
@@ -686,11 +697,8 @@ fn main() -> Result<()> {
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
-            let runtime_controllers = if persistent {
-                persistent_process_runtime_controllers(&plan, adapter)?
-            } else {
-                process_runtime_controllers(&plan, adapter)?
-            };
+            let runtime_controllers =
+                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_workers)?;
             let selections = read_selection_decisions(selections.as_ref())?;
             let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
@@ -704,12 +712,18 @@ fn main() -> Result<()> {
             })
             .with_context(|| "process CV+refit bundle capture failed")?;
             println!(
-                "process cv refit bundle run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} captured artifact handle(s), {} prediction cache(s)",
+                "process cv refit bundle run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} captured artifact handle(s), {} prediction cache(s), configured process worker(s)={}, observed process worker(s)={}",
                 captured.fit_cv_result_count,
                 captured.fit_cv_oof_prediction_block_count,
                 captured.refit_result_count,
                 captured.artifact_store.len(),
-                captured.bundle.prediction_caches.len()
+                captured.bundle.prediction_caches.len(),
+                configured_persistent_process_workers(persistent, process_workers),
+                if persistent {
+                    captured.observed_process_worker_count
+                } else {
+                    0
+                }
             );
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
             if let Some(path) = prediction_cache_output.as_ref() {
@@ -730,6 +744,7 @@ fn main() -> Result<()> {
             controllers,
             envelope,
             adapter,
+            process_workers,
             bundle_id,
             variant_id,
             selections,
@@ -741,7 +756,8 @@ fn main() -> Result<()> {
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope.clone())?;
-            let runtime_controllers = persistent_process_runtime_controllers(&plan, adapter)?;
+            let runtime_controllers =
+                persistent_process_runtime_controllers(&plan, adapter, process_workers)?;
             let selections = read_selection_decisions(selections.as_ref())?;
             let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
@@ -778,14 +794,17 @@ fn main() -> Result<()> {
                 )
                 .with_context(|| "process replay after CV+refit capture failed")?;
             println!(
-                "process cv refit replay run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s), {} prediction cache(s)",
+                "process cv refit replay run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s), {} prediction cache(s), configured process worker(s)={}, observed process worker(s)={}, replay observed process worker(s)={}",
                 captured.fit_cv_result_count,
                 captured.fit_cv_oof_prediction_block_count,
                 captured.refit_result_count,
                 replay_results.len(),
                 replay_ctx.prediction_store.blocks().len(),
                 captured.artifact_store.len(),
-                captured.bundle.prediction_caches.len()
+                captured.bundle.prediction_caches.len(),
+                process_workers,
+                captured.observed_process_worker_count,
+                observed_process_worker_count(&replay_ctx)
             );
         }
         Command::RunProcessRefitReplay {
@@ -794,6 +813,7 @@ fn main() -> Result<()> {
             controllers,
             envelope,
             adapter,
+            process_workers,
             bundle_id,
             variant_id,
             plan_id,
@@ -804,7 +824,8 @@ fn main() -> Result<()> {
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope.clone())?;
-            let runtime_controllers = persistent_process_runtime_controllers(&plan, adapter)?;
+            let runtime_controllers =
+                persistent_process_runtime_controllers(&plan, adapter, process_workers)?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -840,11 +861,14 @@ fn main() -> Result<()> {
                 )
                 .with_context(|| "process replay after refit capture failed")?;
             println!(
-                "process refit replay run: {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s)",
+                "process refit replay run: {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s), configured process worker(s)={}, observed process worker(s)={}, replay observed process worker(s)={}",
                 captured.refit_result_count,
                 replay_results.len(),
                 replay_ctx.prediction_store.blocks().len(),
-                captured.artifact_store.len()
+                captured.artifact_store.len(),
+                process_workers,
+                captured.observed_process_worker_count,
+                observed_process_worker_count(&replay_ctx)
             );
         }
         Command::ValidateBundle {
@@ -1041,6 +1065,7 @@ fn main() -> Result<()> {
             envelopes,
             adapter,
             persistent,
+            process_workers,
             plan_id,
             run_id,
             root_seed,
@@ -1067,11 +1092,8 @@ fn main() -> Result<()> {
                 data_provider.register_envelope(envelope.clone())?;
             }
             let artifact_store = mock_artifact_store(&plan, &bundle)?;
-            let runtime_controllers = if persistent {
-                persistent_process_runtime_controllers(&plan, adapter)?
-            } else {
-                process_runtime_controllers(&plan, adapter)?
-            };
+            let runtime_controllers =
+                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_workers)?;
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let results = SequentialScheduler
                 .execute_bundle_replay(
@@ -1091,7 +1113,7 @@ fn main() -> Result<()> {
                 )
                 .with_context(|| "process replay execution failed")?;
             println!(
-                "process replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s), {} prediction cache handle(s)",
+                "process replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s), {} prediction cache handle(s), configured process worker(s)={}, observed process worker(s)={}",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
@@ -1101,7 +1123,9 @@ fn main() -> Result<()> {
                 prediction_cache_store
                     .as_ref()
                     .map(CliPredictionCacheStore::materialization_record_count)
-                    .unwrap_or(0)
+                    .unwrap_or(0),
+                configured_persistent_process_workers(persistent, process_workers),
+                observed_persistent_process_worker_count(persistent, &ctx)
             );
         }
     }
@@ -1449,6 +1473,7 @@ struct CapturedRefitBundle {
     fit_cv_result_count: usize,
     fit_cv_oof_prediction_block_count: usize,
     refit_result_count: usize,
+    observed_process_worker_count: usize,
 }
 
 fn selected_refit_variant(
@@ -1522,6 +1547,7 @@ fn build_bundle_from_captured_refit(
         fit_cv_result_count: 0,
         fit_cv_oof_prediction_block_count: 0,
         refit_result_count: results.len(),
+        observed_process_worker_count: observed_process_worker_count(&ctx),
     })
 }
 
@@ -1632,6 +1658,7 @@ fn build_bundle_from_cv_then_captured_refit(
         fit_cv_result_count: fit_cv_results.len(),
         fit_cv_oof_prediction_block_count,
         refit_result_count: refit_results.len(),
+        observed_process_worker_count: observed_process_worker_count(&ctx),
     })
 }
 
@@ -1837,7 +1864,7 @@ struct ProcessRuntimeController {
 struct PersistentProcessRuntimeController {
     id: ControllerId,
     adapter: PathBuf,
-    session: RefCell<Option<PersistentProcessSession>>,
+    sessions: RefCell<Vec<PersistentProcessSession>>,
 }
 
 struct PersistentProcessSession {
@@ -1847,25 +1874,33 @@ struct PersistentProcessSession {
 }
 
 impl PersistentProcessSession {
-    fn spawn(controller_id: &ControllerId, adapter: &Path) -> dag_ml_core::Result<Self> {
+    fn spawn(
+        controller_id: &ControllerId,
+        adapter: &Path,
+        worker_index: usize,
+        worker_count: usize,
+    ) -> dag_ml_core::Result<Self> {
         let mut command = process_adapter_command(adapter, ProcessAdapterMode::Jsonl);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::inherit());
+        command.env("DAG_ML_CONTROLLER_ID", controller_id.as_str());
+        command.env("DAG_ML_PROCESS_WORKER_INDEX", worker_index.to_string());
+        command.env("DAG_ML_PROCESS_WORKER_COUNT", worker_count.to_string());
         let mut child = command.spawn().map_err(|err| {
             DagMlError::RuntimeValidation(format!(
-                "controller `{controller_id}` failed to spawn persistent adapter `{}`: {err}",
+                "controller `{controller_id}` failed to spawn persistent adapter `{}` worker {worker_index}/{worker_count}: {err}",
                 adapter.display()
             ))
         })?;
         let stdin = child.stdin.take().ok_or_else(|| {
             DagMlError::RuntimeValidation(format!(
-                "controller `{controller_id}` persistent adapter stdin was not available"
+                "controller `{controller_id}` persistent adapter worker {worker_index}/{worker_count} stdin was not available"
             ))
         })?;
         let stdout = child.stdout.take().ok_or_else(|| {
             DagMlError::RuntimeValidation(format!(
-                "controller `{controller_id}` persistent adapter stdout was not available"
+                "controller `{controller_id}` persistent adapter worker {worker_index}/{worker_count} stdout was not available"
             ))
         })?;
         Ok(Self {
@@ -2011,14 +2046,15 @@ impl RuntimeController for PersistentProcessRuntimeController {
     }
 
     fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
-        let mut session = self.session.borrow_mut();
-        if session.is_none() {
-            *session = Some(PersistentProcessSession::spawn(&self.id, &self.adapter)?);
+        let mut sessions = self.sessions.borrow_mut();
+        if sessions.is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` persistent adapter pool has no workers",
+                self.id
+            )));
         }
-        session
-            .as_mut()
-            .expect("session was initialized")
-            .invoke(&self.id, &self.adapter, task)
+        let worker_index = process_worker_index_for_task(task, sessions.len());
+        sessions[worker_index].invoke(&self.id, &self.adapter, task)
     }
 }
 
@@ -2229,19 +2265,102 @@ fn process_runtime_controllers(
     Ok(registry)
 }
 
+fn process_runtime_controllers_for_mode(
+    plan: &dag_ml_core::ExecutionPlan,
+    adapter: PathBuf,
+    persistent: bool,
+    process_workers: usize,
+) -> Result<RuntimeControllerRegistry> {
+    validate_process_worker_count(persistent, process_workers)?;
+    if persistent {
+        persistent_process_runtime_controllers(plan, adapter, process_workers)
+    } else {
+        process_runtime_controllers(plan, adapter)
+    }
+}
+
 fn persistent_process_runtime_controllers(
     plan: &dag_ml_core::ExecutionPlan,
     adapter: PathBuf,
+    process_workers: usize,
 ) -> Result<RuntimeControllerRegistry> {
+    validate_process_worker_count(true, process_workers)?;
     let mut registry = RuntimeControllerRegistry::new();
     for controller_id in plan.controller_manifests.keys() {
+        let mut sessions = Vec::with_capacity(process_workers);
+        for worker_index in 0..process_workers {
+            sessions.push(PersistentProcessSession::spawn(
+                controller_id,
+                &adapter,
+                worker_index,
+                process_workers,
+            )?);
+        }
         registry.register(Box::new(PersistentProcessRuntimeController {
             id: controller_id.clone(),
             adapter: adapter.clone(),
-            session: RefCell::new(None),
+            sessions: RefCell::new(sessions),
         }))?;
     }
     Ok(registry)
+}
+
+fn validate_process_worker_count(persistent: bool, process_workers: usize) -> Result<()> {
+    if process_workers == 0 {
+        bail!("--process-workers must be at least 1");
+    }
+    if !persistent && process_workers != 1 {
+        bail!("--process-workers > 1 requires --persistent");
+    }
+    Ok(())
+}
+
+fn process_worker_index_for_task(task: &NodeTask, worker_count: usize) -> usize {
+    debug_assert!(worker_count > 0);
+    let variant = task
+        .variant_id
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "base".to_string());
+    let key = if task.phase == Phase::FitCv {
+        format!(
+            "{}:{}:{}",
+            task.node_plan.node_id,
+            variant,
+            task.fold_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "nofold".to_string())
+        )
+    } else {
+        format!("{}:{}", task.node_plan.node_id, variant)
+    };
+    (stable_handle(&key) as usize) % worker_count
+}
+
+fn observed_process_worker_count(ctx: &RunContext) -> usize {
+    ctx.lineage
+        .records()
+        .filter_map(|record| record.metrics.get("process_worker_index"))
+        .map(|value| *value as u64)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn configured_persistent_process_workers(persistent: bool, process_workers: usize) -> usize {
+    if persistent {
+        process_workers
+    } else {
+        0
+    }
+}
+
+fn observed_persistent_process_worker_count(persistent: bool, ctx: &RunContext) -> usize {
+    if persistent {
+        observed_process_worker_count(ctx)
+    } else {
+        0
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

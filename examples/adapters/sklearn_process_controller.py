@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from typing import Any
 
@@ -265,6 +266,12 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
     if predictions:
         flat = [row[0] for row in predictions[0]["values"]]
         metrics["prediction_mean"] = float(sum(flat) / len(flat))
+    worker_index = os.environ.get("DAG_ML_PROCESS_WORKER_INDEX")
+    worker_count = os.environ.get("DAG_ML_PROCESS_WORKER_COUNT")
+    if worker_index is not None:
+        metrics["process_worker_index"] = float(worker_index)
+    if worker_count is not None:
+        metrics["process_worker_count"] = float(worker_count)
 
     return {
         "node_id": node_id,

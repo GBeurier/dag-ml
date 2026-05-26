@@ -43,13 +43,14 @@ Definition of done:
 - artifact handle release tests.
 
 Status: first process adapter smoke implemented for campaign, refit and replay.
-The CLI can invoke an external Python script per `NodeTask` either one-shot or
-as a persistent JSONL process, parse a returned `NodeResult`, and let the
-scheduler enforce lineage/result conformance across OOF folds, variants and
-replay. A stateful sklearn smoke now fits a real sklearn pipeline during
-`REFIT`, stores it behind an opaque model handle, and replays `PREDICT` through
-that handle in the same persistent process. This is intentionally not yet a
-production Python binding or worker pool.
+The CLI can invoke an external Python script per `NodeTask` either one-shot,
+as a single persistent JSONL process, or as a prewarmed persistent worker pool
+per controller. Pool routing spreads `FIT_CV` by node/variant/fold while keeping
+`REFIT` and `PREDICT` sticky by node/variant so stateful artifact handles replay
+on the worker that produced them. A stateful sklearn smoke now fits a real
+sklearn pipeline during `REFIT`, stores it behind an opaque model handle, and
+replays `PREDICT` through that handle in the same persistent pool. This is
+intentionally not yet a production Python binding or native worker runtime.
 
 ## Phase 3: Integration With `dag-ml-data`
 
