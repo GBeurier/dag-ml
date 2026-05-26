@@ -36,7 +36,12 @@
         "id": "artifact:model:base:refit",
         "kind": "mock_model",
         "controller_id": "controller:model.mock",
-        "size_bytes": 128
+        "backend": "joblib",
+        "uri": "artifacts/574cca985c73a83dde82cbb3bbd5db5a215b8e232f9b937d6cdbbbec188c37fc.joblib",
+        "content_fingerprint": "574cca985c73a83dde82cbb3bbd5db5a215b8e232f9b937d6cdbbbec188c37fc",
+        "size_bytes": 128,
+        "plugin": "dagml.mock",
+        "plugin_version": "1.0.0"
       },
       "params_fingerprint": "140a7ef7079b316f626f1deee4e571aaa089a614516a45c4bed8b13ee6549e26",
       "data_requirement_keys": [

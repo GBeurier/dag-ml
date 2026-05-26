@@ -192,6 +192,13 @@ Implemented:
 - CLI export/validation/replay path for file-backed prediction caches, with
   `REFIT` replay accepting either a validated payload set or a validated cache
   directory, but not both;
+- CLI artifact manifest export/validation path for the file-backed artifact
+  manifest: `export-artifact-manifest` writes `artifact_manifest.json` from a
+  bundle's portable refit `ArtifactRef`s, `validate-artifact-manifest` reopens
+  and revalidates it against the bundle, and `validate-bundle
+  --artifact-manifest` reports the manifest entry count while refusing
+  mismatched or non-portable entries; this path is manifest-only and never
+  reads, writes or deserializes artifact payloads;
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;
@@ -309,7 +316,8 @@ Not implemented yet:
   backends for non-sample aggregated prediction blocks;
 - persistent artifact payload stores and payload materialization (reading,
   writing or deserializing the artifact binaries) beyond the implemented
-  portable artifact reference contract and file-backed artifact manifest;
+  portable artifact reference contract, file-backed artifact manifest and its
+  CLI export/validation commands;
 - Arrow prediction storage and ABI-owned prediction tensors;
 - production host controller adapters with native libraries or
   language-specific bindings;

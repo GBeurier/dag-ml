@@ -1358,6 +1358,226 @@ fn cli_selects_builds_and_validates_replay_bundle() {
 }
 
 #[test]
+fn cli_exports_and_validates_artifact_manifest() {
+    let root = repo_root();
+    let temp_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_artifact_manifest_bundle_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_manifest_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_artifact_manifest_dir_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_legacy_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_artifact_manifest_legacy_bundle_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_legacy_manifest_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_artifact_manifest_legacy_dir_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+
+    // Build a portable bundle from the manifest-ready fixture.
+    let build = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "build-bundle",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--bundle-spec",
+            "examples/fixtures/bundle/bundle_build_spec_minimal.json",
+            "--output",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.bundle",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli build-bundle");
+    assert!(
+        build.status.success(),
+        "build-bundle failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let export = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "export-artifact-manifest",
+            "--bundle",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--output-dir",
+            temp_manifest_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli export-artifact-manifest");
+    assert!(
+        export.status.success(),
+        "export-artifact-manifest failed: {}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&export.stdout)
+            .contains("wrote artifact manifest: bundle=bundle:cli.demo, artifact(s)=1"),
+        "unexpected export-artifact-manifest output: {}",
+        String::from_utf8_lossy(&export.stdout)
+    );
+    let manifest_json = std::fs::read_to_string(temp_manifest_dir.join("artifact_manifest.json"))
+        .expect("artifact manifest was written");
+    assert!(
+        manifest_json.contains("\"bundle_id\": \"bundle:cli.demo\"")
+            && manifest_json.contains("\"schema_version\": 1")
+            && manifest_json.contains("artifact:model:base:refit")
+            && manifest_json.contains("\"backend\": \"joblib\"")
+            && manifest_json.contains("\"content_fingerprint\""),
+        "unexpected artifact manifest JSON: {}",
+        manifest_json
+    );
+
+    let validate_manifest = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-artifact-manifest",
+            "--bundle",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--manifest-dir",
+            temp_manifest_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli validate-artifact-manifest");
+    assert!(
+        validate_manifest.status.success(),
+        "validate-artifact-manifest failed: {}",
+        String::from_utf8_lossy(&validate_manifest.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_manifest.stdout)
+            .contains("valid artifact manifest: bundle=bundle:cli.demo, artifact(s)=1"),
+        "unexpected validate-artifact-manifest output: {}",
+        String::from_utf8_lossy(&validate_manifest.stdout)
+    );
+
+    let validate_bundle = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-bundle",
+            "--bundle",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--replay-request",
+            "examples/fixtures/bundle/replay_request_predict.json",
+            "--artifact-manifest",
+            temp_manifest_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.bundle",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli validate-bundle with artifact manifest");
+    assert!(
+        validate_bundle.status.success(),
+        "validate-bundle with artifact manifest failed: {}",
+        String::from_utf8_lossy(&validate_bundle.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_bundle.stdout).contains("valid bundle: bundle:cli.demo")
+            && String::from_utf8_lossy(&validate_bundle.stdout)
+                .contains("artifact manifest entries=1"),
+        "unexpected validate-bundle with artifact manifest output: {}",
+        String::from_utf8_lossy(&validate_bundle.stdout)
+    );
+
+    // A legacy/non-portable refit bundle has no portable artifact references, so
+    // artifact manifest export must refuse it with a clear error and write no
+    // manifest file.
+    let legacy_bundle = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-mock-refit-bundle",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--bundle-id",
+            "bundle:cli.artifact.manifest.legacy",
+            "--output",
+            temp_legacy_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.artifact.manifest.legacy",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli run-mock-refit-bundle");
+    assert!(
+        legacy_bundle.status.success(),
+        "run-mock-refit-bundle failed: {}",
+        String::from_utf8_lossy(&legacy_bundle.stderr)
+    );
+
+    let export_legacy = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "export-artifact-manifest",
+            "--bundle",
+            temp_legacy_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--output-dir",
+            temp_legacy_manifest_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli export-artifact-manifest for legacy bundle");
+    assert!(
+        !export_legacy.status.success(),
+        "export-artifact-manifest unexpectedly accepted a non-portable bundle: {}",
+        String::from_utf8_lossy(&export_legacy.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&export_legacy.stderr).contains("not portable"),
+        "unexpected legacy artifact manifest export error: {}",
+        String::from_utf8_lossy(&export_legacy.stderr)
+    );
+    assert!(
+        !temp_legacy_manifest_dir
+            .join("artifact_manifest.json")
+            .exists(),
+        "legacy artifact manifest file was unexpectedly written at {}",
+        temp_legacy_manifest_dir.display()
+    );
+
+    let _ = std::fs::remove_file(temp_bundle);
+    let _ = std::fs::remove_dir_all(temp_manifest_dir);
+    let _ = std::fs::remove_file(temp_legacy_bundle);
+    let _ = std::fs::remove_dir_all(temp_legacy_manifest_dir);
+}
+
+#[test]
 fn process_adapters_describe_supported_protocol_modes() {
     let root = repo_root();
     for adapter in [
