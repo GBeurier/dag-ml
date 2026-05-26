@@ -283,6 +283,43 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         persistent_process_campaign_stdout
     );
 
+    let process_campaign_with_param_overrides = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation_param_overrides.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--plan-id",
+            "plan:cli.process.param-overrides",
+            "--run-id",
+            "run:cli.process.param-overrides",
+        ])
+        .output()
+        .expect("failed to run generated-param override process campaign");
+    assert!(
+        process_campaign_with_param_overrides.status.success(),
+        "generated-param override process campaign failed: {}",
+        String::from_utf8_lossy(&process_campaign_with_param_overrides.stderr)
+    );
+    let process_campaign_with_param_overrides_stdout =
+        String::from_utf8_lossy(&process_campaign_with_param_overrides.stdout);
+    assert!(
+        process_campaign_with_param_overrides_stdout.contains("process campaign run: 8 result(s)")
+            && process_campaign_with_param_overrides_stdout.contains("4 prediction block(s)")
+            && process_campaign_with_param_overrides_stdout.contains("4 data handle(s)"),
+        "unexpected generated-param override process campaign output: {}",
+        process_campaign_with_param_overrides_stdout
+    );
+
     let branch_merge_campaign = Command::new(cli())
         .current_dir(&root)
         .args([
