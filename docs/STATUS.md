@@ -70,6 +70,9 @@ Implemented:
 - CLI process campaign and replay execution that sends `NodeTask` JSON to an
   external adapter process over stdin, reads `NodeResult` JSON from stdout and
   validates the result through the scheduler;
+- stateful sklearn process-controller smoke that fits a real sklearn pipeline
+  during `REFIT`, stores it behind an opaque model handle, then replays
+  `PREDICT` through the captured handle in the same persistent process;
 - persistent JSONL process-controller mode for campaign/replay smoke tests,
   avoiding one process spawn per task and preparing stateful host adapters;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
@@ -107,6 +110,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Turn the process adapter smoke into a real sklearn controller adapter with
-stateful fit/predict/refit artifact exchange while keeping the same OOF
-campaign, heterogeneous merge and refit score policy.
+Extend the sklearn adapter smoke from the minimal graph to the complex
+branch/merge demonstrator so OOF selection, refit artifacts and replay are
+validated together.

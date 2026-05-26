@@ -167,6 +167,28 @@ enum Command {
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
     },
+    RunProcessRefitReplay {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long, default_value = "bundle:cli.process.refit.replay")]
+        bundle_id: String,
+        #[arg(long)]
+        variant_id: Option<String>,
+        #[arg(long, default_value = "plan:cli.process.refit.replay")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.process.refit.replay")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
+    },
     ValidateBundle {
         #[arg(long)]
         bundle: PathBuf,
@@ -466,7 +488,7 @@ fn main() -> Result<()> {
                 envelope,
             )?;
             let runtime_controllers = mock_runtime_controllers_with_refit_artifacts(&plan)?;
-            let bundle = build_bundle_from_captured_refit(CapturedRefitBundleInput {
+            let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
                 runtime_controllers: &runtime_controllers,
@@ -476,7 +498,7 @@ fn main() -> Result<()> {
                 root_seed,
             })
             .with_context(|| "mock refit bundle capture failed")?;
-            emit_json(output.as_ref(), &bundle, "execution bundle")?;
+            emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
         }
         Command::RunProcessRefitBundle {
             graph,
@@ -504,7 +526,7 @@ fn main() -> Result<()> {
             } else {
                 process_runtime_controllers(&plan, adapter)?
             };
-            let bundle = build_bundle_from_captured_refit(CapturedRefitBundleInput {
+            let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
                 runtime_controllers: &runtime_controllers,
@@ -514,7 +536,77 @@ fn main() -> Result<()> {
                 root_seed,
             })
             .with_context(|| "process refit bundle capture failed")?;
-            emit_json(output.as_ref(), &bundle, "execution bundle")?;
+            emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
+        }
+        Command::RunProcessRefitReplay {
+            graph,
+            campaign,
+            controllers,
+            envelope,
+            adapter,
+            bundle_id,
+            variant_id,
+            plan_id,
+            run_id,
+            root_seed,
+        } => {
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let data_provider = InMemoryDataProvider::with_envelope(
+                ControllerId::new("controller:data.provider")?,
+                envelope.clone(),
+            )?;
+            let runtime_controllers = persistent_process_runtime_controllers(&plan, adapter)?;
+            let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
+                plan: &plan,
+                data_provider: &data_provider,
+                runtime_controllers: &runtime_controllers,
+                bundle_id,
+                variant_id,
+                run_id: run_id.clone(),
+                root_seed,
+            })
+            .with_context(|| "process refit capture before replay failed")?;
+            let envelope_map = captured
+                .bundle
+                .data_requirements
+                .iter()
+                .map(|requirement| {
+                    (
+                        format!("{}.{}", requirement.node_id, requirement.input_name),
+                        envelope.clone(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let replay_request = ReplayPhaseRequest {
+                bundle_id: captured.bundle.bundle_id.clone(),
+                phase: Phase::Predict,
+                data_envelope_keys: envelope_map.keys().cloned().collect(),
+            };
+            let mut replay_ctx =
+                RunContext::new(RunId::new(format!("{run_id}:predict"))?, Some(root_seed));
+            let replay_results = SequentialScheduler
+                .execute_bundle_replay(
+                    dag_ml_core::BundleReplayExecution {
+                        plan: &plan,
+                        bundle: &captured.bundle,
+                        replay_request: &replay_request,
+                        controllers: &runtime_controllers,
+                        data_provider: &data_provider,
+                        artifact_store: &captured.artifact_store,
+                        data_envelopes: &envelope_map,
+                    },
+                    &mut replay_ctx,
+                )
+                .with_context(|| "process replay after refit capture failed")?;
+            println!(
+                "process refit replay run: {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s)",
+                captured.refit_result_count,
+                replay_results.len(),
+                replay_ctx.prediction_store.blocks().len(),
+                captured.artifact_store.len()
+            );
         }
         Command::ValidateBundle {
             bundle,
@@ -690,9 +782,15 @@ struct CapturedRefitBundleInput<'a> {
     root_seed: u64,
 }
 
+struct CapturedRefitBundle {
+    bundle: ExecutionBundle,
+    artifact_store: InMemoryArtifactStore,
+    refit_result_count: usize,
+}
+
 fn build_bundle_from_captured_refit(
     input: CapturedRefitBundleInput<'_>,
-) -> Result<ExecutionBundle> {
+) -> Result<CapturedRefitBundle> {
     let selected_variant_id = match input.variant_id {
         Some(variant_id) => VariantId::new(variant_id)?,
         None => input
@@ -748,7 +846,11 @@ fn build_bundle_from_captured_refit(
         "refit_lineage_count".to_string(),
         serde_json::json!(ctx.lineage.len()),
     );
-    Ok(bundle)
+    Ok(CapturedRefitBundle {
+        bundle,
+        artifact_store,
+        refit_result_count: results.len(),
+    })
 }
 
 struct CliMockController {

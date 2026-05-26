@@ -40,11 +40,14 @@ Definition of done:
 - `describe` blob validation;
 - artifact handle release tests.
 
-Status: first process adapter smoke implemented for campaign and replay. The
-CLI can invoke an external Python script per `NodeTask` either one-shot or as a
-persistent JSONL process, parse a returned `NodeResult`, and let the scheduler
-enforce lineage/result conformance across OOF folds, variants and replay. This
-is intentionally not yet a production Python binding or worker pool.
+Status: first process adapter smoke implemented for campaign, refit and replay.
+The CLI can invoke an external Python script per `NodeTask` either one-shot or
+as a persistent JSONL process, parse a returned `NodeResult`, and let the
+scheduler enforce lineage/result conformance across OOF folds, variants and
+replay. A stateful sklearn smoke now fits a real sklearn pipeline during
+`REFIT`, stores it behind an opaque model handle, and replays `PREDICT` through
+that handle in the same persistent process. This is intentionally not yet a
+production Python binding or worker pool.
 
 ## Phase 3: Integration With `dag-ml-data`
 
@@ -93,7 +96,8 @@ runtime can now capture refit artifact handles emitted by controllers,
 materialize replay data, create predict-scoped data views and materialize refit
 artifact handles, then invoke eligible controllers for replay phases without CV
 folds. The CLI can also build mock and external-process refit bundles directly
-from captured refit artifact records. It has both mock and external-process
+from captured refit artifact records, and can run a stateful process refit plus
+immediate replay against captured handles. It has both mock and external-process
 execution smokes for campaign, refit-bundle and replay paths, and the C ABI
 exposes a mock replay execution helper returning a JSON summary. The
 remaining work is schema migration policy, production host adapters and
