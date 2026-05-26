@@ -299,7 +299,10 @@ Implemented:
 - C ABI controller vtable generic `invoke` path for external host
   controllers, routing `NodeTask` JSON to `NodeResult` JSON with explicit
   host-returned byte release and controller-owned result handle release, plus
-  a tested Rust runtime adapter over the vtable;
+  a tested Rust runtime adapter over the vtable. Controller vtable lifecycle is
+  now explicit: ABI v2 remains borrowed, while ABI v3 opts into Rust-owned
+  teardown and calls `destroy(user_data)` after controller result handles are
+  released;
 - C ABI artifact-store vtable for replay REFIT artifacts, returning typed
   `DagMlHandleRef` values, preserving host handle ownership and releasing
   materialized handles at adapter drop, plus a tested Rust runtime adapter over
