@@ -718,6 +718,7 @@ mod tests {
             .contains("parallel levels"));
 
         let bad_envelope = ExternalDataPlanEnvelope {
+            schema_version: crate::data::EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION,
             schema_fingerprint: "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b"
                 .to_string(),
             plan_fingerprint: "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d"

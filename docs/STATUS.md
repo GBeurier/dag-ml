@@ -36,6 +36,8 @@ Implemented:
 - data/model shape plans and runtime shape deltas;
 - data bindings from node inputs to external `dag-ml-data` plan envelopes,
   including explicit feature-set ids for provider `feature_arrow` calls;
+- external data-plan envelopes carry an explicit schema version and are refused
+  when a future/unsupported version is received;
 - external data-plan envelope validation by schema, plan and relation
   fingerprints;
 - campaign data envelopes with coordinator relations are checked against the
