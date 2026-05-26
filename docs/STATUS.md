@@ -128,6 +128,10 @@ Implemented:
   replay loads exact validation OOF blocks through the store, validates them
   against bundle cache records, and asks the store to materialize controller
   prediction handles for OOF-dependent refit inputs;
+- columnar f64 prediction-cache store behind the same
+  `RuntimePredictionCacheStore` contract: validated payloads are converted once
+  into typed column buffers, exposed through deterministic manifests and used by
+  the CLI payload-backed replay path before controller handles are materialized;
 - file-backed prediction-cache store: validated payload sets can be exported to
   a cache directory with a manifest plus one payload file per OOF requirement,
   reopened for replay, fully revalidated against the bundle and rejected if a
@@ -216,7 +220,7 @@ Not implemented yet:
   overrides;
 - non-mean aggregation methods and custom aggregation controllers;
 - persistent artifact stores and non-JSON/non-file-cache backends;
-- Arrow prediction storage;
+- Arrow prediction storage and ABI-owned prediction tensors;
 - production host controller adapters with stable process pools, native
   libraries or language-specific bindings;
 - bundle schema migration policy;
@@ -225,7 +229,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Add an Arrow-backed prediction cache behind `RuntimePredictionCacheStore`, using
-the new file-backed cache manifest/store as the migration point from JSON
-payload files to columnar buffers shared across process and C ABI controller
-adapters.
+Add cross-repo C conformance where `dag-ml` replay consumes a real
+`dag-ml-data` f64 provider vtable, including feature/target Arrow reads and
+data/view release checks.
