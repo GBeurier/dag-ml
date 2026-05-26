@@ -349,6 +349,22 @@ impl InMemoryPredictionStore {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PredictionInputSpec {
+    pub producer_node: NodeId,
+    pub source_port: String,
+    pub target_port: String,
+    pub partition: PredictionPartition,
+    pub fold_id: Option<FoldId>,
+    #[serde(default)]
+    pub fold_ids: Vec<FoldId>,
+    #[serde(default)]
+    pub sample_ids: Vec<SampleId>,
+    pub prediction_width: usize,
+    #[serde(default)]
+    pub target_names: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeTask {
     pub run_id: RunId,
     pub node_plan: NodePlan,
@@ -361,6 +377,8 @@ pub struct NodeTask {
     pub input_handles: BTreeMap<String, HandleRef>,
     #[serde(default)]
     pub data_views: BTreeMap<String, DataProviderViewSpec>,
+    #[serde(default)]
+    pub prediction_inputs: BTreeMap<String, PredictionInputSpec>,
     pub seed: Option<u64>,
 }
 
@@ -1048,6 +1066,7 @@ impl SequentialScheduler {
                 branch_path: Vec::new(),
                 input_handles,
                 data_views: collected_inputs.data_views,
+                prediction_inputs: collected_inputs.prediction_inputs,
                 seed: derive_task_seed(
                     scope.seed_root,
                     scope.variant_id.as_ref(),
@@ -1086,6 +1105,7 @@ fn collect_input_handles(
 ) -> Result<CollectedInputs> {
     let mut inputs = BTreeMap::new();
     let mut data_views = BTreeMap::new();
+    let mut prediction_inputs = BTreeMap::new();
     let training_oof_edges = incoming_training_oof_edges(plan, node_plan, scope)?;
     let training_oof_sources = training_oof_edges
         .iter()
@@ -1103,10 +1123,16 @@ fn collect_input_handles(
     }
     for edge in training_oof_edges {
         let key = format!("{}.{}", edge.source.node_id, edge.source.port_name);
-        let handle = collect_oof_prediction_input(plan, edge, ctx, scope)?;
-        if inputs.insert(key.clone(), handle).is_some() {
+        let input = collect_oof_prediction_input(plan, edge, ctx, scope)?;
+        if inputs.insert(key.clone(), input.handle).is_some() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "node `{}` received duplicate OOF prediction input `{key}`",
+                node_plan.node_id
+            )));
+        }
+        if prediction_inputs.insert(key.clone(), input.spec).is_some() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` received duplicate OOF prediction spec `{key}`",
                 node_plan.node_id
             )));
         }
@@ -1164,6 +1190,7 @@ fn collect_input_handles(
     Ok(CollectedInputs {
         handles: inputs,
         data_views,
+        prediction_inputs,
     })
 }
 
@@ -1195,34 +1222,42 @@ fn incoming_training_oof_edges<'a>(
         .collect()
 }
 
+struct CollectedPredictionInput {
+    handle: HandleRef,
+    spec: PredictionInputSpec,
+}
+
 fn collect_oof_prediction_input(
     plan: &ExecutionPlan,
     edge: &EdgeSpec,
     ctx: &RunContext,
     scope: &PhaseScope,
-) -> Result<HandleRef> {
-    match scope.phase {
+) -> Result<CollectedPredictionInput> {
+    let blocks = match scope.phase {
         Phase::FitCv => validate_fit_cv_oof_edge(plan, edge, ctx, scope)?,
         Phase::Refit => validate_refit_oof_edge(plan, edge, ctx)?,
-        _ => {}
-    }
+        _ => Vec::new(),
+    };
     let source_plan = plan
         .node_plans
         .get(&edge.source.node_id)
         .expect("edge source has a node plan");
-    Ok(HandleRef {
-        handle: deterministic_oof_handle(plan, edge, ctx, scope)?,
-        kind: HandleKind::Prediction,
-        owner_controller: source_plan.controller_id.clone(),
+    Ok(CollectedPredictionInput {
+        handle: HandleRef {
+            handle: deterministic_oof_handle(plan, edge, ctx, scope)?,
+            kind: HandleKind::Prediction,
+            owner_controller: source_plan.controller_id.clone(),
+        },
+        spec: prediction_input_spec(edge, scope, &blocks)?,
     })
 }
 
-fn validate_fit_cv_oof_edge(
+fn validate_fit_cv_oof_edge<'a>(
     plan: &ExecutionPlan,
     edge: &EdgeSpec,
-    ctx: &RunContext,
+    ctx: &'a RunContext,
     scope: &PhaseScope,
-) -> Result<()> {
+) -> Result<Vec<&'a PredictionBlock>> {
     let fold_id = scope.fold_id.as_ref().ok_or_else(|| {
         DagMlError::RuntimeValidation(format!(
             "edge `{}.{}` -> `{}.{}` requires OOF predictions but FIT_CV has no fold scope",
@@ -1241,10 +1276,14 @@ fn validate_fit_cv_oof_edge(
         let fold_set = required_fold_set_for_oof(plan, edge)?;
         validate_oof_blocks_match_fold(edge, fold_set, fold_id, &blocks)?;
     }
-    Ok(())
+    Ok(blocks)
 }
 
-fn validate_refit_oof_edge(plan: &ExecutionPlan, edge: &EdgeSpec, ctx: &RunContext) -> Result<()> {
+fn validate_refit_oof_edge<'a>(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &'a RunContext,
+) -> Result<Vec<&'a PredictionBlock>> {
     let blocks = ctx.prediction_store.find(
         Some(&edge.source.node_id),
         Some(&PredictionPartition::Validation),
@@ -1257,7 +1296,69 @@ fn validate_refit_oof_edge(plan: &ExecutionPlan, edge: &EdgeSpec, ctx: &RunConte
         let fold_set = required_fold_set_for_oof(plan, edge)?;
         validate_oof_blocks_cover_fold_set(edge, fold_set, &blocks)?;
     }
-    Ok(())
+    Ok(blocks)
+}
+
+fn prediction_input_spec(
+    edge: &EdgeSpec,
+    scope: &PhaseScope,
+    blocks: &[&PredictionBlock],
+) -> Result<PredictionInputSpec> {
+    let sample_ids = collect_unique_oof_samples(edge, blocks)?
+        .into_iter()
+        .collect::<Vec<_>>();
+    let fold_ids = blocks
+        .iter()
+        .filter_map(|block| block.fold_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut prediction_width = None;
+    let mut target_names = None;
+    for block in blocks {
+        let width = block.validate_shape()?;
+        let block_target_names = if block.target_names.is_empty() {
+            (0..width)
+                .map(|index| format!("p{index}"))
+                .collect::<Vec<_>>()
+        } else {
+            block.target_names.clone()
+        };
+        if prediction_width.is_some_and(|expected| expected != width) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` OOF prediction width is not stable across folds",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+        if target_names
+            .as_ref()
+            .is_some_and(|expected| expected != &block_target_names)
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` OOF target names are not stable across folds",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+        prediction_width = Some(width);
+        target_names = Some(block_target_names);
+    }
+    Ok(PredictionInputSpec {
+        producer_node: edge.source.node_id.clone(),
+        source_port: edge.source.port_name.clone(),
+        target_port: edge.target.port_name.clone(),
+        partition: PredictionPartition::Validation,
+        fold_id: scope.fold_id.clone(),
+        fold_ids,
+        sample_ids,
+        prediction_width: prediction_width.unwrap_or_default(),
+        target_names: target_names.unwrap_or_default(),
+    })
 }
 
 fn missing_oof_edge_error(edge: &EdgeSpec, fold_id: Option<&FoldId>) -> DagMlError {
@@ -1443,6 +1544,7 @@ fn deterministic_oof_handle(
 struct CollectedInputs {
     handles: BTreeMap<String, HandleRef>,
     data_views: BTreeMap<String, DataProviderViewSpec>,
+    prediction_inputs: BTreeMap<String, PredictionInputSpec>,
 }
 
 fn make_data_view_handle(
@@ -1976,6 +2078,48 @@ mod tests {
                         "meta node received {:?} instead of OOF prediction input",
                         handle.kind
                     )));
+                }
+                let prediction_input =
+                    task.prediction_inputs
+                        .get("model:base.pred")
+                        .ok_or_else(|| {
+                            DagMlError::RuntimeValidation(
+                                "meta node did not receive OOF prediction input spec".to_string(),
+                            )
+                        })?;
+                if prediction_input.producer_node.as_str() != "model:base"
+                    || prediction_input.partition != PredictionPartition::Validation
+                    || prediction_input.prediction_width != 1
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "meta node received invalid OOF prediction input spec".to_string(),
+                    ));
+                }
+                if task.phase == Phase::FitCv {
+                    if prediction_input.fold_id != task.fold_id {
+                        return Err(DagMlError::RuntimeValidation(
+                            "meta node received OOF prediction spec for the wrong fold".to_string(),
+                        ));
+                    }
+                    if prediction_input.sample_ids != aligned_validation_samples(task) {
+                        return Err(DagMlError::RuntimeValidation(
+                            "meta node received OOF prediction spec for wrong samples".to_string(),
+                        ));
+                    }
+                }
+                if task.phase == Phase::Refit
+                    && (prediction_input.fold_id.is_some()
+                        || prediction_input.fold_ids
+                            != vec![
+                                FoldId::new("fold:0").unwrap(),
+                                FoldId::new("fold:1").unwrap(),
+                            ]
+                        || prediction_input.sample_ids
+                            != vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()])
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "meta node received invalid refit OOF coverage spec".to_string(),
+                    ));
                 }
             }
 
@@ -2984,6 +3128,7 @@ mod tests {
             branch_path: Vec::new(),
             input_handles: BTreeMap::new(),
             data_views: BTreeMap::new(),
+            prediction_inputs: BTreeMap::new(),
             seed: Some(99),
         };
         let controller = MockController {
@@ -3056,6 +3201,7 @@ mod tests {
             branch_path: Vec::new(),
             input_handles: BTreeMap::new(),
             data_views: BTreeMap::new(),
+            prediction_inputs: BTreeMap::new(),
             seed: Some(99),
         };
         let controller = MockController {
@@ -3183,6 +3329,7 @@ mod tests {
                     extra: BTreeMap::new(),
                 },
             )]),
+            prediction_inputs: BTreeMap::new(),
             seed: Some(99),
         };
         let result = NodeResult {
