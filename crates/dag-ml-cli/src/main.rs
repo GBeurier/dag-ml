@@ -7,8 +7,9 @@ use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, St
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_core::{
-    build_execution_bundle, build_execution_plan, oof_campaign_fingerprint, select_candidate,
-    select_candidate_groups, validate_oof_campaign, ArtifactId, BundleId, CampaignSpec,
+    build_execution_bundle, build_execution_bundle_with_prediction_requirements,
+    build_execution_plan, oof_campaign_fingerprint, select_candidate, select_candidate_groups,
+    validate_oof_campaign, ArtifactId, BundleId, BundlePredictionRequirement, CampaignSpec,
     CandidateScore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
     DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, GraphSpec, HandleKind,
     HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
@@ -1290,6 +1291,8 @@ fn build_bundle_from_cv_then_captured_refit(
     if fit_cv_oof_prediction_block_count == 0 {
         bail!("FIT_CV did not produce any validation OOF prediction blocks before refit");
     }
+    let prediction_requirements =
+        oof_prediction_requirements(input.plan, ctx.prediction_store.blocks())?;
     let oof_prediction_summary = oof_prediction_summary(ctx.prediction_store.blocks())?;
 
     let refit_results = SequentialScheduler
@@ -1313,12 +1316,13 @@ fn build_bundle_from_cv_then_captured_refit(
         .filter(|block| block.partition == PredictionPartition::Final)
         .count();
 
-    let mut bundle = build_execution_bundle(
+    let mut bundle = build_execution_bundle_with_prediction_requirements(
         BundleId::new(input.bundle_id)?,
         input.plan,
         Some(selected_variant_id),
         BTreeMap::new(),
         artifact_store.refit_artifacts(),
+        prediction_requirements,
     )
     .with_context(|| "failed to build execution bundle from CV+refit artifacts")?;
     bundle.metadata.insert(
@@ -1353,6 +1357,7 @@ fn build_bundle_from_cv_then_captured_refit(
         "total_lineage_count".to_string(),
         serde_json::json!(ctx.lineage.len()),
     );
+    bundle.validate_against_plan(input.plan)?;
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
@@ -1360,6 +1365,60 @@ fn build_bundle_from_cv_then_captured_refit(
         fit_cv_oof_prediction_block_count,
         refit_result_count: refit_results.len(),
     })
+}
+
+fn oof_prediction_requirements(
+    plan: &dag_ml_core::ExecutionPlan,
+    blocks: &[PredictionBlock],
+) -> Result<Vec<BundlePredictionRequirement>> {
+    let mut requirements = Vec::new();
+    for edge in plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| edge.contract.requires_oof)
+    {
+        let edge_blocks = blocks
+            .iter()
+            .filter(|block| {
+                block.producer_node == edge.source.node_id
+                    && block.partition == PredictionPartition::Validation
+            })
+            .collect::<Vec<_>>();
+        if edge_blocks.is_empty() {
+            bail!(
+                "OOF prediction requirement `{}` -> `{}` has no validation blocks",
+                edge.source.node_id,
+                edge.target.node_id
+            );
+        }
+        let summary = summarize_oof_blocks(&edge.source.node_id, &edge_blocks)?;
+        requirements.push(BundlePredictionRequirement {
+            producer_node: edge.source.node_id.clone(),
+            source_port: edge.source.port_name.clone(),
+            consumer_node: edge.target.node_id.clone(),
+            target_port: edge.target.port_name.clone(),
+            partition: PredictionPartition::Validation,
+            fold_ids: summary
+                .fold_ids
+                .into_iter()
+                .map(dag_ml_core::FoldId::new)
+                .collect::<dag_ml_core::Result<Vec<_>>>()?,
+            sample_ids: summary
+                .sample_ids
+                .into_iter()
+                .map(SampleId::new)
+                .collect::<dag_ml_core::Result<Vec<_>>>()?,
+            prediction_width: summary.prediction_width.unwrap_or_default(),
+            target_names: summary.target_names.unwrap_or_default(),
+        });
+    }
+    requirements.sort_by_key(BundlePredictionRequirement::key);
+    for requirement in &requirements {
+        requirement.validate()?;
+    }
+    Ok(requirements)
 }
 
 #[derive(Default)]
@@ -1421,6 +1480,44 @@ fn oof_prediction_summary(blocks: &[PredictionBlock]) -> Result<Vec<serde_json::
             })
         })
         .collect())
+}
+
+fn summarize_oof_blocks(
+    producer_node: &NodeId,
+    blocks: &[&PredictionBlock],
+) -> Result<OofPredictionSummary> {
+    let mut summary = OofPredictionSummary::default();
+    for block in blocks {
+        let width = block.validate_shape()?;
+        summary.block_count += 1;
+        if let Some(fold_id) = &block.fold_id {
+            summary.fold_ids.insert(fold_id.to_string());
+        }
+        summary
+            .sample_ids
+            .extend(block.sample_ids.iter().map(ToString::to_string));
+        if summary
+            .prediction_width
+            .is_some_and(|expected| expected != width)
+        {
+            bail!("OOF prediction requirement for `{producer_node}` has inconsistent prediction width");
+        }
+        summary.prediction_width = Some(width);
+        let target_names = if block.target_names.is_empty() {
+            (0..width).map(|index| format!("p{index}")).collect()
+        } else {
+            block.target_names.clone()
+        };
+        if summary
+            .target_names
+            .as_ref()
+            .is_some_and(|expected| expected != &target_names)
+        {
+            bail!("OOF prediction requirement for `{producer_node}` has inconsistent target names");
+        }
+        summary.target_names = Some(target_names);
+    }
+    Ok(summary)
 }
 
 struct CliMockController {

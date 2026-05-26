@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::bundle::{ExecutionBundle, RefitArtifactRecord, ReplayPhaseRequest};
+use crate::bundle::{
+    bundle_prediction_requirement_key, ExecutionBundle, RefitArtifactRecord, ReplayPhaseRequest,
+};
 use crate::campaign::stable_json_fingerprint;
 use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
@@ -170,6 +172,18 @@ impl InMemoryArtifactStore {
                     .data_bindings
                     .iter()
                     .map(|binding| format!("{}.{}", binding.node_id, binding.input_name))
+                    .collect(),
+                prediction_requirement_keys: task
+                    .prediction_inputs
+                    .values()
+                    .map(|spec| {
+                        bundle_prediction_requirement_key(
+                            &spec.producer_node,
+                            &spec.source_port,
+                            &task.node_plan.node_id,
+                            &spec.target_port,
+                        )
+                    })
                     .collect(),
             };
             self.register(&record, handle.clone())?;
@@ -2518,6 +2532,7 @@ mod tests {
                 },
                 params_fingerprint: model_plan.params_fingerprint.clone(),
                 data_requirement_keys: vec!["model:base.x".to_string()],
+                prediction_requirement_keys: Vec::new(),
             }],
         )
         .unwrap()

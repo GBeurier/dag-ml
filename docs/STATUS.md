@@ -85,8 +85,10 @@ Implemented:
 - CLI process CV+refit bundle command that first runs `FIT_CV`, keeps the
   same `RunContext`/prediction store, then runs `REFIT`; this validates that
   branch/merge meta-model refit consumes complete CV OOF coverage before
-  capturing base and meta refit artifacts, and writes an OOF summary
-  (producer, folds, samples, prediction width and targets) into bundle metadata;
+  capturing base and meta refit artifacts, writes typed bundle
+  `prediction_requirements`, links the meta refit artifact to the OOF
+  requirements it consumed, and keeps an OOF summary (producer, folds, samples,
+  prediction width and targets) in bundle metadata;
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;
