@@ -515,7 +515,8 @@ An `ExecutionPlan` is the Rust-owned, immutable plan after compile and plan:
 - leakage unit policy;
 - data/model shape plans per node;
 - aggregation policies for prediction/evaluation/refit;
-- topological task groups;
+- topological order and deterministic parallel node levels;
+- phase execution schedules expanded by variant and fold;
 - phase gates per node;
 - expected input/output contracts;
 - cache key templates;

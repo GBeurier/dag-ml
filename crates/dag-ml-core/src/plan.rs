@@ -9,7 +9,7 @@ use crate::error::{DagMlError, Result};
 use crate::fold::FoldSet;
 use crate::generation::{enumerate_variants, GenerationSpec, VariantPlan};
 use crate::graph::{GraphSpec, NodeKind};
-use crate::ids::{ControllerId, NodeId};
+use crate::ids::{ControllerId, FoldId, NodeId, VariantId};
 use crate::phase::Phase;
 use crate::policy::{AggregationPolicy, DataModelShapePlan, LeakageUnitPolicy};
 
@@ -102,15 +102,26 @@ impl CampaignSpec {
 pub struct GraphPlan {
     pub graph: GraphSpec,
     pub topological_order: Vec<NodeId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parallel_levels: Vec<Vec<NodeId>>,
 }
 
 impl GraphPlan {
     pub fn from_graph(graph: GraphSpec) -> Result<Self> {
         let topological_order = graph.topological_order()?;
+        let parallel_levels = graph.parallel_levels()?;
         Ok(Self {
             graph,
             topological_order,
+            parallel_levels,
         })
+    }
+
+    pub fn parallel_levels(&self) -> Result<Vec<Vec<NodeId>>> {
+        if self.parallel_levels.is_empty() {
+            return self.graph.parallel_levels();
+        }
+        Ok(self.parallel_levels.clone())
     }
 }
 
@@ -145,10 +156,34 @@ pub struct ExecutionPlan {
     pub controller_fingerprint: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionScopePlan {
+    pub scope_id: String,
+    pub phase: Phase,
+    pub variant_id: Option<VariantId>,
+    pub variant_seed: Option<u64>,
+    pub fold_id: Option<FoldId>,
+    pub node_levels: Vec<Vec<NodeId>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PhaseExecutionSchedule {
+    pub plan_id: String,
+    pub phase: Phase,
+    pub scopes: Vec<ExecutionScopePlan>,
+}
+
 impl ExecutionPlan {
     pub fn validate(&self) -> Result<()> {
         self.graph_plan.graph.validate()?;
         self.campaign.validate()?;
+        if !self.graph_plan.parallel_levels.is_empty()
+            && self.graph_plan.parallel_levels != self.graph_plan.graph.parallel_levels()?
+        {
+            return Err(DagMlError::Planning(
+                "graph plan parallel levels do not match graph".to_string(),
+            ));
+        }
         if self.node_plans.len() != self.graph_plan.graph.nodes.len() {
             return Err(DagMlError::Planning(
                 "execution plan node count does not match graph".to_string(),
@@ -201,6 +236,96 @@ impl ExecutionPlan {
             variant.validate()?;
         }
         Ok(())
+    }
+
+    pub fn node_parallel_levels_for_phase(&self, phase: Phase) -> Result<Vec<Vec<NodeId>>> {
+        let levels = self
+            .graph_plan
+            .parallel_levels()?
+            .into_iter()
+            .map(|level| {
+                level
+                    .into_iter()
+                    .filter(|node_id| {
+                        self.node_plans
+                            .get(node_id)
+                            .is_some_and(|node_plan| node_plan.supported_phases.contains(&phase))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|level| !level.is_empty())
+            .collect::<Vec<_>>();
+        Ok(levels)
+    }
+
+    pub fn campaign_phase_schedule(&self, phase: Phase) -> Result<PhaseExecutionSchedule> {
+        self.validate()?;
+        let node_levels = self.node_parallel_levels_for_phase(phase)?;
+        let fold_ids = if phase == Phase::FitCv {
+            self.fold_set
+                .as_ref()
+                .map(|fold_set| {
+                    fold_set
+                        .folds
+                        .iter()
+                        .map(|fold| Some(fold.fold_id.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![None])
+        } else {
+            vec![None]
+        };
+        let mut scopes = Vec::new();
+        for variant in &self.variants {
+            for fold_id in &fold_ids {
+                scopes.push(ExecutionScopePlan {
+                    scope_id: execution_scope_id(
+                        phase,
+                        Some(&variant.variant_id),
+                        fold_id.as_ref(),
+                    ),
+                    phase,
+                    variant_id: Some(variant.variant_id.clone()),
+                    variant_seed: variant.seed,
+                    fold_id: fold_id.clone(),
+                    node_levels: node_levels.clone(),
+                });
+            }
+        }
+        Ok(PhaseExecutionSchedule {
+            plan_id: self.id.clone(),
+            phase,
+            scopes,
+        })
+    }
+}
+
+fn execution_scope_id(
+    phase: Phase,
+    variant_id: Option<&VariantId>,
+    fold_id: Option<&FoldId>,
+) -> String {
+    format!(
+        "scope:{}:{}:{}",
+        phase_scope_label(phase),
+        variant_id
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "base".to_string()),
+        fold_id
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string())
+    )
+}
+
+fn phase_scope_label(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Compile => "COMPILE",
+        Phase::Plan => "PLAN",
+        Phase::FitCv => "FIT_CV",
+        Phase::Select => "SELECT",
+        Phase::Refit => "REFIT",
+        Phase::Predict => "PREDICT",
+        Phase::Explain => "EXPLAIN",
     }
 }
 
@@ -455,6 +580,13 @@ mod tests {
         }
     }
 
+    fn levels_as_strings(levels: &[Vec<NodeId>]) -> Vec<Vec<String>> {
+        levels
+            .iter()
+            .map(|level| level.iter().map(ToString::to_string).collect())
+            .collect()
+    }
+
     #[test]
     fn builds_execution_plan_with_shape_and_fold_contracts() {
         let model_id = NodeId::new("model:pls").unwrap();
@@ -523,7 +655,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["transform:snv", "model:pls"]
         );
+        assert_eq!(
+            levels_as_strings(&plan.graph_plan.parallel_levels),
+            vec![vec!["transform:snv"], vec!["model:pls"]]
+        );
         assert!(plan.fold_set.is_some());
+        let schedule = plan.campaign_phase_schedule(Phase::FitCv).unwrap();
+        assert_eq!(schedule.scopes.len(), 2);
+        assert!(schedule.scopes[0].scope_id.starts_with("scope:FIT_CV:"));
+        assert!(schedule
+            .scopes
+            .iter()
+            .all(|scope| levels_as_strings(&scope.node_levels)
+                == vec![vec!["transform:snv"], vec!["model:pls"]]));
+        assert_eq!(
+            schedule
+                .scopes
+                .iter()
+                .filter_map(|scope| scope.fold_id.as_ref().map(ToString::to_string))
+                .collect::<Vec<_>>(),
+            vec!["fold0", "fold1"]
+        );
         assert_eq!(
             plan.node_plans
                 .get(&model_id)
@@ -536,6 +688,15 @@ mod tests {
             plan.node_plans.get(&model_id).unwrap().data_bindings.len(),
             1
         );
+
+        let mut bad_plan = plan.clone();
+        bad_plan.graph_plan.parallel_levels =
+            vec![vec![model_id], vec![NodeId::new("transform:snv").unwrap()]];
+        assert!(bad_plan
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("parallel levels"));
     }
 
     #[test]

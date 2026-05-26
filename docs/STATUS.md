@@ -13,6 +13,9 @@ Implemented:
 - controller manifests, controller registry and controller resolution;
 - `GraphPlan`, `CampaignSpec`, `ExecutionPlan`, `NodePlan`, `NodeTask`,
   `NodeResult` and `RunContext`;
+- `GraphPlan.parallel_levels` plus `PhaseExecutionSchedule`, so a compiled
+  plan exposes deterministic node batches per phase/variant/fold before any
+  controller is invoked;
 - split invocation as a campaign-plan controller call;
 - deterministic generation/search-space scaffold with variant fingerprints and
   variant seeds;
@@ -63,7 +66,8 @@ Implemented:
   owner, artifact controller fields and artifact handle ownership;
 - in-memory prediction store and lineage recorder;
 - sequential scheduler for DAG order plus campaign execution over
-  variant x CV-fold scopes;
+  variant x CV-fold scopes; it now walks the precomputed phase node levels,
+  preserving deterministic order while preparing executor-level parallelism;
 - deterministic graph parallel-level planner for future node-batch execution
   without changing topological semantics;
 - deterministic metric selection contracts, including grouped candidate

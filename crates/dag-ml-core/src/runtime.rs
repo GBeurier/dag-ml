@@ -1325,69 +1325,74 @@ impl SequentialScheduler {
         let mut output_handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
         let mut input_lineage = BTreeMap::<NodeId, LineageId>::new();
 
-        for node_id in &plan.graph_plan.topological_order {
-            let node_plan = plan
-                .node_plans
-                .get(node_id)
-                .expect("execution plan was validated");
-            if !node_plan.supported_phases.contains(&scope.phase) {
-                continue;
-            }
-            let controller = controllers.get(&node_plan.controller_id).ok_or_else(|| {
-                DagMlError::RuntimeValidation(format!(
-                    "runtime controller `{}` is not registered",
-                    node_plan.controller_id
-                ))
-            })?;
-            let collected_inputs =
-                collect_input_handles(plan, node_plan, &output_handles, &resources, ctx, &scope)?;
-            let mut input_handles = collected_inputs.handles;
-            if let Some(node_artifact_handles) = resources
-                .replay_artifact_handles
-                .and_then(|handles| handles.get(node_id))
-            {
-                for (key, handle) in node_artifact_handles {
-                    if input_handles.insert(key.clone(), handle.clone()).is_some() {
-                        return Err(DagMlError::RuntimeValidation(format!(
-                            "node `{node_id}` received duplicate replay artifact input `{key}`"
-                        )));
+        for level in plan.node_parallel_levels_for_phase(scope.phase)? {
+            for node_id in &level {
+                let node_plan = plan
+                    .node_plans
+                    .get(node_id)
+                    .expect("execution plan was validated");
+                let controller = controllers.get(&node_plan.controller_id).ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "runtime controller `{}` is not registered",
+                        node_plan.controller_id
+                    ))
+                })?;
+                let collected_inputs = collect_input_handles(
+                    plan,
+                    node_plan,
+                    &output_handles,
+                    &resources,
+                    ctx,
+                    &scope,
+                )?;
+                let mut input_handles = collected_inputs.handles;
+                if let Some(node_artifact_handles) = resources
+                    .replay_artifact_handles
+                    .and_then(|handles| handles.get(node_id))
+                {
+                    for (key, handle) in node_artifact_handles {
+                        if input_handles.insert(key.clone(), handle.clone()).is_some() {
+                            return Err(DagMlError::RuntimeValidation(format!(
+                                "node `{node_id}` received duplicate replay artifact input `{key}`"
+                            )));
+                        }
                     }
                 }
-            }
-            let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
-            let task = NodeTask {
-                run_id: ctx.run_id.clone(),
-                node_plan: task_node_plan.clone(),
-                phase: scope.phase,
-                variant_id: scope.variant_id.clone(),
-                variant: scope.variant.clone(),
-                fold_id: scope.fold_id.clone(),
-                branch_path: Vec::new(),
-                input_handles,
-                data_views: collected_inputs.data_views,
-                prediction_inputs: collected_inputs.prediction_inputs,
-                seed: derive_task_seed(
-                    scope.seed_root,
-                    scope.variant_id.as_ref(),
-                    scope.fold_id.as_ref(),
-                    &task_node_plan,
-                    scope.phase,
-                ),
-            };
-            let result = controller.invoke(&task)?;
-            result.validate_for_task(&task)?;
-            if let Some(store) = resources.artifact_store.as_deref_mut() {
-                if scope.phase == Phase::Refit {
-                    store.capture_refit_artifacts(&task, &result)?;
+                let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
+                let task = NodeTask {
+                    run_id: ctx.run_id.clone(),
+                    node_plan: task_node_plan.clone(),
+                    phase: scope.phase,
+                    variant_id: scope.variant_id.clone(),
+                    variant: scope.variant.clone(),
+                    fold_id: scope.fold_id.clone(),
+                    branch_path: Vec::new(),
+                    input_handles,
+                    data_views: collected_inputs.data_views,
+                    prediction_inputs: collected_inputs.prediction_inputs,
+                    seed: derive_task_seed(
+                        scope.seed_root,
+                        scope.variant_id.as_ref(),
+                        scope.fold_id.as_ref(),
+                        &task_node_plan,
+                        scope.phase,
+                    ),
+                };
+                let result = controller.invoke(&task)?;
+                result.validate_for_task(&task)?;
+                if let Some(store) = resources.artifact_store.as_deref_mut() {
+                    if scope.phase == Phase::Refit {
+                        store.capture_refit_artifacts(&task, &result)?;
+                    }
                 }
+                for prediction in &result.predictions {
+                    ctx.prediction_store.append(prediction.clone())?;
+                }
+                ctx.lineage.record(result.lineage.clone())?;
+                output_handles.insert(node_id.clone(), result.outputs.clone());
+                input_lineage.insert(node_id.clone(), result.lineage.record_id.clone());
+                results.push(result);
             }
-            for prediction in &result.predictions {
-                ctx.prediction_store.append(prediction.clone())?;
-            }
-            ctx.lineage.record(result.lineage.clone())?;
-            output_handles.insert(node_id.clone(), result.outputs.clone());
-            input_lineage.insert(node_id.clone(), result.lineage.record_id.clone());
-            results.push(result);
         }
 
         Ok(results)
