@@ -11,13 +11,13 @@ use dag_ml_core::{
     build_prediction_cache_payload, build_prediction_cache_record, oof_campaign_fingerprint,
     select_candidate, select_candidate_groups, validate_oof_campaign, ArtifactId, BundleId,
     BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
-    BundlePredictionRequirement, CampaignSpec, CandidateScore, ControllerId, ControllerManifest,
-    ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle,
-    ExternalDataPlanEnvelope, FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef,
-    InMemoryArtifactStore, InMemoryDataProvider, InMemoryPredictionCacheStore, LineageId,
-    LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, Phase,
-    PredictionBlock, PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest, RunContext,
-    RunId, RuntimeController, RuntimeControllerRegistry, RuntimePredictionCacheStore, SampleId,
+    BundlePredictionRequirement, CampaignSpec, CandidateScore, ColumnarPredictionCacheStore,
+    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataRequestPartition,
+    ExecutionBundle, ExternalDataPlanEnvelope, FilePredictionCacheStore, GraphSpec, HandleKind,
+    HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
+    MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock,
+    PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId,
+    RuntimeController, RuntimeControllerRegistry, RuntimePredictionCacheStore, SampleId,
     SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
@@ -2420,14 +2420,14 @@ fn read_optional_prediction_cache_payload(
 }
 
 enum CliPredictionCacheStore {
-    InMemory(InMemoryPredictionCacheStore),
+    Columnar(ColumnarPredictionCacheStore),
     File(FilePredictionCacheStore),
 }
 
 impl CliPredictionCacheStore {
     fn materialization_record_count(&self) -> usize {
         match self {
-            Self::InMemory(store) => store.materialization_records().len(),
+            Self::Columnar(store) => store.materialization_records().len(),
             Self::File(store) => store.materialization_records().len(),
         }
     }
@@ -2436,7 +2436,7 @@ impl CliPredictionCacheStore {
 impl RuntimePredictionCacheStore for CliPredictionCacheStore {
     fn load_blocks(&self, requirement_key: &str) -> dag_ml_core::Result<Vec<PredictionBlock>> {
         match self {
-            Self::InMemory(store) => store.load_blocks(requirement_key),
+            Self::Columnar(store) => store.load_blocks(requirement_key),
             Self::File(store) => store.load_blocks(requirement_key),
         }
     }
@@ -2446,7 +2446,7 @@ impl RuntimePredictionCacheStore for CliPredictionCacheStore {
         request: &dag_ml_core::PredictionCacheMaterializationRequest,
     ) -> dag_ml_core::Result<HandleRef> {
         match self {
-            Self::InMemory(store) => store.materialize(request),
+            Self::Columnar(store) => store.materialize(request),
             Self::File(store) => store.materialize(request),
         }
     }
@@ -2461,8 +2461,8 @@ fn optional_prediction_cache_store(
         bail!("use either --prediction-cache-payload or --prediction-cache-store, not both");
     }
     if let Some(payloads) = payloads {
-        return InMemoryPredictionCacheStore::from_payloads(bundle, payloads)
-            .map(CliPredictionCacheStore::InMemory)
+        return ColumnarPredictionCacheStore::from_payloads(bundle, payloads)
+            .map(CliPredictionCacheStore::Columnar)
             .map(Some)
             .with_context(|| "prediction cache payload set does not match bundle");
     }

@@ -110,8 +110,12 @@ meta-model refit consumes complete CV OOF coverage before bundle capture, then
 replay that captured branch/merge bundle through the process adapter with
 separate branch/meta data requirements backed by one data-plan envelope. OOF
 prediction caches can now be exported from the monolithic JSON payload into a
-validated file-backed store directory and reused by replay. It has both mock
-and external-process execution smokes for campaign, refit-bundle and replay
-paths, and the C ABI exposes a mock replay execution helper returning a JSON
-summary. The remaining work is schema migration policy, production host
-adapters, persistent artifact/data stores and Arrow-backed prediction caches.
+validated file-backed store directory and reused by replay. Payload-backed CLI
+replay now converts validated OOF prediction payloads into typed columnar f64
+buffers behind `RuntimePredictionCacheStore`, keeping the external bundle
+contract stable while removing JSON-shaped rows from the runtime cache path.
+It has both mock and external-process execution smokes for campaign,
+refit-bundle and replay paths, and the C ABI exposes a mock replay execution
+helper returning a JSON summary. The remaining work is schema migration policy,
+production host adapters, persistent artifact/data stores and Arrow-backed
+prediction cache exports.

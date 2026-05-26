@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::bundle::{
     build_prediction_cache_payload, bundle_prediction_requirement_key,
-    validate_prediction_cache_payload_matches_record, BundlePredictionCachePayloadSet,
-    BundlePredictionCacheRecord, BundlePredictionRequirement, ExecutionBundle, RefitArtifactRecord,
-    ReplayPhaseRequest,
+    validate_prediction_cache_payload_matches_record, BundlePredictionCachePayload,
+    BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
+    ExecutionBundle, RefitArtifactRecord, ReplayPhaseRequest,
 };
 use crate::campaign::stable_json_fingerprint;
 use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
@@ -737,6 +737,352 @@ fn validate_prediction_cache_file_name(file_name: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColumnarPredictionCacheBlock {
+    pub prediction_id: Option<String>,
+    pub producer_node: NodeId,
+    pub partition: PredictionPartition,
+    pub fold_id: Option<FoldId>,
+    pub sample_ids: Vec<SampleId>,
+    pub target_names: Vec<String>,
+    pub width: usize,
+    pub columns: Vec<Vec<f64>>,
+}
+
+impl ColumnarPredictionCacheBlock {
+    pub fn from_prediction_block(block: &PredictionBlock) -> Result<Self> {
+        let width = block.validate_shape()?;
+        let mut columns = vec![Vec::with_capacity(block.values.len()); width];
+        for row in &block.values {
+            for (column_idx, value) in row.iter().enumerate() {
+                columns[column_idx].push(*value);
+            }
+        }
+        Ok(Self {
+            prediction_id: block.prediction_id.clone(),
+            producer_node: block.producer_node.clone(),
+            partition: block.partition.clone(),
+            fold_id: block.fold_id.clone(),
+            sample_ids: block.sample_ids.clone(),
+            target_names: block.target_names.clone(),
+            width,
+            columns,
+        })
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.sample_ids.len()
+    }
+
+    pub fn value_count(&self) -> usize {
+        self.columns.iter().map(Vec::len).sum()
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.width == 0 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction block for `{}` has zero width",
+                self.producer_node
+            )));
+        }
+        if self.columns.len() != self.width {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction block for `{}` has {} column(s), expected {}",
+                self.producer_node,
+                self.columns.len(),
+                self.width
+            )));
+        }
+        for (column_idx, column) in self.columns.iter().enumerate() {
+            if column.len() != self.row_count() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "columnar prediction block for `{}` column {} has {} value(s), expected {}",
+                    self.producer_node,
+                    column_idx,
+                    column.len(),
+                    self.row_count()
+                )));
+            }
+        }
+        if !self.target_names.is_empty() && self.target_names.len() != self.width {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction block for `{}` has {} target names for width {}",
+                self.producer_node,
+                self.target_names.len(),
+                self.width
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn to_prediction_block(&self) -> Result<PredictionBlock> {
+        self.validate()?;
+        let values = (0..self.row_count())
+            .map(|row_idx| {
+                self.columns
+                    .iter()
+                    .map(|column| column[row_idx])
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let block = PredictionBlock {
+            prediction_id: self.prediction_id.clone(),
+            producer_node: self.producer_node.clone(),
+            partition: self.partition.clone(),
+            fold_id: self.fold_id.clone(),
+            sample_ids: self.sample_ids.clone(),
+            values,
+            target_names: self.target_names.clone(),
+        };
+        block.validate_shape()?;
+        Ok(block)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnarPredictionCacheManifest {
+    pub requirement_key: String,
+    pub cache_id: String,
+    pub block_count: usize,
+    pub row_count: usize,
+    pub prediction_width: usize,
+    pub value_count: usize,
+    pub estimated_value_bytes: usize,
+    pub content_fingerprint: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ColumnarPredictionCacheEntry {
+    cache: BundlePredictionCacheRecord,
+    blocks: Vec<ColumnarPredictionCacheBlock>,
+}
+
+impl ColumnarPredictionCacheEntry {
+    fn from_payload(
+        payload: BundlePredictionCachePayload,
+        cache: BundlePredictionCacheRecord,
+    ) -> Result<Self> {
+        validate_prediction_cache_payload_matches_record(&payload, &cache)?;
+        let blocks = payload
+            .blocks
+            .iter()
+            .map(ColumnarPredictionCacheBlock::from_prediction_block)
+            .collect::<Result<Vec<_>>>()?;
+        let entry = Self { cache, blocks };
+        entry.validate()?;
+        Ok(entry)
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.cache.validate()?;
+        if self.blocks.len() != self.cache.block_count {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction cache `{}` has {} block(s), expected {}",
+                self.cache.cache_id,
+                self.blocks.len(),
+                self.cache.block_count
+            )));
+        }
+        let mut row_count = 0usize;
+        let mut value_count = 0usize;
+        for block in &self.blocks {
+            block.validate()?;
+            if block.partition != self.cache.partition {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "columnar prediction cache `{}` contains a block from partition {:?}",
+                    self.cache.cache_id, block.partition
+                )));
+            }
+            row_count += block.row_count();
+            value_count += block.value_count();
+        }
+        if row_count != self.cache.row_count {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction cache `{}` has {} row(s), expected {}",
+                self.cache.cache_id, row_count, self.cache.row_count
+            )));
+        }
+        let expected_values = self
+            .cache
+            .row_count
+            .checked_mul(self.cache.prediction_width)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "columnar prediction cache `{}` value count overflow",
+                    self.cache.cache_id
+                ))
+            })?;
+        if value_count != expected_values {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction cache `{}` has {} value(s), expected {}",
+                self.cache.cache_id, value_count, expected_values
+            )));
+        }
+        Ok(())
+    }
+
+    fn to_blocks(&self) -> Result<Vec<PredictionBlock>> {
+        self.validate()?;
+        self.blocks
+            .iter()
+            .map(ColumnarPredictionCacheBlock::to_prediction_block)
+            .collect()
+    }
+
+    fn validate_against_cache_record(&self, cache: &BundlePredictionCacheRecord) -> Result<()> {
+        if &self.cache != cache {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction cache materialization request for `{}` does not match bundle cache record",
+                cache.requirement_key
+            )));
+        }
+        let payload = BundlePredictionCachePayload {
+            requirement_key: self.cache.requirement_key.clone(),
+            cache_id: self.cache.cache_id.clone(),
+            format: self.cache.format.clone(),
+            partition: self.cache.partition.clone(),
+            block_count: self.cache.block_count,
+            row_count: self.cache.row_count,
+            content_fingerprint: self.cache.content_fingerprint.clone(),
+            blocks: self.to_blocks()?,
+        };
+        validate_prediction_cache_payload_matches_record(&payload, cache)
+    }
+
+    fn manifest(&self) -> ColumnarPredictionCacheManifest {
+        let value_count = self
+            .blocks
+            .iter()
+            .map(ColumnarPredictionCacheBlock::value_count)
+            .sum::<usize>();
+        ColumnarPredictionCacheManifest {
+            requirement_key: self.cache.requirement_key.clone(),
+            cache_id: self.cache.cache_id.clone(),
+            block_count: self.cache.block_count,
+            row_count: self.cache.row_count,
+            prediction_width: self.cache.prediction_width,
+            value_count,
+            estimated_value_bytes: value_count * std::mem::size_of::<f64>(),
+            content_fingerprint: self.cache.content_fingerprint.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ColumnarPredictionCacheStore {
+    entries: BTreeMap<String, ColumnarPredictionCacheEntry>,
+    materialization_records: RefCell<Vec<PredictionCacheMaterializationRecord>>,
+}
+
+impl ColumnarPredictionCacheStore {
+    pub fn from_payloads(
+        bundle: &ExecutionBundle,
+        payloads: BundlePredictionCachePayloadSet,
+    ) -> Result<Self> {
+        payloads.validate_against_bundle(bundle)?;
+        let records_by_requirement = bundle
+            .prediction_caches
+            .iter()
+            .cloned()
+            .map(|cache| (cache.requirement_key.clone(), cache))
+            .collect::<BTreeMap<_, _>>();
+        let mut entries = BTreeMap::new();
+        for payload in payloads.caches {
+            let cache = records_by_requirement
+                .get(&payload.requirement_key)
+                .cloned()
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "columnar prediction cache payload `{}` references unknown requirement `{}`",
+                        payload.cache_id, payload.requirement_key
+                    ))
+                })?;
+            let requirement_key = payload.requirement_key.clone();
+            let previous = entries.insert(
+                requirement_key,
+                ColumnarPredictionCacheEntry::from_payload(payload, cache)?,
+            );
+            debug_assert!(previous.is_none());
+        }
+        Ok(Self {
+            entries,
+            materialization_records: RefCell::new(Vec::new()),
+        })
+    }
+
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn manifests(&self) -> Vec<ColumnarPredictionCacheManifest> {
+        self.entries
+            .values()
+            .map(ColumnarPredictionCacheEntry::manifest)
+            .collect()
+    }
+
+    pub fn materialization_records(&self) -> Vec<PredictionCacheMaterializationRecord> {
+        self.materialization_records.borrow().clone()
+    }
+}
+
+impl RuntimePredictionCacheStore for ColumnarPredictionCacheStore {
+    fn load_blocks(&self, requirement_key: &str) -> Result<Vec<PredictionBlock>> {
+        let entry = self.entries.get(requirement_key).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "columnar prediction cache store is missing requirement `{requirement_key}`"
+            ))
+        })?;
+        entry.validate_against_cache_record(&entry.cache)?;
+        entry.to_blocks()
+    }
+
+    fn materialize(&self, request: &PredictionCacheMaterializationRequest) -> Result<HandleRef> {
+        request.requirement.validate()?;
+        request.cache.validate()?;
+        let requirement_key = request.requirement.key();
+        if requirement_key != request.cache.requirement_key {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction cache materialization request for `{}` uses cache `{}` with mismatched requirement `{}`",
+                requirement_key, request.cache.cache_id, request.cache.requirement_key
+            )));
+        }
+        let entry = self.entries.get(&requirement_key).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "columnar prediction cache store is missing requirement `{requirement_key}`"
+            ))
+        })?;
+        entry.validate_against_cache_record(&request.cache)?;
+        let fingerprint = stable_json_fingerprint(&(
+            &request.run_id,
+            &request.bundle_id,
+            request.phase,
+            &request.variant_id,
+            &request.cache.requirement_key,
+            &request.cache.cache_id,
+            &request.cache.content_fingerprint,
+        ))?;
+        let handle = HandleRef {
+            handle: u64::from_str_radix(&fingerprint[..16], 16)
+                .expect("sha256 hex prefix should fit into u64"),
+            kind: HandleKind::Prediction,
+            owner_controller: request.producer_controller_id.clone(),
+        };
+        self.materialization_records
+            .borrow_mut()
+            .push(PredictionCacheMaterializationRecord {
+                run_id: request.run_id.clone(),
+                bundle_id: request.bundle_id.clone(),
+                phase: request.phase,
+                variant_id: request.variant_id.clone(),
+                requirement_key,
+                cache_id: request.cache.cache_id.clone(),
+                handle: handle.clone(),
+            });
+        Ok(handle)
+    }
 }
 
 fn validate_runtime_non_empty(label: &str, value: &str) -> Result<()> {
@@ -3884,6 +4230,111 @@ mod tests {
         let handle = store
             .materialize(&PredictionCacheMaterializationRequest {
                 run_id: RunId::new("run:oof.edge.cache.store.replay").unwrap(),
+                bundle_id: bundle.bundle_id.clone(),
+                phase: Phase::Refit,
+                variant_id: bundle.selected_variant_id.clone(),
+                requirement: requirement.clone(),
+                cache,
+                producer_controller_id: ControllerId::new("controller:model").unwrap(),
+            })
+            .unwrap();
+        assert_eq!(handle.kind, HandleKind::Prediction);
+        assert_eq!(
+            handle.owner_controller,
+            ControllerId::new("controller:model").unwrap()
+        );
+        let records = store.materialization_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].requirement_key, requirement.key());
+        assert_eq!(records[0].handle, handle);
+    }
+
+    #[test]
+    fn columnar_prediction_cache_block_round_trips_multi_target_rows() {
+        let block = PredictionBlock {
+            prediction_id: Some("pred:wide".to_string()),
+            producer_node: NodeId::new("model:wide").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
+            values: vec![vec![1.0, 10.0], vec![2.0, 20.0]],
+            target_names: vec!["y0".to_string(), "y1".to_string()],
+        };
+
+        let columnar = ColumnarPredictionCacheBlock::from_prediction_block(&block).unwrap();
+        assert_eq!(columnar.width, 2);
+        assert_eq!(columnar.row_count(), 2);
+        assert_eq!(columnar.value_count(), 4);
+        assert_eq!(columnar.columns, vec![vec![1.0, 2.0], vec![10.0, 20.0]]);
+        assert_eq!(columnar.to_prediction_block().unwrap(), block);
+    }
+
+    #[test]
+    fn columnar_prediction_cache_store_loads_and_materializes_oof_payloads() {
+        let plan = build_execution_plan(
+            "plan:oof.edge.columnar.cache.store",
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+        )
+        .unwrap();
+        let fit_controllers = oof_edge_runtime_controllers(
+            Some(PredictionPartition::Validation),
+            OofSampleMode::Aligned,
+        );
+        let mut ctx = RunContext::new(
+            RunId::new("run:oof.edge.columnar.cache.store").unwrap(),
+            Some(11),
+        );
+        SequentialScheduler
+            .execute_campaign_phase(&plan, &fit_controllers, &mut ctx, Phase::FitCv)
+            .unwrap();
+
+        let requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("model:base").unwrap(),
+            source_port: "pred".to_string(),
+            consumer_node: NodeId::new("model:meta").unwrap(),
+            target_port: "pred".to_string(),
+            partition: PredictionPartition::Validation,
+            fold_ids: vec![
+                FoldId::new("fold:0").unwrap(),
+                FoldId::new("fold:1").unwrap(),
+            ],
+            sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let cache =
+            build_prediction_cache_record(&requirement, ctx.prediction_store.blocks()).unwrap();
+        let payload =
+            build_prediction_cache_payload(&requirement, ctx.prediction_store.blocks()).unwrap();
+        let bundle = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:oof.edge.columnar.cache.store").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            Vec::new(),
+            vec![requirement.clone()],
+            vec![cache.clone()],
+        )
+        .unwrap();
+        let payload_set = BundlePredictionCachePayloadSet {
+            bundle_id: bundle.bundle_id.clone(),
+            schema_version: PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+            caches: vec![payload],
+        };
+        let store = ColumnarPredictionCacheStore::from_payloads(&bundle, payload_set).unwrap();
+        assert_eq!(store.entry_count(), 1);
+        let manifest = store.manifests();
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].requirement_key, requirement.key());
+        assert_eq!(manifest[0].value_count, 2);
+        assert_eq!(manifest[0].estimated_value_bytes, 16);
+        assert_eq!(store.load_blocks(&requirement.key()).unwrap().len(), 2);
+
+        let handle = store
+            .materialize(&PredictionCacheMaterializationRequest {
+                run_id: RunId::new("run:oof.edge.columnar.cache.store.replay").unwrap(),
                 bundle_id: bundle.bundle_id.clone(),
                 phase: Phase::Refit,
                 variant_id: bundle.selected_variant_id.clone(),
