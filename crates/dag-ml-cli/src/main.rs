@@ -193,6 +193,8 @@ enum Command {
         bundle_id: String,
         #[arg(long)]
         variant_id: Option<String>,
+        #[arg(long)]
+        selections: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.process.cv.refit")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.process.cv.refit")]
@@ -540,6 +542,7 @@ fn main() -> Result<()> {
                 runtime_controllers: &runtime_controllers,
                 bundle_id,
                 variant_id,
+                selections: BTreeMap::new(),
                 run_id,
                 root_seed,
             })
@@ -578,6 +581,7 @@ fn main() -> Result<()> {
                 runtime_controllers: &runtime_controllers,
                 bundle_id,
                 variant_id,
+                selections: BTreeMap::new(),
                 run_id,
                 root_seed,
             })
@@ -594,6 +598,7 @@ fn main() -> Result<()> {
             output,
             bundle_id,
             variant_id,
+            selections,
             plan_id,
             run_id,
             root_seed,
@@ -610,12 +615,14 @@ fn main() -> Result<()> {
             } else {
                 process_runtime_controllers(&plan, adapter)?
             };
+            let selections = read_selection_decisions(selections.as_ref())?;
             let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
                 runtime_controllers: &runtime_controllers,
                 bundle_id,
                 variant_id,
+                selections,
                 run_id,
                 root_seed,
             })
@@ -655,6 +662,7 @@ fn main() -> Result<()> {
                 runtime_controllers: &runtime_controllers,
                 bundle_id,
                 variant_id,
+                selections: BTreeMap::new(),
                 run_id: run_id.clone(),
                 root_seed,
             })
@@ -1178,6 +1186,7 @@ struct CapturedRefitBundleInput<'a> {
     runtime_controllers: &'a RuntimeControllerRegistry,
     bundle_id: String,
     variant_id: Option<String>,
+    selections: BTreeMap<String, SelectionDecision>,
     run_id: String,
     root_seed: u64,
 }
@@ -1242,7 +1251,7 @@ fn build_bundle_from_captured_refit(
         BundleId::new(input.bundle_id)?,
         input.plan,
         Some(selected_variant_id),
-        BTreeMap::new(),
+        input.selections,
         artifact_store.refit_artifacts(),
     )
     .with_context(|| "failed to build execution bundle from refit artifacts")?;
@@ -1320,7 +1329,7 @@ fn build_bundle_from_cv_then_captured_refit(
         BundleId::new(input.bundle_id)?,
         input.plan,
         Some(selected_variant_id),
-        BTreeMap::new(),
+        input.selections,
         artifact_store.refit_artifacts(),
         prediction_requirements,
     )
@@ -2066,6 +2075,22 @@ fn read_replay_envelopes(args: &[String]) -> Result<BTreeMap<String, ExternalDat
         }
     }
     Ok(envelopes)
+}
+
+fn read_selection_decisions(path: Option<&PathBuf>) -> Result<BTreeMap<String, SelectionDecision>> {
+    let Some(path) = path else {
+        return Ok(BTreeMap::new());
+    };
+    let decisions: BTreeMap<String, SelectionDecision> = read_json(path, "selection decisions")?;
+    for (key, decision) in &decisions {
+        if key.trim().is_empty() {
+            bail!("selection decision map contains an empty key");
+        }
+        decision
+            .validate()
+            .with_context(|| format!("invalid selection decision `{key}`"))?;
+    }
+    Ok(decisions)
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Result<T> {
