@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "profile_id": "dag-ml.research_provenance_package.v1",
+  "package": {
+    "required_files": [
+      {
+        "path": "execution_plan.json",
+        "kind": "dagml.execution_plan",
+        "checksum_in_ro_crate": true
+      },
+      {
+        "path": "execution_bundle.json",
+        "kind": "dagml.execution_bundle",
+        "checksum_in_ro_crate": true
+      },
+      {
+        "path": "lineage_records.json",
+        "kind": "dagml.lineage_records",
+        "checksum_in_ro_crate": true
+      },
+      {
+        "path": "lineage.prov.jsonld",
+        "kind": "w3c.prov_jsonld",
+        "checksum_in_ro_crate": true
+      },
+      {
+        "path": "ro-crate-metadata.json",
+        "kind": "ro_crate.metadata",
+        "checksum_in_ro_crate": false
+      }
+    ],
+    "optional_files": [
+      {
+        "path": "prediction_cache_manifest.json",
+        "kind": "dagml.prediction_cache_manifest",
+        "checksum_in_ro_crate": true
+      },
+      {
+        "path": "artifact_manifest.json",
+        "kind": "dagml.artifact_manifest",
+        "checksum_in_ro_crate": true
+      },
+      {
+        "path_pattern": "^data_envelopes/[^/\\\\]+\\.json$",
+        "kind": "dagml.external_data_plan_envelope",
+        "checksum_in_ro_crate": true
+      }
+    ]
+  },
+  "ro_crate": {
+    "metadata_file": "ro-crate-metadata.json",
+    "root_dataset_id": "./",
+    "workflow_type": "ComputationalWorkflow",
+    "required_file_properties": [
+      "sha256",
+      "dagml:sha256",
+      "contentSize",
+      "encodingFormat"
+    ],
+    "required_json_encoding": "application/json"
+  },
+  "prov_jsonld": {
+    "file": "lineage.prov.jsonld",
+    "required_sections": [
+      "entity",
+      "activity",
+      "agent",
+      "used",
+      "wasGeneratedBy",
+      "wasDerivedFrom",
+      "wasAssociatedWith"
+    ]
+  },
+  "openlineage": {
+    "command": "export-open-lineage",
+    "facet_schema": "openlineage_dagml_facets.schema.json",
+    "required_run_facets": [
+      "dagml_reproducibility",
+      "dagml_oof_safety"
+    ],
+    "required_job_facets": [
+      "dagml_plan"
+    ]
+  },
+  "cli_conformance": {
+    "export_command": "export-research-provenance",
+    "validation_command": "validate-research-provenance",
+    "required_tests": [
+      "cli_exports_research_provenance_bundle",
+      "cli_selects_builds_and_validates_replay_bundle"
+    ]
+  }
+}

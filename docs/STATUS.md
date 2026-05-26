@@ -59,6 +59,9 @@ Implemented:
 - shared conformance-pack manifest with canonical schema/fixture digests, C ABI
   requirements and required cross-repo checks, kept JSON-identical with
   `dag-ml-data`;
+- research provenance package profile describing the publishable package shape,
+  RO-Crate checksum rules, PROV sections, OpenLineage facets and required CLI
+  conformance tests, validated by the stdlib contract script;
 - external data-plan envelope validation by schema, plan and relation
   fingerprints;
 - campaign data envelopes with coordinator relations are checked against the

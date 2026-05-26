@@ -55,6 +55,16 @@ already validated research provenance package and uses these custom `dagml_*`
 facets to preserve DAG-ML fingerprints, OOF coverage counters, unsafe flags and
 bundle/plan identifiers that OpenLineage does not model natively.
 
+## Research Provenance Package Profile v1
+
+Profile: `research_provenance_package_profile.v1.json`
+
+This publication profile declares the required files, optional files, checksum
+rules, PROV JSON-LD sections, RO-Crate file properties, OpenLineage facets and
+CLI tests for a DAG-ML research package. It is validated by
+`scripts/validate_contracts.py` so the human-facing publication contract stays
+aligned with the Rust/CLI validator.
+
 ## Data Provider C ABI v2
 
 The shared provider surface is `DagMlDataVTable` guarded by
