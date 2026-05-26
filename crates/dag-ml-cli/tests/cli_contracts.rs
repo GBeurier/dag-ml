@@ -137,6 +137,42 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         String::from_utf8_lossy(&replay.stdout)
     );
 
+    let process_replay = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-replay",
+            "--bundle",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--replay-request",
+            "examples/fixtures/bundle/replay_request_predict.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--plan-id",
+            "plan:cli.bundle",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli run-process-replay");
+    assert!(
+        process_replay.status.success(),
+        "run-process-replay failed: {}",
+        String::from_utf8_lossy(&process_replay.stderr)
+    );
+    let process_stdout = String::from_utf8_lossy(&process_replay.stdout);
+    assert!(
+        process_stdout.contains("process replay run: 2 result(s)")
+            && process_stdout.contains("1 artifact handle(s)"),
+        "unexpected run-process-replay output: {}",
+        process_stdout
+    );
+
     let _ = std::fs::remove_file(temp_bundle);
     let _ = std::fs::remove_file(temp_selection);
 }

@@ -33,6 +33,9 @@ Implemented:
 - bundle replay executor that validates plan/bundle/request/data envelopes,
   materializes data and refit artifact handles, and invokes eligible runtime
   controllers for replay phases without CV folds;
+- stricter `NodeResult` conformance validation for externally returned run,
+  controller, version, variant, fold, branch, seed, params fingerprint, output
+  owner and artifact controller fields;
 - in-memory prediction store and lineage recorder;
 - sequential scheduler for DAG order plus campaign execution over
   variant x CV-fold scopes;
@@ -52,6 +55,11 @@ Implemented:
 - CLI mock replay execution through execution bundles, data envelopes,
   in-memory data provider, in-memory artifact store and mock runtime
   controllers;
+- CLI process replay execution that sends `NodeTask` JSON to an external
+  adapter process over stdin, reads `NodeResult` JSON from stdout and validates
+  the result through the scheduler;
+- Python process-controller adapter fixture for replay smoke tests, including
+  replay data-handle and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph, selection decisions,
   grouped selection, execution bundles, replay envelopes and replay requests;
 - C ABI mock replay execution helper that exercises execution-plan, bundle,
@@ -74,14 +82,14 @@ Not implemented yet:
 - non-mean aggregation methods and custom aggregation controllers;
 - persistent artifact/cache stores;
 - Arrow prediction storage;
-- host controller adapters;
-- bundle schema migration policy and real host-binding replay execution entry
-  points;
+- production host controller adapters with stable process pools, native
+  libraries or language-specific bindings;
+- bundle schema migration policy;
 - concrete `dag-ml-data` provider implementation with real buffers and handle
   lifecycle arena.
 
 Next recommended task:
 
-Turn the sklearn demonstrator into the first controller adapter smoke: replace
-the Python-side orchestration loop with `dag-ml` scheduler tasks while keeping
-the same OOF campaign, heterogeneous merge and refit score policy.
+Turn the process adapter smoke into a real sklearn controller adapter:
+replace the Python-side orchestration loop with `dag-ml` scheduler tasks while
+keeping the same OOF campaign, heterogeneous merge and refit score policy.

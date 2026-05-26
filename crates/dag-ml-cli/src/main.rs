@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Command as ProcessCommand, Stdio};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -127,6 +129,28 @@ enum Command {
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.replay")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
+    },
+    RunProcessReplay {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        replay_request: PathBuf,
+        #[arg(long = "envelope")]
+        envelopes: Vec<String>,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long, default_value = "plan:cli.bundle")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.process.replay")]
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
@@ -394,6 +418,58 @@ fn main() -> Result<()> {
                 artifact_store.len()
             );
         }
+        Command::RunProcessReplay {
+            graph,
+            campaign,
+            controllers,
+            bundle,
+            replay_request,
+            envelopes,
+            adapter,
+            plan_id,
+            run_id,
+            root_seed,
+        } => {
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let replay_request: ReplayPhaseRequest =
+                read_json(&replay_request, "replay phase request")?;
+            let envelope_map = read_replay_envelopes(&envelopes)?;
+            if envelope_map.is_empty() {
+                bail!("run-process-replay requires at least one --envelope KEY=PATH argument");
+            }
+
+            let mut data_provider =
+                InMemoryDataProvider::new(ControllerId::new("controller:data.provider")?);
+            for envelope in envelope_map.values() {
+                data_provider.register_envelope(envelope.clone())?;
+            }
+            let artifact_store = mock_artifact_store(&plan, &bundle)?;
+            let runtime_controllers = process_runtime_controllers(&plan, adapter)?;
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
+            let results = SequentialScheduler
+                .execute_bundle_replay(
+                    dag_ml_core::BundleReplayExecution {
+                        plan: &plan,
+                        bundle: &bundle,
+                        replay_request: &replay_request,
+                        controllers: &runtime_controllers,
+                        data_provider: &data_provider,
+                        artifact_store: &artifact_store,
+                        data_envelopes: &envelope_map,
+                    },
+                    &mut ctx,
+                )
+                .with_context(|| "process replay execution failed")?;
+            println!(
+                "process replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} artifact handle(s)",
+                results.len(),
+                ctx.lineage.len(),
+                ctx.prediction_store.blocks().len(),
+                data_provider.handle_records().len(),
+                artifact_store.len()
+            );
+        }
     }
 
     Ok(())
@@ -414,6 +490,84 @@ struct BundleBuildSpec {
 
 struct CliMockController {
     id: ControllerId,
+}
+
+struct ProcessRuntimeController {
+    id: ControllerId,
+    adapter: PathBuf,
+}
+
+impl RuntimeController for ProcessRuntimeController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
+        let mut command = process_adapter_command(&self.adapter);
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+
+        let mut child = command.spawn().map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` failed to spawn adapter `{}`: {err}",
+                self.id,
+                self.adapter.display()
+            ))
+        })?;
+
+        {
+            let mut stdin = child.stdin.take().ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` adapter stdin was not available",
+                    self.id
+                ))
+            })?;
+            serde_json::to_writer(&mut stdin, task).map_err(|err| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` failed to serialize task JSON: {err}",
+                    self.id
+                ))
+            })?;
+            stdin.write_all(b"\n").map_err(|err| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` failed to write task JSON: {err}",
+                    self.id
+                ))
+            })?;
+        }
+
+        let output = child.wait_with_output().map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` failed while waiting for adapter `{}`: {err}",
+                self.id,
+                self.adapter.display()
+            ))
+        })?;
+        if !output.status.success() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` adapter `{}` exited with status {}: {}",
+                self.id,
+                self.adapter.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        if output.stdout.is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` adapter `{}` returned empty stdout",
+                self.id,
+                self.adapter.display()
+            )));
+        }
+        serde_json::from_slice(&output.stdout).map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` adapter `{}` returned invalid NodeResult JSON: {err}",
+                self.id,
+                self.adapter.display()
+            ))
+        })
+    }
 }
 
 impl RuntimeController for CliMockController {
@@ -531,6 +685,30 @@ fn mock_runtime_controllers(
         }))?;
     }
     Ok(registry)
+}
+
+fn process_runtime_controllers(
+    plan: &dag_ml_core::ExecutionPlan,
+    adapter: PathBuf,
+) -> Result<RuntimeControllerRegistry> {
+    let mut registry = RuntimeControllerRegistry::new();
+    for controller_id in plan.controller_manifests.keys() {
+        registry.register(Box::new(ProcessRuntimeController {
+            id: controller_id.clone(),
+            adapter: adapter.clone(),
+        }))?;
+    }
+    Ok(registry)
+}
+
+fn process_adapter_command(adapter: &PathBuf) -> ProcessCommand {
+    if adapter.extension().and_then(|extension| extension.to_str()) == Some("py") {
+        let mut command = ProcessCommand::new("python3");
+        command.arg(adapter);
+        command
+    } else {
+        ProcessCommand::new(adapter.as_os_str())
+    }
 }
 
 fn mock_artifact_store(

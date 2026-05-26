@@ -345,6 +345,77 @@ impl NodeResult {
                 task.node_plan.node_id, self.lineage.phase, task.phase
             )));
         }
+        if self.lineage.run_id != task.run_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has run `{}`, expected `{}`",
+                task.node_plan.node_id, self.lineage.run_id, task.run_id
+            )));
+        }
+        if self.lineage.controller_id != task.node_plan.controller_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has controller `{}`, expected `{}`",
+                task.node_plan.node_id, self.lineage.controller_id, task.node_plan.controller_id
+            )));
+        }
+        if self.lineage.controller_version != task.node_plan.controller_version {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has controller version `{}`, expected `{}`",
+                task.node_plan.node_id,
+                self.lineage.controller_version,
+                task.node_plan.controller_version
+            )));
+        }
+        if self.lineage.variant_id != task.variant_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has variant {:?}, expected {:?}",
+                task.node_plan.node_id, self.lineage.variant_id, task.variant_id
+            )));
+        }
+        if self.lineage.fold_id != task.fold_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has fold {:?}, expected {:?}",
+                task.node_plan.node_id, self.lineage.fold_id, task.fold_id
+            )));
+        }
+        if self.lineage.branch_path != task.branch_path {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has branch path {:?}, expected {:?}",
+                task.node_plan.node_id, self.lineage.branch_path, task.branch_path
+            )));
+        }
+        if self.lineage.seed != task.seed {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has seed {:?}, expected {:?}",
+                task.node_plan.node_id, self.lineage.seed, task.seed
+            )));
+        }
+        if self.lineage.params_fingerprint != task.node_plan.params_fingerprint {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "lineage for node `{}` has params fingerprint `{}`, expected `{}`",
+                task.node_plan.node_id,
+                self.lineage.params_fingerprint,
+                task.node_plan.params_fingerprint
+            )));
+        }
+        for (port, handle) in &self.outputs {
+            if handle.owner_controller != task.node_plan.controller_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` output `{port}` is owned by `{}`, expected `{}`",
+                    task.node_plan.node_id, handle.owner_controller, task.node_plan.controller_id
+                )));
+            }
+        }
+        for artifact in &self.artifacts {
+            if artifact.controller_id != task.node_plan.controller_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted artifact `{}` for controller `{}`, expected `{}`",
+                    task.node_plan.node_id,
+                    artifact.id,
+                    artifact.controller_id,
+                    task.node_plan.controller_id
+                )));
+            }
+        }
         for prediction in &self.predictions {
             prediction.validate_shape()?;
             if prediction.producer_node != task.node_plan.node_id {
@@ -1463,6 +1534,77 @@ mod tests {
         assert_eq!(provider.handle_records().len(), 1);
         assert_eq!(provider.handle_records()[0].input_name, "x");
         assert_eq!(provider.handle_records()[0].relation_record_count, Some(4));
+    }
+
+    #[test]
+    fn node_result_validation_rejects_external_conformance_mismatches() {
+        let plan = build_execution_plan(
+            "plan:result.validation",
+            simple_graph(),
+            CampaignSpec {
+                id: "campaign:result.validation".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: None,
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+            &manifests(),
+        )
+        .unwrap();
+        let node_plan = plan
+            .node_plans
+            .get(&NodeId::new("model:pls").unwrap())
+            .unwrap()
+            .clone();
+        let task = NodeTask {
+            run_id: RunId::new("run:result.validation").unwrap(),
+            node_plan: node_plan.clone(),
+            phase: Phase::FitCv,
+            variant_id: None,
+            fold_id: None,
+            branch_path: Vec::new(),
+            input_handles: BTreeMap::new(),
+            seed: Some(99),
+        };
+        let controller = MockController {
+            id: node_plan.controller_id.clone(),
+            handle: 2,
+            emit_prediction: false,
+        };
+        let result = controller.invoke(&task).unwrap();
+        result.validate_for_task(&task).unwrap();
+
+        let mut bad_controller = result.clone();
+        bad_controller.lineage.controller_id = ControllerId::new("controller:wrong").unwrap();
+        assert!(bad_controller
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("controller"));
+
+        let mut bad_params = result.clone();
+        bad_params.lineage.params_fingerprint = "wrong".to_string();
+        assert!(bad_params
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("params fingerprint"));
+
+        let mut bad_output_owner = result.clone();
+        bad_output_owner
+            .outputs
+            .get_mut("out")
+            .unwrap()
+            .owner_controller = ControllerId::new("controller:wrong").unwrap();
+        assert!(bad_output_owner
+            .validate_for_task(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("output `out`"));
     }
 
     #[test]
