@@ -311,6 +311,8 @@ pub struct NodeTask {
     pub branch_path: Vec<BranchId>,
     #[serde(default)]
     pub input_handles: BTreeMap<String, HandleRef>,
+    #[serde(default)]
+    pub data_views: BTreeMap<String, DataProviderViewSpec>,
     pub seed: Option<u64>,
 }
 
@@ -787,7 +789,7 @@ impl SequentialScheduler {
                     node_plan.controller_id
                 ))
             })?;
-            let mut input_handles = collect_input_handles(
+            let collected_inputs = collect_input_handles(
                 plan,
                 node_plan,
                 &output_handles,
@@ -795,6 +797,7 @@ impl SequentialScheduler {
                 ctx,
                 &scope,
             )?;
+            let mut input_handles = collected_inputs.handles;
             if let Some(node_artifact_handles) =
                 replay_artifact_handles.and_then(|handles| handles.get(node_id))
             {
@@ -814,6 +817,7 @@ impl SequentialScheduler {
                 fold_id: scope.fold_id.clone(),
                 branch_path: Vec::new(),
                 input_handles,
+                data_views: collected_inputs.data_views,
                 seed: derive_task_seed(
                     scope.seed_root,
                     scope.variant_id.as_ref(),
@@ -844,8 +848,9 @@ fn collect_input_handles(
     data_provider: Option<&dyn RuntimeDataProvider>,
     ctx: &RunContext,
     scope: &PhaseScope,
-) -> Result<BTreeMap<String, HandleRef>> {
+) -> Result<CollectedInputs> {
     let mut inputs = BTreeMap::new();
+    let mut data_views = BTreeMap::new();
     for upstream in &node_plan.input_nodes {
         if let Some(handles) = output_handles.get(upstream) {
             for (port, handle) in handles {
@@ -881,12 +886,22 @@ fn collect_input_handles(
                 fold_id: scope.fold_id.clone(),
                 binding: binding.clone(),
                 data_handle: materialized,
-                view,
+                view: view.clone(),
             })?;
-            inputs.insert(format!("data:{}", binding.input_name), view_handle);
+            let key = format!("data:{}", binding.input_name);
+            data_views.insert(key.clone(), view);
+            inputs.insert(key, view_handle);
         }
     }
-    Ok(inputs)
+    Ok(CollectedInputs {
+        handles: inputs,
+        data_views,
+    })
+}
+
+struct CollectedInputs {
+    handles: BTreeMap<String, HandleRef>,
+    data_views: BTreeMap<String, DataProviderViewSpec>,
 }
 
 fn data_view_for_scope(
@@ -1115,6 +1130,12 @@ mod tests {
                         task.node_plan.node_id
                     )));
                 }
+                if !task.data_views.contains_key(&key) {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` did not receive data view spec for `{key}`",
+                        task.node_plan.node_id
+                    )));
+                }
             }
             let variant_label = task
                 .variant_id
@@ -1201,6 +1222,12 @@ mod tests {
                 if !matches!(handle.kind, HandleKind::Data | HandleKind::DataView) {
                     return Err(DagMlError::RuntimeValidation(format!(
                         "node `{}` received non-data/data-view handle for `{key}`",
+                        task.node_plan.node_id
+                    )));
+                }
+                if !task.data_views.contains_key(&key) {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` did not receive data view spec for `{key}`",
                         task.node_plan.node_id
                     )));
                 }
@@ -1792,6 +1819,7 @@ mod tests {
             fold_id: None,
             branch_path: Vec::new(),
             input_handles: BTreeMap::new(),
+            data_views: BTreeMap::new(),
             seed: Some(99),
         };
         let controller = MockController {

@@ -31,6 +31,7 @@ def prediction_partition(phase: str) -> str:
 def require_data_handles(task: dict[str, Any]) -> None:
     node_plan = task["node_plan"]
     input_handles = task.get("input_handles", {})
+    data_views = task.get("data_views", {})
     for binding in node_plan.get("data_bindings", []):
         key = f"data:{binding['input_name']}"
         handle = input_handles.get(key)
@@ -38,6 +39,17 @@ def require_data_handles(task: dict[str, Any]) -> None:
             fail(f"node `{node_plan['node_id']}` did not receive data handle `{key}`")
         if handle.get("kind") not in {"data", "data_view"}:
             fail(f"node `{node_plan['node_id']}` received non-data/data-view handle `{key}`")
+        view = data_views.get(key)
+        if view is None:
+            fail(f"node `{node_plan['node_id']}` did not receive data view spec `{key}`")
+        if task.get("phase") == "PREDICT" and task.get("fold_id") is None:
+            if view.get("partition") != "predict":
+                fail(f"node `{node_plan['node_id']}` received non-predict replay view `{key}`")
+        if task.get("phase") == "FIT_CV" and task.get("fold_id") is not None:
+            if view.get("partition") != "fold_train":
+                fail(f"node `{node_plan['node_id']}` received non-train fold view `{key}`")
+            if not view.get("sample_ids"):
+                fail(f"node `{node_plan['node_id']}` received fold view without samples `{key}`")
 
 
 def require_replay_artifact(task: dict[str, Any]) -> None:
