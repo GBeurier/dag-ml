@@ -36,6 +36,9 @@ Implemented:
   producer has emitted validation predictions for the current fold, while
   `REFIT` requires full CV OOF coverage; fold-aligned edges are checked against
   the `FoldSet`;
+- controller-facing `NodeTask.prediction_inputs` metadata for validated OOF
+  inputs, exposing producer/ports, fold scope, sample ids, prediction width and
+  target names beside the opaque prediction handle;
 - controller-facing `NodeTask.data_views` map carrying the scoped view spec
   beside each data-view handle;
 - in-memory runtime data provider with handle records for schema/plan/relation
