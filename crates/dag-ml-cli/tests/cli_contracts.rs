@@ -31,6 +31,11 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_branch_merge_cv_refit_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_branch_merge_cv_refit_bundle_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
     let temp_refit_request = std::env::temp_dir().join(format!(
         "dag_ml_cli_refit_request_{}_{}.json",
         std::process::id(),
@@ -300,6 +305,64 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         branch_merge_stdout
     );
 
+    let branch_merge_cv_refit_bundle = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-cv-refit-bundle",
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--bundle-id",
+            "bundle:cli.branch.merge.cv.refit",
+            "--output",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.branch.merge.cv.refit",
+            "--run-id",
+            "run:cli.branch.merge.cv.refit",
+        ])
+        .output()
+        .expect("failed to run branch/merge CV+refit process bundle");
+    assert!(
+        branch_merge_cv_refit_bundle.status.success(),
+        "branch/merge CV+refit process bundle failed: {}",
+        String::from_utf8_lossy(&branch_merge_cv_refit_bundle.stderr)
+    );
+    let branch_merge_cv_refit_stdout =
+        String::from_utf8_lossy(&branch_merge_cv_refit_bundle.stdout);
+    assert!(
+        branch_merge_cv_refit_stdout.contains("process cv refit bundle run: 6 fit_cv result(s)")
+            && branch_merge_cv_refit_stdout.contains("6 OOF prediction block(s)")
+            && branch_merge_cv_refit_stdout.contains("3 refit result(s)")
+            && branch_merge_cv_refit_stdout.contains("3 captured artifact handle(s)"),
+        "unexpected branch/merge CV+refit process bundle output: {}",
+        branch_merge_cv_refit_stdout
+    );
+    let branch_merge_cv_refit_bundle_json =
+        std::fs::read_to_string(&temp_branch_merge_cv_refit_bundle)
+            .expect("branch/merge CV+refit bundle was written");
+    assert!(
+        branch_merge_cv_refit_bundle_json.contains("artifact:branch:b0.model:ridge:refit")
+            && branch_merge_cv_refit_bundle_json.contains("artifact:branch:b1.model:rf:refit")
+            && branch_merge_cv_refit_bundle_json
+                .contains("artifact:merge:stack.pred_plus_original.meta:ridge:refit")
+            && branch_merge_cv_refit_bundle_json.contains("fit_cv_result_count")
+            && branch_merge_cv_refit_bundle_json.contains("fit_cv_oof_prediction_block_count")
+            && branch_merge_cv_refit_bundle_json.contains("refit_prediction_block_count"),
+        "unexpected branch/merge CV+refit bundle JSON: {}",
+        branch_merge_cv_refit_bundle_json
+    );
+
     let validate = Command::new(cli())
         .current_dir(&root)
         .args([
@@ -564,6 +627,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     let _ = std::fs::remove_file(temp_bundle);
     let _ = std::fs::remove_file(temp_refit_bundle);
     let _ = std::fs::remove_file(temp_process_refit_bundle);
+    let _ = std::fs::remove_file(temp_branch_merge_cv_refit_bundle);
     let _ = std::fs::remove_file(temp_refit_request);
     let _ = std::fs::remove_file(temp_process_refit_request);
     let _ = std::fs::remove_file(temp_selection);
