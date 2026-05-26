@@ -6,15 +6,17 @@ Rust-first execution core for leakage-safe, in-process ML pipelines.
 cache and deterministic control RNG. It does not own source storage or feature
 buffers; those contracts live in the companion `dag-ml-data` repository.
 
-> Status: foundation scaffold. The project is ready for implementation work:
-> executable Rust crates, C ABI header, CLI validation, design documents,
-> rationale, roadmap, CI and first invariant tests are present.
+> Status: active core scaffold. The project has executable Rust crates, C ABI
+> graph validation, CLI validation, coordinator planning/runtime contracts,
+> data-plan fingerprints, OOF leakage checks, deterministic selection and first
+> refit/replay bundle contracts. Host bindings and real controller adapters are
+> still pending.
 
 ## Repository Layout
 
 ```text
 crates/
-  dag-ml-core/      # graph, phase, OOF and deterministic control contracts
+  dag-ml-core/      # graph, phase, OOF, selection, bundle and control contracts
   dag-ml/           # Rust facade re-exporting stable core APIs
   dag-ml-capi/      # C ABI surface and header for host/controller integration
   dag-ml-cli/       # small validation CLI for specs and fixtures
@@ -41,15 +43,18 @@ cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
 
 ## First Implementation Target
 
-The first useful milestone is a sequential Rust core that can:
+The current useful milestone is a sequential Rust core that can:
 
 1. parse a canonical `GraphSpec`;
 2. validate edge contracts and acyclicity;
 3. consume identity-only fold assignments;
 4. join validation predictions by `sample_id`;
 5. reject train predictions as meta-model training features by default;
-6. expose the same checks through the C ABI.
+6. select branch/merge variants from persisted OOF metrics;
+7. build a refit/replay bundle that locks plan, controller, data and artifact
+   fingerprints.
 
-That milestone is intentionally smaller than full pipeline execution, but it
-tests the hard invariant: stacking must be OOF and aligned by identity, never by
-position.
+That milestone is intentionally smaller than full pipeline execution. The next
+gate is to expose selection/bundle/replay through CLI/C ABI and replace the
+Python-side orchestration in the sklearn demonstrator with host controller
+adapters driven by the Rust scheduler.

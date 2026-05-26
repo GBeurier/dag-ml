@@ -32,6 +32,11 @@ Implemented:
 - in-memory prediction store and lineage recorder;
 - sequential scheduler for DAG order plus campaign execution over
   variant x CV-fold scopes;
+- deterministic metric selection contracts, including grouped candidate
+  selection and stable tie-breaking;
+- refit execution bundle contracts that bind selected variants, selected
+  candidates, refit artifacts, plan fingerprints and replay data requirements;
+- replay request validation for predict, explain and refit phases;
 - mock controller conformance tests;
 - CLI execution-plan validation from graph/campaign/controller JSON fixtures;
 - CLI data-binding validation against a coordinator data-plan envelope;
@@ -55,11 +60,13 @@ Not implemented yet:
 - artifact/cache stores;
 - Arrow prediction storage;
 - host controller adapters;
+- bundle export/import CLI and host-binding replay entry points;
 - concrete `dag-ml-data` provider implementation with real buffers and handle
   lifecycle arena.
 
 Next recommended task:
 
-Turn the sklearn demonstrator into the first controller adapter smoke: replace
-the Python-side orchestration loop with `dag-ml` scheduler tasks while keeping
-the same OOF campaign, heterogeneous merge and refit score policy.
+Expose the new bundle/selection/replay contracts through CLI and the C ABI,
+then turn the sklearn demonstrator into the first controller adapter smoke:
+replace the Python-side orchestration loop with `dag-ml` scheduler tasks while
+keeping the same OOF campaign, heterogeneous merge and refit score policy.

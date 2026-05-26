@@ -78,6 +78,7 @@ define_id!(GroupId);
 define_id!(ControllerId);
 define_id!(VariantId);
 define_id!(RunId);
+define_id!(BundleId);
 define_id!(ArtifactId);
 define_id!(LineageId);
 define_id!(BranchId);

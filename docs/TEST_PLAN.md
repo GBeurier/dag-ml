@@ -9,6 +9,8 @@
 | OOF campaign fixtures | UC6 joins, UC11 refuses, fold prediction samples match fold partitions, campaign fingerprint is stable |
 | RNG | same path gives same seed, different labels split streams |
 | Data binding | validates envelope fingerprints, refuses mismatches, materializes in-memory handles |
+| Selection | deterministic metric ranking, stable tie-breaking, grouped branch selection, sklearn demo merge selection |
+| Bundle/replay | bundle matches execution plan fingerprints, refit artifacts match node plans, replay envelopes match data requirements |
 | Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths |
 | sklearn demonstrator | group OOF, repeated observations, train-only augmentation, branch variant selection, heterogeneous merge selection, refit report |
 | ABI | null pointer handling, invalid JSON, valid graph |
@@ -20,7 +22,8 @@ Add after the executor exists:
 - UC6 stacking with intentionally shuffled prediction order;
 - UC11 train-prediction leakage refusal;
 - group-aware split where no group crosses train/validation;
-- replay rejects schema fingerprint mismatch.
+- replay rejects schema fingerprint mismatch;
+- selected branch/merge candidates are reproducible from persisted metrics;
 - mock campaign run materializes data handles before invoking controllers.
 
 Current CLI smoke commands:
