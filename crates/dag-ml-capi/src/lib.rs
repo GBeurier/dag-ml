@@ -1,11 +1,15 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 use std::slice;
 
 use dag_ml_core::{
-    select_candidate, select_candidate_groups, CandidateScore, ExecutionBundle,
-    ExternalDataPlanEnvelope, GraphSpec, ReplayPhaseRequest, SelectionDecision, SelectionPolicy,
+    select_candidate, select_candidate_groups, BundleReplayExecution, CandidateScore, ControllerId,
+    DagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope, GraphSpec, HandleKind,
+    HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeResult,
+    NodeTask, Phase, PredictionBlock, PredictionPartition, ReplayPhaseRequest, RunContext, RunId,
+    RuntimeController, RuntimeControllerRegistry, SampleId, SelectionDecision, SelectionPolicy,
+    SequentialScheduler,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -437,6 +441,71 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_json(
     }
 }
 
+/// Executes a deterministic Rust-side mock replay from JSON contracts.
+///
+/// This is a conformance smoke for bindings: it validates the replay bundle,
+/// materializes data and refit artifact handles, invokes mock controllers, and
+/// returns a small JSON summary. Real host controller execution is handled by
+/// the vtable roadmap and is intentionally not implemented by this helper.
+///
+/// # Safety
+///
+/// Input pointers follow the same rules as `dagml_graph_validate_json`.
+/// `out_json` must point to writable memory for one `DagMlOwnedBytes`; returned
+/// bytes must be released with `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_mock_replay_execute_json(
+    plan_ptr: *const u8,
+    plan_len: usize,
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+    envelopes_ptr: *const u8,
+    envelopes_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let plan =
+        match parse_json_ptr::<ExecutionPlan>(plan_ptr, plan_len, error_out, "execution plan") {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+    let bundle =
+        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+    let request = match parse_json_ptr::<ReplayPhaseRequest>(
+        request_ptr,
+        request_len,
+        error_out,
+        "replay request",
+    ) {
+        Ok(request) => request,
+        Err(status) => return status,
+    };
+    let envelopes = match parse_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+        envelopes_ptr,
+        envelopes_len,
+        error_out,
+        "replay envelopes",
+    ) {
+        Ok(envelopes) => envelopes,
+        Err(status) => return status,
+    };
+
+    match execute_mock_replay(&plan, &bundle, &request, &envelopes) {
+        Ok(summary) => write_owned_json(out_json, error_out, &summary),
+        Err(error) => {
+            set_error(error_out, error.to_string());
+            DagMlStatusCode::ValidationError
+        }
+    }
+}
+
 unsafe fn clear_error(error_out: *mut DagMlString) {
     if !error_out.is_null() {
         *error_out = DagMlString::default();
@@ -539,9 +608,230 @@ where
     }
 }
 
+#[derive(Debug, Serialize)]
+struct MockReplaySummary {
+    bundle_id: String,
+    phase: Phase,
+    result_count: usize,
+    lineage_record_count: usize,
+    prediction_block_count: usize,
+    data_handle_count: usize,
+    artifact_handle_count: usize,
+}
+
+fn execute_mock_replay(
+    plan: &ExecutionPlan,
+    bundle: &ExecutionBundle,
+    request: &ReplayPhaseRequest,
+    envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+) -> dag_ml_core::Result<MockReplaySummary> {
+    if envelopes.is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "mock replay requires at least one replay envelope".to_string(),
+        ));
+    }
+    let mut data_provider =
+        InMemoryDataProvider::new(ControllerId::new("controller:data.provider")?);
+    for envelope in envelopes.values() {
+        data_provider.register_envelope(envelope.clone())?;
+    }
+    let artifact_store = mock_artifact_store(plan, bundle)?;
+    let controllers = mock_runtime_controllers(plan)?;
+    let mut ctx = RunContext::new(RunId::new("run:capi.mock.replay")?, None);
+    let results = SequentialScheduler.execute_bundle_replay(
+        BundleReplayExecution {
+            plan,
+            bundle,
+            replay_request: request,
+            controllers: &controllers,
+            data_provider: &data_provider,
+            artifact_store: &artifact_store,
+            data_envelopes: envelopes,
+        },
+        &mut ctx,
+    )?;
+    Ok(MockReplaySummary {
+        bundle_id: bundle.bundle_id.to_string(),
+        phase: request.phase,
+        result_count: results.len(),
+        lineage_record_count: ctx.lineage.len(),
+        prediction_block_count: ctx.prediction_store.blocks().len(),
+        data_handle_count: data_provider.handle_records().len(),
+        artifact_handle_count: artifact_store.len(),
+    })
+}
+
+fn mock_artifact_store(
+    plan: &ExecutionPlan,
+    bundle: &ExecutionBundle,
+) -> dag_ml_core::Result<InMemoryArtifactStore> {
+    bundle.validate_against_plan(plan)?;
+    let mut store = InMemoryArtifactStore::new();
+    for artifact in &bundle.refit_artifacts {
+        let node_plan = plan.node_plans.get(&artifact.node_id).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "bundle artifact `{}` references unknown node `{}`",
+                artifact.artifact.id, artifact.node_id
+            ))
+        })?;
+        let kind = if matches!(node_plan.kind, dag_ml_core::NodeKind::Model) {
+            HandleKind::Model
+        } else {
+            HandleKind::Artifact
+        };
+        store.register(
+            artifact,
+            HandleRef {
+                handle: stable_handle(artifact.artifact.id.as_str()),
+                kind,
+                owner_controller: artifact.controller_id.clone(),
+            },
+        )?;
+    }
+    Ok(store)
+}
+
+fn mock_runtime_controllers(
+    plan: &ExecutionPlan,
+) -> dag_ml_core::Result<RuntimeControllerRegistry> {
+    let mut registry = RuntimeControllerRegistry::new();
+    for controller_id in plan.controller_manifests.keys() {
+        registry.register(Box::new(CapiMockController {
+            id: controller_id.clone(),
+        }))?;
+    }
+    Ok(registry)
+}
+
+struct CapiMockController {
+    id: ControllerId,
+}
+
+impl RuntimeController for CapiMockController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
+        for binding in &task.node_plan.data_bindings {
+            let key = format!("data:{}", binding.input_name);
+            let handle = task.input_handles.get(&key).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "node `{}` did not receive data handle `{key}`",
+                    task.node_plan.node_id
+                ))
+            })?;
+            if handle.kind != HandleKind::Data {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` received non-data handle for `{key}`",
+                    task.node_plan.node_id
+                )));
+            }
+        }
+
+        if task.phase == Phase::Predict
+            && matches!(task.node_plan.kind, dag_ml_core::NodeKind::Model)
+        {
+            let artifact_handles = task
+                .input_handles
+                .iter()
+                .filter(|(key, _)| key.starts_with("artifact:"))
+                .collect::<Vec<_>>();
+            if artifact_handles.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` did not receive a replay artifact handle",
+                    task.node_plan.node_id
+                )));
+            }
+            for (key, handle) in artifact_handles {
+                if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact) {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received invalid replay artifact handle `{key}`",
+                        task.node_plan.node_id
+                    )));
+                }
+            }
+        }
+
+        let predictions = if matches!(task.node_plan.kind, dag_ml_core::NodeKind::Model) {
+            vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                partition: prediction_partition_for_phase(task.phase),
+                fold_id: task.fold_id.clone(),
+                sample_ids: vec![SampleId::new("sample:mock")?],
+                values: vec![vec![stable_handle(task.node_plan.node_id.as_str()) as f64]],
+                target_names: vec!["y".to_string()],
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([(
+                "out".to_string(),
+                HandleRef {
+                    handle: stable_handle(task.node_plan.node_id.as_str()),
+                    kind: HandleKind::Data,
+                    owner_controller: self.id.clone(),
+                },
+            )]),
+            predictions,
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{:?}:{}:{}",
+                    task.node_plan.node_id,
+                    task.phase,
+                    task.variant_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "base".to_string()),
+                    task.fold_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "nofold".to_string())
+                ))?,
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
+fn prediction_partition_for_phase(phase: Phase) -> PredictionPartition {
+    match phase {
+        Phase::FitCv => PredictionPartition::Validation,
+        Phase::Refit | Phase::Predict | Phase::Explain => PredictionPartition::Final,
+        Phase::Compile | Phase::Plan | Phase::Select => PredictionPartition::Test,
+    }
+}
+
+fn stable_handle(value: &str) -> u64 {
+    value.bytes().fold(17u64, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(byte as u64)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dag_ml_core::{build_execution_plan, CampaignSpec, ControllerManifest, ControllerRegistry};
     use std::ffi::CStr;
 
     #[test]
@@ -631,6 +921,46 @@ mod tests {
     }
 
     #[test]
+    fn executes_mock_replay_over_abi() {
+        let plan = fixture_plan_json();
+        let bundle = include_bytes!("../../../examples/generated/execution_bundle_minimal.json");
+        let request =
+            include_bytes!("../../../examples/fixtures/bundle/replay_request_predict.json");
+        let envelope =
+            include_str!("../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json");
+        let envelopes = format!(r#"{{"model:base.x":{envelope}}}"#);
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_mock_replay_execute_json(
+                plan.as_ptr(),
+                plan.len(),
+                bundle.as_ptr(),
+                bundle.len(),
+                request.as_ptr(),
+                request.len(),
+                envelopes.as_ptr(),
+                envelopes.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let summary: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(summary["bundle_id"], "bundle:cli.demo");
+        assert_eq!(summary["result_count"], 2);
+        assert_eq!(summary["prediction_block_count"], 1);
+        assert_eq!(summary["data_handle_count"], 1);
+        assert_eq!(summary["artifact_handle_count"], 1);
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
     fn invalid_bundle_returns_error_string() {
         let invalid = br#"{"bundle_id":"bundle:bad"}"#;
         let mut error = DagMlString::default();
@@ -657,5 +987,23 @@ mod tests {
         assert_eq!(status, DagMlStatusCode::InvalidArgument);
         assert!(!error.ptr.is_null());
         unsafe { dagml_string_free(error) };
+    }
+
+    fn fixture_plan_json() -> Vec<u8> {
+        let graph: GraphSpec =
+            serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
+        let campaign: CampaignSpec = serde_json::from_str(include_str!(
+            "../../../examples/campaign_oof_generation.json"
+        ))
+        .unwrap();
+        let manifests: Vec<ControllerManifest> =
+            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
+                .unwrap();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        let plan = build_execution_plan("plan:cli.bundle", graph, campaign, &registry).unwrap();
+        serde_json::to_vec(&plan).unwrap()
     }
 }

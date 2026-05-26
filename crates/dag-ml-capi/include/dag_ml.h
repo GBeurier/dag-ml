@@ -71,6 +71,7 @@ DagMlStatusCode dagml_select_candidate_groups_json(const uint8_t *policy_ptr, si
 DagMlStatusCode dagml_execution_bundle_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_execution_bundle_validate_replay_envelopes_json(const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *envelopes_ptr, size_t envelopes_len, DagMlString *error_out);
 DagMlStatusCode dagml_replay_request_validate_for_bundle_json(const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, DagMlString *error_out);
+DagMlStatusCode dagml_mock_replay_execute_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, const uint8_t *envelopes_ptr, size_t envelopes_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 
 #ifdef __cplusplus
 }
