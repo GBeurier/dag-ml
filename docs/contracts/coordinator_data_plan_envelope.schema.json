@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/coordinator_data_plan_envelope.v1.schema.json",
+  "title": "DAG-ML Coordinator Data Plan Envelope",
+  "type": "object",
+  "required": ["schema_version", "schema_fingerprint", "plan_fingerprint", "plan"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "schema_fingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "plan_fingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "relation_fingerprint": {
+      "anyOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "plan": {
+      "type": "object",
+      "required": ["id", "steps", "output_representation"],
+      "additionalProperties": true
+    },
+    "coordinator_relations": {
+      "anyOf": [
+        { "$ref": "#/$defs/coordinator_relation_set" },
+        { "type": "null" }
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "coordinator_relation_set": {
+      "type": "object",
+      "required": ["records"],
+      "properties": {
+        "records": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/coordinator_relation"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "coordinator_relation": {
+      "type": "object",
+      "required": ["observation_id", "sample_id"],
+      "properties": {
+        "observation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "sample_id": {
+          "$ref": "#/$defs/id"
+        },
+        "target_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ]
+        },
+        "group_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ]
+        },
+        "origin_sample_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ]
+        },
+        "source_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ]
+        },
+        "is_augmented": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

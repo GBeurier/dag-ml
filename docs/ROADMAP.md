@@ -61,10 +61,13 @@ Definition of done:
 - UC6 stacking fixture passes end to end.
 
 Status: JSON/fingerprint contract started. `dag-ml-data` now emits a
-coordinator envelope, `dag-ml` validates node data bindings against it, and the
-scheduler requests an opaque parent data handle plus a fold/refit/predict
-provider view through `RuntimeDataProvider`. The C ABI data-provider vtable is
-aligned on materialization, view creation, identity, sample-level target and
+versioned coordinator envelope, `dag-ml` validates node data bindings against
+it, and both repositories publish the v1 JSON Schema artifact for the shared
+wire contract. `dag-ml` also validates the sibling `dag-ml-data` coordinator
+fixture when that checkout is available. The scheduler requests an opaque
+parent data handle plus a fold/refit/predict provider view through
+`RuntimeDataProvider`. The C ABI data-provider vtable is aligned on
+materialization, view creation, identity, sample-level target and
 observation-level feature exports, with a Rust runtime adapter smoke over that
 vtable. A core in-memory provider records both materialized handles and scoped
 data-view handles for smoke tests. Next missing piece is a concrete
