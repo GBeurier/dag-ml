@@ -20,6 +20,10 @@ pub const EXECUTION_BUNDLE_FILE: &str = "execution_bundle.json";
 pub const LINEAGE_RECORDS_FILE: &str = "lineage_records.json";
 pub const PROV_JSONLD_FILE: &str = "lineage.prov.jsonld";
 pub const RO_CRATE_METADATA_FILE: &str = "ro-crate-metadata.json";
+pub const OPENLINEAGE_RUN_EVENT_SCHEMA_URL: &str =
+    "https://openlineage.io/spec/1-0-0/OpenLineage.json#/definitions/RunEvent";
+pub const DAGML_OPENLINEAGE_FACET_SCHEMA_URL: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/openlineage_dagml_facets.v1.schema.json";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResearchProvenanceExport {
@@ -53,6 +57,12 @@ pub struct ResearchProvenancePackageValidation {
     pub data_envelope_count: usize,
     pub has_prediction_cache_manifest: bool,
     pub has_artifact_manifest: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenLineageRunEventOptions {
+    pub namespace: String,
+    pub event_time: String,
 }
 
 pub fn build_research_provenance_export(
@@ -236,6 +246,93 @@ pub fn validate_research_provenance_package_files(
         has_prediction_cache_manifest: prediction_cache_manifest.is_some(),
         has_artifact_manifest: artifact_manifest.is_some(),
     })
+}
+
+pub fn build_openlineage_run_event_from_package_files(
+    files: &BTreeMap<String, Vec<u8>>,
+    namespace: &str,
+    event_time: &str,
+) -> Result<Value> {
+    validate_research_provenance_package_files(files)?;
+    let plan: ExecutionPlan = parse_package_json(
+        require_package_file(files, EXECUTION_PLAN_FILE)?,
+        EXECUTION_PLAN_FILE,
+    )?;
+    let bundle: ExecutionBundle = parse_package_json(
+        require_package_file(files, EXECUTION_BUNDLE_FILE)?,
+        EXECUTION_BUNDLE_FILE,
+    )?;
+    let lineage: Vec<LineageRecord> = parse_package_json(
+        require_package_file(files, LINEAGE_RECORDS_FILE)?,
+        LINEAGE_RECORDS_FILE,
+    )?;
+    let data_envelopes = parse_package_data_envelopes(files)?;
+    let prediction_cache_manifest: Option<FilePredictionCacheManifest> = files
+        .get(FILE_PREDICTION_CACHE_MANIFEST_FILE)
+        .map(|bytes| parse_package_json(bytes, FILE_PREDICTION_CACHE_MANIFEST_FILE))
+        .transpose()?;
+    let artifact_manifest: Option<FileArtifactManifest> = files
+        .get(FILE_ARTIFACT_MANIFEST_FILE)
+        .map(|bytes| parse_package_json(bytes, FILE_ARTIFACT_MANIFEST_FILE))
+        .transpose()?;
+    let options = OpenLineageRunEventOptions {
+        namespace: namespace.to_string(),
+        event_time: event_time.to_string(),
+    };
+
+    build_openlineage_run_event(
+        &plan,
+        &bundle,
+        &lineage,
+        &data_envelopes,
+        prediction_cache_manifest.as_ref(),
+        artifact_manifest.as_ref(),
+        &options,
+    )
+}
+
+pub fn build_openlineage_run_event(
+    plan: &ExecutionPlan,
+    bundle: &ExecutionBundle,
+    lineage: &[LineageRecord],
+    data_envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+    prediction_cache_manifest: Option<&FilePredictionCacheManifest>,
+    artifact_manifest: Option<&FileArtifactManifest>,
+    options: &OpenLineageRunEventOptions,
+) -> Result<Value> {
+    validate_provenance_inputs(
+        plan,
+        bundle,
+        lineage,
+        data_envelopes,
+        prediction_cache_manifest,
+        artifact_manifest,
+    )?;
+    validate_openlineage_namespace(options.namespace.as_str())?;
+    validate_openlineage_event_time(options.event_time.as_str())?;
+
+    Ok(json!({
+        "eventType": "COMPLETE",
+        "eventTime": options.event_time.as_str(),
+        "run": {
+            "runId": openlineage_run_id(plan, bundle),
+            "facets": {
+                "dagml_reproducibility": dagml_openlineage_reproducibility_run_facet(plan, bundle),
+                "dagml_oof_safety": dagml_openlineage_oof_safety_run_facet(bundle, lineage),
+            },
+        },
+        "job": {
+            "namespace": options.namespace.as_str(),
+            "name": format!("{}::{}", plan.id, bundle.bundle_id),
+            "facets": {
+                "dagml_plan": dagml_openlineage_plan_job_facet(plan, bundle),
+            },
+        },
+        "inputs": openlineage_input_datasets(bundle, data_envelopes),
+        "outputs": openlineage_output_datasets(bundle, prediction_cache_manifest, artifact_manifest),
+        "producer": "https://github.com/GBeurier/dag-ml",
+        "schemaURL": OPENLINEAGE_RUN_EVENT_SCHEMA_URL,
+    }))
 }
 
 fn validate_provenance_inputs(
@@ -919,6 +1016,197 @@ fn validate_prov_jsonld_root(prov_jsonld: Value) -> Result<()> {
     Ok(())
 }
 
+fn validate_openlineage_namespace(namespace: &str) -> Result<()> {
+    if namespace.trim().is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "OpenLineage namespace must not be empty".to_string(),
+        ));
+    }
+    if namespace.chars().any(char::is_control) {
+        return Err(DagMlError::RuntimeValidation(
+            "OpenLineage namespace contains control characters".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_openlineage_event_time(event_time: &str) -> Result<()> {
+    if event_time.trim().is_empty() || !event_time.contains('T') {
+        return Err(DagMlError::RuntimeValidation(
+            "OpenLineage event_time must be a non-empty RFC3339-like timestamp".to_string(),
+        ));
+    }
+    if event_time.chars().any(char::is_control) {
+        return Err(DagMlError::RuntimeValidation(
+            "OpenLineage event_time contains control characters".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn dagml_openlineage_reproducibility_run_facet(
+    plan: &ExecutionPlan,
+    bundle: &ExecutionBundle,
+) -> Value {
+    json!({
+        "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlReproducibilityRunFacet"),
+        "plan_id": plan.id,
+        "bundle_id": bundle.bundle_id,
+        "graph_fingerprint": bundle.graph_fingerprint,
+        "campaign_fingerprint": bundle.campaign_fingerprint,
+        "controller_fingerprint": bundle.controller_fingerprint,
+        "selected_variant_id": bundle.selected_variant_id,
+        "variant_count": plan.variants.len(),
+        "unsafe_flags": bundle.unsafe_flags,
+    })
+}
+
+fn dagml_openlineage_oof_safety_run_facet(
+    bundle: &ExecutionBundle,
+    lineage: &[LineageRecord],
+) -> Value {
+    json!({
+        "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlOofSafetyRunFacet"),
+        "prediction_requirement_count": bundle.prediction_requirements.len(),
+        "prediction_cache_count": bundle.prediction_caches.len(),
+        "lineage_record_count": lineage.len(),
+        "requires_oof_prediction_count": bundle.prediction_requirements.len(),
+        "refit_artifact_count": bundle.refit_artifacts.len(),
+    })
+}
+
+fn dagml_openlineage_plan_job_facet(plan: &ExecutionPlan, bundle: &ExecutionBundle) -> Value {
+    json!({
+        "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlPlanJobFacet"),
+        "plan_id": plan.id,
+        "bundle_id": bundle.bundle_id,
+        "node_count": plan.node_plans.len(),
+        "controller_count": plan.controller_manifests.len(),
+        "has_fold_set": plan.fold_set.is_some(),
+        "selected_variant_id": bundle.selected_variant_id,
+    })
+}
+
+fn openlineage_input_datasets(
+    bundle: &ExecutionBundle,
+    data_envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+) -> Vec<Value> {
+    bundle
+        .data_requirements
+        .iter()
+        .map(|requirement| {
+            let key = requirement.key();
+            let envelope = data_envelopes.get(&key);
+            json!({
+                "namespace": "dagml:data-requirement",
+                "name": key,
+                "facets": {
+                    "dagml_contract": {
+                        "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
+                        "node_id": requirement.node_id,
+                        "input_name": requirement.input_name,
+                        "schema_fingerprint": requirement.schema_fingerprint,
+                        "plan_fingerprint": requirement.plan_fingerprint,
+                        "relation_fingerprint": requirement.relation_fingerprint,
+                        "feature_set_id": requirement.feature_set_id,
+                        "envelope_schema_fingerprint": envelope.map(|envelope| envelope.schema_fingerprint.clone()),
+                        "envelope_plan_fingerprint": envelope.map(|envelope| envelope.plan_fingerprint.clone()),
+                    }
+                }
+            })
+        })
+        .collect()
+}
+
+fn openlineage_output_datasets(
+    bundle: &ExecutionBundle,
+    prediction_cache_manifest: Option<&FilePredictionCacheManifest>,
+    artifact_manifest: Option<&FileArtifactManifest>,
+) -> Vec<Value> {
+    let mut outputs = vec![json!({
+        "namespace": "dagml:bundle",
+        "name": bundle.bundle_id,
+        "facets": {
+            "dagml_contract": {
+                "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
+                "schema_version": bundle.schema_version,
+                "plan_id": bundle.plan_id,
+                "selected_variant_id": bundle.selected_variant_id,
+                "graph_fingerprint": bundle.graph_fingerprint,
+                "campaign_fingerprint": bundle.campaign_fingerprint,
+                "controller_fingerprint": bundle.controller_fingerprint,
+            }
+        }
+    })];
+    for cache in &bundle.prediction_caches {
+        outputs.push(json!({
+            "namespace": "dagml:prediction-cache",
+            "name": cache.cache_id,
+            "facets": {
+                "dagml_contract": {
+                    "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
+                    "requirement_key": cache.requirement_key,
+                    "prediction_level": cache.prediction_level,
+                    "row_count": cache.row_count,
+                    "block_count": cache.block_count,
+                    "content_fingerprint": cache.content_fingerprint,
+                    "has_file_manifest": prediction_cache_manifest.is_some(),
+                }
+            }
+        }));
+    }
+    for artifact in &bundle.refit_artifacts {
+        outputs.push(json!({
+            "namespace": "dagml:artifact",
+            "name": artifact.artifact.id,
+            "facets": {
+                "dagml_contract": {
+                    "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
+                    "node_id": artifact.node_id,
+                    "controller_id": artifact.controller_id,
+                    "backend": artifact.artifact.backend,
+                    "uri": artifact.artifact.uri,
+                    "content_fingerprint": artifact.artifact.content_fingerprint,
+                    "plugin": artifact.artifact.plugin,
+                    "plugin_version": artifact.artifact.plugin_version,
+                    "data_requirement_keys": artifact.data_requirement_keys,
+                    "prediction_requirement_keys": artifact.prediction_requirement_keys,
+                    "has_file_manifest": artifact_manifest.is_some(),
+                }
+            }
+        }));
+    }
+    outputs
+}
+
+fn openlineage_run_id(plan: &ExecutionPlan, bundle: &ExecutionBundle) -> String {
+    let input = format!("dag-ml/openlineage/run/{}/{}", plan.id, bundle.bundle_id);
+    let digest = Sha256::digest(input.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    )
+}
+
 fn validate_ro_crate_package_checksums(
     ro_crate_metadata: &Value,
     files: &BTreeMap<String, Vec<u8>>,
@@ -1362,6 +1650,50 @@ mod tests {
             error.contains("sha256 mismatch"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn openlineage_export_uses_validated_research_package() {
+        let plan = fixture_plan();
+        let bundle = fixture_bundle();
+        let lineage = vec![fixture_lineage(&plan)];
+        let package = build_research_provenance_package(
+            &plan,
+            &bundle,
+            &lineage,
+            &BTreeMap::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let files = package
+            .files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.bytes.clone()))
+            .collect::<BTreeMap<_, _>>();
+
+        let event = build_openlineage_run_event_from_package_files(
+            &files,
+            "dag-ml-test",
+            "2026-05-27T00:00:00Z",
+        )
+        .unwrap();
+
+        assert_eq!(event["eventType"], json!("COMPLETE"));
+        assert_eq!(event["schemaURL"], json!(OPENLINEAGE_RUN_EVENT_SCHEMA_URL));
+        assert_eq!(event["job"]["namespace"], json!("dag-ml-test"));
+        assert_eq!(event["run"]["runId"].as_str().map(str::len), Some(36));
+        assert!(
+            event["run"]["facets"]["dagml_reproducibility"]["graph_fingerprint"]
+                .as_str()
+                .is_some()
+        );
+        assert!(!event["inputs"].as_array().unwrap().is_empty());
+        assert!(event["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|output| output["namespace"] == json!("dagml:bundle")));
     }
 
     #[test]

@@ -203,11 +203,14 @@ manifests. The schedulers attach coordinator-owned input lineage from compiled
 DAG edges, and the CLI exposes `export-research-provenance` over validated
 plans, bundles, real lineage records, data envelopes, prediction-cache stores
 and artifact manifests; `validate-research-provenance` reopens those packages,
-verifies RO-Crate checksums and reruns the DAG-ML contract validation. The C ABI
-exposes the same validated research provenance export as owned JSON for
-non-Rust bindings. A branch/merge CV+refit contract test exports lineage, OOF
-cache store, portable artifact manifest and research provenance from the same
-captured bundle, then revalidates the published package. Remaining work is
-optional OpenLineage or MLMD adapters plus any external conformance profile we
-decide to publish. This remains a publication/export layer and must not replace
-the Rust coordinator's stricter internal validation model.
+verifies RO-Crate checksums and reruns the DAG-ML contract validation.
+`export-open-lineage` derives an OpenLineage `RunEvent` from the already
+validated package and carries DAG-ML-specific reproducibility and OOF-safety
+evidence in custom `dagml_*` facets. The C ABI exposes the same validated
+research provenance export as owned JSON for non-Rust bindings. A branch/merge
+CV+refit contract test exports lineage, OOF cache store, portable artifact
+manifest and research provenance from the same captured bundle, then
+revalidates the published package. Remaining work is optional MLMD export plus
+any external conformance profile we decide to publish. This remains a
+publication/export layer and must not replace the Rust coordinator's stricter
+internal validation model.

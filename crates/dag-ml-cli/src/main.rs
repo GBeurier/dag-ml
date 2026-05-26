@@ -12,8 +12,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use dag_ml_core::{
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
-    build_prediction_cache_payload, build_prediction_cache_record,
-    build_research_provenance_package, oof_campaign_fingerprint,
+    build_openlineage_run_event_from_package_files, build_prediction_cache_payload,
+    build_prediction_cache_record, build_research_provenance_package, oof_campaign_fingerprint,
     regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
     validate_oof_campaign, validate_research_provenance_package_files, AggregatedPredictionBlock,
@@ -573,6 +573,16 @@ enum Command {
     ValidateResearchProvenance {
         #[arg(long)]
         input_dir: PathBuf,
+    },
+    ExportOpenLineage {
+        #[arg(long)]
+        input_dir: PathBuf,
+        #[arg(long)]
+        event_time: String,
+        #[arg(long, default_value = "dag-ml")]
+        namespace: String,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     RunMockReplay {
         #[arg(long)]
@@ -1500,6 +1510,21 @@ fn main() -> Result<()> {
                 validation.has_artifact_manifest,
                 input_dir.display()
             );
+        }
+        Command::ExportOpenLineage {
+            input_dir,
+            event_time,
+            namespace,
+            output,
+        } => {
+            let files = read_research_provenance_package_dir(&input_dir)?;
+            let event = build_openlineage_run_event_from_package_files(
+                &files,
+                namespace.as_str(),
+                event_time.as_str(),
+            )
+            .with_context(|| "failed to build OpenLineage run event")?;
+            emit_json(output.as_ref(), &event, "OpenLineage run event")?;
         }
         Command::RunMockReplay {
             graph,

@@ -1792,6 +1792,11 @@ fn cli_exports_research_provenance_bundle() {
         std::process::id(),
         suffix
     ));
+    let temp_openlineage = std::env::temp_dir().join(format!(
+        "dag_ml_cli_openlineage_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
 
     let build = Command::new(cli())
         .current_dir(&root)
@@ -1896,6 +1901,38 @@ fn cli_exports_research_provenance_bundle() {
         "unexpected validate-research-provenance output: {}",
         String::from_utf8_lossy(&validate_provenance.stdout)
     );
+    let export_openlineage = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "export-open-lineage",
+            "--input-dir",
+            temp_provenance_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--event-time",
+            "2026-05-27T00:00:00Z",
+            "--namespace",
+            "dag-ml-cli-test",
+            "--output",
+            temp_openlineage.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli export-open-lineage");
+    assert!(
+        export_openlineage.status.success(),
+        "export-open-lineage failed: {}",
+        String::from_utf8_lossy(&export_openlineage.stderr)
+    );
+    let openlineage_json =
+        std::fs::read_to_string(&temp_openlineage).expect("OpenLineage export was written");
+    assert!(
+        openlineage_json.contains("\"eventType\": \"COMPLETE\"")
+            && openlineage_json.contains("\"schemaURL\"")
+            && openlineage_json.contains("\"dagml_reproducibility\"")
+            && openlineage_json.contains("\"dag-ml-cli-test\""),
+        "unexpected OpenLineage export: {}",
+        openlineage_json
+    );
 
     let prov_json = std::fs::read_to_string(temp_provenance_dir.join("lineage.prov.jsonld"))
         .expect("PROV JSON-LD export was written");
@@ -1935,6 +1972,7 @@ fn cli_exports_research_provenance_bundle() {
     let _ = std::fs::remove_file(temp_bundle);
     let _ = std::fs::remove_dir_all(temp_manifest_dir);
     let _ = std::fs::remove_dir_all(temp_provenance_dir);
+    let _ = std::fs::remove_file(temp_openlineage);
 }
 
 #[test]

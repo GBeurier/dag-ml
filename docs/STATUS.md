@@ -208,7 +208,9 @@ Implemented:
   PROV/Workflow Run RO-Crate and keeps DAG-ML's stricter OOF, replay and
   artifact contracts as the canonical internal model; the CLI can reopen the
   package with `validate-research-provenance`, verify RO-Crate checksums and
-  re-run the DAG-ML contract validation;
+  re-run the DAG-ML contract validation; `export-open-lineage` derives an
+  OpenLineage `RunEvent` from that already-validated package using custom
+  `dagml_*` facets for reproducibility and OOF-safety evidence;
 - coordinator-owned lineage propagation: schedulers infer `input_lineage` from
   compiled DAG edges marked `propagates_lineage`, reject adapter-declared
   mismatches and expose `--lineage-output` on refit bundle capture commands so

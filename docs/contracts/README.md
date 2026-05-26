@@ -1,9 +1,9 @@
 # Shared Contracts
 
-This directory contains wire-contract artifacts shared with `dag-ml-data`.
-`dag-ml` remains the consumer and semantic validator: it checks fingerprints,
-campaign fold membership, OOF boundaries and leakage policies before any
-controller receives a handle.
+This directory contains wire-contract artifacts shared with `dag-ml-data`, plus
+DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
+validator: it checks fingerprints, campaign fold membership, OOF boundaries and
+leakage policies before any controller receives a handle.
 
 ## Coordinator Data Plan Envelope v1
 
@@ -44,6 +44,16 @@ supports `dag-ml-data` multi-source fusion:
 source maps a `source_id` to a provider-owned `feature_set_id` and optional
 column subset. This keeps `DagMlDataVTable` ABI-compatible while making feature
 fusion explicit.
+
+## DAG-ML OpenLineage Facets v1
+
+Schema: `openlineage_dagml_facets.schema.json`
+
+This is a DAG-ML-specific publication contract, not a shared `dag-ml-data`
+wire contract. `export-open-lineage` derives an OpenLineage `RunEvent` from an
+already validated research provenance package and uses these custom `dagml_*`
+facets to preserve DAG-ML fingerprints, OOF coverage counters, unsafe flags and
+bundle/plan identifiers that OpenLineage does not model natively.
 
 ## Data Provider C ABI v2
 

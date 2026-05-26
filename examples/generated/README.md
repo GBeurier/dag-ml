@@ -54,6 +54,7 @@ cargo run -p dag-ml-cli -- export-artifact-manifest --bundle examples/generated/
 cargo run -p dag-ml-cli -- validate-artifact-manifest --bundle examples/generated/execution_bundle_minimal.json --manifest-dir examples/generated/artifact_manifest_minimal
 cargo run -p dag-ml-cli -- export-research-provenance --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --bundle examples/generated/execution_bundle_minimal.json --artifact-manifest examples/generated/artifact_manifest_minimal --output-dir examples/generated/research_provenance_minimal --plan-id plan:cli.bundle
 cargo run -p dag-ml-cli -- validate-research-provenance --input-dir examples/generated/research_provenance_minimal
+cargo run -p dag-ml-cli -- export-open-lineage --input-dir examples/generated/research_provenance_minimal --event-time 2026-05-27T00:00:00Z --namespace dag-ml --output examples/generated/openlineage_minimal.json
 cargo run -p dag-ml-cli -- run-mock-refit-bundle --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_sample12.json --bundle-id bundle:cli.refit.capture --output examples/generated/execution_bundle_refit_capture.json --plan-id plan:cli.refit.capture
 cargo run -p dag-ml-cli -- run-process-refit-bundle --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_sample12.json --adapter examples/adapters/python_process_controller.py --persistent --bundle-id bundle:cli.process.refit.capture --output examples/generated/execution_bundle_process_refit_capture.json --plan-id plan:cli.process.refit.capture
 cargo run -p dag-ml-cli -- run-process-refit-replay --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_sample12.json --adapter examples/adapters/sklearn_process_controller.py --bundle-id bundle:cli.sklearn.refit.replay --plan-id plan:cli.sklearn.refit.replay
@@ -101,5 +102,8 @@ and writes a standards-facing RO-Crate package. The package includes
 optional prediction-cache/artifact manifests, with checksums recorded in the
 RO-Crate metadata. Reopen it with `validate-research-provenance --input-dir`
 to verify the checksums and rerun the underlying DAG-ML contract validation.
+Use `export-open-lineage` on that validated package when a data-lineage system
+expects an OpenLineage `RunEvent`; DAG-ML-specific OOF and reproducibility
+evidence is carried in custom `dagml_*` facets.
 DAG-ML's internal fingerprints, replay requirements and leakage-safety
 contracts remain the source of truth.
