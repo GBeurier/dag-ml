@@ -101,9 +101,11 @@ folds. The CLI can also build mock and external-process refit bundles directly
 from captured refit artifact records, and can run a stateful process refit plus
 immediate replay against captured handles. It can run `FIT_CV` followed by
 `REFIT` in a single process context for a branch/merge OOF DAG, proving the
-meta-model refit consumes complete CV OOF coverage before bundle capture. It
-has both mock and external-process execution smokes for campaign, refit-bundle
-and replay paths, and the C ABI exposes a mock replay execution helper
-returning a JSON summary. The
+meta-model refit consumes complete CV OOF coverage before bundle capture, then
+replay that captured branch/merge bundle through the process adapter with
+separate branch/meta data requirements backed by one data-plan envelope. It has
+both mock and external-process execution smokes for campaign, refit-bundle and
+replay paths, and the C ABI exposes a mock replay execution helper returning a
+JSON summary. The
 remaining work is schema migration policy, production host adapters and
 persistent artifact/data stores.
