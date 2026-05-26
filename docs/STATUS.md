@@ -120,6 +120,13 @@ Implemented:
   replay loads exact validation OOF blocks through the store, validates them
   against bundle cache records, and asks the store to materialize controller
   prediction handles for OOF-dependent refit inputs;
+- file-backed prediction-cache store: validated payload sets can be exported to
+  a cache directory with a manifest plus one payload file per OOF requirement,
+  reopened for replay, fully revalidated against the bundle and rejected if a
+  payload file is tampered;
+- CLI export/validation/replay path for file-backed prediction caches, with
+  `REFIT` replay accepting either a validated payload set or a validated cache
+  directory, but not both;
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;
@@ -181,6 +188,9 @@ Implemented:
 - C ABI graph validation entry point;
 - `dag-ml-data` fixture integration through schema, plan and relation
   fingerprints;
+- explicit `dag-ml-data` coordinator-envelope contract fixture using the
+  `S001`/`S002` sample ids and `y` target emitted by `dag-ml-data`, plus a
+  sibling-repo CLI conformance test when `../dag-ml-data` is available;
 - coordinator graph/campaign/controller fixtures;
 - CI workflow.
 
@@ -190,8 +200,7 @@ Not implemented yet:
 - advanced search-space compiler/lowering beyond typed node-parameter
   overrides;
 - non-mean aggregation methods and custom aggregation controllers;
-- persistent artifact/cache stores beyond JSON cache payload export and the
-  in-memory prediction-cache store adapter;
+- persistent artifact stores and non-JSON/non-file-cache backends;
 - Arrow prediction storage;
 - production host controller adapters with stable process pools, native
   libraries or language-specific bindings;
@@ -201,6 +210,7 @@ Not implemented yet:
 
 Next recommended task:
 
-Add native/foreign store backends behind `RuntimePredictionCacheStore`, starting
-with an Arrow-backed prediction cache that can be shared across process and C
-ABI controller adapters.
+Add an Arrow-backed prediction cache behind `RuntimePredictionCacheStore`, using
+the new file-backed cache manifest/store as the migration point from JSON
+payload files to columnar buffers shared across process and C ABI controller
+adapters.
