@@ -8,13 +8,14 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_core::{
     build_execution_bundle, build_execution_plan, oof_campaign_fingerprint, select_candidate,
-    select_candidate_groups, validate_oof_campaign, BundleId, CampaignSpec, CandidateScore,
-    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataRequestPartition,
-    ExecutionBundle, ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef,
-    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeId, NodeResult,
-    NodeTask, OofCampaign, Phase, PredictionBlock, PredictionPartition, RefitArtifactRecord,
-    ReplayPhaseRequest, RunContext, RunId, RuntimeController, RuntimeControllerRegistry, SampleId,
-    SelectionDecision, SelectionPolicy, SequentialScheduler, VariantId,
+    select_candidate_groups, validate_oof_campaign, ArtifactId, BundleId, CampaignSpec,
+    CandidateScore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
+    DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, GraphSpec, HandleKind,
+    HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeId,
+    NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock, PredictionPartition,
+    RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId, RuntimeController,
+    RuntimeControllerRegistry, SampleId, SelectionDecision, SelectionPolicy, SequentialScheduler,
+    VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -117,6 +118,28 @@ enum Command {
         output: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
+    },
+    RunMockRefitBundle {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = "bundle:cli.refit")]
+        bundle_id: String,
+        #[arg(long)]
+        variant_id: Option<String>,
+        #[arg(long, default_value = "plan:cli.refit")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.refit")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
     },
     ValidateBundle {
         #[arg(long)]
@@ -397,6 +420,81 @@ fn main() -> Result<()> {
             bundle.validate_against_plan(&plan)?;
             emit_json(output.as_ref(), &bundle, "execution bundle")?;
         }
+        Command::RunMockRefitBundle {
+            graph,
+            campaign,
+            controllers,
+            envelope,
+            output,
+            bundle_id,
+            variant_id,
+            plan_id,
+            run_id,
+            root_seed,
+        } => {
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let selected_variant_id = match variant_id {
+                Some(variant_id) => VariantId::new(variant_id)?,
+                None => plan
+                    .variants
+                    .first()
+                    .map(|variant| variant.variant_id.clone())
+                    .with_context(|| "execution plan has no variants to refit")?,
+            };
+            if !plan
+                .variants
+                .iter()
+                .any(|variant| variant.variant_id == selected_variant_id)
+            {
+                bail!(
+                    "unknown variant `{selected_variant_id}` for plan `{}`",
+                    plan.id
+                );
+            }
+
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let data_provider = InMemoryDataProvider::with_envelope(
+                ControllerId::new("controller:data.provider")?,
+                envelope,
+            )?;
+            let runtime_controllers = mock_runtime_controllers_with_refit_artifacts(&plan)?;
+            let mut artifact_store = InMemoryArtifactStore::new();
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
+            ctx.variant_id = Some(selected_variant_id.clone());
+
+            let results = SequentialScheduler
+                .execute_campaign_phase_with_data_provider_and_artifact_store(
+                    &plan,
+                    &runtime_controllers,
+                    &data_provider,
+                    &mut artifact_store,
+                    &mut ctx,
+                    Phase::Refit,
+                )
+                .with_context(|| "mock refit execution failed")?;
+            if artifact_store.is_empty() {
+                bail!("mock refit did not capture any refit artifacts");
+            }
+
+            let mut bundle = build_execution_bundle(
+                BundleId::new(bundle_id)?,
+                &plan,
+                Some(selected_variant_id),
+                BTreeMap::new(),
+                artifact_store.refit_artifacts(),
+            )
+            .with_context(|| "failed to build execution bundle from refit artifacts")?;
+            bundle.metadata.insert(
+                "refit_result_count".to_string(),
+                serde_json::json!(results.len()),
+            );
+            bundle.metadata.insert(
+                "refit_lineage_count".to_string(),
+                serde_json::json!(ctx.lineage.len()),
+            );
+            emit_json(output.as_ref(), &bundle, "execution bundle")?;
+        }
         Command::ValidateBundle {
             bundle,
             graph,
@@ -563,6 +661,7 @@ struct BundleBuildSpec {
 
 struct CliMockController {
     id: ControllerId,
+    emit_refit_artifact: bool,
 }
 
 struct ProcessRuntimeController {
@@ -851,13 +950,39 @@ impl RuntimeController for CliMockController {
         } else {
             Vec::new()
         };
+        let artifacts = if self.emit_refit_artifact
+            && task.phase == Phase::Refit
+            && matches!(task.node_plan.kind, dag_ml_core::NodeKind::Model)
+        {
+            vec![dag_ml_core::ArtifactRef {
+                id: ArtifactId::new(format!("artifact:{}:refit", task.node_plan.node_id))?,
+                kind: "mock_model".to_string(),
+                controller_id: self.id.clone(),
+                size_bytes: Some(128),
+            }]
+        } else {
+            Vec::new()
+        };
+        let artifact_handles = artifacts
+            .iter()
+            .map(|artifact| {
+                (
+                    artifact.id.clone(),
+                    HandleRef {
+                        handle: stable_handle(artifact.id.as_str()),
+                        kind: HandleKind::Model,
+                        owner_controller: self.id.clone(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         Ok(NodeResult {
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("out".to_string(), output)]),
             predictions,
             shape_deltas: Vec::new(),
-            artifacts: Vec::new(),
-            artifact_handles: BTreeMap::new(),
+            artifacts: artifacts.clone(),
+            artifact_handles,
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{}:{}",
@@ -881,7 +1006,7 @@ impl RuntimeController for CliMockController {
                 fold_id: task.fold_id.clone(),
                 branch_path: task.branch_path.clone(),
                 input_lineage: Vec::new(),
-                artifact_refs: Vec::new(),
+                artifact_refs: artifacts,
                 params_fingerprint: task.node_plan.params_fingerprint.clone(),
                 data_model_shape_fingerprint: None,
                 aggregation_policy_fingerprint: None,
@@ -896,10 +1021,24 @@ impl RuntimeController for CliMockController {
 fn mock_runtime_controllers(
     plan: &dag_ml_core::ExecutionPlan,
 ) -> Result<RuntimeControllerRegistry> {
+    mock_runtime_controllers_with_options(plan, false)
+}
+
+fn mock_runtime_controllers_with_refit_artifacts(
+    plan: &dag_ml_core::ExecutionPlan,
+) -> Result<RuntimeControllerRegistry> {
+    mock_runtime_controllers_with_options(plan, true)
+}
+
+fn mock_runtime_controllers_with_options(
+    plan: &dag_ml_core::ExecutionPlan,
+    emit_refit_artifacts: bool,
+) -> Result<RuntimeControllerRegistry> {
     let mut registry = RuntimeControllerRegistry::new();
     for controller_id in plan.controller_manifests.keys() {
         registry.register(Box::new(CliMockController {
             id: controller_id.clone(),
+            emit_refit_artifact: emit_refit_artifacts,
         }))?;
     }
     Ok(registry)
