@@ -72,8 +72,12 @@ observation-level feature exports; `feature_arrow` can stay ABI-compatible
 while carrying `dag-ml-data` JSON fusion selectors for multi-source feature
 joins. The two C headers now share a guarded data-provider vtable ABI version
 and compile together in both include orders. A core in-memory provider records
-both materialized handles and scoped data-view handles for smoke tests. Next
-missing piece is a concrete buffer-backed `dag-ml-data` provider/handle arena.
+both materialized handles and scoped data-view handles for smoke tests, and
+the C conformance suite now links both libraries so `dag-ml` replay can consume
+a real `dag-ml-data` f64 provider, read feature/target Arrow exports and verify
+data/view handle release. Next missing piece is to turn that sibling-checkout
+smoke into a shared conformance pack and broaden provider backends beyond the
+in-memory fixture.
 
 ## Phase 4: Parallelism
 

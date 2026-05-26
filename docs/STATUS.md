@@ -170,6 +170,10 @@ Implemented:
 - `dag_ml.h` and `dag_ml_data.h` share a guarded data-provider vtable ABI
   version macro and are compiled together in both include orders when the
   sibling checkout is present;
+- cross-repo C conformance replay where `dag-ml` consumes a real
+  `dag-ml-data` in-memory f64 provider vtable, reads feature and target Arrow
+  exports from an external controller, and verifies data/view handle release
+  order through the runtime adapter;
 - C ABI controller vtable generic `invoke` path for external host
   controllers, routing `NodeTask` JSON to `NodeResult` JSON with explicit
   host-returned byte release, plus a tested Rust runtime adapter over the
@@ -224,11 +228,11 @@ Not implemented yet:
 - production host controller adapters with stable process pools, native
   libraries or language-specific bindings;
 - bundle schema migration policy;
-- concrete `dag-ml-data` provider implementation with real buffers and handle
-  lifecycle arena.
+- production `dag-ml-data` provider backends beyond the current in-memory C
+  conformance provider.
 
 Next recommended task:
 
-Add cross-repo C conformance where `dag-ml` replay consumes a real
-`dag-ml-data` f64 provider vtable, including feature/target Arrow reads and
-data/view release checks.
+Promote the cross-repo provider contract into a shared conformance pack:
+versioned generated fixtures, schema validation, and CI that runs the provider
+replay test whenever the sibling checkout is available.
