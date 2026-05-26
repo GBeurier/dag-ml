@@ -1745,10 +1745,8 @@ impl CAbiRuntimePredictionCacheStore {
         }
         Ok(Self { vtable })
     }
-}
 
-impl RuntimePredictionCacheStore for CAbiRuntimePredictionCacheStore {
-    fn load_blocks(&self, requirement_key: &str) -> dag_ml_core::Result<Vec<PredictionBlock>> {
+    fn load_prediction_json(&self, requirement_key: &str) -> dag_ml_core::Result<Vec<u8>> {
         let load_blocks = self.vtable.load_blocks.ok_or_else(|| {
             DagMlError::RuntimeValidation(
                 "prediction cache vtable is missing load_blocks".to_string(),
@@ -1780,9 +1778,28 @@ impl RuntimePredictionCacheStore for CAbiRuntimePredictionCacheStore {
         }
         let data = unsafe { slice::from_raw_parts(out_json.ptr, out_json.len) }.to_vec();
         unsafe { release_bytes(self.vtable.user_data, out_json) };
+        Ok(data)
+    }
+}
+
+impl RuntimePredictionCacheStore for CAbiRuntimePredictionCacheStore {
+    fn load_blocks(&self, requirement_key: &str) -> dag_ml_core::Result<Vec<PredictionBlock>> {
+        let data = self.load_prediction_json(requirement_key)?;
         serde_json::from_slice::<Vec<PredictionBlock>>(&data).map_err(|error| {
             DagMlError::RuntimeValidation(format!(
                 "prediction cache load_blocks returned invalid prediction block JSON: {error}"
+            ))
+        })
+    }
+
+    fn load_aggregated_blocks(
+        &self,
+        requirement_key: &str,
+    ) -> dag_ml_core::Result<Vec<AggregatedPredictionBlock>> {
+        let data = self.load_prediction_json(requirement_key)?;
+        serde_json::from_slice::<Vec<AggregatedPredictionBlock>>(&data).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "prediction cache load_blocks returned invalid aggregated prediction block JSON: {error}"
             ))
         })
     }
@@ -2271,10 +2288,11 @@ fn stable_handle(value: &str) -> u64 {
 mod tests {
     use super::*;
     use dag_ml_core::{
-        build_prediction_cache_record, ArtifactId, ArtifactPolicy, ArtifactRef, BundleId,
-        BundlePredictionRequirement, ControllerCapability, ControllerFitScope, DataBinding,
-        DataProviderViewSpec, DataRequestPartition, DataViewPolicy, FoldId, NodeId, NodeKind,
-        NodePlan, RngPolicy, VariantId,
+        build_aggregated_prediction_cache_record, build_prediction_cache_record, ArtifactId,
+        ArtifactPolicy, ArtifactRef, BundleId, BundlePredictionRequirement, ControllerCapability,
+        ControllerFitScope, DataBinding, DataProviderViewSpec, DataRequestPartition,
+        DataViewPolicy, FoldId, NodeId, NodeKind, NodePlan, PredictionLevel, PredictionUnitId,
+        RngPolicy, TargetId, VariantId,
     };
     use std::ffi::CStr;
 
@@ -3059,6 +3077,78 @@ mod tests {
             serde_json::from_slice(&state.materialize_json).unwrap();
         assert_eq!(request_json["requirement"]["producer_node"], "model:base");
         assert_eq!(request_json["cache"]["requirement_key"], requirement.key());
+    }
+
+    #[test]
+    fn c_abi_prediction_cache_store_loads_aggregated_blocks() {
+        let requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("model:base").unwrap(),
+            source_port: "pred".to_string(),
+            consumer_node: NodeId::new("model:meta").unwrap(),
+            target_port: "pred".to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Target,
+            fold_ids: vec![FoldId::new("fold:0").unwrap()],
+            unit_ids: vec![PredictionUnitId::Target(TargetId::new("target:1").unwrap())],
+            sample_ids: Vec::new(),
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let blocks = vec![AggregatedPredictionBlock {
+            prediction_id: Some("prediction:model:base.target.fold0".to_string()),
+            producer_node: requirement.producer_node.clone(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            level: PredictionLevel::Target,
+            unit_ids: requirement.unit_ids.clone(),
+            values: vec![vec![0.42]],
+            target_names: vec!["y".to_string()],
+        }];
+        let cache = build_aggregated_prediction_cache_record(&requirement, &blocks).unwrap();
+        let mut state = PredictionCacheStub {
+            blocks_json: serde_json::to_vec(&blocks).unwrap(),
+            ..Default::default()
+        };
+        let table = DagMlPredictionCacheVTable {
+            abi_version: 1,
+            user_data: (&mut state as *mut PredictionCacheStub).cast::<c_void>(),
+            load_blocks: Some(prediction_cache_load_blocks_stub),
+            materialize: Some(prediction_cache_materialize_stub),
+            release_bytes: Some(prediction_cache_release_bytes_stub),
+            release: None,
+            destroy: None,
+        };
+        let store = CAbiRuntimePredictionCacheStore::new(table).unwrap();
+
+        let loaded = store.load_aggregated_blocks(&requirement.key()).unwrap();
+        assert_eq!(loaded, blocks);
+        assert_eq!(
+            String::from_utf8(state.load_key.clone()).unwrap(),
+            requirement.key()
+        );
+        assert_eq!(state.release_count, 1);
+
+        let handle = store
+            .materialize(&PredictionCacheMaterializationRequest {
+                run_id: RunId::new("run:prediction.cache.abi").unwrap(),
+                bundle_id: BundleId::new("bundle:prediction.cache.abi").unwrap(),
+                phase: Phase::Refit,
+                variant_id: None,
+                requirement: requirement.clone(),
+                cache,
+                producer_controller_id: ControllerId::new("controller:model").unwrap(),
+            })
+            .unwrap();
+        assert_eq!(handle.handle, 77);
+        let request_json: serde_json::Value =
+            serde_json::from_slice(&state.materialize_json).unwrap();
+        assert_eq!(request_json["requirement"]["prediction_level"], "target");
+        assert_eq!(
+            request_json["requirement"]["unit_ids"][0]["level"],
+            "target"
+        );
+        assert_eq!(request_json["requirement"]["unit_ids"][0]["id"], "target:1");
+        assert_eq!(request_json["cache"]["unit_ids"][0]["level"], "target");
     }
 
     #[test]
