@@ -269,7 +269,10 @@ Implemented:
 - `dag-ml-core` now has a bounded `ParallelScheduler` for parallel DAG levels:
   controllers are `Send + Sync`, independent nodes in the same compiled level
   are invoked concurrently, and results are committed back into prediction,
-  lineage and handle stores in deterministic level order;
+  lineage and handle stores in deterministic level order. Core tests now stress
+  that contract across multi-level campaign scopes with three variants and
+  three CV folds, comparing sequential and parallel outputs, predictions,
+  lineage and seeds byte-for-byte;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph validation,

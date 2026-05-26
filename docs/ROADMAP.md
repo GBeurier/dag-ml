@@ -70,7 +70,10 @@ controllers are now `Send + Sync`; the persistent process adapter pool locks per
 worker, so parallel scheduler threads can use distinct workers instead of
 serializing on the whole pool. The CLI exposes `--scheduler sequential|parallel`
 and `--scheduler-workers` for campaign, refit and replay execution commands.
-Broader stress tests remain to do.
+Core stress coverage now compares sequential and parallel campaign execution on
+multi-level DAG scopes across three variants and three CV folds, including
+deterministic prediction, lineage and seed equality. Broader native-controller
+and long-running adapter stress tests remain to do.
 
 ## Phase 3: Integration With `dag-ml-data`
 
