@@ -147,3 +147,53 @@ refit-bundle and replay paths, and the C ABI exposes a mock replay execution
 helper returning a JSON summary. The remaining work is production host
 adapters, persistent artifact/data stores and Arrow-backed prediction cache
 exports.
+
+## Phase 6: Research Provenance Exports
+
+Goal: make a DAG-ML campaign publishable as a reproducible research object
+without weakening the internal DAG-ML contracts.
+
+Design rule:
+
+- the internal DAG-ML model remains canonical for OOF, folds, groups,
+  repetitions, augmentation origins, leakage units, prediction levels, refit
+  conditions, fingerprints and scheduler decisions;
+- research standards are export targets, not the execution model used by the
+  coordinator;
+- exported provenance must be generated from validated plans, bundles,
+  lineage, data envelopes, cache manifests and artifact refs, never from
+  adapter-side free text.
+
+Definition of done:
+
+- W3C PROV mapping for DAG-ML lineage:
+  - `LineageRecord` and phase-scoped node execution become `prov:Activity`;
+  - data views, prediction blocks, prediction caches, bundles and model
+    artifacts become `prov:Entity`;
+  - controllers, adapters, plugins and host runtimes become `prov:Agent`;
+  - DAG edges, OOF joins, cache hits, artifact capture and replay materialization
+    map to `prov:used`, `prov:wasGeneratedBy`, `prov:wasDerivedFrom` and
+    `prov:wasAssociatedWith`;
+- Workflow Run RO-Crate export for research bundles:
+  - `ro-crate-metadata.json` with a `ComputationalWorkflow` main entity;
+  - embedded or referenced `graph.json`, `campaign.json`, `execution_plan.json`,
+    `bundle.json`, data-plan envelopes, prediction-cache manifests and artifact
+    manifests;
+  - `lineage.prov.jsonld` plus checksums/fingerprints for every exported
+    contract artifact;
+  - software/controller/plugin versions, seeds, unsafe flags and replay
+    requirements;
+- a DAG-ML extension namespace for ML-specific invariants that W3C PROV and
+  RO-Crate do not express natively: fold id, variant id, branch path,
+  prediction level, leakage unit, aggregation policy, augmentation origin,
+  refit dependency and OOF coverage;
+- conformance fixtures that prove a branch/merge OOF sklearn campaign can be
+  exported and revalidated as a Workflow Run RO-Crate without losing DAG-ML
+  leakage-safety evidence;
+- optional later adapters for OpenLineage and MLMD, derived from the same
+  internal provenance graph:
+  - OpenLineage for data-platform/job lineage;
+  - MLMD for ML experiment stores.
+
+Status: planned. This is a publication/export layer and must not replace the
+Rust coordinator's stricter internal validation model.
