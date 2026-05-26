@@ -92,6 +92,10 @@ Implemented:
   meta refit artifact to the OOF requirements it consumed, accepts validated
   selection decisions for branch and merge choices, and keeps an OOF summary
   (producer, folds, samples, prediction width and targets) in bundle metadata;
+- materialized OOF prediction-cache payload sets for CV+refit bundles: payload
+  JSON stores the actual validation `PredictionBlock` values, validates by
+  cache id, requirement key, format, row/block counts and content fingerprints
+  against the bundle manifest, and refuses tampered payload values;
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;
@@ -138,7 +142,7 @@ Not implemented yet:
 - full DSL compiler;
 - full search-space compiler/lowering into graph/campaign overrides;
 - non-mean aggregation methods and custom aggregation controllers;
-- persistent artifact/cache stores;
+- persistent artifact/cache stores beyond JSON cache payload export;
 - Arrow prediction storage;
 - production host controller adapters with stable process pools, native
   libraries or language-specific bindings;
@@ -148,6 +152,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Move the sklearn complex branch/merge path from report-level validation toward
-runtime `NodeTask`/`NodeResult` execution so OOF selection, refit artifacts and
-replay are validated together inside the scheduler.
+Load validated prediction-cache payloads back into the replay `PredictionStore`
+so OOF-dependent `REFIT` replay can be enabled without weakening the current
+manifest-only refusal.

@@ -8,16 +8,16 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_core::{
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
-    build_prediction_cache_record, oof_campaign_fingerprint, select_candidate,
-    select_candidate_groups, validate_oof_campaign, ArtifactId, BundleId,
-    BundlePredictionCacheRecord, BundlePredictionRequirement, CampaignSpec, CandidateScore,
-    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataRequestPartition,
-    ExecutionBundle, ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef,
-    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId,
-    NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock, PredictionPartition,
-    RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId, RuntimeController,
-    RuntimeControllerRegistry, SampleId, SelectionDecision, SelectionMetric, SelectionPolicy,
-    SequentialScheduler, VariantId,
+    build_prediction_cache_payload, build_prediction_cache_record, oof_campaign_fingerprint,
+    select_candidate, select_candidate_groups, validate_oof_campaign, ArtifactId, BundleId,
+    BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
+    BundlePredictionRequirement, CampaignSpec, CandidateScore, ControllerId, ControllerManifest,
+    ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle,
+    ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
+    InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
+    OofCampaign, Phase, PredictionBlock, PredictionPartition, RefitArtifactRecord,
+    ReplayPhaseRequest, RunContext, RunId, RuntimeController, RuntimeControllerRegistry, SampleId,
+    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -190,6 +190,8 @@ enum Command {
         persistent: bool,
         #[arg(long)]
         output: Option<PathBuf>,
+        #[arg(long)]
+        prediction_cache_output: Option<PathBuf>,
         #[arg(long, default_value = "bundle:cli.process.cv.refit")]
         bundle_id: String,
         #[arg(long)]
@@ -264,6 +266,12 @@ enum Command {
         replay_request: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
+    },
+    ValidatePredictionCache {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        payload: PathBuf,
     },
     RunMockReplay {
         #[arg(long)]
@@ -621,6 +629,7 @@ fn main() -> Result<()> {
             adapter,
             persistent,
             output,
+            prediction_cache_output,
             bundle_id,
             variant_id,
             selections,
@@ -661,6 +670,17 @@ fn main() -> Result<()> {
                 captured.bundle.prediction_caches.len()
             );
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
+            if let Some(path) = prediction_cache_output.as_ref() {
+                let payload_set = BundlePredictionCachePayloadSet {
+                    bundle_id: captured.bundle.bundle_id.clone(),
+                    schema_version: dag_ml_core::PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+                    caches: captured.prediction_cache_payloads.clone(),
+                };
+                payload_set
+                    .validate_against_bundle(&captured.bundle)
+                    .with_context(|| "prediction cache payloads do not match captured bundle")?;
+                emit_json(Some(path), &payload_set, "prediction cache payload set")?;
+            }
         }
         Command::RunProcessCvRefitReplay {
             graph,
@@ -825,6 +845,19 @@ fn main() -> Result<()> {
                 bundle.prediction_caches.len(),
                 bundle.data_requirements.len(),
                 envelope_map.len()
+            );
+        }
+        Command::ValidatePredictionCache { bundle, payload } => {
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let payload: BundlePredictionCachePayloadSet =
+                read_json(&payload, "prediction cache payload set")?;
+            payload
+                .validate_against_bundle(&bundle)
+                .with_context(|| "prediction cache payload set does not match bundle")?;
+            println!(
+                "valid prediction cache payload set: bundle={}, cache(s)={}",
+                payload.bundle_id,
+                payload.caches.len()
             );
         }
         Command::RunMockReplay {
@@ -1278,6 +1311,7 @@ struct CapturedRefitBundleInput<'a> {
 struct CapturedRefitBundle {
     bundle: ExecutionBundle,
     artifact_store: InMemoryArtifactStore,
+    prediction_cache_payloads: Vec<BundlePredictionCachePayload>,
     fit_cv_result_count: usize,
     fit_cv_oof_prediction_block_count: usize,
     refit_result_count: usize,
@@ -1350,6 +1384,7 @@ fn build_bundle_from_captured_refit(
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
+        prediction_cache_payloads: Vec::new(),
         fit_cv_result_count: 0,
         fit_cv_oof_prediction_block_count: 0,
         refit_result_count: results.len(),
@@ -1388,6 +1423,8 @@ fn build_bundle_from_cv_then_captured_refit(
         oof_prediction_requirements(input.plan, ctx.prediction_store.blocks())?;
     let prediction_caches =
         oof_prediction_caches(&prediction_requirements, ctx.prediction_store.blocks())?;
+    let prediction_cache_payloads =
+        oof_prediction_cache_payloads(&prediction_requirements, ctx.prediction_store.blocks())?;
     let oof_prediction_summary = oof_prediction_summary(ctx.prediction_store.blocks())?;
 
     let refit_results = SequentialScheduler
@@ -1457,6 +1494,7 @@ fn build_bundle_from_cv_then_captured_refit(
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
+        prediction_cache_payloads,
         fit_cv_result_count: fit_cv_results.len(),
         fit_cv_oof_prediction_block_count,
         refit_result_count: refit_results.len(),
@@ -1540,6 +1578,16 @@ fn oof_prediction_caches(
     requirements
         .iter()
         .map(|requirement| build_prediction_cache_record(requirement, blocks))
+        .collect()
+}
+
+fn oof_prediction_cache_payloads(
+    requirements: &[BundlePredictionRequirement],
+    blocks: &[PredictionBlock],
+) -> dag_ml_core::Result<Vec<BundlePredictionCachePayload>> {
+    requirements
+        .iter()
+        .map(|requirement| build_prediction_cache_payload(requirement, blocks))
         .collect()
 }
 

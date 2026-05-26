@@ -36,6 +36,16 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_branch_merge_prediction_cache = std::env::temp_dir().join(format!(
+        "dag_ml_cli_branch_merge_prediction_cache_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_branch_merge_prediction_cache_tampered = std::env::temp_dir().join(format!(
+        "dag_ml_cli_branch_merge_prediction_cache_tampered_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
     let temp_refit_request = std::env::temp_dir().join(format!(
         "dag_ml_cli_refit_request_{}_{}.json",
         std::process::id(),
@@ -369,6 +379,10 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             temp_branch_merge_cv_refit_bundle
                 .to_str()
                 .expect("temp path is valid utf-8"),
+            "--prediction-cache-output",
+            temp_branch_merge_prediction_cache
+                .to_str()
+                .expect("temp path is valid utf-8"),
             "--plan-id",
             "plan:cli.branch.merge.cv.refit",
             "--run-id",
@@ -422,6 +436,88 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_cv_refit_bundle_json.contains("refit_prediction_block_count"),
         "unexpected branch/merge CV+refit bundle JSON: {}",
         branch_merge_cv_refit_bundle_json
+    );
+    let branch_merge_prediction_cache_json =
+        std::fs::read_to_string(&temp_branch_merge_prediction_cache)
+            .expect("branch/merge prediction cache payload was written");
+    assert!(
+        branch_merge_prediction_cache_json.contains("\"bundle_id\": \"bundle:cli.branch.merge.cv.refit\"")
+            && branch_merge_prediction_cache_json.contains("\"schema_version\": 1")
+            && branch_merge_prediction_cache_json.contains("\"caches\"")
+            && branch_merge_prediction_cache_json.contains("\"blocks\"")
+            && branch_merge_prediction_cache_json.contains("\"values\"")
+            && branch_merge_prediction_cache_json.contains(
+                "prediction-cache:branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof"
+            )
+            && branch_merge_prediction_cache_json.contains(
+                "prediction-cache:branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof"
+            ),
+        "unexpected branch/merge prediction cache payload JSON: {}",
+        branch_merge_prediction_cache_json
+    );
+    let validate_prediction_cache = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-prediction-cache",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--payload",
+            temp_branch_merge_prediction_cache
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to validate branch/merge prediction cache payload");
+    assert!(
+        validate_prediction_cache.status.success(),
+        "validate-prediction-cache failed: {}",
+        String::from_utf8_lossy(&validate_prediction_cache.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_prediction_cache.stdout).contains(
+            "valid prediction cache payload set: bundle=bundle:cli.branch.merge.cv.refit, cache(s)=2"
+        ),
+        "unexpected validate-prediction-cache output: {}",
+        String::from_utf8_lossy(&validate_prediction_cache.stdout)
+    );
+    let mut tampered_prediction_cache: serde_json::Value =
+        serde_json::from_str(&branch_merge_prediction_cache_json)
+            .expect("prediction cache payload JSON parses");
+    tampered_prediction_cache["caches"][0]["blocks"][0]["values"][0][0] =
+        serde_json::json!(123456.0);
+    std::fs::write(
+        &temp_branch_merge_prediction_cache_tampered,
+        serde_json::to_string_pretty(&tampered_prediction_cache)
+            .expect("tampered prediction cache payload serializes"),
+    )
+    .expect("tampered prediction cache payload was written");
+    let validate_tampered_prediction_cache = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-prediction-cache",
+            "--bundle",
+            temp_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--payload",
+            temp_branch_merge_prediction_cache_tampered
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to validate tampered branch/merge prediction cache payload");
+    assert!(
+        !validate_tampered_prediction_cache.status.success(),
+        "tampered prediction cache payload unexpectedly validated: {}",
+        String::from_utf8_lossy(&validate_tampered_prediction_cache.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_tampered_prediction_cache.stderr)
+            .contains("content fingerprint does not match blocks"),
+        "unexpected tampered prediction cache validation error: {}",
+        String::from_utf8_lossy(&validate_tampered_prediction_cache.stderr)
     );
     std::fs::write(
         &temp_branch_merge_replay_request,
