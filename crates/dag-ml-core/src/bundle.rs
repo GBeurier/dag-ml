@@ -16,12 +16,118 @@ pub const EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 1;
 pub const PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 pub const BUNDLE_PREDICTION_CACHE_FORMAT: &str = "dag-ml-json-prediction-blocks-v1";
 
+pub const MIN_READABLE_EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 1;
+pub const MIN_WRITABLE_EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 1;
+pub const MIN_READABLE_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+pub const MIN_WRITABLE_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+
 fn default_execution_bundle_schema_version() -> u32 {
     EXECUTION_BUNDLE_SCHEMA_VERSION
 }
 
 fn default_prediction_cache_payload_schema_version() -> u32 {
     PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SchemaMigrationPolicy {
+    pub artifact: String,
+    pub current_version: u32,
+    pub min_readable_version: u32,
+    pub min_writable_version: u32,
+    #[serde(default)]
+    pub automatic_migrations: BTreeMap<u32, u32>,
+}
+
+impl SchemaMigrationPolicy {
+    pub fn validate(&self) -> Result<()> {
+        validate_non_empty("schema migration artifact", &self.artifact)?;
+        if self.current_version == 0
+            || self.min_readable_version == 0
+            || self.min_writable_version == 0
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "schema migration policy `{}` has zero version boundary",
+                self.artifact
+            )));
+        }
+        if self.min_readable_version > self.current_version {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "schema migration policy `{}` min_readable_version exceeds current_version",
+                self.artifact
+            )));
+        }
+        if self.min_writable_version > self.current_version {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "schema migration policy `{}` min_writable_version exceeds current_version",
+                self.artifact
+            )));
+        }
+        for (from, to) in &self.automatic_migrations {
+            if *from == 0 || *to == 0 {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "schema migration policy `{}` contains a zero migration version",
+                    self.artifact
+                )));
+            }
+            if from == to {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "schema migration policy `{}` contains a no-op migration {from}->{to}",
+                    self.artifact
+                )));
+            }
+            if *to > self.current_version {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "schema migration policy `{}` migrates to unsupported future version {to}",
+                    self.artifact
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_read_version(&self, version: u32, owner: &str) -> Result<()> {
+        self.validate()?;
+        if version < self.min_readable_version {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "{owner} uses schema_version {version}, below minimum readable {} for {}",
+                self.min_readable_version, self.artifact
+            )));
+        }
+        if version > self.current_version {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "{owner} uses future schema_version {version}, current readable {} for {}",
+                self.current_version, self.artifact
+            )));
+        }
+        if version != self.current_version && !self.automatic_migrations.contains_key(&version) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "{owner} uses schema_version {version}, but {} declares no automatic migration to current version {}",
+                self.artifact, self.current_version
+            )));
+        }
+        Ok(())
+    }
+}
+
+pub fn execution_bundle_schema_migration_policy() -> SchemaMigrationPolicy {
+    SchemaMigrationPolicy {
+        artifact: "execution_bundle".to_string(),
+        current_version: EXECUTION_BUNDLE_SCHEMA_VERSION,
+        min_readable_version: MIN_READABLE_EXECUTION_BUNDLE_SCHEMA_VERSION,
+        min_writable_version: MIN_WRITABLE_EXECUTION_BUNDLE_SCHEMA_VERSION,
+        automatic_migrations: BTreeMap::new(),
+    }
+}
+
+pub fn prediction_cache_payload_schema_migration_policy() -> SchemaMigrationPolicy {
+    SchemaMigrationPolicy {
+        artifact: "prediction_cache_payload".to_string(),
+        current_version: PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+        min_readable_version: MIN_READABLE_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+        min_writable_version: MIN_WRITABLE_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+        automatic_migrations: BTreeMap::new(),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -345,12 +451,13 @@ pub struct BundlePredictionCachePayloadSet {
 
 impl BundlePredictionCachePayloadSet {
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "prediction cache payload set for bundle `{}` uses unsupported schema_version {}, expected {}",
-                self.bundle_id, self.schema_version, PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION
-            )));
-        }
+        prediction_cache_payload_schema_migration_policy().validate_read_version(
+            self.schema_version,
+            &format!(
+                "prediction cache payload set for bundle `{}`",
+                self.bundle_id
+            ),
+        )?;
         let mut requirement_keys = BTreeSet::new();
         let mut cache_ids = BTreeSet::new();
         for payload in &self.caches {
@@ -521,12 +628,8 @@ pub struct ExecutionBundle {
 
 impl ExecutionBundle {
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != EXECUTION_BUNDLE_SCHEMA_VERSION {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "bundle `{}` uses unsupported schema_version {}, expected {}",
-                self.bundle_id, self.schema_version, EXECUTION_BUNDLE_SCHEMA_VERSION
-            )));
-        }
+        execution_bundle_schema_migration_policy()
+            .validate_read_version(self.schema_version, &format!("bundle `{}`", self.bundle_id))?;
         if self.plan_id.trim().is_empty() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "bundle `{}` has empty plan_id",
@@ -1872,6 +1975,70 @@ mod tests {
         bundle.schema_version = EXECUTION_BUNDLE_SCHEMA_VERSION + 1;
 
         assert!(bundle.validate().is_err());
+
+        bundle.schema_version = 0;
+        assert!(bundle.validate().is_err());
+    }
+
+    #[test]
+    fn schema_migration_policy_is_explicit_and_refuses_implicit_migrations() {
+        let bundle_policy = execution_bundle_schema_migration_policy();
+        assert_eq!(
+            bundle_policy.current_version,
+            EXECUTION_BUNDLE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            bundle_policy.min_readable_version,
+            MIN_READABLE_EXECUTION_BUNDLE_SCHEMA_VERSION
+        );
+        assert!(bundle_policy.automatic_migrations.is_empty());
+        bundle_policy
+            .validate_read_version(EXECUTION_BUNDLE_SCHEMA_VERSION, "bundle `current`")
+            .unwrap();
+        assert!(bundle_policy
+            .validate_read_version(EXECUTION_BUNDLE_SCHEMA_VERSION + 1, "bundle `future`")
+            .is_err());
+        assert!(bundle_policy
+            .validate_read_version(0, "bundle `zero`")
+            .is_err());
+
+        let mut future_policy = SchemaMigrationPolicy {
+            artifact: "execution_bundle".to_string(),
+            current_version: 2,
+            min_readable_version: 1,
+            min_writable_version: 2,
+            automatic_migrations: BTreeMap::new(),
+        };
+        assert!(future_policy
+            .validate_read_version(1, "bundle `old-without-migration`")
+            .is_err());
+        future_policy.automatic_migrations.insert(1, 2);
+        future_policy
+            .validate_read_version(1, "bundle `old-with-migration`")
+            .unwrap();
+    }
+
+    #[test]
+    fn prediction_cache_payload_schema_policy_rejects_unsupported_versions() {
+        let policy = prediction_cache_payload_schema_migration_policy();
+        assert_eq!(
+            policy.current_version,
+            PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION
+        );
+        assert!(policy.automatic_migrations.is_empty());
+
+        let mut payload_set = BundlePredictionCachePayloadSet {
+            bundle_id: BundleId::new("bundle:payload.schema").unwrap(),
+            schema_version: PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+            caches: Vec::new(),
+        };
+        payload_set.validate().unwrap();
+
+        payload_set.schema_version = PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION + 1;
+        assert!(payload_set.validate().is_err());
+
+        payload_set.schema_version = 0;
+        assert!(payload_set.validate().is_err());
     }
 
     #[test]

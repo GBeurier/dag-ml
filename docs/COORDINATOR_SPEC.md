@@ -662,6 +662,12 @@ The lineage graph must be enough to answer:
 - did any unsafe leakage path occur?
 - can this predict/explain run replay the training bundle?
 
+Bundle and prediction-cache payload schemas are versioned artifacts. The core
+publishes a `SchemaMigrationPolicy` for each artifact with current/min readable
+and writable versions plus explicit automatic migration edges. No implicit
+migration is allowed: old versions are accepted only if the policy declares a
+migration edge, future versions are refused, and version `0` is always invalid.
+
 ## Performance Requirements
 
 The Rust core must be designed as the high-performance coordination layer:
