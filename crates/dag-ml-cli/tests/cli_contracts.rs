@@ -1259,11 +1259,15 @@ fn cli_selects_builds_and_validates_replay_bundle() {
 #[test]
 fn cli_validates_sibling_dag_ml_data_coordinator_fixture_when_available() {
     let root = repo_root();
-    let Some(workspace_parent) = root.parent() else {
-        return;
+    let dag_ml_data_root = if let Some(path) = std::env::var_os("DAG_ML_DATA_REPO") {
+        PathBuf::from(path)
+    } else {
+        let Some(workspace_parent) = root.parent() else {
+            return;
+        };
+        workspace_parent.join("dag-ml-data")
     };
-    let dag_ml_data_envelope = workspace_parent
-        .join("dag-ml-data")
+    let dag_ml_data_envelope = dag_ml_data_root
         .join("examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json");
     if !dag_ml_data_envelope.exists() {
         return;

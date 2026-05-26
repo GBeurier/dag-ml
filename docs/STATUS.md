@@ -41,6 +41,8 @@ Implemented:
 - published JSON Schema artifact for external coordinator data-plan envelopes,
   with a unit smoke that keeps its declared version aligned to the Rust
   contract;
+- stdlib shared-contract validation script plus CI checkout of `dag-ml-data`
+  so schema copies and coordinator fixtures cannot drift silently;
 - external data-plan envelope validation by schema, plan and relation
   fingerprints;
 - campaign data envelopes with coordinator relations are checked against the

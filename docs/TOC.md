@@ -34,4 +34,5 @@ Use this as a validation map before development starts.
 | Rust tests | `cargo test --workspace` |
 | Lints | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Contract schema syntax | `python3 -m json.tool docs/contracts/coordinator_data_plan_envelope.schema.json >/dev/null` |
+| Shared contract drift | `DAG_ML_DATA_REPO=../dag-ml-data python3 scripts/validate_contracts.py` |
 | Example graph | `cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json` |

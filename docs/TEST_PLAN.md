@@ -63,6 +63,7 @@ cargo run -p dag-ml-cli -- run-process-replay --bundle examples/generated/execut
 python examples/sklearn_complex_oof_demo.py
 cargo run -p dag-ml-cli -- validate-oof-campaign examples/generated/sklearn_complex_oof_campaign.json
 python3 -m json.tool docs/contracts/coordinator_data_plan_envelope.schema.json >/dev/null
+DAG_ML_DATA_REPO=../dag-ml-data python3 scripts/validate_contracts.py
 ```
 
 ## ABI Tests

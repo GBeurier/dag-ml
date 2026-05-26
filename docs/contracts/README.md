@@ -20,6 +20,8 @@ portable shape of that envelope; Rust validation enforces the stronger semantic
 rules that depend on the active campaign.
 
 Short-term policy: both repositories keep a copy of the v1 schema and test that
-the published artifact declares the Rust-supported version. When development
-moves into a monorepo, this file should become a single generated or shared
-contract artifact used by both crates.
+the published artifact declares the Rust-supported version. `scripts/validate_contracts.py`
+compares the copies when `DAG_ML_DATA_REPO` points to a sibling checkout, and
+CI checks out that peer explicitly. When development moves into a monorepo, this
+file should become a single generated or shared contract artifact used by both
+crates.

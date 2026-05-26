@@ -62,10 +62,10 @@ Definition of done:
 
 Status: JSON/fingerprint contract started. `dag-ml-data` now emits a
 versioned coordinator envelope, `dag-ml` validates node data bindings against
-it, and both repositories publish the v1 JSON Schema artifact for the shared
-wire contract. `dag-ml` also validates the sibling `dag-ml-data` coordinator
-fixture when that checkout is available. The scheduler requests an opaque
-parent data handle plus a fold/refit/predict provider view through
+it, and both repositories publish and compare the v1 JSON Schema artifact for
+the shared wire contract in CI. `dag-ml` also validates the sibling
+`dag-ml-data` coordinator fixture when that checkout is available. The scheduler
+requests an opaque parent data handle plus a fold/refit/predict provider view through
 `RuntimeDataProvider`. The C ABI data-provider vtable is aligned on
 materialization, view creation, identity, sample-level target and
 observation-level feature exports, with a Rust runtime adapter smoke over that

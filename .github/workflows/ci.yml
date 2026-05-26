@@ -10,11 +10,20 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
+    env:
+      DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout dag-ml-data contract peer
+        uses: actions/checkout@v4
+        with:
+          repository: GBeurier/dag-ml-data
+          path: external/dag-ml-data
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Shared contract
+        run: python3 scripts/validate_contracts.py
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
