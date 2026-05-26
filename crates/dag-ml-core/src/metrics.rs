@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::aggregation::{AggregatedPredictionBlock, PredictionUnitId};
 use crate::error::{DagMlError, Result};
-use crate::oof::PredictionBlock;
+use crate::ids::{FoldId, NodeId};
+use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::policy::PredictionLevel;
 use crate::selection::{CandidateScore, MetricObjective};
 
@@ -98,6 +99,11 @@ impl RegressionTargetBlock {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RegressionMetricReport {
+    #[serde(default)]
+    pub prediction_id: Option<String>,
+    pub producer_node: NodeId,
+    pub partition: PredictionPartition,
+    pub fold_id: Option<FoldId>,
     pub level: PredictionLevel,
     pub row_count: usize,
     pub target_width: usize,
@@ -149,6 +155,11 @@ impl RegressionMetricReport {
         self.validate()?;
         let mut metadata = BTreeMap::from([
             (
+                "producer_node".to_string(),
+                serde_json::json!(self.producer_node),
+            ),
+            ("partition".to_string(), serde_json::json!(self.partition)),
+            (
                 "metric_level".to_string(),
                 serde_json::json!(prediction_level_name(self.level)),
             ),
@@ -158,6 +169,15 @@ impl RegressionMetricReport {
                 serde_json::json!(self.target_width),
             ),
         ]);
+        if let Some(prediction_id) = self.prediction_id {
+            metadata.insert(
+                "prediction_id".to_string(),
+                serde_json::json!(prediction_id),
+            );
+        }
+        if let Some(fold_id) = self.fold_id {
+            metadata.insert("fold_id".to_string(), serde_json::json!(fold_id));
+        }
         if !self.target_names.is_empty() {
             metadata.insert(
                 "target_names".to_string(),
@@ -194,11 +214,19 @@ pub fn score_regression_prediction_block(
         .map(PredictionUnitId::Sample)
         .collect::<Vec<_>>();
     score_regression_rows(
-        PredictionLevel::Sample,
-        &prediction_units,
-        &predictions.values,
-        &predictions.target_names,
-        width,
+        PredictionRows {
+            level: PredictionLevel::Sample,
+            unit_ids: &prediction_units,
+            values: &predictions.values,
+            target_names: &predictions.target_names,
+            width,
+            origin: PredictionReportOrigin {
+                prediction_id: predictions.prediction_id.clone(),
+                producer_node: predictions.producer_node.clone(),
+                partition: predictions.partition.clone(),
+                fold_id: predictions.fold_id.clone(),
+            },
+        },
         targets,
         metrics,
     )
@@ -211,22 +239,44 @@ pub fn score_regression_aggregated_block(
 ) -> Result<RegressionMetricReport> {
     let width = predictions.validate_shape()?;
     score_regression_rows(
-        predictions.level,
-        &predictions.unit_ids,
-        &predictions.values,
-        &predictions.target_names,
-        width,
+        PredictionRows {
+            level: predictions.level,
+            unit_ids: &predictions.unit_ids,
+            values: &predictions.values,
+            target_names: &predictions.target_names,
+            width,
+            origin: PredictionReportOrigin {
+                prediction_id: predictions.prediction_id.clone(),
+                producer_node: predictions.producer_node.clone(),
+                partition: predictions.partition.clone(),
+                fold_id: predictions.fold_id.clone(),
+            },
+        },
         targets,
         metrics,
     )
 }
 
-fn score_regression_rows(
-    prediction_level: PredictionLevel,
-    prediction_unit_ids: &[PredictionUnitId],
-    prediction_values: &[Vec<f64>],
-    prediction_target_names: &[String],
+#[derive(Clone, Debug)]
+struct PredictionReportOrigin {
+    prediction_id: Option<String>,
+    producer_node: NodeId,
+    partition: PredictionPartition,
+    fold_id: Option<FoldId>,
+}
+
+#[derive(Clone, Debug)]
+struct PredictionRows<'a> {
+    level: PredictionLevel,
+    unit_ids: &'a [PredictionUnitId],
+    values: &'a [Vec<f64>],
+    target_names: &'a [String],
     width: usize,
+    origin: PredictionReportOrigin,
+}
+
+fn score_regression_rows(
+    predictions: PredictionRows<'_>,
     targets: &RegressionTargetBlock,
     metrics: &[RegressionMetricKind],
 ) -> Result<RegressionMetricReport> {
@@ -246,20 +296,21 @@ fn score_regression_rows(
     }
 
     let target_width = targets.validate_shape()?;
-    if width != target_width {
+    if predictions.width != target_width {
         return Err(DagMlError::OofValidation(format!(
-            "prediction width {width} does not match target width {target_width}"
+            "prediction width {} does not match target width {target_width}",
+            predictions.width
         )));
     }
-    if prediction_level != targets.level {
+    if predictions.level != targets.level {
         return Err(DagMlError::OofValidation(format!(
             "prediction level {:?} does not match target level {:?}",
-            prediction_level, targets.level
+            predictions.level, targets.level
         )));
     }
-    if !prediction_target_names.is_empty()
+    if !predictions.target_names.is_empty()
         && !targets.target_names.is_empty()
-        && prediction_target_names != targets.target_names
+        && predictions.target_names != targets.target_names
     {
         return Err(DagMlError::OofValidation(
             "prediction target names do not match target block names".to_string(),
@@ -271,9 +322,9 @@ fn score_regression_rows(
         .iter()
         .zip(targets.values.iter().map(Vec::as_slice))
         .collect::<BTreeMap<_, _>>();
-    let mut aligned_predictions = Vec::with_capacity(prediction_unit_ids.len());
-    let mut aligned_targets = Vec::with_capacity(prediction_unit_ids.len());
-    for (unit_id, prediction_row) in prediction_unit_ids.iter().zip(prediction_values.iter()) {
+    let mut aligned_predictions = Vec::with_capacity(predictions.unit_ids.len());
+    let mut aligned_targets = Vec::with_capacity(predictions.unit_ids.len());
+    for (unit_id, prediction_row) in predictions.unit_ids.iter().zip(predictions.values.iter()) {
         let target_row = target_by_unit.get(unit_id).ok_or_else(|| {
             DagMlError::OofValidation(format!(
                 "prediction unit `{unit_id}` is missing from target block"
@@ -288,16 +339,20 @@ fn score_regression_rows(
         ));
     }
 
-    let target_names = if !prediction_target_names.is_empty() {
-        prediction_target_names.to_vec()
+    let target_names = if !predictions.target_names.is_empty() {
+        predictions.target_names.to_vec()
     } else {
         targets.target_names.clone()
     };
-    let metric_suffixes = target_metric_names(width, &target_names);
+    let metric_suffixes = target_metric_names(predictions.width, &target_names);
     let mut values = BTreeMap::new();
     for metric in metrics {
-        let per_target =
-            compute_metric_per_target(*metric, width, &aligned_predictions, &aligned_targets);
+        let per_target = compute_metric_per_target(
+            *metric,
+            predictions.width,
+            &aligned_predictions,
+            &aligned_targets,
+        );
         values.insert(metric.name().to_string(), macro_mean(&per_target));
         for (name, value) in metric_suffixes.iter().zip(per_target) {
             values.insert(format!("{}:{name}", metric.name()), value);
@@ -305,9 +360,13 @@ fn score_regression_rows(
     }
 
     let report = RegressionMetricReport {
-        level: prediction_level,
-        row_count: prediction_unit_ids.len(),
-        target_width: width,
+        prediction_id: predictions.origin.prediction_id,
+        producer_node: predictions.origin.producer_node,
+        partition: predictions.origin.partition,
+        fold_id: predictions.origin.fold_id,
+        level: predictions.level,
+        row_count: predictions.unit_ids.len(),
+        target_width: predictions.width,
         target_names,
         metrics: values,
     };
@@ -512,6 +571,9 @@ mod tests {
         let candidate = regression_report_to_candidate_score("model:pls", report).unwrap();
         assert_eq!(candidate.metrics["rmse"], 1.0);
         assert_eq!(candidate.metadata["metric_level"], "sample");
+        assert_eq!(candidate.metadata["producer_node"], "model:pls");
+        assert_eq!(candidate.metadata["partition"], "validation");
+        assert_eq!(candidate.metadata["prediction_id"], "pred:sample");
         assert_eq!(candidate.metadata["target_names"], serde_json::json!(["y"]));
     }
 

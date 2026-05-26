@@ -102,7 +102,8 @@ Implemented:
   selection and stable tie-breaking;
 - identity-aligned regression metric reports over validated sample, target and
   group prediction blocks (`mse`, `rmse`, `mae`, `r2`), with finite score
-  validation and direct conversion to `CandidateScore` for selection;
+  validation, prediction origin traceability and direct conversion to
+  `CandidateScore` for selection;
 - refit execution bundle contracts that bind selected variants, selected
   candidates, refit artifacts, plan fingerprints and replay data requirements;
 - execution-bundle validation now checks selected candidates against the
