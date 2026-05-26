@@ -197,8 +197,12 @@ Implemented:
 - `dag-ml-data` fixture integration through schema, plan and relation
   fingerprints;
 - explicit `dag-ml-data` coordinator-envelope contract fixture using the
-  `S001`/`S002` sample ids and `y` target emitted by `dag-ml-data`, plus a
+  `S001`/`S002` sample ids and `y` target emitted by `dag-ml-data`, kept
+  JSON-identical across repos by `scripts/validate_contracts.py`, plus a
   sibling-repo CLI conformance test when `../dag-ml-data` is available;
+- separate `sample:1`/`sample:2` internal envelope fixture for legacy
+  scheduler/replay smoke campaigns, so internal test data cannot masquerade as
+  the shared coordinator contract;
 - coordinator graph/campaign/controller fixtures;
 - CI workflow.
 

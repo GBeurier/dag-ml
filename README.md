@@ -39,7 +39,7 @@ examples/
 cargo fmt --all --check
 cargo test --workspace
 cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
-cargo run -p dag-ml-cli -- validate-bundle --bundle examples/generated/execution_bundle_minimal.json --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json --replay-request examples/fixtures/bundle/replay_request_predict.json --plan-id plan:cli.bundle
+cargo run -p dag-ml-cli -- validate-bundle --bundle examples/generated/execution_bundle_minimal.json --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_sample12.json --replay-request examples/fixtures/bundle/replay_request_predict.json --plan-id plan:cli.bundle
 ```
 
 ## First Implementation Target

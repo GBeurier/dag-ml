@@ -1522,7 +1522,7 @@ mod tests {
         )
         .unwrap();
         let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
 

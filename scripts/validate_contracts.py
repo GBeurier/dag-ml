@@ -332,6 +332,10 @@ def main() -> int:
             "feature fusion selector schemas diverge beyond repository-specific $id",
         )
         require(
+            local_fixture == sibling_fixture,
+            "coordinator envelope fixtures diverge",
+        )
+        require(
             local_feature_fusion_fixture == sibling_feature_fusion_fixture,
             "feature fusion selector fixtures diverge",
         )
