@@ -13,6 +13,7 @@ use crate::campaign::stable_json_fingerprint;
 use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::fold::{FoldAssignment, FoldSet};
+use crate::generation::{GenerationChoice, VariantPlan};
 use crate::graph::{EdgeSpec, PortKind};
 use crate::ids::{
     ArtifactId, BranchId, BundleId, ControllerId, FoldId, LineageId, NodeId, RunId, SampleId,
@@ -508,6 +509,8 @@ pub struct NodeTask {
     pub node_plan: NodePlan,
     pub phase: Phase,
     pub variant_id: Option<VariantId>,
+    #[serde(default)]
+    pub variant: Option<VariantExecutionSpec>,
     pub fold_id: Option<FoldId>,
     #[serde(default)]
     pub branch_path: Vec<BranchId>,
@@ -518,6 +521,50 @@ pub struct NodeTask {
     #[serde(default)]
     pub prediction_inputs: BTreeMap<String, PredictionInputSpec>,
     pub seed: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VariantExecutionSpec {
+    pub variant_id: VariantId,
+    #[serde(default)]
+    pub choices: BTreeMap<String, GenerationChoice>,
+    pub fingerprint: String,
+    pub seed: Option<u64>,
+}
+
+impl VariantExecutionSpec {
+    pub fn from_plan(variant: &VariantPlan) -> Self {
+        Self {
+            variant_id: variant.variant_id.clone(),
+            choices: variant.choices.clone(),
+            fingerprint: variant.fingerprint.clone(),
+            seed: variant.seed,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.fingerprint.trim().is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "variant `{}` has an empty fingerprint in task context",
+                self.variant_id
+            )));
+        }
+        for (dimension_name, choice) in &self.choices {
+            if dimension_name.trim().is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "variant `{}` has an empty generation dimension name",
+                    self.variant_id
+                )));
+            }
+            if choice.label.trim().is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "variant `{}` has an empty choice label for dimension `{dimension_name}`",
+                    self.variant_id
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -581,6 +628,15 @@ impl NodeResult {
                 "lineage for node `{}` has variant {:?}, expected {:?}",
                 task.node_plan.node_id, self.lineage.variant_id, task.variant_id
             )));
+        }
+        if let Some(variant) = &task.variant {
+            variant.validate()?;
+            if Some(&variant.variant_id) != task.variant_id.as_ref() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "task for node `{}` has variant context `{}` but variant_id {:?}",
+                    task.node_plan.node_id, variant.variant_id, task.variant_id
+                )));
+            }
         }
         if self.lineage.fold_id != task.fold_id {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -876,6 +932,7 @@ pub struct SequentialScheduler;
 struct PhaseScope {
     phase: Phase,
     variant_id: Option<VariantId>,
+    variant: Option<VariantExecutionSpec>,
     fold_id: Option<FoldId>,
     seed_root: Option<u64>,
 }
@@ -914,6 +971,7 @@ impl SequentialScheduler {
             PhaseScope {
                 phase,
                 variant_id,
+                variant: None,
                 fold_id: None,
                 seed_root,
             },
@@ -939,6 +997,7 @@ impl SequentialScheduler {
             PhaseScope {
                 phase,
                 variant_id,
+                variant: None,
                 fold_id: None,
                 seed_root,
             },
@@ -989,6 +1048,7 @@ impl SequentialScheduler {
                     PhaseScope {
                         phase,
                         variant_id: Some(variant.variant_id.clone()),
+                        variant: Some(VariantExecutionSpec::from_plan(variant)),
                         fold_id: fold_id.clone(),
                         seed_root,
                     },
@@ -1040,6 +1100,7 @@ impl SequentialScheduler {
                     PhaseScope {
                         phase,
                         variant_id: Some(variant.variant_id.clone()),
+                        variant: Some(VariantExecutionSpec::from_plan(variant)),
                         fold_id: fold_id.clone(),
                         seed_root,
                     },
@@ -1095,6 +1156,7 @@ impl SequentialScheduler {
                     PhaseScope {
                         phase,
                         variant_id: Some(variant.variant_id.clone()),
+                        variant: Some(VariantExecutionSpec::from_plan(variant)),
                         fold_id: fold_id.clone(),
                         seed_root,
                     },
@@ -1143,18 +1205,28 @@ impl SequentialScheduler {
             replay.artifact_store,
             ctx,
         )?;
-        let seed_root = replay
+        let selected_variant = replay
             .bundle
             .selected_variant_id
             .as_ref()
-            .and_then(|selected| {
+            .map(|selected| {
                 replay
                     .plan
                     .variants
                     .iter()
                     .find(|variant| &variant.variant_id == selected)
-                    .and_then(|variant| variant.seed)
+                    .map(VariantExecutionSpec::from_plan)
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "bundle `{}` selected unknown variant `{selected}`",
+                            replay.bundle.bundle_id
+                        ))
+                    })
             })
+            .transpose()?;
+        let seed_root = selected_variant
+            .as_ref()
+            .and_then(|variant| variant.seed)
             .or(ctx.root_seed);
 
         self.execute_phase_scope(
@@ -1164,6 +1236,7 @@ impl SequentialScheduler {
             PhaseScope {
                 phase: replay.replay_request.phase,
                 variant_id: replay.bundle.selected_variant_id.clone(),
+                variant: selected_variant,
                 fold_id: None,
                 seed_root,
             },
@@ -1224,6 +1297,7 @@ impl SequentialScheduler {
                 node_plan: node_plan.clone(),
                 phase: scope.phase,
                 variant_id: scope.variant_id.clone(),
+                variant: scope.variant.clone(),
                 fold_id: scope.fold_id.clone(),
                 branch_path: Vec::new(),
                 input_handles,
@@ -2063,7 +2137,11 @@ fn derive_task_seed(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::{
+        cell::RefCell,
+        collections::{BTreeMap, BTreeSet},
+        rc::Rc,
+    };
 
     use super::*;
     use crate::bundle::{
@@ -2094,6 +2172,65 @@ mod tests {
         id: ControllerId,
         handle: u64,
         emit_prediction: bool,
+    }
+
+    struct VariantProbeController {
+        id: ControllerId,
+        handle: u64,
+        variants: Rc<RefCell<Vec<Option<VariantExecutionSpec>>>>,
+    }
+
+    impl RuntimeController for VariantProbeController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            self.variants.borrow_mut().push(task.variant.clone());
+            let variant_label = task
+                .variant_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "base".to_string());
+            Ok(NodeResult {
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([(
+                    "out".to_string(),
+                    HandleRef {
+                        handle: self.handle,
+                        kind: HandleKind::Data,
+                        owner_controller: self.id.clone(),
+                    },
+                )]),
+                predictions: Vec::new(),
+                shape_deltas: Vec::new(),
+                artifacts: Vec::new(),
+                artifact_handles: BTreeMap::new(),
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:{}:{:?}:{variant_label}",
+                        task.node_plan.node_id, task.phase
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
     }
 
     impl RuntimeController for MockController {
@@ -2961,6 +3098,82 @@ mod tests {
     }
 
     #[test]
+    fn node_tasks_expose_generation_variant_context() {
+        let plan = build_execution_plan(
+            "plan:generation.task.context",
+            simple_graph(),
+            CampaignSpec {
+                id: "campaign:generation.task.context".to_string(),
+                root_seed: Some(23),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: None,
+                generation: GenerationSpec {
+                    strategy: GenerationStrategy::Cartesian,
+                    dimensions: vec![GenerationDimension {
+                        name: "model_family".to_string(),
+                        choices: vec![
+                            GenerationChoice {
+                                label: "pls".to_string(),
+                                value: json!({"n_components": 4}),
+                            },
+                            GenerationChoice {
+                                label: "rf".to_string(),
+                                value: json!({"trees": 64}),
+                            },
+                        ],
+                    }],
+                    max_variants: Some(2),
+                },
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+            &manifests(),
+        )
+        .unwrap();
+        let observed_variants = Rc::new(RefCell::new(Vec::new()));
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(MockController {
+                id: ControllerId::new("controller:transform").unwrap(),
+                handle: 1,
+                emit_prediction: false,
+            }))
+            .unwrap();
+        controllers
+            .register(Box::new(VariantProbeController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 2,
+                variants: Rc::clone(&observed_variants),
+            }))
+            .unwrap();
+        let mut ctx = RunContext::new(RunId::new("run:generation.task.context").unwrap(), Some(23));
+
+        let results = SequentialScheduler
+            .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+            .unwrap();
+
+        assert_eq!(results.len(), 4);
+        let observed = observed_variants.borrow();
+        assert_eq!(observed.len(), 2);
+        let mut labels = BTreeSet::new();
+        for variant in observed.iter().map(|variant| variant.as_ref().unwrap()) {
+            variant.validate().unwrap();
+            let expected = plan
+                .variants
+                .iter()
+                .find(|planned| planned.variant_id == variant.variant_id)
+                .unwrap();
+            assert_eq!(variant.choices, expected.choices);
+            assert_eq!(variant.fingerprint, expected.fingerprint);
+            assert_eq!(variant.seed, expected.seed);
+            labels.insert(variant.choices["model_family"].label.as_str());
+        }
+        assert_eq!(labels, BTreeSet::from(["pls", "rf"]));
+    }
+
+    #[test]
     fn requires_oof_prediction_edge_supplies_validated_prediction_handle() {
         let plan = build_execution_plan(
             "plan:oof.edge.success",
@@ -3507,6 +3720,7 @@ mod tests {
             node_plan: node_plan.clone(),
             phase: Phase::FitCv,
             variant_id: None,
+            variant: None,
             fold_id: None,
             branch_path: Vec::new(),
             input_handles: BTreeMap::new(),
@@ -3580,6 +3794,7 @@ mod tests {
             node_plan: node_plan.clone(),
             phase: Phase::Refit,
             variant_id: None,
+            variant: None,
             fold_id: None,
             branch_path: Vec::new(),
             input_handles: BTreeMap::new(),
@@ -3696,6 +3911,7 @@ mod tests {
             node_plan: node_plan.clone(),
             phase: Phase::FitCv,
             variant_id: Some(VariantId::new("variant:base").unwrap()),
+            variant: None,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             branch_path: Vec::new(),
             input_handles: BTreeMap::new(),

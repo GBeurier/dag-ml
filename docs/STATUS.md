@@ -16,6 +16,9 @@ Implemented:
 - split invocation as a campaign-plan controller call;
 - deterministic generation/search-space scaffold with variant fingerprints and
   variant seeds;
+- controller-facing `NodeTask.variant` context with generated choices,
+  fingerprint and variant seed, so external bindings can apply model,
+  augmentation or processing variants without guessing from `variant_id`;
 - leakage-unit policies for sample/target/group/repetition/origin boundaries;
 - sample relation validation for repeated observations, shared targets, groups
   and augmentation origins;
