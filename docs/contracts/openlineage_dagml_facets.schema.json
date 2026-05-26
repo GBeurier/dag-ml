@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/openlineage_dagml_facets.v1.schema.json",
+  "title": "DAG-ML OpenLineage custom facets v1",
+  "type": "object",
+  "$defs": {
+    "DagmlReproducibilityRunFacet": {
+      "type": "object",
+      "required": [
+        "_schemaURL",
+        "plan_id",
+        "bundle_id",
+        "graph_fingerprint",
+        "campaign_fingerprint",
+        "controller_fingerprint",
+        "variant_count",
+        "unsafe_flags"
+      ],
+      "properties": {
+        "_schemaURL": {
+          "type": "string"
+        },
+        "plan_id": {
+          "type": "string"
+        },
+        "bundle_id": {
+          "type": "string"
+        },
+        "graph_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "campaign_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "controller_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "selected_variant_id": {
+          "type": ["string", "null"]
+        },
+        "variant_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsafe_flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "DagmlOofSafetyRunFacet": {
+      "type": "object",
+      "required": [
+        "_schemaURL",
+        "prediction_requirement_count",
+        "prediction_cache_count",
+        "lineage_record_count",
+        "requires_oof_prediction_count",
+        "refit_artifact_count"
+      ],
+      "properties": {
+        "_schemaURL": {
+          "type": "string"
+        },
+        "prediction_requirement_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "prediction_cache_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lineage_record_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requires_oof_prediction_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "refit_artifact_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "DagmlPlanJobFacet": {
+      "type": "object",
+      "required": [
+        "_schemaURL",
+        "plan_id",
+        "bundle_id",
+        "node_count",
+        "controller_count",
+        "has_fold_set"
+      ],
+      "properties": {
+        "_schemaURL": {
+          "type": "string"
+        },
+        "plan_id": {
+          "type": "string"
+        },
+        "bundle_id": {
+          "type": "string"
+        },
+        "node_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "controller_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "has_fold_set": {
+          "type": "boolean"
+        },
+        "selected_variant_id": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "DagmlDatasetContractFacet": {
+      "type": "object",
+      "required": [
+        "_schemaURL"
+      ],
+      "properties": {
+        "_schemaURL": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
