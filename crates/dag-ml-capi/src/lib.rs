@@ -2892,7 +2892,12 @@ mod tests {
                 id: ArtifactId::new("artifact:model.base").unwrap(),
                 kind: "sklearn_pickle".to_string(),
                 controller_id: ControllerId::new("controller:model").unwrap(),
+                backend: None,
+                uri: None,
+                content_fingerprint: None,
                 size_bytes: Some(1024),
+                plugin: None,
+                plugin_version: None,
             },
             params_fingerprint: "params:artifact-fixture".to_string(),
         }

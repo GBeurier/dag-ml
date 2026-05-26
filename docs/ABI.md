@@ -41,7 +41,10 @@ the host owns the underlying object behind each handle.
   `DagMlDataVTable` definition so `dag_ml.h` and `dag_ml_data.h` can be
   included together by bindings.
 - `DagMlArtifactStoreVTable` for host replay artifact stores, returning typed
-  `DagMlHandleRef` values for model/artifact handles.
+  `DagMlHandleRef` values for model/artifact handles. Artifact references are
+  JSON-level Rust contracts with optional typed backend, URI, content
+  fingerprint and plugin/version metadata; the ABI still transports them inside
+  owned JSON payloads so C structs do not freeze a storage layout too early.
 - `DagMlPredictionCacheVTable` for host prediction-cache stores, including
   `load_blocks`, `materialize` and explicit returned-byte release.
   `load_blocks` is the single JSON load callback for replay prediction
