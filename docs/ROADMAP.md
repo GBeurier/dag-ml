@@ -120,8 +120,10 @@ plan/controller fingerprints, selected variants, deterministic selection
 decisions, refit artifacts and the external data requirements needed for
 replay. The CLI can select candidates, build a bundle, and validate that a
 bundle plus replay request matches a rebuilt plan and external data envelopes.
-Bundles carry an explicit schema version and reject unsupported versions. The C
-ABI exposes the same selection and replay-validation contracts over JSON. The
+Bundles carry an explicit schema version, publish migration policies, reject
+unsupported future/zero versions, and refuse old versions unless an explicit
+migration edge is declared. The C ABI exposes the same selection and
+replay-validation contracts over JSON. The
 runtime can now capture refit artifact handles emitted by controllers,
 materialize replay data, create predict-scoped data views and materialize refit
 artifact handles, then invoke eligible controllers for replay phases without CV
@@ -139,6 +141,6 @@ buffers behind `RuntimePredictionCacheStore`, keeping the external bundle
 contract stable while removing JSON-shaped rows from the runtime cache path.
 It has both mock and external-process execution smokes for campaign,
 refit-bundle and replay paths, and the C ABI exposes a mock replay execution
-helper returning a JSON summary. The remaining work is schema migration policy,
-production host adapters, persistent artifact/data stores and Arrow-backed
-prediction cache exports.
+helper returning a JSON summary. The remaining work is production host
+adapters, persistent artifact/data stores and Arrow-backed prediction cache
+exports.

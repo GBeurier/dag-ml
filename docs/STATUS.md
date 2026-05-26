@@ -105,6 +105,9 @@ Implemented:
 - execution-bundle validation now checks selected candidates against the
   rebuilt plan and requires refit artifacts for selected refittable nodes;
 - explicit execution-bundle schema version with unsupported-version refusal;
+- explicit schema migration policies for execution bundles and prediction-cache
+  payload sets: current/min readable/writable versions are public, future/zero
+  versions are refused, and old versions require declared migration edges;
 - replay request validation for predict, explain and refit phases;
 - mock controller conformance tests;
 - CLI execution-plan validation from graph/campaign/controller JSON fixtures;
@@ -271,7 +274,6 @@ Not implemented yet:
 - Arrow prediction storage and ABI-owned prediction tensors;
 - production host controller adapters with native libraries or
   language-specific bindings;
-- bundle schema migration policy;
 - production `dag-ml-data` provider backends beyond the current in-memory C
   conformance provider.
 
