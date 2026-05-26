@@ -80,4 +80,7 @@ replay. The CLI can select candidates, build a bundle, and validate that a
 bundle plus replay request matches a rebuilt plan and external data envelopes.
 Bundles carry an explicit schema version and reject unsupported versions. The C
 ABI exposes the same selection and replay-validation contracts over JSON. The
-remaining work is schema migration policy and host adapter replay execution.
+runtime can now materialize replay data and refit artifact handles, then invoke
+eligible controllers for replay phases without CV folds. The remaining work is
+schema migration policy, CLI/C ABI replay-execution smoke and host adapter
+replay execution.

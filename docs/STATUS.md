@@ -29,6 +29,10 @@ Implemented:
   bindings into opaque task handles;
 - in-memory runtime data provider with handle records for schema/plan/relation
   traceability;
+- runtime artifact-store trait plus in-memory refit artifact handle records;
+- bundle replay executor that validates plan/bundle/request/data envelopes,
+  materializes data and refit artifact handles, and invokes eligible runtime
+  controllers for replay phases without CV folds;
 - in-memory prediction store and lineage recorder;
 - sequential scheduler for DAG order plus campaign execution over
   variant x CV-fold scopes;
@@ -62,7 +66,7 @@ Not implemented yet:
 - full DSL compiler;
 - full search-space compiler/lowering into graph/campaign overrides;
 - non-mean aggregation methods and custom aggregation controllers;
-- artifact/cache stores;
+- persistent artifact/cache stores;
 - Arrow prediction storage;
 - host controller adapters;
 - bundle schema migration policy and host-binding replay execution entry points;
@@ -71,6 +75,7 @@ Not implemented yet:
 
 Next recommended task:
 
-Turn the sklearn demonstrator into the first controller adapter smoke: replace
-the Python-side orchestration loop with `dag-ml` scheduler tasks while keeping
-the same OOF campaign, heterogeneous merge and refit score policy.
+Expose replay execution through CLI/C ABI smoke commands, then turn the sklearn
+demonstrator into the first controller adapter smoke: replace the Python-side
+orchestration loop with `dag-ml` scheduler tasks while keeping the same OOF
+campaign, heterogeneous merge and refit score policy.
