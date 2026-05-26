@@ -432,6 +432,43 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         process_stdout
     );
 
+    if python_has_sklearn(&root) {
+        let sklearn_refit_replay = Command::new(cli())
+            .current_dir(&root)
+            .args([
+                "run-process-refit-replay",
+                "--graph",
+                "examples/minimal_graph.json",
+                "--campaign",
+                "examples/campaign_oof_generation.json",
+                "--controllers",
+                "examples/controller_manifests.json",
+                "--envelope",
+                "examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+                "--adapter",
+                "examples/adapters/sklearn_process_controller.py",
+                "--bundle-id",
+                "bundle:cli.sklearn.refit.replay",
+                "--plan-id",
+                "plan:cli.sklearn.refit.replay",
+            ])
+            .output()
+            .expect("failed to run dag-ml-cli run-process-refit-replay");
+        assert!(
+            sklearn_refit_replay.status.success(),
+            "run-process-refit-replay failed: {}",
+            String::from_utf8_lossy(&sklearn_refit_replay.stderr)
+        );
+        let sklearn_stdout = String::from_utf8_lossy(&sklearn_refit_replay.stdout);
+        assert!(
+            sklearn_stdout.contains("process refit replay run: 2 refit result(s)")
+                && sklearn_stdout.contains("1 replay prediction block(s)")
+                && sklearn_stdout.contains("1 captured artifact handle(s)"),
+            "unexpected run-process-refit-replay output: {}",
+            sklearn_stdout
+        );
+    }
+
     let _ = std::fs::remove_file(temp_bundle);
     let _ = std::fs::remove_file(temp_refit_bundle);
     let _ = std::fs::remove_file(temp_process_refit_bundle);
@@ -445,4 +482,13 @@ fn unique_suffix() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock is after UNIX_EPOCH")
         .as_nanos()
+}
+
+fn python_has_sklearn(root: &Path) -> bool {
+    Command::new("python3")
+        .current_dir(root)
+        .args(["-c", "import sklearn"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
