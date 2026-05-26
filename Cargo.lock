@@ -150,6 +150,7 @@ name = "dag-ml-capi"
 version = "0.1.0-alpha.0"
 dependencies = [
  "dag-ml-core",
+ "serde",
  "serde_json",
 ]
 

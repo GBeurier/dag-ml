@@ -14,4 +14,5 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 dag-ml-core.workspace = true
+serde.workspace = true
 serde_json.workspace = true

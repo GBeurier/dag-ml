@@ -14,7 +14,7 @@
 | Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths |
 | CLI contracts | selection command, bundle build command, bundle validation with replay request and data envelope |
 | sklearn demonstrator | group OOF, repeated observations, train-only augmentation, branch variant selection, heterogeneous merge selection, refit report |
-| ABI | null pointer handling, invalid JSON, valid graph |
+| ABI | null pointer handling, invalid JSON, valid graph, grouped selection output, bundle/replay validation |
 
 ## Conformance Tests
 
@@ -48,4 +48,6 @@ Add a C smoke test that:
 2. calls `dagml_version`;
 3. validates `examples/minimal_graph.json`;
 4. validates that Rust-allocated error strings are released by
-   `dagml_string_free`.
+   `dagml_string_free`;
+5. validates that Rust-allocated JSON byte outputs are released by
+   `dagml_owned_bytes_free`.
