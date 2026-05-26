@@ -387,7 +387,8 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         branch_merge_cv_refit_stdout.contains("process cv refit bundle run: 6 fit_cv result(s)")
             && branch_merge_cv_refit_stdout.contains("6 OOF prediction block(s)")
             && branch_merge_cv_refit_stdout.contains("3 refit result(s)")
-            && branch_merge_cv_refit_stdout.contains("3 captured artifact handle(s)"),
+            && branch_merge_cv_refit_stdout.contains("3 captured artifact handle(s)")
+            && branch_merge_cv_refit_stdout.contains("2 prediction cache(s)"),
         "unexpected branch/merge CV+refit process bundle output: {}",
         branch_merge_cv_refit_stdout
     );
@@ -557,10 +558,12 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         "validate-bundle failed: {}",
         String::from_utf8_lossy(&validate.stderr)
     );
+    let validate_stdout = String::from_utf8_lossy(&validate.stdout);
     assert!(
-        String::from_utf8_lossy(&validate.stdout).contains("valid bundle: bundle:cli.demo"),
+        validate_stdout.contains("valid bundle: bundle:cli.demo")
+            && validate_stdout.contains("prediction requirement(s)=0, prediction cache(s)=0"),
         "unexpected validate-bundle output: {}",
-        String::from_utf8_lossy(&validate.stdout)
+        validate_stdout
     );
 
     let validate_refit = Command::new(cli())
@@ -593,11 +596,12 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         "validate refit bundle failed: {}",
         String::from_utf8_lossy(&validate_refit.stderr)
     );
+    let validate_refit_stdout = String::from_utf8_lossy(&validate_refit.stdout);
     assert!(
-        String::from_utf8_lossy(&validate_refit.stdout)
-            .contains("valid bundle: bundle:cli.refit.capture"),
+        validate_refit_stdout.contains("valid bundle: bundle:cli.refit.capture")
+            && validate_refit_stdout.contains("prediction requirement(s)=0, prediction cache(s)=0"),
         "unexpected validate refit bundle output: {}",
-        String::from_utf8_lossy(&validate_refit.stdout)
+        validate_refit_stdout
     );
 
     let validate_process_refit = Command::new(cli())
@@ -630,11 +634,13 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         "validate process refit bundle failed: {}",
         String::from_utf8_lossy(&validate_process_refit.stderr)
     );
+    let validate_process_refit_stdout = String::from_utf8_lossy(&validate_process_refit.stdout);
     assert!(
-        String::from_utf8_lossy(&validate_process_refit.stdout)
-            .contains("valid bundle: bundle:cli.process.refit.capture"),
+        validate_process_refit_stdout.contains("valid bundle: bundle:cli.process.refit.capture")
+            && validate_process_refit_stdout
+                .contains("prediction requirement(s)=0, prediction cache(s)=0"),
         "unexpected validate process refit bundle output: {}",
-        String::from_utf8_lossy(&validate_process_refit.stdout)
+        validate_process_refit_stdout
     );
 
     let replay = Command::new(cli())
