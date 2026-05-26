@@ -50,6 +50,23 @@ def require_data_handles(task: dict[str, Any]) -> None:
                 fail(f"node `{node_plan['node_id']}` received non-train fold view `{key}`")
             if not view.get("sample_ids"):
                 fail(f"node `{node_plan['node_id']}` received fold view without samples `{key}`")
+            validation_key = f"{key}:validation"
+            validation_view = data_views.get(validation_key)
+            if validation_view is None:
+                fail(
+                    f"node `{node_plan['node_id']}` did not receive validation data view "
+                    f"`{validation_key}`"
+                )
+            if validation_view.get("partition") != "fold_validation":
+                fail(
+                    f"node `{node_plan['node_id']}` received non-validation fold view "
+                    f"`{validation_key}`"
+                )
+            if not validation_view.get("sample_ids"):
+                fail(
+                    f"node `{node_plan['node_id']}` received validation view without samples "
+                    f"`{validation_key}`"
+                )
 
 
 def require_replay_artifact(task: dict[str, Any]) -> None:
@@ -81,14 +98,21 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
 
     predictions = []
     if node_plan.get("kind") == "model":
+        prediction_sample_ids = ["sample:process"]
+        data_bindings = node_plan.get("data_bindings", [])
+        if phase == "FIT_CV" and data_bindings:
+            input_name = data_bindings[0]["input_name"]
+            validation_view = task.get("data_views", {}).get(f"data:{input_name}:validation")
+            if validation_view is not None:
+                prediction_sample_ids = validation_view.get("sample_ids") or prediction_sample_ids
         predictions.append(
             {
                 "prediction_id": f"pred:{node_id}:{phase}",
                 "producer_node": node_id,
                 "partition": prediction_partition(phase),
                 "fold_id": fold_id,
-                "sample_ids": ["sample:process"],
-                "values": [[float(handle_value % 1_000_000)]],
+                "sample_ids": prediction_sample_ids,
+                "values": [[float(handle_value % 1_000_000)] for _ in prediction_sample_ids],
                 "target_names": ["y"],
             }
         )

@@ -28,6 +28,9 @@ Implemented:
   fingerprints;
 - runtime data-provider trait with materialization plus fold/refit/predict view
   requests that turn data bindings into scoped opaque task handles;
+- `FIT_CV` data routing now gives controllers separate fold-train and
+  fold-validation views, so validation OOF predictions can be checked against
+  the validation identity set;
 - controller-facing `NodeTask.data_views` map carrying the scoped view spec
   beside each data-view handle;
 - in-memory runtime data provider with handle records for schema/plan/relation
