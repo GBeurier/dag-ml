@@ -394,6 +394,10 @@ FIT_CV requirements:
    is missing or comes from another level are rejected before ranking.
 6. OOF joins use the declared aggregation level and must not mix raw and
    aggregated predictions implicitly.
+7. Replay-facing prediction contracts carry `prediction_level` explicitly.
+   The current OOF replay cache contract is intentionally sample-level only;
+   target/group blocks are scored through the aggregated metric APIs until
+   aggregated replay materialization has its own unit-id contract.
 
 REFIT requirements:
 
@@ -407,6 +411,10 @@ REFIT requirements:
    aggregated sample predictions.
 5. A bundle must record whether the selected model was chosen by observation,
    sample, target or group metrics.
+6. Prediction requirements, prediction-cache records, prediction-cache payloads
+   and `NodeTask.prediction_inputs` must preserve the prediction level, so a
+   target/group metric decision cannot be replayed through an implicit
+   sample-level cache.
 
 ## Data/Model Shape Plan
 

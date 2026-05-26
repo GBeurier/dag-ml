@@ -226,6 +226,8 @@ def require_prediction_inputs(task: dict[str, Any]) -> None:
             fail(f"node `{node_plan['node_id']}` received mismatched prediction spec `{key}`")
         if spec.get("partition") != "validation":
             fail(f"node `{node_plan['node_id']}` received non-validation prediction spec `{key}`")
+        if spec.get("prediction_level", "sample") != "sample":
+            fail(f"node `{node_plan['node_id']}` received non-sample prediction spec `{key}`")
         if not spec.get("sample_ids"):
             fail(f"node `{node_plan['node_id']}` received prediction spec without samples `{key}`")
         if int(spec.get("prediction_width", 0)) <= 0:

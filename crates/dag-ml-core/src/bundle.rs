@@ -9,6 +9,7 @@ use crate::ids::{BundleId, ControllerId, FoldId, NodeId, SampleId, VariantId};
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::ExecutionPlan;
+use crate::policy::PredictionLevel;
 use crate::runtime::ArtifactRef;
 use crate::selection::SelectionDecision;
 
@@ -27,6 +28,10 @@ fn default_execution_bundle_schema_version() -> u32 {
 
 fn default_prediction_cache_payload_schema_version() -> u32 {
     PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION
+}
+
+fn default_prediction_level() -> PredictionLevel {
+    PredictionLevel::Sample
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -185,6 +190,8 @@ pub struct BundlePredictionRequirement {
     pub consumer_node: NodeId,
     pub target_port: String,
     pub partition: PredictionPartition,
+    #[serde(default = "default_prediction_level")]
+    pub prediction_level: PredictionLevel,
     #[serde(default)]
     pub fold_ids: Vec<FoldId>,
     pub sample_ids: Vec<SampleId>,
@@ -209,6 +216,13 @@ impl BundlePredictionRequirement {
             return Err(DagMlError::RuntimeValidation(format!(
                 "bundle prediction requirement `{}` must use validation OOF predictions",
                 self.key()
+            )));
+        }
+        if self.prediction_level != PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle prediction requirement `{}` uses {:?} predictions, but replay prediction requirements currently require sample-level OOF caches",
+                self.key(),
+                self.prediction_level
             )));
         }
         validate_unique_ids("fold id", &self.fold_ids)?;
@@ -253,6 +267,8 @@ pub struct BundlePredictionBlockCacheRecord {
     pub prediction_id: Option<String>,
     #[serde(default)]
     pub fold_id: Option<FoldId>,
+    #[serde(default = "default_prediction_level")]
+    pub prediction_level: PredictionLevel,
     pub row_count: usize,
     pub sample_ids: Vec<SampleId>,
     pub content_fingerprint: String,
@@ -267,6 +283,12 @@ impl BundlePredictionBlockCacheRecord {
             return Err(DagMlError::RuntimeValidation(
                 "prediction block cache record has zero rows".to_string(),
             ));
+        }
+        if self.prediction_level != PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction block cache record for {:?} predictions is not replay-cache supported yet",
+                self.prediction_level
+            )));
         }
         if self.row_count != self.sample_ids.len() {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -286,6 +308,8 @@ pub struct BundlePredictionCacheRecord {
     pub cache_id: String,
     pub format: String,
     pub partition: PredictionPartition,
+    #[serde(default = "default_prediction_level")]
+    pub prediction_level: PredictionLevel,
     #[serde(default)]
     pub fold_ids: Vec<FoldId>,
     pub sample_ids: Vec<SampleId>,
@@ -313,6 +337,13 @@ impl BundlePredictionCacheRecord {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache `{}` must cache validation OOF predictions",
                 self.cache_id
+            )));
+        }
+        if self.prediction_level != PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache `{}` uses {:?} predictions, but replay caches currently require sample-level OOF predictions",
+                self.cache_id,
+                self.prediction_level
             )));
         }
         validate_unique_ids("fold id", &self.fold_ids)?;
@@ -369,6 +400,8 @@ pub struct BundlePredictionCachePayload {
     pub cache_id: String,
     pub format: String,
     pub partition: PredictionPartition,
+    #[serde(default = "default_prediction_level")]
+    pub prediction_level: PredictionLevel,
     pub block_count: usize,
     pub row_count: usize,
     pub content_fingerprint: String,
@@ -391,6 +424,13 @@ impl BundlePredictionCachePayload {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache payload `{}` must cache validation OOF predictions",
                 self.cache_id
+            )));
+        }
+        if self.prediction_level != PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache payload `{}` uses {:?} predictions, but replay payloads currently require sample-level OOF predictions",
+                self.cache_id,
+                self.prediction_level
             )));
         }
         if self.block_count == 0 || self.block_count != self.blocks.len() {
@@ -1148,6 +1188,7 @@ pub fn build_prediction_cache_payload(
         cache_id: format!("prediction-cache:{}", requirement.key()),
         format: BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
         partition: requirement.partition.clone(),
+        prediction_level: requirement.prediction_level,
         block_count: selected.len(),
         row_count: selected.iter().map(|block| block.sample_ids.len()).sum(),
         content_fingerprint: stable_json_fingerprint(&selected)?,
@@ -1169,6 +1210,7 @@ pub fn validate_prediction_cache_payload_matches_record(
         || payload.cache_id != record.cache_id
         || payload.format != record.format
         || payload.partition != record.partition
+        || payload.prediction_level != record.prediction_level
         || payload.block_count != record.block_count
         || payload.row_count != record.row_count
         || payload.content_fingerprint != record.content_fingerprint
@@ -1185,6 +1227,7 @@ pub fn validate_prediction_cache_payload_matches_record(
             Ok(BundlePredictionBlockCacheRecord {
                 prediction_id: block.prediction_id.clone(),
                 fold_id: block.fold_id.clone(),
+                prediction_level: PredictionLevel::Sample,
                 row_count: block.sample_ids.len(),
                 sample_ids: block.sample_ids.clone(),
                 content_fingerprint: stable_json_fingerprint(block)?,
@@ -1285,6 +1328,7 @@ fn build_prediction_cache_record_from_selected(
         block_records.push(BundlePredictionBlockCacheRecord {
             prediction_id: block.prediction_id.clone(),
             fold_id: block.fold_id.clone(),
+            prediction_level: PredictionLevel::Sample,
             row_count: block.sample_ids.len(),
             sample_ids: block.sample_ids.clone(),
             content_fingerprint: stable_json_fingerprint(block)?,
@@ -1296,6 +1340,7 @@ fn build_prediction_cache_record_from_selected(
         cache_id: format!("prediction-cache:{}", requirement.key()),
         format: BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
         partition: requirement.partition.clone(),
+        prediction_level: requirement.prediction_level,
         fold_ids: fold_ids.into_iter().collect(),
         sample_ids: sample_ids.into_iter().collect(),
         prediction_width: prediction_width.unwrap_or_default(),
@@ -1316,6 +1361,7 @@ fn validate_prediction_cache_matches_requirement(
 ) -> Result<()> {
     if cache.requirement_key != requirement.key()
         || cache.partition != requirement.partition
+        || cache.prediction_level != requirement.prediction_level
         || cache.fold_ids != requirement.fold_ids
         || cache.sample_ids != requirement.sample_ids
         || cache.prediction_width != requirement.prediction_width
@@ -1565,6 +1611,7 @@ mod tests {
             consumer_node: NodeId::new("merge:stack.pred_plus_original.meta:ridge").unwrap(),
             target_port: target_port.to_string(),
             partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
             fold_ids: vec![
                 FoldId::new("fold:0").unwrap(),
                 FoldId::new("fold:1").unwrap(),
@@ -1851,6 +1898,7 @@ mod tests {
             consumer_node: meta_plan.node_id.clone(),
             target_port: "b0_oof".to_string(),
             partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
             fold_ids: vec![fold0.clone(), fold1.clone()],
             sample_ids: samples.to_vec(),
             prediction_width: 1,
@@ -1878,7 +1926,22 @@ mod tests {
         ];
         let cache = build_prediction_cache_record(&requirement, &prediction_blocks).unwrap();
         let payload = build_prediction_cache_payload(&requirement, &prediction_blocks).unwrap();
+        assert_eq!(cache.prediction_level, PredictionLevel::Sample);
+        assert_eq!(payload.prediction_level, PredictionLevel::Sample);
+        assert!(cache
+            .blocks
+            .iter()
+            .all(|block| block.prediction_level == PredictionLevel::Sample));
         validate_prediction_cache_payload_matches_record(&payload, &cache).unwrap();
+        let mut wrong_level_requirement = requirement.clone();
+        wrong_level_requirement.prediction_level = PredictionLevel::Target;
+        assert!(wrong_level_requirement.validate().is_err());
+        let mut wrong_level_cache = cache.clone();
+        wrong_level_cache.prediction_level = PredictionLevel::Target;
+        assert!(wrong_level_cache.validate().is_err());
+        let mut wrong_level_payload = payload.clone();
+        wrong_level_payload.prediction_level = PredictionLevel::Target;
+        assert!(wrong_level_payload.validate().is_err());
         let prediction_key = requirement.key();
         let artifact = RefitArtifactRecord {
             node_id: meta_plan.node_id.clone(),

@@ -2999,6 +2999,7 @@ mod tests {
             consumer_node: NodeId::new("model:meta").unwrap(),
             target_port: "pred".to_string(),
             partition: PredictionPartition::Validation,
+            prediction_level: dag_ml_core::PredictionLevel::Sample,
             fold_ids: vec![FoldId::new("fold:0").unwrap()],
             sample_ids: vec![SampleId::new("sample:1").unwrap()],
             prediction_width: 1,
