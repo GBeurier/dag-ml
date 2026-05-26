@@ -804,6 +804,8 @@ pub struct ColumnarPredictionCacheBlock {
     pub producer_node: NodeId,
     pub partition: PredictionPartition,
     pub fold_id: Option<FoldId>,
+    pub prediction_level: PredictionLevel,
+    pub unit_ids: Vec<PredictionUnitId>,
     pub sample_ids: Vec<SampleId>,
     pub target_names: Vec<String>,
     pub width: usize,
@@ -824,6 +826,8 @@ impl ColumnarPredictionCacheBlock {
             producer_node: block.producer_node.clone(),
             partition: block.partition.clone(),
             fold_id: block.fold_id.clone(),
+            prediction_level: PredictionLevel::Sample,
+            unit_ids: Vec::new(),
             sample_ids: block.sample_ids.clone(),
             target_names: block.target_names.clone(),
             width,
@@ -831,8 +835,40 @@ impl ColumnarPredictionCacheBlock {
         })
     }
 
+    pub fn from_aggregated_prediction_block(block: &AggregatedPredictionBlock) -> Result<Self> {
+        let width = block.validate_shape()?;
+        if block.level == PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar aggregated prediction block for `{}` must use target/group level, got sample",
+                block.producer_node
+            )));
+        }
+        let mut columns = vec![Vec::with_capacity(block.values.len()); width];
+        for row in &block.values {
+            for (column_idx, value) in row.iter().enumerate() {
+                columns[column_idx].push(*value);
+            }
+        }
+        Ok(Self {
+            prediction_id: block.prediction_id.clone(),
+            producer_node: block.producer_node.clone(),
+            partition: block.partition.clone(),
+            fold_id: block.fold_id.clone(),
+            prediction_level: block.level,
+            unit_ids: block.unit_ids.clone(),
+            sample_ids: Vec::new(),
+            target_names: block.target_names.clone(),
+            width,
+            columns,
+        })
+    }
+
     pub fn row_count(&self) -> usize {
-        self.sample_ids.len()
+        match self.prediction_level {
+            PredictionLevel::Sample => self.sample_ids.len(),
+            PredictionLevel::Target | PredictionLevel::Group => self.unit_ids.len(),
+            PredictionLevel::Observation => 0,
+        }
     }
 
     pub fn value_count(&self) -> usize {
@@ -840,6 +876,52 @@ impl ColumnarPredictionCacheBlock {
     }
 
     pub fn validate(&self) -> Result<()> {
+        match self.prediction_level {
+            PredictionLevel::Observation => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "columnar prediction block for `{}` cannot store observation-level predictions",
+                    self.producer_node
+                )));
+            }
+            PredictionLevel::Sample => {
+                if self.sample_ids.is_empty() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "columnar sample prediction block for `{}` has no sample ids",
+                        self.producer_node
+                    )));
+                }
+                if !self.unit_ids.is_empty() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "columnar sample prediction block for `{}` unexpectedly carries unit ids",
+                        self.producer_node
+                    )));
+                }
+            }
+            PredictionLevel::Target | PredictionLevel::Group => {
+                if !self.sample_ids.is_empty() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "columnar aggregated prediction block for `{}` unexpectedly carries sample ids",
+                        self.producer_node
+                    )));
+                }
+                if self.unit_ids.is_empty() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "columnar aggregated prediction block for `{}` has no unit ids",
+                        self.producer_node
+                    )));
+                }
+                if self
+                    .unit_ids
+                    .iter()
+                    .any(|unit_id| unit_id.level() != self.prediction_level)
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "columnar aggregated prediction block for `{}` carries unit ids outside {:?}",
+                        self.producer_node, self.prediction_level
+                    )));
+                }
+            }
+        }
         if self.width == 0 {
             return Err(DagMlError::RuntimeValidation(format!(
                 "columnar prediction block for `{}` has zero width",
@@ -878,6 +960,12 @@ impl ColumnarPredictionCacheBlock {
 
     pub fn to_prediction_block(&self) -> Result<PredictionBlock> {
         self.validate()?;
+        if self.prediction_level != PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction block for `{}` contains {:?} predictions, not sample predictions",
+                self.producer_node, self.prediction_level
+            )));
+        }
         let values = (0..self.row_count())
             .map(|row_idx| {
                 self.columns
@@ -892,6 +980,36 @@ impl ColumnarPredictionCacheBlock {
             partition: self.partition.clone(),
             fold_id: self.fold_id.clone(),
             sample_ids: self.sample_ids.clone(),
+            values,
+            target_names: self.target_names.clone(),
+        };
+        block.validate_shape()?;
+        Ok(block)
+    }
+
+    pub fn to_aggregated_prediction_block(&self) -> Result<AggregatedPredictionBlock> {
+        self.validate()?;
+        if self.prediction_level == PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction block for `{}` contains sample predictions, not aggregated predictions",
+                self.producer_node
+            )));
+        }
+        let values = (0..self.row_count())
+            .map(|row_idx| {
+                self.columns
+                    .iter()
+                    .map(|column| column[row_idx])
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let block = AggregatedPredictionBlock {
+            prediction_id: self.prediction_id.clone(),
+            producer_node: self.producer_node.clone(),
+            partition: self.partition.clone(),
+            fold_id: self.fold_id.clone(),
+            level: self.prediction_level,
+            unit_ids: self.unit_ids.clone(),
             values,
             target_names: self.target_names.clone(),
         };
@@ -925,11 +1043,24 @@ impl ColumnarPredictionCacheEntry {
         cache: BundlePredictionCacheRecord,
     ) -> Result<Self> {
         validate_prediction_cache_payload_matches_record(&payload, &cache)?;
-        let blocks = payload
-            .blocks
-            .iter()
-            .map(ColumnarPredictionCacheBlock::from_prediction_block)
-            .collect::<Result<Vec<_>>>()?;
+        let blocks = match payload.prediction_level {
+            PredictionLevel::Sample => payload
+                .blocks
+                .iter()
+                .map(ColumnarPredictionCacheBlock::from_prediction_block)
+                .collect::<Result<Vec<_>>>()?,
+            PredictionLevel::Target | PredictionLevel::Group => payload
+                .aggregated_blocks
+                .iter()
+                .map(ColumnarPredictionCacheBlock::from_aggregated_prediction_block)
+                .collect::<Result<Vec<_>>>()?,
+            PredictionLevel::Observation => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "columnar prediction cache payload `{}` cannot use observation-level predictions",
+                    payload.cache_id
+                )));
+            }
+        };
         let entry = Self { cache, blocks };
         entry.validate()?;
         Ok(entry)
@@ -949,6 +1080,12 @@ impl ColumnarPredictionCacheEntry {
         let mut value_count = 0usize;
         for block in &self.blocks {
             block.validate()?;
+            if block.prediction_level != self.cache.prediction_level {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "columnar prediction cache `{}` contains a {:?} block, expected {:?}",
+                    self.cache.cache_id, block.prediction_level, self.cache.prediction_level
+                )));
+            }
             if block.partition != self.cache.partition {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "columnar prediction cache `{}` contains a block from partition {:?}",
@@ -991,6 +1128,14 @@ impl ColumnarPredictionCacheEntry {
             .collect()
     }
 
+    fn to_aggregated_blocks(&self) -> Result<Vec<AggregatedPredictionBlock>> {
+        self.validate()?;
+        self.blocks
+            .iter()
+            .map(ColumnarPredictionCacheBlock::to_aggregated_prediction_block)
+            .collect()
+    }
+
     fn validate_against_cache_record(&self, cache: &BundlePredictionCacheRecord) -> Result<()> {
         if &self.cache != cache {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -998,6 +1143,18 @@ impl ColumnarPredictionCacheEntry {
                 cache.requirement_key
             )));
         }
+        let (blocks, aggregated_blocks) = match self.cache.prediction_level {
+            PredictionLevel::Sample => (self.to_blocks()?, Vec::new()),
+            PredictionLevel::Target | PredictionLevel::Group => {
+                (Vec::new(), self.to_aggregated_blocks()?)
+            }
+            PredictionLevel::Observation => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "columnar prediction cache `{}` cannot materialize observation-level predictions",
+                    self.cache.cache_id
+                )));
+            }
+        };
         let payload = BundlePredictionCachePayload {
             requirement_key: self.cache.requirement_key.clone(),
             cache_id: self.cache.cache_id.clone(),
@@ -1007,8 +1164,8 @@ impl ColumnarPredictionCacheEntry {
             block_count: self.cache.block_count,
             row_count: self.cache.row_count,
             content_fingerprint: self.cache.content_fingerprint.clone(),
-            blocks: self.to_blocks()?,
-            aggregated_blocks: Vec::new(),
+            blocks,
+            aggregated_blocks,
         };
         validate_prediction_cache_payload_matches_record(&payload, cache)
     }
@@ -1098,8 +1255,32 @@ impl RuntimePredictionCacheStore for ColumnarPredictionCacheStore {
                 "columnar prediction cache store is missing requirement `{requirement_key}`"
             ))
         })?;
+        if entry.cache.prediction_level != PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction cache store requirement `{requirement_key}` contains {:?} predictions, not sample blocks",
+                entry.cache.prediction_level
+            )));
+        }
         entry.validate_against_cache_record(&entry.cache)?;
         entry.to_blocks()
+    }
+
+    fn load_aggregated_blocks(
+        &self,
+        requirement_key: &str,
+    ) -> Result<Vec<AggregatedPredictionBlock>> {
+        let entry = self.entries.get(requirement_key).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "columnar prediction cache store is missing requirement `{requirement_key}`"
+            ))
+        })?;
+        if entry.cache.prediction_level == PredictionLevel::Sample {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "columnar prediction cache store requirement `{requirement_key}` contains sample predictions, not aggregated blocks"
+            )));
+        }
+        entry.validate_against_cache_record(&entry.cache)?;
+        entry.to_aggregated_blocks()
     }
 
     fn materialize(&self, request: &PredictionCacheMaterializationRequest) -> Result<HandleRef> {
@@ -5672,6 +5853,31 @@ mod tests {
             .unwrap();
         assert_eq!(handle.kind, HandleKind::Prediction);
 
+        let columnar =
+            ColumnarPredictionCacheStore::from_payloads(&bundle, payload_set.clone()).unwrap();
+        assert_eq!(columnar.entry_count(), 1);
+        let manifest = columnar.manifests();
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].prediction_level, PredictionLevel::Target);
+        assert_eq!(manifest[0].value_count, 2);
+        assert!(columnar.load_blocks(&requirement.key()).is_err());
+        assert_eq!(
+            columnar.load_aggregated_blocks(&requirement.key()).unwrap(),
+            aggregated_blocks
+        );
+        let columnar_handle = columnar
+            .materialize(&PredictionCacheMaterializationRequest {
+                run_id: RunId::new("run:oof.edge.aggregated.columnar.cache.store.replay").unwrap(),
+                bundle_id: bundle.bundle_id.clone(),
+                phase: Phase::Refit,
+                variant_id: bundle.selected_variant_id.clone(),
+                requirement: requirement.clone(),
+                cache: cache.clone(),
+                producer_controller_id: ControllerId::new("controller:model").unwrap(),
+            })
+            .unwrap();
+        assert_eq!(columnar_handle.kind, HandleKind::Prediction);
+
         let root = temp_prediction_cache_dir("dag_ml_aggregated_prediction_cache_store");
         let manifest =
             FilePredictionCacheStore::write_payload_set(&root, &bundle, &payload_set).unwrap();
@@ -5705,6 +5911,32 @@ mod tests {
         assert_eq!(columnar.value_count(), 4);
         assert_eq!(columnar.columns, vec![vec![1.0, 2.0], vec![10.0, 20.0]]);
         assert_eq!(columnar.to_prediction_block().unwrap(), block);
+    }
+
+    #[test]
+    fn columnar_prediction_cache_block_round_trips_aggregated_units() {
+        let block = AggregatedPredictionBlock {
+            prediction_id: Some("pred:target".to_string()),
+            producer_node: NodeId::new("model:target").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            level: PredictionLevel::Target,
+            unit_ids: vec![
+                PredictionUnitId::Target(TargetId::new("target:a").unwrap()),
+                PredictionUnitId::Target(TargetId::new("target:b").unwrap()),
+            ],
+            values: vec![vec![1.0, 10.0], vec![2.0, 20.0]],
+            target_names: vec!["y0".to_string(), "y1".to_string()],
+        };
+
+        let columnar =
+            ColumnarPredictionCacheBlock::from_aggregated_prediction_block(&block).unwrap();
+        assert_eq!(columnar.prediction_level, PredictionLevel::Target);
+        assert_eq!(columnar.row_count(), 2);
+        assert_eq!(columnar.value_count(), 4);
+        assert_eq!(columnar.columns, vec![vec![1.0, 2.0], vec![10.0, 20.0]]);
+        assert!(columnar.to_prediction_block().is_err());
+        assert_eq!(columnar.to_aggregated_prediction_block().unwrap(), block);
     }
 
     #[test]
