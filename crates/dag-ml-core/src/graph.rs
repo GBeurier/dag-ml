@@ -208,6 +208,15 @@ impl GraphSpec {
                     target_port.kind
                 )));
             }
+            if edge.contract.requires_oof && edge.contract.kind != PortKind::Prediction {
+                return Err(DagMlError::GraphValidation(format!(
+                    "edge `{}.{}` -> `{}.{}` requires OOF but is not a prediction edge",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name
+                )));
+            }
 
             adjacency
                 .get_mut(&edge.source.node_id)
@@ -415,6 +424,41 @@ mod tests {
         };
 
         assert!(graph.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_oof_contract_on_non_prediction_edge() {
+        let graph = GraphSpec {
+            id: "g".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node("model:a", vec![], vec![port("x", PortKind::Data)]),
+                node("model:b", vec![port("x", PortKind::Data)], vec![]),
+            ],
+            edges: vec![EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new("model:a").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new("model:b").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                contract: EdgeContract {
+                    kind: PortKind::Data,
+                    representation: None,
+                    requires_oof: true,
+                    requires_fold_alignment: true,
+                    propagates_lineage: true,
+                },
+            }],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+
+        let error = graph.validate().unwrap_err().to_string();
+
+        assert!(error.contains("requires OOF"));
     }
 
     #[test]
