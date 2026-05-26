@@ -11,8 +11,10 @@ the host owns the underlying object behind each handle.
 - owned byte release helper for JSON outputs returned by Rust;
 - `dagml_graph_validate_json` for graph contract checks;
 - selection policy/decision validation and candidate selection JSON helpers;
-- execution bundle validation, replay-envelope validation and replay-request
-  validation helpers;
+- execution bundle validation, replay-envelope validation, replay-request
+  validation and prediction-cache payload validation helpers;
+- replay-request validation can optionally include an OOF prediction-cache
+  payload set, which is required for OOF-dependent `REFIT` replay;
 - mock replay execution helper that returns a JSON summary while exercising
   Rust-side data handle materialization, data view creation and artifact handle
   materialization;
