@@ -38,6 +38,9 @@ Implemented:
   including explicit feature-set ids for provider `feature_arrow` calls;
 - external data-plan envelopes carry an explicit schema version and are refused
   when a future/unsupported version is received;
+- published JSON Schema artifact for external coordinator data-plan envelopes,
+  with a unit smoke that keeps its declared version aligned to the Rust
+  contract;
 - external data-plan envelope validation by schema, plan and relation
   fingerprints;
 - campaign data envelopes with coordinator relations are checked against the

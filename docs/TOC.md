@@ -8,6 +8,7 @@ Use this as a validation map before development starts.
 | Agent handoff | `AGENTS.md` | Rules for autonomous implementation work | A new agent knows boundaries and green gate |
 | Architecture | `docs/ARCHITECTURE.md` | Runtime layers, crate responsibilities, phase flow | DAG-ML owns control only, not data buffers |
 | Coordinator spec | `docs/COORDINATOR_SPEC.md` | Short normative product and coordinator contract | Controllers stay external; Rust owns orchestration and invariants |
+| Shared contract schema | `docs/contracts/coordinator_data_plan_envelope.schema.json` | JSON Schema for the external data-plan envelope consumed from `dag-ml-data` | Fixtures and bindings declare the same v1 envelope shape |
 | ABI | `docs/ABI.md` | C ABI shape, handles, vtables, ownership | No host object crosses as a Rust-owned value |
 | Rationale | `docs/RATIONALE.md` | Technical decisions and non-goals | Rust/C ABI split is justified and scoped |
 | MVP acceptance | `docs/MVP_ACCEPTANCE.md` | First executable target and no-leakage gates | UC6 succeeds and UC11 fails for the right reason |
@@ -32,4 +33,5 @@ Use this as a validation map before development starts.
 | Rust formatting | `cargo fmt --all --check` |
 | Rust tests | `cargo test --workspace` |
 | Lints | `cargo clippy --workspace --all-targets -- -D warnings` |
+| Contract schema syntax | `python3 -m json.tool docs/contracts/coordinator_data_plan_envelope.schema.json >/dev/null` |
 | Example graph | `cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json` |

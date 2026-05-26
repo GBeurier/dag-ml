@@ -145,6 +145,15 @@ a coordinator envelope containing these fingerprints plus coordinator relation
 records; `dag-ml` validates that an execution campaign binds to the exact
 envelope before a controller receives any handle.
 
+The shared serialization contract is versioned as
+`CoordinatorDataPlanEnvelope` v1. `dag-ml` consumes the subset represented by
+`ExternalDataPlanEnvelope`, rejects unsupported future versions at runtime, and
+publishes the current JSON Schema at
+`docs/contracts/coordinator_data_plan_envelope.schema.json`. The schema is the
+wire-contract artifact; Rust validation remains responsible for semantic
+checks such as fingerprint equality and relation membership in the active
+campaign fold set.
+
 At execution time, the scheduler does not give the controller the raw
 materialized data handle directly. It asks the data provider for a scoped view
 derived from the active phase and `DataViewPolicy`: `FIT_CV` tasks receive a

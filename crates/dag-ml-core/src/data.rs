@@ -519,6 +519,24 @@ mod tests {
     }
 
     #[test]
+    fn published_external_data_envelope_schema_declares_current_version() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/coordinator_data_plan_envelope.schema.json"
+        ))
+        .unwrap();
+
+        assert_eq!(
+            schema["properties"]["schema_version"]["const"].as_u64(),
+            Some(EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION as u64)
+        );
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("schema_version")));
+    }
+
+    #[test]
     fn refuses_unsupported_external_data_envelope_schema_version() {
         let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
             "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
