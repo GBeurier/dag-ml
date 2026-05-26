@@ -3,7 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::campaign::stable_json_fingerprint;
-use crate::controller::{ControllerManifest, ControllerRegistry};
+use crate::controller::{
+    ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
+    ControllerRegistry, RngPolicy,
+};
 use crate::data::{DataBinding, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::fold::FoldSet;
@@ -150,6 +153,11 @@ pub struct NodePlan {
     pub controller_id: ControllerId,
     pub controller_version: String,
     pub supported_phases: BTreeSet<Phase>,
+    #[serde(default)]
+    pub controller_capabilities: BTreeSet<ControllerCapability>,
+    pub fit_scope: ControllerFitScope,
+    pub rng_policy: RngPolicy,
+    pub artifact_policy: ArtifactPolicy,
     pub input_nodes: Vec<NodeId>,
     pub output_nodes: Vec<NodeId>,
     pub shape_plan: Option<DataModelShapePlan>,
@@ -226,6 +234,21 @@ impl ExecutionPlan {
                     manifest.controller_id
                 )));
             }
+            if plan.controller_capabilities != manifest.capabilities {
+                return Err(DagMlError::Planning(format!(
+                    "node `{node_id}` controller capabilities do not match manifest `{}`",
+                    manifest.controller_id
+                )));
+            }
+            if plan.fit_scope != manifest.fit_scope
+                || plan.rng_policy != manifest.rng_policy
+                || plan.artifact_policy != manifest.artifact_policy
+            {
+                return Err(DagMlError::Planning(format!(
+                    "node `{node_id}` controller policy fields do not match manifest `{}`",
+                    manifest.controller_id
+                )));
+            }
             for binding in &plan.data_bindings {
                 if binding.node_id != *node_id {
                     return Err(DagMlError::Planning(format!(
@@ -242,6 +265,7 @@ impl ExecutionPlan {
                 )));
             }
         }
+        self.validate_oof_controller_capabilities()?;
         if let Some(fold_set) = &self.fold_set {
             fold_set.validate()?;
         }
@@ -252,6 +276,89 @@ impl ExecutionPlan {
         }
         for variant in &self.variants {
             variant.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_parallel_controller_capabilities(
+        &self,
+        max_workers: usize,
+        phase: Phase,
+    ) -> Result<()> {
+        if max_workers <= 1 {
+            return Ok(());
+        }
+        let node_ids = self
+            .node_parallel_levels_for_phase(phase)?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        for node_id in node_ids {
+            let node_plan = self.node_plans.get(&node_id).ok_or_else(|| {
+                DagMlError::Planning(format!("missing node plan for `{node_id}`"))
+            })?;
+            let manifest = self
+                .controller_manifests
+                .get(&node_plan.controller_id)
+                .ok_or_else(|| {
+                    DagMlError::Planning(format!(
+                        "missing controller manifest `{}` for node `{}`",
+                        node_plan.controller_id, node_plan.node_id
+                    ))
+                })?;
+            if !manifest.supports_parallel_invocation() {
+                return Err(DagMlError::Planning(format!(
+                    "parallel scheduler with {max_workers} workers requires controller `{}` for node `{}` to declare thread_safe or process_safe",
+                    manifest.controller_id, node_plan.node_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_oof_controller_capabilities(&self) -> Result<()> {
+        for edge in &self.graph_plan.graph.edges {
+            if !edge.contract.requires_oof {
+                continue;
+            }
+            let source_plan = self.node_plans.get(&edge.source.node_id).ok_or_else(|| {
+                DagMlError::Planning(format!(
+                    "OOF edge source node `{}` has no node plan",
+                    edge.source.node_id
+                ))
+            })?;
+            if !source_plan
+                .controller_capabilities
+                .contains(&ControllerCapability::EmitsPredictions)
+            {
+                return Err(DagMlError::Planning(format!(
+                    "OOF edge `{}.{}` -> `{}.{}` requires source controller `{}` to declare emits_predictions",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name,
+                    source_plan.controller_id
+                )));
+            }
+            let target_plan = self.node_plans.get(&edge.target.node_id).ok_or_else(|| {
+                DagMlError::Planning(format!(
+                    "OOF edge target node `{}` has no node plan",
+                    edge.target.node_id
+                ))
+            })?;
+            if !target_plan
+                .controller_capabilities
+                .contains(&ControllerCapability::ConsumesOofPredictions)
+            {
+                return Err(DagMlError::Planning(format!(
+                    "OOF edge `{}.{}` -> `{}.{}` requires target controller `{}` to declare consumes_oof_predictions",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name,
+                    target_plan.controller_id
+                )));
+            }
         }
         Ok(())
     }
@@ -389,6 +496,10 @@ pub fn build_execution_plan(
                 controller_id: manifest.controller_id.clone(),
                 controller_version: manifest.controller_version.clone(),
                 supported_phases: manifest.supported_phases.clone(),
+                controller_capabilities: manifest.capabilities.clone(),
+                fit_scope: manifest.fit_scope,
+                rng_policy: manifest.rng_policy,
+                artifact_policy: manifest.artifact_policy,
                 input_nodes: graph_plan.graph.upstream_nodes(&node.id),
                 output_nodes: graph_plan.graph.downstream_nodes(&node.id),
                 shape_plan,
@@ -551,6 +662,15 @@ mod tests {
     }
 
     fn manifest(id: &str, kind: NodeKind) -> ControllerManifest {
+        let mut capabilities = BTreeSet::from([
+            ControllerCapability::Deterministic,
+            ControllerCapability::ThreadSafe,
+            ControllerCapability::ProcessSafe,
+        ]);
+        if kind == NodeKind::Model {
+            capabilities.insert(ControllerCapability::EmitsPredictions);
+            capabilities.insert(ControllerCapability::ConsumesOofPredictions);
+        }
         ControllerManifest {
             controller_id: ControllerId::new(id).unwrap(),
             controller_version: "0.1.0".to_string(),
@@ -560,7 +680,7 @@ mod tests {
             input_ports: Vec::new(),
             output_ports: Vec::new(),
             data_requirements: None,
-            capabilities: BTreeSet::from([ControllerCapability::Deterministic]),
+            capabilities,
             fit_scope: ControllerFitScope::FoldTrain,
             rng_policy: RngPolicy::UsesCoreSeed,
             artifact_policy: ArtifactPolicy::Serializable,
@@ -576,6 +696,46 @@ mod tests {
             .register(manifest("controller:model", NodeKind::Model))
             .unwrap();
         registry
+    }
+
+    fn oof_graph() -> GraphSpec {
+        GraphSpec {
+            id: "g:oof.capabilities".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    "model:base",
+                    NodeKind::Model,
+                    vec![],
+                    vec![port("pred", PortKind::Prediction)],
+                ),
+                node(
+                    "model:meta",
+                    NodeKind::Model,
+                    vec![port("pred", PortKind::Prediction)],
+                    vec![port("pred", PortKind::Prediction)],
+                ),
+            ],
+            edges: vec![EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new("model:base").unwrap(),
+                    port_name: "pred".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new("model:meta").unwrap(),
+                    port_name: "pred".to_string(),
+                },
+                contract: EdgeContract {
+                    kind: PortKind::Prediction,
+                    representation: None,
+                    requires_oof: true,
+                    requires_fold_alignment: true,
+                    propagates_lineage: true,
+                },
+            }],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        }
     }
 
     fn data_binding(node_id: &NodeId) -> DataBinding {
@@ -678,6 +838,9 @@ mod tests {
             levels_as_strings(&plan.graph_plan.parallel_levels),
             vec![vec!["transform:snv"], vec!["model:pls"]]
         );
+        assert!(plan.node_plans[&model_id]
+            .controller_capabilities
+            .contains(&ControllerCapability::EmitsPredictions));
         assert!(plan.fold_set.is_some());
         let schedule = plan.campaign_phase_schedule(Phase::FitCv).unwrap();
         assert_eq!(schedule.scopes.len(), 2);
@@ -774,6 +937,77 @@ mod tests {
         };
 
         assert!(build_execution_plan("plan:oof", graph(), campaign, &registry()).is_err());
+    }
+
+    #[test]
+    fn planning_refuses_oof_edge_without_controller_capabilities() {
+        let mut registry = ControllerRegistry::new();
+        let mut model_manifest = manifest("controller:model", NodeKind::Model);
+        model_manifest
+            .capabilities
+            .remove(&ControllerCapability::ConsumesOofPredictions);
+        registry.register(model_manifest).unwrap();
+
+        let err = build_execution_plan(
+            "plan:oof.capability",
+            oof_graph(),
+            CampaignSpec {
+                id: "campaign:oof.capability".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: None,
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+            &registry,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("consumes_oof_predictions"));
+    }
+
+    #[test]
+    fn parallel_controller_capability_validation_requires_safe_manifest() {
+        let mut registry = ControllerRegistry::new();
+        let mut transform_manifest = manifest("controller:transform", NodeKind::Transform);
+        transform_manifest
+            .capabilities
+            .remove(&ControllerCapability::ThreadSafe);
+        transform_manifest
+            .capabilities
+            .remove(&ControllerCapability::ProcessSafe);
+        registry.register(transform_manifest).unwrap();
+        registry
+            .register(manifest("controller:model", NodeKind::Model))
+            .unwrap();
+        let plan = build_execution_plan(
+            "plan:parallel.capability",
+            graph(),
+            CampaignSpec {
+                id: "campaign:parallel.capability".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: None,
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+            &registry,
+        )
+        .unwrap();
+
+        assert!(plan
+            .validate_parallel_controller_capabilities(1, Phase::FitCv)
+            .is_ok());
+        let err = plan
+            .validate_parallel_controller_capabilities(2, Phase::FitCv)
+            .unwrap_err();
+        assert!(err.to_string().contains("thread_safe or process_safe"));
     }
 
     #[test]

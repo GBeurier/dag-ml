@@ -24,7 +24,7 @@
       }
     ],
     "data_requirements": null,
-    "capabilities": ["deterministic", "thread_safe", "uses_core_rng"],
+    "capabilities": ["deterministic", "thread_safe", "process_safe", "uses_core_rng"],
     "fit_scope": "fold_train",
     "rng_policy": "uses_core_seed",
     "artifact_policy": "serializable"
@@ -54,7 +54,16 @@
       }
     ],
     "data_requirements": null,
-    "capabilities": ["deterministic", "thread_safe", "uses_core_rng", "emits_predictions"],
+    "capabilities": [
+      "deterministic",
+      "thread_safe",
+      "process_safe",
+      "uses_core_rng",
+      "emits_predictions",
+      "consumes_oof_predictions",
+      "emits_artifacts",
+      "stateful"
+    ],
     "fit_scope": "fold_train",
     "rng_policy": "uses_core_seed",
     "artifact_policy": "serializable"

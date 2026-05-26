@@ -2463,6 +2463,7 @@ impl ParallelScheduler {
         scope: PhaseScope,
         mut resources: PhaseScopeResources<'_>,
     ) -> Result<Vec<NodeResult>> {
+        plan.validate_parallel_controller_capabilities(self.max_workers, scope.phase)?;
         let mut results = Vec::new();
         let mut output_handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
         let mut input_lineage = BTreeMap::<NodeId, LineageId>::new();
@@ -3953,6 +3954,17 @@ mod tests {
     }
 
     fn controller_manifest(id: &str, kind: NodeKind) -> ControllerManifest {
+        let mut capabilities = BTreeSet::from([
+            ControllerCapability::Deterministic,
+            ControllerCapability::ThreadSafe,
+            ControllerCapability::ProcessSafe,
+        ]);
+        if kind == NodeKind::Model {
+            capabilities.insert(ControllerCapability::EmitsPredictions);
+            capabilities.insert(ControllerCapability::ConsumesOofPredictions);
+            capabilities.insert(ControllerCapability::EmitsArtifacts);
+            capabilities.insert(ControllerCapability::Stateful);
+        }
         ControllerManifest {
             controller_id: ControllerId::new(id).unwrap(),
             controller_version: "0.1.0".to_string(),
@@ -3962,7 +3974,7 @@ mod tests {
             input_ports: Vec::new(),
             output_ports: Vec::new(),
             data_requirements: None,
-            capabilities: BTreeSet::from([ControllerCapability::Deterministic]),
+            capabilities,
             fit_scope: ControllerFitScope::FoldTrain,
             rng_policy: RngPolicy::UsesCoreSeed,
             artifact_policy: ArtifactPolicy::Serializable,

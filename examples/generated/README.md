@@ -27,7 +27,8 @@ Process adapters must answer `--describe` with the dag-ml process-adapter
 contract. Persistent process adapters must support `control_frames_v1`
 (`init`/`task`/`close` with typed `ack`/`result`/`error`). Persistent process
 commands accept `--process-workers`, `--process-timeout-ms` and
-`--process-retries`. Execution commands also accept
+`--process-retries`; adapters must declare `persistent_workers`, `worker_env`
+and `parallel_invocation_v1` before those modes are enabled. Execution commands also accept
 `--scheduler sequential|parallel` and `--scheduler-workers`; generated fixtures
 use the stable defaults except where multi-worker or scheduler coverage is
 useful.

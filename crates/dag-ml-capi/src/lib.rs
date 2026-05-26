@@ -2122,9 +2122,10 @@ fn stable_handle(value: &str) -> u64 {
 mod tests {
     use super::*;
     use dag_ml_core::{
-        build_prediction_cache_record, ArtifactId, ArtifactRef, BundleId,
-        BundlePredictionRequirement, DataBinding, DataProviderViewSpec, DataRequestPartition,
-        DataViewPolicy, FoldId, NodeId, NodeKind, NodePlan, VariantId,
+        build_prediction_cache_record, ArtifactId, ArtifactPolicy, ArtifactRef, BundleId,
+        BundlePredictionRequirement, ControllerCapability, ControllerFitScope, DataBinding,
+        DataProviderViewSpec, DataRequestPartition, DataViewPolicy, FoldId, NodeId, NodeKind,
+        NodePlan, RngPolicy, VariantId,
     };
     use std::ffi::CStr;
 
@@ -2485,6 +2486,13 @@ mod tests {
                 controller_id: controller_id.clone(),
                 controller_version: "0.1.0".to_string(),
                 supported_phases: BTreeSet::from([Phase::FitCv]),
+                controller_capabilities: BTreeSet::from([
+                    ControllerCapability::Deterministic,
+                    ControllerCapability::ThreadSafe,
+                ]),
+                fit_scope: ControllerFitScope::FoldTrain,
+                rng_policy: RngPolicy::UsesCoreSeed,
+                artifact_policy: ArtifactPolicy::Serializable,
                 input_nodes: Vec::new(),
                 output_nodes: Vec::new(),
                 shape_plan: None,

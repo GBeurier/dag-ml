@@ -55,8 +55,9 @@ guarded by coordinator-side timeouts and opt-in retry/restart, with a flaky
 adapter fixture covering timeout refusal and recovery. A stateful sklearn smoke
 now fits a real sklearn pipeline during `REFIT`, stores it behind an opaque model
 handle, and replays `PREDICT` through that handle in the same persistent pool.
-This is intentionally not yet a production Python binding or native worker
-runtime.
+The handshake now also gates persistent-worker, worker-env and
+parallel-invocation capabilities. This is intentionally not yet a production
+Python binding or native worker runtime.
 
 ## Phase 2b: Parallel Execution
 

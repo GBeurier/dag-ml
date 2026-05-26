@@ -35,6 +35,9 @@ const PROCESS_ADAPTER_MODE_JSONL: &str = "jsonl";
 const PROCESS_ADAPTER_CAP_NODE_TASK_JSON: &str = "node_task_json_v1";
 const PROCESS_ADAPTER_CAP_NODE_RESULT_JSON: &str = "node_result_json_v1";
 const PROCESS_ADAPTER_CAP_CONTROL_FRAMES: &str = "control_frames_v1";
+const PROCESS_ADAPTER_CAP_PARALLEL_INVOCATION: &str = "parallel_invocation_v1";
+const PROCESS_ADAPTER_CAP_PERSISTENT_WORKERS: &str = "persistent_workers";
+const PROCESS_ADAPTER_CAP_WORKER_ENV: &str = "worker_env";
 const PROCESS_ADAPTER_FRAME_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -739,10 +742,15 @@ fn main() -> Result<()> {
                 process_timeout_ms,
                 process_retries,
             )?;
-            let runtime_controllers =
-                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
-            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let runtime_controllers = process_runtime_controllers_for_mode(
+                &plan,
+                adapter,
+                persistent,
+                process_config,
+                scheduler,
+            )?;
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let results = execute_campaign_phase_with_scheduler(
                 scheduler,
                 &plan,
@@ -868,9 +876,14 @@ fn main() -> Result<()> {
                 process_timeout_ms,
                 process_retries,
             )?;
-            let runtime_controllers =
-                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
             let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let runtime_controllers = process_runtime_controllers_for_mode(
+                &plan,
+                adapter,
+                persistent,
+                process_config,
+                scheduler,
+            )?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -915,10 +928,15 @@ fn main() -> Result<()> {
                 process_timeout_ms,
                 process_retries,
             )?;
-            let runtime_controllers =
-                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
-            let selections = read_selection_decisions(selections.as_ref())?;
             let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let runtime_controllers = process_runtime_controllers_for_mode(
+                &plan,
+                adapter,
+                persistent,
+                process_config,
+                scheduler,
+            )?;
+            let selections = read_selection_decisions(selections.as_ref())?;
             let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -987,10 +1005,10 @@ fn main() -> Result<()> {
                 process_timeout_ms,
                 process_retries,
             )?;
-            let runtime_controllers =
-                persistent_process_runtime_controllers(&plan, adapter, process_config)?;
-            let selections = read_selection_decisions(selections.as_ref())?;
             let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let runtime_controllers =
+                persistent_process_runtime_controllers(&plan, adapter, process_config, scheduler)?;
+            let selections = read_selection_decisions(selections.as_ref())?;
             let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -1068,9 +1086,9 @@ fn main() -> Result<()> {
                 process_timeout_ms,
                 process_retries,
             )?;
-            let runtime_controllers =
-                persistent_process_runtime_controllers(&plan, adapter, process_config)?;
             let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let runtime_controllers =
+                persistent_process_runtime_controllers(&plan, adapter, process_config, scheduler)?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -1354,10 +1372,15 @@ fn main() -> Result<()> {
                 process_timeout_ms,
                 process_retries,
             )?;
-            let runtime_controllers =
-                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
-            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let runtime_controllers = process_runtime_controllers_for_mode(
+                &plan,
+                adapter,
+                persistent,
+                process_config,
+                scheduler,
+            )?;
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let results = execute_bundle_replay_with_scheduler(
                 scheduler,
                 BundleReplayExecution {
@@ -2867,8 +2890,10 @@ fn mock_runtime_controllers_with_options(
 fn process_runtime_controllers(
     plan: &dag_ml_core::ExecutionPlan,
     adapter: PathBuf,
+    scheduler: SchedulerConfig,
 ) -> Result<RuntimeControllerRegistry> {
-    validate_process_adapter_description(&adapter, ProcessAdapterMode::OneShot)?;
+    let description = validate_process_adapter_description(&adapter, ProcessAdapterMode::OneShot)?;
+    validate_process_adapter_execution_capabilities(&adapter, &description, false, scheduler)?;
     let mut registry = RuntimeControllerRegistry::new();
     for controller_id in plan.controller_manifests.keys() {
         registry.register(Box::new(ProcessRuntimeController {
@@ -2884,12 +2909,13 @@ fn process_runtime_controllers_for_mode(
     adapter: PathBuf,
     persistent: bool,
     config: ProcessAdapterRuntimeConfig,
+    scheduler: SchedulerConfig,
 ) -> Result<RuntimeControllerRegistry> {
     validate_process_runtime_config(persistent, &config)?;
     if persistent {
-        persistent_process_runtime_controllers(plan, adapter, config)
+        persistent_process_runtime_controllers(plan, adapter, config, scheduler)
     } else {
-        process_runtime_controllers(plan, adapter)
+        process_runtime_controllers(plan, adapter, scheduler)
     }
 }
 
@@ -2897,19 +2923,11 @@ fn persistent_process_runtime_controllers(
     plan: &dag_ml_core::ExecutionPlan,
     adapter: PathBuf,
     mut config: ProcessAdapterRuntimeConfig,
+    scheduler: SchedulerConfig,
 ) -> Result<RuntimeControllerRegistry> {
     validate_process_runtime_config(true, &config)?;
     let description = validate_process_adapter_description(&adapter, ProcessAdapterMode::Jsonl)?;
-    if !description
-        .capabilities
-        .contains(PROCESS_ADAPTER_CAP_CONTROL_FRAMES)
-    {
-        bail!(
-            "adapter `{}` is missing required persistent capability `{}`",
-            adapter.display(),
-            PROCESS_ADAPTER_CAP_CONTROL_FRAMES
-        );
-    }
+    validate_process_adapter_execution_capabilities(&adapter, &description, true, scheduler)?;
     config.control_frames = true;
     let mut registry = RuntimeControllerRegistry::new();
     for controller_id in plan.controller_manifests.keys() {
@@ -2932,6 +2950,42 @@ fn persistent_process_runtime_controllers(
         }))?;
     }
     Ok(registry)
+}
+
+fn validate_process_adapter_execution_capabilities(
+    adapter: &Path,
+    description: &ProcessAdapterDescription,
+    persistent: bool,
+    scheduler: SchedulerConfig,
+) -> Result<()> {
+    if scheduler.scheduler == CliScheduler::Parallel
+        && scheduler.workers > 1
+        && !description
+            .capabilities
+            .contains(PROCESS_ADAPTER_CAP_PARALLEL_INVOCATION)
+    {
+        bail!(
+            "adapter `{}` is missing required parallel scheduler capability `{}`",
+            adapter.display(),
+            PROCESS_ADAPTER_CAP_PARALLEL_INVOCATION
+        );
+    }
+    if persistent {
+        for capability in [
+            PROCESS_ADAPTER_CAP_CONTROL_FRAMES,
+            PROCESS_ADAPTER_CAP_PERSISTENT_WORKERS,
+            PROCESS_ADAPTER_CAP_WORKER_ENV,
+        ] {
+            if !description.capabilities.contains(capability) {
+                bail!(
+                    "adapter `{}` is missing required persistent capability `{}`",
+                    adapter.display(),
+                    capability
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn process_adapter_runtime_config(

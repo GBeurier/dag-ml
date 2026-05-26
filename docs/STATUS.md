@@ -11,6 +11,11 @@ Implemented:
 - campaign and OOF fixture fingerprints;
 - deterministic control seed derivation;
 - controller manifests, controller registry and controller resolution;
+- controller manifests now carry scheduler/operator capabilities into
+  `NodePlan`/`NodeTask`, including `thread_safe`, `process_safe`,
+  `emits_predictions`, `consumes_oof_predictions`, `emits_artifacts` and
+  statefulness flags; OOF edges and parallel scheduler modes validate these
+  declarations before controller invocation;
 - `GraphPlan`, `CampaignSpec`, `ExecutionPlan`, `NodePlan`, `NodeTask`,
   `NodeResult` and `RunContext`;
 - `GraphPlan.parallel_levels` plus `PhaseExecutionSchedule`, so a compiled
@@ -181,6 +186,9 @@ Implemented:
   the adapter protocol version, supported modes and JSON task/result
   capabilities; the CLI validates this contract before one-shot or JSONL
   execution;
+- process adapters must explicitly declare persistent-worker, worker-env and
+  parallel-invocation capabilities before the CLI enables those execution
+  modes;
 - persistent process adapters now use `control_frames_v1`: workers receive
   explicit `init`, framed `task`, and `close` JSONL messages and return typed
   `ack`, `result`, or `error` frames, giving the coordinator a stable lifecycle
