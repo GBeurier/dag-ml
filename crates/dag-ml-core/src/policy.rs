@@ -132,6 +132,21 @@ impl AggregationPolicy {
                 "aggregation method none is only valid at observation level".to_string(),
             ));
         }
+        if self.method == AggregationMethod::WeightedMean
+            && self.weights == AggregationWeights::None
+        {
+            return Err(DagMlError::CampaignValidation(
+                "weighted_mean aggregation requires an explicit weights policy".to_string(),
+            ));
+        }
+        if self.method != AggregationMethod::WeightedMean
+            && self.weights != AggregationWeights::None
+        {
+            return Err(DagMlError::CampaignValidation(format!(
+                "aggregation weights {:?} are only valid with weighted_mean",
+                self.weights
+            )));
+        }
         if !self.store_raw_predictions && !self.store_aggregated_predictions {
             return Err(DagMlError::CampaignValidation(
                 "aggregation policy must store raw and/or aggregated predictions".to_string(),
@@ -475,6 +490,30 @@ mod tests {
         };
 
         assert!(policy.validate().is_err());
+    }
+
+    #[test]
+    fn weighted_aggregation_requires_explicit_weight_policy() {
+        let missing_weights = AggregationPolicy {
+            method: AggregationMethod::WeightedMean,
+            weights: AggregationWeights::None,
+            ..AggregationPolicy::default()
+        };
+        assert!(missing_weights.validate().is_err());
+
+        let stray_weights = AggregationPolicy {
+            method: AggregationMethod::Mean,
+            weights: AggregationWeights::ControllerEmitted,
+            ..AggregationPolicy::default()
+        };
+        assert!(stray_weights.validate().is_err());
+
+        let valid = AggregationPolicy {
+            method: AggregationMethod::WeightedMean,
+            weights: AggregationWeights::ControllerEmitted,
+            ..AggregationPolicy::default()
+        };
+        valid.validate().unwrap();
     }
 
     #[test]

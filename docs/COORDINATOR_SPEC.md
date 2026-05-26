@@ -369,6 +369,13 @@ Required aggregation policies:
 | `store_raw_predictions` | keep observation-level predictions for audit |
 | `store_aggregated_predictions` | keep aggregated predictions for ranking/replay |
 
+The Rust core implements deterministic observation-to-sample aggregation for
+`mean`, `median`, `vote` and `weighted_mean`. Weighted means require an explicit
+weight policy; `controller_emitted` and `quality` weights are read from the
+observation prediction block, while `repetition_count` is treated as one weight
+per emitted observation for this level. Target/group aggregation and
+`custom_controller` remain explicit controller responsibilities.
+
 FIT_CV requirements:
 
 1. Models may fit on observation-level rows if the data plan says so.
