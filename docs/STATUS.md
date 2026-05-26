@@ -49,6 +49,9 @@ Implemented:
   in-memory data provider and mock runtime controllers;
 - CLI selection, bundle build and bundle replay validation commands with
   fixture-backed integration tests;
+- CLI mock replay execution through execution bundles, data envelopes,
+  in-memory data provider, in-memory artifact store and mock runtime
+  controllers;
 - C ABI validation and JSON output helpers for graph, selection decisions,
   grouped selection, execution bundles, replay envelopes and replay requests;
 - standalone sklearn complex OOF demonstrator with repeated observations,
@@ -75,7 +78,7 @@ Not implemented yet:
 
 Next recommended task:
 
-Expose replay execution through CLI/C ABI smoke commands, then turn the sklearn
-demonstrator into the first controller adapter smoke: replace the Python-side
-orchestration loop with `dag-ml` scheduler tasks while keeping the same OOF
-campaign, heterogeneous merge and refit score policy.
+Expose replay execution through the C ABI, then turn the sklearn demonstrator
+into the first controller adapter smoke: replace the Python-side orchestration
+loop with `dag-ml` scheduler tasks while keeping the same OOF campaign,
+heterogeneous merge and refit score policy.
