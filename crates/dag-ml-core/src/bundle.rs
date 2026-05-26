@@ -10,6 +10,12 @@ use crate::plan::ExecutionPlan;
 use crate::runtime::ArtifactRef;
 use crate::selection::SelectionDecision;
 
+pub const EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 1;
+
+fn default_execution_bundle_schema_version() -> u32 {
+    EXECUTION_BUNDLE_SCHEMA_VERSION
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BundleDataRequirement {
     pub node_id: NodeId,
@@ -101,6 +107,8 @@ impl RefitArtifactRecord {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionBundle {
     pub bundle_id: BundleId,
+    #[serde(default = "default_execution_bundle_schema_version")]
+    pub schema_version: u32,
     pub plan_id: String,
     pub graph_fingerprint: String,
     pub campaign_fingerprint: String,
@@ -121,6 +129,12 @@ pub struct ExecutionBundle {
 
 impl ExecutionBundle {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version != EXECUTION_BUNDLE_SCHEMA_VERSION {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle `{}` uses unsupported schema_version {}, expected {}",
+                self.bundle_id, self.schema_version, EXECUTION_BUNDLE_SCHEMA_VERSION
+            )));
+        }
         if self.plan_id.trim().is_empty() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "bundle `{}` has empty plan_id",
@@ -268,6 +282,7 @@ pub fn build_execution_bundle(
     plan.validate()?;
     let bundle = ExecutionBundle {
         bundle_id,
+        schema_version: EXECUTION_BUNDLE_SCHEMA_VERSION,
         plan_id: plan.id.clone(),
         graph_fingerprint: plan.graph_fingerprint.clone(),
         campaign_fingerprint: plan.campaign_fingerprint.clone(),
@@ -486,6 +501,21 @@ mod tests {
         assert!(bundle
             .validate_replay_envelopes(&BTreeMap::from([("model:base.x".to_string(), mismatched,)]))
             .is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_bundle_schema_version() {
+        let mut bundle = build_execution_bundle(
+            BundleId::new("bundle:demo").unwrap(),
+            &plan(),
+            None,
+            BTreeMap::from([("merge".to_string(), decision())]),
+            Vec::new(),
+        )
+        .unwrap();
+        bundle.schema_version = EXECUTION_BUNDLE_SCHEMA_VERSION + 1;
+
+        assert!(bundle.validate().is_err());
     }
 
     #[test]

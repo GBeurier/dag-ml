@@ -1,5 +1,6 @@
 {
   "bundle_id": "bundle:cli.demo",
+  "schema_version": 1,
   "plan_id": "plan:cli.bundle",
   "graph_fingerprint": "dbdeb632cb41d144e1e52292d2ac6c4d4bd7969f7d220682be9786ab6c7d850f",
   "campaign_fingerprint": "b9a4d11af6298cadc2349eb2da9c9af28e787d8f2392575b6f4e8bd8aea9f9f5",
