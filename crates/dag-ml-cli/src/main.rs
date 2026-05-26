@@ -653,11 +653,12 @@ fn main() -> Result<()> {
             })
             .with_context(|| "process CV+refit bundle capture failed")?;
             println!(
-                "process cv refit bundle run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} captured artifact handle(s)",
+                "process cv refit bundle run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} captured artifact handle(s), {} prediction cache(s)",
                 captured.fit_cv_result_count,
                 captured.fit_cv_oof_prediction_block_count,
                 captured.refit_result_count,
-                captured.artifact_store.len()
+                captured.artifact_store.len(),
+                captured.bundle.prediction_caches.len()
             );
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
         }
@@ -816,10 +817,12 @@ fn main() -> Result<()> {
                     .with_context(|| "replay request does not match bundle")?;
             }
             println!(
-                "valid bundle: {}, selection(s)={}, artifact(s)={}, data requirement(s)={}, replay envelope(s)={}",
+                "valid bundle: {}, selection(s)={}, artifact(s)={}, prediction requirement(s)={}, prediction cache(s)={}, data requirement(s)={}, replay envelope(s)={}",
                 bundle.bundle_id,
                 bundle.selections.len(),
                 bundle.refit_artifacts.len(),
+                bundle.prediction_requirements.len(),
+                bundle.prediction_caches.len(),
                 bundle.data_requirements.len(),
                 envelope_map.len()
             );
