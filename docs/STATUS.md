@@ -42,6 +42,8 @@ Implemented:
 - CLI data-binding validation against a coordinator data-plan envelope;
 - CLI mock campaign execution through controller manifests, data bindings,
   in-memory data provider and mock runtime controllers;
+- CLI selection, bundle build and bundle replay validation commands with
+  fixture-backed integration tests;
 - standalone sklearn complex OOF demonstrator with repeated observations,
   group-aware splits, train-only augmentation, branch model variants,
   heterogeneous prediction+raw-data merge variants, OOF-based selection and
@@ -60,13 +62,13 @@ Not implemented yet:
 - artifact/cache stores;
 - Arrow prediction storage;
 - host controller adapters;
-- bundle export/import CLI and host-binding replay entry points;
+- stable bundle schema versioning and host-binding replay entry points;
 - concrete `dag-ml-data` provider implementation with real buffers and handle
   lifecycle arena.
 
 Next recommended task:
 
-Expose the new bundle/selection/replay contracts through CLI and the C ABI,
-then turn the sklearn demonstrator into the first controller adapter smoke:
-replace the Python-side orchestration loop with `dag-ml` scheduler tasks while
-keeping the same OOF campaign, heterogeneous merge and refit score policy.
+Expose the new bundle/selection/replay contracts through the C ABI, then turn
+the sklearn demonstrator into the first controller adapter smoke: replace the
+Python-side orchestration loop with `dag-ml` scheduler tasks while keeping the
+same OOF campaign, heterogeneous merge and refit score policy.

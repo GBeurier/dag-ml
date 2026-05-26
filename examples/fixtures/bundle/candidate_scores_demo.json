@@ -1,0 +1,42 @@
+[
+  {
+    "candidate_id": "branch:b0.variant:ridge",
+    "metrics": {
+      "rmse": 1.18,
+      "r2": 0.51
+    },
+    "metadata": {
+      "branch": "branch:b0"
+    }
+  },
+  {
+    "candidate_id": "branch:b0.variant:pls",
+    "metrics": {
+      "rmse": 1.04,
+      "r2": 0.59
+    },
+    "metadata": {
+      "branch": "branch:b0"
+    }
+  },
+  {
+    "candidate_id": "merge:m0.predictions_only",
+    "metrics": {
+      "rmse": 1.11,
+      "r2": 0.56
+    },
+    "metadata": {
+      "merge": "predictions"
+    }
+  },
+  {
+    "candidate_id": "merge:m1.predictions_plus_original",
+    "metrics": {
+      "rmse": 0.98,
+      "r2": 0.64
+    },
+    "metadata": {
+      "merge": "predictions+original"
+    }
+  }
+]

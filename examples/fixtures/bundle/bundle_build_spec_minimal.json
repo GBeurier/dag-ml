@@ -1,0 +1,44 @@
+{
+  "bundle_id": "bundle:cli.demo",
+  "selected_variant_id": "variant:e30e0bcc0b694951",
+  "selections": {
+    "merge": {
+      "policy_id": "select:rmse",
+      "selected_candidate_id": "merge:m1.predictions_plus_original",
+      "metric_name": "rmse",
+      "objective": "minimize",
+      "selected_score": 0.98,
+      "ranked_candidates": [
+        {
+          "candidate_id": "merge:m1.predictions_plus_original",
+          "score": 0.98,
+          "rank": 1
+        },
+        {
+          "candidate_id": "merge:m0.predictions_only",
+          "score": 1.11,
+          "rank": 2
+        }
+      ]
+    }
+  },
+  "refit_artifacts": [
+    {
+      "node_id": "model:base",
+      "controller_id": "controller:model.mock",
+      "artifact": {
+        "id": "artifact:model:base:refit",
+        "kind": "mock_model",
+        "controller_id": "controller:model.mock",
+        "size_bytes": 128
+      },
+      "params_fingerprint": "140a7ef7079b316f626f1deee4e571aaa089a614516a45c4bed8b13ee6549e26",
+      "data_requirement_keys": [
+        "model:base.x"
+      ]
+    }
+  ],
+  "metadata": {
+    "purpose": "cli bundle fixture"
+  }
+}

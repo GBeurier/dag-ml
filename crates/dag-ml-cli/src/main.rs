@@ -4,12 +4,16 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_core::{
-    build_execution_plan, oof_campaign_fingerprint, validate_oof_campaign, CampaignSpec,
-    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, ExternalDataPlanEnvelope,
-    GraphSpec, HandleKind, HandleRef, InMemoryDataProvider, LineageId, LineageRecord, NodeId,
-    NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock, PredictionPartition, RunContext,
-    RunId, RuntimeController, RuntimeControllerRegistry, SampleId, SequentialScheduler,
+    build_execution_bundle, build_execution_plan, oof_campaign_fingerprint, select_candidate,
+    select_candidate_groups, validate_oof_campaign, BundleId, CampaignSpec, CandidateScore,
+    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, ExecutionBundle,
+    ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryDataProvider, LineageId,
+    LineageRecord, NodeId, NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock,
+    PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId,
+    RuntimeController, RuntimeControllerRegistry, SampleId, SelectionDecision, SelectionPolicy,
+    SequentialScheduler, VariantId,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -66,6 +70,46 @@ enum Command {
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
+    },
+    SelectCandidates {
+        #[arg(long)]
+        policy: PathBuf,
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        groups: Option<PathBuf>,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    BuildBundle {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        bundle_spec: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = "plan:cli.bundle")]
+        plan_id: String,
+    },
+    ValidateBundle {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long = "envelope")]
+        envelopes: Vec<String>,
+        #[arg(long)]
+        replay_request: Option<PathBuf>,
+        #[arg(long, default_value = "plan:cli.bundle")]
+        plan_id: String,
     },
 }
 
@@ -128,16 +172,7 @@ fn main() -> Result<()> {
             controllers,
             plan_id,
         } => {
-            let graph_spec: GraphSpec = read_json(&graph, "graph")?;
-            let campaign_spec: CampaignSpec = read_json(&campaign, "campaign")?;
-            let controller_manifests: Vec<ControllerManifest> =
-                read_json(&controllers, "controller manifest list")?;
-            let mut registry = ControllerRegistry::new();
-            for manifest in controller_manifests {
-                registry.register(manifest)?;
-            }
-            let plan = build_execution_plan(plan_id, graph_spec, campaign_spec, &registry)
-                .with_context(|| "failed to build execution plan")?;
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             println!(
                 "valid execution plan: {} node(s), {} controller(s), {} variant(s), fold_set={}",
                 plan.node_plans.len(),
@@ -182,12 +217,7 @@ fn main() -> Result<()> {
         } => {
             let graph_spec: GraphSpec = read_json(&graph, "graph")?;
             let campaign_spec: CampaignSpec = read_json(&campaign, "campaign")?;
-            let controller_manifests: Vec<ControllerManifest> =
-                read_json(&controllers, "controller manifest list")?;
-            let mut registry = ControllerRegistry::new();
-            for manifest in controller_manifests {
-                registry.register(manifest)?;
-            }
+            let registry = controller_registry_from_path(&controllers)?;
             let plan = build_execution_plan(plan_id, graph_spec, campaign_spec, &registry)
                 .with_context(|| "failed to build execution plan")?;
 
@@ -216,9 +246,99 @@ fn main() -> Result<()> {
                 data_provider.handle_records().len()
             );
         }
+        Command::SelectCandidates {
+            policy,
+            candidates,
+            groups,
+            output,
+        } => {
+            let policy: SelectionPolicy = read_json(&policy, "selection policy")?;
+            let candidates: Vec<CandidateScore> = read_json(&candidates, "candidate scores")?;
+            if let Some(groups) = groups {
+                let groups: BTreeMap<String, Vec<String>> = read_json(&groups, "candidate groups")?;
+                let decisions = select_candidate_groups(&policy, &candidates, &groups)
+                    .with_context(|| "selection failed")?;
+                emit_json(output.as_ref(), &decisions, "selection decisions")?;
+            } else {
+                let decision =
+                    select_candidate(&policy, &candidates).with_context(|| "selection failed")?;
+                emit_json(output.as_ref(), &decision, "selection decision")?;
+            }
+        }
+        Command::BuildBundle {
+            graph,
+            campaign,
+            controllers,
+            bundle_spec,
+            output,
+            plan_id,
+        } => {
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let spec: BundleBuildSpec = read_json(&bundle_spec, "bundle build spec")?;
+            let mut bundle = build_execution_bundle(
+                spec.bundle_id,
+                &plan,
+                spec.selected_variant_id,
+                spec.selections,
+                spec.refit_artifacts,
+            )
+            .with_context(|| "failed to build execution bundle")?;
+            bundle.metadata = spec.metadata;
+            bundle.validate_against_plan(&plan)?;
+            emit_json(output.as_ref(), &bundle, "execution bundle")?;
+        }
+        Command::ValidateBundle {
+            bundle,
+            graph,
+            campaign,
+            controllers,
+            envelopes,
+            replay_request,
+            plan_id,
+        } => {
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            bundle
+                .validate_against_plan(&plan)
+                .with_context(|| "execution bundle does not match plan")?;
+            let envelope_map = read_replay_envelopes(&envelopes)?;
+            if !envelope_map.is_empty() {
+                bundle
+                    .validate_replay_envelopes(&envelope_map)
+                    .with_context(|| "replay envelopes do not match bundle")?;
+            }
+            if let Some(replay_request) = replay_request {
+                let request: ReplayPhaseRequest =
+                    read_json(&replay_request, "replay phase request")?;
+                request
+                    .validate_for_bundle(&bundle)
+                    .with_context(|| "replay request does not match bundle")?;
+            }
+            println!(
+                "valid bundle: {}, selection(s)={}, artifact(s)={}, data requirement(s)={}, replay envelope(s)={}",
+                bundle.bundle_id,
+                bundle.selections.len(),
+                bundle.refit_artifacts.len(),
+                bundle.data_requirements.len(),
+                envelope_map.len()
+            );
+        }
     }
 
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct BundleBuildSpec {
+    pub bundle_id: BundleId,
+    #[serde(default)]
+    pub selected_variant_id: Option<VariantId>,
+    #[serde(default)]
+    pub selections: BTreeMap<String, SelectionDecision>,
+    #[serde(default)]
+    pub refit_artifacts: Vec<RefitArtifactRecord>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
 struct CliMockController {
@@ -324,9 +444,67 @@ fn stable_handle(value: &str) -> u64 {
     })
 }
 
+fn build_plan_from_paths(
+    graph: &PathBuf,
+    campaign: &PathBuf,
+    controllers: &PathBuf,
+    plan_id: String,
+) -> Result<dag_ml_core::ExecutionPlan> {
+    let graph_spec: GraphSpec = read_json(graph, "graph")?;
+    let campaign_spec: CampaignSpec = read_json(campaign, "campaign")?;
+    let registry = controller_registry_from_path(controllers)?;
+    build_execution_plan(plan_id, graph_spec, campaign_spec, &registry)
+        .with_context(|| "failed to build execution plan")
+}
+
+fn controller_registry_from_path(path: &PathBuf) -> Result<ControllerRegistry> {
+    let controller_manifests: Vec<ControllerManifest> =
+        read_json(path, "controller manifest list")?;
+    let mut registry = ControllerRegistry::new();
+    for manifest in controller_manifests {
+        registry.register(manifest)?;
+    }
+    Ok(registry)
+}
+
+fn read_replay_envelopes(args: &[String]) -> Result<BTreeMap<String, ExternalDataPlanEnvelope>> {
+    let mut envelopes = BTreeMap::new();
+    for arg in args {
+        let (key, path) = arg
+            .split_once('=')
+            .with_context(|| format!("envelope `{arg}` must use KEY=PATH format"))?;
+        if key.trim().is_empty() {
+            bail!("envelope key is empty in `{arg}`");
+        }
+        if path.trim().is_empty() {
+            bail!("envelope path is empty for key `{key}`");
+        }
+        let envelope_path = PathBuf::from(path);
+        let envelope: ExternalDataPlanEnvelope =
+            read_json(&envelope_path, "external data-plan envelope")?;
+        if envelopes.insert(key.to_string(), envelope).is_some() {
+            bail!("duplicate envelope key `{key}`");
+        }
+    }
+    Ok(envelopes)
+}
+
 fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Result<T> {
     let data = std::fs::read(path)
         .with_context(|| format!("failed to read {label} JSON at {}", path.display()))?;
     serde_json::from_slice(&data)
         .with_context(|| format!("failed to parse {label} JSON at {}", path.display()))
+}
+
+fn emit_json<T: Serialize>(output: Option<&PathBuf>, value: &T, label: &str) -> Result<()> {
+    let mut data = serde_json::to_vec_pretty(value)?;
+    data.push(b'\n');
+    if let Some(output) = output {
+        std::fs::write(output, &data)
+            .with_context(|| format!("failed to write {label} JSON at {}", output.display()))?;
+        println!("wrote {label}: {}", output.display());
+    } else {
+        println!("{}", String::from_utf8(data)?);
+    }
+    Ok(())
 }

@@ -1,0 +1,10 @@
+{
+  "branch:b0": [
+    "branch:b0.variant:ridge",
+    "branch:b0.variant:pls"
+  ],
+  "merge": [
+    "merge:m0.predictions_only",
+    "merge:m1.predictions_plus_original"
+  ]
+}

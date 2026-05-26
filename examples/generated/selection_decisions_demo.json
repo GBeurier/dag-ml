@@ -1,0 +1,40 @@
+{
+  "branch:b0": {
+    "policy_id": "select:rmse",
+    "selected_candidate_id": "branch:b0.variant:pls",
+    "metric_name": "rmse",
+    "objective": "minimize",
+    "selected_score": 1.04,
+    "ranked_candidates": [
+      {
+        "candidate_id": "branch:b0.variant:pls",
+        "score": 1.04,
+        "rank": 1
+      },
+      {
+        "candidate_id": "branch:b0.variant:ridge",
+        "score": 1.18,
+        "rank": 2
+      }
+    ]
+  },
+  "merge": {
+    "policy_id": "select:rmse",
+    "selected_candidate_id": "merge:m1.predictions_plus_original",
+    "metric_name": "rmse",
+    "objective": "minimize",
+    "selected_score": 0.98,
+    "ranked_candidates": [
+      {
+        "candidate_id": "merge:m1.predictions_plus_original",
+        "score": 0.98,
+        "rank": 1
+      },
+      {
+        "candidate_id": "merge:m0.predictions_only",
+        "score": 1.11,
+        "rank": 2
+      }
+    ]
+  }
+}
