@@ -10,6 +10,8 @@ the host owns the underlying object behind each handle.
 - version and string-free helpers;
 - owned byte release helper for JSON outputs returned by Rust;
 - `dagml_graph_validate_json` for graph contract checks;
+- `dagml_graph_parallel_levels_json` for deterministic node batches that
+  bindings can use to prepare parallel schedulers;
 - `dagml_execution_plan_build_json` for compiling graph/campaign/controller
   manifests into an `ExecutionPlan` while Rust owns planner validation;
 - selection policy/decision validation and candidate selection JSON helpers;

@@ -137,6 +137,11 @@ DagMlVersion dagml_version(void);
 void dagml_string_free(DagMlString value);
 void dagml_owned_bytes_free(DagMlOwnedBytes value);
 DagMlStatusCode dagml_graph_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
+DagMlStatusCode dagml_graph_parallel_levels_json(
+    const uint8_t *json_ptr,
+    size_t json_len,
+    DagMlOwnedBytes *out_json,
+    DagMlString *error_out);
 DagMlStatusCode dagml_execution_plan_build_json(
     const uint8_t *graph_ptr,
     size_t graph_len,
