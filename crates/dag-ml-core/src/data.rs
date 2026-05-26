@@ -12,6 +12,12 @@ use crate::runtime::{
     RuntimeDataProvider,
 };
 
+pub const EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION: u32 = 1;
+
+fn default_external_data_plan_envelope_schema_version() -> u32 {
+    EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataRequestPartition {
@@ -170,6 +176,8 @@ impl DataBinding {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExternalDataPlanEnvelope {
+    #[serde(default = "default_external_data_plan_envelope_schema_version")]
+    pub schema_version: u32,
     pub schema_fingerprint: String,
     pub plan_fingerprint: String,
     #[serde(default)]
@@ -180,6 +188,12 @@ pub struct ExternalDataPlanEnvelope {
 
 impl ExternalDataPlanEnvelope {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version != EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION {
+            return Err(DagMlError::CampaignValidation(format!(
+                "external data-plan envelope uses unsupported schema_version {}, expected {}",
+                self.schema_version, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
+            )));
+        }
         validate_fingerprint("schema", &self.schema_fingerprint)?;
         validate_fingerprint("plan", &self.plan_fingerprint)?;
         if let Some(relation_fingerprint) = &self.relation_fingerprint {
@@ -497,7 +511,22 @@ mod tests {
         ))
         .unwrap();
 
+        assert_eq!(
+            envelope.schema_version,
+            EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
+        );
         binding().validate_envelope(&envelope).unwrap();
+    }
+
+    #[test]
+    fn refuses_unsupported_external_data_envelope_schema_version() {
+        let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION + 1;
+
+        assert!(binding().validate_envelope(&envelope).is_err());
     }
 
     #[test]
