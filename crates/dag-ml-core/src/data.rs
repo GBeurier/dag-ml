@@ -70,6 +70,8 @@ pub struct DataBinding {
     pub relation_fingerprint: Option<String>,
     pub output_representation: String,
     #[serde(default)]
+    pub feature_set_id: Option<String>,
+    #[serde(default)]
     pub source_ids: Vec<String>,
     #[serde(default)]
     pub require_relations: bool,
@@ -109,6 +111,14 @@ impl DataBinding {
                 self.input_name, self.node_id
             )));
         }
+        if let Some(feature_set_id) = &self.feature_set_id {
+            if feature_set_id.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "data binding `{}` on `{}` has empty feature_set_id",
+                    self.input_name, self.node_id
+                )));
+            }
+        }
         for source_id in &self.source_ids {
             if source_id.trim().is_empty() {
                 return Err(DagMlError::CampaignValidation(format!(
@@ -118,6 +128,10 @@ impl DataBinding {
             }
         }
         Ok(())
+    }
+
+    pub fn feature_set_id(&self) -> &str {
+        self.feature_set_id.as_deref().unwrap_or(&self.input_name)
     }
 
     pub fn validate_envelope(&self, envelope: &ExternalDataPlanEnvelope) -> Result<()> {
@@ -227,6 +241,8 @@ pub struct DataHandleRecord {
     pub relation_fingerprint: Option<String>,
     pub output_representation: String,
     #[serde(default)]
+    pub feature_set_id: Option<String>,
+    #[serde(default)]
     pub source_ids: Vec<String>,
     pub relation_record_count: Option<usize>,
 }
@@ -328,6 +344,7 @@ impl RuntimeDataProvider for InMemoryDataProvider {
             plan_fingerprint: request.binding.plan_fingerprint.clone(),
             relation_fingerprint: request.binding.relation_fingerprint.clone(),
             output_representation: request.binding.output_representation.clone(),
+            feature_set_id: request.binding.feature_set_id.clone(),
             source_ids: request.binding.source_ids.clone(),
             relation_record_count: envelope
                 .coordinator_relations
@@ -367,6 +384,7 @@ mod tests {
                 "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10".to_string(),
             ),
             output_representation: "tabular_numeric".to_string(),
+            feature_set_id: Some("x".to_string()),
             source_ids: vec!["nir".to_string()],
             require_relations: true,
             view_policy: DataViewPolicy::default(),
@@ -376,7 +394,9 @@ mod tests {
 
     #[test]
     fn validates_data_binding_contract() {
-        binding().validate().unwrap();
+        let binding = binding();
+        binding.validate().unwrap();
+        assert_eq!(binding.feature_set_id(), "x");
     }
 
     #[test]

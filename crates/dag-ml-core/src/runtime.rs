@@ -1280,6 +1280,7 @@ mod tests {
                 "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10".to_string(),
             ),
             output_representation: "tabular_numeric".to_string(),
+            feature_set_id: Some("x".to_string()),
             source_ids: vec!["nir".to_string()],
             require_relations: true,
             view_policy: Default::default(),

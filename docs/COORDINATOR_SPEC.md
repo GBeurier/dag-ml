@@ -135,6 +135,8 @@ Data-plan references are `DataBinding` contracts owned by the coordinator:
 - data-plan fingerprint;
 - optional relation fingerprint;
 - output representation;
+- feature set id used for `feature_arrow` requests, defaulting to input name
+  when omitted;
 - source ids;
 - view policy for fold train, fold validation, refit and predict.
 

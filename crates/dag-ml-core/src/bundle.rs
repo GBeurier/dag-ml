@@ -25,6 +25,8 @@ pub struct BundleDataRequirement {
     #[serde(default)]
     pub relation_fingerprint: Option<String>,
     pub output_representation: String,
+    #[serde(default)]
+    pub feature_set_id: Option<String>,
 }
 
 impl BundleDataRequirement {
@@ -49,6 +51,14 @@ impl BundleDataRequirement {
                 "bundle data requirement `{}` has empty output representation",
                 self.key()
             )));
+        }
+        if let Some(feature_set_id) = &self.feature_set_id {
+            if feature_set_id.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "bundle data requirement `{}` has empty feature_set_id",
+                    self.key()
+                )));
+            }
         }
         Ok(())
     }
@@ -309,6 +319,7 @@ fn collect_data_requirements(plan: &ExecutionPlan) -> Result<Vec<BundleDataRequi
                 plan_fingerprint: binding.plan_fingerprint.clone(),
                 relation_fingerprint: binding.relation_fingerprint.clone(),
                 output_representation: binding.output_representation.clone(),
+                feature_set_id: binding.feature_set_id.clone(),
             });
         }
     }

@@ -22,7 +22,8 @@ Implemented:
 - aggregation policy plus mean aggregation from observation predictions to
   sample predictions;
 - data/model shape plans and runtime shape deltas;
-- data bindings from node inputs to external `dag-ml-data` plan envelopes;
+- data bindings from node inputs to external `dag-ml-data` plan envelopes,
+  including explicit feature-set ids for provider `feature_arrow` calls;
 - external data-plan envelope validation by schema, plan and relation
   fingerprints;
 - runtime data-provider trait and materialization requests that turn data

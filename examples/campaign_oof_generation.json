@@ -154,6 +154,7 @@
         "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
         "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
         "output_representation": "tabular_numeric",
+        "feature_set_id": "x",
         "source_ids": ["nir"],
         "require_relations": true,
         "view_policy": {
