@@ -17,7 +17,7 @@ pub fn campaign_fingerprint(spec: &CampaignFingerprintSpec) -> Result<String> {
     stable_json_fingerprint(spec)
 }
 
-pub(crate) fn stable_json_fingerprint<T: Serialize>(value: &T) -> Result<String> {
+pub(crate) fn stable_json_fingerprint<T: Serialize + ?Sized>(value: &T) -> Result<String> {
     let json = serde_json::to_vec(value)?;
     let digest = Sha256::digest(json);
     Ok(to_hex(&digest))

@@ -1,0 +1,112 @@
+{
+  "bundle_id": "bundle:generated.branch.merge.cv.refit",
+  "schema_version": 1,
+  "caches": [
+    {
+      "requirement_key": "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
+      "cache_id": "prediction-cache:branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
+      "format": "dag-ml-json-prediction-blocks-v1",
+      "partition": "validation",
+      "block_count": 2,
+      "row_count": 4,
+      "content_fingerprint": "b42c63e64a52964592a71f660bac3ba5c6931b57ee60d5246fee5551fb00abca",
+      "blocks": [
+        {
+          "prediction_id": "pred:branch:b0.model:ridge:FIT_CV",
+          "producer_node": "branch:b0.model:ridge",
+          "partition": "validation",
+          "fold_id": "fold:0",
+          "sample_ids": [
+            "sample:1",
+            "sample:2"
+          ],
+          "values": [
+            [
+              9931.0
+            ],
+            [
+              9931.0
+            ]
+          ],
+          "target_names": [
+            "y"
+          ]
+        },
+        {
+          "prediction_id": "pred:branch:b0.model:ridge:FIT_CV",
+          "producer_node": "branch:b0.model:ridge",
+          "partition": "validation",
+          "fold_id": "fold:1",
+          "sample_ids": [
+            "sample:3",
+            "sample:4"
+          ],
+          "values": [
+            [
+              9932.0
+            ],
+            [
+              9932.0
+            ]
+          ],
+          "target_names": [
+            "y"
+          ]
+        }
+      ]
+    },
+    {
+      "requirement_key": "branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof",
+      "cache_id": "prediction-cache:branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof",
+      "format": "dag-ml-json-prediction-blocks-v1",
+      "partition": "validation",
+      "block_count": 2,
+      "row_count": 4,
+      "content_fingerprint": "4342d7bbe3cb55dd3adf30fb6c16b8b27cc19a51698bb7e32cca79f51444f398",
+      "blocks": [
+        {
+          "prediction_id": "pred:branch:b1.model:rf:FIT_CV",
+          "producer_node": "branch:b1.model:rf",
+          "partition": "validation",
+          "fold_id": "fold:0",
+          "sample_ids": [
+            "sample:1",
+            "sample:2"
+          ],
+          "values": [
+            [
+              891535.0
+            ],
+            [
+              891535.0
+            ]
+          ],
+          "target_names": [
+            "y"
+          ]
+        },
+        {
+          "prediction_id": "pred:branch:b1.model:rf:FIT_CV",
+          "producer_node": "branch:b1.model:rf",
+          "partition": "validation",
+          "fold_id": "fold:1",
+          "sample_ids": [
+            "sample:3",
+            "sample:4"
+          ],
+          "values": [
+            [
+              891536.0
+            ],
+            [
+              891536.0
+            ]
+          ],
+          "target_names": [
+            "y"
+          ]
+        }
+      ]
+    }
+  ]
+}
