@@ -1271,6 +1271,143 @@ fn cli_selects_builds_and_validates_replay_bundle() {
 }
 
 #[test]
+fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() {
+    let root = repo_root();
+    let timeout_marker_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_flaky_timeout_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let retry_marker_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_flaky_retry_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+
+    let timeout_run_id = format!("run:cli.process.timeout.{}", unique_suffix());
+    let timeout = Command::new(cli())
+        .current_dir(&root)
+        .env("DAG_ML_FLAKY_MARKER_DIR", &timeout_marker_dir)
+        .env("DAG_ML_FLAKY_SLEEP_SECONDS", "2.0")
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/flaky_process_controller.py",
+            "--persistent",
+            "--process-timeout-ms",
+            "750",
+            "--plan-id",
+            "plan:cli.process.timeout",
+            "--run-id",
+            timeout_run_id.as_str(),
+        ])
+        .output()
+        .expect("failed to run flaky process campaign without retry");
+    assert!(
+        !timeout.status.success(),
+        "flaky process campaign unexpectedly succeeded without retry: {}",
+        String::from_utf8_lossy(&timeout.stdout)
+    );
+    let timeout_stderr = String::from_utf8_lossy(&timeout.stderr);
+    assert!(
+        timeout_stderr.contains("timed out after 750 ms")
+            && timeout_stderr.contains("after 1 attempt(s)"),
+        "unexpected flaky timeout error: {}",
+        timeout_stderr
+    );
+
+    let retry_run_id = format!("run:cli.process.retry.{}", unique_suffix());
+    let retry = Command::new(cli())
+        .current_dir(&root)
+        .env("DAG_ML_FLAKY_MARKER_DIR", &retry_marker_dir)
+        .env("DAG_ML_FLAKY_SLEEP_SECONDS", "2.0")
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/flaky_process_controller.py",
+            "--persistent",
+            "--process-timeout-ms",
+            "750",
+            "--process-retries",
+            "1",
+            "--plan-id",
+            "plan:cli.process.retry",
+            "--run-id",
+            retry_run_id.as_str(),
+        ])
+        .output()
+        .expect("failed to run flaky process campaign with retry");
+    assert!(
+        retry.status.success(),
+        "flaky process campaign with retry failed: {}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    let retry_stdout = String::from_utf8_lossy(&retry.stdout);
+    assert!(
+        retry_stdout.contains("process campaign run: 8 result(s)")
+            && retry_stdout.contains("4 prediction block(s)")
+            && retry_stdout.contains("4 data handle(s)"),
+        "unexpected flaky retry output: {}",
+        retry_stdout
+    );
+
+    let invalid_timeout = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--process-timeout-ms",
+            "0",
+            "--plan-id",
+            "plan:cli.process.invalid-timeout",
+            "--run-id",
+            "run:cli.process.invalid-timeout",
+        ])
+        .output()
+        .expect("failed to run process campaign with invalid timeout");
+    assert!(
+        !invalid_timeout.status.success(),
+        "invalid process timeout unexpectedly succeeded: {}",
+        String::from_utf8_lossy(&invalid_timeout.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&invalid_timeout.stderr)
+            .contains("--process-timeout-ms must be at least 1"),
+        "unexpected invalid timeout error: {}",
+        String::from_utf8_lossy(&invalid_timeout.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(timeout_marker_dir);
+    let _ = std::fs::remove_dir_all(retry_marker_dir);
+}
+
+#[test]
 fn cli_validates_sibling_dag_ml_data_coordinator_fixture_when_available() {
     let root = repo_root();
     let dag_ml_data_root = if let Some(path) = std::env::var_os("DAG_ML_DATA_REPO") {

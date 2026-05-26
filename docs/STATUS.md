@@ -166,6 +166,11 @@ Implemented:
   node/variant/fold, routes `REFIT`/`PREDICT` by node/variant for artifact
   stickiness, and exposes observed worker counts through adapter lineage
   metrics;
+- persistent process workers now have a coordinator-side watchdog
+  (`--process-timeout-ms`) and opt-in task retry (`--process-retries`) that
+  kills, replaces and replays a task on the targeted worker after timeout, EOF
+  or transport failure; the flaky adapter fixture proves both timeout refusal
+  and timeout/restart/retry recovery;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph validation,
