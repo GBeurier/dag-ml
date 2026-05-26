@@ -11,8 +11,8 @@
 | Data binding | validates envelope fingerprints, refuses mismatches, materializes in-memory handles |
 | Selection | deterministic metric ranking, stable tie-breaking, grouped branch selection, sklearn demo merge selection |
 | Bundle/replay | bundle matches execution plan fingerprints, refit artifacts match node plans, replay envelopes match data requirements, unsupported bundle schema version refused |
-| Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths, replay materializes data and refit artifact handles |
-| CLI contracts | selection command, bundle build command, bundle validation with replay request and data envelope, mock replay execution |
+| Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths, replay materializes data and refit artifact handles, external controller result conformance |
+| CLI contracts | selection command, bundle build command, bundle validation with replay request and data envelope, mock replay execution, process adapter replay execution |
 | sklearn demonstrator | group OOF, repeated observations, train-only augmentation, branch variant selection, heterogeneous merge selection, refit report |
 | ABI | null pointer handling, invalid JSON, valid graph, grouped selection output, bundle/replay validation, mock replay execution summary |
 
@@ -27,6 +27,8 @@ Add after the executor exists:
 - replay rejects missing refit artifacts and unsupported phases;
 - selected branch/merge candidates are reproducible from persisted metrics;
 - mock campaign run materializes data handles before invoking controllers.
+- process adapter replay refuses malformed `NodeResult` lineage or output
+  ownership.
 
 Current CLI smoke commands:
 
@@ -38,6 +40,7 @@ cargo run -p dag-ml-cli -- select-candidates --policy examples/fixtures/bundle/s
 cargo run -p dag-ml-cli -- build-bundle --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --bundle-spec examples/fixtures/bundle/bundle_build_spec_minimal.json --output examples/generated/execution_bundle_minimal.json --plan-id plan:cli.bundle
 cargo run -p dag-ml-cli -- validate-bundle --bundle examples/generated/execution_bundle_minimal.json --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json --replay-request examples/fixtures/bundle/replay_request_predict.json --plan-id plan:cli.bundle
 cargo run -p dag-ml-cli -- run-mock-replay --bundle examples/generated/execution_bundle_minimal.json --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json --replay-request examples/fixtures/bundle/replay_request_predict.json --plan-id plan:cli.bundle
+cargo run -p dag-ml-cli -- run-process-replay --bundle examples/generated/execution_bundle_minimal.json --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json --replay-request examples/fixtures/bundle/replay_request_predict.json --adapter examples/adapters/python_process_controller.py --plan-id plan:cli.bundle
 python examples/sklearn_complex_oof_demo.py
 cargo run -p dag-ml-cli -- validate-oof-campaign examples/generated/sklearn_complex_oof_campaign.json
 ```

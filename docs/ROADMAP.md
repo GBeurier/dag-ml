@@ -28,8 +28,8 @@ Definition of done:
 - deterministic `SeedContext`.
 
 Status: implemented as the first core slice. Remaining Phase 1 hardening is
-mostly API tightening, richer fixtures and replacing mock controllers with host
-adapter smoke tests.
+mostly richer fixtures and replacing smoke adapters with production host
+controllers.
 
 ## Phase 2: Host Controllers
 
@@ -39,6 +39,11 @@ Definition of done:
 - native C++ controller shim for `nirs4all-methods`;
 - `describe` blob validation;
 - artifact handle release tests.
+
+Status: first process adapter smoke implemented for replay. The CLI can invoke
+an external Python script per `NodeTask`, parse a returned `NodeResult`, and
+let the scheduler enforce lineage/result conformance. This is intentionally
+not yet a production Python binding or process pool.
 
 ## Phase 3: Integration With `dag-ml-data`
 
@@ -81,7 +86,8 @@ bundle plus replay request matches a rebuilt plan and external data envelopes.
 Bundles carry an explicit schema version and reject unsupported versions. The C
 ABI exposes the same selection and replay-validation contracts over JSON. The
 runtime can now materialize replay data and refit artifact handles, then invoke
-eligible controllers for replay phases without CV folds. The CLI has a mock
-replay execution smoke for the same path, and the C ABI exposes a mock replay
-execution helper returning a JSON summary. The remaining work is schema
-migration policy and real host adapter replay execution.
+eligible controllers for replay phases without CV folds. The CLI has both mock
+and external-process replay execution smokes for the same path, and the C ABI
+exposes a mock replay execution helper returning a JSON summary. The remaining
+work is schema migration policy, production host adapters and persistent
+artifact/data stores.
