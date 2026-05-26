@@ -4,13 +4,14 @@ use std::os::raw::c_char;
 use std::slice;
 
 use dag_ml_core::{
-    select_candidate, select_candidate_groups, BundleReplayExecution, CandidateScore, ControllerId,
-    DagMlError, DataMaterializationRequest, DataRequestPartition, DataViewRequest, ExecutionBundle,
-    ExecutionPlan, ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef,
-    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeResult, NodeTask,
-    Phase, PredictionBlock, PredictionPartition, ReplayPhaseRequest, RunContext, RunId,
-    RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, SampleId, SelectionDecision,
-    SelectionPolicy, SequentialScheduler,
+    select_candidate, select_candidate_groups, BundlePredictionCachePayloadSet,
+    BundleReplayExecution, CandidateScore, ControllerId, DagMlError, DataMaterializationRequest,
+    DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
+    ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
+    InMemoryDataProvider, LineageId, LineageRecord, NodeResult, NodeTask, Phase, PredictionBlock,
+    PredictionPartition, ReplayPhaseRequest, RunContext, RunId, RuntimeController,
+    RuntimeControllerRegistry, RuntimeDataProvider, SampleId, SelectionDecision, SelectionPolicy,
+    SequentialScheduler,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -478,6 +479,94 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_json(
         Err(status) => return status,
     };
     match request.validate_for_bundle(&bundle) {
+        Ok(()) => DagMlStatusCode::Ok,
+        Err(error) => {
+            set_error(error_out, error.to_string());
+            DagMlStatusCode::ValidationError
+        }
+    }
+}
+
+/// Validates a prediction-cache payload set against an `ExecutionBundle`.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_prediction_cache_payload_validate_for_bundle_json(
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    let bundle =
+        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+    let payload = match parse_json_ptr::<BundlePredictionCachePayloadSet>(
+        payload_ptr,
+        payload_len,
+        error_out,
+        "prediction cache payload set",
+    ) {
+        Ok(payload) => payload,
+        Err(status) => return status,
+    };
+    match payload.validate_against_bundle(&bundle) {
+        Ok(()) => DagMlStatusCode::Ok,
+        Err(error) => {
+            set_error(error_out, error.to_string());
+            DagMlStatusCode::ValidationError
+        }
+    }
+}
+
+/// Validates a replay request against an `ExecutionBundle` plus OOF cache payloads.
+///
+/// This variant is required for OOF-dependent `REFIT` replay; the manifest-only
+/// validator keeps refusing that case.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_with_prediction_cache_payload_json(
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    let bundle =
+        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+    let request = match parse_json_ptr::<ReplayPhaseRequest>(
+        request_ptr,
+        request_len,
+        error_out,
+        "replay request",
+    ) {
+        Ok(request) => request,
+        Err(status) => return status,
+    };
+    let payload = match parse_json_ptr::<BundlePredictionCachePayloadSet>(
+        payload_ptr,
+        payload_len,
+        error_out,
+        "prediction cache payload set",
+    ) {
+        Ok(payload) => payload,
+        Err(status) => return status,
+    };
+    match request.validate_for_bundle_with_prediction_cache_payloads(&bundle, Some(&payload)) {
         Ok(()) => DagMlStatusCode::Ok,
         Err(error) => {
             set_error(error_out, error.to_string());
@@ -1355,6 +1444,60 @@ mod tests {
                 bundle.len(),
                 request.as_ptr(),
                 request.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::Ok);
+        assert!(error.ptr.is_null());
+    }
+
+    #[test]
+    fn validates_prediction_cache_payload_over_abi() {
+        let bundle = include_bytes!(
+            "../../../examples/generated/execution_bundle_branch_merge_cv_refit.json"
+        );
+        let payload = include_bytes!(
+            "../../../examples/generated/prediction_cache_branch_merge_cv_refit.json"
+        );
+        let refit_request = include_bytes!(
+            "../../../examples/fixtures/bundle/replay_request_branch_merge_refit.json"
+        );
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_prediction_cache_payload_validate_for_bundle_json(
+                bundle.as_ptr(),
+                bundle.len(),
+                payload.as_ptr(),
+                payload.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let status = unsafe {
+            dagml_replay_request_validate_for_bundle_json(
+                bundle.as_ptr(),
+                bundle.len(),
+                refit_request.as_ptr(),
+                refit_request.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::ValidationError);
+        assert!(!error.ptr.is_null());
+        unsafe { dagml_string_free(error) };
+        error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_replay_request_validate_for_bundle_with_prediction_cache_payload_json(
+                bundle.as_ptr(),
+                bundle.len(),
+                refit_request.as_ptr(),
+                refit_request.len(),
+                payload.as_ptr(),
+                payload.len(),
                 &mut error,
             )
         };
