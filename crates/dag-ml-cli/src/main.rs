@@ -19,14 +19,14 @@ use dag_ml_core::{
     BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
     BundlePredictionRequirement, BundleReplayExecution, CampaignSpec, CandidateScore,
     ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
-    DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, FilePredictionCacheStore,
-    GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId,
-    LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, ParallelScheduler,
-    Phase, PredictionBlock, PredictionLevel, PredictionPartition, RefitArtifactRecord,
-    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
-    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
-    RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric, SelectionPolicy,
-    SequentialScheduler, VariantId,
+    DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, FileArtifactManifestStore,
+    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
+    InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
+    OofCampaign, ParallelScheduler, Phase, PredictionBlock, PredictionLevel, PredictionPartition,
+    RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
+    ReplayPhaseRequest, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
+    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric,
+    SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -503,6 +503,8 @@ enum Command {
         prediction_cache_payload: Option<PathBuf>,
         #[arg(long)]
         prediction_cache_store: Option<PathBuf>,
+        #[arg(long)]
+        artifact_manifest: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
     },
@@ -525,6 +527,18 @@ enum Command {
         bundle: PathBuf,
         #[arg(long)]
         store_dir: PathBuf,
+    },
+    ExportArtifactManifest {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    ValidateArtifactManifest {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        manifest_dir: PathBuf,
     },
     RunMockReplay {
         #[arg(long)]
@@ -1226,6 +1240,7 @@ fn main() -> Result<()> {
             replay_request,
             prediction_cache_payload,
             prediction_cache_store,
+            artifact_manifest,
             plan_id,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
@@ -1255,6 +1270,10 @@ fn main() -> Result<()> {
                     "use either --prediction-cache-payload or --prediction-cache-store, not both"
                 );
             }
+            let file_artifact_manifest_store = artifact_manifest
+                .as_ref()
+                .map(|manifest_dir| validate_file_artifact_manifest_store(&bundle, manifest_dir))
+                .transpose()?;
             if let Some(replay_request) = replay_request {
                 let request: ReplayPhaseRequest =
                     read_json(&replay_request, "replay phase request")?;
@@ -1275,7 +1294,7 @@ fn main() -> Result<()> {
                 }
             }
             println!(
-                "valid bundle: {}, selection(s)={}, artifact(s)={}, prediction requirement(s)={}, prediction cache(s)={}, prediction cache payload(s)={}, prediction cache store cache(s)={}, data requirement(s)={}, replay envelope(s)={}",
+                "valid bundle: {}, selection(s)={}, artifact(s)={}, prediction requirement(s)={}, prediction cache(s)={}, prediction cache payload(s)={}, prediction cache store cache(s)={}, data requirement(s)={}, replay envelope(s)={}, artifact manifest entries={}",
                 bundle.bundle_id,
                 bundle.selections.len(),
                 bundle.refit_artifacts.len(),
@@ -1288,7 +1307,10 @@ fn main() -> Result<()> {
                     .as_ref()
                     .map_or(0, |store| store.manifest().caches.len()),
                 bundle.data_requirements.len(),
-                envelope_map.len()
+                envelope_map.len(),
+                file_artifact_manifest_store
+                    .as_ref()
+                    .map_or(0, |store| store.manifest().artifacts.len())
             );
         }
         Command::ValidatePredictionCache { bundle, payload } => {
@@ -1330,6 +1352,30 @@ fn main() -> Result<()> {
                 store.manifest().bundle_id,
                 store.manifest().caches.len(),
                 store_dir.display()
+            );
+        }
+        Command::ExportArtifactManifest { bundle, output_dir } => {
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let manifest = FileArtifactManifestStore::write(&output_dir, &bundle)
+                .with_context(|| "failed to export artifact manifest")?;
+            println!(
+                "wrote artifact manifest: bundle={}, artifact(s)={}, dir={}",
+                manifest.bundle_id,
+                manifest.artifacts.len(),
+                output_dir.display()
+            );
+        }
+        Command::ValidateArtifactManifest {
+            bundle,
+            manifest_dir,
+        } => {
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let store = validate_file_artifact_manifest_store(&bundle, &manifest_dir)?;
+            println!(
+                "valid artifact manifest: bundle={}, artifact(s)={}, dir={}",
+                store.manifest().bundle_id,
+                store.manifest().artifacts.len(),
+                manifest_dir.display()
             );
         }
         Command::RunMockReplay {
@@ -3522,6 +3568,18 @@ fn validate_file_prediction_cache_store(
         })?;
     }
     Ok(store)
+}
+
+fn validate_file_artifact_manifest_store(
+    bundle: &ExecutionBundle,
+    manifest_dir: &Path,
+) -> Result<FileArtifactManifestStore> {
+    FileArtifactManifestStore::open(manifest_dir.to_path_buf(), bundle).with_context(|| {
+        format!(
+            "artifact manifest store is invalid at {}",
+            manifest_dir.display()
+        )
+    })
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Result<T> {
