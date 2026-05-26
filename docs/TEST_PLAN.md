@@ -14,7 +14,7 @@
 | Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths, fold-aware data view routing, replay materializes predict views and refit artifact handles, external controller result conformance |
 | CLI contracts | selection command, bundle build command, bundle validation with replay request and data envelope, mock replay execution, process adapter campaign/replay execution, persistent JSONL process campaign |
 | sklearn demonstrator | group OOF, repeated observations, train-only augmentation, branch variant selection, heterogeneous merge selection, refit report |
-| ABI | null pointer handling, invalid JSON, valid graph, grouped selection output, bundle/replay validation, mock replay execution summary |
+| ABI | null pointer handling, invalid JSON, valid graph, grouped selection output, bundle/replay validation, data-provider vtable routing, mock replay execution summary |
 
 ## Conformance Tests
 

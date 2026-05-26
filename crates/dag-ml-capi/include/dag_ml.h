@@ -83,7 +83,8 @@ typedef struct DagMlControllerVTable {
 typedef struct DagMlDataVTable {
     uint32_t abi_version;
     void *user_data;
-    DagMlStatusCode (*make_view)(void *user_data, DagMlHandle data, DagMlBytesView sample_ids_json, DagMlHandle *out_view);
+    DagMlStatusCode (*materialize)(void *user_data, DagMlHandle dataset, DagMlBytesView request_json, DagMlHandle *out_handle);
+    DagMlStatusCode (*make_view)(void *user_data, DagMlHandle data, DagMlBytesView selector_json, DagMlHandle *out_view);
     DagMlStatusCode (*view_identity)(void *user_data, DagMlHandle view, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);
     DagMlStatusCode (*target_arrow)(void *user_data, DagMlHandle view, DagMlBytesView target_name, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);
     DagMlStatusCode (*feature_arrow)(void *user_data, DagMlHandle view, DagMlBytesView feature_set_name, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);

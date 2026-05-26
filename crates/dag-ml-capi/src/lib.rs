@@ -5,10 +5,11 @@ use std::slice;
 
 use dag_ml_core::{
     select_candidate, select_candidate_groups, BundleReplayExecution, CandidateScore, ControllerId,
-    DagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope, GraphSpec, HandleKind,
-    HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeResult,
-    NodeTask, Phase, PredictionBlock, PredictionPartition, ReplayPhaseRequest, RunContext, RunId,
-    RuntimeController, RuntimeControllerRegistry, SampleId, SelectionDecision, SelectionPolicy,
+    DagMlError, DataMaterializationRequest, DataViewRequest, ExecutionBundle, ExecutionPlan,
+    ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
+    InMemoryDataProvider, LineageId, LineageRecord, NodeResult, NodeTask, Phase, PredictionBlock,
+    PredictionPartition, ReplayPhaseRequest, RunContext, RunId, RuntimeController,
+    RuntimeControllerRegistry, RuntimeDataProvider, SampleId, SelectionDecision, SelectionPolicy,
     SequentialScheduler,
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -147,11 +148,19 @@ pub struct DagMlControllerVTable {
 pub struct DagMlDataVTable {
     pub abi_version: u32,
     pub user_data: *mut c_void,
+    pub materialize: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            dataset: DagMlHandle,
+            request_json: DagMlBytesView,
+            out_handle: *mut DagMlHandle,
+        ) -> DagMlStatusCode,
+    >,
     pub make_view: Option<
         unsafe extern "C" fn(
             user_data: *mut c_void,
             data: DagMlHandle,
-            sample_ids_json: DagMlBytesView,
+            selector_json: DagMlBytesView,
             out_view: *mut DagMlHandle,
         ) -> DagMlStatusCode,
     >,
@@ -644,6 +653,183 @@ where
     }
 }
 
+#[derive(Clone)]
+pub struct CAbiRuntimeDataProvider {
+    vtable: DagMlDataVTable,
+    dataset: DagMlHandle,
+    owner_controller: ControllerId,
+}
+
+impl CAbiRuntimeDataProvider {
+    pub fn new(
+        owner_controller: ControllerId,
+        dataset: DagMlHandle,
+        vtable: DagMlDataVTable,
+    ) -> dag_ml_core::Result<Self> {
+        if vtable.abi_version < 2 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data provider ABI version {} is unsupported",
+                vtable.abi_version
+            )));
+        }
+        if vtable.materialize.is_none() {
+            return Err(DagMlError::RuntimeValidation(
+                "data provider vtable is missing materialize".to_string(),
+            ));
+        }
+        if vtable.make_view.is_none() {
+            return Err(DagMlError::RuntimeValidation(
+                "data provider vtable is missing make_view".to_string(),
+            ));
+        }
+        Ok(Self {
+            vtable,
+            dataset,
+            owner_controller,
+        })
+    }
+}
+
+impl RuntimeDataProvider for CAbiRuntimeDataProvider {
+    fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
+        let materialize = self.vtable.materialize.ok_or_else(|| {
+            DagMlError::RuntimeValidation("data provider vtable is missing materialize".to_string())
+        })?;
+        let request_json = serde_json::to_vec(&CAbiDataMaterializationJson::from(request))
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "failed to serialize data materialization request: {error}"
+                ))
+            })?;
+        let mut out_handle = 0;
+        let status = unsafe {
+            materialize(
+                self.vtable.user_data,
+                self.dataset,
+                bytes_view(&request_json),
+                &mut out_handle,
+            )
+        };
+        data_provider_status(status, "materialize")?;
+        if out_handle == 0 {
+            return Err(DagMlError::RuntimeValidation(
+                "data provider materialize returned empty handle".to_string(),
+            ));
+        }
+        Ok(HandleRef {
+            handle: out_handle,
+            kind: HandleKind::Data,
+            owner_controller: self.owner_controller.clone(),
+        })
+    }
+
+    fn make_view(&self, request: &DataViewRequest) -> dag_ml_core::Result<HandleRef> {
+        let make_view = self.vtable.make_view.ok_or_else(|| {
+            DagMlError::RuntimeValidation("data provider vtable is missing make_view".to_string())
+        })?;
+        if request.data_handle.kind != HandleKind::Data {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data provider make_view received non-data parent handle for `{}` on `{}`",
+                request.input_name, request.node_id
+            )));
+        }
+        let selector_json = serde_json::to_vec(&request.view).map_err(|error| {
+            DagMlError::RuntimeValidation(format!("failed to serialize data view request: {error}"))
+        })?;
+        let mut out_view = 0;
+        let status = unsafe {
+            make_view(
+                self.vtable.user_data,
+                request.data_handle.handle,
+                bytes_view(&selector_json),
+                &mut out_view,
+            )
+        };
+        data_provider_status(status, "make_view")?;
+        if out_view == 0 {
+            return Err(DagMlError::RuntimeValidation(
+                "data provider make_view returned empty handle".to_string(),
+            ));
+        }
+        Ok(HandleRef {
+            handle: out_view,
+            kind: HandleKind::DataView,
+            owner_controller: self.owner_controller.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct CAbiDataMaterializationJson {
+    run_id: String,
+    node_id: String,
+    input_name: String,
+    phase: &'static str,
+    variant_id: Option<String>,
+    fold_id: Option<String>,
+    request_id: String,
+    schema_fingerprint: String,
+    plan_fingerprint: String,
+    relation_fingerprint: Option<String>,
+    output_representation: String,
+    source_ids: Vec<String>,
+    require_relations: bool,
+}
+
+impl From<&DataMaterializationRequest> for CAbiDataMaterializationJson {
+    fn from(request: &DataMaterializationRequest) -> Self {
+        Self {
+            run_id: request.run_id.to_string(),
+            node_id: request.node_id.to_string(),
+            input_name: request.input_name.clone(),
+            phase: phase_abi_name(request.phase),
+            variant_id: request.variant_id.as_ref().map(ToString::to_string),
+            fold_id: request.fold_id.as_ref().map(ToString::to_string),
+            request_id: request.binding.request_id.clone(),
+            schema_fingerprint: request.binding.schema_fingerprint.clone(),
+            plan_fingerprint: request.binding.plan_fingerprint.clone(),
+            relation_fingerprint: request.binding.relation_fingerprint.clone(),
+            output_representation: request.binding.output_representation.clone(),
+            source_ids: request.binding.source_ids.clone(),
+            require_relations: request.binding.require_relations,
+        }
+    }
+}
+
+fn phase_abi_name(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Compile => "COMPILE",
+        Phase::Plan => "PLAN",
+        Phase::FitCv => "FIT_CV",
+        Phase::Select => "SELECT",
+        Phase::Refit => "REFIT",
+        Phase::Predict => "PREDICT",
+        Phase::Explain => "EXPLAIN",
+    }
+}
+
+fn bytes_view(bytes: &[u8]) -> DagMlBytesView {
+    DagMlBytesView {
+        ptr: bytes.as_ptr(),
+        len: bytes.len(),
+    }
+}
+
+fn data_provider_status(status: DagMlStatusCode, action: &str) -> dag_ml_core::Result<()> {
+    match status {
+        DagMlStatusCode::Ok => Ok(()),
+        DagMlStatusCode::InvalidArgument => Err(DagMlError::RuntimeValidation(format!(
+            "data provider {action} returned invalid argument"
+        ))),
+        DagMlStatusCode::ValidationError => Err(DagMlError::RuntimeValidation(format!(
+            "data provider {action} returned validation error"
+        ))),
+        DagMlStatusCode::Panic => Err(DagMlError::RuntimeValidation(format!(
+            "data provider {action} panicked"
+        ))),
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct MockReplaySummary {
     bundle_id: String,
@@ -869,8 +1055,51 @@ fn stable_handle(value: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dag_ml_core::{build_execution_plan, CampaignSpec, ControllerManifest, ControllerRegistry};
+    use dag_ml_core::{
+        build_execution_plan, CampaignSpec, ControllerManifest, ControllerRegistry, DataBinding,
+        DataProviderViewSpec, DataRequestPartition, DataViewPolicy, FoldId, NodeId, VariantId,
+    };
     use std::ffi::CStr;
+
+    #[derive(Default)]
+    struct DataProviderStub {
+        materialize_dataset: DagMlHandle,
+        materialize_json: Vec<u8>,
+        make_view_parent: DagMlHandle,
+        make_view_json: Vec<u8>,
+    }
+
+    unsafe extern "C" fn materialize_stub(
+        user_data: *mut c_void,
+        dataset: DagMlHandle,
+        request_json: DagMlBytesView,
+        out_handle: *mut DagMlHandle,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || request_json.ptr.is_null() || out_handle.is_null() {
+            return DagMlStatusCode::InvalidArgument;
+        }
+        let state = &mut *(user_data.cast::<DataProviderStub>());
+        state.materialize_dataset = dataset;
+        state.materialize_json = slice::from_raw_parts(request_json.ptr, request_json.len).to_vec();
+        *out_handle = 41;
+        DagMlStatusCode::Ok
+    }
+
+    unsafe extern "C" fn make_view_stub(
+        user_data: *mut c_void,
+        data: DagMlHandle,
+        selector_json: DagMlBytesView,
+        out_view: *mut DagMlHandle,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || selector_json.ptr.is_null() || out_view.is_null() {
+            return DagMlStatusCode::InvalidArgument;
+        }
+        let state = &mut *(user_data.cast::<DataProviderStub>());
+        state.make_view_parent = data;
+        state.make_view_json = slice::from_raw_parts(selector_json.ptr, selector_json.len).to_vec();
+        *out_view = 42;
+        DagMlStatusCode::Ok
+    }
 
     unsafe extern "C" fn feature_arrow_stub(
         _user_data: *mut c_void,
@@ -893,6 +1122,7 @@ mod tests {
         let table = DagMlDataVTable {
             abi_version: 2,
             user_data: std::ptr::null_mut(),
+            materialize: Some(materialize_stub),
             make_view: None,
             view_identity: None,
             target_arrow: None,
@@ -902,7 +1132,100 @@ mod tests {
         };
 
         assert_eq!(table.abi_version, 2);
+        assert!(table.materialize.is_some());
         assert!(table.feature_arrow.is_some());
+    }
+
+    #[test]
+    fn c_abi_runtime_data_provider_routes_materialize_and_view_requests() {
+        let mut state = DataProviderStub::default();
+        let table = DagMlDataVTable {
+            abi_version: 2,
+            user_data: (&mut state as *mut DataProviderStub).cast::<c_void>(),
+            materialize: Some(materialize_stub),
+            make_view: Some(make_view_stub),
+            view_identity: None,
+            target_arrow: None,
+            feature_arrow: None,
+            release: None,
+            destroy: None,
+        };
+        let provider = CAbiRuntimeDataProvider::new(
+            ControllerId::new("controller:data.provider").unwrap(),
+            7,
+            table,
+        )
+        .unwrap();
+        let binding = DataBinding {
+            node_id: NodeId::new("model:base").unwrap(),
+            input_name: "x".to_string(),
+            request_id: "nir-to-tabular".to_string(),
+            schema_fingerprint: "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b"
+                .to_string(),
+            plan_fingerprint: "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d"
+                .to_string(),
+            relation_fingerprint: Some(
+                "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10".to_string(),
+            ),
+            output_representation: "tabular_numeric".to_string(),
+            feature_set_id: Some("x".to_string()),
+            source_ids: vec!["nir".to_string()],
+            require_relations: true,
+            view_policy: DataViewPolicy::default(),
+            metadata: BTreeMap::new(),
+        };
+        let data = provider
+            .materialize(&DataMaterializationRequest {
+                run_id: RunId::new("run:cabi.data").unwrap(),
+                node_id: binding.node_id.clone(),
+                input_name: binding.input_name.clone(),
+                phase: Phase::FitCv,
+                variant_id: Some(VariantId::new("variant:base").unwrap()),
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                binding: binding.clone(),
+            })
+            .unwrap();
+
+        assert_eq!(data.handle, 41);
+        assert_eq!(data.kind, HandleKind::Data);
+        assert_eq!(state.materialize_dataset, 7);
+        let materialize_json: serde_json::Value =
+            serde_json::from_slice(&state.materialize_json).unwrap();
+        assert_eq!(materialize_json["phase"], "FIT_CV");
+        assert_eq!(materialize_json["request_id"], "nir-to-tabular");
+        assert_eq!(materialize_json["source_ids"][0], "nir");
+
+        let view = provider
+            .make_view(&DataViewRequest {
+                run_id: RunId::new("run:cabi.data").unwrap(),
+                node_id: binding.node_id.clone(),
+                input_name: binding.input_name.clone(),
+                phase: Phase::FitCv,
+                variant_id: Some(VariantId::new("variant:base").unwrap()),
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                binding,
+                data_handle: data,
+                view: DataProviderViewSpec {
+                    sample_ids: Some(vec![SampleId::new("s1").unwrap()]),
+                    partition: DataRequestPartition::FoldTrain,
+                    fold_id: Some(FoldId::new("fold:0").unwrap()),
+                    source_ids: Some(vec!["nir".to_string()]),
+                    columns: Some(vec!["abs_1000".to_string()]),
+                    include_augmented: true,
+                    include_excluded: false,
+                    extra: BTreeMap::new(),
+                },
+            })
+            .unwrap();
+
+        assert_eq!(view.handle, 42);
+        assert_eq!(view.kind, HandleKind::DataView);
+        assert_eq!(state.make_view_parent, 41);
+        let view_json: serde_json::Value = serde_json::from_slice(&state.make_view_json).unwrap();
+        assert_eq!(view_json["partition"], "fold_train");
+        assert_eq!(view_json["fold_id"], "fold:0");
+        assert_eq!(view_json["sample_ids"][0], "s1");
+        assert_eq!(view_json["columns"][0], "abs_1000");
     }
 
     #[test]
