@@ -172,6 +172,15 @@ pub struct DagMlDataVTable {
             out_arrow_schema: *mut *mut ArrowSchema,
         ) -> DagMlStatusCode,
     >,
+    pub feature_arrow: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            view: DagMlHandle,
+            feature_set_name: DagMlBytesView,
+            out_arrow_array: *mut *mut ArrowArray,
+            out_arrow_schema: *mut *mut ArrowSchema,
+        ) -> DagMlStatusCode,
+    >,
     pub release: Option<unsafe extern "C" fn(user_data: *mut c_void, handle: DagMlHandle)>,
     pub destroy: Option<unsafe extern "C" fn(user_data: *mut c_void)>,
 }
@@ -860,6 +869,39 @@ mod tests {
     use super::*;
     use dag_ml_core::{build_execution_plan, CampaignSpec, ControllerManifest, ControllerRegistry};
     use std::ffi::CStr;
+
+    unsafe extern "C" fn feature_arrow_stub(
+        _user_data: *mut c_void,
+        _view: DagMlHandle,
+        _feature_set_name: DagMlBytesView,
+        out_arrow_array: *mut *mut ArrowArray,
+        out_arrow_schema: *mut *mut ArrowSchema,
+    ) -> DagMlStatusCode {
+        if !out_arrow_array.is_null() {
+            *out_arrow_array = std::ptr::null_mut();
+        }
+        if !out_arrow_schema.is_null() {
+            *out_arrow_schema = std::ptr::null_mut();
+        }
+        DagMlStatusCode::Ok
+    }
+
+    #[test]
+    fn data_vtable_exposes_feature_arrow_slot() {
+        let table = DagMlDataVTable {
+            abi_version: 2,
+            user_data: std::ptr::null_mut(),
+            make_view: None,
+            view_identity: None,
+            target_arrow: None,
+            feature_arrow: Some(feature_arrow_stub),
+            release: None,
+            destroy: None,
+        };
+
+        assert_eq!(table.abi_version, 2);
+        assert!(table.feature_arrow.is_some());
+    }
 
     #[test]
     fn validates_graph_json_over_abi() {

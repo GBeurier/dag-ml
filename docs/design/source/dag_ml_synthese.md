@@ -111,7 +111,7 @@ Deux vtables C `#[repr(C)]` (détail complet : doc de travail §9-10). L'essenti
 
 **`DataVTable`** (la couche données par langage) :
 - `materialize`, `make_view` (slice **par sample-ids**, jamais par positions →
-  anti-leakage porté par l'ABI), `view_identity`, `target_arrow`,
+  anti-leakage porté par l'ABI), `view_identity`, `target_arrow`, `feature_arrow`,
   `ingest_arrow` (OOF → handle), `handle_nbytes`, `schema_fingerprint`,
   `release / destroy`.
 

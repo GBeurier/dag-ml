@@ -64,6 +64,8 @@ Implemented:
   including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph, selection decisions,
   grouped selection, execution bundles, replay envelopes and replay requests;
+- C ABI data-provider vtable shape aligned with `dag-ml-data`
+  identity/target/feature Arrow exports;
 - C ABI mock replay execution helper that exercises execution-plan, bundle,
   replay request, data envelope and refit artifact handle materialization and
   returns a JSON summary;
