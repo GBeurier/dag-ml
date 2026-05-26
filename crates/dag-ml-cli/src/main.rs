@@ -1550,7 +1550,7 @@ fn validate_sklearn_complex_demo(
             name: "rmse".to_string(),
             objective: MetricObjective::Minimize,
         },
-        required_metric_level: None,
+        required_metric_level: Some(dag_ml_core::PredictionLevel::Sample),
         require_finite: true,
     };
     let branch_candidates = metric_candidates(report, "branch_variant_metrics")?;
@@ -1594,7 +1594,10 @@ fn metric_candidates(report: &serde_json::Value, key: &str) -> Result<Vec<Candid
                         Ok((name.clone(), value))
                     })
                     .collect::<Result<BTreeMap<_, _>>>()?,
-                metadata: BTreeMap::new(),
+                metadata: BTreeMap::from([(
+                    "metric_level".to_string(),
+                    serde_json::Value::String("sample".to_string()),
+                )]),
             })
         })
         .collect()

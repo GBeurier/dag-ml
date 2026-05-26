@@ -840,7 +840,23 @@ impl ExecutionBundle {
             .iter()
             .map(|artifact| artifact.node_id.clone())
             .collect::<BTreeSet<_>>();
+        let required_metric_level = plan.campaign.aggregation_policy.selection_metric_level;
         for (selection_key, decision) in &self.selections {
+            match decision.metric_level {
+                Some(metric_level) if metric_level == required_metric_level => {}
+                Some(metric_level) => {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "bundle `{}` selection `{selection_key}` metric_level {:?} does not match campaign selection_metric_level {:?}",
+                        self.bundle_id, metric_level, required_metric_level
+                    )));
+                }
+                None => {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "bundle `{}` selection `{selection_key}` is missing metric_level for campaign selection_metric_level {:?}",
+                        self.bundle_id, required_metric_level
+                    )));
+                }
+            }
             let selected_candidate_id = decision.selected_candidate_id.as_str();
             if let Ok(selected_node_id) = NodeId::new(selected_candidate_id) {
                 if let Some(node_plan) = plan.node_plans.get(&selected_node_id) {
@@ -1592,19 +1608,25 @@ mod tests {
                     name: "rmse".to_string(),
                     objective: MetricObjective::Minimize,
                 },
-                required_metric_level: None,
+                required_metric_level: Some(crate::policy::PredictionLevel::Sample),
                 require_finite: true,
             },
             &[
                 CandidateScore {
                     candidate_id: "model:base".to_string(),
                     metrics: BTreeMap::from([("rmse".to_string(), 1.0)]),
-                    metadata: BTreeMap::new(),
+                    metadata: BTreeMap::from([(
+                        "metric_level".to_string(),
+                        serde_json::Value::String("sample".to_string()),
+                    )]),
                 },
                 CandidateScore {
                     candidate_id: "model:other".to_string(),
                     metrics: BTreeMap::from([("rmse".to_string(), 2.0)]),
-                    metadata: BTreeMap::new(),
+                    metadata: BTreeMap::from([(
+                        "metric_level".to_string(),
+                        serde_json::Value::String("sample".to_string()),
+                    )]),
                 },
             ],
         )
@@ -1673,6 +1695,28 @@ mod tests {
             Some(plan.variants[0].variant_id.clone()),
             BTreeMap::from([("model".to_string(), selected_model_base_decision())]),
             Vec::new(),
+        )
+        .is_err());
+
+        let mut missing_level = selected_model_base_decision();
+        missing_level.metric_level = None;
+        assert!(build_execution_bundle(
+            BundleId::new("bundle:selected.missing.level").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::from([("model".to_string(), missing_level)]),
+            vec![artifact.clone()],
+        )
+        .is_err());
+
+        let mut wrong_level = selected_model_base_decision();
+        wrong_level.metric_level = Some(crate::policy::PredictionLevel::Target);
+        assert!(build_execution_bundle(
+            BundleId::new("bundle:selected.wrong.level").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::from([("model".to_string(), wrong_level)]),
+            vec![artifact.clone()],
         )
         .is_err());
 

@@ -4,6 +4,7 @@
     "selected_candidate_id": "branch:b0.model:ridge",
     "metric_name": "rmse_sample",
     "objective": "minimize",
+    "metric_level": "sample",
     "selected_score": 0.118,
     "ranked_candidates": [
       {
@@ -23,6 +24,7 @@
     "selected_candidate_id": "branch:b1.model:rf",
     "metric_name": "rmse_sample",
     "objective": "minimize",
+    "metric_level": "sample",
     "selected_score": 0.104,
     "ranked_candidates": [
       {
@@ -42,6 +44,7 @@
     "selected_candidate_id": "merge:stack.pred_plus_original.meta:ridge",
     "metric_name": "rmse_sample",
     "objective": "minimize",
+    "metric_level": "sample",
     "selected_score": 0.091,
     "ranked_candidates": [
       {
