@@ -7,16 +7,17 @@ use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, St
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_core::{
-    build_execution_bundle, build_execution_bundle_with_prediction_requirements,
-    build_execution_plan, oof_campaign_fingerprint, select_candidate, select_candidate_groups,
-    validate_oof_campaign, ArtifactId, BundleId, BundlePredictionRequirement, CampaignSpec,
-    CandidateScore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
-    DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, GraphSpec, HandleKind,
-    HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
-    MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock,
-    PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId,
-    RuntimeController, RuntimeControllerRegistry, SampleId, SelectionDecision, SelectionMetric,
-    SelectionPolicy, SequentialScheduler, VariantId,
+    build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
+    build_prediction_cache_record, oof_campaign_fingerprint, select_candidate,
+    select_candidate_groups, validate_oof_campaign, ArtifactId, BundleId,
+    BundlePredictionCacheRecord, BundlePredictionRequirement, CampaignSpec, CandidateScore,
+    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataRequestPartition,
+    ExecutionBundle, ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef,
+    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId,
+    NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock, PredictionPartition,
+    RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId, RuntimeController,
+    RuntimeControllerRegistry, SampleId, SelectionDecision, SelectionMetric, SelectionPolicy,
+    SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1302,6 +1303,8 @@ fn build_bundle_from_cv_then_captured_refit(
     }
     let prediction_requirements =
         oof_prediction_requirements(input.plan, ctx.prediction_store.blocks())?;
+    let prediction_caches =
+        oof_prediction_caches(&prediction_requirements, ctx.prediction_store.blocks())?;
     let oof_prediction_summary = oof_prediction_summary(ctx.prediction_store.blocks())?;
 
     let refit_results = SequentialScheduler
@@ -1325,13 +1328,14 @@ fn build_bundle_from_cv_then_captured_refit(
         .filter(|block| block.partition == PredictionPartition::Final)
         .count();
 
-    let mut bundle = build_execution_bundle_with_prediction_requirements(
+    let mut bundle = build_execution_bundle_with_prediction_contracts(
         BundleId::new(input.bundle_id)?,
         input.plan,
         Some(selected_variant_id),
         input.selections,
         artifact_store.refit_artifacts(),
         prediction_requirements,
+        prediction_caches,
     )
     .with_context(|| "failed to build execution bundle from CV+refit artifacts")?;
     bundle.metadata.insert(
@@ -1428,6 +1432,16 @@ fn oof_prediction_requirements(
         requirement.validate()?;
     }
     Ok(requirements)
+}
+
+fn oof_prediction_caches(
+    requirements: &[BundlePredictionRequirement],
+    blocks: &[PredictionBlock],
+) -> dag_ml_core::Result<Vec<BundlePredictionCacheRecord>> {
+    requirements
+        .iter()
+        .map(|requirement| build_prediction_cache_record(requirement, blocks))
+        .collect()
 }
 
 #[derive(Default)]

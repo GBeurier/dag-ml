@@ -49,9 +49,10 @@ prediction inputs into a heterogeneous meta-model that also receives original
 data. The branch/merge CV+refit bundle smoke keeps the CV prediction store
 alive through refit, proving that the meta-model refit sees complete validation
 OOF coverage before base and meta artifacts are captured, and the generated
-bundle includes typed prediction requirements plus a compact OOF summary by
-producer/fold/sample and persisted branch/merge selection decisions. The paired
-replay smoke reuses that bundle for the two branch models and the meta-model
-while all three data requirements point at the same validated data-plan envelope. The
-sklearn refit/replay smoke fits a real sklearn pipeline and reuses the captured
-model handle in a persistent JSONL process.
+bundle includes typed prediction requirements, deterministic prediction cache
+fingerprints, a compact OOF summary by producer/fold/sample and persisted
+branch/merge selection decisions. The paired replay smoke reuses that bundle for
+the two branch models and the meta-model while all three data requirements point
+at the same validated data-plan envelope. The sklearn refit/replay smoke fits a
+real sklearn pipeline and reuses the captured model handle in a persistent JSONL
+process.
