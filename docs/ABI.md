@@ -24,6 +24,9 @@ the host owns the underlying object behind each handle.
   optional lineage records, replay envelopes, prediction-cache manifests and
   artifact manifests; null pointer plus zero length denotes an omitted
   optional input;
+- `dagml_openlineage_run_event_json` for building the same validated provenance
+  evidence as an OpenLineage `RunEvent` JSON with explicit namespace and event
+  time byte views;
 - vtable replay execution helper that composes host controllers, host data
   provider, host artifact store and optional host prediction-cache store while
   Rust owns scheduling and validation;

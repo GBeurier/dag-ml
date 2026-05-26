@@ -5,15 +5,16 @@ use std::slice;
 use std::sync::Mutex;
 
 use dag_ml_core::{
-    build_execution_plan, build_research_provenance_export, regression_report_to_candidate_score,
-    score_regression_aggregated_block, score_regression_prediction_block, select_candidate,
-    select_candidate_groups, AggregatedPredictionBlock, ArtifactMaterializationRequest,
-    BundlePredictionCachePayloadSet, BundleReplayExecution, CampaignSpec, CandidateScore,
-    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataMaterializationRequest,
-    DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
-    ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest, GraphSpec,
-    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
-    NodeResult, NodeTask, Phase, PredictionBlock, PredictionCacheMaterializationRequest,
+    build_execution_plan, build_openlineage_run_event, build_research_provenance_export,
+    regression_report_to_candidate_score, score_regression_aggregated_block,
+    score_regression_prediction_block, select_candidate, select_candidate_groups,
+    AggregatedPredictionBlock, ArtifactMaterializationRequest, BundlePredictionCachePayloadSet,
+    BundleReplayExecution, CampaignSpec, CandidateScore, ControllerId, ControllerManifest,
+    ControllerRegistry, DagMlError, DataMaterializationRequest, DataRequestPartition,
+    DataViewRequest, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
+    FileArtifactManifest, FilePredictionCacheManifest, GraphSpec, HandleKind, HandleRef,
+    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeResult, NodeTask,
+    OpenLineageRunEventOptions, Phase, PredictionBlock, PredictionCacheMaterializationRequest,
     PredictionPartition, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
     ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
     RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
@@ -1062,6 +1063,115 @@ pub unsafe extern "C" fn dagml_research_provenance_export_json(
         artifact_manifest.as_ref(),
     ) {
         Ok(export) => write_owned_json(out_json, error_out, &export),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Builds an OpenLineage RunEvent from validated DAG-ML provenance contracts.
+///
+/// This function mirrors `dagml_research_provenance_export_json` inputs, but
+/// returns a single OpenLineage-compatible JSON event. The event is a
+/// publication view only: DAG-ML fingerprints and OOF evidence remain available
+/// through custom `dagml_*` facets.
+///
+/// # Safety
+///
+/// Non-null input pointers must point to readable bytes for the duration of the
+/// call. `namespace` and `event_time` must be valid UTF-8 byte views.
+/// `out_json` must point to writable memory for one `DagMlOwnedBytes`; returned
+/// bytes must be released with `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_openlineage_run_event_json(
+    plan_ptr: *const u8,
+    plan_len: usize,
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    lineage_ptr: *const u8,
+    lineage_len: usize,
+    envelopes_ptr: *const u8,
+    envelopes_len: usize,
+    prediction_cache_manifest_ptr: *const u8,
+    prediction_cache_manifest_len: usize,
+    artifact_manifest_ptr: *const u8,
+    artifact_manifest_len: usize,
+    namespace: DagMlBytesView,
+    event_time: DagMlBytesView,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let plan =
+        match parse_json_ptr::<ExecutionPlan>(plan_ptr, plan_len, error_out, "execution plan") {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+    let bundle =
+        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+    let lineage = match parse_optional_json_ptr::<Vec<LineageRecord>>(
+        lineage_ptr,
+        lineage_len,
+        error_out,
+        "lineage records",
+    ) {
+        Ok(Some(lineage)) => lineage,
+        Ok(None) => Vec::new(),
+        Err(status) => return status,
+    };
+    let envelopes = match parse_optional_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+        envelopes_ptr,
+        envelopes_len,
+        error_out,
+        "replay envelopes",
+    ) {
+        Ok(Some(envelopes)) => envelopes,
+        Ok(None) => BTreeMap::new(),
+        Err(status) => return status,
+    };
+    let prediction_cache_manifest = match parse_optional_json_ptr::<FilePredictionCacheManifest>(
+        prediction_cache_manifest_ptr,
+        prediction_cache_manifest_len,
+        error_out,
+        "prediction cache manifest",
+    ) {
+        Ok(manifest) => manifest,
+        Err(status) => return status,
+    };
+    let artifact_manifest = match parse_optional_json_ptr::<FileArtifactManifest>(
+        artifact_manifest_ptr,
+        artifact_manifest_len,
+        error_out,
+        "artifact manifest",
+    ) {
+        Ok(manifest) => manifest,
+        Err(status) => return status,
+    };
+    let namespace = match parse_utf8_view(namespace, error_out, "OpenLineage namespace") {
+        Ok(namespace) => namespace,
+        Err(status) => return status,
+    };
+    let event_time = match parse_utf8_view(event_time, error_out, "OpenLineage event_time") {
+        Ok(event_time) => event_time,
+        Err(status) => return status,
+    };
+    let options = OpenLineageRunEventOptions {
+        namespace,
+        event_time,
+    };
+
+    match build_openlineage_run_event(
+        &plan,
+        &bundle,
+        &lineage,
+        &envelopes,
+        prediction_cache_manifest.as_ref(),
+        artifact_manifest.as_ref(),
+        &options,
+    ) {
+        Ok(event) => write_owned_json(out_json, error_out, &event),
         Err(error) => validation_error(error_out, error),
     }
 }
@@ -3997,6 +4107,54 @@ mod tests {
             .unwrap()
             .iter()
             .any(|entry| entry["@type"].to_string().contains("ComputationalWorkflow")));
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn exports_openlineage_run_event_over_abi() {
+        let plan = fixture_plan_json();
+        let bundle = include_bytes!("../../../examples/generated/execution_bundle_minimal.json");
+        let namespace = b"dag-ml-capi-test";
+        let event_time = b"2026-05-27T00:00:00Z";
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_openlineage_run_event_json(
+                plan.as_ptr(),
+                plan.len(),
+                bundle.as_ptr(),
+                bundle.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                bytes_view(namespace),
+                bytes_view(event_time),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let event: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(event["eventType"], "COMPLETE");
+        assert_eq!(event["job"]["namespace"], "dag-ml-capi-test");
+        assert!(event["run"]["facets"]["dagml_reproducibility"]
+            .to_string()
+            .contains("graph_fingerprint"));
+        assert!(event["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|output| output["namespace"] == "dagml:bundle"));
         unsafe { dagml_owned_bytes_free(out) };
     }
 
