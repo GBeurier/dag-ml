@@ -263,6 +263,43 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         persistent_process_campaign_stdout
     );
 
+    let branch_merge_campaign = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--plan-id",
+            "plan:cli.branch.merge",
+            "--run-id",
+            "run:cli.branch.merge",
+        ])
+        .output()
+        .expect("failed to run branch/merge process campaign");
+    assert!(
+        branch_merge_campaign.status.success(),
+        "branch/merge process campaign failed: {}",
+        String::from_utf8_lossy(&branch_merge_campaign.stderr)
+    );
+    let branch_merge_stdout = String::from_utf8_lossy(&branch_merge_campaign.stdout);
+    assert!(
+        branch_merge_stdout.contains("process campaign run: 6 result(s)")
+            && branch_merge_stdout.contains("6 prediction block(s)")
+            && branch_merge_stdout.contains("6 data handle(s)")
+            && branch_merge_stdout.contains("12 data view(s)"),
+        "unexpected branch/merge process campaign output: {}",
+        branch_merge_stdout
+    );
+
     let validate = Command::new(cli())
         .current_dir(&root)
         .args([

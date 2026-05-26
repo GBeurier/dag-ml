@@ -78,6 +78,10 @@ Implemented:
 - CLI process campaign and replay execution that sends `NodeTask` JSON to an
   external adapter process over stdin, reads `NodeResult` JSON from stdout and
   validates the result through the scheduler;
+- scheduler-level branch/merge OOF smoke fixture with two branch models feeding
+  a heterogeneous meta-model through `requires_oof` prediction edges plus an
+  original-data binding; the process adapter now validates
+  `NodeTask.prediction_inputs` against fold/sample scope;
 - stateful sklearn process-controller smoke that fits a real sklearn pipeline
   during `REFIT`, stores it behind an opaque model handle, then replays
   `PREDICT` through the captured handle in the same persistent process;

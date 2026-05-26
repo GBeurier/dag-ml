@@ -141,6 +141,37 @@ def replay_model(task: dict[str, Any]) -> Pipeline:
     return model
 
 
+def require_prediction_inputs(task: dict[str, Any]) -> None:
+    node_plan = task["node_plan"]
+    input_handles = task.get("input_handles", {})
+    prediction_inputs = task.get("prediction_inputs", {})
+    for key, spec in prediction_inputs.items():
+        handle = input_handles.get(key)
+        if handle is None:
+            fail(f"node `{node_plan['node_id']}` did not receive prediction handle `{key}`")
+        if handle.get("kind") != "prediction":
+            fail(f"node `{node_plan['node_id']}` received non-prediction handle `{key}`")
+        if spec.get("producer_node") not in key:
+            fail(f"node `{node_plan['node_id']}` received mismatched prediction spec `{key}`")
+        if spec.get("partition") != "validation":
+            fail(f"node `{node_plan['node_id']}` received non-validation prediction spec `{key}`")
+        if not spec.get("sample_ids"):
+            fail(f"node `{node_plan['node_id']}` received prediction spec without samples `{key}`")
+        if int(spec.get("prediction_width", 0)) <= 0:
+            fail(f"node `{node_plan['node_id']}` received prediction spec without width `{key}`")
+        if task.get("phase") == "FIT_CV":
+            if spec.get("fold_id") != task.get("fold_id"):
+                fail(f"node `{node_plan['node_id']}` received prediction spec for wrong fold `{key}`")
+            validation_samples: set[str] = set()
+            for view in task.get("data_views", {}).values():
+                if view.get("partition") == "fold_validation":
+                    validation_samples.update(view.get("sample_ids") or [])
+            if validation_samples and set(spec.get("sample_ids") or []) != validation_samples:
+                fail(f"node `{node_plan['node_id']}` received prediction spec for wrong samples `{key}`")
+        if task.get("phase") == "REFIT" and spec.get("fold_id") is not None:
+            fail(f"node `{node_plan['node_id']}` received fold-scoped prediction spec during REFIT `{key}`")
+
+
 def model_result(task: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     phase = task["phase"]
     node_id = task["node_plan"]["node_id"]
@@ -250,6 +281,7 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
 
 def emit_result(task: dict[str, Any]) -> None:
     require_data_handles(task)
+    require_prediction_inputs(task)
     result = build_result(task)
     json.dump(result, sys.stdout, sort_keys=True)
     sys.stdout.write("\n")
