@@ -11,7 +11,7 @@
 | Data binding | validates envelope fingerprints, refuses mismatches, materializes in-memory handles |
 | Selection | deterministic metric ranking, stable tie-breaking, grouped branch selection, sklearn demo merge selection |
 | Bundle/replay | bundle matches execution plan fingerprints, refit artifacts match node plans, replay envelopes match data requirements, unsupported bundle schema version refused |
-| Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths |
+| Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths, replay materializes data and refit artifact handles |
 | CLI contracts | selection command, bundle build command, bundle validation with replay request and data envelope |
 | sklearn demonstrator | group OOF, repeated observations, train-only augmentation, branch variant selection, heterogeneous merge selection, refit report |
 | ABI | null pointer handling, invalid JSON, valid graph, grouped selection output, bundle/replay validation |
@@ -24,6 +24,7 @@ Add after the executor exists:
 - UC11 train-prediction leakage refusal;
 - group-aware split where no group crosses train/validation;
 - replay rejects schema fingerprint mismatch;
+- replay rejects missing refit artifacts and unsupported phases;
 - selected branch/merge candidates are reproducible from persisted metrics;
 - mock campaign run materializes data handles before invoking controllers.
 
