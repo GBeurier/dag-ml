@@ -13,11 +13,13 @@ PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION = 1
 PROCESS_ADAPTER_PROTOCOL = "dag-ml-process-adapter"
 PROCESS_ADAPTER_MODES = ["one_shot", "jsonl"]
 PROCESS_ADAPTER_CAPABILITIES = [
+    "control_frames_v1",
     "node_task_json_v1",
     "node_result_json_v1",
     "persistent_workers",
     "worker_env",
 ]
+PROCESS_ADAPTER_FRAME_SCHEMA_VERSION = 1
 
 
 def adapter_description(
@@ -47,6 +49,36 @@ def emit_description(
     )
     sys.stdout.write("\n")
     sys.stdout.flush()
+
+
+def emit_json(payload: dict[str, Any]) -> None:
+    json.dump(payload, sys.stdout, sort_keys=True)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def emit_ack(status: str) -> None:
+    emit_json(
+        {
+            "type": "ack",
+            "schema_version": PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
+            "status": status,
+        }
+    )
+
+
+def emit_error(code: str, message: str, retryable: bool = False) -> None:
+    emit_json(
+        {
+            "type": "error",
+            "schema_version": PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
+            "error": {
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+            },
+        }
+    )
 
 
 def fail(message: str) -> None:
@@ -290,10 +322,72 @@ def run_jsonl() -> None:
         if not line.strip():
             continue
         try:
-            task = json.loads(line)
+            payload = json.loads(line)
         except json.JSONDecodeError as exc:
             fail(f"invalid NodeTask JSON line: {exc}")
-        emit_result(task)
+        if is_control_frame(payload):
+            if not handle_control_frame(payload):
+                break
+            continue
+        emit_result(payload)
+
+
+def is_control_frame(payload: Any) -> bool:
+    return isinstance(payload, dict) and isinstance(payload.get("type"), str)
+
+
+def validate_frame_schema(frame: dict[str, Any]) -> bool:
+    if frame.get("schema_version") != PROCESS_ADAPTER_FRAME_SCHEMA_VERSION:
+        emit_error(
+            "unsupported_frame_schema",
+            f"unsupported frame schema version `{frame.get('schema_version')}`",
+            retryable=False,
+        )
+        return False
+    return True
+
+
+def handle_control_frame(frame: dict[str, Any]) -> bool:
+    if not validate_frame_schema(frame):
+        return True
+    frame_type = frame["type"]
+    if frame_type == "init":
+        write_lifecycle_marker("init", frame)
+        emit_ack("initialized")
+        return True
+    if frame_type == "task":
+        task = frame.get("task")
+        if not isinstance(task, dict):
+            emit_error("invalid_task_frame", "task frame is missing object field `task`")
+            return True
+        emit_result_frame(task)
+        return True
+    if frame_type == "close":
+        write_lifecycle_marker("close", frame)
+        emit_ack("closed")
+        return False
+    emit_error("unsupported_frame", f"unsupported frame type `{frame_type}`")
+    return True
+
+
+def write_lifecycle_marker(event: str, frame: dict[str, Any]) -> None:
+    marker_dir = os.environ.get("DAG_ML_PROCESS_LIFECYCLE_MARKER_DIR")
+    if not marker_dir:
+        return
+    os.makedirs(marker_dir, exist_ok=True)
+    controller_id = frame.get("controller_id") or os.environ.get("DAG_ML_CONTROLLER_ID", "controller")
+    worker_index = (
+        frame.get("worker_index")
+        if frame.get("worker_index") is not None
+        else os.environ.get("DAG_ML_PROCESS_WORKER_INDEX", "0")
+    )
+    safe_name = "".join(
+        character if character.isalnum() or character in "._-" else "_"
+        for character in f"{event}_{controller_id}_{worker_index}"
+    )
+    with open(os.path.join(marker_dir, f"{safe_name}.marker"), "a", encoding="utf-8") as marker:
+        marker.write(event)
+        marker.write("\n")
 
 
 def emit_result(task: dict[str, Any]) -> None:
@@ -301,9 +395,21 @@ def emit_result(task: dict[str, Any]) -> None:
     require_replay_artifact(task)
     require_prediction_inputs(task)
     require_variant_param_overrides(task)
-    json.dump(build_result(task), sys.stdout, sort_keys=True)
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+    emit_json(build_result(task))
+
+
+def emit_result_frame(task: dict[str, Any]) -> None:
+    require_data_handles(task)
+    require_replay_artifact(task)
+    require_prediction_inputs(task)
+    require_variant_param_overrides(task)
+    emit_json(
+        {
+            "type": "result",
+            "schema_version": PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
+            "result": build_result(task),
+        }
+    )
 
 
 if __name__ == "__main__":

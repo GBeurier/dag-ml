@@ -1294,6 +1294,7 @@ fn process_adapters_describe_supported_protocol_modes() {
                 && stdout.contains("\"schema_version\": 1")
                 && stdout.contains("\"one_shot\"")
                 && stdout.contains("\"jsonl\"")
+                && stdout.contains("\"control_frames_v1\"")
                 && stdout.contains("\"node_task_json_v1\"")
                 && stdout.contains("\"node_result_json_v1\""),
             "unexpected adapter `{adapter}` describe output: {}",
@@ -1312,6 +1313,11 @@ fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() 
     ));
     let retry_marker_dir = std::env::temp_dir().join(format!(
         "dag_ml_cli_flaky_retry_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let retry_lifecycle_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_lifecycle_retry_{}_{}",
         std::process::id(),
         unique_suffix()
     ));
@@ -1360,6 +1366,7 @@ fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() 
     let retry = Command::new(cli())
         .current_dir(&root)
         .env("DAG_ML_FLAKY_MARKER_DIR", &retry_marker_dir)
+        .env("DAG_ML_PROCESS_LIFECYCLE_MARKER_DIR", &retry_lifecycle_dir)
         .env("DAG_ML_FLAKY_SLEEP_SECONDS", "2.0")
         .args([
             "run-process-campaign",
@@ -1397,6 +1404,12 @@ fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() 
             && retry_stdout.contains("4 data handle(s)"),
         "unexpected flaky retry output: {}",
         retry_stdout
+    );
+    assert!(
+        lifecycle_marker_count(&retry_lifecycle_dir, "init") >= 2
+            && lifecycle_marker_count(&retry_lifecycle_dir, "close") >= 2,
+        "expected persistent worker init/close lifecycle markers in {}",
+        retry_lifecycle_dir.display()
     );
 
     let invalid_timeout = Command::new(cli())
@@ -1437,6 +1450,7 @@ fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() 
 
     let _ = std::fs::remove_dir_all(timeout_marker_dir);
     let _ = std::fs::remove_dir_all(retry_marker_dir);
+    let _ = std::fs::remove_dir_all(retry_lifecycle_dir);
 }
 
 #[test]
@@ -1492,6 +1506,22 @@ fn unique_suffix() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock is after UNIX_EPOCH")
         .as_nanos()
+}
+
+fn lifecycle_marker_count(dir: &Path, prefix: &str) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with(prefix))
+                })
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 fn python_has_sklearn(root: &Path) -> bool {

@@ -31,6 +31,8 @@ const PROCESS_ADAPTER_MODE_ONE_SHOT: &str = "one_shot";
 const PROCESS_ADAPTER_MODE_JSONL: &str = "jsonl";
 const PROCESS_ADAPTER_CAP_NODE_TASK_JSON: &str = "node_task_json_v1";
 const PROCESS_ADAPTER_CAP_NODE_RESULT_JSON: &str = "node_result_json_v1";
+const PROCESS_ADAPTER_CAP_CONTROL_FRAMES: &str = "control_frames_v1";
+const PROCESS_ADAPTER_FRAME_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -1951,6 +1953,7 @@ struct ProcessAdapterRuntimeConfig {
     process_workers: usize,
     timeout: Duration,
     retries: usize,
+    control_frames: bool,
 }
 
 struct PersistentProcessRuntimeController {
@@ -1964,6 +1967,8 @@ struct PersistentProcessSession {
     child: Child,
     stdin: ChildStdin,
     stdout_rx: Receiver<PersistentReadEvent>,
+    control_frames: bool,
+    close_timeout: Duration,
 }
 
 enum PersistentReadEvent {
@@ -1975,6 +1980,59 @@ enum PersistentReadEvent {
 struct PersistentWorkerFailure {
     restartable: bool,
     message: String,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ProcessAdapterRequestFrame<'a> {
+    Init {
+        schema_version: u32,
+        controller_id: &'a str,
+        worker_index: usize,
+        worker_count: usize,
+    },
+    Task {
+        schema_version: u32,
+        task: &'a NodeTask,
+    },
+    Close {
+        schema_version: u32,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ProcessAdapterResponseFrame {
+    Ack {
+        schema_version: u32,
+        status: String,
+    },
+    Result {
+        schema_version: u32,
+        result: Box<NodeResult>,
+    },
+    Error {
+        schema_version: u32,
+        error: ProcessAdapterErrorFrame,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessAdapterErrorFrame {
+    code: String,
+    message: String,
+    #[serde(default)]
+    retryable: bool,
+}
+
+impl ProcessAdapterResponseFrame {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Ack { .. } => "ack",
+            Self::Result { .. } => "result",
+            Self::Error { .. } => "error",
+        }
+    }
 }
 
 impl PersistentWorkerFailure {
@@ -1999,6 +2057,8 @@ impl PersistentProcessSession {
         adapter: &Path,
         worker_index: usize,
         worker_count: usize,
+        control_frames: bool,
+        timeout: Duration,
     ) -> dag_ml_core::Result<Self> {
         let mut command = process_adapter_command(adapter, ProcessAdapterMode::Jsonl);
         command.stdin(Stdio::piped());
@@ -2023,11 +2083,71 @@ impl PersistentProcessSession {
                 "controller `{controller_id}` persistent adapter worker {worker_index}/{worker_count} stdout was not available"
             ))
         })?;
-        Ok(Self {
+        let mut session = Self {
             child,
             stdin,
             stdout_rx: spawn_persistent_stdout_reader(stdout),
-        })
+            control_frames,
+            close_timeout: timeout.min(Duration::from_millis(250)),
+        };
+        if control_frames {
+            session
+                .init(controller_id, adapter, worker_index, worker_count, timeout)
+                .map_err(|failure| {
+                    session.terminate();
+                    DagMlError::RuntimeValidation(format!(
+                        "controller `{controller_id}` failed to initialize persistent adapter `{}` worker {worker_index}/{worker_count}: {}",
+                        adapter.display(),
+                        failure.message
+                    ))
+                })?;
+        }
+        Ok(session)
+    }
+
+    fn init(
+        &mut self,
+        controller_id: &ControllerId,
+        adapter: &Path,
+        worker_index: usize,
+        worker_count: usize,
+        timeout: Duration,
+    ) -> Result<(), PersistentWorkerFailure> {
+        self.write_json_line(
+            controller_id,
+            ProcessAdapterRequestFrame::Init {
+                schema_version: PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
+                controller_id: controller_id.as_str(),
+                worker_index,
+                worker_count,
+            },
+        )?;
+        match self.read_response_frame(controller_id, adapter, timeout)? {
+            ProcessAdapterResponseFrame::Ack {
+                schema_version,
+                status,
+            } if schema_version == PROCESS_ADAPTER_FRAME_SCHEMA_VERSION
+                && status == "initialized" =>
+            {
+                Ok(())
+            }
+            ProcessAdapterResponseFrame::Error {
+                schema_version,
+                error,
+            } if schema_version == PROCESS_ADAPTER_FRAME_SCHEMA_VERSION => {
+                Err(PersistentWorkerFailure {
+                    restartable: error.retryable,
+                    message: format!(
+                        "adapter init returned error `{}`: {}",
+                        error.code, error.message
+                    ),
+                })
+            }
+            frame => Err(PersistentWorkerFailure::terminal(format!(
+                "adapter init returned unexpected frame `{}`",
+                frame.kind()
+            ))),
+        }
     }
 
     fn invoke_once(
@@ -2037,26 +2157,91 @@ impl PersistentProcessSession {
         task: &NodeTask,
         timeout: Duration,
     ) -> Result<NodeResult, PersistentWorkerFailure> {
-        serde_json::to_writer(&mut self.stdin, task).map_err(|err| {
-            PersistentWorkerFailure::terminal(format!(
-                "controller `{controller_id}` failed to serialize persistent task JSON: {err}"
-            ))
-        })?;
-        self.stdin.write_all(b"\n").map_err(|err| {
-            PersistentWorkerFailure::restartable(format!(
-                "controller `{controller_id}` failed to write persistent task JSON: {err}"
-            ))
-        })?;
-        self.stdin.flush().map_err(|err| {
-            PersistentWorkerFailure::restartable(format!(
-                "controller `{controller_id}` failed to flush persistent task JSON: {err}"
-            ))
-        })?;
+        if self.control_frames {
+            return self.invoke_framed(controller_id, adapter, task, timeout);
+        }
+
+        self.write_json_line(controller_id, task)?;
 
         let line = self.read_response_line(controller_id, adapter, timeout)?;
         serde_json::from_str(&line).map_err(|err| {
             PersistentWorkerFailure::terminal(format!(
                 "controller `{controller_id}` persistent adapter `{}` returned invalid NodeResult JSON: {err}",
+                adapter.display()
+            ))
+        })
+    }
+
+    fn invoke_framed(
+        &mut self,
+        controller_id: &ControllerId,
+        adapter: &Path,
+        task: &NodeTask,
+        timeout: Duration,
+    ) -> Result<NodeResult, PersistentWorkerFailure> {
+        self.write_json_line(
+            controller_id,
+            ProcessAdapterRequestFrame::Task {
+                schema_version: PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
+                task,
+            },
+        )?;
+        match self.read_response_frame(controller_id, adapter, timeout)? {
+            ProcessAdapterResponseFrame::Result {
+                schema_version,
+                result,
+            } if schema_version == PROCESS_ADAPTER_FRAME_SCHEMA_VERSION => Ok(*result),
+            ProcessAdapterResponseFrame::Error {
+                schema_version,
+                error,
+            } if schema_version == PROCESS_ADAPTER_FRAME_SCHEMA_VERSION => {
+                Err(PersistentWorkerFailure {
+                    restartable: error.retryable,
+                    message: format!(
+                        "adapter task returned error `{}`: {}",
+                        error.code, error.message
+                    ),
+                })
+            }
+            frame => Err(PersistentWorkerFailure::terminal(format!(
+                "adapter task returned unexpected frame `{}`",
+                frame.kind()
+            ))),
+        }
+    }
+
+    fn write_json_line<T: Serialize>(
+        &mut self,
+        controller_id: &ControllerId,
+        value: T,
+    ) -> Result<(), PersistentWorkerFailure> {
+        serde_json::to_writer(&mut self.stdin, &value).map_err(|err| {
+            PersistentWorkerFailure::terminal(format!(
+                "controller `{controller_id}` failed to serialize persistent adapter JSON: {err}"
+            ))
+        })?;
+        self.stdin.write_all(b"\n").map_err(|err| {
+            PersistentWorkerFailure::restartable(format!(
+                "controller `{controller_id}` failed to write persistent adapter JSON: {err}"
+            ))
+        })?;
+        self.stdin.flush().map_err(|err| {
+            PersistentWorkerFailure::restartable(format!(
+                "controller `{controller_id}` failed to flush persistent adapter JSON: {err}"
+            ))
+        })
+    }
+
+    fn read_response_frame(
+        &mut self,
+        controller_id: &ControllerId,
+        adapter: &Path,
+        timeout: Duration,
+    ) -> Result<ProcessAdapterResponseFrame, PersistentWorkerFailure> {
+        let line = self.read_response_line(controller_id, adapter, timeout)?;
+        serde_json::from_str(&line).map_err(|err| {
+            PersistentWorkerFailure::terminal(format!(
+                "controller `{controller_id}` persistent adapter `{}` returned invalid response frame JSON: {err}",
                 adapter.display()
             ))
         })
@@ -2109,10 +2294,32 @@ impl PersistentProcessSession {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+
+    fn close_gracefully(&mut self) {
+        if !self.control_frames {
+            return;
+        }
+        let Ok(controller_id) = ControllerId::new("controller:process.close") else {
+            return;
+        };
+        if self
+            .write_json_line(
+                &controller_id,
+                ProcessAdapterRequestFrame::Close {
+                    schema_version: PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
+                },
+            )
+            .is_err()
+        {
+            return;
+        }
+        let _ = self.stdout_rx.recv_timeout(self.close_timeout);
+    }
 }
 
 impl Drop for PersistentProcessSession {
     fn drop(&mut self) {
+        self.close_gracefully();
         self.terminate();
     }
 }
@@ -2246,6 +2453,8 @@ impl RuntimeController for PersistentProcessRuntimeController {
                             &self.adapter,
                             worker_index,
                             self.config.process_workers,
+                            self.config.control_frames,
+                            self.config.timeout,
                         )
                         .map_err(|restart_err| {
                             DagMlError::RuntimeValidation(format!(
@@ -2499,10 +2708,21 @@ fn process_runtime_controllers_for_mode(
 fn persistent_process_runtime_controllers(
     plan: &dag_ml_core::ExecutionPlan,
     adapter: PathBuf,
-    config: ProcessAdapterRuntimeConfig,
+    mut config: ProcessAdapterRuntimeConfig,
 ) -> Result<RuntimeControllerRegistry> {
     validate_process_runtime_config(true, &config)?;
-    validate_process_adapter_description(&adapter, ProcessAdapterMode::Jsonl)?;
+    let description = validate_process_adapter_description(&adapter, ProcessAdapterMode::Jsonl)?;
+    if !description
+        .capabilities
+        .contains(PROCESS_ADAPTER_CAP_CONTROL_FRAMES)
+    {
+        bail!(
+            "adapter `{}` is missing required persistent capability `{}`",
+            adapter.display(),
+            PROCESS_ADAPTER_CAP_CONTROL_FRAMES
+        );
+    }
+    config.control_frames = true;
     let mut registry = RuntimeControllerRegistry::new();
     for controller_id in plan.controller_manifests.keys() {
         let mut sessions = Vec::with_capacity(config.process_workers);
@@ -2512,6 +2732,8 @@ fn persistent_process_runtime_controllers(
                 &adapter,
                 worker_index,
                 config.process_workers,
+                config.control_frames,
+                config.timeout,
             )?);
         }
         registry.register(Box::new(PersistentProcessRuntimeController {
@@ -2536,6 +2758,7 @@ fn process_adapter_runtime_config(
         process_workers,
         timeout: Duration::from_millis(process_timeout_ms),
         retries: process_retries,
+        control_frames: false,
     })
 }
 
