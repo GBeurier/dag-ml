@@ -2318,6 +2318,143 @@ impl ParallelScheduler {
         Ok(results)
     }
 
+    pub fn execute_campaign_phase_with_data_provider_and_artifact_store(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        artifact_store: &mut InMemoryArtifactStore,
+        ctx: &mut RunContext,
+        phase: Phase,
+    ) -> Result<Vec<NodeResult>> {
+        plan.validate()?;
+        let mut results = Vec::new();
+        let fold_ids = if phase == Phase::FitCv {
+            plan.fold_set
+                .as_ref()
+                .map(|fold_set| {
+                    fold_set
+                        .folds
+                        .iter()
+                        .map(|fold| Some(fold.fold_id.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![None])
+        } else {
+            vec![None]
+        };
+        for variant in &plan.variants {
+            if ctx
+                .variant_id
+                .as_ref()
+                .is_some_and(|requested| requested != &variant.variant_id)
+            {
+                continue;
+            }
+            for fold_id in &fold_ids {
+                let seed_root = variant.seed.or(ctx.root_seed);
+                results.extend(self.execute_phase_scope(
+                    plan,
+                    controllers,
+                    ctx,
+                    PhaseScope {
+                        phase,
+                        variant_id: Some(variant.variant_id.clone()),
+                        variant: Some(VariantExecutionSpec::from_plan(variant)),
+                        fold_id: fold_id.clone(),
+                        seed_root,
+                    },
+                    PhaseScopeResources {
+                        data_provider: Some(data_provider),
+                        artifact_store: Some(&mut *artifact_store),
+                        ..Default::default()
+                    },
+                )?);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn execute_bundle_replay(
+        &self,
+        replay: BundleReplayExecution<'_>,
+        ctx: &mut RunContext,
+    ) -> Result<Vec<NodeResult>> {
+        replay.bundle.validate_against_plan(replay.plan)?;
+        replay
+            .replay_request
+            .validate_for_bundle_with_prediction_cache_store(
+                replay.bundle,
+                replay.prediction_cache_store.is_some(),
+            )?;
+        replay
+            .bundle
+            .validate_replay_envelopes(replay.data_envelopes)?;
+        let prediction_cache_contracts = if replay.replay_request.phase == Phase::Refit {
+            Some(replay_prediction_cache_contracts(replay.bundle)?)
+        } else {
+            None
+        };
+        if replay.replay_request.phase == Phase::Refit {
+            preload_replay_prediction_cache_store(
+                replay.bundle,
+                replay.prediction_cache_store,
+                ctx,
+            )?;
+        }
+        let replay_artifacts = materialize_replay_artifact_handles(
+            replay.plan,
+            replay.bundle,
+            replay.replay_request,
+            replay.artifact_store,
+            ctx,
+        )?;
+        let selected_variant = replay
+            .bundle
+            .selected_variant_id
+            .as_ref()
+            .map(|selected| {
+                replay
+                    .plan
+                    .variants
+                    .iter()
+                    .find(|variant| &variant.variant_id == selected)
+                    .map(VariantExecutionSpec::from_plan)
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "bundle `{}` selected unknown variant `{selected}`",
+                            replay.bundle.bundle_id
+                        ))
+                    })
+            })
+            .transpose()?;
+        let seed_root = selected_variant
+            .as_ref()
+            .and_then(|variant| variant.seed)
+            .or(ctx.root_seed);
+
+        self.execute_phase_scope(
+            replay.plan,
+            replay.controllers,
+            ctx,
+            PhaseScope {
+                phase: replay.replay_request.phase,
+                variant_id: replay.bundle.selected_variant_id.clone(),
+                variant: selected_variant,
+                fold_id: None,
+                seed_root,
+            },
+            PhaseScopeResources {
+                data_provider: Some(replay.data_provider),
+                replay_artifact_handles: Some(&replay_artifacts),
+                replay_bundle_id: Some(&replay.bundle.bundle_id),
+                prediction_cache_store: replay.prediction_cache_store,
+                prediction_cache_contracts: prediction_cache_contracts.as_ref(),
+                ..Default::default()
+            },
+        )
+    }
+
     fn execute_phase_scope(
         &self,
         plan: &ExecutionPlan,
@@ -5191,6 +5328,56 @@ mod tests {
     }
 
     #[test]
+    fn parallel_campaign_refit_captures_emitted_artifact_handles() {
+        let plan = fixture_plan("plan:parallel.refit.artifact.capture");
+        let provider = replay_data_provider();
+        let mut artifact_store = InMemoryArtifactStore::new();
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(ReplayMockController {
+                id: ControllerId::new("controller:transform.mock").unwrap(),
+                handle: 11,
+                require_artifact: false,
+                emit_prediction: false,
+                emit_refit_artifact: false,
+            }))
+            .unwrap();
+        controllers
+            .register(Box::new(ReplayMockController {
+                id: ControllerId::new("controller:model.mock").unwrap(),
+                handle: 22,
+                require_artifact: false,
+                emit_prediction: true,
+                emit_refit_artifact: true,
+            }))
+            .unwrap();
+        let mut ctx = RunContext::new(
+            RunId::new("run:parallel.refit.artifact.capture").unwrap(),
+            Some(11),
+        );
+        ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+
+        let results = ParallelScheduler::new(2)
+            .unwrap()
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                &plan,
+                &controllers,
+                &provider,
+                &mut artifact_store,
+                &mut ctx,
+                Phase::Refit,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(artifact_store.len(), 1);
+        assert_eq!(
+            artifact_store.refit_artifacts()[0].artifact.id.as_str(),
+            "artifact:model:base:refit"
+        );
+    }
+
+    #[test]
     fn node_result_validation_rejects_external_conformance_mismatches() {
         let plan = build_execution_plan(
             "plan:result.validation",
@@ -5563,6 +5750,34 @@ mod tests {
             .any(|record| record.node_id.as_str() == "model:base"
                 && record.phase == Phase::Predict
                 && record.variant_id == bundle.selected_variant_id));
+
+        let provider = replay_data_provider();
+        let mut ctx = RunContext::new(RunId::new("run:parallel.replay.predict").unwrap(), Some(11));
+        let results = ParallelScheduler::new(2)
+            .unwrap()
+            .execute_bundle_replay(
+                BundleReplayExecution {
+                    plan: &plan,
+                    bundle: &bundle,
+                    replay_request: &request,
+                    prediction_cache_store: None,
+                    controllers: &controllers,
+                    data_provider: &provider,
+                    artifact_store: &store,
+                    data_envelopes: &envelopes,
+                },
+                &mut ctx,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(provider.handle_records().len(), 1);
+        assert_eq!(provider.view_records().len(), 1);
+        assert_eq!(
+            provider.view_records()[0].view.partition,
+            DataRequestPartition::Predict
+        );
+        assert_eq!(ctx.prediction_store.blocks().len(), 1);
     }
 
     #[test]

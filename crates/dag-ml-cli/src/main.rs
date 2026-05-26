@@ -9,20 +9,21 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use dag_ml_core::{
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
     build_prediction_cache_payload, build_prediction_cache_record, oof_campaign_fingerprint,
     select_candidate, select_candidate_groups, validate_oof_campaign, ArtifactId, BundleId,
     BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
-    BundlePredictionRequirement, CampaignSpec, CandidateScore, ColumnarPredictionCacheStore,
-    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataRequestPartition,
-    ExecutionBundle, ExternalDataPlanEnvelope, FilePredictionCacheStore, GraphSpec, HandleKind,
-    HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
-    MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock,
-    PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId,
-    RuntimeController, RuntimeControllerRegistry, RuntimePredictionCacheStore, SampleId,
-    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
+    BundlePredictionRequirement, BundleReplayExecution, CampaignSpec, CandidateScore,
+    ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
+    DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, FilePredictionCacheStore,
+    GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId,
+    LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, ParallelScheduler,
+    Phase, PredictionBlock, PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest,
+    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
+    RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric, SelectionPolicy,
+    SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,108 @@ const PROCESS_ADAPTER_CAP_NODE_TASK_JSON: &str = "node_task_json_v1";
 const PROCESS_ADAPTER_CAP_NODE_RESULT_JSON: &str = "node_result_json_v1";
 const PROCESS_ADAPTER_CAP_CONTROL_FRAMES: &str = "control_frames_v1";
 const PROCESS_ADAPTER_FRAME_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliScheduler {
+    Sequential,
+    Parallel,
+}
+
+impl CliScheduler {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Sequential => "sequential",
+            Self::Parallel => "parallel",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SchedulerConfig {
+    scheduler: CliScheduler,
+    workers: usize,
+}
+
+impl SchedulerConfig {
+    fn new(scheduler: CliScheduler, workers: usize) -> Result<Self> {
+        if workers == 0 {
+            bail!("--scheduler-workers must be at least 1");
+        }
+        Ok(Self { scheduler, workers })
+    }
+}
+
+fn execute_campaign_phase_with_scheduler(
+    scheduler: SchedulerConfig,
+    plan: &dag_ml_core::ExecutionPlan,
+    controllers: &RuntimeControllerRegistry,
+    data_provider: &dyn RuntimeDataProvider,
+    ctx: &mut RunContext,
+    phase: Phase,
+) -> Result<Vec<NodeResult>> {
+    match scheduler.scheduler {
+        CliScheduler::Sequential => Ok(SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                plan,
+                controllers,
+                data_provider,
+                ctx,
+                phase,
+            )?),
+        CliScheduler::Parallel => Ok(ParallelScheduler::new(scheduler.workers)?
+            .execute_campaign_phase_with_data_provider(
+                plan,
+                controllers,
+                data_provider,
+                ctx,
+                phase,
+            )?),
+    }
+}
+
+fn execute_campaign_phase_with_artifact_store_and_scheduler(
+    scheduler: SchedulerConfig,
+    plan: &dag_ml_core::ExecutionPlan,
+    controllers: &RuntimeControllerRegistry,
+    data_provider: &dyn RuntimeDataProvider,
+    artifact_store: &mut InMemoryArtifactStore,
+    ctx: &mut RunContext,
+    phase: Phase,
+) -> Result<Vec<NodeResult>> {
+    match scheduler.scheduler {
+        CliScheduler::Sequential => Ok(SequentialScheduler
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                plan,
+                controllers,
+                data_provider,
+                artifact_store,
+                ctx,
+                phase,
+            )?),
+        CliScheduler::Parallel => Ok(ParallelScheduler::new(scheduler.workers)?
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                plan,
+                controllers,
+                data_provider,
+                artifact_store,
+                ctx,
+                phase,
+            )?),
+    }
+}
+
+fn execute_bundle_replay_with_scheduler(
+    scheduler: SchedulerConfig,
+    replay: BundleReplayExecution<'_>,
+    ctx: &mut RunContext,
+) -> Result<Vec<NodeResult>> {
+    match scheduler.scheduler {
+        CliScheduler::Sequential => Ok(SequentialScheduler.execute_bundle_replay(replay, ctx)?),
+        CliScheduler::Parallel => {
+            Ok(ParallelScheduler::new(scheduler.workers)?.execute_bundle_replay(replay, ctx)?)
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -111,6 +214,10 @@ enum Command {
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
     },
     RunProcessCampaign {
         #[arg(long)]
@@ -137,6 +244,10 @@ enum Command {
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
     },
     SelectCandidates {
         #[arg(long)]
@@ -183,6 +294,10 @@ enum Command {
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
     },
     RunProcessRefitBundle {
         #[arg(long)]
@@ -215,6 +330,10 @@ enum Command {
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
     },
     RunProcessCvRefitBundle {
         #[arg(long)]
@@ -251,6 +370,10 @@ enum Command {
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
     },
     RunProcessCvRefitReplay {
         #[arg(long)]
@@ -281,6 +404,10 @@ enum Command {
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
     },
     RunProcessRefitReplay {
         #[arg(long)]
@@ -309,6 +436,10 @@ enum Command {
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
     },
     ValidateBundle {
         #[arg(long)]
@@ -373,6 +504,10 @@ enum Command {
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
     },
     RunProcessReplay {
         #[arg(long)]
@@ -407,6 +542,10 @@ enum Command {
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
     },
 }
 
@@ -540,6 +679,8 @@ fn main() -> Result<()> {
             plan_id,
             run_id,
             root_seed,
+            scheduler,
+            scheduler_workers,
         } => {
             let graph_spec: GraphSpec = read_json(&graph, "graph")?;
             let campaign_spec: CampaignSpec = read_json(&campaign, "campaign")?;
@@ -552,22 +693,25 @@ fn main() -> Result<()> {
             let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
             let runtime_controllers = mock_runtime_controllers(&plan)?;
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
-            let results = SequentialScheduler
-                .execute_campaign_phase_with_data_provider(
-                    &plan,
-                    &runtime_controllers,
-                    &data_provider,
-                    &mut ctx,
-                    Phase::FitCv,
-                )
-                .with_context(|| "mock campaign execution failed")?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let results = execute_campaign_phase_with_scheduler(
+                scheduler,
+                &plan,
+                &runtime_controllers,
+                &data_provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .with_context(|| "mock campaign execution failed")?;
             println!(
-                "mock campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s)",
+                "mock campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), scheduler={}, scheduler worker(s)={}",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
                 data_provider.handle_records().len(),
-                data_provider.view_records().len()
+                data_provider.view_records().len(),
+                scheduler.scheduler.label(),
+                scheduler.workers
             );
         }
         Command::RunProcessCampaign {
@@ -583,6 +727,8 @@ fn main() -> Result<()> {
             plan_id,
             run_id,
             root_seed,
+            scheduler,
+            scheduler_workers,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
@@ -596,22 +742,25 @@ fn main() -> Result<()> {
             let runtime_controllers =
                 process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
-            let results = SequentialScheduler
-                .execute_campaign_phase_with_data_provider(
-                    &plan,
-                    &runtime_controllers,
-                    &data_provider,
-                    &mut ctx,
-                    Phase::FitCv,
-                )
-                .with_context(|| "process campaign execution failed")?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let results = execute_campaign_phase_with_scheduler(
+                scheduler,
+                &plan,
+                &runtime_controllers,
+                &data_provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .with_context(|| "process campaign execution failed")?;
             println!(
-                "process campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), configured process worker(s)={}, observed process worker(s)={}",
+                "process campaign run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), scheduler={}, scheduler worker(s)={}, configured process worker(s)={}, observed process worker(s)={}",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
                 data_provider.handle_records().len(),
                 data_provider.view_records().len(),
+                scheduler.scheduler.label(),
+                scheduler.workers,
                 configured_persistent_process_workers(persistent, process_workers),
                 observed_persistent_process_worker_count(persistent, &ctx)
             );
@@ -668,12 +817,15 @@ fn main() -> Result<()> {
             plan_id,
             run_id,
             root_seed,
+            scheduler,
+            scheduler_workers,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
             let runtime_controllers = mock_runtime_controllers_with_refit_artifacts(&plan)?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -683,6 +835,7 @@ fn main() -> Result<()> {
                 selections: BTreeMap::new(),
                 run_id,
                 root_seed,
+                scheduler,
             })
             .with_context(|| "mock refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
@@ -703,6 +856,8 @@ fn main() -> Result<()> {
             plan_id,
             run_id,
             root_seed,
+            scheduler,
+            scheduler_workers,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
@@ -715,6 +870,7 @@ fn main() -> Result<()> {
             )?;
             let runtime_controllers =
                 process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -724,6 +880,7 @@ fn main() -> Result<()> {
                 selections: BTreeMap::new(),
                 run_id,
                 root_seed,
+                scheduler,
             })
             .with_context(|| "process refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
@@ -746,6 +903,8 @@ fn main() -> Result<()> {
             plan_id,
             run_id,
             root_seed,
+            scheduler,
+            scheduler_workers,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
@@ -759,6 +918,7 @@ fn main() -> Result<()> {
             let runtime_controllers =
                 process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
             let selections = read_selection_decisions(selections.as_ref())?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
             let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -768,15 +928,18 @@ fn main() -> Result<()> {
                 selections,
                 run_id,
                 root_seed,
+                scheduler,
             })
             .with_context(|| "process CV+refit bundle capture failed")?;
             println!(
-                "process cv refit bundle run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} captured artifact handle(s), {} prediction cache(s), configured process worker(s)={}, observed process worker(s)={}",
+                "process cv refit bundle run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} captured artifact handle(s), {} prediction cache(s), scheduler={}, scheduler worker(s)={}, configured process worker(s)={}, observed process worker(s)={}",
                 captured.fit_cv_result_count,
                 captured.fit_cv_oof_prediction_block_count,
                 captured.refit_result_count,
                 captured.artifact_store.len(),
                 captured.bundle.prediction_caches.len(),
+                scheduler.scheduler.label(),
+                scheduler.workers,
                 configured_persistent_process_workers(persistent, process_workers),
                 if persistent {
                     captured.observed_process_worker_count
@@ -812,6 +975,8 @@ fn main() -> Result<()> {
             plan_id,
             run_id,
             root_seed,
+            scheduler,
+            scheduler_workers,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
@@ -825,6 +990,7 @@ fn main() -> Result<()> {
             let runtime_controllers =
                 persistent_process_runtime_controllers(&plan, adapter, process_config)?;
             let selections = read_selection_decisions(selections.as_ref())?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
             let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -834,6 +1000,7 @@ fn main() -> Result<()> {
                 selections,
                 run_id: run_id.clone(),
                 root_seed,
+                scheduler,
             })
             .with_context(|| "process CV+refit capture before replay failed")?;
             let envelope_map = replay_envelope_map_for_bundle(&captured.bundle, &envelope);
@@ -844,23 +1011,23 @@ fn main() -> Result<()> {
             };
             let mut replay_ctx =
                 RunContext::new(RunId::new(format!("{run_id}:predict"))?, Some(root_seed));
-            let replay_results = SequentialScheduler
-                .execute_bundle_replay(
-                    dag_ml_core::BundleReplayExecution {
-                        plan: &plan,
-                        bundle: &captured.bundle,
-                        replay_request: &replay_request,
-                        prediction_cache_store: None,
-                        controllers: &runtime_controllers,
-                        data_provider: &data_provider,
-                        artifact_store: &captured.artifact_store,
-                        data_envelopes: &envelope_map,
-                    },
-                    &mut replay_ctx,
-                )
-                .with_context(|| "process replay after CV+refit capture failed")?;
+            let replay_results = execute_bundle_replay_with_scheduler(
+                scheduler,
+                BundleReplayExecution {
+                    plan: &plan,
+                    bundle: &captured.bundle,
+                    replay_request: &replay_request,
+                    prediction_cache_store: None,
+                    controllers: &runtime_controllers,
+                    data_provider: &data_provider,
+                    artifact_store: &captured.artifact_store,
+                    data_envelopes: &envelope_map,
+                },
+                &mut replay_ctx,
+            )
+            .with_context(|| "process replay after CV+refit capture failed")?;
             println!(
-                "process cv refit replay run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s), {} prediction cache(s), configured process worker(s)={}, observed process worker(s)={}, replay observed process worker(s)={}",
+                "process cv refit replay run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s), {} prediction cache(s), scheduler={}, scheduler worker(s)={}, configured process worker(s)={}, observed process worker(s)={}, replay observed process worker(s)={}",
                 captured.fit_cv_result_count,
                 captured.fit_cv_oof_prediction_block_count,
                 captured.refit_result_count,
@@ -868,6 +1035,8 @@ fn main() -> Result<()> {
                 replay_ctx.prediction_store.blocks().len(),
                 captured.artifact_store.len(),
                 captured.bundle.prediction_caches.len(),
+                scheduler.scheduler.label(),
+                scheduler.workers,
                 process_workers,
                 captured.observed_process_worker_count,
                 observed_process_worker_count(&replay_ctx)
@@ -887,6 +1056,8 @@ fn main() -> Result<()> {
             plan_id,
             run_id,
             root_seed,
+            scheduler,
+            scheduler_workers,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
@@ -899,6 +1070,7 @@ fn main() -> Result<()> {
             )?;
             let runtime_controllers =
                 persistent_process_runtime_controllers(&plan, adapter, process_config)?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -908,6 +1080,7 @@ fn main() -> Result<()> {
                 selections: BTreeMap::new(),
                 run_id: run_id.clone(),
                 root_seed,
+                scheduler,
             })
             .with_context(|| "process refit capture before replay failed")?;
             let envelope_map = replay_envelope_map_for_bundle(&captured.bundle, &envelope);
@@ -918,27 +1091,29 @@ fn main() -> Result<()> {
             };
             let mut replay_ctx =
                 RunContext::new(RunId::new(format!("{run_id}:predict"))?, Some(root_seed));
-            let replay_results = SequentialScheduler
-                .execute_bundle_replay(
-                    dag_ml_core::BundleReplayExecution {
-                        plan: &plan,
-                        bundle: &captured.bundle,
-                        replay_request: &replay_request,
-                        prediction_cache_store: None,
-                        controllers: &runtime_controllers,
-                        data_provider: &data_provider,
-                        artifact_store: &captured.artifact_store,
-                        data_envelopes: &envelope_map,
-                    },
-                    &mut replay_ctx,
-                )
-                .with_context(|| "process replay after refit capture failed")?;
+            let replay_results = execute_bundle_replay_with_scheduler(
+                scheduler,
+                BundleReplayExecution {
+                    plan: &plan,
+                    bundle: &captured.bundle,
+                    replay_request: &replay_request,
+                    prediction_cache_store: None,
+                    controllers: &runtime_controllers,
+                    data_provider: &data_provider,
+                    artifact_store: &captured.artifact_store,
+                    data_envelopes: &envelope_map,
+                },
+                &mut replay_ctx,
+            )
+            .with_context(|| "process replay after refit capture failed")?;
             println!(
-                "process refit replay run: {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s), configured process worker(s)={}, observed process worker(s)={}, replay observed process worker(s)={}",
+                "process refit replay run: {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s), scheduler={}, scheduler worker(s)={}, configured process worker(s)={}, observed process worker(s)={}, replay observed process worker(s)={}",
                 captured.refit_result_count,
                 replay_results.len(),
                 replay_ctx.prediction_store.blocks().len(),
                 captured.artifact_store.len(),
+                scheduler.scheduler.label(),
+                scheduler.workers,
                 process_workers,
                 captured.observed_process_worker_count,
                 observed_process_worker_count(&replay_ctx)
@@ -1071,6 +1246,8 @@ fn main() -> Result<()> {
             plan_id,
             run_id,
             root_seed,
+            scheduler,
+            scheduler_workers,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
@@ -1096,25 +1273,26 @@ fn main() -> Result<()> {
             let artifact_store = mock_artifact_store(&plan, &bundle)?;
             let runtime_controllers = mock_runtime_controllers(&plan)?;
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
-            let results = SequentialScheduler
-                .execute_bundle_replay(
-                    dag_ml_core::BundleReplayExecution {
-                        plan: &plan,
-                        bundle: &bundle,
-                        replay_request: &replay_request,
-                        prediction_cache_store: prediction_cache_store
-                            .as_ref()
-                            .map(|store| store as &dyn RuntimePredictionCacheStore),
-                        controllers: &runtime_controllers,
-                        data_provider: &data_provider,
-                        artifact_store: &artifact_store,
-                        data_envelopes: &envelope_map,
-                    },
-                    &mut ctx,
-                )
-                .with_context(|| "mock replay execution failed")?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let results = execute_bundle_replay_with_scheduler(
+                scheduler,
+                BundleReplayExecution {
+                    plan: &plan,
+                    bundle: &bundle,
+                    replay_request: &replay_request,
+                    prediction_cache_store: prediction_cache_store
+                        .as_ref()
+                        .map(|store| store as &dyn RuntimePredictionCacheStore),
+                    controllers: &runtime_controllers,
+                    data_provider: &data_provider,
+                    artifact_store: &artifact_store,
+                    data_envelopes: &envelope_map,
+                },
+                &mut ctx,
+            )
+            .with_context(|| "mock replay execution failed")?;
             println!(
-                "mock replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s), {} prediction cache handle(s)",
+                "mock replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s), {} prediction cache handle(s), scheduler={}, scheduler worker(s)={}",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
@@ -1124,7 +1302,9 @@ fn main() -> Result<()> {
                 prediction_cache_store
                     .as_ref()
                     .map(CliPredictionCacheStore::materialization_record_count)
-                    .unwrap_or(0)
+                    .unwrap_or(0),
+                scheduler.scheduler.label(),
+                scheduler.workers
             );
         }
         Command::RunProcessReplay {
@@ -1144,6 +1324,8 @@ fn main() -> Result<()> {
             plan_id,
             run_id,
             root_seed,
+            scheduler,
+            scheduler_workers,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
@@ -1175,25 +1357,26 @@ fn main() -> Result<()> {
             let runtime_controllers =
                 process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
-            let results = SequentialScheduler
-                .execute_bundle_replay(
-                    dag_ml_core::BundleReplayExecution {
-                        plan: &plan,
-                        bundle: &bundle,
-                        replay_request: &replay_request,
-                        prediction_cache_store: prediction_cache_store
-                            .as_ref()
-                            .map(|store| store as &dyn RuntimePredictionCacheStore),
-                        controllers: &runtime_controllers,
-                        data_provider: &data_provider,
-                        artifact_store: &artifact_store,
-                        data_envelopes: &envelope_map,
-                    },
-                    &mut ctx,
-                )
-                .with_context(|| "process replay execution failed")?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let results = execute_bundle_replay_with_scheduler(
+                scheduler,
+                BundleReplayExecution {
+                    plan: &plan,
+                    bundle: &bundle,
+                    replay_request: &replay_request,
+                    prediction_cache_store: prediction_cache_store
+                        .as_ref()
+                        .map(|store| store as &dyn RuntimePredictionCacheStore),
+                    controllers: &runtime_controllers,
+                    data_provider: &data_provider,
+                    artifact_store: &artifact_store,
+                    data_envelopes: &envelope_map,
+                },
+                &mut ctx,
+            )
+            .with_context(|| "process replay execution failed")?;
             println!(
-                "process replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s), {} prediction cache handle(s), configured process worker(s)={}, observed process worker(s)={}",
+                "process replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s), {} prediction cache handle(s), scheduler={}, scheduler worker(s)={}, configured process worker(s)={}, observed process worker(s)={}",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
@@ -1204,6 +1387,8 @@ fn main() -> Result<()> {
                     .as_ref()
                     .map(CliPredictionCacheStore::materialization_record_count)
                     .unwrap_or(0),
+                scheduler.scheduler.label(),
+                scheduler.workers,
                 configured_persistent_process_workers(persistent, process_workers),
                 observed_persistent_process_worker_count(persistent, &ctx)
             );
@@ -1544,6 +1729,7 @@ struct CapturedRefitBundleInput<'a> {
     selections: BTreeMap<String, SelectionDecision>,
     run_id: String,
     root_seed: u64,
+    scheduler: SchedulerConfig,
 }
 
 struct CapturedRefitBundle {
@@ -1590,16 +1776,16 @@ fn build_bundle_from_captured_refit(
     let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
     ctx.variant_id = Some(selected_variant_id.clone());
 
-    let results = SequentialScheduler
-        .execute_campaign_phase_with_data_provider_and_artifact_store(
-            input.plan,
-            input.runtime_controllers,
-            input.data_provider,
-            &mut artifact_store,
-            &mut ctx,
-            Phase::Refit,
-        )
-        .with_context(|| "refit execution failed")?;
+    let results = execute_campaign_phase_with_artifact_store_and_scheduler(
+        input.scheduler,
+        input.plan,
+        input.runtime_controllers,
+        input.data_provider,
+        &mut artifact_store,
+        &mut ctx,
+        Phase::Refit,
+    )
+    .with_context(|| "refit execution failed")?;
     if artifact_store.is_empty() {
         bail!("refit did not capture any refit artifacts");
     }
@@ -1640,15 +1826,15 @@ fn build_bundle_from_cv_then_captured_refit(
     let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
     ctx.variant_id = Some(selected_variant_id.clone());
 
-    let fit_cv_results = SequentialScheduler
-        .execute_campaign_phase_with_data_provider(
-            input.plan,
-            input.runtime_controllers,
-            input.data_provider,
-            &mut ctx,
-            Phase::FitCv,
-        )
-        .with_context(|| "FIT_CV execution before refit failed")?;
+    let fit_cv_results = execute_campaign_phase_with_scheduler(
+        input.scheduler,
+        input.plan,
+        input.runtime_controllers,
+        input.data_provider,
+        &mut ctx,
+        Phase::FitCv,
+    )
+    .with_context(|| "FIT_CV execution before refit failed")?;
     let fit_cv_lineage_count = ctx.lineage.len();
     let fit_cv_oof_prediction_block_count = ctx
         .prediction_store
@@ -1667,16 +1853,16 @@ fn build_bundle_from_cv_then_captured_refit(
         oof_prediction_cache_payloads(&prediction_requirements, ctx.prediction_store.blocks())?;
     let oof_prediction_summary = oof_prediction_summary(ctx.prediction_store.blocks())?;
 
-    let refit_results = SequentialScheduler
-        .execute_campaign_phase_with_data_provider_and_artifact_store(
-            input.plan,
-            input.runtime_controllers,
-            input.data_provider,
-            &mut artifact_store,
-            &mut ctx,
-            Phase::Refit,
-        )
-        .with_context(|| "refit execution after FIT_CV failed")?;
+    let refit_results = execute_campaign_phase_with_artifact_store_and_scheduler(
+        input.scheduler,
+        input.plan,
+        input.runtime_controllers,
+        input.data_provider,
+        &mut artifact_store,
+        &mut ctx,
+        Phase::Refit,
+    )
+    .with_context(|| "refit execution after FIT_CV failed")?;
     if artifact_store.is_empty() {
         bail!("refit did not capture any refit artifacts");
     }
