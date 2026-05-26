@@ -73,6 +73,8 @@ Implemented:
   preserving deterministic order while preparing executor-level parallelism;
 - deterministic graph parallel-level planner for future node-batch execution
   without changing topological semantics;
+- C ABI exports both compiled execution plans and phase execution schedules as
+  owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate
   selection and stable tie-breaking;
 - refit execution bundle contracts that bind selected variants, selected

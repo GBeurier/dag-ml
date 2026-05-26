@@ -398,6 +398,37 @@ pub unsafe extern "C" fn dagml_execution_plan_build_json(
     }
 }
 
+/// Returns a deterministic phase execution schedule from an `ExecutionPlan`.
+///
+/// # Safety
+///
+/// Input JSON and output ownership follow `dagml_execution_plan_build_json`.
+/// `phase` must point to UTF-8 bytes with one ABI phase name such as `FIT_CV`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_execution_plan_schedule_json(
+    plan_ptr: *const u8,
+    plan_len: usize,
+    phase: DagMlBytesView,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let plan =
+        match parse_json_ptr::<ExecutionPlan>(plan_ptr, plan_len, error_out, "execution plan") {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+    let phase = match parse_phase_view(phase, error_out, "phase") {
+        Ok(phase) => phase,
+        Err(status) => return status,
+    };
+    match plan.campaign_phase_schedule(phase) {
+        Ok(schedule) => write_owned_json(out_json, error_out, &schedule),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
 struct ExecutionPlanBuildJsonArgs {
     graph_ptr: *const u8,
     graph_len: usize,
@@ -1674,6 +1705,27 @@ fn phase_abi_name(phase: Phase) -> &'static str {
     }
 }
 
+unsafe fn parse_phase_view(
+    view: DagMlBytesView,
+    error_out: *mut DagMlString,
+    label: &str,
+) -> Result<Phase, DagMlStatusCode> {
+    let raw = parse_utf8_view(view, error_out, label)?;
+    match raw.as_str() {
+        "COMPILE" => Ok(Phase::Compile),
+        "PLAN" => Ok(Phase::Plan),
+        "FIT_CV" => Ok(Phase::FitCv),
+        "SELECT" => Ok(Phase::Select),
+        "REFIT" => Ok(Phase::Refit),
+        "PREDICT" => Ok(Phase::Predict),
+        "EXPLAIN" => Ok(Phase::Explain),
+        _ => {
+            set_error(error_out, format!("unsupported {label} `{raw}`"));
+            Err(DagMlStatusCode::VALIDATION_ERROR)
+        }
+    }
+}
+
 fn bytes_view(bytes: &[u8]) -> DagMlBytesView {
     DagMlBytesView {
         ptr: bytes.as_ptr(),
@@ -2859,6 +2911,40 @@ mod tests {
         let levels: Vec<Vec<NodeId>> = serde_json::from_slice(json).unwrap();
         assert_eq!(
             levels,
+            vec![
+                vec![NodeId::new("transform:snv").unwrap()],
+                vec![NodeId::new("model:base").unwrap()]
+            ]
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn returns_execution_schedule_over_abi() {
+        let plan = fixture_plan_json();
+        let phase = b"FIT_CV";
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_execution_plan_schedule_json(
+                plan.as_ptr(),
+                plan.len(),
+                bytes_view(phase),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK);
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let schedule: dag_ml_core::PhaseExecutionSchedule = serde_json::from_slice(json).unwrap();
+        assert_eq!(schedule.phase, Phase::FitCv);
+        assert_eq!(schedule.scopes.len(), 4);
+        assert_eq!(
+            schedule.scopes[0].node_levels,
             vec![
                 vec![NodeId::new("transform:snv").unwrap()],
                 vec![NodeId::new("model:base").unwrap()]
