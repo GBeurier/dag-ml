@@ -7,11 +7,11 @@ use dag_ml_core::{
     build_execution_bundle, build_execution_plan, oof_campaign_fingerprint, select_candidate,
     select_candidate_groups, validate_oof_campaign, BundleId, CampaignSpec, CandidateScore,
     ControllerId, ControllerManifest, ControllerRegistry, DagMlError, ExecutionBundle,
-    ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryDataProvider, LineageId,
-    LineageRecord, NodeId, NodeResult, NodeTask, OofCampaign, Phase, PredictionBlock,
-    PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest, RunContext, RunId,
-    RuntimeController, RuntimeControllerRegistry, SampleId, SelectionDecision, SelectionPolicy,
-    SequentialScheduler, VariantId,
+    ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
+    InMemoryDataProvider, LineageId, LineageRecord, NodeId, NodeResult, NodeTask, OofCampaign,
+    Phase, PredictionBlock, PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest,
+    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, SampleId, SelectionDecision,
+    SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -110,6 +110,26 @@ enum Command {
         replay_request: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
+    },
+    RunMockReplay {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        replay_request: PathBuf,
+        #[arg(long = "envelope")]
+        envelopes: Vec<String>,
+        #[arg(long, default_value = "plan:cli.bundle")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.replay")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
     },
 }
 
@@ -323,6 +343,57 @@ fn main() -> Result<()> {
                 envelope_map.len()
             );
         }
+        Command::RunMockReplay {
+            graph,
+            campaign,
+            controllers,
+            bundle,
+            replay_request,
+            envelopes,
+            plan_id,
+            run_id,
+            root_seed,
+        } => {
+            let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let replay_request: ReplayPhaseRequest =
+                read_json(&replay_request, "replay phase request")?;
+            let envelope_map = read_replay_envelopes(&envelopes)?;
+            if envelope_map.is_empty() {
+                bail!("run-mock-replay requires at least one --envelope KEY=PATH argument");
+            }
+
+            let mut data_provider =
+                InMemoryDataProvider::new(ControllerId::new("controller:data.provider")?);
+            for envelope in envelope_map.values() {
+                data_provider.register_envelope(envelope.clone())?;
+            }
+            let artifact_store = mock_artifact_store(&plan, &bundle)?;
+            let runtime_controllers = mock_runtime_controllers(&plan)?;
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
+            let results = SequentialScheduler
+                .execute_bundle_replay(
+                    dag_ml_core::BundleReplayExecution {
+                        plan: &plan,
+                        bundle: &bundle,
+                        replay_request: &replay_request,
+                        controllers: &runtime_controllers,
+                        data_provider: &data_provider,
+                        artifact_store: &artifact_store,
+                        data_envelopes: &envelope_map,
+                    },
+                    &mut ctx,
+                )
+                .with_context(|| "mock replay execution failed")?;
+            println!(
+                "mock replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} artifact handle(s)",
+                results.len(),
+                ctx.lineage.len(),
+                ctx.prediction_store.blocks().len(),
+                data_provider.handle_records().len(),
+                artifact_store.len()
+            );
+        }
     }
 
     Ok(())
@@ -367,6 +438,30 @@ impl RuntimeController for CliMockController {
             }
         }
 
+        if task.phase == Phase::Predict
+            && matches!(task.node_plan.kind, dag_ml_core::NodeKind::Model)
+        {
+            let artifact_handles = task
+                .input_handles
+                .iter()
+                .filter(|(key, _)| key.starts_with("artifact:"))
+                .collect::<Vec<_>>();
+            if artifact_handles.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` did not receive a replay artifact handle",
+                    task.node_plan.node_id
+                )));
+            }
+            for (key, handle) in artifact_handles {
+                if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact) {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received invalid replay artifact handle `{key}`",
+                        task.node_plan.node_id
+                    )));
+                }
+            }
+        }
+
         let output = HandleRef {
             handle: stable_handle(task.node_plan.node_id.as_str()),
             kind: HandleKind::Data,
@@ -376,7 +471,7 @@ impl RuntimeController for CliMockController {
             vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
-                partition: PredictionPartition::Validation,
+                partition: prediction_partition_for_phase(task.phase),
                 fold_id: task.fold_id.clone(),
                 sample_ids: vec![SampleId::new("sample:mock")?],
                 values: vec![vec![stable_handle(task.node_plan.node_id.as_str()) as f64]],
@@ -436,6 +531,45 @@ fn mock_runtime_controllers(
         }))?;
     }
     Ok(registry)
+}
+
+fn mock_artifact_store(
+    plan: &dag_ml_core::ExecutionPlan,
+    bundle: &ExecutionBundle,
+) -> Result<InMemoryArtifactStore> {
+    bundle.validate_against_plan(plan)?;
+    let mut store = InMemoryArtifactStore::new();
+    for artifact in &bundle.refit_artifacts {
+        let node_plan = plan.node_plans.get(&artifact.node_id).with_context(|| {
+            format!(
+                "bundle artifact `{}` references unknown node `{}`",
+                artifact.artifact.id, artifact.node_id
+            )
+        })?;
+        let kind = if matches!(node_plan.kind, dag_ml_core::NodeKind::Model) {
+            HandleKind::Model
+        } else {
+            HandleKind::Artifact
+        };
+        store.register(
+            artifact,
+            HandleRef {
+                handle: stable_handle(artifact.artifact.id.as_str()),
+                kind,
+                owner_controller: artifact.controller_id.clone(),
+            },
+        )?;
+    }
+    Ok(store)
+}
+
+fn prediction_partition_for_phase(phase: Phase) -> PredictionPartition {
+    match phase {
+        Phase::FitCv => PredictionPartition::Validation,
+        Phase::Refit | Phase::Predict => PredictionPartition::Final,
+        Phase::Explain => PredictionPartition::Final,
+        Phase::Compile | Phase::Plan | Phase::Select => PredictionPartition::Test,
+    }
 }
 
 fn stable_handle(value: &str) -> u64 {
