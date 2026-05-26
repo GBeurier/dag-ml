@@ -25,6 +25,8 @@ cargo run -p dag-ml-cli -- select-candidates --policy examples/fixtures/bundle/s
 cargo run -p dag-ml-cli -- run-process-campaign --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_nir.json --adapter examples/adapters/python_process_controller.py --plan-id plan:cli.process
 cargo run -p dag-ml-cli -- run-process-campaign --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_nir.json --adapter examples/adapters/python_process_controller.py --persistent --plan-id plan:cli.process
 cargo run -p dag-ml-cli -- build-bundle --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --bundle-spec examples/fixtures/bundle/bundle_build_spec_minimal.json --output examples/generated/execution_bundle_minimal.json --plan-id plan:cli.bundle
+cargo run -p dag-ml-cli -- run-mock-refit-bundle --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_nir.json --bundle-id bundle:cli.refit.capture --output examples/generated/execution_bundle_refit_capture.json --plan-id plan:cli.refit.capture
+cargo run -p dag-ml-cli -- run-process-refit-bundle --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope examples/fixtures/data/coordinator_data_plan_envelope_nir.json --adapter examples/adapters/python_process_controller.py --persistent --bundle-id bundle:cli.process.refit.capture --output examples/generated/execution_bundle_process_refit_capture.json --plan-id plan:cli.process.refit.capture
 cargo run -p dag-ml-cli -- validate-bundle --bundle examples/generated/execution_bundle_minimal.json --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json --replay-request examples/fixtures/bundle/replay_request_predict.json --plan-id plan:cli.bundle
 cargo run -p dag-ml-cli -- run-mock-replay --bundle examples/generated/execution_bundle_minimal.json --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json --replay-request examples/fixtures/bundle/replay_request_predict.json --plan-id plan:cli.bundle
 cargo run -p dag-ml-cli -- run-process-replay --bundle examples/generated/execution_bundle_minimal.json --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json --replay-request examples/fixtures/bundle/replay_request_predict.json --adapter examples/adapters/python_process_controller.py --plan-id plan:cli.bundle
@@ -32,7 +34,8 @@ cargo run -p dag-ml-cli -- run-process-replay --bundle examples/generated/execut
 
 These fixtures demonstrate deterministic candidate selection, bundle export
 from a rebuilt execution plan, replay validation against external data
-fingerprints, mock replay execution with opaque data/artifact handles, and
-process-based controller campaign/replay execution through a JSON
-`NodeTask`/`NodeResult` adapter boundary, including persistent JSONL process
-mode for stateful adapter smoke tests.
+fingerprints, mock replay execution with opaque data/artifact handles, refit
+bundle creation from captured model artifacts, and process-based controller
+campaign/refit/replay execution through a JSON `NodeTask`/`NodeResult` adapter
+boundary, including persistent JSONL process mode for stateful adapter smoke
+tests.
