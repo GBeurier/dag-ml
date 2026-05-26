@@ -127,6 +127,10 @@ Implemented:
 - C ABI data-provider vtable shape aligned with `dag-ml-data`
   materialize/view/identity/target/feature exports plus a tested Rust runtime
   adapter over the vtable;
+- C ABI controller vtable generic `invoke` path for external host
+  controllers, routing `NodeTask` JSON to `NodeResult` JSON with explicit
+  host-returned byte release, plus a tested Rust runtime adapter over the
+  vtable;
 - C ABI prediction-cache vtable shape for host OOF cache stores, including
   JSON block loading, prediction-handle materialization and explicit
   host-returned byte release, plus a tested Rust runtime adapter over the
