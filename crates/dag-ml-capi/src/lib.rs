@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 use std::slice;
+use std::sync::Mutex;
 
 use dag_ml_core::{
     build_execution_plan, select_candidate, select_candidate_groups,
@@ -1234,11 +1235,11 @@ unsafe fn build_controller_registry(
     Ok(registry)
 }
 
-#[derive(Clone)]
 pub struct CAbiRuntimeDataProvider {
     vtable: DagMlDataVTable,
     dataset: DagMlHandle,
     owner_controller: ControllerId,
+    live_handles: Mutex<Vec<DagMlHandle>>,
 }
 
 impl CAbiRuntimeDataProvider {
@@ -1267,7 +1268,23 @@ impl CAbiRuntimeDataProvider {
             vtable,
             dataset,
             owner_controller,
+            live_handles: Mutex::new(Vec::new()),
         })
+    }
+}
+
+impl Drop for CAbiRuntimeDataProvider {
+    fn drop(&mut self) {
+        if let Some(release) = self.vtable.release {
+            let handles = self
+                .live_handles
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for handle in handles.iter().rev() {
+                unsafe { release(self.vtable.user_data, *handle) };
+            }
+            handles.clear();
+        }
     }
 }
 
@@ -1297,6 +1314,14 @@ impl RuntimeDataProvider for CAbiRuntimeDataProvider {
                 "data provider materialize returned empty handle".to_string(),
             ));
         }
+        self.live_handles
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(
+                    "data provider handle registry is poisoned".to_string(),
+                )
+            })?
+            .push(out_handle);
         Ok(HandleRef {
             handle: out_handle,
             kind: HandleKind::Data,
@@ -1332,6 +1357,14 @@ impl RuntimeDataProvider for CAbiRuntimeDataProvider {
                 "data provider make_view returned empty handle".to_string(),
             ));
         }
+        self.live_handles
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(
+                    "data provider handle registry is poisoned".to_string(),
+                )
+            })?
+            .push(out_view);
         Ok(HandleRef {
             handle: out_view,
             kind: HandleKind::DataView,
@@ -2094,6 +2127,7 @@ mod tests {
         materialize_json: Vec<u8>,
         make_view_parent: DagMlHandle,
         make_view_json: Vec<u8>,
+        release_handles: Vec<DagMlHandle>,
     }
 
     #[derive(Default)]
@@ -2153,6 +2187,14 @@ mod tests {
         state.make_view_json = slice::from_raw_parts(selector_json.ptr, selector_json.len).to_vec();
         *out_view = 42;
         DagMlStatusCode::OK
+    }
+
+    unsafe extern "C" fn data_release_stub(user_data: *mut c_void, handle: DagMlHandle) {
+        if user_data.is_null() {
+            return;
+        }
+        let state = &mut *(user_data.cast::<DataProviderStub>());
+        state.release_handles.push(handle);
     }
 
     unsafe extern "C" fn feature_arrow_stub(
@@ -2539,15 +2581,9 @@ mod tests {
             view_identity: None,
             target_arrow: None,
             feature_arrow: None,
-            release: None,
+            release: Some(data_release_stub),
             destroy: None,
         };
-        let provider = CAbiRuntimeDataProvider::new(
-            ControllerId::new("controller:data.provider").unwrap(),
-            7,
-            table,
-        )
-        .unwrap();
         let binding = DataBinding {
             node_id: NodeId::new("model:base").unwrap(),
             input_name: "x".to_string(),
@@ -2566,58 +2602,68 @@ mod tests {
             view_policy: DataViewPolicy::default(),
             metadata: BTreeMap::new(),
         };
-        let data = provider
-            .materialize(&DataMaterializationRequest {
-                run_id: RunId::new("run:cabi.data").unwrap(),
-                node_id: binding.node_id.clone(),
-                input_name: binding.input_name.clone(),
-                phase: Phase::FitCv,
-                variant_id: Some(VariantId::new("variant:base").unwrap()),
-                fold_id: Some(FoldId::new("fold:0").unwrap()),
-                binding: binding.clone(),
-            })
+        {
+            let provider = CAbiRuntimeDataProvider::new(
+                ControllerId::new("controller:data.provider").unwrap(),
+                7,
+                table,
+            )
             .unwrap();
-
-        assert_eq!(data.handle, 41);
-        assert_eq!(data.kind, HandleKind::Data);
-        assert_eq!(state.materialize_dataset, 7);
-        let materialize_json: serde_json::Value =
-            serde_json::from_slice(&state.materialize_json).unwrap();
-        assert_eq!(materialize_json["phase"], "FIT_CV");
-        assert_eq!(materialize_json["request_id"], "nir-to-tabular");
-        assert_eq!(materialize_json["source_ids"][0], "nir");
-
-        let view = provider
-            .make_view(&DataViewRequest {
-                run_id: RunId::new("run:cabi.data").unwrap(),
-                node_id: binding.node_id.clone(),
-                input_name: binding.input_name.clone(),
-                phase: Phase::FitCv,
-                variant_id: Some(VariantId::new("variant:base").unwrap()),
-                fold_id: Some(FoldId::new("fold:0").unwrap()),
-                binding,
-                data_handle: data,
-                view: DataProviderViewSpec {
-                    sample_ids: Some(vec![SampleId::new("s1").unwrap()]),
-                    partition: DataRequestPartition::FoldTrain,
+            let data = provider
+                .materialize(&DataMaterializationRequest {
+                    run_id: RunId::new("run:cabi.data").unwrap(),
+                    node_id: binding.node_id.clone(),
+                    input_name: binding.input_name.clone(),
+                    phase: Phase::FitCv,
+                    variant_id: Some(VariantId::new("variant:base").unwrap()),
                     fold_id: Some(FoldId::new("fold:0").unwrap()),
-                    source_ids: Some(vec!["nir".to_string()]),
-                    columns: Some(vec!["abs_1000".to_string()]),
-                    include_augmented: true,
-                    include_excluded: false,
-                    extra: BTreeMap::new(),
-                },
-            })
-            .unwrap();
+                    binding: binding.clone(),
+                })
+                .unwrap();
 
-        assert_eq!(view.handle, 42);
-        assert_eq!(view.kind, HandleKind::DataView);
-        assert_eq!(state.make_view_parent, 41);
-        let view_json: serde_json::Value = serde_json::from_slice(&state.make_view_json).unwrap();
-        assert_eq!(view_json["partition"], "fold_train");
-        assert_eq!(view_json["fold_id"], "fold:0");
-        assert_eq!(view_json["sample_ids"][0], "s1");
-        assert_eq!(view_json["columns"][0], "abs_1000");
+            assert_eq!(data.handle, 41);
+            assert_eq!(data.kind, HandleKind::Data);
+            assert_eq!(state.materialize_dataset, 7);
+            let materialize_json: serde_json::Value =
+                serde_json::from_slice(&state.materialize_json).unwrap();
+            assert_eq!(materialize_json["phase"], "FIT_CV");
+            assert_eq!(materialize_json["request_id"], "nir-to-tabular");
+            assert_eq!(materialize_json["source_ids"][0], "nir");
+
+            let view = provider
+                .make_view(&DataViewRequest {
+                    run_id: RunId::new("run:cabi.data").unwrap(),
+                    node_id: binding.node_id.clone(),
+                    input_name: binding.input_name.clone(),
+                    phase: Phase::FitCv,
+                    variant_id: Some(VariantId::new("variant:base").unwrap()),
+                    fold_id: Some(FoldId::new("fold:0").unwrap()),
+                    binding,
+                    data_handle: data,
+                    view: DataProviderViewSpec {
+                        sample_ids: Some(vec![SampleId::new("s1").unwrap()]),
+                        partition: DataRequestPartition::FoldTrain,
+                        fold_id: Some(FoldId::new("fold:0").unwrap()),
+                        source_ids: Some(vec!["nir".to_string()]),
+                        columns: Some(vec!["abs_1000".to_string()]),
+                        include_augmented: true,
+                        include_excluded: false,
+                        extra: BTreeMap::new(),
+                    },
+                })
+                .unwrap();
+
+            assert_eq!(view.handle, 42);
+            assert_eq!(view.kind, HandleKind::DataView);
+            assert_eq!(state.make_view_parent, 41);
+            let view_json: serde_json::Value =
+                serde_json::from_slice(&state.make_view_json).unwrap();
+            assert_eq!(view_json["partition"], "fold_train");
+            assert_eq!(view_json["fold_id"], "fold:0");
+            assert_eq!(view_json["sample_ids"][0], "s1");
+            assert_eq!(view_json["columns"][0], "abs_1000");
+        }
+        assert_eq!(state.release_handles, vec![42, 41]);
     }
 
     #[test]
