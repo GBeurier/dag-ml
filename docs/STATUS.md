@@ -126,9 +126,10 @@ Implemented:
   avoiding one process spawn per task and preparing stateful host adapters;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
-- C ABI validation and JSON output helpers for graph, execution-plan build,
-  selection decisions, grouped selection, execution bundles, replay envelopes,
-  replay requests and prediction-cache payload sets;
+- C ABI validation and JSON output helpers for graph validation,
+  graph parallel levels, execution-plan build, selection decisions, grouped
+  selection, execution bundles, replay envelopes, replay requests and
+  prediction-cache payload sets;
 - C ABI data-provider vtable shape aligned with `dag-ml-data`
   materialize/view/identity/target/feature exports plus a tested Rust runtime
   adapter over the vtable;

@@ -327,6 +327,31 @@ pub unsafe extern "C" fn dagml_graph_validate_json(
     validate_json::<GraphSpec>(json_ptr, json_len, error_out, "graph", GraphSpec::validate)
 }
 
+/// Returns deterministic topological levels for parallel node scheduling.
+///
+/// # Safety
+///
+/// Same pointer and output ownership rules as `dagml_graph_validate_json` and
+/// other JSON-output helpers.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_graph_parallel_levels_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let graph = match parse_json_ptr::<GraphSpec>(json_ptr, json_len, error_out, "graph") {
+        Ok(graph) => graph,
+        Err(status) => return status,
+    };
+    match graph.parallel_levels() {
+        Ok(levels) => write_owned_json(out_json, error_out, &levels),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
 /// Builds an `ExecutionPlan` from graph, campaign and controller manifests.
 ///
 /// # Safety
@@ -2814,6 +2839,31 @@ mod tests {
 
         assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
+    }
+
+    #[test]
+    fn returns_graph_parallel_levels_over_abi() {
+        let graph = include_bytes!("../../../examples/minimal_graph.json");
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_graph_parallel_levels_json(graph.as_ptr(), graph.len(), &mut out, &mut error)
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK);
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let levels: Vec<Vec<NodeId>> = serde_json::from_slice(json).unwrap();
+        assert_eq!(
+            levels,
+            vec![
+                vec![NodeId::new("transform:snv").unwrap()],
+                vec![NodeId::new("model:base").unwrap()]
+            ]
+        );
+        unsafe { dagml_owned_bytes_free(out) };
     }
 
     #[test]
