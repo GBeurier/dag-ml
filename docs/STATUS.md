@@ -163,6 +163,9 @@ Implemented:
 - C ABI data-provider vtable shape aligned with `dag-ml-data`
   materialize/view/identity/target/feature exports plus a tested Rust runtime
   adapter over the vtable;
+- `dag_ml.h` and `dag_ml_data.h` share a guarded data-provider vtable ABI
+  version macro and are compiled together in both include orders when the
+  sibling checkout is present;
 - C ABI controller vtable generic `invoke` path for external host
   controllers, routing `NodeTask` JSON to `NodeResult` JSON with explicit
   host-returned byte release, plus a tested Rust runtime adapter over the

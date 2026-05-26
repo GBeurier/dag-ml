@@ -70,9 +70,10 @@ requests an opaque parent data handle plus a fold/refit/predict provider view th
 materialization, view creation, identity, sample-level target and
 observation-level feature exports; `feature_arrow` can stay ABI-compatible
 while carrying `dag-ml-data` JSON fusion selectors for multi-source feature
-joins. A core in-memory provider records both materialized handles and scoped
-data-view handles for smoke tests. Next missing piece is a concrete
-buffer-backed `dag-ml-data` provider/handle arena.
+joins. The two C headers now share a guarded data-provider vtable ABI version
+and compile together in both include orders. A core in-memory provider records
+both materialized handles and scoped data-view handles for smoke tests. Next
+missing piece is a concrete buffer-backed `dag-ml-data` provider/handle arena.
 
 ## Phase 4: Parallelism
 
