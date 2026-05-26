@@ -1613,6 +1613,12 @@ impl RuntimeController for CliMockController {
                 )));
             }
             for (key, handle) in artifact_handles {
+                if !key.contains(task.node_plan.node_id.as_str()) {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received replay artifact handle for another node `{key}`",
+                        task.node_plan.node_id
+                    )));
+                }
                 if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact) {
                     return Err(DagMlError::RuntimeValidation(format!(
                         "node `{}` received invalid replay artifact handle `{key}`",

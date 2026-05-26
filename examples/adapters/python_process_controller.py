@@ -81,6 +81,8 @@ def require_replay_artifact(task: dict[str, Any]) -> None:
     if not artifact_handles:
         fail(f"node `{node_plan['node_id']}` did not receive replay artifact handle")
     for key, handle in artifact_handles.items():
+        if node_plan["node_id"] not in key:
+            fail(f"node `{node_plan['node_id']}` received artifact handle for another node `{key}`")
         if handle.get("kind") not in {"model", "artifact"}:
             fail(f"node `{node_plan['node_id']}` received invalid artifact handle `{key}`")
 

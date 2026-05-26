@@ -133,6 +133,8 @@ def replay_model(task: dict[str, Any]) -> Pipeline:
     if not artifact_handles:
         fail(f"node `{task['node_plan']['node_id']}` did not receive replay artifact handle")
     key, handle = next(iter(artifact_handles.items()))
+    if task["node_plan"]["node_id"] not in key:
+        fail(f"node `{task['node_plan']['node_id']}` received artifact handle for another node `{key}`")
     if handle.get("kind") not in {"model", "artifact"}:
         fail(f"node `{task['node_plan']['node_id']}` received invalid artifact handle `{key}`")
     model = MODELS.get(int(handle["handle"]))

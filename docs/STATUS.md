@@ -89,6 +89,8 @@ Implemented:
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;
+- process-controller replay fixtures now verify that a model receives its own
+  refit artifact handle, not just any artifact handle in the task inputs;
 - stateful sklearn process-controller smoke that fits a real sklearn pipeline
   during `REFIT`, stores it behind an opaque model handle, then replays
   `PREDICT` through the captured handle in the same persistent process;
