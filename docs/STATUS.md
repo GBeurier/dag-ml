@@ -143,6 +143,9 @@ Implemented:
   Rust owns bundle validation, replay envelope validation, DAG scheduling,
   data-view construction and `NodeResult` conformance, with branch/merge
   `REFIT` replay covered through a host OOF prediction-cache vtable;
+- C ABI C-language conformance test that compiles and runs a small C program
+  against `dag_ml.h` and `libdag_ml_capi`, driving non-mock replay through
+  controller, data-provider and artifact-store vtables;
 - C ABI mock replay execution helper that exercises execution-plan, bundle,
   replay request, data envelope and refit artifact handle materialization and
   returns a JSON summary including data view counts;
