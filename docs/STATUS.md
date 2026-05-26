@@ -37,7 +37,8 @@ Implemented:
 - sample relation validation for repeated observations, shared targets, groups
   and augmentation origins;
 - aggregation policy plus deterministic mean, weighted-mean, median and vote
-  aggregation from observation predictions to sample predictions;
+  reducers from observation predictions to samples and from sample predictions
+  to target/group units;
 - data/model shape plans and runtime shape deltas;
 - shape-policy hardening for sample augmentation, supervised feature-selection
   mask audit, optional lineage shape fingerprints and feature-delta schema
@@ -264,7 +265,8 @@ Not implemented yet:
 - full DSL compiler;
 - advanced search-space compiler/lowering beyond typed node-parameter
   overrides;
-- target/group aggregation and custom aggregation controllers;
+- custom aggregation controllers and downstream metric/replay integration for
+  non-sample aggregated prediction blocks;
 - persistent artifact stores and non-JSON/non-file-cache backends;
 - Arrow prediction storage and ABI-owned prediction tensors;
 - production host controller adapters with native libraries or
