@@ -41,3 +41,11 @@ supports `dag-ml-data` multi-source fusion:
 source maps a `source_id` to a provider-owned `feature_set_id` and optional
 column subset. This keeps `DagMlDataVTable` ABI-compatible while making feature
 fusion explicit.
+
+## Data Provider C ABI v2
+
+The shared provider surface is `DagMlDataVTable` guarded by
+`DAG_ML_DATA_VTABLE_DEFINED` and versioned by
+`DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION == 2`. `scripts/validate_contracts.py`
+and the C ABI tests verify that `dag_ml.h` and `dag_ml_data.h` can be included
+together in either order when the sibling checkout is available.

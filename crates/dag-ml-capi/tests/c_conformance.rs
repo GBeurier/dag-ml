@@ -292,7 +292,7 @@ int main(int argc, char **argv) {
     Buffer envelopes = read_file(argv[6]);
 
     DagMlDataVTable data_provider = {0};
-    data_provider.abi_version = 2;
+    data_provider.abi_version = DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION;
     data_provider.materialize = data_materialize;
     data_provider.make_view = data_make_view;
 
@@ -389,6 +389,92 @@ int main(int argc, char **argv) {
 "#;
 
 #[test]
+fn c_headers_can_be_included_with_dag_ml_data_peer() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate lives under workspace/crates")
+        .to_path_buf();
+    let Some(peer) = dag_ml_data_peer_root(&workspace) else {
+        eprintln!("skipping cross-header smoke; dag-ml-data checkout not found");
+        return;
+    };
+    let peer_include = peer.join("crates/dag-ml-data-capi/include");
+    assert!(
+        peer_include.exists(),
+        "dag-ml-data include directory not found at {}",
+        peer_include.display()
+    );
+
+    let sources = [
+        (
+            "dag_ml_first",
+            r#"
+#include "dag_ml.h"
+#include "dag_ml_data.h"
+
+int main(void) {
+#if DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION != 2u
+#error unexpected data-provider ABI version
+#endif
+    DagMlDataVTable table = {0};
+    DagMlDataTensorF64 tensor = {0};
+    table.abi_version = DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION;
+    tensor.abi_version = DAG_ML_DATA_TENSOR_F64_ABI_VERSION;
+    return table.abi_version == 0 || tensor.abi_version == 0;
+}
+"#,
+        ),
+        (
+            "dag_ml_data_first",
+            r#"
+#include "dag_ml_data.h"
+#include "dag_ml.h"
+
+int main(void) {
+#if DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION != 2u
+#error unexpected data-provider ABI version
+#endif
+    DagMlDataVTable table = {0};
+    DagMlDataTensorF64 tensor = {0};
+    table.abi_version = DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION;
+    tensor.abi_version = DAG_ML_DATA_TENSOR_F64_ABI_VERSION;
+    return table.abi_version == 0 || tensor.abi_version == 0;
+}
+"#,
+        ),
+    ];
+
+    for (name, source) in sources {
+        let path = std::env::temp_dir().join(format!(
+            "dag_ml_cross_header_{name}_{}_{}.c",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::write(&path, source).expect("write cross-header smoke source");
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+        let output = Command::new(cc)
+            .arg("-std=c11")
+            .arg("-fsyntax-only")
+            .arg("-I")
+            .arg(manifest_dir.join("include"))
+            .arg("-I")
+            .arg(&peer_include)
+            .arg(&path)
+            .output()
+            .expect("run C compiler");
+        let _ = fs::remove_file(&path);
+        assert!(
+            output.status.success(),
+            "cross-header smoke `{name}` failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn c_program_executes_vtable_replay_against_c_abi() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace = manifest_dir
@@ -461,6 +547,18 @@ fn c_program_executes_vtable_replay_against_c_abi() {
         String::from_utf8_lossy(&run_output.stdout),
         String::from_utf8_lossy(&run_output.stderr)
     );
+}
+
+fn dag_ml_data_peer_root(workspace: &Path) -> Option<PathBuf> {
+    std::env::var_os("DAG_ML_DATA_REPO")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain([
+            workspace.parent()?.join("dag-ml-data"),
+            workspace.join("external/dag-ml-data"),
+        ])
+        .find(|candidate| candidate.exists())
+        .map(|candidate| candidate.canonicalize().unwrap_or(candidate))
 }
 
 fn unique_suffix() -> u128 {

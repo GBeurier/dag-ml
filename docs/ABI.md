@@ -36,7 +36,10 @@ the host owns the underlying object behind each handle.
   `make_view`, `view_identity`, `target_arrow` and `feature_arrow`.
   `feature_arrow` remains ABI-compatible: hosts may receive either a plain
   feature-set id or a JSON fusion selector understood by `dag-ml-data`
-  providers.
+  providers. The vtable uses the shared
+  `DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION` macro and guarded
+  `DagMlDataVTable` definition so `dag_ml.h` and `dag_ml_data.h` can be
+  included together by bindings.
 - `DagMlArtifactStoreVTable` for host replay artifact stores, returning typed
   `DagMlHandleRef` values for model/artifact handles.
 - `DagMlPredictionCacheVTable` for host prediction-cache stores, including
@@ -76,4 +79,5 @@ Rust adapters do not claim ownership of the host context.
 3. Add conformance tests that call the C ABI from a small C program.
 4. Add C conformance tests that drive non-mock replay through the vtable
    surface.
-5. Add host adapters for Python and native C++ controllers and artifact stores.
+5. Keep shared `dag-ml-data` header inclusion and vtable ABI conformance in CI.
+6. Add host adapters for Python and native C++ controllers and artifact stores.

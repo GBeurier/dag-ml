@@ -18,6 +18,7 @@ use dag_ml_core::{
 use serde::{de::DeserializeOwned, Serialize};
 
 pub type DagMlHandle = u64;
+pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
 pub const DAG_ML_HANDLE_KIND_DATA_VIEW: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_MODEL: u32 = 3;
@@ -1246,7 +1247,7 @@ impl CAbiRuntimeDataProvider {
         dataset: DagMlHandle,
         vtable: DagMlDataVTable,
     ) -> dag_ml_core::Result<Self> {
-        if vtable.abi_version < 2 {
+        if vtable.abi_version < DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION {
             return Err(DagMlError::RuntimeValidation(format!(
                 "data provider ABI version {} is unsupported",
                 vtable.abi_version
@@ -2511,7 +2512,7 @@ mod tests {
     #[test]
     fn data_vtable_exposes_feature_arrow_slot() {
         let table = DagMlDataVTable {
-            abi_version: 2,
+            abi_version: DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
             user_data: std::ptr::null_mut(),
             materialize: Some(materialize_stub),
             make_view: None,
@@ -2522,7 +2523,7 @@ mod tests {
             destroy: None,
         };
 
-        assert_eq!(table.abi_version, 2);
+        assert_eq!(table.abi_version, DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION);
         assert!(table.materialize.is_some());
         assert!(table.feature_arrow.is_some());
     }
@@ -2531,7 +2532,7 @@ mod tests {
     fn c_abi_runtime_data_provider_routes_materialize_and_view_requests() {
         let mut state = DataProviderStub::default();
         let table = DagMlDataVTable {
-            abi_version: 2,
+            abi_version: DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
             user_data: (&mut state as *mut DataProviderStub).cast::<c_void>(),
             materialize: Some(materialize_stub),
             make_view: Some(make_view_stub),
@@ -3137,7 +3138,7 @@ mod tests {
         let envelopes = format!(r#"{{"model:base.x":{envelope}}}"#);
         let mut data_state = DataProviderStub::default();
         let data_provider = DagMlDataVTable {
-            abi_version: 2,
+            abi_version: DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
             user_data: (&mut data_state as *mut DataProviderStub).cast::<c_void>(),
             materialize: Some(materialize_stub),
             make_view: Some(make_view_stub),
@@ -3287,7 +3288,7 @@ mod tests {
         };
         let mut data_state = DataProviderStub::default();
         let data_provider = DagMlDataVTable {
-            abi_version: 2,
+            abi_version: DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
             user_data: (&mut data_state as *mut DataProviderStub).cast::<c_void>(),
             materialize: Some(materialize_stub),
             make_view: Some(make_view_stub),

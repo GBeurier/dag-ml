@@ -25,12 +25,14 @@ LOCAL_FIXTURE_REL = Path("examples/fixtures/data/coordinator_data_plan_envelope_
 LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
 )
+LOCAL_C_HEADER_REL = Path("crates/dag-ml-capi/include/dag_ml.h")
 SIBLING_FIXTURE_REL = Path(
     "examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
 )
 SIBLING_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/oof_campaign/feature_fusion_selector_nir_chem.json"
 )
+SIBLING_C_HEADER_REL = Path("crates/dag-ml-data-capi/include/dag_ml_data.h")
 LOCAL_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "coordinator_data_plan_envelope.v1.schema.json"
@@ -67,6 +69,13 @@ def load_json(path: Path) -> Any:
         raise ContractError(f"missing JSON file: {path}") from exc
     except json.JSONDecodeError as exc:
         raise ContractError(f"invalid JSON in {path}: {exc}") from exc
+
+
+def load_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ContractError(f"missing text file: {path}") from exc
 
 
 def require_non_empty_string(value: Any, label: str) -> None:
@@ -261,6 +270,43 @@ def validate_feature_fusion_selector(selector: Any, label: str) -> None:
             )
 
 
+def validate_data_provider_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION 2u" in header,
+        f"{label} header must declare DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION=2",
+    )
+    require(
+        "#define DAG_ML_DATA_VTABLE_DEFINED" in header,
+        f"{label} header must guard the shared DagMlDataVTable definition",
+    )
+    require(
+        "typedef struct DagMlDataVTable" in header,
+        f"{label} header must expose DagMlDataVTable",
+    )
+    for field in (
+        "materialize",
+        "make_view",
+        "view_identity",
+        "target_arrow",
+        "feature_arrow",
+        "release",
+        "destroy",
+    ):
+        require(field in header, f"{label} DagMlDataVTable must expose `{field}`")
+
+
+def validate_dag_ml_data_tensor_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_DATA_TENSOR_F64_ABI_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_DATA_TENSOR_F64_ABI_VERSION=1",
+    )
+    require("DagMlDataTensorF64" in header, f"{label} header must expose DagMlDataTensorF64")
+    require(
+        "dagmldata_inmemory_provider_feature_collation_tensor_f64_json" in header,
+        f"{label} header must expose provider tensor collation",
+    )
+
+
 def normalize_schema(schema: Any) -> Any:
     normalized = copy.deepcopy(schema)
     if isinstance(normalized, dict):
@@ -294,6 +340,7 @@ def main() -> int:
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
+        local_header = load_text(ROOT / LOCAL_C_HEADER_REL)
         validate_schema_artifact(local_schema, LOCAL_SCHEMA_ID, "dag-ml")
         validate_feature_fusion_schema_artifact(
             local_feature_fusion_schema,
@@ -302,6 +349,7 @@ def main() -> int:
         )
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
+        validate_data_provider_header(local_header, "dag-ml")
 
         sibling = sibling_root()
         if sibling is None:
@@ -314,6 +362,7 @@ def main() -> int:
         sibling_feature_fusion_fixture = load_json(
             sibling / SIBLING_FEATURE_FUSION_FIXTURE_REL
         )
+        sibling_header = load_text(sibling / SIBLING_C_HEADER_REL)
         validate_schema_artifact(sibling_schema, SIBLING_SCHEMA_ID, "dag-ml-data")
         validate_feature_fusion_schema_artifact(
             sibling_feature_fusion_schema,
@@ -322,6 +371,8 @@ def main() -> int:
         )
         validate_envelope(sibling_fixture, "dag-ml-data")
         validate_feature_fusion_selector(sibling_feature_fusion_fixture, "dag-ml-data")
+        validate_data_provider_header(sibling_header, "dag-ml-data")
+        validate_dag_ml_data_tensor_header(sibling_header, "dag-ml-data")
         require(
             normalize_schema(local_schema) == normalize_schema(sibling_schema),
             "coordinator envelope schemas diverge beyond repository-specific $id",
