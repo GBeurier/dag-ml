@@ -40,6 +40,9 @@ leakage guarantees.
    parameter choices.
 7. `dag-ml-data` may describe relations and fit scopes, but `dag-ml` enforces
    ML invariants.
+8. A training-phase edge marked `requires_oof` must be backed by validation
+   predictions in the core `PredictionStore`; raw upstream handles are not
+   forwarded across that edge.
 
 ## MVP To Full Replacement Path
 
