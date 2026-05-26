@@ -39,13 +39,43 @@ typedef struct DagMlOwnedBytes {
     size_t capacity;
 } DagMlOwnedBytes;
 
+#ifndef ARROW_C_DATA_INTERFACE
+#define ARROW_C_DATA_INTERFACE
+
+typedef struct ArrowArray {
+    int64_t length;
+    int64_t null_count;
+    int64_t offset;
+    int64_t n_buffers;
+    int64_t n_children;
+    const void **buffers;
+    struct ArrowArray **children;
+    struct ArrowArray *dictionary;
+    void (*release)(struct ArrowArray *array);
+    void *private_data;
+} ArrowArray;
+
+typedef struct ArrowSchema {
+    const char *format;
+    const char *name;
+    const char *metadata;
+    int64_t flags;
+    int64_t n_children;
+    struct ArrowSchema **children;
+    struct ArrowSchema *dictionary;
+    void (*release)(struct ArrowSchema *schema);
+    void *private_data;
+} ArrowSchema;
+
+#endif
+
 typedef struct DagMlControllerVTable {
     uint32_t abi_version;
     void *user_data;
     DagMlStatusCode (*clone_with)(void *user_data, DagMlHandle op, DagMlBytesView params_json, DagMlHandle *out_op);
     DagMlStatusCode (*describe)(void *user_data, DagMlHandle op, DagMlOwnedBytes *out_json);
     DagMlStatusCode (*fit)(void *user_data, DagMlHandle op, DagMlHandle data, DagMlBytesView context_json, DagMlHandle *out_fitted);
-    DagMlStatusCode (*predict)(void *user_data, DagMlHandle fitted, DagMlHandle data, void **out_arrow_array, void **out_arrow_schema);
+    DagMlStatusCode (*predict)(void *user_data, DagMlHandle fitted, DagMlHandle data, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);
     void (*release)(void *user_data, DagMlHandle handle);
     void (*destroy)(void *user_data);
 } DagMlControllerVTable;
@@ -54,8 +84,8 @@ typedef struct DagMlDataVTable {
     uint32_t abi_version;
     void *user_data;
     DagMlStatusCode (*make_view)(void *user_data, DagMlHandle data, DagMlBytesView sample_ids_json, DagMlHandle *out_view);
-    DagMlStatusCode (*view_identity)(void *user_data, DagMlHandle view, void **out_arrow_array, void **out_arrow_schema);
-    DagMlStatusCode (*target_arrow)(void *user_data, DagMlHandle view, DagMlBytesView target_name, void **out_arrow_array, void **out_arrow_schema);
+    DagMlStatusCode (*view_identity)(void *user_data, DagMlHandle view, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);
+    DagMlStatusCode (*target_arrow)(void *user_data, DagMlHandle view, DagMlBytesView target_name, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);
     void (*release)(void *user_data, DagMlHandle handle);
     void (*destroy)(void *user_data);
 } DagMlDataVTable;

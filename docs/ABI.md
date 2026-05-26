@@ -15,6 +15,8 @@ the host owns the underlying object behind each handle.
   validation helpers;
 - mock replay execution helper that returns a JSON summary while exercising
   Rust-side data and artifact handle materialization;
+- Arrow C Data `ArrowArray` and `ArrowSchema` structs for controller
+  predictions and data-provider identity/target exports;
 - `DagMlControllerVTable` for host operator controllers;
 - `DagMlDataVTable` for host data providers.
 
@@ -37,9 +39,7 @@ ownership and naming before full execution is implemented.
 1. Freeze `DagMlBytesView`, `DagMlOwnedBytes`, handle and status conventions.
 2. Add canonical JSON schemas for `describe`, `GraphSpec`, `ModelInputSpec` and
    `DataPlan` blobs.
-3. Replace placeholder Arrow pointers with explicit `struct ArrowArray` and
-   `struct ArrowSchema` declarations in the header.
-4. Add conformance tests that call the C ABI from a small C program.
-5. Replace the mock replay helper with host-controller replay through the
+3. Add conformance tests that call the C ABI from a small C program.
+4. Replace the mock replay helper with host-controller replay through the
    vtable surface.
-6. Add host adapters for Python and native C++ controllers.
+5. Add host adapters for Python and native C++ controllers.
