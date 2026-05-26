@@ -16,9 +16,10 @@ the host owns the underlying object behind each handle.
 - mock replay execution helper that returns a JSON summary while exercising
   Rust-side data and artifact handle materialization;
 - Arrow C Data `ArrowArray` and `ArrowSchema` structs for controller
-  predictions and data-provider identity/target exports;
+  predictions and data-provider identity/target/feature exports;
 - `DagMlControllerVTable` for host operator controllers;
-- `DagMlDataVTable` for host data providers.
+- `DagMlDataVTable` for host data providers, including
+  `view_identity`, `target_arrow` and `feature_arrow`.
 
 The vtables are intentionally small in this scaffold. They establish shape,
 ownership and naming before full execution is implemented.

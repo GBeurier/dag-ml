@@ -410,6 +410,7 @@ handles et qui expose l'identité au cœur.
     make_view:     extern "C" fn(state, h: HandleId,               // slice par sample-ids (folds §7.3)
                                  ids: *mut ArrowArray, sch: *mut ArrowSchema, partition: u8) -> HandleId,
     target_arrow:  extern "C" fn(state, h: HandleId) -> ArrowOut,  // y_true pour scoring (cœur)
+    feature_arrow: extern "C" fn(state, h: HandleId) -> ArrowOut,  // X/features par observation
     ingest_arrow:  extern "C" fn(state, *mut ArrowArray, *mut ArrowSchema) -> HandleId, // OOF -> handle
     handle_nbytes: extern "C" fn(state, h: HandleId) -> u64,       // budget step-cache §13.4
     schema_fingerprint: extern "C" fn(state, h: HandleId) -> Bytes,
