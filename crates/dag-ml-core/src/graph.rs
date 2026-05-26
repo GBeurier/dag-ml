@@ -256,6 +256,32 @@ impl GraphSpec {
         topological_order(adjacency, indegree)
     }
 
+    pub fn parallel_levels(&self) -> Result<Vec<Vec<NodeId>>> {
+        self.validate()?;
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut adjacency = nodes
+            .iter()
+            .cloned()
+            .map(|id| (id, Vec::new()))
+            .collect::<BTreeMap<_, _>>();
+        let mut indegree: BTreeMap<NodeId, usize> =
+            nodes.iter().cloned().map(|id| (id, 0usize)).collect();
+        for edge in &self.edges {
+            adjacency
+                .get_mut(&edge.source.node_id)
+                .expect("source exists after validate")
+                .push(edge.target.node_id.clone());
+            *indegree
+                .get_mut(&edge.target.node_id)
+                .expect("target exists after validate") += 1;
+        }
+        topological_levels(adjacency, indegree)
+    }
+
     pub fn upstream_nodes(&self, node_id: &NodeId) -> Vec<NodeId> {
         let mut upstream = self
             .edges
@@ -345,6 +371,44 @@ fn topological_order(
     }
 }
 
+fn topological_levels(
+    adjacency: BTreeMap<NodeId, Vec<NodeId>>,
+    mut indegree: BTreeMap<NodeId, usize>,
+) -> Result<Vec<Vec<NodeId>>> {
+    let mut queue = indegree
+        .iter()
+        .filter_map(|(id, degree)| (*degree == 0).then_some(id.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut levels = Vec::new();
+    let mut visited = 0usize;
+
+    while !queue.is_empty() {
+        let level = queue.iter().cloned().collect::<Vec<_>>();
+        queue.clear();
+        for node in &level {
+            visited += 1;
+            if let Some(next_nodes) = adjacency.get(node) {
+                for next in next_nodes {
+                    let degree = indegree.get_mut(next).expect("node exists");
+                    *degree -= 1;
+                    if *degree == 0 {
+                        queue.insert(next.clone());
+                    }
+                }
+            }
+        }
+        levels.push(level);
+    }
+
+    if visited == indegree.len() {
+        Ok(levels)
+    } else {
+        Err(DagMlError::GraphValidation(
+            "graph contains at least one cycle".to_string(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +470,50 @@ mod tests {
         };
 
         assert!(graph.validate().is_ok());
+    }
+
+    #[test]
+    fn computes_deterministic_parallel_levels() {
+        let graph = GraphSpec {
+            id: "g".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node("model:a", vec![], vec![port("pred", PortKind::Prediction)]),
+                node(
+                    "model:b",
+                    vec![port("pred", PortKind::Prediction)],
+                    vec![port("pred", PortKind::Prediction)],
+                ),
+                node(
+                    "model:c",
+                    vec![port("pred", PortKind::Prediction)],
+                    vec![port("pred", PortKind::Prediction)],
+                ),
+                node("model:d", vec![port("pred", PortKind::Prediction)], vec![]),
+            ],
+            edges: vec![
+                edge("model:a", "pred", "model:b", "pred"),
+                edge("model:a", "pred", "model:c", "pred"),
+                edge("model:b", "pred", "model:d", "pred"),
+                edge("model:c", "pred", "model:d", "pred"),
+            ],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+
+        let levels = graph.parallel_levels().unwrap();
+
+        assert_eq!(
+            levels,
+            vec![
+                vec![NodeId::new("model:a").unwrap()],
+                vec![
+                    NodeId::new("model:b").unwrap(),
+                    NodeId::new("model:c").unwrap()
+                ],
+                vec![NodeId::new("model:d").unwrap()]
+            ]
+        );
     }
 
     #[test]

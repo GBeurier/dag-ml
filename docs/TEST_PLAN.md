@@ -4,7 +4,7 @@
 
 | Area | First tests |
 |---|---|
-| Graph | missing endpoints, port-kind mismatch, cycles, valid graph |
+| Graph | missing endpoints, port-kind mismatch, cycles, valid graph, deterministic parallel levels |
 | OOF | rejects train predictions, aligns by sample id, duplicate detection |
 | OOF campaign fixtures | UC6 joins, UC11 refuses, fold prediction samples match fold partitions, campaign fingerprint is stable |
 | RNG | same path gives same seed, different labels split streams |
