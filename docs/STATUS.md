@@ -100,6 +100,9 @@ Implemented:
 - stateful sklearn process-controller smoke that fits a real sklearn pipeline
   during `REFIT`, stores it behind an opaque model handle, then replays
   `PREDICT` through the captured handle in the same persistent process;
+- stateful sklearn branch/merge smoke that runs scheduler-managed `FIT_CV`,
+  builds OOF prediction requirements/cache manifests, captures refit artifacts
+  and replays predictions in the same persistent process;
 - persistent JSONL process-controller mode for campaign/replay smoke tests,
   avoiding one process spawn per task and preparing stateful host adapters;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
