@@ -1,0 +1,40 @@
+{
+  "report": {
+    "prediction_id": "pred:sample",
+    "producer_node": "model:pls",
+    "partition": "validation",
+    "fold_id": null,
+    "level": "sample",
+    "row_count": 2,
+    "target_width": 1,
+    "target_names": [
+      "y"
+    ],
+    "metrics": {
+      "r2": 0.75,
+      "r2:y": 0.75,
+      "rmse": 1.0,
+      "rmse:y": 1.0
+    }
+  },
+  "candidate_score": {
+    "candidate_id": "model:pls",
+    "metrics": {
+      "r2": 0.75,
+      "r2:y": 0.75,
+      "rmse": 1.0,
+      "rmse:y": 1.0
+    },
+    "metadata": {
+      "metric_level": "sample",
+      "partition": "validation",
+      "prediction_id": "pred:sample",
+      "producer_node": "model:pls",
+      "row_count": 2,
+      "target_names": [
+        "y"
+      ],
+      "target_width": 1
+    }
+  }
+}

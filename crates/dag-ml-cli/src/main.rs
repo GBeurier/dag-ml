@@ -13,17 +13,19 @@ use clap::{Parser, Subcommand, ValueEnum};
 use dag_ml_core::{
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
     build_prediction_cache_payload, build_prediction_cache_record, oof_campaign_fingerprint,
-    select_candidate, select_candidate_groups, validate_oof_campaign, ArtifactId, BundleId,
+    regression_report_to_candidate_score, score_regression_aggregated_block,
+    score_regression_prediction_block, select_candidate, select_candidate_groups,
+    validate_oof_campaign, AggregatedPredictionBlock, ArtifactId, BundleId,
     BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
     BundlePredictionRequirement, BundleReplayExecution, CampaignSpec, CandidateScore,
     ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
     DataRequestPartition, ExecutionBundle, ExternalDataPlanEnvelope, FilePredictionCacheStore,
     GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId,
     LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, ParallelScheduler,
-    Phase, PredictionBlock, PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest,
-    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
-    RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric, SelectionPolicy,
-    SequentialScheduler, VariantId,
+    Phase, PredictionBlock, PredictionPartition, RefitArtifactRecord, RegressionMetricKind,
+    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, RunContext, RunId,
+    RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
+    SampleId, SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +53,31 @@ impl CliScheduler {
         match self {
             Self::Sequential => "sequential",
             Self::Parallel => "parallel",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliPredictionBlockKind {
+    Sample,
+    Aggregated,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliRegressionMetricKind {
+    Mse,
+    Rmse,
+    Mae,
+    R2,
+}
+
+impl From<CliRegressionMetricKind> for RegressionMetricKind {
+    fn from(value: CliRegressionMetricKind) -> Self {
+        match value {
+            CliRegressionMetricKind::Mse => Self::Mse,
+            CliRegressionMetricKind::Rmse => Self::Rmse,
+            CliRegressionMetricKind::Mae => Self::Mae,
+            CliRegressionMetricKind::R2 => Self::R2,
         }
     }
 }
@@ -259,6 +286,20 @@ enum Command {
         candidates: PathBuf,
         #[arg(long)]
         groups: Option<PathBuf>,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    ScoreRegression {
+        #[arg(long, value_enum)]
+        prediction_block: CliPredictionBlockKind,
+        #[arg(long)]
+        predictions: PathBuf,
+        #[arg(long)]
+        targets: PathBuf,
+        #[arg(long, value_enum, required = true)]
+        metric: Vec<CliRegressionMetricKind>,
+        #[arg(long)]
+        candidate_id: Option<String>,
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -791,6 +832,44 @@ fn main() -> Result<()> {
                     select_candidate(&policy, &candidates).with_context(|| "selection failed")?;
                 emit_json(output.as_ref(), &decision, "selection decision")?;
             }
+        }
+        Command::ScoreRegression {
+            prediction_block,
+            predictions,
+            targets,
+            metric,
+            candidate_id,
+            output,
+        } => {
+            let targets: RegressionTargetBlock = read_json(&targets, "regression target block")?;
+            let metrics = metric.into_iter().map(Into::into).collect::<Vec<_>>();
+            let report = match prediction_block {
+                CliPredictionBlockKind::Sample => {
+                    let predictions: PredictionBlock =
+                        read_json(&predictions, "sample prediction block")?;
+                    score_regression_prediction_block(&predictions, &targets, &metrics)
+                }
+                CliPredictionBlockKind::Aggregated => {
+                    let predictions: AggregatedPredictionBlock =
+                        read_json(&predictions, "aggregated prediction block")?;
+                    score_regression_aggregated_block(&predictions, &targets, &metrics)
+                }
+            }
+            .with_context(|| "regression scoring failed")?;
+            let candidate_score = candidate_id
+                .map(|candidate_id| {
+                    regression_report_to_candidate_score(candidate_id, report.clone())
+                })
+                .transpose()
+                .with_context(|| "failed to convert regression report to candidate score")?;
+            emit_json(
+                output.as_ref(),
+                &RegressionScoreCliOutput {
+                    report,
+                    candidate_score,
+                },
+                "regression score",
+            )?;
         }
         Command::BuildBundle {
             graph,
@@ -1419,6 +1498,13 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct RegressionScoreCliOutput {
+    pub report: RegressionMetricReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_score: Option<CandidateScore>,
 }
 
 #[derive(Debug, Deserialize)]

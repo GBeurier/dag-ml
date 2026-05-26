@@ -14,6 +14,93 @@ fn cli() -> &'static str {
 }
 
 #[test]
+fn cli_scores_regression_prediction_blocks() {
+    let root = repo_root();
+    let suffix = unique_suffix();
+    let predictions_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_regression_predictions_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let targets_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_regression_targets_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let output_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_regression_score_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::write(
+        &predictions_path,
+        r#"{
+  "prediction_id": "pred:sample",
+  "producer_node": "model:pls",
+  "partition": "validation",
+  "sample_ids": ["sample:1", "sample:2"],
+  "values": [[2.0], [4.0]],
+  "target_names": ["y"]
+}
+"#,
+    )
+    .expect("prediction fixture was written");
+    std::fs::write(
+        &targets_path,
+        r#"{
+  "level": "sample",
+  "unit_ids": [
+    {"level": "sample", "id": "sample:2"},
+    {"level": "sample", "id": "sample:1"}
+  ],
+  "values": [[5.0], [1.0]],
+  "target_names": ["y"]
+}
+"#,
+    )
+    .expect("target fixture was written");
+
+    let score = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "score-regression",
+            "--prediction-block",
+            "sample",
+            "--predictions",
+            predictions_path.to_str().expect("temp path is valid utf-8"),
+            "--targets",
+            targets_path.to_str().expect("temp path is valid utf-8"),
+            "--metric",
+            "rmse",
+            "--metric",
+            "r2",
+            "--candidate-id",
+            "model:pls",
+            "--output",
+            output_path.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli score-regression");
+    assert!(
+        score.status.success(),
+        "score-regression failed: {}",
+        String::from_utf8_lossy(&score.stderr)
+    );
+
+    let scored: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&output_path).expect("regression score output was written"),
+    )
+    .expect("regression score output is JSON");
+    assert_eq!(scored["report"]["metrics"]["rmse"], 1.0);
+    assert_eq!(scored["report"]["metrics"]["r2"], 0.75);
+    assert_eq!(scored["candidate_score"]["candidate_id"], "model:pls");
+    assert_eq!(
+        scored["candidate_score"]["metadata"]["producer_node"],
+        "model:pls"
+    );
+}
+
+#[test]
 fn cli_selects_builds_and_validates_replay_bundle() {
     let root = repo_root();
     let temp_bundle = std::env::temp_dir().join(format!(

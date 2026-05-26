@@ -1,0 +1,20 @@
+{
+  "prediction_id": "pred:sample",
+  "producer_node": "model:pls",
+  "partition": "validation",
+  "sample_ids": [
+    "sample:1",
+    "sample:2"
+  ],
+  "values": [
+    [
+      2.0
+    ],
+    [
+      4.0
+    ]
+  ],
+  "target_names": [
+    "y"
+  ]
+}

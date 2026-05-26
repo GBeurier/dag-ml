@@ -5,13 +5,15 @@ use std::slice;
 use std::sync::Mutex;
 
 use dag_ml_core::{
-    build_execution_plan, select_candidate, select_candidate_groups,
-    ArtifactMaterializationRequest, BundlePredictionCachePayloadSet, BundleReplayExecution,
-    CampaignSpec, CandidateScore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
-    DataMaterializationRequest, DataRequestPartition, DataViewRequest, ExecutionBundle,
-    ExecutionPlan, ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef,
-    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeResult, NodeTask,
-    Phase, PredictionBlock, PredictionCacheMaterializationRequest, PredictionPartition,
+    build_execution_plan, regression_report_to_candidate_score, score_regression_aggregated_block,
+    score_regression_prediction_block, select_candidate, select_candidate_groups,
+    AggregatedPredictionBlock, ArtifactMaterializationRequest, BundlePredictionCachePayloadSet,
+    BundleReplayExecution, CampaignSpec, CandidateScore, ControllerId, ControllerManifest,
+    ControllerRegistry, DagMlError, DataMaterializationRequest, DataRequestPartition,
+    DataViewRequest, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope, GraphSpec,
+    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
+    NodeResult, NodeTask, Phase, PredictionBlock, PredictionCacheMaterializationRequest,
+    PredictionPartition, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
     ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
     RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
     SelectionDecision, SelectionPolicy, SequentialScheduler,
@@ -631,6 +633,153 @@ pub unsafe extern "C" fn dagml_select_candidate_groups_json(
             set_error(error_out, error.to_string());
             DagMlStatusCode::VALIDATION_ERROR
         }
+    }
+}
+
+/// Scores a sample-level `PredictionBlock` against a `RegressionTargetBlock`.
+///
+/// `metrics_json` must be a JSON array of metric names, for example
+/// `["rmse","mae","r2"]`.
+///
+/// # Safety
+///
+/// Input pointers follow the same rules as `dagml_graph_validate_json`.
+/// `out_json` must point to writable memory for one `DagMlOwnedBytes`; returned
+/// bytes must be released with `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_score_regression_prediction_block_json(
+    predictions_ptr: *const u8,
+    predictions_len: usize,
+    targets_ptr: *const u8,
+    targets_len: usize,
+    metrics_ptr: *const u8,
+    metrics_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let predictions = match parse_json_ptr::<PredictionBlock>(
+        predictions_ptr,
+        predictions_len,
+        error_out,
+        "sample prediction block",
+    ) {
+        Ok(predictions) => predictions,
+        Err(status) => return status,
+    };
+    let targets = match parse_json_ptr::<RegressionTargetBlock>(
+        targets_ptr,
+        targets_len,
+        error_out,
+        "regression target block",
+    ) {
+        Ok(targets) => targets,
+        Err(status) => return status,
+    };
+    let metrics = match parse_json_ptr::<Vec<RegressionMetricKind>>(
+        metrics_ptr,
+        metrics_len,
+        error_out,
+        "regression metric list",
+    ) {
+        Ok(metrics) => metrics,
+        Err(status) => return status,
+    };
+    match score_regression_prediction_block(&predictions, &targets, &metrics) {
+        Ok(report) => write_owned_json(out_json, error_out, &report),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Scores an `AggregatedPredictionBlock` against a `RegressionTargetBlock`.
+///
+/// `metrics_json` must be a JSON array of metric names, for example
+/// `["rmse","mae","r2"]`.
+///
+/// # Safety
+///
+/// Input pointers follow the same rules as `dagml_graph_validate_json`.
+/// `out_json` must point to writable memory for one `DagMlOwnedBytes`; returned
+/// bytes must be released with `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_score_regression_aggregated_block_json(
+    predictions_ptr: *const u8,
+    predictions_len: usize,
+    targets_ptr: *const u8,
+    targets_len: usize,
+    metrics_ptr: *const u8,
+    metrics_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let predictions = match parse_json_ptr::<AggregatedPredictionBlock>(
+        predictions_ptr,
+        predictions_len,
+        error_out,
+        "aggregated prediction block",
+    ) {
+        Ok(predictions) => predictions,
+        Err(status) => return status,
+    };
+    let targets = match parse_json_ptr::<RegressionTargetBlock>(
+        targets_ptr,
+        targets_len,
+        error_out,
+        "regression target block",
+    ) {
+        Ok(targets) => targets,
+        Err(status) => return status,
+    };
+    let metrics = match parse_json_ptr::<Vec<RegressionMetricKind>>(
+        metrics_ptr,
+        metrics_len,
+        error_out,
+        "regression metric list",
+    ) {
+        Ok(metrics) => metrics,
+        Err(status) => return status,
+    };
+    match score_regression_aggregated_block(&predictions, &targets, &metrics) {
+        Ok(report) => write_owned_json(out_json, error_out, &report),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Converts a `RegressionMetricReport` to a selection `CandidateScore`.
+///
+/// # Safety
+///
+/// Input pointers follow the same rules as `dagml_graph_validate_json`.
+/// `candidate_id` must point to UTF-8 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_regression_report_candidate_score_json(
+    report_ptr: *const u8,
+    report_len: usize,
+    candidate_id: DagMlBytesView,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let report = match parse_json_ptr::<RegressionMetricReport>(
+        report_ptr,
+        report_len,
+        error_out,
+        "regression metric report",
+    ) {
+        Ok(report) => report,
+        Err(status) => return status,
+    };
+    let candidate_id = match parse_utf8_view(candidate_id, error_out, "candidate id") {
+        Ok(candidate_id) => candidate_id,
+        Err(status) => return status,
+    };
+    match regression_report_to_candidate_score(candidate_id, report) {
+        Ok(score) => write_owned_json(out_json, error_out, &score),
+        Err(error) => validation_error(error_out, error),
     }
 }
 
@@ -3055,6 +3204,125 @@ mod tests {
             decisions["merge"].selected_candidate_id,
             "merge:m1.predictions_plus_original"
         );
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn scores_regression_predictions_over_abi() {
+        let predictions = br#"{
+  "prediction_id": "pred:sample",
+  "producer_node": "model:pls",
+  "partition": "validation",
+  "sample_ids": ["sample:1", "sample:2"],
+  "values": [[2.0], [4.0]],
+  "target_names": ["y"]
+}"#;
+        let targets = br#"{
+  "level": "sample",
+  "unit_ids": [
+    {"level": "sample", "id": "sample:2"},
+    {"level": "sample", "id": "sample:1"}
+  ],
+  "values": [[5.0], [1.0]],
+  "target_names": ["y"]
+}"#;
+        let metrics = br#"["rmse", "mae", "r2"]"#;
+        let mut report_out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_score_regression_prediction_block_json(
+                predictions.as_ptr(),
+                predictions.len(),
+                targets.as_ptr(),
+                targets.len(),
+                metrics.as_ptr(),
+                metrics.len(),
+                &mut report_out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!report_out.ptr.is_null());
+        let report_json = unsafe { slice::from_raw_parts(report_out.ptr, report_out.len) };
+        let report: RegressionMetricReport = serde_json::from_slice(report_json).unwrap();
+        assert_eq!(report.producer_node, NodeId::new("model:pls").unwrap());
+        assert_eq!(report.partition, PredictionPartition::Validation);
+        assert_eq!(report.metrics["rmse"], 1.0);
+        assert_eq!(report.metrics["r2"], 0.75);
+
+        let candidate_id = b"model:pls";
+        let mut candidate_out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_regression_report_candidate_score_json(
+                report_json.as_ptr(),
+                report_json.len(),
+                bytes_view(candidate_id),
+                &mut candidate_out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let candidate_json = unsafe { slice::from_raw_parts(candidate_out.ptr, candidate_out.len) };
+        let candidate: CandidateScore = serde_json::from_slice(candidate_json).unwrap();
+        assert_eq!(candidate.candidate_id, "model:pls");
+        assert_eq!(candidate.metrics["rmse"], 1.0);
+        assert_eq!(candidate.metadata["producer_node"], "model:pls");
+        unsafe { dagml_owned_bytes_free(candidate_out) };
+        unsafe { dagml_owned_bytes_free(report_out) };
+    }
+
+    #[test]
+    fn scores_aggregated_regression_predictions_over_abi() {
+        let predictions = br#"{
+  "prediction_id": "pred:target",
+  "producer_node": "model:pls",
+  "partition": "validation",
+  "level": "target",
+  "unit_ids": [
+    {"level": "target", "id": "target:a"},
+    {"level": "target", "id": "target:b"}
+  ],
+  "values": [[1.0, 10.0], [3.0, 30.0]],
+  "target_names": ["y1", "y2"]
+}"#;
+        let targets = br#"{
+  "level": "target",
+  "unit_ids": [
+    {"level": "target", "id": "target:b"},
+    {"level": "target", "id": "target:a"}
+  ],
+  "values": [[2.0, 28.0], [2.0, 12.0]],
+  "target_names": ["y1", "y2"]
+}"#;
+        let metrics = br#"["mse", "rmse"]"#;
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_score_regression_aggregated_block_json(
+                predictions.as_ptr(),
+                predictions.len(),
+                targets.as_ptr(),
+                targets.len(),
+                metrics.as_ptr(),
+                metrics.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let report: RegressionMetricReport = serde_json::from_slice(json).unwrap();
+        assert_eq!(report.row_count, 2);
+        assert_eq!(report.target_width, 2);
+        assert_eq!(report.metrics["mse"], 2.5);
+        assert_eq!(report.metrics["rmse"], 1.5);
         unsafe { dagml_owned_bytes_free(out) };
     }
 

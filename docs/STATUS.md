@@ -104,6 +104,9 @@ Implemented:
   group prediction blocks (`mse`, `rmse`, `mae`, `r2`), with finite score
   validation, prediction origin traceability and direct conversion to
   `CandidateScore` for selection;
+- CLI and C ABI JSON entry points for identity-aligned regression scoring over
+  sample or aggregated prediction blocks, plus report-to-`CandidateScore`
+  conversion for non-Rust bindings;
 - refit execution bundle contracts that bind selected variants, selected
   candidates, refit artifacts, plan fingerprints and replay data requirements;
 - execution-bundle validation now checks selected candidates against the
@@ -211,9 +214,9 @@ Implemented:
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph validation,
-  graph parallel levels, execution-plan build, selection decisions, grouped
-  selection, execution bundles, replay envelopes, replay requests and
-  prediction-cache payload sets;
+  graph parallel levels, execution-plan build, regression metric reports,
+  selection decisions, grouped selection, execution bundles, replay envelopes,
+  replay requests and prediction-cache payload sets;
 - C ABI data-provider vtable shape aligned with `dag-ml-data`
   materialize/view/identity/target/feature exports plus a tested Rust runtime
   adapter over the vtable;
