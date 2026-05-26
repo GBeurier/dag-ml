@@ -79,9 +79,12 @@ Implemented:
   controller, version, variant, fold, branch, seed, params fingerprint, output
   owner, artifact controller fields and artifact handle ownership;
 - in-memory prediction store and lineage recorder;
-- sequential scheduler for DAG order plus campaign execution over
-  variant x CV-fold scopes; it now walks the precomputed phase node levels,
-  preserving deterministic order while preparing executor-level parallelism;
+- sequential scheduler for deterministic DAG order plus campaign execution over
+  variant x CV-fold scopes;
+- bounded parallel scheduler for compiled DAG levels, including `FIT_CV`,
+  `REFIT` artifact capture and bundle replay paths; controller invocation is
+  concurrent within each level while data/view preparation and result commits
+  stay deterministic;
 - deterministic graph parallel-level planner for future node-batch execution
   without changing topological semantics;
 - C ABI exports both compiled execution plans and phase execution schedules as
@@ -166,6 +169,9 @@ Implemented:
   node/variant/fold, routes `REFIT`/`PREDICT` by node/variant for artifact
   stickiness, and exposes observed worker counts through adapter lineage
   metrics;
+- CLI execution commands expose `--scheduler sequential|parallel` plus
+  `--scheduler-workers`, so branch/merge campaigns can exercise the core
+  parallel scheduler against persistent process adapters;
 - persistent process workers now have a coordinator-side watchdog
   (`--process-timeout-ms`) and opt-in task retry (`--process-retries`) that
   kills, replaces and replays a task on the targeted worker after timeout, EOF

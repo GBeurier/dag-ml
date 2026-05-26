@@ -65,8 +65,9 @@ independent nodes from the same compiled DAG level concurrently and commits
 their outputs, predictions and lineage in deterministic order. Runtime
 controllers are now `Send + Sync`; the persistent process adapter pool locks per
 worker, so parallel scheduler threads can use distinct workers instead of
-serializing on the whole pool. CLI integration and broader stress tests remain
-to do.
+serializing on the whole pool. The CLI exposes `--scheduler sequential|parallel`
+and `--scheduler-workers` for campaign, refit and replay execution commands.
+Broader stress tests remain to do.
 
 ## Phase 3: Integration With `dag-ml-data`
 

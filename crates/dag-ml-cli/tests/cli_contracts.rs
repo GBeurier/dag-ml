@@ -1454,6 +1454,58 @@ fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() 
 }
 
 #[test]
+fn cli_parallel_scheduler_runs_branch_merge_process_campaign() {
+    let root = repo_root();
+    let run_id = format!("run:cli.parallel.branch.merge.{}", unique_suffix());
+    let output = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--process-workers",
+            "2",
+            "--scheduler",
+            "parallel",
+            "--scheduler-workers",
+            "2",
+            "--plan-id",
+            "plan:cli.parallel.branch.merge",
+            "--run-id",
+            run_id.as_str(),
+        ])
+        .output()
+        .expect("failed to run parallel branch/merge process campaign");
+
+    assert!(
+        output.status.success(),
+        "parallel branch/merge process campaign failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("process campaign run: 6 result(s)")
+            && stdout.contains("6 prediction block(s)")
+            && stdout.contains("scheduler=parallel")
+            && stdout.contains("scheduler worker(s)=2")
+            && stdout.contains("configured process worker(s)=2")
+            && stdout.contains("observed process worker(s)=2"),
+        "unexpected parallel branch/merge process campaign output: {}",
+        stdout
+    );
+}
+
+#[test]
 fn cli_validates_sibling_dag_ml_data_coordinator_fixture_when_available() {
     let root = repo_root();
     let dag_ml_data_root = if let Some(path) = std::env::var_os("DAG_ML_DATA_REPO") {
