@@ -147,14 +147,14 @@ envelope before a controller receives any handle.
 
 At execution time, the scheduler does not give the controller the raw
 materialized data handle directly. It asks the data provider for a scoped view
-derived from the active phase and `DataViewPolicy`: fold-train views carry the
-fold training sample ids, fold-validation views carry the validation sample ids,
-refit/full-train views carry the full training sample ids, and replay predict
-views are marked as predict partitions. The handle visible in `TaskRequest` is
-the scoped data-view handle, and the same request carries a `data_views` map
-keyed like `input_handles` so bindings can inspect the selected partition
-without guessing from the handle. The parent handle remains traceability state
-owned by the provider.
+derived from the active phase and `DataViewPolicy`: `FIT_CV` tasks receive a
+fold-train view for fitting and a separate fold-validation view for OOF
+prediction, refit/full-train views carry the full training sample ids, and
+replay predict views are marked as predict partitions. The handles visible in
+`TaskRequest` are scoped data-view handles, and the same request carries a
+`data_views` map keyed like `input_handles` so bindings can inspect the selected
+partition without guessing from the handle. The parent handle remains
+traceability state owned by the provider.
 
 Controller outputs:
 
@@ -551,6 +551,7 @@ Before dispatch, the Rust core checks:
 - data plan fingerprint matches;
 - requested data views match the active phase, fold id and partition;
 - view sample ids are in the active fold/partition;
+- validation prediction sample ids are contained in the fold-validation view;
 - leakage unit membership is compatible with the active fold;
 - task data/model shape plan matches the phase and controller manifest;
 - seed is derived from the canonical path;

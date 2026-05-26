@@ -10,7 +10,7 @@ use crate::ids::{
     ArtifactId, BranchId, BundleId, ControllerId, FoldId, LineageId, NodeId, RunId, SampleId,
     VariantId,
 };
-use crate::oof::PredictionBlock;
+use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::{ExecutionPlan, NodePlan};
 use crate::policy::ShapeDelta;
@@ -429,6 +429,7 @@ impl NodeResult {
                     task.node_plan.node_id, prediction.producer_node
                 )));
             }
+            validate_prediction_scope(prediction, task)?;
         }
         for delta in &self.shape_deltas {
             delta.validate()?;
@@ -441,6 +442,52 @@ impl NodeResult {
         }
         self.lineage.validate()
     }
+}
+
+fn validate_prediction_scope(prediction: &PredictionBlock, task: &NodeTask) -> Result<()> {
+    if prediction.partition != PredictionPartition::Validation {
+        return Ok(());
+    }
+    if prediction.fold_id != task.fold_id {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "node `{}` emitted validation predictions for fold {:?}, expected {:?}",
+            task.node_plan.node_id, prediction.fold_id, task.fold_id
+        )));
+    }
+    if task.phase == Phase::FitCv
+        && task.fold_id.is_some()
+        && !task.node_plan.data_bindings.is_empty()
+    {
+        let validation_sample_ids = validation_view_sample_ids(task).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted validation predictions without a fold-validation data view",
+                task.node_plan.node_id
+            ))
+        })?;
+        for sample_id in &prediction.sample_ids {
+            if !validation_sample_ids.contains(sample_id) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted validation prediction for sample `{}` outside its validation view",
+                    task.node_plan.node_id, sample_id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validation_view_sample_ids(task: &NodeTask) -> Option<BTreeSet<SampleId>> {
+    let mut sample_ids = BTreeSet::new();
+    for view in task
+        .data_views
+        .values()
+        .filter(|view| view.partition == DataRequestPartition::FoldValidation)
+    {
+        if let Some(view_sample_ids) = &view.sample_ids {
+            sample_ids.extend(view_sample_ids.iter().cloned());
+        }
+    }
+    (!sample_ids.is_empty()).then_some(sample_ids)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -877,20 +924,35 @@ fn collect_input_handles(
                 binding: binding.clone(),
             })?;
             let view = data_view_for_scope(binding, plan.fold_set.as_ref(), scope)?;
-            let view_handle = data_provider.make_view(&DataViewRequest {
-                run_id: ctx.run_id.clone(),
-                node_id: node_plan.node_id.clone(),
-                input_name: binding.input_name.clone(),
-                phase: scope.phase,
-                variant_id: scope.variant_id.clone(),
-                fold_id: scope.fold_id.clone(),
-                binding: binding.clone(),
-                data_handle: materialized,
-                view: view.clone(),
-            })?;
             let key = format!("data:{}", binding.input_name);
+            let view_handle = make_data_view_handle(
+                data_provider,
+                ctx,
+                node_plan,
+                scope,
+                binding,
+                &materialized,
+                &view,
+            )?;
             data_views.insert(key.clone(), view);
             inputs.insert(key, view_handle);
+
+            if let Some(validation_view) =
+                validation_data_view_for_scope(binding, plan.fold_set.as_ref(), scope)?
+            {
+                let validation_key = format!("data:{}:validation", binding.input_name);
+                let validation_handle = make_data_view_handle(
+                    data_provider,
+                    ctx,
+                    node_plan,
+                    scope,
+                    binding,
+                    &materialized,
+                    &validation_view,
+                )?;
+                data_views.insert(validation_key.clone(), validation_view);
+                inputs.insert(validation_key, validation_handle);
+            }
         }
     }
     Ok(CollectedInputs {
@@ -904,12 +966,58 @@ struct CollectedInputs {
     data_views: BTreeMap<String, DataProviderViewSpec>,
 }
 
+fn make_data_view_handle(
+    data_provider: &dyn RuntimeDataProvider,
+    ctx: &RunContext,
+    node_plan: &NodePlan,
+    scope: &PhaseScope,
+    binding: &DataBinding,
+    data_handle: &HandleRef,
+    view: &DataProviderViewSpec,
+) -> Result<HandleRef> {
+    data_provider.make_view(&DataViewRequest {
+        run_id: ctx.run_id.clone(),
+        node_id: node_plan.node_id.clone(),
+        input_name: binding.input_name.clone(),
+        phase: scope.phase,
+        variant_id: scope.variant_id.clone(),
+        fold_id: scope.fold_id.clone(),
+        binding: binding.clone(),
+        data_handle: data_handle.clone(),
+        view: view.clone(),
+    })
+}
+
 fn data_view_for_scope(
     binding: &DataBinding,
     fold_set: Option<&FoldSet>,
     scope: &PhaseScope,
 ) -> Result<DataProviderViewSpec> {
     let partition = data_partition_for_scope(binding, scope);
+    data_view_for_partition(binding, fold_set, scope, partition)
+}
+
+fn validation_data_view_for_scope(
+    binding: &DataBinding,
+    fold_set: Option<&FoldSet>,
+    scope: &PhaseScope,
+) -> Result<Option<DataProviderViewSpec>> {
+    if scope.phase != Phase::FitCv || scope.fold_id.is_none() {
+        return Ok(None);
+    }
+    let partition = binding.view_policy.predict_partition;
+    if partition == data_partition_for_scope(binding, scope) {
+        return Ok(None);
+    }
+    data_view_for_partition(binding, fold_set, scope, partition).map(Some)
+}
+
+fn data_view_for_partition(
+    binding: &DataBinding,
+    fold_set: Option<&FoldSet>,
+    scope: &PhaseScope,
+    partition: DataRequestPartition,
+) -> Result<DataProviderViewSpec> {
     let fold = fold_for_scope(fold_set, scope.fold_id.as_ref())?;
     let sample_ids = sample_ids_for_partition(partition, fold_set, fold);
     if binding.view_policy.require_sample_ids
@@ -1136,6 +1244,21 @@ mod tests {
                         task.node_plan.node_id
                     )));
                 }
+                if task.phase == Phase::FitCv && task.fold_id.is_some() {
+                    let validation_key = format!("{key}:validation");
+                    let validation_view = task.data_views.get(&validation_key).ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "node `{}` did not receive validation data view spec for `{validation_key}`",
+                            task.node_plan.node_id
+                        ))
+                    })?;
+                    if validation_view.partition != DataRequestPartition::FoldValidation {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "node `{}` received non-validation data view for `{validation_key}`",
+                            task.node_plan.node_id
+                        )));
+                    }
+                }
             }
             let variant_label = task
                 .variant_id
@@ -1152,15 +1275,18 @@ mod tests {
                 kind: HandleKind::Data,
                 owner_controller: self.id.clone(),
             };
+            let prediction_sample_ids = validation_view_sample_ids(task)
+                .map(|ids| ids.into_iter().collect::<Vec<_>>())
+                .unwrap_or_else(|| vec![SampleId::new("s1").unwrap()]);
             let predictions = self
                 .emit_prediction
                 .then(|| PredictionBlock {
                     prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                     producer_node: task.node_plan.node_id.clone(),
                     partition: PredictionPartition::Validation,
-                    fold_id: None,
-                    sample_ids: vec![SampleId::new("s1").unwrap()],
-                    values: vec![vec![1.0]],
+                    fold_id: task.fold_id.clone(),
+                    sample_ids: prediction_sample_ids.clone(),
+                    values: vec![vec![1.0]; prediction_sample_ids.len()],
                     target_names: vec!["y".to_string()],
                 })
                 .into_iter()
@@ -1230,6 +1356,21 @@ mod tests {
                         "node `{}` did not receive data view spec for `{key}`",
                         task.node_plan.node_id
                     )));
+                }
+                if task.phase == Phase::FitCv && task.fold_id.is_some() {
+                    let validation_key = format!("{key}:validation");
+                    let validation_view = task.data_views.get(&validation_key).ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "node `{}` did not receive validation data view spec for `{validation_key}`",
+                            task.node_plan.node_id
+                        ))
+                    })?;
+                    if validation_view.partition != DataRequestPartition::FoldValidation {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "node `{}` received non-validation data view for `{validation_key}`",
+                            task.node_plan.node_id
+                        )));
+                    }
                 }
             }
             if self.require_artifact {
@@ -1771,19 +1912,35 @@ mod tests {
         assert_eq!(results.len(), 4);
         assert_eq!(provider.handle_records().len(), 2);
         let views = provider.view_records();
-        assert_eq!(views.len(), 2);
+        assert_eq!(views.len(), 4);
         assert!(views
             .iter()
             .all(|view| view.handle.kind == HandleKind::DataView));
-        assert_eq!(views[0].view.partition, DataRequestPartition::FoldTrain);
+        let train_views = views
+            .iter()
+            .filter(|view| view.view.partition == DataRequestPartition::FoldTrain)
+            .collect::<Vec<_>>();
+        let validation_views = views
+            .iter()
+            .filter(|view| view.view.partition == DataRequestPartition::FoldValidation)
+            .collect::<Vec<_>>();
+        assert_eq!(train_views.len(), 2);
+        assert_eq!(validation_views.len(), 2);
         assert_eq!(
-            views[0].view.sample_ids,
+            train_views[0].view.sample_ids,
             Some(vec![SampleId::new("s2").unwrap()])
         );
-        assert_eq!(views[1].view.partition, DataRequestPartition::FoldTrain);
         assert_eq!(
-            views[1].view.sample_ids,
+            validation_views[0].view.sample_ids,
             Some(vec![SampleId::new("s1").unwrap()])
+        );
+        assert_eq!(
+            train_views[1].view.sample_ids,
+            Some(vec![SampleId::new("s1").unwrap()])
+        );
+        assert_eq!(
+            validation_views[1].view.sample_ids,
+            Some(vec![SampleId::new("s2").unwrap()])
         );
     }
 
@@ -1902,6 +2059,101 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("output `out`"));
+    }
+
+    #[test]
+    fn node_result_validation_rejects_predictions_outside_validation_view() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let plan = build_execution_plan(
+            "plan:result.validation.samples",
+            simple_graph(),
+            CampaignSpec {
+                id: "campaign:result.validation.samples".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: Some(SplitInvocation {
+                    id: "split:outer".to_string(),
+                    controller_id: None,
+                    leakage_policy: Default::default(),
+                    params: BTreeMap::new(),
+                    fold_set: Some(two_fold_set()),
+                }),
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]),
+                metadata: BTreeMap::new(),
+            },
+            &manifests(),
+        )
+        .unwrap();
+        let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
+        let task = NodeTask {
+            run_id: RunId::new("run:result.validation.samples").unwrap(),
+            node_plan: node_plan.clone(),
+            phase: Phase::FitCv,
+            variant_id: Some(VariantId::new("variant:base").unwrap()),
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            branch_path: Vec::new(),
+            input_handles: BTreeMap::new(),
+            data_views: BTreeMap::from([(
+                "data:x:validation".to_string(),
+                DataProviderViewSpec {
+                    sample_ids: Some(vec![SampleId::new("s1").unwrap()]),
+                    partition: DataRequestPartition::FoldValidation,
+                    fold_id: Some(FoldId::new("fold:0").unwrap()),
+                    source_ids: None,
+                    columns: None,
+                    include_augmented: false,
+                    include_excluded: false,
+                    extra: BTreeMap::new(),
+                },
+            )]),
+            seed: Some(99),
+        };
+        let result = NodeResult {
+            node_id: model_id.clone(),
+            outputs: BTreeMap::from([(
+                "out".to_string(),
+                HandleRef {
+                    handle: 7,
+                    kind: HandleKind::Data,
+                    owner_controller: node_plan.controller_id.clone(),
+                },
+            )]),
+            predictions: vec![PredictionBlock {
+                prediction_id: Some("pred:bad.sample".to_string()),
+                producer_node: model_id,
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                sample_ids: vec![SampleId::new("s2").unwrap()],
+                values: vec![vec![1.0]],
+                target_names: vec!["y".to_string()],
+            }],
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new("lineage:bad.sample").unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: task.node_plan.controller_id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        };
+
+        assert!(result.validate_for_task(&task).is_err());
     }
 
     #[test]

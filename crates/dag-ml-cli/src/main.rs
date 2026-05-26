@@ -9,12 +9,12 @@ use clap::{Parser, Subcommand};
 use dag_ml_core::{
     build_execution_bundle, build_execution_plan, oof_campaign_fingerprint, select_candidate,
     select_candidate_groups, validate_oof_campaign, BundleId, CampaignSpec, CandidateScore,
-    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, ExecutionBundle,
-    ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
-    InMemoryDataProvider, LineageId, LineageRecord, NodeId, NodeResult, NodeTask, OofCampaign,
-    Phase, PredictionBlock, PredictionPartition, RefitArtifactRecord, ReplayPhaseRequest,
-    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, SampleId, SelectionDecision,
-    SelectionPolicy, SequentialScheduler, VariantId,
+    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataRequestPartition,
+    ExecutionBundle, ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef,
+    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeId, NodeResult,
+    NodeTask, OofCampaign, Phase, PredictionBlock, PredictionPartition, RefitArtifactRecord,
+    ReplayPhaseRequest, RunContext, RunId, RuntimeController, RuntimeControllerRegistry, SampleId,
+    SelectionDecision, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -784,6 +784,21 @@ impl RuntimeController for CliMockController {
                     task.node_plan.node_id
                 )));
             }
+            if task.phase == Phase::FitCv && task.fold_id.is_some() {
+                let validation_key = format!("{key}:validation");
+                let validation_view = task.data_views.get(&validation_key).ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "node `{}` did not receive validation data view spec for `{validation_key}`",
+                        task.node_plan.node_id
+                    ))
+                })?;
+                if validation_view.partition != DataRequestPartition::FoldValidation {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received non-validation data view for `{validation_key}`",
+                        task.node_plan.node_id
+                    )));
+                }
+            }
         }
 
         if task.phase == Phase::Predict
@@ -816,13 +831,21 @@ impl RuntimeController for CliMockController {
             owner_controller: self.id.clone(),
         };
         let predictions = if matches!(task.node_plan.kind, dag_ml_core::NodeKind::Model) {
+            let sample_ids = prediction_sample_ids_for_task(task)?;
             vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
                 partition: prediction_partition_for_phase(task.phase),
-                fold_id: task.fold_id.clone(),
-                sample_ids: vec![SampleId::new("sample:mock")?],
-                values: vec![vec![stable_handle(task.node_plan.node_id.as_str()) as f64]],
+                fold_id: if task.phase == Phase::FitCv {
+                    task.fold_id.clone()
+                } else {
+                    None
+                },
+                sample_ids: sample_ids.clone(),
+                values: vec![
+                    vec![stable_handle(task.node_plan.node_id.as_str()) as f64];
+                    sample_ids.len()
+                ],
                 target_names: vec!["y".to_string()],
             }]
         } else {
@@ -968,6 +991,23 @@ fn prediction_partition_for_phase(phase: Phase) -> PredictionPartition {
         Phase::Explain => PredictionPartition::Final,
         Phase::Compile | Phase::Plan | Phase::Select => PredictionPartition::Test,
     }
+}
+
+fn prediction_sample_ids_for_task(task: &NodeTask) -> dag_ml_core::Result<Vec<SampleId>> {
+    if task.phase == Phase::FitCv {
+        if let Some(view) = task
+            .data_views
+            .values()
+            .find(|view| view.partition == DataRequestPartition::FoldValidation)
+        {
+            if let Some(sample_ids) = &view.sample_ids {
+                if !sample_ids.is_empty() {
+                    return Ok(sample_ids.clone());
+                }
+            }
+        }
+    }
+    Ok(vec![SampleId::new("sample:mock")?])
 }
 
 fn stable_handle(value: &str) -> u64 {
