@@ -736,7 +736,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_refit_replay_with_payload_stdout.contains("7 prediction block(s)")
             && branch_merge_refit_replay_with_payload_stdout.contains("3 data handle(s)")
             && branch_merge_refit_replay_with_payload_stdout.contains("3 data view(s)")
-            && branch_merge_refit_replay_with_payload_stdout.contains("3 artifact handle(s)"),
+            && branch_merge_refit_replay_with_payload_stdout.contains("3 artifact handle(s)")
+            && branch_merge_refit_replay_with_payload_stdout
+                .contains("2 prediction cache handle(s)"),
         "unexpected branch/merge REFIT replay with payload output: {}",
         branch_merge_refit_replay_with_payload_stdout
     );

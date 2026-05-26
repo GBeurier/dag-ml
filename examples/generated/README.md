@@ -60,7 +60,8 @@ replay smoke reuses that bundle for the two branch models and the meta-model
 while all three data requirements point at the same validated data-plan
 envelope. The paired refit replay smoke proves that manifest-only OOF replay is
 not enough: replay must receive the validated prediction-cache payload so the
-validation blocks can be preloaded before the meta-model refit. The sklearn
+validation blocks can be loaded through the runtime prediction-cache store and
+materialized as OOF prediction handles before the meta-model refit. The sklearn
 refit/replay smoke fits a real sklearn pipeline and reuses the captured model
 handle in a persistent JSONL process. The branch/merge sklearn CV+refit+replay
 smoke keeps three captured model handles alive through replay inside the same

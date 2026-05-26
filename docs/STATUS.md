@@ -96,6 +96,10 @@ Implemented:
   JSON stores the actual validation `PredictionBlock` values, validates by
   cache id, requirement key, format, row/block counts and content fingerprints
   against the bundle manifest, and refuses tampered payload values;
+- runtime prediction-cache store contract plus in-memory payload-backed store:
+  replay loads exact validation OOF blocks through the store, validates them
+  against bundle cache records, and asks the store to materialize controller
+  prediction handles for OOF-dependent refit inputs;
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;
@@ -144,7 +148,8 @@ Not implemented yet:
 - full DSL compiler;
 - full search-space compiler/lowering into graph/campaign overrides;
 - non-mean aggregation methods and custom aggregation controllers;
-- persistent artifact/cache stores beyond JSON cache payload export;
+- persistent artifact/cache stores beyond JSON cache payload export and the
+  in-memory prediction-cache store adapter;
 - Arrow prediction storage;
 - production host controller adapters with stable process pools, native
   libraries or language-specific bindings;
@@ -154,5 +159,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Replace JSON cache payload side-files with a persistent prediction-cache store
-interface that can materialize OOF handles for native and foreign controllers.
+Add native/foreign store backends behind `RuntimePredictionCacheStore`, starting
+with an Arrow-backed prediction cache that can be shared across process and C
+ABI controller adapters.
