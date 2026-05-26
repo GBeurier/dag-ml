@@ -385,7 +385,8 @@ FIT_CV requirements:
 4. Metrics are computed in parallel when requested. The core provides
    identity-aligned regression scoring for validated sample/target/group
    prediction blocks (`mse`, `rmse`, `mae`, `r2`) and refuses positional-only
-   or mismatched unit sets.
+   or mismatched unit sets. Metric reports preserve the scored prediction
+   origin: producer node, partition, optional fold and optional prediction id.
 5. Selection must declare which metric level is authoritative.
 6. OOF joins use the declared aggregation level and must not mix raw and
    aggregated predictions implicitly.
