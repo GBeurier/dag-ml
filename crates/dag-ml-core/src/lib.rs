@@ -5,6 +5,7 @@
 //! prediction flows that every binding must preserve.
 
 pub mod aggregation;
+pub mod bundle;
 pub mod campaign;
 pub mod controller;
 pub mod data;
@@ -20,8 +21,10 @@ pub mod policy;
 pub mod relation;
 pub mod rng;
 pub mod runtime;
+pub mod selection;
 
 pub use aggregation::*;
+pub use bundle::*;
 pub use campaign::*;
 pub use controller::*;
 pub use data::*;
@@ -37,3 +40,4 @@ pub use policy::*;
 pub use relation::*;
 pub use rng::*;
 pub use runtime::*;
+pub use selection::*;

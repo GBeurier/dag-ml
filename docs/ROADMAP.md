@@ -72,3 +72,8 @@ Definition of done:
 - train bundle includes graph, selected plan, artifacts, fingerprints and lineage;
 - `PREDICT` replay works on new data;
 - `EXPLAIN` hooks can pass opaque explanation payloads.
+
+Status: core contract started. `ExecutionBundle` now records plan/controller
+fingerprints, selected variants, deterministic selection decisions, refit
+artifacts and the external data requirements needed for replay. The remaining
+work is CLI/C ABI exposure, import/export persistence and host adapter replay.
