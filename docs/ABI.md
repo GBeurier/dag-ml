@@ -23,9 +23,19 @@ the host owns the underlying object behind each handle.
 - `DagMlControllerVTable` for host operator controllers;
 - `DagMlDataVTable` for host data providers, including `materialize`,
   `make_view`, `view_identity`, `target_arrow` and `feature_arrow`.
+- `DagMlPredictionCacheVTable` for host prediction-cache stores, including
+  `load_blocks`, `materialize` and explicit returned-byte release.
 
 The vtables are intentionally small in this scaffold. They establish shape,
 ownership and naming before full execution is implemented.
+
+`DagMlStatusCode` is a fixed `uint32_t` ABI value rather than a C/Rust enum
+boundary type. Unknown host status codes are treated as runtime validation
+errors instead of being decoded as Rust enum discriminants.
+
+Vtable `user_data` lifetime remains host-owned in this scaffold. `release` and
+`destroy` callbacks define the ownership shape for bindings, but the current
+Rust adapters do not claim ownership of the host context.
 
 ## Ownership Rules
 
@@ -33,8 +43,10 @@ ownership and naming before full execution is implemented.
 |---|---|---|
 | Host data block | Host | `DataVTable.release` |
 | Host fitted model | Host | `ControllerVTable.release` |
+| Host prediction cache handle | Host | `PredictionCacheVTable.release` |
 | Rust error string | Rust allocation returned through ABI | `dagml_string_free` |
 | Rust JSON byte output | Rust allocation returned through ABI | `dagml_owned_bytes_free` |
+| Host JSON byte output | Host allocation returned through prediction-cache vtable | `PredictionCacheVTable.release_bytes` |
 | Arrow arrays | Producer of the Arrow array | Arrow C Data Interface release callback |
 | JSON blobs | Caller-provided view unless returned as owned bytes | ABI-specific free function |
 

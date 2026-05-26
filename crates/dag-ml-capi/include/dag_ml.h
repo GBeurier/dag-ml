@@ -10,12 +10,14 @@ extern "C" {
 
 typedef uint64_t DagMlHandle;
 
-typedef enum DagMlStatusCode {
+typedef uint32_t DagMlStatusCode;
+
+enum {
     DAG_ML_STATUS_OK = 0,
     DAG_ML_STATUS_INVALID_ARGUMENT = 1,
     DAG_ML_STATUS_VALIDATION_ERROR = 2,
     DAG_ML_STATUS_PANIC = 255
-} DagMlStatusCode;
+};
 
 typedef struct DagMlVersion {
     uint32_t major;
@@ -91,6 +93,16 @@ typedef struct DagMlDataVTable {
     void (*release)(void *user_data, DagMlHandle handle);
     void (*destroy)(void *user_data);
 } DagMlDataVTable;
+
+typedef struct DagMlPredictionCacheVTable {
+    uint32_t abi_version;
+    void *user_data;
+    DagMlStatusCode (*load_blocks)(void *user_data, DagMlBytesView requirement_key, DagMlOwnedBytes *out_json);
+    DagMlStatusCode (*materialize)(void *user_data, DagMlBytesView request_json, DagMlHandle *out_handle);
+    void (*release_bytes)(void *user_data, DagMlOwnedBytes bytes);
+    void (*release)(void *user_data, DagMlHandle handle);
+    void (*destroy)(void *user_data);
+} DagMlPredictionCacheVTable;
 
 DagMlVersion dagml_version(void);
 void dagml_string_free(DagMlString value);
