@@ -1522,10 +1522,10 @@ impl RuntimeDataProvider for CAbiRuntimeDataProvider {
     }
 }
 
-#[derive(Clone)]
 pub struct CAbiRuntimeController {
     id: ControllerId,
     vtable: DagMlControllerVTable,
+    live_handles: Mutex<Vec<DagMlHandle>>,
 }
 
 // The C ABI controller is an opaque host callback table. dag-ml only forwards
@@ -1553,7 +1553,66 @@ impl CAbiRuntimeController {
                 "controller vtable is missing release_bytes".to_string(),
             ));
         }
-        Ok(Self { id, vtable })
+        Ok(Self {
+            id,
+            vtable,
+            live_handles: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn track_result_handles(&self, result: &NodeResult) -> dag_ml_core::Result<()> {
+        if self.vtable.release.is_none() {
+            return Ok(());
+        }
+        let mut handles = self.live_handles.lock().map_err(|_| {
+            DagMlError::RuntimeValidation("controller handle registry is poisoned".to_string())
+        })?;
+        for handle in result
+            .outputs
+            .values()
+            .chain(result.artifact_handles.values())
+        {
+            if handle.owner_controller == self.id
+                && handle.handle != 0
+                && !handles.contains(&handle.handle)
+            {
+                handles.push(handle.handle);
+            }
+        }
+        Ok(())
+    }
+
+    fn release_result_handles_immediately(&self, result: &NodeResult) {
+        if let Some(release) = self.vtable.release {
+            let mut released = BTreeSet::new();
+            for handle in result
+                .outputs
+                .values()
+                .chain(result.artifact_handles.values())
+            {
+                if handle.owner_controller == self.id
+                    && handle.handle != 0
+                    && released.insert(handle.handle)
+                {
+                    unsafe { release(self.vtable.user_data, handle.handle) };
+                }
+            }
+        }
+    }
+}
+
+impl Drop for CAbiRuntimeController {
+    fn drop(&mut self) {
+        if let Some(release) = self.vtable.release {
+            let handles = self
+                .live_handles
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for handle in handles.iter().rev() {
+                unsafe { release(self.vtable.user_data, *handle) };
+            }
+            handles.clear();
+        }
     }
 }
 
@@ -1588,11 +1647,17 @@ impl RuntimeController for CAbiRuntimeController {
         }
         let data = unsafe { slice::from_raw_parts(out_json.ptr, out_json.len) }.to_vec();
         unsafe { release_bytes(self.vtable.user_data, out_json) };
-        serde_json::from_slice::<NodeResult>(&data).map_err(|error| {
+        let result = serde_json::from_slice::<NodeResult>(&data).map_err(|error| {
             DagMlError::RuntimeValidation(format!(
                 "controller invoke returned invalid node result JSON: {error}"
             ))
-        })
+        })?;
+        if let Err(error) = result.validate_for_task(task) {
+            self.release_result_handles_immediately(&result);
+            return Err(error);
+        }
+        self.track_result_handles(&result)?;
+        Ok(result)
     }
 }
 
@@ -2372,6 +2437,7 @@ mod tests {
         task_node_ids: Vec<String>,
         result_json: Vec<u8>,
         release_count: usize,
+        release_handles: Vec<DagMlHandle>,
         invocation_count: usize,
     }
 
@@ -2612,6 +2678,14 @@ mod tests {
         let state = &mut *(user_data.cast::<ControllerStub>());
         state.release_count += 1;
         drop(Vec::from_raw_parts(bytes.ptr, bytes.len, bytes.capacity));
+    }
+
+    unsafe extern "C" fn controller_release_stub(user_data: *mut c_void, handle: DagMlHandle) {
+        if user_data.is_null() {
+            return;
+        }
+        let state = &mut *(user_data.cast::<ControllerStub>());
+        state.release_handles.push(handle);
     }
 
     unsafe extern "C" fn artifact_store_materialize_stub(
@@ -2968,6 +3042,63 @@ mod tests {
         assert_eq!(task_json["node_plan"]["node_id"], "transform:scale");
         assert_eq!(task_json["phase"], "FIT_CV");
         assert_eq!(task_json["seed"], 42);
+    }
+
+    #[test]
+    fn c_abi_runtime_controller_releases_result_handles_on_drop() {
+        let (controller_id, task, expected) = controller_task_result_fixture();
+        let mut state = ControllerStub {
+            result_json: serde_json::to_vec(&expected).unwrap(),
+            ..Default::default()
+        };
+        {
+            let table = DagMlControllerVTable {
+                abi_version: 2,
+                user_data: (&mut state as *mut ControllerStub).cast::<c_void>(),
+                clone_with: None,
+                describe: None,
+                fit: None,
+                predict: None,
+                invoke: Some(controller_invoke_stub),
+                release_bytes: Some(controller_release_bytes_stub),
+                release: Some(controller_release_stub),
+                destroy: None,
+            };
+            let controller = CAbiRuntimeController::new(controller_id, table).unwrap();
+            let actual = controller.invoke(&task).unwrap();
+            assert_eq!(actual.outputs["out"].handle, 88);
+            assert!(state.release_handles.is_empty());
+        }
+        assert_eq!(state.release_handles, vec![88]);
+    }
+
+    #[test]
+    fn c_abi_runtime_controller_releases_invalid_result_handles_immediately() {
+        let (controller_id, task, mut result) = controller_task_result_fixture();
+        result.lineage.seed = Some(999);
+        let mut state = ControllerStub {
+            result_json: serde_json::to_vec(&result).unwrap(),
+            ..Default::default()
+        };
+        {
+            let table = DagMlControllerVTable {
+                abi_version: 2,
+                user_data: (&mut state as *mut ControllerStub).cast::<c_void>(),
+                clone_with: None,
+                describe: None,
+                fit: None,
+                predict: None,
+                invoke: Some(controller_invoke_stub),
+                release_bytes: Some(controller_release_bytes_stub),
+                release: Some(controller_release_stub),
+                destroy: None,
+            };
+            let controller = CAbiRuntimeController::new(controller_id, table).unwrap();
+            let error = controller.invoke(&task).unwrap_err();
+            assert!(format!("{error}").contains("has seed"));
+            assert_eq!(state.release_handles, vec![88]);
+        }
+        assert_eq!(state.release_handles, vec![88]);
     }
 
     #[test]
