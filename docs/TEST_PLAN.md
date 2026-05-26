@@ -8,7 +8,7 @@
 | OOF | rejects train predictions, aligns by sample id, duplicate detection |
 | OOF campaign fixtures | UC6 joins, UC11 refuses, fold prediction samples match fold partitions, campaign fingerprint is stable |
 | RNG | same path gives same seed, different labels split streams |
-| Data binding | validates envelope fingerprints, refuses mismatches, materializes in-memory handles |
+| Data binding | validates envelope fingerprints, feature-set ids, refuses mismatches, materializes in-memory handles |
 | Selection | deterministic metric ranking, stable tie-breaking, grouped branch selection, sklearn demo merge selection |
 | Bundle/replay | bundle matches execution plan fingerprints, refit artifacts match node plans, replay envelopes match data requirements, unsupported bundle schema version refused |
 | Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths, replay materializes data and refit artifact handles, external controller result conformance |
