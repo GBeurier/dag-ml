@@ -1578,6 +1578,133 @@ fn cli_exports_and_validates_artifact_manifest() {
 }
 
 #[test]
+fn cli_exports_research_provenance_bundle() {
+    let root = repo_root();
+    let suffix = unique_suffix();
+    let temp_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_research_provenance_bundle_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let temp_manifest_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_research_provenance_artifacts_{}_{}",
+        std::process::id(),
+        suffix
+    ));
+    let temp_provenance_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_research_provenance_dir_{}_{}",
+        std::process::id(),
+        suffix
+    ));
+
+    let build = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "build-bundle",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--bundle-spec",
+            "examples/fixtures/bundle/bundle_build_spec_minimal.json",
+            "--output",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.bundle",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli build-bundle");
+    assert!(
+        build.status.success(),
+        "build-bundle failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let export_artifacts = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "export-artifact-manifest",
+            "--bundle",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--output-dir",
+            temp_manifest_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli export-artifact-manifest");
+    assert!(
+        export_artifacts.status.success(),
+        "export-artifact-manifest failed: {}",
+        String::from_utf8_lossy(&export_artifacts.stderr)
+    );
+
+    let export_provenance = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "export-research-provenance",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--bundle",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--artifact-manifest",
+            temp_manifest_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--output-dir",
+            temp_provenance_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.bundle",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli export-research-provenance");
+    assert!(
+        export_provenance.status.success(),
+        "export-research-provenance failed: {}",
+        String::from_utf8_lossy(&export_provenance.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&export_provenance.stdout)
+            .contains("wrote research provenance export: bundle=bundle:cli.demo"),
+        "unexpected export-research-provenance output: {}",
+        String::from_utf8_lossy(&export_provenance.stdout)
+    );
+
+    let prov_json = std::fs::read_to_string(temp_provenance_dir.join("lineage.prov.jsonld"))
+        .expect("PROV JSON-LD export was written");
+    assert!(
+        prov_json.contains("\"prov\"")
+            && prov_json.contains("\"wasDerivedFrom\"")
+            && prov_json.contains("dagml:ExecutionBundle")
+            && prov_json.contains("dagml:ArtifactManifest"),
+        "unexpected PROV JSON-LD export: {}",
+        prov_json
+    );
+    let ro_crate_json = std::fs::read_to_string(temp_provenance_dir.join("ro-crate-metadata.json"))
+        .expect("RO-Crate metadata export was written");
+    assert!(
+        ro_crate_json.contains("ComputationalWorkflow")
+            && ro_crate_json.contains("execution_bundle.json")
+            && ro_crate_json.contains("artifact_manifest.json")
+            && ro_crate_json.contains("lineage.prov.jsonld"),
+        "unexpected RO-Crate metadata export: {}",
+        ro_crate_json
+    );
+
+    let _ = std::fs::remove_file(temp_bundle);
+    let _ = std::fs::remove_dir_all(temp_manifest_dir);
+    let _ = std::fs::remove_dir_all(temp_provenance_dir);
+}
+
+#[test]
 fn process_adapters_describe_supported_protocol_modes() {
     let root = repo_root();
     for adapter in [
