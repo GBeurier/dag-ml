@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::aggregation::{AggregatedPredictionBlock, PredictionUnitId};
 use crate::campaign::stable_json_fingerprint;
 use crate::data::ExternalDataPlanEnvelope;
 use crate::error::{DagMlError, Result};
@@ -194,6 +195,9 @@ pub struct BundlePredictionRequirement {
     pub prediction_level: PredictionLevel,
     #[serde(default)]
     pub fold_ids: Vec<FoldId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unit_ids: Vec<PredictionUnitId>,
+    #[serde(default)]
     pub sample_ids: Vec<SampleId>,
     pub prediction_width: usize,
     pub target_names: Vec<String>,
@@ -218,21 +222,8 @@ impl BundlePredictionRequirement {
                 self.key()
             )));
         }
-        if self.prediction_level != PredictionLevel::Sample {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "bundle prediction requirement `{}` uses {:?} predictions, but replay prediction requirements currently require sample-level OOF caches",
-                self.key(),
-                self.prediction_level
-            )));
-        }
         validate_unique_ids("fold id", &self.fold_ids)?;
-        validate_unique_ids("sample id", &self.sample_ids)?;
-        if self.sample_ids.is_empty() {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "bundle prediction requirement `{}` has no sample ids",
-                self.key()
-            )));
-        }
+        validate_prediction_requirement_units(self)?;
         if self.prediction_width == 0 {
             return Err(DagMlError::RuntimeValidation(format!(
                 "bundle prediction requirement `{}` has zero prediction width",
@@ -270,6 +261,9 @@ pub struct BundlePredictionBlockCacheRecord {
     #[serde(default = "default_prediction_level")]
     pub prediction_level: PredictionLevel,
     pub row_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unit_ids: Vec<PredictionUnitId>,
+    #[serde(default)]
     pub sample_ids: Vec<SampleId>,
     pub content_fingerprint: String,
 }
@@ -284,20 +278,7 @@ impl BundlePredictionBlockCacheRecord {
                 "prediction block cache record has zero rows".to_string(),
             ));
         }
-        if self.prediction_level != PredictionLevel::Sample {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "prediction block cache record for {:?} predictions is not replay-cache supported yet",
-                self.prediction_level
-            )));
-        }
-        if self.row_count != self.sample_ids.len() {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "prediction block cache record row_count {} does not match {} sample ids",
-                self.row_count,
-                self.sample_ids.len()
-            )));
-        }
-        validate_unique_ids("sample id", &self.sample_ids)?;
+        validate_prediction_cache_block_record_units(self)?;
         validate_fingerprint("prediction block cache content", &self.content_fingerprint)
     }
 }
@@ -312,6 +293,9 @@ pub struct BundlePredictionCacheRecord {
     pub prediction_level: PredictionLevel,
     #[serde(default)]
     pub fold_ids: Vec<FoldId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unit_ids: Vec<PredictionUnitId>,
+    #[serde(default)]
     pub sample_ids: Vec<SampleId>,
     pub prediction_width: usize,
     pub target_names: Vec<String>,
@@ -339,24 +323,11 @@ impl BundlePredictionCacheRecord {
                 self.cache_id
             )));
         }
-        if self.prediction_level != PredictionLevel::Sample {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "prediction cache `{}` uses {:?} predictions, but replay caches currently require sample-level OOF predictions",
-                self.cache_id,
-                self.prediction_level
-            )));
-        }
         validate_unique_ids("fold id", &self.fold_ids)?;
-        validate_unique_ids("sample id", &self.sample_ids)?;
+        validate_prediction_cache_record_units(self)?;
         if self.prediction_width == 0 {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache `{}` has zero prediction width",
-                self.cache_id
-            )));
-        }
-        if self.row_count != self.sample_ids.len() {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "prediction cache `{}` row_count does not match unique sample ids",
                 self.cache_id
             )));
         }
@@ -375,23 +346,292 @@ impl BundlePredictionCacheRecord {
                 self.cache_id
             )));
         }
-        let block_row_count = self
-            .blocks
-            .iter()
-            .map(|block| block.row_count)
-            .sum::<usize>();
-        if self.row_count == 0 || self.row_count != block_row_count {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "prediction cache `{}` row_count does not match block records",
-                self.cache_id
-            )));
-        }
+        validate_prediction_cache_record_blocks(self)?;
         validate_fingerprint("prediction cache content", &self.content_fingerprint)?;
-        for block in &self.blocks {
-            block.validate()?;
-        }
         Ok(())
     }
+}
+
+fn validate_prediction_requirement_units(requirement: &BundlePredictionRequirement) -> Result<()> {
+    match requirement.prediction_level {
+        PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(format!(
+            "bundle prediction requirement `{}` cannot replay observation-level caches; aggregate to sample first",
+            requirement.key()
+        ))),
+        PredictionLevel::Sample => {
+            validate_unique_ids("sample id", &requirement.sample_ids)?;
+            if requirement.sample_ids.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle prediction requirement `{}` has no sample ids",
+                    requirement.key()
+                )));
+            }
+            if !requirement.unit_ids.is_empty()
+                && requirement.unit_ids != sample_prediction_units(&requirement.sample_ids)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle prediction requirement `{}` sample ids do not match unit ids",
+                    requirement.key()
+                )));
+            }
+            Ok(())
+        }
+        PredictionLevel::Target | PredictionLevel::Group => {
+            if !requirement.sample_ids.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle prediction requirement `{}` uses {:?} unit ids but also carries sample ids",
+                    requirement.key(),
+                    requirement.prediction_level
+                )));
+            }
+            validate_prediction_units(
+                "bundle prediction requirement unit",
+                requirement.prediction_level,
+                &requirement.unit_ids,
+            )?;
+            if requirement.unit_ids.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle prediction requirement `{}` has no unit ids",
+                    requirement.key()
+                )));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_prediction_cache_block_record_units(
+    block: &BundlePredictionBlockCacheRecord,
+) -> Result<()> {
+    match block.prediction_level {
+        PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(
+            "prediction block cache record cannot use observation-level predictions".to_string(),
+        )),
+        PredictionLevel::Sample => {
+            validate_unique_ids("sample id", &block.sample_ids)?;
+            if block.row_count != block.sample_ids.len() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction block cache record row_count {} does not match {} sample ids",
+                    block.row_count,
+                    block.sample_ids.len()
+                )));
+            }
+            if !block.unit_ids.is_empty()
+                && block.unit_ids != sample_prediction_units(&block.sample_ids)
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "prediction block cache record sample ids do not match unit ids".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        PredictionLevel::Target | PredictionLevel::Group => {
+            if !block.sample_ids.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction block cache record uses {:?} unit ids but also carries sample ids",
+                    block.prediction_level
+                )));
+            }
+            validate_prediction_units(
+                "prediction block cache record unit",
+                block.prediction_level,
+                &block.unit_ids,
+            )?;
+            if block.row_count != block.unit_ids.len() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction block cache record row_count {} does not match {} unit ids",
+                    block.row_count,
+                    block.unit_ids.len()
+                )));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_prediction_cache_record_units(cache: &BundlePredictionCacheRecord) -> Result<()> {
+    match cache.prediction_level {
+        PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache `{}` cannot use observation-level predictions",
+            cache.cache_id
+        ))),
+        PredictionLevel::Sample => {
+            validate_unique_ids("sample id", &cache.sample_ids)?;
+            if cache.row_count != cache.sample_ids.len() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache `{}` row_count does not match unique sample ids",
+                    cache.cache_id
+                )));
+            }
+            if !cache.unit_ids.is_empty()
+                && cache.unit_ids != sample_prediction_units(&cache.sample_ids)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache `{}` sample ids do not match unit ids",
+                    cache.cache_id
+                )));
+            }
+            Ok(())
+        }
+        PredictionLevel::Target | PredictionLevel::Group => {
+            if !cache.sample_ids.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache `{}` uses {:?} unit ids but also carries sample ids",
+                    cache.cache_id, cache.prediction_level
+                )));
+            }
+            validate_prediction_units(
+                "prediction cache unit",
+                cache.prediction_level,
+                &cache.unit_ids,
+            )?;
+            if cache.row_count != cache.unit_ids.len() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache `{}` row_count does not match unique unit ids",
+                    cache.cache_id
+                )));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_prediction_cache_record_blocks(cache: &BundlePredictionCacheRecord) -> Result<()> {
+    let mut row_count = 0usize;
+    let mut samples = BTreeSet::new();
+    let mut units = BTreeSet::new();
+    for block in &cache.blocks {
+        block.validate()?;
+        if block.prediction_level != cache.prediction_level {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache `{}` mixes block prediction levels",
+                cache.cache_id
+            )));
+        }
+        row_count += block.row_count;
+        match cache.prediction_level {
+            PredictionLevel::Sample => {
+                for sample_id in &block.sample_ids {
+                    if !samples.insert(sample_id.clone()) {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "prediction cache `{}` contains duplicate sample `{sample_id}`",
+                            cache.cache_id
+                        )));
+                    }
+                }
+            }
+            PredictionLevel::Target | PredictionLevel::Group => {
+                for unit_id in &block.unit_ids {
+                    if !units.insert(unit_id.clone()) {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "prediction cache `{}` contains duplicate unit `{unit_id}`",
+                            cache.cache_id
+                        )));
+                    }
+                }
+            }
+            PredictionLevel::Observation => {
+                unreachable!("record unit validation rejects observation")
+            }
+        }
+    }
+    if cache.row_count == 0 || cache.row_count != row_count {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache `{}` row_count does not match block records",
+            cache.cache_id
+        )));
+    }
+    if cache.prediction_level == PredictionLevel::Sample {
+        let expected = cache.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+        if samples != expected {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache `{}` block samples do not match cache sample ids",
+                cache.cache_id
+            )));
+        }
+    } else {
+        let expected = cache.unit_ids.iter().cloned().collect::<BTreeSet<_>>();
+        if units != expected {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache `{}` block units do not match cache unit ids",
+                cache.cache_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_prediction_cache_payload_blocks(
+    payload: &BundlePredictionCachePayload,
+) -> Result<usize> {
+    match payload.prediction_level {
+        PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache payload `{}` cannot use observation-level predictions",
+            payload.cache_id
+        ))),
+        PredictionLevel::Sample => validate_sample_prediction_cache_payload_blocks(payload),
+        PredictionLevel::Target | PredictionLevel::Group => {
+            validate_aggregated_prediction_cache_payload_blocks(payload)
+        }
+    }
+}
+
+fn validate_sample_prediction_cache_payload_blocks(
+    payload: &BundlePredictionCachePayload,
+) -> Result<usize> {
+    let mut row_count = 0usize;
+    let mut sample_ids = BTreeSet::new();
+    for block in &payload.blocks {
+        block.validate_shape()?;
+        if block.partition != payload.partition {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache payload `{}` contains a block from partition {:?}",
+                payload.cache_id, block.partition
+            )));
+        }
+        for sample_id in &block.sample_ids {
+            if !sample_ids.insert(sample_id) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache payload `{}` contains duplicate sample `{}`",
+                    payload.cache_id, sample_id
+                )));
+            }
+        }
+        row_count += block.sample_ids.len();
+    }
+    Ok(row_count)
+}
+
+fn validate_aggregated_prediction_cache_payload_blocks(
+    payload: &BundlePredictionCachePayload,
+) -> Result<usize> {
+    let mut row_count = 0usize;
+    let mut unit_ids = BTreeSet::new();
+    for block in &payload.aggregated_blocks {
+        block.validate_shape()?;
+        if block.partition != payload.partition {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache payload `{}` contains an aggregated block from partition {:?}",
+                payload.cache_id, block.partition
+            )));
+        }
+        if block.level != payload.prediction_level {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache payload `{}` contains {:?} block inside {:?} payload",
+                payload.cache_id, block.level, payload.prediction_level
+            )));
+        }
+        for unit_id in &block.unit_ids {
+            if !unit_ids.insert(unit_id) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache payload `{}` contains duplicate unit `{unit_id}`",
+                    payload.cache_id
+                )));
+            }
+        }
+        row_count += block.unit_ids.len();
+    }
+    Ok(row_count)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -407,6 +647,8 @@ pub struct BundlePredictionCachePayload {
     pub content_fingerprint: String,
     #[serde(default)]
     pub blocks: Vec<PredictionBlock>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aggregated_blocks: Vec<AggregatedPredictionBlock>,
 }
 
 impl BundlePredictionCachePayload {
@@ -426,39 +668,30 @@ impl BundlePredictionCachePayload {
                 self.cache_id
             )));
         }
-        if self.prediction_level != PredictionLevel::Sample {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "prediction cache payload `{}` uses {:?} predictions, but replay payloads currently require sample-level OOF predictions",
-                self.cache_id,
-                self.prediction_level
-            )));
-        }
-        if self.block_count == 0 || self.block_count != self.blocks.len() {
+        let expected_block_count = if self.prediction_level == PredictionLevel::Sample {
+            if !self.aggregated_blocks.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache payload `{}` mixes sample and aggregated blocks",
+                    self.cache_id
+                )));
+            }
+            self.blocks.len()
+        } else {
+            if !self.blocks.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "prediction cache payload `{}` mixes aggregated and sample blocks",
+                    self.cache_id
+                )));
+            }
+            self.aggregated_blocks.len()
+        };
+        if self.block_count == 0 || self.block_count != expected_block_count {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache payload `{}` block_count does not match blocks",
                 self.cache_id
             )));
         }
-        let mut row_count = 0usize;
-        let mut sample_ids = BTreeSet::new();
-        for block in &self.blocks {
-            block.validate_shape()?;
-            if block.partition != self.partition {
-                return Err(DagMlError::RuntimeValidation(format!(
-                    "prediction cache payload `{}` contains a block from partition {:?}",
-                    self.cache_id, block.partition
-                )));
-            }
-            for sample_id in &block.sample_ids {
-                if !sample_ids.insert(sample_id) {
-                    return Err(DagMlError::RuntimeValidation(format!(
-                        "prediction cache payload `{}` contains duplicate sample `{}`",
-                        self.cache_id, sample_id
-                    )));
-                }
-            }
-            row_count += block.sample_ids.len();
-        }
+        let row_count = validate_prediction_cache_payload_blocks(self)?;
         if self.row_count == 0 || self.row_count != row_count {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache payload `{}` row_count does not match blocks",
@@ -469,7 +702,11 @@ impl BundlePredictionCachePayload {
             "prediction cache payload content",
             &self.content_fingerprint,
         )?;
-        let actual_fingerprint = stable_json_fingerprint(&self.blocks)?;
+        let actual_fingerprint = if self.prediction_level == PredictionLevel::Sample {
+            stable_json_fingerprint(&self.blocks)?
+        } else {
+            stable_json_fingerprint(&self.aggregated_blocks)?
+        };
         if actual_fingerprint != self.content_fingerprint {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache payload `{}` content fingerprint does not match blocks",
@@ -988,6 +1225,16 @@ fn validate_prediction_requirement_against_plan(
             requirement.key()
         )));
     }
+    if requirement.prediction_level != PredictionLevel::Sample {
+        if let Some(cache) = cache {
+            validate_aggregated_prediction_cache_blocks_match_requirement(
+                bundle,
+                requirement,
+                cache,
+            )?;
+        }
+        return Ok(());
+    }
     let expected_sample_ids = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
     let requirement_sample_ids = requirement
         .sample_ids
@@ -1074,6 +1321,63 @@ fn validate_prediction_cache_blocks_match_fold_set(
     if covered_sample_ids != expected_sample_ids {
         return Err(DagMlError::RuntimeValidation(format!(
             "bundle `{}` prediction cache `{}` does not cover the full OOF sample universe for requirement `{}`",
+            bundle.bundle_id,
+            cache.cache_id,
+            requirement.key()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_aggregated_prediction_cache_blocks_match_requirement(
+    bundle: &ExecutionBundle,
+    requirement: &BundlePredictionRequirement,
+    cache: &BundlePredictionCacheRecord,
+) -> Result<()> {
+    let mut covered_fold_ids = BTreeSet::new();
+    let mut covered_unit_ids = BTreeSet::new();
+    for block in &cache.blocks {
+        if block.prediction_level != requirement.prediction_level {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle `{}` prediction cache `{}` block level does not match requirement `{}`",
+                bundle.bundle_id,
+                cache.cache_id,
+                requirement.key()
+            )));
+        }
+        if let Some(fold_id) = &block.fold_id {
+            covered_fold_ids.insert(fold_id.clone());
+        }
+        for unit_id in &block.unit_ids {
+            if !covered_unit_ids.insert(unit_id.clone()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` prediction cache `{}` has duplicate aggregated unit `{unit_id}`",
+                    bundle.bundle_id, cache.cache_id
+                )));
+            }
+        }
+    }
+    let expected_fold_ids = requirement
+        .fold_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if covered_fold_ids != expected_fold_ids {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` prediction cache `{}` does not cover all folds for aggregated requirement `{}`",
+            bundle.bundle_id,
+            cache.cache_id,
+            requirement.key()
+        )));
+    }
+    let expected_unit_ids = requirement
+        .unit_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if covered_unit_ids != expected_unit_ids {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` prediction cache `{}` does not cover all units for aggregated requirement `{}`",
             bundle.bundle_id,
             cache.cache_id,
             requirement.key()
@@ -1193,9 +1497,41 @@ pub fn build_prediction_cache_payload(
         row_count: selected.iter().map(|block| block.sample_ids.len()).sum(),
         content_fingerprint: stable_json_fingerprint(&selected)?,
         blocks: selected,
+        aggregated_blocks: Vec::new(),
     };
     payload.validate()?;
     let record = build_prediction_cache_record(requirement, &payload.blocks)?;
+    validate_prediction_cache_payload_matches_record(&payload, &record)?;
+    Ok(payload)
+}
+
+pub fn build_aggregated_prediction_cache_record(
+    requirement: &BundlePredictionRequirement,
+    blocks: &[AggregatedPredictionBlock],
+) -> Result<BundlePredictionCacheRecord> {
+    let selected = select_aggregated_prediction_cache_blocks(requirement, blocks)?;
+    build_aggregated_prediction_cache_record_from_selected(requirement, &selected)
+}
+
+pub fn build_aggregated_prediction_cache_payload(
+    requirement: &BundlePredictionRequirement,
+    blocks: &[AggregatedPredictionBlock],
+) -> Result<BundlePredictionCachePayload> {
+    let selected = select_aggregated_prediction_cache_blocks(requirement, blocks)?;
+    let payload = BundlePredictionCachePayload {
+        requirement_key: requirement.key(),
+        cache_id: format!("prediction-cache:{}", requirement.key()),
+        format: BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
+        partition: requirement.partition.clone(),
+        prediction_level: requirement.prediction_level,
+        block_count: selected.len(),
+        row_count: selected.iter().map(|block| block.unit_ids.len()).sum(),
+        content_fingerprint: stable_json_fingerprint(&selected)?,
+        blocks: Vec::new(),
+        aggregated_blocks: selected,
+    };
+    payload.validate()?;
+    let record = build_aggregated_prediction_cache_record(requirement, &payload.aggregated_blocks)?;
     validate_prediction_cache_payload_matches_record(&payload, &record)?;
     Ok(payload)
 }
@@ -1220,20 +1556,39 @@ pub fn validate_prediction_cache_payload_matches_record(
             payload.cache_id, record.cache_id
         )));
     }
-    let block_records = payload
-        .blocks
-        .iter()
-        .map(|block| {
-            Ok(BundlePredictionBlockCacheRecord {
-                prediction_id: block.prediction_id.clone(),
-                fold_id: block.fold_id.clone(),
-                prediction_level: PredictionLevel::Sample,
-                row_count: block.sample_ids.len(),
-                sample_ids: block.sample_ids.clone(),
-                content_fingerprint: stable_json_fingerprint(block)?,
+    let block_records = if payload.prediction_level == PredictionLevel::Sample {
+        payload
+            .blocks
+            .iter()
+            .map(|block| {
+                Ok(BundlePredictionBlockCacheRecord {
+                    prediction_id: block.prediction_id.clone(),
+                    fold_id: block.fold_id.clone(),
+                    prediction_level: PredictionLevel::Sample,
+                    row_count: block.sample_ids.len(),
+                    unit_ids: Vec::new(),
+                    sample_ids: block.sample_ids.clone(),
+                    content_fingerprint: stable_json_fingerprint(block)?,
+                })
             })
-        })
-        .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        payload
+            .aggregated_blocks
+            .iter()
+            .map(|block| {
+                Ok(BundlePredictionBlockCacheRecord {
+                    prediction_id: block.prediction_id.clone(),
+                    fold_id: block.fold_id.clone(),
+                    prediction_level: block.level,
+                    row_count: block.unit_ids.len(),
+                    unit_ids: block.unit_ids.clone(),
+                    sample_ids: Vec::new(),
+                    content_fingerprint: stable_json_fingerprint(block)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
     if block_records != record.blocks {
         return Err(DagMlError::RuntimeValidation(format!(
             "prediction cache payload `{}` block fingerprints do not match cache record",
@@ -1259,6 +1614,45 @@ fn select_prediction_cache_blocks(
     if selected.is_empty() {
         return Err(DagMlError::RuntimeValidation(format!(
             "prediction cache requirement `{}` has no matching prediction blocks",
+            requirement.key()
+        )));
+    }
+    selected.sort_by(|left, right| {
+        (
+            left.fold_id.as_ref().map(ToString::to_string),
+            left.prediction_id.clone(),
+        )
+            .cmp(&(
+                right.fold_id.as_ref().map(ToString::to_string),
+                right.prediction_id.clone(),
+            ))
+    });
+    Ok(selected)
+}
+
+fn select_aggregated_prediction_cache_blocks(
+    requirement: &BundlePredictionRequirement,
+    blocks: &[AggregatedPredictionBlock],
+) -> Result<Vec<AggregatedPredictionBlock>> {
+    requirement.validate()?;
+    if requirement.prediction_level == PredictionLevel::Sample {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "aggregated prediction cache requirement `{}` must use target or group level",
+            requirement.key()
+        )));
+    }
+    let mut selected = blocks
+        .iter()
+        .filter(|block| {
+            block.producer_node == requirement.producer_node
+                && block.partition == requirement.partition
+                && block.level == requirement.prediction_level
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "aggregated prediction cache requirement `{}` has no matching prediction blocks",
             requirement.key()
         )));
     }
@@ -1330,6 +1724,7 @@ fn build_prediction_cache_record_from_selected(
             fold_id: block.fold_id.clone(),
             prediction_level: PredictionLevel::Sample,
             row_count: block.sample_ids.len(),
+            unit_ids: Vec::new(),
             sample_ids: block.sample_ids.clone(),
             content_fingerprint: stable_json_fingerprint(block)?,
         });
@@ -1342,7 +1737,97 @@ fn build_prediction_cache_record_from_selected(
         partition: requirement.partition.clone(),
         prediction_level: requirement.prediction_level,
         fold_ids: fold_ids.into_iter().collect(),
+        unit_ids: requirement.unit_ids.clone(),
         sample_ids: sample_ids.into_iter().collect(),
+        prediction_width: prediction_width.unwrap_or_default(),
+        target_names: target_names.unwrap_or_default(),
+        block_count: block_records.len(),
+        row_count,
+        content_fingerprint: stable_json_fingerprint(selected)?,
+        blocks: block_records,
+    };
+    validate_prediction_cache_matches_requirement(&record, requirement)?;
+    record.validate()?;
+    Ok(record)
+}
+
+fn build_aggregated_prediction_cache_record_from_selected(
+    requirement: &BundlePredictionRequirement,
+    selected: &[AggregatedPredictionBlock],
+) -> Result<BundlePredictionCacheRecord> {
+    requirement.validate()?;
+    if requirement.prediction_level == PredictionLevel::Sample {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "aggregated prediction cache requirement `{}` must use target or group level",
+            requirement.key()
+        )));
+    }
+    if selected.is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "aggregated prediction cache requirement `{}` has no matching prediction blocks",
+            requirement.key()
+        )));
+    }
+    let mut fold_ids = BTreeSet::new();
+    let mut unit_ids = BTreeSet::new();
+    let mut target_names: Option<Vec<String>> = None;
+    let mut prediction_width: Option<usize> = None;
+    let mut row_count = 0usize;
+    let mut block_records = Vec::new();
+    for block in selected {
+        if block.producer_node != requirement.producer_node
+            || block.partition != requirement.partition
+            || block.level != requirement.prediction_level
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "aggregated prediction cache `{}` contains a block outside the requirement scope",
+                requirement.key()
+            )));
+        }
+        let width = block.validate_shape()?;
+        if prediction_width.is_some_and(|expected| expected != width) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "aggregated prediction cache `{}` has inconsistent prediction width",
+                requirement.key()
+            )));
+        }
+        prediction_width = Some(width);
+        let block_target_names = normalized_aggregated_prediction_targets(block, width);
+        if target_names
+            .as_ref()
+            .is_some_and(|expected| expected != &block_target_names)
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "aggregated prediction cache `{}` has inconsistent target names",
+                requirement.key()
+            )));
+        }
+        target_names = Some(block_target_names);
+        if let Some(fold_id) = &block.fold_id {
+            fold_ids.insert(fold_id.clone());
+        }
+        unit_ids.extend(block.unit_ids.iter().cloned());
+        row_count += block.unit_ids.len();
+        block_records.push(BundlePredictionBlockCacheRecord {
+            prediction_id: block.prediction_id.clone(),
+            fold_id: block.fold_id.clone(),
+            prediction_level: block.level,
+            row_count: block.unit_ids.len(),
+            unit_ids: block.unit_ids.clone(),
+            sample_ids: Vec::new(),
+            content_fingerprint: stable_json_fingerprint(block)?,
+        });
+    }
+
+    let record = BundlePredictionCacheRecord {
+        requirement_key: requirement.key(),
+        cache_id: format!("prediction-cache:{}", requirement.key()),
+        format: BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
+        partition: requirement.partition.clone(),
+        prediction_level: requirement.prediction_level,
+        fold_ids: fold_ids.into_iter().collect(),
+        unit_ids: unit_ids.into_iter().collect(),
+        sample_ids: Vec::new(),
         prediction_width: prediction_width.unwrap_or_default(),
         target_names: target_names.unwrap_or_default(),
         block_count: block_records.len(),
@@ -1363,6 +1848,7 @@ fn validate_prediction_cache_matches_requirement(
         || cache.partition != requirement.partition
         || cache.prediction_level != requirement.prediction_level
         || cache.fold_ids != requirement.fold_ids
+        || cache.unit_ids != requirement.unit_ids
         || cache.sample_ids != requirement.sample_ids
         || cache.prediction_width != requirement.prediction_width
         || cache.target_names != requirement.target_names
@@ -1382,6 +1868,42 @@ fn normalized_prediction_targets(block: &PredictionBlock, width: usize) -> Vec<S
     } else {
         block.target_names.clone()
     }
+}
+
+fn normalized_aggregated_prediction_targets(
+    block: &AggregatedPredictionBlock,
+    width: usize,
+) -> Vec<String> {
+    if block.target_names.is_empty() {
+        (0..width).map(|index| format!("p{index}")).collect()
+    } else {
+        block.target_names.clone()
+    }
+}
+
+fn sample_prediction_units(sample_ids: &[SampleId]) -> Vec<PredictionUnitId> {
+    sample_ids
+        .iter()
+        .cloned()
+        .map(PredictionUnitId::Sample)
+        .collect()
+}
+
+fn validate_prediction_units(
+    label: &str,
+    expected_level: PredictionLevel,
+    unit_ids: &[PredictionUnitId],
+) -> Result<()> {
+    validate_unique_ids(label, unit_ids)?;
+    for unit_id in unit_ids {
+        if unit_id.level() != expected_level {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "{label} `{unit_id}` does not match prediction level {:?}",
+                expected_level
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
@@ -1520,7 +2042,7 @@ mod tests {
     use super::*;
     use crate::controller::{ControllerManifest, ControllerRegistry};
     use crate::graph::GraphSpec;
-    use crate::ids::{ArtifactId, FoldId, SampleId};
+    use crate::ids::{ArtifactId, FoldId, SampleId, TargetId};
     use crate::plan::{build_execution_plan, CampaignSpec};
     use crate::selection::{
         select_candidate, CandidateScore, MetricObjective, SelectionMetric, SelectionPolicy,
@@ -1616,6 +2138,7 @@ mod tests {
                 FoldId::new("fold:0").unwrap(),
                 FoldId::new("fold:1").unwrap(),
             ],
+            unit_ids: Vec::new(),
             sample_ids: branch_merge_samples(),
             prediction_width: 1,
             target_names: vec!["y".to_string()],
@@ -1859,6 +2382,10 @@ mod tests {
             SampleId::new("sample:1").unwrap(),
             SampleId::new("sample:3").unwrap(),
         ];
+        misaligned_cache.blocks[1].sample_ids = vec![
+            SampleId::new("sample:2").unwrap(),
+            SampleId::new("sample:4").unwrap(),
+        ];
         let error = build_execution_bundle_with_prediction_contracts(
             BundleId::new("bundle:branch.merge.misaligned.oof.cache").unwrap(),
             &plan,
@@ -1900,6 +2427,7 @@ mod tests {
             partition: PredictionPartition::Validation,
             prediction_level: PredictionLevel::Sample,
             fold_ids: vec![fold0.clone(), fold1.clone()],
+            unit_ids: Vec::new(),
             sample_ids: samples.to_vec(),
             prediction_width: 1,
             target_names: vec!["y".to_string()],
@@ -2038,6 +2566,90 @@ mod tests {
             .data_requirement_keys
             .clear();
         assert!(wrong_prediction_consumer.validate().is_err());
+    }
+
+    #[test]
+    fn aggregated_prediction_cache_contracts_preserve_unit_ids() {
+        let plan = branch_merge_plan();
+        let producer_node = NodeId::new("branch:b0.model:ridge").unwrap();
+        let consumer_node = NodeId::new("merge:stack.pred_plus_original.meta:ridge").unwrap();
+        let fold0 = FoldId::new("fold:0").unwrap();
+        let fold1 = FoldId::new("fold:1").unwrap();
+        let target_a = PredictionUnitId::Target(TargetId::new("target:a").unwrap());
+        let target_b = PredictionUnitId::Target(TargetId::new("target:b").unwrap());
+        let requirement = BundlePredictionRequirement {
+            producer_node: producer_node.clone(),
+            source_port: "oof".to_string(),
+            consumer_node: consumer_node.clone(),
+            target_port: "b0_oof".to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Target,
+            fold_ids: vec![fold0.clone(), fold1.clone()],
+            unit_ids: vec![target_a.clone(), target_b.clone()],
+            sample_ids: Vec::new(),
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let aggregated_blocks = vec![
+            AggregatedPredictionBlock {
+                prediction_id: Some("prediction:branch:b0.target.fold0".to_string()),
+                producer_node: producer_node.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold0),
+                level: PredictionLevel::Target,
+                unit_ids: vec![target_a],
+                values: vec![vec![0.15]],
+                target_names: vec!["y".to_string()],
+            },
+            AggregatedPredictionBlock {
+                prediction_id: Some("prediction:branch:b0.target.fold1".to_string()),
+                producer_node,
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold1),
+                level: PredictionLevel::Target,
+                unit_ids: vec![target_b],
+                values: vec![vec![0.35]],
+                target_names: vec!["y".to_string()],
+            },
+        ];
+
+        let cache =
+            build_aggregated_prediction_cache_record(&requirement, &aggregated_blocks).unwrap();
+        let payload =
+            build_aggregated_prediction_cache_payload(&requirement, &aggregated_blocks).unwrap();
+        assert_eq!(cache.prediction_level, PredictionLevel::Target);
+        assert_eq!(cache.unit_ids, requirement.unit_ids);
+        assert!(cache.sample_ids.is_empty());
+        assert!(payload.blocks.is_empty());
+        assert_eq!(payload.aggregated_blocks.len(), 2);
+        validate_prediction_cache_payload_matches_record(&payload, &cache).unwrap();
+
+        let artifact = refit_artifact(
+            &plan,
+            "merge:stack.pred_plus_original.meta:ridge",
+            vec!["merge:stack.pred_plus_original.meta:ridge.x_original".to_string()],
+            vec![requirement.key()],
+        );
+        let bundle = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:target.prediction.requirement").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            vec![artifact],
+            vec![requirement],
+            vec![cache],
+        )
+        .unwrap();
+        bundle.validate_against_plan(&plan).unwrap();
+
+        let mut tampered_payload = payload;
+        tampered_payload.aggregated_blocks[0].unit_ids =
+            vec![PredictionUnitId::Target(TargetId::new("target:z").unwrap())];
+        assert!(validate_prediction_cache_payload_matches_record(
+            &tampered_payload,
+            &bundle.prediction_caches[0]
+        )
+        .is_err());
     }
 
     #[test]

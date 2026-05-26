@@ -3001,6 +3001,7 @@ mod tests {
             partition: PredictionPartition::Validation,
             prediction_level: dag_ml_core::PredictionLevel::Sample,
             fold_ids: vec![FoldId::new("fold:0").unwrap()],
+            unit_ids: Vec::new(),
             sample_ids: vec![SampleId::new("sample:1").unwrap()],
             prediction_width: 1,
             target_names: vec!["y".to_string()],
