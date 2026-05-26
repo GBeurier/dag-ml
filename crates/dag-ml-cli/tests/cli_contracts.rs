@@ -487,6 +487,50 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         branch_merge_replay_stdout
     );
 
+    let branch_merge_sklearn_cv_refit_replay = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-cv-refit-replay",
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--adapter",
+            "examples/adapters/sklearn_process_controller.py",
+            "--bundle-id",
+            "bundle:cli.branch.merge.sklearn.cv.refit.replay",
+            "--selections",
+            "examples/fixtures/bundle/selection_decisions_branch_merge.json",
+            "--plan-id",
+            "plan:cli.branch.merge.sklearn.cv.refit.replay",
+            "--run-id",
+            "run:cli.branch.merge.sklearn.cv.refit.replay",
+        ])
+        .output()
+        .expect("failed to run branch/merge sklearn CV+refit+replay");
+    assert!(
+        branch_merge_sklearn_cv_refit_replay.status.success(),
+        "branch/merge sklearn CV+refit+replay failed: {}",
+        String::from_utf8_lossy(&branch_merge_sklearn_cv_refit_replay.stderr)
+    );
+    let branch_merge_sklearn_stdout =
+        String::from_utf8_lossy(&branch_merge_sklearn_cv_refit_replay.stdout);
+    assert!(
+        branch_merge_sklearn_stdout.contains("process cv refit replay run: 6 fit_cv result(s)")
+            && branch_merge_sklearn_stdout.contains("6 OOF prediction block(s)")
+            && branch_merge_sklearn_stdout.contains("3 refit result(s)")
+            && branch_merge_sklearn_stdout.contains("3 replay result(s)")
+            && branch_merge_sklearn_stdout.contains("3 replay prediction block(s)")
+            && branch_merge_sklearn_stdout.contains("3 captured artifact handle(s)")
+            && branch_merge_sklearn_stdout.contains("2 prediction cache(s)"),
+        "unexpected branch/merge sklearn CV+refit+replay output: {}",
+        branch_merge_sklearn_stdout
+    );
+
     let validate = Command::new(cli())
         .current_dir(&root)
         .args([
