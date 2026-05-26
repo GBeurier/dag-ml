@@ -86,10 +86,10 @@ Implemented:
   same `RunContext`/prediction store, then runs `REFIT`; this validates that
   branch/merge meta-model refit consumes complete CV OOF coverage before
   capturing base and meta refit artifacts, writes typed bundle
-  `prediction_requirements`, links the meta refit artifact to the OOF
-  requirements it consumed, accepts validated selection decisions for branch
-  and merge choices, and keeps an OOF summary (producer, folds, samples,
-  prediction width and targets) in bundle metadata;
+  `prediction_requirements` and deterministic `prediction_caches`, links the
+  meta refit artifact to the OOF requirements it consumed, accepts validated
+  selection decisions for branch and merge choices, and keeps an OOF summary
+  (producer, folds, samples, prediction width and targets) in bundle metadata;
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;

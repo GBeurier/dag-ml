@@ -159,6 +159,98 @@
       ]
     }
   ],
+  "prediction_caches": [
+    {
+      "requirement_key": "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
+      "cache_id": "prediction-cache:branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
+      "format": "dag-ml-json-prediction-blocks-v1",
+      "partition": "validation",
+      "fold_ids": [
+        "fold:0",
+        "fold:1"
+      ],
+      "sample_ids": [
+        "sample:1",
+        "sample:2",
+        "sample:3",
+        "sample:4"
+      ],
+      "prediction_width": 1,
+      "target_names": [
+        "y"
+      ],
+      "block_count": 2,
+      "row_count": 4,
+      "content_fingerprint": "b42c63e64a52964592a71f660bac3ba5c6931b57ee60d5246fee5551fb00abca",
+      "blocks": [
+        {
+          "prediction_id": "pred:branch:b0.model:ridge:FIT_CV",
+          "fold_id": "fold:0",
+          "row_count": 2,
+          "sample_ids": [
+            "sample:1",
+            "sample:2"
+          ],
+          "content_fingerprint": "f67901b195dc29ab2b4d1ed8102d49542bf8c2adcc79b297b9c079bd313b535a"
+        },
+        {
+          "prediction_id": "pred:branch:b0.model:ridge:FIT_CV",
+          "fold_id": "fold:1",
+          "row_count": 2,
+          "sample_ids": [
+            "sample:3",
+            "sample:4"
+          ],
+          "content_fingerprint": "ef3dcc2ebd45fef1720016a8b545edf5a2a0ca83eba061ee05588a8a4d188682"
+        }
+      ]
+    },
+    {
+      "requirement_key": "branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof",
+      "cache_id": "prediction-cache:branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof",
+      "format": "dag-ml-json-prediction-blocks-v1",
+      "partition": "validation",
+      "fold_ids": [
+        "fold:0",
+        "fold:1"
+      ],
+      "sample_ids": [
+        "sample:1",
+        "sample:2",
+        "sample:3",
+        "sample:4"
+      ],
+      "prediction_width": 1,
+      "target_names": [
+        "y"
+      ],
+      "block_count": 2,
+      "row_count": 4,
+      "content_fingerprint": "4342d7bbe3cb55dd3adf30fb6c16b8b27cc19a51698bb7e32cca79f51444f398",
+      "blocks": [
+        {
+          "prediction_id": "pred:branch:b1.model:rf:FIT_CV",
+          "fold_id": "fold:0",
+          "row_count": 2,
+          "sample_ids": [
+            "sample:1",
+            "sample:2"
+          ],
+          "content_fingerprint": "0cf1668d50428976050a26f9f21207aac985caf8d15eea5e6a18962e584fa21b"
+        },
+        {
+          "prediction_id": "pred:branch:b1.model:rf:FIT_CV",
+          "fold_id": "fold:1",
+          "row_count": 2,
+          "sample_ids": [
+            "sample:3",
+            "sample:4"
+          ],
+          "content_fingerprint": "895092bf36baebdc05bf164167af872ef6ec75def31778ea9373e33b84831fe3"
+        }
+      ]
+    }
+  ],
   "data_requirements": [
     {
       "node_id": "branch:b0.model:ridge",
