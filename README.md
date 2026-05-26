@@ -7,10 +7,10 @@ cache and deterministic control RNG. It does not own source storage or feature
 buffers; those contracts live in the companion `dag-ml-data` repository.
 
 > Status: active core scaffold. The project has executable Rust crates, C ABI
-> graph validation, CLI validation, coordinator planning/runtime contracts,
-> data-plan fingerprints, OOF leakage checks, deterministic selection and first
-> refit/replay bundle contracts with CLI build/validate commands. Host bindings
-> and real controller adapters are still pending.
+> graph/selection/bundle validation, CLI validation, coordinator
+> planning/runtime contracts, data-plan fingerprints, OOF leakage checks,
+> deterministic selection and first refit/replay bundle contracts with CLI
+> build/validate commands. Host controller adapters are still pending.
 
 ## Repository Layout
 

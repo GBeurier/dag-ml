@@ -8,7 +8,11 @@ the host owns the underlying object behind each handle.
 `crates/dag-ml-capi/include/dag_ml.h` exposes:
 
 - version and string-free helpers;
-- `dagml_graph_validate_json` for a first executable ABI check;
+- owned byte release helper for JSON outputs returned by Rust;
+- `dagml_graph_validate_json` for graph contract checks;
+- selection policy/decision validation and candidate selection JSON helpers;
+- execution bundle validation, replay-envelope validation and replay-request
+  validation helpers;
 - `DagMlControllerVTable` for host operator controllers;
 - `DagMlDataVTable` for host data providers.
 
@@ -22,6 +26,7 @@ ownership and naming before full execution is implemented.
 | Host data block | Host | `DataVTable.release` |
 | Host fitted model | Host | `ControllerVTable.release` |
 | Rust error string | Rust allocation returned through ABI | `dagml_string_free` |
+| Rust JSON byte output | Rust allocation returned through ABI | `dagml_owned_bytes_free` |
 | Arrow arrays | Producer of the Arrow array | Arrow C Data Interface release callback |
 | JSON blobs | Caller-provided view unless returned as owned bytes | ABI-specific free function |
 
