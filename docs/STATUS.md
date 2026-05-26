@@ -245,8 +245,8 @@ Implemented:
   order through the runtime adapter;
 - C ABI controller vtable generic `invoke` path for external host
   controllers, routing `NodeTask` JSON to `NodeResult` JSON with explicit
-  host-returned byte release, plus a tested Rust runtime adapter over the
-  vtable;
+  host-returned byte release and controller-owned result handle release, plus
+  a tested Rust runtime adapter over the vtable;
 - C ABI artifact-store vtable for replay REFIT artifacts, returning typed
   `DagMlHandleRef` values, preserving host handle ownership and releasing
   materialized handles at adapter drop, plus a tested Rust runtime adapter over
