@@ -60,6 +60,8 @@ Implemented:
   in-memory data provider, fold-aware data views and mock runtime controllers;
 - CLI selection, bundle build and bundle replay validation commands with
   fixture-backed integration tests;
+- CLI mock refit bundle command that runs `REFIT`, captures emitted model
+  artifact handles and builds an `ExecutionBundle` from the captured records;
 - CLI mock replay execution through execution bundles, data envelopes,
   in-memory data provider, predict-scoped data views, in-memory artifact store
   and mock runtime controllers;

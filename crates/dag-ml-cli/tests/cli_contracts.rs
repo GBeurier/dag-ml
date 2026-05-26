@@ -21,6 +21,16 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_refit_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_refit_bundle_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_refit_request = std::env::temp_dir().join(format!(
+        "dag_ml_cli_refit_request_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
     let temp_selection = std::env::temp_dir().join(format!(
         "dag_ml_cli_selection_{}_{}.json",
         std::process::id(),
@@ -72,6 +82,53 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         "build-bundle failed: {}",
         String::from_utf8_lossy(&build.stderr)
     );
+
+    let refit_bundle = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-mock-refit-bundle",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--bundle-id",
+            "bundle:cli.refit.capture",
+            "--output",
+            temp_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.refit.capture",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli run-mock-refit-bundle");
+    assert!(
+        refit_bundle.status.success(),
+        "run-mock-refit-bundle failed: {}",
+        String::from_utf8_lossy(&refit_bundle.stderr)
+    );
+    let refit_bundle_json =
+        std::fs::read_to_string(&temp_refit_bundle).expect("refit bundle was written");
+    assert!(
+        refit_bundle_json.contains("artifact:model:base:refit")
+            && refit_bundle_json.contains("refit_result_count"),
+        "unexpected run-mock-refit-bundle JSON: {}",
+        refit_bundle_json
+    );
+    std::fs::write(
+        &temp_refit_request,
+        r#"{
+  "bundle_id": "bundle:cli.refit.capture",
+  "phase": "PREDICT",
+  "data_envelope_keys": ["model:base.x"]
+}
+"#,
+    )
+    .expect("refit replay request was written");
 
     let process_campaign = Command::new(cli())
         .current_dir(&root)
@@ -173,6 +230,43 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         String::from_utf8_lossy(&validate.stdout)
     );
 
+    let validate_refit = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-bundle",
+            "--bundle",
+            temp_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--replay-request",
+            temp_refit_request
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.refit.capture",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli validate-bundle for refit bundle");
+    assert!(
+        validate_refit.status.success(),
+        "validate refit bundle failed: {}",
+        String::from_utf8_lossy(&validate_refit.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_refit.stdout)
+            .contains("valid bundle: bundle:cli.refit.capture"),
+        "unexpected validate refit bundle output: {}",
+        String::from_utf8_lossy(&validate_refit.stdout)
+    );
+
     let replay = Command::new(cli())
         .current_dir(&root)
         .args([
@@ -242,6 +336,8 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     );
 
     let _ = std::fs::remove_file(temp_bundle);
+    let _ = std::fs::remove_file(temp_refit_bundle);
+    let _ = std::fs::remove_file(temp_refit_request);
     let _ = std::fs::remove_file(temp_selection);
 }
 
