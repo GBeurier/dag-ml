@@ -267,6 +267,10 @@ Implemented:
   graph parallel levels, execution-plan build, regression metric reports,
   selection decisions, grouped selection, execution bundles, replay envelopes,
   replay requests and prediction-cache payload sets;
+- C ABI research provenance export helper that returns the same validated
+  `ResearchProvenanceExport` JSON as the Rust core/CLI path, including
+  optional lineage, replay envelopes, prediction-cache manifest and artifact
+  manifest inputs for non-Rust bindings;
 - C ABI data-provider vtable shape aligned with `dag-ml-data`
   materialize/view/identity/target/feature exports plus a tested Rust runtime
   adapter over the vtable;
