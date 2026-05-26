@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import Any
 
@@ -187,6 +188,14 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
             "owner_controller": controller_id,
         }
 
+    metrics = {"adapter_smoke": 1.0}
+    worker_index = os.environ.get("DAG_ML_PROCESS_WORKER_INDEX")
+    worker_count = os.environ.get("DAG_ML_PROCESS_WORKER_COUNT")
+    if worker_index is not None:
+        metrics["process_worker_index"] = float(worker_index)
+    if worker_count is not None:
+        metrics["process_worker_count"] = float(worker_count)
+
     return {
         "node_id": node_id,
         "outputs": {
@@ -217,7 +226,7 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
             "aggregation_policy_fingerprint": None,
             "seed": task.get("seed"),
             "unsafe_flags": [],
-            "metrics": {"adapter_smoke": 1.0},
+            "metrics": metrics,
         },
     }
 

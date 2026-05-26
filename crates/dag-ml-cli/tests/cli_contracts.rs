@@ -380,6 +380,8 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             "--adapter",
             "examples/adapters/python_process_controller.py",
             "--persistent",
+            "--process-workers",
+            "2",
             "--plan-id",
             "plan:cli.branch.merge",
             "--run-id",
@@ -397,7 +399,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         branch_merge_stdout.contains("process campaign run: 6 result(s)")
             && branch_merge_stdout.contains("6 prediction block(s)")
             && branch_merge_stdout.contains("6 data handle(s)")
-            && branch_merge_stdout.contains("12 data view(s)"),
+            && branch_merge_stdout.contains("12 data view(s)")
+            && branch_merge_stdout.contains("configured process worker(s)=2")
+            && branch_merge_stdout.contains("observed process worker(s)=2"),
         "unexpected branch/merge process campaign output: {}",
         branch_merge_stdout
     );
@@ -417,6 +421,8 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             "--adapter",
             "examples/adapters/python_process_controller.py",
             "--persistent",
+            "--process-workers",
+            "2",
             "--bundle-id",
             "bundle:cli.branch.merge.refit.without.cv",
             "--plan-id",
@@ -453,6 +459,8 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             "--adapter",
             "examples/adapters/python_process_controller.py",
             "--persistent",
+            "--process-workers",
+            "2",
             "--bundle-id",
             "bundle:cli.branch.merge.cv.refit",
             "--selections",
@@ -484,7 +492,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_cv_refit_stdout.contains("6 OOF prediction block(s)")
             && branch_merge_cv_refit_stdout.contains("3 refit result(s)")
             && branch_merge_cv_refit_stdout.contains("3 captured artifact handle(s)")
-            && branch_merge_cv_refit_stdout.contains("2 prediction cache(s)"),
+            && branch_merge_cv_refit_stdout.contains("2 prediction cache(s)")
+            && branch_merge_cv_refit_stdout.contains("configured process worker(s)=2")
+            && branch_merge_cv_refit_stdout.contains("observed process worker(s)=2"),
         "unexpected branch/merge CV+refit process bundle output: {}",
         branch_merge_cv_refit_stdout
     );
@@ -947,6 +957,8 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
             "--adapter",
             "examples/adapters/sklearn_process_controller.py",
+            "--process-workers",
+            "2",
             "--bundle-id",
             "bundle:cli.branch.merge.sklearn.cv.refit.replay",
             "--selections",
@@ -972,7 +984,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_sklearn_stdout.contains("3 replay result(s)")
             && branch_merge_sklearn_stdout.contains("3 replay prediction block(s)")
             && branch_merge_sklearn_stdout.contains("3 captured artifact handle(s)")
-            && branch_merge_sklearn_stdout.contains("2 prediction cache(s)"),
+            && branch_merge_sklearn_stdout.contains("2 prediction cache(s)")
+            && branch_merge_sklearn_stdout.contains("configured process worker(s)=2")
+            && branch_merge_sklearn_stdout.contains("observed process worker(s)=2"),
         "unexpected branch/merge sklearn CV+refit+replay output: {}",
         branch_merge_sklearn_stdout
     );

@@ -161,6 +161,11 @@ Implemented:
   and replays predictions in the same persistent process;
 - persistent JSONL process-controller mode for campaign/replay smoke tests,
   avoiding one process spawn per task and preparing stateful host adapters;
+- persistent process-controller pool mode with `--process-workers`: the CLI
+  prewarms multiple JSONL workers per controller, routes `FIT_CV` tasks by
+  node/variant/fold, routes `REFIT`/`PREDICT` by node/variant for artifact
+  stickiness, and exposes observed worker counts through adapter lineage
+  metrics;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph validation,
@@ -228,14 +233,14 @@ Not implemented yet:
 - non-mean aggregation methods and custom aggregation controllers;
 - persistent artifact stores and non-JSON/non-file-cache backends;
 - Arrow prediction storage and ABI-owned prediction tensors;
-- production host controller adapters with stable process pools, native
-  libraries or language-specific bindings;
+- production host controller adapters with native libraries or
+  language-specific bindings;
 - bundle schema migration policy;
 - production `dag-ml-data` provider backends beyond the current in-memory C
   conformance provider.
 
 Next recommended task:
 
-Start productionizing host adapters: stable process pools/native binding
-contracts, controller lifecycle ownership, and larger replay stress fixtures
-over the shared conformance pack.
+Continue productionizing host adapters: native binding contracts, controller
+lifecycle ownership, failure recovery/timeouts, and larger replay stress
+fixtures over the shared conformance pack.
