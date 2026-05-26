@@ -10,6 +10,7 @@ copy when a dag-ml-data checkout is available.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
+CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
 LOCAL_FIXTURE_REL = Path("examples/fixtures/data/coordinator_data_plan_envelope_nir.json")
 LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
@@ -50,6 +52,7 @@ SIBLING_FEATURE_FUSION_SCHEMA_ID = (
     "feature_fusion_selector.v1.schema.json"
 )
 SHA256_RE = re.compile(r"^[0-9A-Fa-f]{64}$")
+CONFORMANCE_PACK_ID = "dag-ml.shared.conformance.v1"
 
 
 class ContractError(RuntimeError):
@@ -307,11 +310,135 @@ def validate_dag_ml_data_tensor_header(header: str, label: str) -> None:
     )
 
 
+def canonical_json_sha256(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def normalize_schema(schema: Any) -> Any:
     normalized = copy.deepcopy(schema)
     if isinstance(normalized, dict):
         normalized.pop("$id", None)
     return normalized
+
+
+def validate_digest_record(
+    record: Any,
+    expected_sha256: str,
+    expected_kind: str | None,
+    expected_schema_version: int | None,
+    label: str,
+) -> None:
+    require(isinstance(record, dict), f"{label} must be an object")
+    if expected_kind is not None:
+        require(record.get("kind") == expected_kind, f"{label}.kind must be {expected_kind}")
+    if expected_schema_version is not None:
+        require(
+            record.get("schema_version") == expected_schema_version,
+            f"{label}.schema_version must be {expected_schema_version}",
+        )
+    digest = record.get("normalized_sha256", record.get("canonical_json_sha256"))
+    require_sha256(digest, f"{label} digest")
+    require(digest == expected_sha256, f"{label} digest does not match local artifact")
+
+
+def validate_conformance_pack(
+    pack: Any,
+    schema: Any,
+    feature_fusion_schema: Any,
+    fixture: Any,
+    feature_fusion_fixture: Any,
+    header: str,
+    label: str,
+) -> None:
+    require(isinstance(pack, dict), f"{label} conformance pack must be a JSON object")
+    require(pack.get("schema_version") == 1, f"{label} conformance pack schema_version must be 1")
+    require(pack.get("pack_id") == CONFORMANCE_PACK_ID, f"{label} conformance pack id mismatch")
+
+    contracts = pack.get("contracts")
+    require(isinstance(contracts, dict), f"{label} conformance pack contracts must be an object")
+    validate_digest_record(
+        contracts.get("coordinator_data_plan_envelope.v1"),
+        canonical_json_sha256(normalize_schema(schema)),
+        "json_schema",
+        1,
+        f"{label} coordinator envelope contract",
+    )
+    validate_digest_record(
+        contracts.get("feature_fusion_selector.v1"),
+        canonical_json_sha256(normalize_schema(feature_fusion_schema)),
+        "json_schema",
+        1,
+        f"{label} feature fusion selector contract",
+    )
+
+    fixtures = pack.get("fixtures")
+    require(isinstance(fixtures, dict), f"{label} conformance pack fixtures must be an object")
+    coordinator_fixture = fixtures.get("coordinator_data_plan_envelope_nir.v1")
+    validate_digest_record(
+        coordinator_fixture,
+        canonical_json_sha256(fixture),
+        None,
+        None,
+        f"{label} coordinator envelope fixture",
+    )
+    require(
+        coordinator_fixture.get("contract") == "coordinator_data_plan_envelope.v1",
+        f"{label} coordinator fixture must reference coordinator contract",
+    )
+    fusion_fixture = fixtures.get("feature_fusion_selector_nir_chem.v1")
+    validate_digest_record(
+        fusion_fixture,
+        canonical_json_sha256(feature_fusion_fixture),
+        None,
+        None,
+        f"{label} feature fusion fixture",
+    )
+    require(
+        fusion_fixture.get("contract") == "feature_fusion_selector.v1",
+        f"{label} feature fusion fixture must reference feature fusion contract",
+    )
+
+    c_abi = pack.get("c_abi")
+    require(isinstance(c_abi, dict), f"{label} conformance pack c_abi must be an object")
+    require(
+        c_abi.get("data_provider_vtable_abi_version") == 2,
+        f"{label} provider ABI version must be 2",
+    )
+    callbacks = c_abi.get("required_provider_callbacks")
+    require(isinstance(callbacks, list), f"{label} required callbacks must be a list")
+    for callback in (
+        "materialize",
+        "make_view",
+        "view_identity",
+        "target_arrow",
+        "feature_arrow",
+        "release",
+        "destroy",
+    ):
+        require(callback in callbacks, f"{label} conformance pack must require `{callback}`")
+        require(callback in header, f"{label} header must expose `{callback}`")
+    data_symbols = c_abi.get("required_dag_ml_data_symbols")
+    require(isinstance(data_symbols, list), f"{label} dag-ml-data symbols must be a list")
+    if "DagMlDataTensorF64" in header:
+        require(
+            c_abi.get("data_tensor_f64_abi_version") == 1,
+            f"{label} f64 tensor ABI version must be 1",
+        )
+        for symbol in data_symbols:
+            require_non_empty_string(symbol, f"{label} dag-ml-data symbol")
+            require(symbol in header, f"{label} header must expose `{symbol}`")
+
+    cross_repo = pack.get("cross_repo_conformance")
+    require(isinstance(cross_repo, dict), f"{label} cross_repo_conformance must be an object")
+    required_tests = cross_repo.get("required_when_sibling_checkout_present")
+    require(isinstance(required_tests, list), f"{label} cross-repo tests must be a list")
+    for test_id in (
+        "contracts.schema_and_fixture_equivalence",
+        "headers.include_order",
+        "provider.f64_predict_replay",
+    ):
+        require(test_id in required_tests, f"{label} conformance pack must require `{test_id}`")
 
 
 def candidate_sibling_roots() -> list[Path]:
@@ -338,6 +465,7 @@ def main() -> int:
     try:
         local_schema = load_json(ROOT / SCHEMA_REL)
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
+        local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
         local_header = load_text(ROOT / LOCAL_C_HEADER_REL)
@@ -350,6 +478,15 @@ def main() -> int:
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
         validate_data_provider_header(local_header, "dag-ml")
+        validate_conformance_pack(
+            local_pack,
+            local_schema,
+            local_feature_fusion_schema,
+            local_fixture,
+            local_feature_fusion_fixture,
+            local_header,
+            "dag-ml",
+        )
 
         sibling = sibling_root()
         if sibling is None:
@@ -358,6 +495,7 @@ def main() -> int:
 
         sibling_schema = load_json(sibling / SCHEMA_REL)
         sibling_feature_fusion_schema = load_json(sibling / FEATURE_FUSION_SCHEMA_REL)
+        sibling_pack = load_json(sibling / CONFORMANCE_PACK_REL)
         sibling_fixture = load_json(sibling / SIBLING_FIXTURE_REL)
         sibling_feature_fusion_fixture = load_json(
             sibling / SIBLING_FEATURE_FUSION_FIXTURE_REL
@@ -373,6 +511,15 @@ def main() -> int:
         validate_feature_fusion_selector(sibling_feature_fusion_fixture, "dag-ml-data")
         validate_data_provider_header(sibling_header, "dag-ml-data")
         validate_dag_ml_data_tensor_header(sibling_header, "dag-ml-data")
+        validate_conformance_pack(
+            sibling_pack,
+            sibling_schema,
+            sibling_feature_fusion_schema,
+            sibling_fixture,
+            sibling_feature_fusion_fixture,
+            sibling_header,
+            "dag-ml-data",
+        )
         require(
             normalize_schema(local_schema) == normalize_schema(sibling_schema),
             "coordinator envelope schemas diverge beyond repository-specific $id",
@@ -390,6 +537,7 @@ def main() -> int:
             local_feature_fusion_fixture == sibling_feature_fusion_fixture,
             "feature fusion selector fixtures diverge",
         )
+        require(local_pack == sibling_pack, "shared conformance packs diverge")
         print(f"validated dag-ml contract against dag-ml-data at {sibling}")
         return 0
     except ContractError as exc:
