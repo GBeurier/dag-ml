@@ -24,9 +24,11 @@ contracts from Rust.
 Regenerate with:
 
 Process adapters must answer `--describe` with the dag-ml process-adapter
-contract. Persistent process commands accept `--process-workers`,
-`--process-timeout-ms` and `--process-retries`; generated fixtures use the
-stable defaults except where multi-worker coverage is useful.
+contract. Persistent process adapters must support `control_frames_v1`
+(`init`/`task`/`close` with typed `ack`/`result`/`error`). Persistent process
+commands accept `--process-workers`, `--process-timeout-ms` and
+`--process-retries`; generated fixtures use the stable defaults except where
+multi-worker coverage is useful.
 
 ```bash
 cargo run -p dag-ml-cli -- select-candidates --policy examples/fixtures/bundle/selection_policy_rmse.json --candidates examples/fixtures/bundle/candidate_scores_demo.json --groups examples/fixtures/bundle/candidate_groups_demo.json --output examples/generated/selection_decisions_demo.json

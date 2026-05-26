@@ -42,15 +42,38 @@ def emit_result(task: dict[str, Any]) -> None:
     base.emit_result(task)
 
 
+def emit_result_frame(task: dict[str, Any]) -> None:
+    maybe_hang_once(task)
+    base.emit_result_frame(task)
+
+
 def run_jsonl() -> None:
     for line in sys.stdin:
         if not line.strip():
             continue
         try:
-            task = json.loads(line)
+            payload = json.loads(line)
         except json.JSONDecodeError as exc:
             base.fail(f"invalid NodeTask JSON line: {exc}")
-        emit_result(task)
+        if base.is_control_frame(payload):
+            if not handle_control_frame(payload):
+                break
+            continue
+        emit_result(payload)
+
+
+def handle_control_frame(frame: dict[str, Any]) -> bool:
+    if not base.validate_frame_schema(frame):
+        return True
+    frame_type = frame["type"]
+    if frame_type == "task":
+        task = frame.get("task")
+        if not isinstance(task, dict):
+            base.emit_error("invalid_task_frame", "task frame is missing object field `task`")
+            return True
+        emit_result_frame(task)
+        return True
+    return base.handle_control_frame(frame)
 
 
 def main() -> None:

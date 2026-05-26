@@ -175,6 +175,10 @@ Implemented:
   the adapter protocol version, supported modes and JSON task/result
   capabilities; the CLI validates this contract before one-shot or JSONL
   execution;
+- persistent process adapters now use `control_frames_v1`: workers receive
+  explicit `init`, framed `task`, and `close` JSONL messages and return typed
+  `ack`, `result`, or `error` frames, giving the coordinator a stable lifecycle
+  and error surface before native bindings exist;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph validation,
