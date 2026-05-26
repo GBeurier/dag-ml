@@ -101,6 +101,9 @@ Implemented:
 - deterministic metric selection contracts, including grouped candidate
   selection, stable tie-breaking and optional metric-level guards that reject
   sample/target/group score mismatches before ranking;
+- execution-bundle validation requires persisted selection decisions to carry
+  the campaign `selection_metric_level`, preventing sample/target/group metric
+  drift between selection and refit/replay packaging;
 - identity-aligned regression metric reports over validated sample, target and
   group prediction blocks (`mse`, `rmse`, `mae`, `r2`), with finite score
   validation, prediction origin traceability and direct conversion to

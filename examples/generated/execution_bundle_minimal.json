@@ -12,6 +12,7 @@
       "selected_candidate_id": "model:base",
       "metric_name": "rmse",
       "objective": "minimize",
+      "metric_level": "sample",
       "selected_score": 0.98,
       "ranked_candidates": [
         {
