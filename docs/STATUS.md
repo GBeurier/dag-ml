@@ -54,6 +54,9 @@ Implemented:
   controllers;
 - C ABI validation and JSON output helpers for graph, selection decisions,
   grouped selection, execution bundles, replay envelopes and replay requests;
+- C ABI mock replay execution helper that exercises execution-plan, bundle,
+  replay request, data envelope and refit artifact handle materialization and
+  returns a JSON summary;
 - standalone sklearn complex OOF demonstrator with repeated observations,
   group-aware splits, train-only augmentation, branch model variants,
   heterogeneous prediction+raw-data merge variants, OOF-based selection and
@@ -72,13 +75,13 @@ Not implemented yet:
 - persistent artifact/cache stores;
 - Arrow prediction storage;
 - host controller adapters;
-- bundle schema migration policy and host-binding replay execution entry points;
+- bundle schema migration policy and real host-binding replay execution entry
+  points;
 - concrete `dag-ml-data` provider implementation with real buffers and handle
   lifecycle arena.
 
 Next recommended task:
 
-Expose replay execution through the C ABI, then turn the sklearn demonstrator
-into the first controller adapter smoke: replace the Python-side orchestration
-loop with `dag-ml` scheduler tasks while keeping the same OOF campaign,
-heterogeneous merge and refit score policy.
+Turn the sklearn demonstrator into the first controller adapter smoke: replace
+the Python-side orchestration loop with `dag-ml` scheduler tasks while keeping
+the same OOF campaign, heterogeneous merge and refit score policy.

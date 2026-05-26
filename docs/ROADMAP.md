@@ -82,6 +82,6 @@ Bundles carry an explicit schema version and reject unsupported versions. The C
 ABI exposes the same selection and replay-validation contracts over JSON. The
 runtime can now materialize replay data and refit artifact handles, then invoke
 eligible controllers for replay phases without CV folds. The CLI has a mock
-replay execution smoke for the same path. The remaining work is schema
-migration policy, C ABI replay-execution smoke and host adapter replay
-execution.
+replay execution smoke for the same path, and the C ABI exposes a mock replay
+execution helper returning a JSON summary. The remaining work is schema
+migration policy and real host adapter replay execution.

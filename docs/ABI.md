@@ -13,6 +13,8 @@ the host owns the underlying object behind each handle.
 - selection policy/decision validation and candidate selection JSON helpers;
 - execution bundle validation, replay-envelope validation and replay-request
   validation helpers;
+- mock replay execution helper that returns a JSON summary while exercising
+  Rust-side data and artifact handle materialization;
 - `DagMlControllerVTable` for host operator controllers;
 - `DagMlDataVTable` for host data providers.
 
@@ -38,4 +40,6 @@ ownership and naming before full execution is implemented.
 3. Replace placeholder Arrow pointers with explicit `struct ArrowArray` and
    `struct ArrowSchema` declarations in the header.
 4. Add conformance tests that call the C ABI from a small C program.
-5. Add host adapters for Python and native C++ controllers.
+5. Replace the mock replay helper with host-controller replay through the
+   vtable surface.
+6. Add host adapters for Python and native C++ controllers.

@@ -14,7 +14,7 @@
 | Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths, replay materializes data and refit artifact handles |
 | CLI contracts | selection command, bundle build command, bundle validation with replay request and data envelope, mock replay execution |
 | sklearn demonstrator | group OOF, repeated observations, train-only augmentation, branch variant selection, heterogeneous merge selection, refit report |
-| ABI | null pointer handling, invalid JSON, valid graph, grouped selection output, bundle/replay validation |
+| ABI | null pointer handling, invalid JSON, valid graph, grouped selection output, bundle/replay validation, mock replay execution summary |
 
 ## Conformance Tests
 
@@ -53,3 +53,4 @@ Add a C smoke test that:
    `dagml_string_free`;
 5. validates that Rust-allocated JSON byte outputs are released by
    `dagml_owned_bytes_free`.
+6. executes the mock replay ABI helper and validates the returned summary.
