@@ -4,18 +4,18 @@
   "selections": {
     "merge": {
       "policy_id": "select:rmse",
-      "selected_candidate_id": "merge:m1.predictions_plus_original",
+      "selected_candidate_id": "model:base",
       "metric_name": "rmse",
       "objective": "minimize",
       "selected_score": 0.98,
       "ranked_candidates": [
         {
-          "candidate_id": "merge:m1.predictions_plus_original",
+          "candidate_id": "model:base",
           "score": 0.98,
           "rank": 1
         },
         {
-          "candidate_id": "merge:m0.predictions_only",
+          "candidate_id": "model:other",
           "score": 1.11,
           "rank": 2
         }
