@@ -19,6 +19,11 @@ the host owns the underlying object behind each handle.
 - selection policy/decision validation and candidate selection JSON helpers;
 - execution bundle validation, replay-envelope validation, replay-request
   validation and prediction-cache payload validation helpers;
+- `dagml_research_provenance_export_json` for building the standards-facing
+  `ResearchProvenanceExport` JSON over validated execution plans, bundles,
+  optional lineage records, replay envelopes, prediction-cache manifests and
+  artifact manifests; null pointer plus zero length denotes an omitted
+  optional input;
 - vtable replay execution helper that composes host controllers, host data
   provider, host artifact store and optional host prediction-cache store while
   Rust owns scheduling and validation;

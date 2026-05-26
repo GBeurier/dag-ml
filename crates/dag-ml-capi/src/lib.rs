@@ -5,12 +5,13 @@ use std::slice;
 use std::sync::Mutex;
 
 use dag_ml_core::{
-    build_execution_plan, regression_report_to_candidate_score, score_regression_aggregated_block,
-    score_regression_prediction_block, select_candidate, select_candidate_groups,
-    AggregatedPredictionBlock, ArtifactMaterializationRequest, BundlePredictionCachePayloadSet,
-    BundleReplayExecution, CampaignSpec, CandidateScore, ControllerId, ControllerManifest,
-    ControllerRegistry, DagMlError, DataMaterializationRequest, DataRequestPartition,
-    DataViewRequest, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope, GraphSpec,
+    build_execution_plan, build_research_provenance_export, regression_report_to_candidate_score,
+    score_regression_aggregated_block, score_regression_prediction_block, select_candidate,
+    select_candidate_groups, AggregatedPredictionBlock, ArtifactMaterializationRequest,
+    BundlePredictionCachePayloadSet, BundleReplayExecution, CampaignSpec, CandidateScore,
+    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataMaterializationRequest,
+    DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
+    ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest, GraphSpec,
     HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
     NodeResult, NodeTask, Phase, PredictionBlock, PredictionCacheMaterializationRequest,
     PredictionPartition, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
@@ -968,6 +969,103 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_with_predictio
     }
 }
 
+/// Builds a standards-facing research provenance export from validated DAG-ML
+/// contracts.
+///
+/// The returned JSON is a serialized `ResearchProvenanceExport` containing
+/// `lineage.prov.jsonld` and `ro-crate-metadata.json` payloads. `lineage`,
+/// `envelopes`, `prediction_cache_manifest` and `artifact_manifest` are
+/// optional: pass a null pointer with length 0 to omit them. When present,
+/// `lineage` must be a JSON array of `LineageRecord`, `envelopes` a JSON object
+/// keyed by bundle data requirement key, and the manifest inputs must match the
+/// bundle.
+///
+/// # Safety
+///
+/// Non-null input pointers must point to readable bytes for the duration of the
+/// call. `out_json` must point to writable memory for one `DagMlOwnedBytes`;
+/// returned bytes must be released with `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_research_provenance_export_json(
+    plan_ptr: *const u8,
+    plan_len: usize,
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    lineage_ptr: *const u8,
+    lineage_len: usize,
+    envelopes_ptr: *const u8,
+    envelopes_len: usize,
+    prediction_cache_manifest_ptr: *const u8,
+    prediction_cache_manifest_len: usize,
+    artifact_manifest_ptr: *const u8,
+    artifact_manifest_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let plan =
+        match parse_json_ptr::<ExecutionPlan>(plan_ptr, plan_len, error_out, "execution plan") {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+    let bundle =
+        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+    let lineage = match parse_optional_json_ptr::<Vec<LineageRecord>>(
+        lineage_ptr,
+        lineage_len,
+        error_out,
+        "lineage records",
+    ) {
+        Ok(Some(lineage)) => lineage,
+        Ok(None) => Vec::new(),
+        Err(status) => return status,
+    };
+    let envelopes = match parse_optional_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+        envelopes_ptr,
+        envelopes_len,
+        error_out,
+        "replay envelopes",
+    ) {
+        Ok(Some(envelopes)) => envelopes,
+        Ok(None) => BTreeMap::new(),
+        Err(status) => return status,
+    };
+    let prediction_cache_manifest = match parse_optional_json_ptr::<FilePredictionCacheManifest>(
+        prediction_cache_manifest_ptr,
+        prediction_cache_manifest_len,
+        error_out,
+        "prediction cache manifest",
+    ) {
+        Ok(manifest) => manifest,
+        Err(status) => return status,
+    };
+    let artifact_manifest = match parse_optional_json_ptr::<FileArtifactManifest>(
+        artifact_manifest_ptr,
+        artifact_manifest_len,
+        error_out,
+        "artifact manifest",
+    ) {
+        Ok(manifest) => manifest,
+        Err(status) => return status,
+    };
+
+    match build_research_provenance_export(
+        &plan,
+        &bundle,
+        &lineage,
+        &envelopes,
+        prediction_cache_manifest.as_ref(),
+        artifact_manifest.as_ref(),
+    ) {
+        Ok(export) => write_owned_json(out_json, error_out, &export),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
 /// Executes a deterministic Rust-side mock replay from JSON contracts.
 ///
 /// This is a conformance smoke for bindings: it validates the replay bundle,
@@ -1284,6 +1382,21 @@ where
         set_error(error_out, format!("failed to parse {label} JSON: {error}"));
         DagMlStatusCode::VALIDATION_ERROR
     })
+}
+
+unsafe fn parse_optional_json_ptr<T>(
+    json_ptr: *const u8,
+    json_len: usize,
+    error_out: *mut DagMlString,
+    label: &str,
+) -> Result<Option<T>, DagMlStatusCode>
+where
+    T: DeserializeOwned,
+{
+    if json_ptr.is_null() && json_len == 0 {
+        return Ok(None);
+    }
+    parse_json_ptr::<T>(json_ptr, json_len, error_out, label).map(Some)
 }
 
 unsafe fn write_owned_json<T>(
@@ -3838,6 +3951,53 @@ mod tests {
         };
         assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
+    }
+
+    #[test]
+    fn exports_research_provenance_over_abi() {
+        let plan = fixture_plan_json();
+        let bundle = include_bytes!("../../../examples/generated/execution_bundle_minimal.json");
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_research_provenance_export_json(
+                plan.as_ptr(),
+                plan.len(),
+                bundle.as_ptr(),
+                bundle.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let export: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(export["schema_version"], 1);
+        assert_eq!(
+            export["prov_jsonld"]["@context"]["prov"],
+            "http://www.w3.org/ns/prov#"
+        );
+        assert!(export["prov_jsonld"]["wasDerivedFrom"]
+            .to_string()
+            .contains("dagml:derived:bundle-plan"));
+        assert!(export["ro_crate_metadata"]["@graph"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["@type"].to_string().contains("ComputationalWorkflow")));
+        unsafe { dagml_owned_bytes_free(out) };
     }
 
     #[test]
