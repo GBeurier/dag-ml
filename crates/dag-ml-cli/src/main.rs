@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -21,6 +23,8 @@ use dag_ml_core::{
     SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
+
+const DEFAULT_PROCESS_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -113,6 +117,10 @@ enum Command {
         persistent: bool,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
         #[arg(long, default_value = "plan:cli.process")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.process")]
@@ -181,6 +189,10 @@ enum Command {
         persistent: bool,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long, default_value = "bundle:cli.process.refit")]
@@ -209,6 +221,10 @@ enum Command {
         persistent: bool,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long)]
@@ -239,6 +255,10 @@ enum Command {
         adapter: PathBuf,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
         #[arg(long, default_value = "bundle:cli.process.cv.refit.replay")]
         bundle_id: String,
         #[arg(long)]
@@ -265,6 +285,10 @@ enum Command {
         adapter: PathBuf,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
         #[arg(long, default_value = "bundle:cli.process.refit.replay")]
         bundle_id: String,
         #[arg(long)]
@@ -363,6 +387,10 @@ enum Command {
         persistent: bool,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
         #[arg(long, default_value = "plan:cli.bundle")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.process.replay")]
@@ -540,6 +568,8 @@ fn main() -> Result<()> {
             adapter,
             persistent,
             process_workers,
+            process_timeout_ms,
+            process_retries,
             plan_id,
             run_id,
             root_seed,
@@ -548,8 +578,13 @@ fn main() -> Result<()> {
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
+            let process_config = process_adapter_runtime_config(
+                process_workers,
+                process_timeout_ms,
+                process_retries,
+            )?;
             let runtime_controllers =
-                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_workers)?;
+                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let results = SequentialScheduler
                 .execute_campaign_phase_with_data_provider(
@@ -650,6 +685,8 @@ fn main() -> Result<()> {
             adapter,
             persistent,
             process_workers,
+            process_timeout_ms,
+            process_retries,
             output,
             bundle_id,
             variant_id,
@@ -661,8 +698,13 @@ fn main() -> Result<()> {
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
+            let process_config = process_adapter_runtime_config(
+                process_workers,
+                process_timeout_ms,
+                process_retries,
+            )?;
             let runtime_controllers =
-                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_workers)?;
+                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -684,6 +726,8 @@ fn main() -> Result<()> {
             adapter,
             persistent,
             process_workers,
+            process_timeout_ms,
+            process_retries,
             output,
             prediction_cache_output,
             bundle_id,
@@ -697,8 +741,13 @@ fn main() -> Result<()> {
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
+            let process_config = process_adapter_runtime_config(
+                process_workers,
+                process_timeout_ms,
+                process_retries,
+            )?;
             let runtime_controllers =
-                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_workers)?;
+                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
             let selections = read_selection_decisions(selections.as_ref())?;
             let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
@@ -745,6 +794,8 @@ fn main() -> Result<()> {
             envelope,
             adapter,
             process_workers,
+            process_timeout_ms,
+            process_retries,
             bundle_id,
             variant_id,
             selections,
@@ -756,8 +807,13 @@ fn main() -> Result<()> {
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope.clone())?;
+            let process_config = process_adapter_runtime_config(
+                process_workers,
+                process_timeout_ms,
+                process_retries,
+            )?;
             let runtime_controllers =
-                persistent_process_runtime_controllers(&plan, adapter, process_workers)?;
+                persistent_process_runtime_controllers(&plan, adapter, process_config)?;
             let selections = read_selection_decisions(selections.as_ref())?;
             let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
@@ -814,6 +870,8 @@ fn main() -> Result<()> {
             envelope,
             adapter,
             process_workers,
+            process_timeout_ms,
+            process_retries,
             bundle_id,
             variant_id,
             plan_id,
@@ -824,8 +882,13 @@ fn main() -> Result<()> {
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope.clone())?;
+            let process_config = process_adapter_runtime_config(
+                process_workers,
+                process_timeout_ms,
+                process_retries,
+            )?;
             let runtime_controllers =
-                persistent_process_runtime_controllers(&plan, adapter, process_workers)?;
+                persistent_process_runtime_controllers(&plan, adapter, process_config)?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
                 data_provider: &data_provider,
@@ -1066,6 +1129,8 @@ fn main() -> Result<()> {
             adapter,
             persistent,
             process_workers,
+            process_timeout_ms,
+            process_retries,
             plan_id,
             run_id,
             root_seed,
@@ -1092,8 +1157,13 @@ fn main() -> Result<()> {
                 data_provider.register_envelope(envelope.clone())?;
             }
             let artifact_store = mock_artifact_store(&plan, &bundle)?;
+            let process_config = process_adapter_runtime_config(
+                process_workers,
+                process_timeout_ms,
+                process_retries,
+            )?;
             let runtime_controllers =
-                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_workers)?;
+                process_runtime_controllers_for_mode(&plan, adapter, persistent, process_config)?;
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let results = SequentialScheduler
                 .execute_bundle_replay(
@@ -1861,16 +1931,51 @@ struct ProcessRuntimeController {
     adapter: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ProcessAdapterRuntimeConfig {
+    process_workers: usize,
+    timeout: Duration,
+    retries: usize,
+}
+
 struct PersistentProcessRuntimeController {
     id: ControllerId,
     adapter: PathBuf,
+    config: ProcessAdapterRuntimeConfig,
     sessions: RefCell<Vec<PersistentProcessSession>>,
 }
 
 struct PersistentProcessSession {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    stdout_rx: Receiver<PersistentReadEvent>,
+}
+
+enum PersistentReadEvent {
+    Line(String),
+    Eof,
+    Error(String),
+}
+
+struct PersistentWorkerFailure {
+    restartable: bool,
+    message: String,
+}
+
+impl PersistentWorkerFailure {
+    fn restartable(message: impl Into<String>) -> Self {
+        Self {
+            restartable: true,
+            message: message.into(),
+        }
+    }
+
+    fn terminal(message: impl Into<String>) -> Self {
+        Self {
+            restartable: false,
+            message: message.into(),
+        }
+    }
 }
 
 impl PersistentProcessSession {
@@ -1906,65 +2011,121 @@ impl PersistentProcessSession {
         Ok(Self {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            stdout_rx: spawn_persistent_stdout_reader(stdout),
         })
     }
 
-    fn invoke(
+    fn invoke_once(
         &mut self,
         controller_id: &ControllerId,
         adapter: &Path,
         task: &NodeTask,
-    ) -> dag_ml_core::Result<NodeResult> {
+        timeout: Duration,
+    ) -> Result<NodeResult, PersistentWorkerFailure> {
         serde_json::to_writer(&mut self.stdin, task).map_err(|err| {
-            DagMlError::RuntimeValidation(format!(
+            PersistentWorkerFailure::terminal(format!(
                 "controller `{controller_id}` failed to serialize persistent task JSON: {err}"
             ))
         })?;
         self.stdin.write_all(b"\n").map_err(|err| {
-            DagMlError::RuntimeValidation(format!(
+            PersistentWorkerFailure::restartable(format!(
                 "controller `{controller_id}` failed to write persistent task JSON: {err}"
             ))
         })?;
         self.stdin.flush().map_err(|err| {
-            DagMlError::RuntimeValidation(format!(
+            PersistentWorkerFailure::restartable(format!(
                 "controller `{controller_id}` failed to flush persistent task JSON: {err}"
             ))
         })?;
 
-        let mut line = String::new();
-        let bytes = self.stdout.read_line(&mut line).map_err(|err| {
-            DagMlError::RuntimeValidation(format!(
-                "controller `{controller_id}` failed to read persistent adapter `{}`: {err}",
-                adapter.display()
-            ))
-        })?;
-        if bytes == 0 {
-            let status = self
-                .child
-                .try_wait()
-                .map(|status| status.map(|status| status.to_string()))
-                .unwrap_or_else(|err| Some(format!("status unavailable: {err}")))
-                .unwrap_or_else(|| "still running".to_string());
-            return Err(DagMlError::RuntimeValidation(format!(
-                "controller `{controller_id}` persistent adapter `{}` returned EOF ({status})",
-                adapter.display()
-            )));
-        }
+        let line = self.read_response_line(controller_id, adapter, timeout)?;
         serde_json::from_str(&line).map_err(|err| {
-            DagMlError::RuntimeValidation(format!(
+            PersistentWorkerFailure::terminal(format!(
                 "controller `{controller_id}` persistent adapter `{}` returned invalid NodeResult JSON: {err}",
                 adapter.display()
             ))
         })
     }
+
+    fn read_response_line(
+        &mut self,
+        controller_id: &ControllerId,
+        adapter: &Path,
+        timeout: Duration,
+    ) -> Result<String, PersistentWorkerFailure> {
+        match self.stdout_rx.recv_timeout(timeout) {
+            Ok(PersistentReadEvent::Line(line)) => Ok(line),
+            Ok(PersistentReadEvent::Eof) => {
+                let status = self
+                    .child
+                    .try_wait()
+                    .map(|status| status.map(|status| status.to_string()))
+                    .unwrap_or_else(|err| Some(format!("status unavailable: {err}")))
+                    .unwrap_or_else(|| "still running".to_string());
+                Err(PersistentWorkerFailure::restartable(format!(
+                    "controller `{controller_id}` persistent adapter `{}` returned EOF ({status})",
+                    adapter.display()
+                )))
+            }
+            Ok(PersistentReadEvent::Error(err)) => {
+                Err(PersistentWorkerFailure::restartable(format!(
+                    "controller `{controller_id}` failed to read persistent adapter `{}`: {err}",
+                    adapter.display()
+                )))
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                self.terminate();
+                Err(PersistentWorkerFailure::restartable(format!(
+                    "controller `{controller_id}` persistent adapter `{}` timed out after {} ms",
+                    adapter.display(),
+                    timeout.as_millis()
+                )))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(PersistentWorkerFailure::restartable(format!(
+                    "controller `{controller_id}` persistent adapter `{}` stdout reader disconnected",
+                    adapter.display()
+                )))
+            }
+        }
+    }
+
+    fn terminate(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 impl Drop for PersistentProcessSession {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.terminate();
     }
+}
+
+fn spawn_persistent_stdout_reader(stdout: ChildStdout) -> Receiver<PersistentReadEvent> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    let _ = tx.send(PersistentReadEvent::Eof);
+                    break;
+                }
+                Ok(_) => {
+                    if tx.send(PersistentReadEvent::Line(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.send(PersistentReadEvent::Error(err.to_string()));
+                    break;
+                }
+            }
+        }
+    });
+    rx
 }
 
 impl RuntimeController for ProcessRuntimeController {
@@ -2054,7 +2215,47 @@ impl RuntimeController for PersistentProcessRuntimeController {
             )));
         }
         let worker_index = process_worker_index_for_task(task, sessions.len());
-        sessions[worker_index].invoke(&self.id, &self.adapter, task)
+        for attempt in 0..=self.config.retries {
+            match sessions[worker_index].invoke_once(
+                &self.id,
+                &self.adapter,
+                task,
+                self.config.timeout,
+            ) {
+                Ok(result) => return Ok(result),
+                Err(failure) => {
+                    if failure.restartable {
+                        sessions[worker_index].terminate();
+                        let replacement = PersistentProcessSession::spawn(
+                            &self.id,
+                            &self.adapter,
+                            worker_index,
+                            self.config.process_workers,
+                        )
+                        .map_err(|restart_err| {
+                            DagMlError::RuntimeValidation(format!(
+                                "{}; additionally failed to restart persistent worker {}/{}: {restart_err}",
+                                failure.message, worker_index, self.config.process_workers
+                            ))
+                        })?;
+                        sessions[worker_index] = replacement;
+                        if attempt < self.config.retries {
+                            continue;
+                        }
+                    }
+                    let attempts = attempt + 1;
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "{} after {} attempt(s)",
+                        failure.message, attempts
+                    )));
+                }
+            }
+        }
+        Err(DagMlError::RuntimeValidation(format!(
+            "controller `{}` persistent adapter `{}` exhausted retry budget",
+            self.id,
+            self.adapter.display()
+        )))
     }
 }
 
@@ -2269,11 +2470,11 @@ fn process_runtime_controllers_for_mode(
     plan: &dag_ml_core::ExecutionPlan,
     adapter: PathBuf,
     persistent: bool,
-    process_workers: usize,
+    config: ProcessAdapterRuntimeConfig,
 ) -> Result<RuntimeControllerRegistry> {
-    validate_process_worker_count(persistent, process_workers)?;
+    validate_process_runtime_config(persistent, &config)?;
     if persistent {
-        persistent_process_runtime_controllers(plan, adapter, process_workers)
+        persistent_process_runtime_controllers(plan, adapter, config)
     } else {
         process_runtime_controllers(plan, adapter)
     }
@@ -2282,35 +2483,60 @@ fn process_runtime_controllers_for_mode(
 fn persistent_process_runtime_controllers(
     plan: &dag_ml_core::ExecutionPlan,
     adapter: PathBuf,
-    process_workers: usize,
+    config: ProcessAdapterRuntimeConfig,
 ) -> Result<RuntimeControllerRegistry> {
-    validate_process_worker_count(true, process_workers)?;
+    validate_process_runtime_config(true, &config)?;
     let mut registry = RuntimeControllerRegistry::new();
     for controller_id in plan.controller_manifests.keys() {
-        let mut sessions = Vec::with_capacity(process_workers);
-        for worker_index in 0..process_workers {
+        let mut sessions = Vec::with_capacity(config.process_workers);
+        for worker_index in 0..config.process_workers {
             sessions.push(PersistentProcessSession::spawn(
                 controller_id,
                 &adapter,
                 worker_index,
-                process_workers,
+                config.process_workers,
             )?);
         }
         registry.register(Box::new(PersistentProcessRuntimeController {
             id: controller_id.clone(),
             adapter: adapter.clone(),
+            config,
             sessions: RefCell::new(sessions),
         }))?;
     }
     Ok(registry)
 }
 
-fn validate_process_worker_count(persistent: bool, process_workers: usize) -> Result<()> {
-    if process_workers == 0 {
+fn process_adapter_runtime_config(
+    process_workers: usize,
+    process_timeout_ms: u64,
+    process_retries: usize,
+) -> Result<ProcessAdapterRuntimeConfig> {
+    if process_timeout_ms == 0 {
+        bail!("--process-timeout-ms must be at least 1");
+    }
+    Ok(ProcessAdapterRuntimeConfig {
+        process_workers,
+        timeout: Duration::from_millis(process_timeout_ms),
+        retries: process_retries,
+    })
+}
+
+fn validate_process_runtime_config(
+    persistent: bool,
+    config: &ProcessAdapterRuntimeConfig,
+) -> Result<()> {
+    if config.process_workers == 0 {
         bail!("--process-workers must be at least 1");
     }
-    if !persistent && process_workers != 1 {
+    if !persistent && config.process_workers != 1 {
         bail!("--process-workers > 1 requires --persistent");
+    }
+    if !persistent && config.retries != 0 {
+        bail!("--process-retries requires --persistent");
+    }
+    if !persistent && config.timeout != Duration::from_millis(DEFAULT_PROCESS_TIMEOUT_MS) {
+        bail!("--process-timeout-ms requires --persistent");
     }
     Ok(())
 }
