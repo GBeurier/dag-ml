@@ -14,7 +14,7 @@
 | Runtime | sequential DAG order, campaign variant x fold execution, data-provider-required paths, fold train/validation data view routing, `NodeTask.data_views`, `NodeTask.prediction_inputs`, validation prediction sample checks, `requires_oof` edge enforcement with missing/train/misaligned refusal and refit OOF coverage checks, prediction-cache store loading/materialization, refit artifact-handle capture, replay materializes predict views, prediction-cache handles and refit artifact handles, external controller result conformance |
 | CLI contracts | selection command, bundle build command, mock/process refit bundle capture, branch/merge direct refit refusal without CV OOF, branch/merge CV+refit process bundle capture, prediction-cache payload export/validation and store-backed replay, branch/merge REFIT replay refusal with manifest-only OOF caches, branch/merge REFIT replay acceptance with validated OOF payloads, branch/merge stateful sklearn CV+refit+replay, bundle validation with replay request and data envelope, mock replay execution, process adapter campaign/replay execution, persistent JSONL process campaign, branch/merge OOF process campaign, stateful sklearn refit/replay, sklearn complex demo report validation |
 | sklearn demonstrator | group OOF, repeated observations, train-only augmentation, branch variant selection, heterogeneous merge selection, refit report |
-| ABI | null pointer handling, invalid JSON, valid graph, grouped selection output, bundle/replay validation, prediction-cache payload validation, controller vtable routing, data-provider vtable routing, artifact-store vtable routing, prediction-cache vtable routing, mock replay execution summary, non-mock vtable replay execution summary, non-mock vtable REFIT replay with OOF prediction-cache store, compiled C conformance replay against `dag_ml.h` |
+| ABI | null pointer handling, invalid JSON, valid graph, execution-plan build, grouped selection output, bundle/replay validation, prediction-cache payload validation, controller vtable routing, data-provider vtable routing, artifact-store vtable routing, prediction-cache vtable routing, mock replay execution summary, non-mock vtable replay execution summary, non-mock vtable REFIT replay with OOF prediction-cache store, compiled C conformance plan-build and replay against `dag_ml.h` |
 
 ## Conformance Tests
 
@@ -71,4 +71,5 @@ Add a C smoke test that:
    `dagml_owned_bytes_free`.
 6. executes the mock replay ABI helper and validates the returned summary;
 7. compiles a C conformance executable against `dag_ml.h`, links it with
-   `libdag_ml_capi`, and drives non-mock vtable replay.
+   `libdag_ml_capi`, builds the execution plan through the ABI, and drives
+   non-mock vtable replay.

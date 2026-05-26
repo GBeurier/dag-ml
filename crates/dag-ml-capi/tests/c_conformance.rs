@@ -2,10 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use dag_ml_core::{
-    build_execution_plan, CampaignSpec, ControllerManifest, ControllerRegistry, GraphSpec,
-};
-
 const C_CONFORMANCE_SOURCE: &str = r#"
 #include "dag_ml.h"
 
@@ -275,14 +271,16 @@ static void release_bytes(void *user_data, DagMlOwnedBytes bytes) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 5) {
-        fprintf(stderr, "usage: %s PLAN BUNDLE REQUEST ENVELOPES\n", argv[0]);
+    if (argc != 7) {
+        fprintf(stderr, "usage: %s GRAPH CAMPAIGN CONTROLLERS BUNDLE REQUEST ENVELOPES\n", argv[0]);
         return 2;
     }
-    Buffer plan = read_file(argv[1]);
-    Buffer bundle = read_file(argv[2]);
-    Buffer request = read_file(argv[3]);
-    Buffer envelopes = read_file(argv[4]);
+    Buffer graph = read_file(argv[1]);
+    Buffer campaign = read_file(argv[2]);
+    Buffer controllers = read_file(argv[3]);
+    Buffer bundle = read_file(argv[4]);
+    Buffer request = read_file(argv[5]);
+    Buffer envelopes = read_file(argv[6]);
 
     DagMlDataVTable data_provider = {0};
     data_provider.abi_version = 2;
@@ -304,8 +302,37 @@ int main(int argc, char **argv) {
     bindings[1].vtable.invoke = controller_invoke;
     bindings[1].vtable.release_bytes = release_bytes;
 
+    DagMlOwnedBytes plan = {0};
     DagMlOwnedBytes out = {0};
     DagMlString error = {0};
+    DagMlStatusCode plan_status = dagml_execution_plan_build_json(
+        graph.ptr,
+        graph.len,
+        campaign.ptr,
+        campaign.len,
+        controllers.ptr,
+        controllers.len,
+        bytes_view("plan:cli.bundle"),
+        &plan,
+        &error
+    );
+    free(graph.ptr);
+    free(campaign.ptr);
+    free(controllers.ptr);
+    if (plan_status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "dagml_execution_plan_build_json failed with status %u: %.*s\n",
+            plan_status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        free(bundle.ptr);
+        free(request.ptr);
+        free(envelopes.ptr);
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+
     DagMlStatusCode status = dagml_replay_execute_json(
         plan.ptr,
         plan.len,
@@ -325,10 +352,10 @@ int main(int argc, char **argv) {
         &out,
         &error
     );
-    free(plan.ptr);
     free(bundle.ptr);
     free(request.ptr);
     free(envelopes.ptr);
+    dagml_owned_bytes_free(plan);
     if (status != DAG_ML_STATUS_OK) {
         fprintf(stderr, "dagml_replay_execute_json failed with status %u: %.*s\n",
             status,
@@ -378,11 +405,9 @@ fn c_program_executes_vtable_replay_against_c_abi() {
     ));
     fs::create_dir_all(&temp).expect("create conformance temp dir");
 
-    let plan_path = temp.join("execution_plan.json");
     let c_path = temp.join("conformance.c");
     let envelopes_path = temp.join("envelopes.json");
     let exe_path = temp.join("conformance");
-    fs::write(&plan_path, fixture_plan_json()).expect("write generated execution plan");
     fs::write(&c_path, C_CONFORMANCE_SOURCE).expect("write C conformance source");
     let envelope = fs::read_to_string(
         workspace.join("examples/fixtures/data/coordinator_data_plan_envelope_nir.json"),
@@ -413,7 +438,9 @@ fn c_program_executes_vtable_replay_against_c_abi() {
     );
 
     let run_output = Command::new(&exe_path)
-        .arg(&plan_path)
+        .arg(workspace.join("examples/minimal_graph.json"))
+        .arg(workspace.join("examples/campaign_oof_generation.json"))
+        .arg(workspace.join("examples/controller_manifests.json"))
         .arg(workspace.join("examples/generated/execution_bundle_minimal.json"))
         .arg(workspace.join("examples/fixtures/bundle/replay_request_predict.json"))
         .arg(&envelopes_path)
@@ -425,36 +452,6 @@ fn c_program_executes_vtable_replay_against_c_abi() {
         String::from_utf8_lossy(&run_output.stdout),
         String::from_utf8_lossy(&run_output.stderr)
     );
-}
-
-fn fixture_plan_json() -> Vec<u8> {
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under workspace/crates")
-        .to_path_buf();
-    let graph: GraphSpec = serde_json::from_str(
-        &fs::read_to_string(workspace.join("examples/minimal_graph.json"))
-            .expect("read minimal graph fixture"),
-    )
-    .expect("parse minimal graph fixture");
-    let campaign: CampaignSpec = serde_json::from_str(
-        &fs::read_to_string(workspace.join("examples/campaign_oof_generation.json"))
-            .expect("read campaign fixture"),
-    )
-    .expect("parse campaign fixture");
-    let manifests: Vec<ControllerManifest> = serde_json::from_str(
-        &fs::read_to_string(workspace.join("examples/controller_manifests.json"))
-            .expect("read controller manifests"),
-    )
-    .expect("parse controller manifests");
-    let mut registry = ControllerRegistry::new();
-    for manifest in manifests {
-        registry.register(manifest).expect("register manifest");
-    }
-    let plan = build_execution_plan("plan:cli.bundle", graph, campaign, &registry)
-        .expect("build execution plan");
-    serde_json::to_vec(&plan).expect("serialize execution plan")
 }
 
 fn unique_suffix() -> u128 {

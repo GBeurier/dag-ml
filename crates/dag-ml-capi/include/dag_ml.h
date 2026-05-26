@@ -137,6 +137,16 @@ DagMlVersion dagml_version(void);
 void dagml_string_free(DagMlString value);
 void dagml_owned_bytes_free(DagMlOwnedBytes value);
 DagMlStatusCode dagml_graph_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
+DagMlStatusCode dagml_execution_plan_build_json(
+    const uint8_t *graph_ptr,
+    size_t graph_len,
+    const uint8_t *campaign_ptr,
+    size_t campaign_len,
+    const uint8_t *controllers_ptr,
+    size_t controllers_len,
+    DagMlBytesView plan_id,
+    DagMlOwnedBytes *out_json,
+    DagMlString *error_out);
 DagMlStatusCode dagml_selection_policy_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_selection_decision_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, DagMlOwnedBytes *out_json, DagMlString *error_out);

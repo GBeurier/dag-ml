@@ -4,9 +4,10 @@ use std::os::raw::c_char;
 use std::slice;
 
 use dag_ml_core::{
-    select_candidate, select_candidate_groups, ArtifactMaterializationRequest,
-    BundlePredictionCachePayloadSet, BundleReplayExecution, CandidateScore, ControllerId,
-    DagMlError, DataMaterializationRequest, DataRequestPartition, DataViewRequest, ExecutionBundle,
+    build_execution_plan, select_candidate, select_candidate_groups,
+    ArtifactMaterializationRequest, BundlePredictionCachePayloadSet, BundleReplayExecution,
+    CampaignSpec, CandidateScore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
+    DataMaterializationRequest, DataRequestPartition, DataViewRequest, ExecutionBundle,
     ExecutionPlan, ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef,
     InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeResult, NodeTask,
     Phase, PredictionBlock, PredictionCacheMaterializationRequest, PredictionPartition,
@@ -324,6 +325,114 @@ pub unsafe extern "C" fn dagml_graph_validate_json(
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
     validate_json::<GraphSpec>(json_ptr, json_len, error_out, "graph", GraphSpec::validate)
+}
+
+/// Builds an `ExecutionPlan` from graph, campaign and controller manifests.
+///
+/// # Safety
+///
+/// Input JSON pointers follow the same rules as `dagml_graph_validate_json`.
+/// `plan_id` must point to UTF-8 bytes. `out_json` must point to writable
+/// memory for one `DagMlOwnedBytes`; returned bytes must be released with
+/// `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_execution_plan_build_json(
+    graph_ptr: *const u8,
+    graph_len: usize,
+    campaign_ptr: *const u8,
+    campaign_len: usize,
+    controllers_ptr: *const u8,
+    controllers_len: usize,
+    plan_id: DagMlBytesView,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dagml_execution_plan_build_json_impl(ExecutionPlanBuildJsonArgs {
+            graph_ptr,
+            graph_len,
+            campaign_ptr,
+            campaign_len,
+            controllers_ptr,
+            controllers_len,
+            plan_id,
+            out_json,
+            error_out,
+        })
+    })) {
+        Ok(status) => status,
+        Err(_) => {
+            clear_error(error_out);
+            clear_owned_bytes(out_json);
+            set_error(
+                error_out,
+                "panic while building execution plan through C ABI",
+            );
+            DagMlStatusCode::PANIC
+        }
+    }
+}
+
+struct ExecutionPlanBuildJsonArgs {
+    graph_ptr: *const u8,
+    graph_len: usize,
+    campaign_ptr: *const u8,
+    campaign_len: usize,
+    controllers_ptr: *const u8,
+    controllers_len: usize,
+    plan_id: DagMlBytesView,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+}
+
+unsafe fn dagml_execution_plan_build_json_impl(
+    args: ExecutionPlanBuildJsonArgs,
+) -> DagMlStatusCode {
+    let ExecutionPlanBuildJsonArgs {
+        graph_ptr,
+        graph_len,
+        campaign_ptr,
+        campaign_len,
+        controllers_ptr,
+        controllers_len,
+        plan_id,
+        out_json,
+        error_out,
+    } = args;
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let graph = match parse_json_ptr::<GraphSpec>(graph_ptr, graph_len, error_out, "graph") {
+        Ok(graph) => graph,
+        Err(status) => return status,
+    };
+    let campaign =
+        match parse_json_ptr::<CampaignSpec>(campaign_ptr, campaign_len, error_out, "campaign") {
+            Ok(campaign) => campaign,
+            Err(status) => return status,
+        };
+    let manifests = match parse_json_ptr::<Vec<ControllerManifest>>(
+        controllers_ptr,
+        controllers_len,
+        error_out,
+        "controller manifests",
+    ) {
+        Ok(manifests) => manifests,
+        Err(status) => return status,
+    };
+    let plan_id = match parse_utf8_view(plan_id, error_out, "execution plan id") {
+        Ok(plan_id) => plan_id,
+        Err(status) => return status,
+    };
+    let mut registry = ControllerRegistry::new();
+    for manifest in manifests {
+        if let Err(error) = registry.register(manifest) {
+            return validation_error(error_out, error);
+        }
+    }
+    match build_execution_plan(plan_id, graph, campaign, &registry) {
+        Ok(plan) => write_owned_json(out_json, error_out, &plan),
+        Err(error) => validation_error(error_out, error),
+    }
 }
 
 /// Validates a canonical JSON `SelectionPolicy`.
@@ -1013,6 +1122,18 @@ unsafe fn parse_controller_id_view(
     error_out: *mut DagMlString,
     label: &str,
 ) -> Result<ControllerId, DagMlStatusCode> {
+    let raw = parse_utf8_view(view, error_out, label)?;
+    ControllerId::new(raw).map_err(|error| {
+        set_error(error_out, error.to_string());
+        DagMlStatusCode::VALIDATION_ERROR
+    })
+}
+
+unsafe fn parse_utf8_view(
+    view: DagMlBytesView,
+    error_out: *mut DagMlString,
+    label: &str,
+) -> Result<String, DagMlStatusCode> {
     if view.ptr.is_null() {
         set_error(error_out, format!("{label} pointer is null"));
         return Err(DagMlStatusCode::INVALID_ARGUMENT);
@@ -1022,10 +1143,7 @@ unsafe fn parse_controller_id_view(
         set_error(error_out, format!("{label} is not valid UTF-8: {error}"));
         DagMlStatusCode::VALIDATION_ERROR
     })?;
-    ControllerId::new(raw).map_err(|error| {
-        set_error(error_out, error.to_string());
-        DagMlStatusCode::VALIDATION_ERROR
-    })
+    Ok(raw.to_string())
 }
 
 unsafe fn build_controller_registry(
@@ -1886,10 +2004,9 @@ fn stable_handle(value: &str) -> u64 {
 mod tests {
     use super::*;
     use dag_ml_core::{
-        build_execution_plan, build_prediction_cache_record, ArtifactId, ArtifactRef, BundleId,
-        BundlePredictionRequirement, CampaignSpec, ControllerManifest, ControllerRegistry,
-        DataBinding, DataProviderViewSpec, DataRequestPartition, DataViewPolicy, FoldId, NodeId,
-        NodeKind, NodePlan, VariantId,
+        build_prediction_cache_record, ArtifactId, ArtifactRef, BundleId,
+        BundlePredictionRequirement, DataBinding, DataProviderViewSpec, DataRequestPartition,
+        DataViewPolicy, FoldId, NodeId, NodeKind, NodePlan, VariantId,
     };
     use std::ffi::CStr;
 
@@ -3149,6 +3266,52 @@ mod tests {
         assert_eq!(status, DagMlStatusCode::INVALID_ARGUMENT);
         assert!(!error.ptr.is_null());
         unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn builds_execution_plan_over_abi() {
+        let graph = include_bytes!("../../../examples/minimal_graph.json");
+        let campaign = include_bytes!("../../../examples/campaign_oof_generation.json");
+        let manifests = include_bytes!("../../../examples/controller_manifests.json");
+        let plan_id = b"plan:cabi.build";
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_execution_plan_build_json(
+                graph.as_ptr(),
+                graph.len(),
+                campaign.as_ptr(),
+                campaign.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                bytes_view(plan_id),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(
+            status,
+            DagMlStatusCode::OK,
+            "{}",
+            if error.ptr.is_null() {
+                String::new()
+            } else {
+                unsafe { CStr::from_ptr(error.ptr) }
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        );
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let plan: ExecutionPlan = serde_json::from_slice(json).unwrap();
+        plan.validate().unwrap();
+        assert_eq!(plan.id, "plan:cabi.build");
+        assert_eq!(plan.node_plans.len(), plan.graph_plan.graph.nodes.len());
+        assert_eq!(plan.controller_manifests.len(), 2);
+        unsafe { dagml_owned_bytes_free(out) };
     }
 
     fn fixture_plan_json() -> Vec<u8> {
