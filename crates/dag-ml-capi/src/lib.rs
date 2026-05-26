@@ -74,6 +74,33 @@ impl Default for DagMlOwnedBytes {
 }
 
 #[repr(C)]
+pub struct ArrowArray {
+    pub length: i64,
+    pub null_count: i64,
+    pub offset: i64,
+    pub n_buffers: i64,
+    pub n_children: i64,
+    pub buffers: *mut *const c_void,
+    pub children: *mut *mut ArrowArray,
+    pub dictionary: *mut ArrowArray,
+    pub release: Option<unsafe extern "C" fn(array: *mut ArrowArray)>,
+    pub private_data: *mut c_void,
+}
+
+#[repr(C)]
+pub struct ArrowSchema {
+    pub format: *const c_char,
+    pub name: *const c_char,
+    pub metadata: *const c_char,
+    pub flags: i64,
+    pub n_children: i64,
+    pub children: *mut *mut ArrowSchema,
+    pub dictionary: *mut ArrowSchema,
+    pub release: Option<unsafe extern "C" fn(schema: *mut ArrowSchema)>,
+    pub private_data: *mut c_void,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct DagMlControllerVTable {
     pub abi_version: u32,
@@ -107,8 +134,8 @@ pub struct DagMlControllerVTable {
             user_data: *mut c_void,
             fitted: DagMlHandle,
             data: DagMlHandle,
-            out_arrow_array: *mut *mut c_void,
-            out_arrow_schema: *mut *mut c_void,
+            out_arrow_array: *mut *mut ArrowArray,
+            out_arrow_schema: *mut *mut ArrowSchema,
         ) -> DagMlStatusCode,
     >,
     pub release: Option<unsafe extern "C" fn(user_data: *mut c_void, handle: DagMlHandle)>,
@@ -132,8 +159,8 @@ pub struct DagMlDataVTable {
         unsafe extern "C" fn(
             user_data: *mut c_void,
             view: DagMlHandle,
-            out_arrow_array: *mut *mut c_void,
-            out_arrow_schema: *mut *mut c_void,
+            out_arrow_array: *mut *mut ArrowArray,
+            out_arrow_schema: *mut *mut ArrowSchema,
         ) -> DagMlStatusCode,
     >,
     pub target_arrow: Option<
@@ -141,8 +168,8 @@ pub struct DagMlDataVTable {
             user_data: *mut c_void,
             view: DagMlHandle,
             target_name: DagMlBytesView,
-            out_arrow_array: *mut *mut c_void,
-            out_arrow_schema: *mut *mut c_void,
+            out_arrow_array: *mut *mut ArrowArray,
+            out_arrow_schema: *mut *mut ArrowSchema,
         ) -> DagMlStatusCode,
     >,
     pub release: Option<unsafe extern "C" fn(user_data: *mut c_void, handle: DagMlHandle)>,
