@@ -843,6 +843,29 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         "unexpected branch/merge research provenance output: {}",
         String::from_utf8_lossy(&export_branch_merge_research_provenance.stdout)
     );
+    let validate_branch_merge_research_provenance = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-research-provenance",
+            "--input-dir",
+            temp_branch_merge_provenance_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to validate branch/merge research provenance");
+    assert!(
+        validate_branch_merge_research_provenance.status.success(),
+        "validate branch/merge research provenance failed: {}",
+        String::from_utf8_lossy(&validate_branch_merge_research_provenance.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_branch_merge_research_provenance.stdout).contains(
+            "valid research provenance package: bundle=bundle:cli.branch.merge.cv.refit, plan=plan:cli.branch.merge.cv.refit"
+        ),
+        "unexpected branch/merge research provenance validation output: {}",
+        String::from_utf8_lossy(&validate_branch_merge_research_provenance.stdout)
+    );
     let branch_merge_prov_json =
         std::fs::read_to_string(temp_branch_merge_provenance_dir.join("lineage.prov.jsonld"))
             .expect("branch/merge PROV JSON-LD was written");
@@ -1849,6 +1872,29 @@ fn cli_exports_research_provenance_bundle() {
             .contains("wrote research provenance export: bundle=bundle:cli.demo"),
         "unexpected export-research-provenance output: {}",
         String::from_utf8_lossy(&export_provenance.stdout)
+    );
+    let validate_provenance = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-research-provenance",
+            "--input-dir",
+            temp_provenance_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli validate-research-provenance");
+    assert!(
+        validate_provenance.status.success(),
+        "validate-research-provenance failed: {}",
+        String::from_utf8_lossy(&validate_provenance.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_provenance.stdout).contains(
+            "valid research provenance package: bundle=bundle:cli.demo, plan=plan:cli.bundle"
+        ),
+        "unexpected validate-research-provenance output: {}",
+        String::from_utf8_lossy(&validate_provenance.stdout)
     );
 
     let prov_json = std::fs::read_to_string(temp_provenance_dir.join("lineage.prov.jsonld"))

@@ -206,7 +206,9 @@ Implemented:
   `lineage.prov.jsonld`, `ro-crate-metadata.json`, optional data envelopes and
   optional manifest files; this is a standards-facing export target for W3C
   PROV/Workflow Run RO-Crate and keeps DAG-ML's stricter OOF, replay and
-  artifact contracts as the canonical internal model;
+  artifact contracts as the canonical internal model; the CLI can reopen the
+  package with `validate-research-provenance`, verify RO-Crate checksums and
+  re-run the DAG-ML contract validation;
 - coordinator-owned lineage propagation: schedulers infer `input_lineage` from
   compiled DAG edges marked `propagates_lineage`, reject adapter-declared
   mismatches and expose `--lineage-output` on refit bundle capture commands so

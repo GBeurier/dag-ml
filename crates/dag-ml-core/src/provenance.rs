@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -40,6 +40,19 @@ pub struct ResearchProvenancePackageFile {
     pub sha256: String,
     pub size_bytes: usize,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResearchProvenancePackageValidation {
+    pub schema_version: u32,
+    pub plan_id: String,
+    pub bundle_id: String,
+    pub file_count: usize,
+    pub checksummed_file_count: usize,
+    pub lineage_record_count: usize,
+    pub data_envelope_count: usize,
+    pub has_prediction_cache_manifest: bool,
+    pub has_artifact_manifest: bool,
 }
 
 pub fn build_research_provenance_export(
@@ -152,6 +165,76 @@ pub fn build_research_provenance_package(
     Ok(ResearchProvenancePackage {
         schema_version: RESEARCH_PROVENANCE_SCHEMA_VERSION,
         files,
+    })
+}
+
+pub fn validate_research_provenance_package_files(
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<ResearchProvenancePackageValidation> {
+    if files.is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "research provenance package has no files".to_string(),
+        ));
+    }
+    for path in files.keys() {
+        validate_package_path(path)?;
+    }
+    require_package_file(files, EXECUTION_PLAN_FILE)?;
+    require_package_file(files, EXECUTION_BUNDLE_FILE)?;
+    require_package_file(files, LINEAGE_RECORDS_FILE)?;
+    require_package_file(files, PROV_JSONLD_FILE)?;
+    let ro_crate_metadata: Value = parse_package_json(
+        require_package_file(files, RO_CRATE_METADATA_FILE)?,
+        RO_CRATE_METADATA_FILE,
+    )?;
+
+    let checksummed_file_count = validate_ro_crate_package_checksums(&ro_crate_metadata, files)?;
+    validate_prov_jsonld_root(parse_package_json(
+        require_package_file(files, PROV_JSONLD_FILE)?,
+        PROV_JSONLD_FILE,
+    )?)?;
+
+    let plan: ExecutionPlan = parse_package_json(
+        require_package_file(files, EXECUTION_PLAN_FILE)?,
+        EXECUTION_PLAN_FILE,
+    )?;
+    let bundle: ExecutionBundle = parse_package_json(
+        require_package_file(files, EXECUTION_BUNDLE_FILE)?,
+        EXECUTION_BUNDLE_FILE,
+    )?;
+    let lineage: Vec<LineageRecord> = parse_package_json(
+        require_package_file(files, LINEAGE_RECORDS_FILE)?,
+        LINEAGE_RECORDS_FILE,
+    )?;
+    let data_envelopes = parse_package_data_envelopes(files)?;
+    let prediction_cache_manifest: Option<FilePredictionCacheManifest> = files
+        .get(FILE_PREDICTION_CACHE_MANIFEST_FILE)
+        .map(|bytes| parse_package_json(bytes, FILE_PREDICTION_CACHE_MANIFEST_FILE))
+        .transpose()?;
+    let artifact_manifest: Option<FileArtifactManifest> = files
+        .get(FILE_ARTIFACT_MANIFEST_FILE)
+        .map(|bytes| parse_package_json(bytes, FILE_ARTIFACT_MANIFEST_FILE))
+        .transpose()?;
+
+    validate_provenance_inputs(
+        &plan,
+        &bundle,
+        &lineage,
+        &data_envelopes,
+        prediction_cache_manifest.as_ref(),
+        artifact_manifest.as_ref(),
+    )?;
+
+    Ok(ResearchProvenancePackageValidation {
+        schema_version: RESEARCH_PROVENANCE_SCHEMA_VERSION,
+        plan_id: plan.id.to_string(),
+        bundle_id: bundle.bundle_id.to_string(),
+        file_count: files.len(),
+        checksummed_file_count,
+        lineage_record_count: lineage.len(),
+        data_envelope_count: data_envelopes.len(),
+        has_prediction_cache_manifest: prediction_cache_manifest.is_some(),
+        has_artifact_manifest: artifact_manifest.is_some(),
     })
 }
 
@@ -783,6 +866,160 @@ fn data_envelope_file_path(key: &str) -> Result<String> {
     Ok(format!("data_envelopes/{key}.json"))
 }
 
+fn require_package_file<'a>(files: &'a BTreeMap<String, Vec<u8>>, path: &str) -> Result<&'a [u8]> {
+    files.get(path).map(Vec::as_slice).ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!("research provenance package is missing `{path}`"))
+    })
+}
+
+fn parse_package_json<T: DeserializeOwned>(bytes: &[u8], path: &str) -> Result<T> {
+    serde_json::from_slice(bytes).map_err(|err| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to parse research provenance package JSON `{path}`: {err}"
+        ))
+    })
+}
+
+fn parse_package_data_envelopes(
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<BTreeMap<String, ExternalDataPlanEnvelope>> {
+    let mut envelopes = BTreeMap::new();
+    for (path, bytes) in files {
+        let Some(key) = path
+            .strip_prefix("data_envelopes/")
+            .and_then(|suffix| suffix.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        if key.is_empty() || key.contains(['/', '\\']) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "research provenance data envelope path `{path}` has an invalid key"
+            )));
+        }
+        let previous = envelopes.insert(key.to_string(), parse_package_json(bytes, path)?);
+        if previous.is_some() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "duplicate research provenance data envelope key `{key}`"
+            )));
+        }
+    }
+    Ok(envelopes)
+}
+
+fn validate_prov_jsonld_root(prov_jsonld: Value) -> Result<()> {
+    if prov_jsonld.get("@context").is_none()
+        || prov_jsonld.get("entity").is_none()
+        || prov_jsonld.get("activity").is_none()
+        || prov_jsonld.get("agent").is_none()
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "research provenance PROV JSON-LD root is missing required sections".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ro_crate_package_checksums(
+    ro_crate_metadata: &Value,
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<usize> {
+    let graph = ro_crate_metadata
+        .get("@graph")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation("RO-Crate metadata has no @graph array".to_string())
+        })?;
+    let root = graph
+        .iter()
+        .find(|entry| entry.get("@id").and_then(Value::as_str) == Some("./"))
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation("RO-Crate metadata has no root dataset".to_string())
+        })?;
+    if root.get("dagml:schema_version").and_then(Value::as_u64)
+        != Some(RESEARCH_PROVENANCE_SCHEMA_VERSION as u64)
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "RO-Crate root has unsupported dagml:schema_version, expected {}",
+            RESEARCH_PROVENANCE_SCHEMA_VERSION
+        )));
+    }
+    let root_has_part = root
+        .get("hasPart")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation("RO-Crate root hasPart is not an array".to_string())
+        })?;
+    let root_has_part_ids = root_has_part
+        .iter()
+        .filter_map(|entry| entry.get("@id").and_then(Value::as_str))
+        .collect::<BTreeSet<_>>();
+
+    let mut checksummed = 0;
+    for (path, bytes) in files {
+        if path == RO_CRATE_METADATA_FILE {
+            continue;
+        }
+        if !root_has_part_ids.contains(path.as_str()) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "RO-Crate root does not list package file `{path}` in hasPart"
+            )));
+        }
+        let entry = graph
+            .iter()
+            .find(|entry| entry.get("@id").and_then(Value::as_str) == Some(path.as_str()))
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "RO-Crate metadata is missing package file entry `{path}`"
+                ))
+            })?;
+        let expected_sha256 = sha256_hex(bytes);
+        let declared_sha256 = entry.get("sha256").and_then(Value::as_str).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "RO-Crate package file `{path}` is missing sha256"
+            ))
+        })?;
+        if declared_sha256 != expected_sha256 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "RO-Crate package file `{path}` sha256 mismatch"
+            )));
+        }
+        let declared_dagml_sha256 = entry
+            .get("dagml:sha256")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "RO-Crate package file `{path}` is missing dagml:sha256"
+                ))
+            })?;
+        if declared_dagml_sha256 != declared_sha256 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "RO-Crate package file `{path}` has inconsistent checksum fields"
+            )));
+        }
+        if entry.get("contentSize").and_then(Value::as_u64) != Some(bytes.len() as u64) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "RO-Crate package file `{path}` contentSize mismatch"
+            )));
+        }
+        if entry.get("encodingFormat").and_then(Value::as_str) != Some("application/json") {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "RO-Crate package file `{path}` must declare application/json"
+            )));
+        }
+        checksummed += 1;
+    }
+
+    for has_part_id in root_has_part_ids {
+        if has_part_id != RO_CRATE_METADATA_FILE && !files.contains_key(has_part_id) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "RO-Crate root references missing package file `{has_part_id}`"
+            )));
+        }
+    }
+
+    Ok(checksummed)
+}
+
 fn annotate_ro_crate_package_files(
     ro_crate_metadata: &mut Value,
     files: &BTreeMap<String, ResearchProvenancePackageFile>,
@@ -1068,6 +1305,63 @@ mod tests {
         assert!(has_part
             .iter()
             .any(|entry| entry["@id"] == json!(LINEAGE_RECORDS_FILE)));
+    }
+
+    #[test]
+    fn research_provenance_package_validation_reopens_exported_contracts() {
+        let plan = fixture_plan();
+        let bundle = fixture_bundle();
+        let lineage = vec![fixture_lineage(&plan)];
+        let package = build_research_provenance_package(
+            &plan,
+            &bundle,
+            &lineage,
+            &BTreeMap::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let files = package
+            .files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.bytes.clone()))
+            .collect::<BTreeMap<_, _>>();
+
+        let validation = validate_research_provenance_package_files(&files).unwrap();
+
+        assert_eq!(
+            validation.schema_version,
+            RESEARCH_PROVENANCE_SCHEMA_VERSION
+        );
+        assert_eq!(validation.plan_id, plan.id.to_string());
+        assert_eq!(validation.bundle_id, bundle.bundle_id.to_string());
+        assert_eq!(validation.file_count, package.files.len());
+        assert_eq!(validation.checksummed_file_count, package.files.len() - 1);
+        assert_eq!(validation.lineage_record_count, 1);
+    }
+
+    #[test]
+    fn research_provenance_package_validation_refuses_tampered_file() {
+        let plan = fixture_plan();
+        let bundle = fixture_bundle();
+        let package =
+            build_research_provenance_package(&plan, &bundle, &[], &BTreeMap::new(), None, None)
+                .unwrap();
+        let mut files = package
+            .files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.bytes.clone()))
+            .collect::<BTreeMap<_, _>>();
+        files.insert(LINEAGE_RECORDS_FILE.to_string(), b"[]\n\n".to_vec());
+
+        let error = validate_research_provenance_package_files(&files)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("sha256 mismatch"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
