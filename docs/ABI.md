@@ -34,6 +34,9 @@ the host owns the underlying object behind each handle.
   release;
 - `DagMlDataVTable` for host data providers, including `materialize`,
   `make_view`, `view_identity`, `target_arrow` and `feature_arrow`.
+  `feature_arrow` remains ABI-compatible: hosts may receive either a plain
+  feature-set id or a JSON fusion selector understood by `dag-ml-data`
+  providers.
 - `DagMlArtifactStoreVTable` for host replay artifact stores, returning typed
   `DagMlHandleRef` values for model/artifact handles.
 - `DagMlPredictionCacheVTable` for host prediction-cache stores, including

@@ -35,7 +35,8 @@ Implemented:
   sample predictions;
 - data/model shape plans and runtime shape deltas;
 - data bindings from node inputs to external `dag-ml-data` plan envelopes,
-  including explicit feature-set ids for provider `feature_arrow` calls;
+  including explicit feature-set ids and ABI-compatible fusion selectors for
+  provider `feature_arrow` calls;
 - external data-plan envelopes carry an explicit schema version and are refused
   when a future/unsupported version is received;
 - published JSON Schema artifact for external coordinator data-plan envelopes,
