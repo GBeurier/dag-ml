@@ -310,6 +310,42 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         branch_merge_stdout
     );
 
+    let branch_merge_refit_without_cv = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-refit-bundle",
+            "--graph",
+            "examples/branch_merge_oof_graph.json",
+            "--campaign",
+            "examples/campaign_branch_merge_oof.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--bundle-id",
+            "bundle:cli.branch.merge.refit.without.cv",
+            "--plan-id",
+            "plan:cli.branch.merge.refit.without.cv",
+            "--run-id",
+            "run:cli.branch.merge.refit.without.cv",
+        ])
+        .output()
+        .expect("failed to run branch/merge refit without CV");
+    assert!(
+        !branch_merge_refit_without_cv.status.success(),
+        "branch/merge direct refit unexpectedly succeeded: {}",
+        String::from_utf8_lossy(&branch_merge_refit_without_cv.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&branch_merge_refit_without_cv.stderr)
+            .contains("requires OOF validation predictions"),
+        "unexpected branch/merge direct refit error: {}",
+        String::from_utf8_lossy(&branch_merge_refit_without_cv.stderr)
+    );
+
     let branch_merge_cv_refit_bundle = Command::new(cli())
         .current_dir(&root)
         .args([

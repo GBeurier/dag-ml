@@ -90,6 +90,8 @@ Implemented:
 - branch/merge process replay from that captured bundle, including three
   refit artifact handles and three data requirements that may resolve to the
   same external data-plan envelope without duplicate-registration failure;
+- CLI contract proving direct branch/merge `REFIT` without a preceding
+  in-context `FIT_CV` is refused because OOF validation predictions are absent;
 - process-controller replay fixtures now verify that a model receives its own
   refit artifact handle, not just any artifact handle in the task inputs;
 - stateful sklearn process-controller smoke that fits a real sklearn pipeline
