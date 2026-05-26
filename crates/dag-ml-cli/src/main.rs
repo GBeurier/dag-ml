@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
 use std::sync::{
     mpsc::{self, Receiver, RecvTimeoutError},
@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use dag_ml_core::{
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
     build_prediction_cache_payload, build_prediction_cache_record,
-    build_research_provenance_export, oof_campaign_fingerprint,
+    build_research_provenance_package, oof_campaign_fingerprint,
     regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
     validate_oof_campaign, AggregatedPredictionBlock, ArtifactId, BundleId,
@@ -25,9 +25,9 @@ use dag_ml_core::{
     InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
     OofCampaign, ParallelScheduler, Phase, PredictionBlock, PredictionLevel, PredictionPartition,
     RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
-    ReplayPhaseRequest, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric,
-    SelectionPolicy, SequentialScheduler, VariantId, PROV_JSONLD_FILE, RO_CRATE_METADATA_FILE,
+    ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId, RuntimeController,
+    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
+    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1453,7 +1453,7 @@ fn main() -> Result<()> {
                 .as_ref()
                 .map(|manifest_dir| validate_file_artifact_manifest_store(&bundle, manifest_dir))
                 .transpose()?;
-            let export = build_research_provenance_export(
+            let package = build_research_provenance_package(
                 &plan,
                 &bundle,
                 &lineage_records,
@@ -1467,29 +1467,15 @@ fn main() -> Result<()> {
             )
             .with_context(|| "failed to build research provenance export")?;
 
-            std::fs::create_dir_all(&output_dir).with_context(|| {
-                format!(
-                    "failed to create research provenance output dir {}",
-                    output_dir.display()
-                )
-            })?;
-            emit_json(
-                Some(&output_dir.join(PROV_JSONLD_FILE)),
-                &export.prov_jsonld,
-                "research provenance PROV",
-            )?;
-            emit_json(
-                Some(&output_dir.join(RO_CRATE_METADATA_FILE)),
-                &export.ro_crate_metadata,
-                "research provenance RO-Crate metadata",
-            )?;
+            write_research_provenance_package(&output_dir, &package)?;
             println!(
-                "wrote research provenance export: bundle={}, lineage record(s)={}, data envelope(s)={}, prediction cache manifest={}, artifact manifest={}, dir={}",
+                "wrote research provenance export: bundle={}, lineage record(s)={}, data envelope(s)={}, prediction cache manifest={}, artifact manifest={}, file(s)={}, dir={}",
                 bundle.bundle_id,
                 lineage_records.len(),
                 envelope_map.len(),
                 prediction_cache_store.is_some(),
                 artifact_manifest_store.is_some(),
+                package.files.len(),
                 output_dir.display()
             );
         }
@@ -3705,6 +3691,47 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Res
         .with_context(|| format!("failed to read {label} JSON at {}", path.display()))?;
     serde_json::from_slice(&data)
         .with_context(|| format!("failed to parse {label} JSON at {}", path.display()))
+}
+
+fn write_research_provenance_package(
+    output_dir: &Path,
+    package: &ResearchProvenancePackage,
+) -> Result<()> {
+    std::fs::create_dir_all(output_dir).with_context(|| {
+        format!(
+            "failed to create research provenance output dir {}",
+            output_dir.display()
+        )
+    })?;
+    for file in package.files.values() {
+        let relative_path = Path::new(&file.path);
+        let safe_relative_path = !relative_path.is_absolute()
+            && relative_path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)));
+        if !safe_relative_path {
+            bail!(
+                "research provenance package contains unsafe output path `{}`",
+                file.path
+            );
+        }
+        let output = output_dir.join(relative_path);
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create research provenance package directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        std::fs::write(&output, &file.bytes).with_context(|| {
+            format!(
+                "failed to write research provenance package file {}",
+                output.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn emit_json<T: Serialize>(output: Option<&PathBuf>, value: &T, label: &str) -> Result<()> {
