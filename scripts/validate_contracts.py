@@ -20,17 +20,32 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
+FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 LOCAL_FIXTURE_REL = Path("examples/fixtures/data/coordinator_data_plan_envelope_nir.json")
+LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
+    "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
+)
 SIBLING_FIXTURE_REL = Path(
     "examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+)
+SIBLING_FEATURE_FUSION_FIXTURE_REL = Path(
+    "examples/fixtures/oof_campaign/feature_fusion_selector_nir_chem.json"
 )
 LOCAL_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "coordinator_data_plan_envelope.v1.schema.json"
 )
+LOCAL_FEATURE_FUSION_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "feature_fusion_selector.v1.schema.json"
+)
 SIBLING_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml-data/schemas/"
     "coordinator_data_plan_envelope.v1.schema.json"
+)
+SIBLING_FEATURE_FUSION_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml-data/schemas/"
+    "feature_fusion_selector.v1.schema.json"
 )
 SHA256_RE = re.compile(r"^[0-9A-Fa-f]{64}$")
 
@@ -108,6 +123,33 @@ def validate_schema_artifact(schema: Any, expected_id: str, label: str) -> None:
     )
 
 
+def validate_feature_fusion_schema_artifact(schema: Any, expected_id: str, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} feature-fusion schema must be a JSON object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} feature-fusion schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == expected_id,
+        f"{label} feature-fusion schema has unexpected $id",
+    )
+    require(schema.get("type") == "object", f"{label} feature-fusion root must be an object")
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} feature-fusion required list is missing")
+    for field in ("schema_version", "feature_set_id", "sources", "alignment"):
+        require(field in required, f"{label} feature-fusion schema does not require `{field}`")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} feature-fusion properties are missing")
+    require(
+        properties.get("schema_version", {}).get("const") == 1,
+        f"{label} feature-fusion schema_version const must be 1",
+    )
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} feature-fusion $defs are missing")
+    for name in ("source", "alignment", "presence_mask"):
+        require(name in defs, f"{label} feature-fusion schema misses `{name}` definition")
+
+
 def validate_envelope(envelope: Any, label: str) -> None:
     require(isinstance(envelope, dict), f"{label} envelope must be a JSON object")
     require(envelope.get("schema_version") == 1, f"{label} envelope schema_version must be 1")
@@ -150,6 +192,75 @@ def validate_envelope(envelope: Any, label: str) -> None:
             )
 
 
+def validate_feature_fusion_selector(selector: Any, label: str) -> None:
+    require(isinstance(selector, dict), f"{label} selector must be a JSON object")
+    require(selector.get("schema_version") == 1, f"{label} selector schema_version must be 1")
+    require_non_empty_string(selector.get("feature_set_id"), f"{label}.feature_set_id")
+    sources = selector.get("sources")
+    require(isinstance(sources, list) and sources, f"{label}.sources must be a non-empty array")
+    source_ids: list[str] = []
+    for index, source in enumerate(sources):
+        source_label = f"{label}.sources[{index}]"
+        require(isinstance(source, dict), f"{source_label} must be an object")
+        require_non_empty_string(source.get("source_id"), f"{source_label}.source_id")
+        require_non_empty_string(source.get("feature_set_id"), f"{source_label}.feature_set_id")
+        source_ids.append(source["source_id"])
+        columns = source.get("columns")
+        if columns is not None:
+            require(
+                isinstance(columns, list) and columns,
+                f"{source_label}.columns must be a non-empty array when present",
+            )
+            for column_index, column in enumerate(columns):
+                require_non_empty_string(column, f"{source_label}.columns[{column_index}]")
+    require(len(set(source_ids)) == len(source_ids), f"{label}.sources contain duplicate source ids")
+
+    alignment = selector.get("alignment")
+    require(isinstance(alignment, dict), f"{label}.alignment must be an object")
+    require(
+        alignment.get("mode") in {"inner", "left", "outer"},
+        f"{label}.alignment.mode must be inner, left or outer",
+    )
+    sample_ids = alignment.get("sample_ids")
+    require(
+        isinstance(sample_ids, list) and sample_ids,
+        f"{label}.alignment.sample_ids must be a non-empty array",
+    )
+    for index, sample_id in enumerate(sample_ids):
+        require_non_empty_string(sample_id, f"{label}.alignment.sample_ids[{index}]")
+    require(
+        len(set(sample_ids)) == len(sample_ids),
+        f"{label}.alignment.sample_ids contain duplicates",
+    )
+    masks = alignment.get("masks")
+    require(isinstance(masks, list) and masks, f"{label}.alignment.masks must be non-empty")
+    mask_source_ids: list[str] = []
+    for index, mask in enumerate(masks):
+        mask_label = f"{label}.alignment.masks[{index}]"
+        require(isinstance(mask, dict), f"{mask_label} must be an object")
+        require_non_empty_string(mask.get("source_id"), f"{mask_label}.source_id")
+        mask_source_ids.append(mask["source_id"])
+        require(mask.get("sample_ids") == sample_ids, f"{mask_label}.sample_ids order mismatch")
+        present = mask.get("present")
+        require(
+            isinstance(present, list) and len(present) == len(sample_ids),
+            f"{mask_label}.present length must match sample_ids",
+        )
+        for present_index, value in enumerate(present):
+            require(isinstance(value, bool), f"{mask_label}.present[{present_index}] must be bool")
+    require(set(mask_source_ids) == set(source_ids), f"{label}.alignment masks must match sources")
+
+    policy = selector.get("policy")
+    if policy is not None:
+        require(isinstance(policy, dict), f"{label}.policy must be an object")
+        namespace_columns = policy.get("namespace_columns")
+        if namespace_columns is not None:
+            require(
+                isinstance(namespace_columns, bool),
+                f"{label}.policy.namespace_columns must be bool",
+            )
+
+
 def normalize_schema(schema: Any) -> Any:
     normalized = copy.deepcopy(schema)
     if isinstance(normalized, dict):
@@ -180,9 +291,17 @@ def sibling_root() -> Path | None:
 def main() -> int:
     try:
         local_schema = load_json(ROOT / SCHEMA_REL)
+        local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
+        local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
         validate_schema_artifact(local_schema, LOCAL_SCHEMA_ID, "dag-ml")
+        validate_feature_fusion_schema_artifact(
+            local_feature_fusion_schema,
+            LOCAL_FEATURE_FUSION_SCHEMA_ID,
+            "dag-ml",
+        )
         validate_envelope(local_fixture, "dag-ml")
+        validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
 
         sibling = sibling_root()
         if sibling is None:
@@ -190,12 +309,31 @@ def main() -> int:
             return 0
 
         sibling_schema = load_json(sibling / SCHEMA_REL)
+        sibling_feature_fusion_schema = load_json(sibling / FEATURE_FUSION_SCHEMA_REL)
         sibling_fixture = load_json(sibling / SIBLING_FIXTURE_REL)
+        sibling_feature_fusion_fixture = load_json(
+            sibling / SIBLING_FEATURE_FUSION_FIXTURE_REL
+        )
         validate_schema_artifact(sibling_schema, SIBLING_SCHEMA_ID, "dag-ml-data")
+        validate_feature_fusion_schema_artifact(
+            sibling_feature_fusion_schema,
+            SIBLING_FEATURE_FUSION_SCHEMA_ID,
+            "dag-ml-data",
+        )
         validate_envelope(sibling_fixture, "dag-ml-data")
+        validate_feature_fusion_selector(sibling_feature_fusion_fixture, "dag-ml-data")
         require(
             normalize_schema(local_schema) == normalize_schema(sibling_schema),
             "coordinator envelope schemas diverge beyond repository-specific $id",
+        )
+        require(
+            normalize_schema(local_feature_fusion_schema)
+            == normalize_schema(sibling_feature_fusion_schema),
+            "feature fusion selector schemas diverge beyond repository-specific $id",
+        )
+        require(
+            local_feature_fusion_fixture == sibling_feature_fusion_fixture,
+            "feature fusion selector fixtures diverge",
         )
         print(f"validated dag-ml contract against dag-ml-data at {sibling}")
         return 0

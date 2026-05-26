@@ -25,3 +25,16 @@ compares the copies when `DAG_ML_DATA_REPO` points to a sibling checkout, and
 CI checks out that peer explicitly. When development moves into a monorepo, this
 file should become a single generated or shared contract artifact used by both
 crates.
+
+## Feature Fusion Selector v1
+
+Schema: `feature_fusion_selector.schema.json`
+
+Canonical fixture: `examples/fixtures/data/feature_fusion_selector_nir_chem.json`
+
+Runtime shape passed through data-provider `feature_arrow` when the provider
+supports `dag-ml-data` multi-source fusion:
+`{ schema_version, feature_set_id, sources, alignment, policy? }`, where each
+source maps a `source_id` to a provider-owned `feature_set_id` and optional
+column subset. This keeps `DagMlDataVTable` ABI-compatible while making feature
+fusion explicit.
