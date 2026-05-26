@@ -126,6 +126,8 @@ pub struct NodePlan {
     pub shape_plan: Option<DataModelShapePlan>,
     #[serde(default)]
     pub data_bindings: Vec<DataBinding>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, serde_json::Value>,
     pub params_fingerprint: String,
 }
 
@@ -180,6 +182,12 @@ impl ExecutionPlan {
                 }
                 binding.validate()?;
             }
+            let actual_params_fingerprint = stable_json_fingerprint(&plan.params)?;
+            if actual_params_fingerprint != plan.params_fingerprint {
+                return Err(DagMlError::Planning(format!(
+                    "node plan `{node_id}` params fingerprint does not match params"
+                )));
+            }
         }
         if let Some(fold_set) = &self.fold_set {
             fold_set.validate()?;
@@ -222,7 +230,8 @@ pub fn build_execution_plan(
             .find(|node| &node.id == node_id)
             .expect("topological node exists");
         let manifest = registry.resolve_for_node(node)?;
-        let params_fingerprint = stable_json_fingerprint(&node.params)?;
+        let params = node.params.clone();
+        let params_fingerprint = stable_json_fingerprint(&params)?;
         let shape_plan = campaign.shape_plans.get(&node.id).cloned();
         let data_bindings = campaign
             .data_bindings
@@ -241,6 +250,7 @@ pub fn build_execution_plan(
                 output_nodes: graph_plan.graph.downstream_nodes(&node.id),
                 shape_plan,
                 data_bindings,
+                params,
                 params_fingerprint,
             },
         );
@@ -252,6 +262,7 @@ pub fn build_execution_plan(
         .as_ref()
         .and_then(|split| split.fold_set.clone());
     let variants = enumerate_variants(&campaign.generation, campaign.root_seed)?;
+    validate_generation_override_targets(&graph_plan.graph, &variants)?;
     let graph_fingerprint = stable_json_fingerprint(&graph_plan.graph)?;
     let campaign_fingerprint = stable_json_fingerprint(&campaign)?;
     let controller_fingerprint = stable_json_fingerprint(&controller_manifests)?;
@@ -269,6 +280,25 @@ pub fn build_execution_plan(
     };
     plan.validate()?;
     Ok(plan)
+}
+
+fn validate_generation_override_targets(graph: &GraphSpec, variants: &[VariantPlan]) -> Result<()> {
+    let node_ids = graph
+        .nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    for variant in variants {
+        for node_id in variant.param_override_targets()? {
+            if !node_ids.contains(&node_id) {
+                return Err(DagMlError::Planning(format!(
+                    "variant `{}` overrides params for unknown node `{node_id}`",
+                    variant.variant_id
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_campaign_node_targets(graph: &GraphSpec, campaign: &CampaignSpec) -> Result<()> {
@@ -303,6 +333,9 @@ mod tests {
         ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest, RngPolicy,
     };
     use crate::data::DataBinding;
+    use crate::generation::{
+        GenerationChoice, GenerationDimension, GenerationParamOverride, GenerationStrategy,
+    };
     use crate::graph::{
         EdgeContract, EdgeSpec, GraphInterface, NodeSpec, PortCardinality, PortKind, PortRef,
         PortSchema, PortSpec,
@@ -535,5 +568,43 @@ mod tests {
         };
 
         assert!(build_execution_plan("plan:oof", graph(), campaign, &registry()).is_err());
+    }
+
+    #[test]
+    fn planning_refuses_generation_override_for_unknown_node() {
+        let campaign = CampaignSpec {
+            id: "campaign:oof".to_string(),
+            root_seed: Some(7),
+            leakage_policy: LeakageUnitPolicy::default(),
+            aggregation_policy: AggregationPolicy::default(),
+            split_invocation: None,
+            generation: GenerationSpec {
+                strategy: GenerationStrategy::Cartesian,
+                dimensions: vec![GenerationDimension {
+                    name: "model_family".to_string(),
+                    choices: vec![GenerationChoice {
+                        label: "pls".to_string(),
+                        value: serde_json::json!("pls"),
+                        param_overrides: vec![GenerationParamOverride {
+                            node_id: NodeId::new("model:missing").unwrap(),
+                            params: BTreeMap::from([(
+                                "n_components".to_string(),
+                                serde_json::json!(8),
+                            )]),
+                        }],
+                    }],
+                }],
+                max_variants: Some(1),
+            },
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        };
+
+        let error = build_execution_plan("plan:oof", graph(), campaign, &registry())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("overrides params for unknown node"));
     }
 }

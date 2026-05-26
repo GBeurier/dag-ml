@@ -16,6 +16,10 @@ Implemented:
 - split invocation as a campaign-plan controller call;
 - deterministic generation/search-space scaffold with variant fingerprints and
   variant seeds;
+- generation choices can carry typed node parameter overrides; the scheduler
+  lowers them into the controller-facing `NodePlan.params` and
+  `params_fingerprint` for each variant while refusing conflicting overrides
+  and unknown target nodes;
 - controller-facing `NodeTask.variant` context with generated choices,
   fingerprint and variant seed, so external bindings can apply model,
   augmentation or processing variants without guessing from `variant_id`;
@@ -172,7 +176,8 @@ Implemented:
 Not implemented yet:
 
 - full DSL compiler;
-- full search-space compiler/lowering into graph/campaign overrides;
+- advanced search-space compiler/lowering beyond typed node-parameter
+  overrides;
 - non-mean aggregation methods and custom aggregation controllers;
 - persistent artifact/cache stores beyond JSON cache payload export and the
   in-memory prediction-cache store adapter;
