@@ -249,9 +249,9 @@ Implemented:
   `DagMlHandleRef` values and preserving host handle ownership, plus a tested
   Rust runtime adapter over the vtable;
 - C ABI prediction-cache vtable shape for host OOF cache stores, including
-  JSON block loading, prediction-handle materialization and explicit
-  host-returned byte release, plus a tested Rust runtime adapter over the
-  vtable;
+  JSON block loading for sample and target/group aggregated replay blocks,
+  prediction-handle materialization and explicit host-returned byte release,
+  plus a tested Rust runtime adapter over the vtable;
 - C ABI non-mock replay execution helper that composes host controller,
   data-provider, artifact-store and optional prediction-cache vtables while
   Rust owns bundle validation, replay envelope validation, DAG scheduling,

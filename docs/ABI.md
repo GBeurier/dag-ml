@@ -44,6 +44,11 @@ the host owns the underlying object behind each handle.
   `DagMlHandleRef` values for model/artifact handles.
 - `DagMlPredictionCacheVTable` for host prediction-cache stores, including
   `load_blocks`, `materialize` and explicit returned-byte release.
+  `load_blocks` is the single JSON load callback for replay prediction
+  requirements: sample-level requirements return `PredictionBlock[]`, while
+  target/group requirements return `AggregatedPredictionBlock[]` keyed by typed
+  `PredictionUnitId` values. Rust selects and validates the expected block
+  shape from the bundle requirement before materializing a prediction handle.
 
 The vtables are intentionally small in this scaffold. They establish shape,
 ownership and naming before full execution is implemented.
