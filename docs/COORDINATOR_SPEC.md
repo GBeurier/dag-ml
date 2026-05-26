@@ -369,12 +369,13 @@ Required aggregation policies:
 | `store_raw_predictions` | keep observation-level predictions for audit |
 | `store_aggregated_predictions` | keep aggregated predictions for ranking/replay |
 
-The Rust core implements deterministic observation-to-sample aggregation for
-`mean`, `median`, `vote` and `weighted_mean`. Weighted means require an explicit
-weight policy; `controller_emitted` and `quality` weights are read from the
-observation prediction block, while `repetition_count` is treated as one weight
-per emitted observation for this level. Target/group aggregation and
-`custom_controller` remain explicit controller responsibilities.
+The Rust core implements deterministic observation-to-sample and
+sample-to-target/group aggregation for `mean`, `median`, `vote` and
+`weighted_mean`. Weighted means require an explicit weight policy;
+`controller_emitted` and `quality` weights are read from observation prediction
+blocks, while `repetition_count` weights sample-to-target/group aggregation by
+the number of observations attached to each sample. `custom_controller` remains
+an explicit controller responsibility.
 
 FIT_CV requirements:
 

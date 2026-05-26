@@ -195,7 +195,28 @@ impl SampleRelationSet {
             .map(|record| &record.sample_id)
     }
 
-    fn sample_targets(&self) -> BTreeMap<SampleId, TargetId> {
+    pub fn target_for_sample(&self, sample_id: &SampleId) -> Option<&TargetId> {
+        self.records
+            .iter()
+            .find(|record| &record.sample_id == sample_id)
+            .and_then(|record| record.target_id.as_ref())
+    }
+
+    pub fn group_for_sample(&self, sample_id: &SampleId) -> Option<&GroupId> {
+        self.records
+            .iter()
+            .find(|record| &record.sample_id == sample_id)
+            .and_then(|record| record.group_id.as_ref())
+    }
+
+    pub fn observation_count_for_sample(&self, sample_id: &SampleId) -> usize {
+        self.records
+            .iter()
+            .filter(|record| &record.sample_id == sample_id)
+            .count()
+    }
+
+    pub fn sample_targets(&self) -> BTreeMap<SampleId, TargetId> {
         self.records
             .iter()
             .filter_map(|record| {
@@ -207,7 +228,7 @@ impl SampleRelationSet {
             .collect()
     }
 
-    fn sample_groups(&self) -> BTreeMap<SampleId, GroupId> {
+    pub fn sample_groups(&self) -> BTreeMap<SampleId, GroupId> {
         self.records
             .iter()
             .filter_map(|record| {
