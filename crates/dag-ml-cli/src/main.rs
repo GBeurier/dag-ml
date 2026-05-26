@@ -1290,6 +1290,7 @@ fn build_bundle_from_cv_then_captured_refit(
     if fit_cv_oof_prediction_block_count == 0 {
         bail!("FIT_CV did not produce any validation OOF prediction blocks before refit");
     }
+    let oof_prediction_summary = oof_prediction_summary(ctx.prediction_store.blocks())?;
 
     let refit_results = SequentialScheduler
         .execute_campaign_phase_with_data_provider_and_artifact_store(
@@ -1333,6 +1334,10 @@ fn build_bundle_from_cv_then_captured_refit(
         serde_json::json!(fit_cv_oof_prediction_block_count),
     );
     bundle.metadata.insert(
+        "oof_prediction_summary".to_string(),
+        serde_json::json!(oof_prediction_summary),
+    );
+    bundle.metadata.insert(
         "refit_result_count".to_string(),
         serde_json::json!(refit_results.len()),
     );
@@ -1355,6 +1360,67 @@ fn build_bundle_from_cv_then_captured_refit(
         fit_cv_oof_prediction_block_count,
         refit_result_count: refit_results.len(),
     })
+}
+
+#[derive(Default)]
+struct OofPredictionSummary {
+    block_count: usize,
+    fold_ids: BTreeSet<String>,
+    sample_ids: BTreeSet<String>,
+    prediction_width: Option<usize>,
+    target_names: Option<Vec<String>>,
+}
+
+fn oof_prediction_summary(blocks: &[PredictionBlock]) -> Result<Vec<serde_json::Value>> {
+    let mut summaries = BTreeMap::<NodeId, OofPredictionSummary>::new();
+    for block in blocks
+        .iter()
+        .filter(|block| block.partition == PredictionPartition::Validation)
+    {
+        let width = block.validate_shape()?;
+        let entry = summaries.entry(block.producer_node.clone()).or_default();
+        entry.block_count += 1;
+        if let Some(fold_id) = &block.fold_id {
+            entry.fold_ids.insert(fold_id.to_string());
+        }
+        entry
+            .sample_ids
+            .extend(block.sample_ids.iter().map(ToString::to_string));
+        if entry
+            .prediction_width
+            .is_some_and(|expected| expected != width)
+        {
+            bail!(
+                "OOF prediction summary for `{}` has inconsistent prediction width",
+                block.producer_node
+            );
+        }
+        entry.prediction_width = Some(width);
+        if entry
+            .target_names
+            .as_ref()
+            .is_some_and(|expected| expected != &block.target_names)
+        {
+            bail!(
+                "OOF prediction summary for `{}` has inconsistent target names",
+                block.producer_node
+            );
+        }
+        entry.target_names = Some(block.target_names.clone());
+    }
+    Ok(summaries
+        .into_iter()
+        .map(|(producer_node, summary)| {
+            serde_json::json!({
+                "producer_node": producer_node,
+                "block_count": summary.block_count,
+                "fold_ids": summary.fold_ids.into_iter().collect::<Vec<_>>(),
+                "sample_ids": summary.sample_ids.into_iter().collect::<Vec<_>>(),
+                "prediction_width": summary.prediction_width.unwrap_or_default(),
+                "target_names": summary.target_names.unwrap_or_default(),
+            })
+        })
+        .collect())
 }
 
 struct CliMockController {
