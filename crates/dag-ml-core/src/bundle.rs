@@ -1122,6 +1122,14 @@ pub struct ReplayPhaseRequest {
 
 impl ReplayPhaseRequest {
     pub fn validate_for_bundle(&self, bundle: &ExecutionBundle) -> Result<()> {
+        self.validate_for_bundle_with_prediction_cache_payloads(bundle, None)
+    }
+
+    pub fn validate_for_bundle_with_prediction_cache_payloads(
+        &self,
+        bundle: &ExecutionBundle,
+        prediction_cache_payloads: Option<&BundlePredictionCachePayloadSet>,
+    ) -> Result<()> {
         bundle.validate()?;
         if self.bundle_id != bundle.bundle_id {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -1135,13 +1143,23 @@ impl ReplayPhaseRequest {
                 self.phase
             )));
         }
+        if let Some(payloads) = prediction_cache_payloads {
+            payloads.validate_against_bundle(bundle)?;
+        }
         if self.phase == Phase::Refit && !bundle.prediction_requirements.is_empty() {
+            if prediction_cache_payloads.is_some() {
+                return self.validate_data_envelope_keys(bundle);
+            }
             return Err(DagMlError::RuntimeValidation(format!(
                 "bundle `{}` cannot replay REFIT because it depends on {} OOF prediction requirement(s) but stores only prediction cache manifests",
                 bundle.bundle_id,
                 bundle.prediction_requirements.len()
             )));
         }
+        self.validate_data_envelope_keys(bundle)
+    }
+
+    fn validate_data_envelope_keys(&self, bundle: &ExecutionBundle) -> Result<()> {
         let expected = bundle
             .data_requirements
             .iter()
@@ -1438,17 +1456,7 @@ mod tests {
             caches: vec![payload],
         };
         payload_set.validate_against_bundle(&bundle).unwrap();
-        let mut tampered_payload_set = payload_set.clone();
-        tampered_payload_set.caches[0].blocks[0].values[0][0] = 99.0;
-        assert!(tampered_payload_set
-            .validate_against_bundle(&bundle)
-            .is_err());
-        let mut missing_payload_set = payload_set;
-        missing_payload_set.caches.clear();
-        assert!(missing_payload_set
-            .validate_against_bundle(&bundle)
-            .is_err());
-        assert!(ReplayPhaseRequest {
+        let refit_replay_request = ReplayPhaseRequest {
             bundle_id: bundle.bundle_id.clone(),
             phase: Phase::Refit,
             data_envelope_keys: bundle
@@ -1456,9 +1464,21 @@ mod tests {
                 .iter()
                 .map(BundleDataRequirement::key)
                 .collect(),
-        }
-        .validate_for_bundle(&bundle)
-        .is_err());
+        };
+        refit_replay_request
+            .validate_for_bundle_with_prediction_cache_payloads(&bundle, Some(&payload_set))
+            .unwrap();
+        let mut tampered_payload_set = payload_set.clone();
+        tampered_payload_set.caches[0].blocks[0].values[0][0] = 99.0;
+        assert!(tampered_payload_set
+            .validate_against_bundle(&bundle)
+            .is_err());
+        let mut missing_payload_set = payload_set.clone();
+        missing_payload_set.caches.clear();
+        assert!(missing_payload_set
+            .validate_against_bundle(&bundle)
+            .is_err());
+        assert!(refit_replay_request.validate_for_bundle(&bundle).is_err());
 
         let mut wrong_data_owner = bundle.clone();
         wrong_data_owner.refit_artifacts[0].data_requirement_keys =
