@@ -23,6 +23,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
+OPENLINEAGE_FACETS_SCHEMA_REL = Path("docs/contracts/openlineage_dagml_facets.schema.json")
+RESEARCH_PROVENANCE_PROFILE_REL = Path(
+    "docs/contracts/research_provenance_package_profile.v1.json"
+)
 LOCAL_FIXTURE_REL = Path("examples/fixtures/data/coordinator_data_plan_envelope_nir.json")
 LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
@@ -53,6 +57,11 @@ SIBLING_FEATURE_FUSION_SCHEMA_ID = (
 )
 SHA256_RE = re.compile(r"^[0-9A-Fa-f]{64}$")
 CONFORMANCE_PACK_ID = "dag-ml.shared.conformance.v1"
+OPENLINEAGE_FACETS_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "openlineage_dagml_facets.v1.schema.json"
+)
+RESEARCH_PROVENANCE_PROFILE_ID = "dag-ml.research_provenance_package.v1"
 
 
 class ContractError(RuntimeError):
@@ -160,6 +169,40 @@ def validate_feature_fusion_schema_artifact(schema: Any, expected_id: str, label
     require(isinstance(defs, dict), f"{label} feature-fusion $defs are missing")
     for name in ("source", "alignment", "presence_mask"):
         require(name in defs, f"{label} feature-fusion schema misses `{name}` definition")
+
+
+def validate_openlineage_facets_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} OpenLineage facets schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} OpenLineage facets schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == OPENLINEAGE_FACETS_SCHEMA_ID,
+        f"{label} OpenLineage facets schema has unexpected $id",
+    )
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} OpenLineage facets schema $defs are missing")
+    for definition_name in (
+        "DagmlReproducibilityRunFacet",
+        "DagmlOofSafetyRunFacet",
+        "DagmlPlanJobFacet",
+        "DagmlDatasetContractFacet",
+    ):
+        definition = defs.get(definition_name)
+        require(
+            isinstance(definition, dict),
+            f"{label} OpenLineage facets schema misses `{definition_name}`",
+        )
+        required = definition.get("required")
+        require(
+            isinstance(required, list) and "_schemaURL" in required,
+            f"{label} `{definition_name}` must require _schemaURL",
+        )
+        require(
+            definition.get("additionalProperties") in {False, True},
+            f"{label} `{definition_name}` must declare additionalProperties explicitly",
+        )
 
 
 def validate_envelope(envelope: Any, label: str) -> None:
@@ -441,6 +484,180 @@ def validate_conformance_pack(
         require(test_id in required_tests, f"{label} conformance pack must require `{test_id}`")
 
 
+def validate_research_provenance_profile(
+    profile: Any,
+    openlineage_facets_schema: Any,
+    label: str,
+) -> None:
+    require(isinstance(profile, dict), f"{label} research provenance profile must be an object")
+    require(
+        profile.get("schema_version") == 1,
+        f"{label} research provenance profile schema_version must be 1",
+    )
+    require(
+        profile.get("profile_id") == RESEARCH_PROVENANCE_PROFILE_ID,
+        f"{label} research provenance profile id mismatch",
+    )
+
+    package = profile.get("package")
+    require(isinstance(package, dict), f"{label} profile package must be an object")
+    required_files = package.get("required_files")
+    require(isinstance(required_files, list), f"{label} profile required_files must be a list")
+    required_by_path = {}
+    for index, record in enumerate(required_files):
+        record_label = f"{label} profile required_files[{index}]"
+        require(isinstance(record, dict), f"{record_label} must be an object")
+        path = record.get("path")
+        require_non_empty_string(path, f"{record_label}.path")
+        require(path not in required_by_path, f"{label} profile duplicates required path `{path}`")
+        require_non_empty_string(record.get("kind"), f"{record_label}.kind")
+        require(
+            isinstance(record.get("checksum_in_ro_crate"), bool),
+            f"{record_label}.checksum_in_ro_crate must be boolean",
+        )
+        required_by_path[path] = record
+    for path in (
+        "execution_plan.json",
+        "execution_bundle.json",
+        "lineage_records.json",
+        "lineage.prov.jsonld",
+        "ro-crate-metadata.json",
+    ):
+        require(path in required_by_path, f"{label} profile must require `{path}`")
+    require(
+        required_by_path["ro-crate-metadata.json"].get("checksum_in_ro_crate") is False,
+        f"{label} profile must not require RO-Crate metadata to checksum itself",
+    )
+    for path, record in required_by_path.items():
+        if path != "ro-crate-metadata.json":
+            require(
+                record.get("checksum_in_ro_crate") is True,
+                f"{label} profile must require checksum for `{path}`",
+            )
+
+    optional_files = package.get("optional_files")
+    require(isinstance(optional_files, list), f"{label} profile optional_files must be a list")
+    optional_kinds = set()
+    for index, record in enumerate(optional_files):
+        record_label = f"{label} profile optional_files[{index}]"
+        require(isinstance(record, dict), f"{record_label} must be an object")
+        require_non_empty_string(record.get("kind"), f"{record_label}.kind")
+        optional_kinds.add(record["kind"])
+        require(
+            isinstance(record.get("checksum_in_ro_crate"), bool),
+            f"{record_label}.checksum_in_ro_crate must be boolean",
+        )
+        require(
+            "path" in record or "path_pattern" in record,
+            f"{record_label} must declare path or path_pattern",
+        )
+        if "path_pattern" in record:
+            require_non_empty_string(record["path_pattern"], f"{record_label}.path_pattern")
+            try:
+                re.compile(record["path_pattern"])
+            except re.error as exc:
+                raise ContractError(f"{record_label}.path_pattern is invalid: {exc}") from exc
+    for kind in (
+        "dagml.prediction_cache_manifest",
+        "dagml.artifact_manifest",
+        "dagml.external_data_plan_envelope",
+    ):
+        require(kind in optional_kinds, f"{label} profile must include optional kind `{kind}`")
+
+    ro_crate = profile.get("ro_crate")
+    require(isinstance(ro_crate, dict), f"{label} profile ro_crate must be an object")
+    require(
+        ro_crate.get("metadata_file") == "ro-crate-metadata.json",
+        f"{label} profile RO-Crate metadata file mismatch",
+    )
+    require(
+        ro_crate.get("root_dataset_id") == "./",
+        f"{label} profile RO-Crate root id must be ./",
+    )
+    require(
+        ro_crate.get("workflow_type") == "ComputationalWorkflow",
+        f"{label} profile must require ComputationalWorkflow",
+    )
+    required_properties = ro_crate.get("required_file_properties")
+    require(
+        isinstance(required_properties, list),
+        f"{label} profile RO-Crate required_file_properties must be a list",
+    )
+    for field in ("sha256", "dagml:sha256", "contentSize", "encodingFormat"):
+        require(field in required_properties, f"{label} profile RO-Crate must require `{field}`")
+    require(
+        ro_crate.get("required_json_encoding") == "application/json",
+        f"{label} profile must require application/json encoding",
+    )
+
+    prov_jsonld = profile.get("prov_jsonld")
+    require(isinstance(prov_jsonld, dict), f"{label} profile prov_jsonld must be an object")
+    require(
+        prov_jsonld.get("file") == "lineage.prov.jsonld",
+        f"{label} profile PROV JSON-LD file mismatch",
+    )
+    sections = prov_jsonld.get("required_sections")
+    require(isinstance(sections, list), f"{label} profile PROV sections must be a list")
+    for section in (
+        "entity",
+        "activity",
+        "agent",
+        "used",
+        "wasGeneratedBy",
+        "wasDerivedFrom",
+        "wasAssociatedWith",
+    ):
+        require(section in sections, f"{label} profile must require PROV section `{section}`")
+
+    openlineage = profile.get("openlineage")
+    require(isinstance(openlineage, dict), f"{label} profile openlineage must be an object")
+    require(
+        openlineage.get("command") == "export-open-lineage",
+        f"{label} profile OpenLineage command mismatch",
+    )
+    require(
+        openlineage.get("facet_schema") == OPENLINEAGE_FACETS_SCHEMA_REL.name,
+        f"{label} profile OpenLineage facet schema mismatch",
+    )
+    defs = openlineage_facets_schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} OpenLineage facets schema $defs are missing")
+    for facet_key, definition_name in (
+        ("dagml_reproducibility", "DagmlReproducibilityRunFacet"),
+        ("dagml_oof_safety", "DagmlOofSafetyRunFacet"),
+    ):
+        require(
+            facet_key in openlineage.get("required_run_facets", []),
+            f"{label} profile must require OpenLineage run facet `{facet_key}`",
+        )
+        require(definition_name in defs, f"{label} facet schema must define `{definition_name}`")
+    require(
+        "dagml_plan" in openlineage.get("required_job_facets", []),
+        f"{label} profile must require OpenLineage job facet `dagml_plan`",
+    )
+    require(
+        "DagmlPlanJobFacet" in defs,
+        f"{label} facet schema must define `DagmlPlanJobFacet`",
+    )
+
+    cli_conformance = profile.get("cli_conformance")
+    require(isinstance(cli_conformance, dict), f"{label} profile cli_conformance must be an object")
+    require(
+        cli_conformance.get("export_command") == "export-research-provenance",
+        f"{label} profile export command mismatch",
+    )
+    require(
+        cli_conformance.get("validation_command") == "validate-research-provenance",
+        f"{label} profile validation command mismatch",
+    )
+    required_tests = cli_conformance.get("required_tests")
+    require(isinstance(required_tests, list), f"{label} profile required_tests must be a list")
+    for test_id in (
+        "cli_exports_research_provenance_bundle",
+        "cli_selects_builds_and_validates_replay_bundle",
+    ):
+        require(test_id in required_tests, f"{label} profile must require test `{test_id}`")
+
+
 def candidate_sibling_roots() -> list[Path]:
     candidates = []
     env_path = os.environ.get("DAG_ML_DATA_REPO")
@@ -466,6 +683,8 @@ def main() -> int:
         local_schema = load_json(ROOT / SCHEMA_REL)
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
+        local_openlineage_facets_schema = load_json(ROOT / OPENLINEAGE_FACETS_SCHEMA_REL)
+        local_research_provenance_profile = load_json(ROOT / RESEARCH_PROVENANCE_PROFILE_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
         local_header = load_text(ROOT / LOCAL_C_HEADER_REL)
@@ -475,6 +694,7 @@ def main() -> int:
             LOCAL_FEATURE_FUSION_SCHEMA_ID,
             "dag-ml",
         )
+        validate_openlineage_facets_schema(local_openlineage_facets_schema, "dag-ml")
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
         validate_data_provider_header(local_header, "dag-ml")
@@ -485,6 +705,11 @@ def main() -> int:
             local_fixture,
             local_feature_fusion_fixture,
             local_header,
+            "dag-ml",
+        )
+        validate_research_provenance_profile(
+            local_research_provenance_profile,
+            local_openlineage_facets_schema,
             "dag-ml",
         )
 
