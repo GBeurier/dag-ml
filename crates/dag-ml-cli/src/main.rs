@@ -1,9 +1,11 @@
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{
+    mpsc::{self, Receiver, RecvTimeoutError},
+    Mutex,
+};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -1960,7 +1962,7 @@ struct PersistentProcessRuntimeController {
     id: ControllerId,
     adapter: PathBuf,
     config: ProcessAdapterRuntimeConfig,
-    sessions: RefCell<Vec<PersistentProcessSession>>,
+    sessions: Vec<Mutex<PersistentProcessSession>>,
 }
 
 struct PersistentProcessSession {
@@ -2429,25 +2431,25 @@ impl RuntimeController for PersistentProcessRuntimeController {
     }
 
     fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
-        let mut sessions = self.sessions.borrow_mut();
-        if sessions.is_empty() {
+        if self.sessions.is_empty() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "controller `{}` persistent adapter pool has no workers",
                 self.id
             )));
         }
-        let worker_index = process_worker_index_for_task(task, sessions.len());
+        let worker_index = process_worker_index_for_task(task, self.sessions.len());
+        let mut session = self.sessions[worker_index].lock().map_err(|_| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` persistent adapter worker {worker_index}/{} is poisoned",
+                self.id, self.config.process_workers
+            ))
+        })?;
         for attempt in 0..=self.config.retries {
-            match sessions[worker_index].invoke_once(
-                &self.id,
-                &self.adapter,
-                task,
-                self.config.timeout,
-            ) {
+            match session.invoke_once(&self.id, &self.adapter, task, self.config.timeout) {
                 Ok(result) => return Ok(result),
                 Err(failure) => {
                     if failure.restartable {
-                        sessions[worker_index].terminate();
+                        session.terminate();
                         let replacement = PersistentProcessSession::spawn(
                             &self.id,
                             &self.adapter,
@@ -2462,7 +2464,7 @@ impl RuntimeController for PersistentProcessRuntimeController {
                                 failure.message, worker_index, self.config.process_workers
                             ))
                         })?;
-                        sessions[worker_index] = replacement;
+                        *session = replacement;
                         if attempt < self.config.retries {
                             continue;
                         }
@@ -2727,20 +2729,20 @@ fn persistent_process_runtime_controllers(
     for controller_id in plan.controller_manifests.keys() {
         let mut sessions = Vec::with_capacity(config.process_workers);
         for worker_index in 0..config.process_workers {
-            sessions.push(PersistentProcessSession::spawn(
+            sessions.push(Mutex::new(PersistentProcessSession::spawn(
                 controller_id,
                 &adapter,
                 worker_index,
                 config.process_workers,
                 config.control_frames,
                 config.timeout,
-            )?);
+            )?));
         }
         registry.register(Box::new(PersistentProcessRuntimeController {
             id: controller_id.clone(),
             adapter: adapter.clone(),
             config,
-            sessions: RefCell::new(sessions),
+            sessions,
         }))?;
     }
     Ok(registry)

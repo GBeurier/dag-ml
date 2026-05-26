@@ -1379,6 +1379,13 @@ pub struct CAbiRuntimeController {
     vtable: DagMlControllerVTable,
 }
 
+// The C ABI controller is an opaque host callback table. dag-ml only forwards
+// immutable task JSON and release calls through the supplied function pointers;
+// host implementations are responsible for making `user_data` safe for any
+// scheduler mode they opt into.
+unsafe impl Send for CAbiRuntimeController {}
+unsafe impl Sync for CAbiRuntimeController {}
+
 impl CAbiRuntimeController {
     pub fn new(id: ControllerId, vtable: DagMlControllerVTable) -> dag_ml_core::Result<Self> {
         if vtable.abi_version < 2 {
