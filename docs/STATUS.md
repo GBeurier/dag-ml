@@ -38,6 +38,9 @@ Implemented:
   including explicit feature-set ids for provider `feature_arrow` calls;
 - external data-plan envelope validation by schema, plan and relation
   fingerprints;
+- campaign data envelopes with coordinator relations are checked against the
+  campaign/split fold set and leakage policies before training handles are
+  registered by the CLI;
 - runtime data-provider trait with materialization plus fold/refit/predict view
   requests that turn data bindings into scoped opaque task handles;
 - `FIT_CV` data routing now gives controllers separate fold-train and

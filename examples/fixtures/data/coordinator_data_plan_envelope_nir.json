@@ -51,17 +51,17 @@
     "records": [
       {
         "observation_id": "obs.S001.aug0",
-        "sample_id": "S001",
-        "target_id": "y",
+        "sample_id": "sample:1",
+        "target_id": "target:1",
         "group_id": "plant.A",
-        "origin_sample_id": "S001",
+        "origin_sample_id": "sample:1",
         "source_id": "nir",
         "is_augmented": true
       },
       {
         "observation_id": "obs.S001.base",
-        "sample_id": "S001",
-        "target_id": "y",
+        "sample_id": "sample:1",
+        "target_id": "target:1",
         "group_id": "plant.A",
         "origin_sample_id": null,
         "source_id": "nir",
@@ -69,8 +69,8 @@
       },
       {
         "observation_id": "obs.S001.rep1",
-        "sample_id": "S001",
-        "target_id": "y",
+        "sample_id": "sample:1",
+        "target_id": "target:1",
         "group_id": "plant.A",
         "origin_sample_id": null,
         "source_id": "nir",
@@ -78,8 +78,8 @@
       },
       {
         "observation_id": "obs.S002.base",
-        "sample_id": "S002",
-        "target_id": "y",
+        "sample_id": "sample:2",
+        "target_id": "target:2",
         "group_id": "plant.B",
         "origin_sample_id": null,
         "source_id": "nir",

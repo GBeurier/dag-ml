@@ -454,6 +454,9 @@ fn main() -> Result<()> {
                 .and_then(|bindings| bindings.iter().find(|binding| binding.input_name == input))
                 .with_context(|| format!("no data binding for node `{node_id}` input `{input}`"))?;
             binding.validate_envelope(&envelope)?;
+            campaign_spec
+                .validate_data_envelope_relations(&envelope)
+                .with_context(|| "data envelope relations violate campaign folds")?;
             println!(
                 "valid data binding: {}.{} -> {}",
                 node_id, binding.input_name, binding.plan_fingerprint
@@ -476,10 +479,7 @@ fn main() -> Result<()> {
 
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
-            let data_provider = InMemoryDataProvider::with_envelope(
-                ControllerId::new("controller:data.provider")?,
-                envelope,
-            )?;
+            let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
             let runtime_controllers = mock_runtime_controllers(&plan)?;
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let results = SequentialScheduler
@@ -514,10 +514,7 @@ fn main() -> Result<()> {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
-            let data_provider = InMemoryDataProvider::with_envelope(
-                ControllerId::new("controller:data.provider")?,
-                envelope,
-            )?;
+            let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
             let runtime_controllers = if persistent {
                 persistent_process_runtime_controllers(&plan, adapter)?
             } else {
@@ -598,10 +595,7 @@ fn main() -> Result<()> {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
-            let data_provider = InMemoryDataProvider::with_envelope(
-                ControllerId::new("controller:data.provider")?,
-                envelope,
-            )?;
+            let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
             let runtime_controllers = mock_runtime_controllers_with_refit_artifacts(&plan)?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
@@ -633,10 +627,7 @@ fn main() -> Result<()> {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
-            let data_provider = InMemoryDataProvider::with_envelope(
-                ControllerId::new("controller:data.provider")?,
-                envelope,
-            )?;
+            let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
             let runtime_controllers = if persistent {
                 persistent_process_runtime_controllers(&plan, adapter)?
             } else {
@@ -674,10 +665,7 @@ fn main() -> Result<()> {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
-            let data_provider = InMemoryDataProvider::with_envelope(
-                ControllerId::new("controller:data.provider")?,
-                envelope,
-            )?;
+            let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
             let runtime_controllers = if persistent {
                 persistent_process_runtime_controllers(&plan, adapter)?
             } else {
@@ -732,10 +720,7 @@ fn main() -> Result<()> {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
-            let data_provider = InMemoryDataProvider::with_envelope(
-                ControllerId::new("controller:data.provider")?,
-                envelope.clone(),
-            )?;
+            let data_provider = data_provider_for_training_envelope(&plan, envelope.clone())?;
             let runtime_controllers = persistent_process_runtime_controllers(&plan, adapter)?;
             let selections = read_selection_decisions(selections.as_ref())?;
             let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
@@ -798,10 +783,7 @@ fn main() -> Result<()> {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
-            let data_provider = InMemoryDataProvider::with_envelope(
-                ControllerId::new("controller:data.provider")?,
-                envelope.clone(),
-            )?;
+            let data_provider = data_provider_for_training_envelope(&plan, envelope.clone())?;
             let runtime_controllers = persistent_process_runtime_controllers(&plan, adapter)?;
             let captured = build_bundle_from_captured_refit(CapturedRefitBundleInput {
                 plan: &plan,
@@ -2291,6 +2273,17 @@ fn build_plan_from_paths(
     let registry = controller_registry_from_path(controllers)?;
     build_execution_plan(plan_id, graph_spec, campaign_spec, &registry)
         .with_context(|| "failed to build execution plan")
+}
+
+fn data_provider_for_training_envelope(
+    plan: &dag_ml_core::ExecutionPlan,
+    envelope: ExternalDataPlanEnvelope,
+) -> Result<InMemoryDataProvider> {
+    plan.campaign
+        .validate_data_envelope_relations(&envelope)
+        .with_context(|| "training data envelope relations violate campaign folds")?;
+    InMemoryDataProvider::with_envelope(ControllerId::new("controller:data.provider")?, envelope)
+        .with_context(|| "failed to register training data envelope")
 }
 
 fn controller_registry_from_path(path: &PathBuf) -> Result<ControllerRegistry> {

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::campaign::stable_json_fingerprint;
 use crate::controller::{ControllerManifest, ControllerRegistry};
-use crate::data::DataBinding;
+use crate::data::{DataBinding, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::fold::FoldSet;
 use crate::generation::{enumerate_variants, GenerationSpec, VariantPlan};
@@ -95,6 +95,24 @@ impl CampaignSpec {
             }
         }
         Ok(())
+    }
+
+    pub fn validate_data_envelope_relations(
+        &self,
+        envelope: &ExternalDataPlanEnvelope,
+    ) -> Result<()> {
+        envelope.validate()?;
+        let Some(relations) = &envelope.coordinator_relations else {
+            return Ok(());
+        };
+        let Some(split) = &self.split_invocation else {
+            return Ok(());
+        };
+        let Some(fold_set) = &split.fold_set else {
+            return Ok(());
+        };
+        relations.validate_against_fold_set(fold_set, &self.leakage_policy)?;
+        relations.validate_against_fold_set(fold_set, &split.leakage_policy)
     }
 }
 
@@ -465,9 +483,10 @@ mod tests {
         EdgeContract, EdgeSpec, GraphInterface, NodeSpec, PortCardinality, PortKind, PortRef,
         PortSchema, PortSpec,
     };
-    use crate::ids::{ControllerId, FoldId, SampleId};
+    use crate::ids::{ControllerId, FoldId, ObservationId, SampleId, TargetId};
     use crate::phase::Phase;
     use crate::policy::{DataModelShapePlan, Granularity};
+    use crate::relation::{SampleRelation, SampleRelationSet};
 
     fn port(name: &str, kind: PortKind) -> PortSpec {
         PortSpec {
@@ -697,6 +716,31 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("parallel levels"));
+
+        let bad_envelope = ExternalDataPlanEnvelope {
+            schema_fingerprint: "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b"
+                .to_string(),
+            plan_fingerprint: "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d"
+                .to_string(),
+            relation_fingerprint: None,
+            coordinator_relations: Some(SampleRelationSet {
+                records: vec![SampleRelation {
+                    observation_id: ObservationId::new("obs:outside").unwrap(),
+                    sample_id: SampleId::new("sample:outside").unwrap(),
+                    target_id: Some(TargetId::new("target:outside").unwrap()),
+                    group_id: None,
+                    origin_sample_id: None,
+                    source_id: Some("nir".to_string()),
+                    is_augmented: false,
+                }],
+            }),
+        };
+        assert!(plan
+            .campaign
+            .validate_data_envelope_relations(&bad_envelope)
+            .unwrap_err()
+            .to_string()
+            .contains("outside fold set"));
     }
 
     #[test]
