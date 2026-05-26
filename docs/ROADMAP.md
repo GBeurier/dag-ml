@@ -68,8 +68,9 @@ the shared wire contract in CI. `dag-ml` also validates the sibling
 requests an opaque parent data handle plus a fold/refit/predict provider view through
 `RuntimeDataProvider`. The C ABI data-provider vtable is aligned on
 materialization, view creation, identity, sample-level target and
-observation-level feature exports, with a Rust runtime adapter smoke over that
-vtable. A core in-memory provider records both materialized handles and scoped
+observation-level feature exports; `feature_arrow` can stay ABI-compatible
+while carrying `dag-ml-data` JSON fusion selectors for multi-source feature
+joins. A core in-memory provider records both materialized handles and scoped
 data-view handles for smoke tests. Next missing piece is a concrete
 buffer-backed `dag-ml-data` provider/handle arena.
 

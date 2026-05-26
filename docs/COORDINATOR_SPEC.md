@@ -137,6 +137,8 @@ Data-plan references are `DataBinding` contracts owned by the coordinator:
 - output representation;
 - feature set id used for `feature_arrow` requests, defaulting to input name
   when omitted;
+- feature fusion selectors may be passed through the same `feature_arrow`
+  bytes-view when a data provider supports `dag-ml-data` multi-source fusion;
 - source ids;
 - view policy for fold train, fold validation, refit and predict.
 
