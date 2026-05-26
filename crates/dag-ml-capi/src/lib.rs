@@ -2165,6 +2165,15 @@ mod tests {
         materialize_count: usize,
     }
 
+    fn error_message(error: &DagMlString) -> String {
+        if error.ptr.is_null() {
+            return "<no error>".to_string();
+        }
+        unsafe { CStr::from_ptr(error.ptr) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
     unsafe extern "C" fn materialize_stub(
         user_data: *mut c_void,
         dataset: DagMlHandle,
@@ -2952,7 +2961,7 @@ mod tests {
 
         let status = unsafe { dagml_graph_validate_json(graph.as_ptr(), graph.len(), &mut error) };
 
-        assert_eq!(status, DagMlStatusCode::OK);
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
     }
 
@@ -2966,7 +2975,7 @@ mod tests {
             dagml_graph_parallel_levels_json(graph.as_ptr(), graph.len(), &mut out, &mut error)
         };
 
-        assert_eq!(status, DagMlStatusCode::OK);
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
         assert!(!out.ptr.is_null());
         let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
@@ -2998,7 +3007,7 @@ mod tests {
             )
         };
 
-        assert_eq!(status, DagMlStatusCode::OK);
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
         assert!(!out.ptr.is_null());
         let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
@@ -3037,7 +3046,7 @@ mod tests {
             )
         };
 
-        assert_eq!(status, DagMlStatusCode::OK);
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
         assert!(!out.ptr.is_null());
         let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
@@ -3063,7 +3072,7 @@ mod tests {
         let status = unsafe {
             dagml_execution_bundle_validate_json(bundle.as_ptr(), bundle.len(), &mut error)
         };
-        assert_eq!(status, DagMlStatusCode::OK);
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
 
         let status = unsafe {
@@ -3075,7 +3084,7 @@ mod tests {
                 &mut error,
             )
         };
-        assert_eq!(status, DagMlStatusCode::OK);
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
 
         let status = unsafe {
@@ -3173,7 +3182,7 @@ mod tests {
             )
         };
 
-        assert_eq!(status, DagMlStatusCode::OK);
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
         assert!(!out.ptr.is_null());
         let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
@@ -3285,7 +3294,7 @@ mod tests {
             )
         };
 
-        assert_eq!(status, DagMlStatusCode::OK);
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
         assert!(!out.ptr.is_null());
         let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
@@ -3416,7 +3425,7 @@ mod tests {
             )
         };
 
-        assert_eq!(status, DagMlStatusCode::OK);
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
         assert!(!out.ptr.is_null());
         let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };

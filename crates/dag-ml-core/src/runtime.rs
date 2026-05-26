@@ -1645,6 +1645,89 @@ pub struct DataProviderViewSpec {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+impl DataProviderViewSpec {
+    pub fn validate(&self) -> Result<()> {
+        validate_optional_ids("sample id", &self.sample_ids)?;
+        validate_optional_strings("source id", &self.source_ids)?;
+        validate_optional_strings("column", &self.columns)?;
+        match self.partition {
+            DataRequestPartition::FoldTrain | DataRequestPartition::FoldValidation => {
+                if self.sample_ids.is_some() && self.fold_id.is_none() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "data provider view {:?} with explicit sample ids requires a fold id",
+                        self.partition
+                    )));
+                }
+            }
+            DataRequestPartition::FullTrain | DataRequestPartition::Predict => {
+                if self.fold_id.is_some() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "data provider view {:?} must not carry a fold id",
+                        self.partition
+                    )));
+                }
+            }
+        }
+        for key in self.extra.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::RuntimeValidation(
+                    "data provider view extra contains an empty key".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_optional_ids<T>(label: &str, values: &Option<Vec<T>>) -> Result<()>
+where
+    T: Ord + ToString,
+{
+    let Some(values) = values else {
+        return Ok(());
+    };
+    if values.is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "data provider view {label} list is empty"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for value in values {
+        if !seen.insert(value) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data provider view has duplicate {label} `{}`",
+                value.to_string()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_strings(label: &str, values: &Option<Vec<String>>) -> Result<()> {
+    let Some(values) = values else {
+        return Ok(());
+    };
+    if values.is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "data provider view {label} list is empty"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for value in values {
+        if value.trim().is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data provider view contains an empty {label}"
+            )));
+        }
+        if !seen.insert(value.as_str()) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data provider view has duplicate {label} `{value}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DataViewRequest {
     pub run_id: RunId,
@@ -3117,6 +3200,7 @@ fn make_data_view_handle(
     data_handle: &HandleRef,
     view: &DataProviderViewSpec,
 ) -> Result<HandleRef> {
+    view.validate()?;
     data_provider.make_view(&DataViewRequest {
         run_id: ctx.run_id.clone(),
         node_id: node_plan.node_id.clone(),
@@ -3188,16 +3272,37 @@ fn data_view_for_partition(
         "feature_set_id".to_string(),
         serde_json::Value::String(binding.feature_set_id().to_string()),
     );
-    Ok(DataProviderViewSpec {
+    if !binding.view_policy.unsafe_flags.is_empty() {
+        extra.insert(
+            "unsafe_flags".to_string(),
+            serde_json::Value::Array(
+                binding
+                    .view_policy
+                    .unsafe_flags
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    let view = DataProviderViewSpec {
         sample_ids,
         partition,
-        fold_id: scope.fold_id.clone(),
+        fold_id: match partition {
+            DataRequestPartition::FoldTrain | DataRequestPartition::FoldValidation => {
+                scope.fold_id.clone()
+            }
+            DataRequestPartition::FullTrain | DataRequestPartition::Predict => None,
+        },
         source_ids: (!binding.source_ids.is_empty()).then(|| binding.source_ids.clone()),
         columns: None,
         include_augmented,
         include_excluded: binding.view_policy.include_excluded,
         extra,
-    })
+    };
+    view.validate()?;
+    Ok(view)
 }
 
 fn data_partition_for_scope(binding: &DataBinding, scope: &PhaseScope) -> DataRequestPartition {
@@ -3423,7 +3528,7 @@ mod tests {
         ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
         ControllerRegistry, RngPolicy,
     };
-    use crate::data::{ExternalDataPlanEnvelope, InMemoryDataProvider};
+    use crate::data::{DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider};
     use crate::fold::{FoldAssignment, FoldSet};
     use crate::generation::{
         GenerationChoice, GenerationDimension, GenerationSpec, GenerationStrategy,
@@ -5611,6 +5716,85 @@ mod tests {
             validation_views[1].view.sample_ids,
             Some(vec![SampleId::new("s2").unwrap()])
         );
+    }
+
+    #[test]
+    fn campaign_data_bindings_require_unsafe_flags_for_full_train_cv_views() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let mut unsafe_binding = data_binding(&model_id);
+        unsafe_binding.view_policy.fit_partition = DataRequestPartition::FullTrain;
+        unsafe_binding.view_policy.unsafe_flags =
+            BTreeSet::from([DataViewPolicy::ALLOW_FIT_CV_FULL_TRAIN_VIEW.to_string()]);
+
+        let mut unsafe_campaign = oof_edge_campaign();
+        unsafe_campaign.data_bindings =
+            BTreeMap::from([(model_id.clone(), vec![unsafe_binding.clone()])]);
+        let plan = build_execution_plan(
+            "plan:data.full-train.unsafe",
+            simple_graph(),
+            unsafe_campaign,
+            &manifests(),
+        )
+        .unwrap();
+
+        let mut missing_flag = unsafe_binding;
+        missing_flag.view_policy.unsafe_flags.clear();
+        let mut invalid_campaign = oof_edge_campaign();
+        invalid_campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![missing_flag])]);
+        assert!(build_execution_plan(
+            "plan:data.full-train.missing-flag",
+            simple_graph(),
+            invalid_campaign,
+            &manifests(),
+        )
+        .is_err());
+
+        let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        let provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider").unwrap(),
+            envelope,
+        )
+        .unwrap();
+        let controllers = runtime_controllers();
+        let mut ctx = RunContext::new(RunId::new("run:data.full-train.unsafe").unwrap(), Some(11));
+
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+
+        let full_train_ids = plan.fold_set.as_ref().unwrap().sample_ids.clone();
+        let views = provider.view_records();
+        let full_train_views = views
+            .iter()
+            .filter(|view| view.view.partition == DataRequestPartition::FullTrain)
+            .collect::<Vec<_>>();
+        let validation_views = views
+            .iter()
+            .filter(|view| view.view.partition == DataRequestPartition::FoldValidation)
+            .collect::<Vec<_>>();
+        assert_eq!(full_train_views.len(), 2);
+        assert_eq!(validation_views.len(), 2);
+        assert!(full_train_views.iter().all(|view| {
+            view.view.sample_ids == Some(full_train_ids.clone())
+                && view.view.fold_id.is_none()
+                && view.view.extra["unsafe_flags"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|flag| flag.as_str() == Some(DataViewPolicy::ALLOW_FIT_CV_FULL_TRAIN_VIEW))
+        }));
+        assert!(validation_views
+            .iter()
+            .all(|view| !view.view.include_augmented));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +41,8 @@ pub struct DataViewPolicy {
     pub include_excluded: bool,
     #[serde(default = "default_true")]
     pub require_sample_ids: bool,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub unsafe_flags: BTreeSet<String>,
 }
 
 impl Default for DataViewPolicy {
@@ -52,7 +54,75 @@ impl Default for DataViewPolicy {
             include_augmented_validation: false,
             include_excluded: false,
             require_sample_ids: true,
+            unsafe_flags: BTreeSet::new(),
         }
+    }
+}
+
+impl DataViewPolicy {
+    pub const ALLOW_FIT_CV_FULL_TRAIN_VIEW: &'static str = "allow_fit_cv_full_train_view";
+    pub const ALLOW_FIT_CV_VALIDATION_VIEW: &'static str = "allow_fit_cv_validation_view";
+    pub const ALLOW_AUGMENTED_VALIDATION_VIEW: &'static str = "allow_augmented_validation_view";
+    pub const ALLOW_EXCLUDED_ROWS: &'static str = "allow_excluded_rows";
+
+    pub fn validate(&self) -> Result<()> {
+        for unsafe_flag in &self.unsafe_flags {
+            if unsafe_flag.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(
+                    "data view policy contains an empty unsafe flag".to_string(),
+                ));
+            }
+        }
+        match self.fit_partition {
+            DataRequestPartition::FoldTrain => {}
+            DataRequestPartition::FullTrain
+                if self
+                    .unsafe_flags
+                    .contains(Self::ALLOW_FIT_CV_FULL_TRAIN_VIEW) => {}
+            DataRequestPartition::FoldValidation
+                if self
+                    .unsafe_flags
+                    .contains(Self::ALLOW_FIT_CV_VALIDATION_VIEW) => {}
+            DataRequestPartition::FullTrain => {
+                return Err(DagMlError::CampaignValidation(
+                    "data view policy fit_partition=full_train would leak validation rows during FIT_CV; add explicit unsafe flag allow_fit_cv_full_train_view".to_string(),
+                ));
+            }
+            DataRequestPartition::FoldValidation => {
+                return Err(DagMlError::CampaignValidation(
+                    "data view policy fit_partition=fold_validation would train on validation rows during FIT_CV; add explicit unsafe flag allow_fit_cv_validation_view".to_string(),
+                ));
+            }
+            DataRequestPartition::Predict => {
+                return Err(DagMlError::CampaignValidation(
+                    "data view policy fit_partition=predict is not valid for FIT_CV".to_string(),
+                ));
+            }
+        }
+        match self.predict_partition {
+            DataRequestPartition::FoldValidation | DataRequestPartition::Predict => {}
+            DataRequestPartition::FoldTrain | DataRequestPartition::FullTrain => {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "data view policy predict_partition={:?} is not valid for validation/predict views",
+                    self.predict_partition
+                )));
+            }
+        }
+        if self.include_augmented_validation
+            && !self
+                .unsafe_flags
+                .contains(Self::ALLOW_AUGMENTED_VALIDATION_VIEW)
+        {
+            return Err(DagMlError::CampaignValidation(
+                "data view policy include_augmented_validation=true can leak augmented validation/test rows; add explicit unsafe flag allow_augmented_validation_view".to_string(),
+            ));
+        }
+        if self.include_excluded && !self.unsafe_flags.contains(Self::ALLOW_EXCLUDED_ROWS) {
+            return Err(DagMlError::CampaignValidation(
+                "data view policy include_excluded=true requires explicit unsafe flag allow_excluded_rows".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -92,6 +162,7 @@ pub struct DataBinding {
 
 impl DataBinding {
     pub fn validate(&self) -> Result<()> {
+        self.view_policy.validate()?;
         if self.input_name.trim().is_empty() {
             return Err(DagMlError::CampaignValidation(format!(
                 "data binding for `{}` has empty input_name",
@@ -402,6 +473,7 @@ impl RuntimeDataProvider for InMemoryDataProvider {
     }
 
     fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+        request.view.validate()?;
         if request.node_id != request.binding.node_id {
             return Err(DagMlError::RuntimeValidation(format!(
                 "data view request node `{}` does not match binding node `{}`",
@@ -502,6 +574,53 @@ mod tests {
         let binding = binding();
         binding.validate().unwrap();
         assert_eq!(binding.feature_set_id(), "x");
+    }
+
+    #[test]
+    fn data_view_policy_rejects_unsafe_fit_and_validation_augmentation_by_default() {
+        let mut full_train_binding = binding();
+        full_train_binding.view_policy.fit_partition = DataRequestPartition::FullTrain;
+        let full_train_error = full_train_binding.validate().unwrap_err().to_string();
+        assert!(
+            full_train_error.contains("fit_partition=full_train"),
+            "unexpected full-train error: {full_train_error}"
+        );
+
+        let mut augmented_validation_binding = binding();
+        augmented_validation_binding
+            .view_policy
+            .include_augmented_validation = true;
+        let augmented_error = augmented_validation_binding
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            augmented_error.contains("include_augmented_validation=true"),
+            "unexpected augmented-validation error: {augmented_error}"
+        );
+
+        let mut excluded_binding = binding();
+        excluded_binding.view_policy.include_excluded = true;
+        let excluded_error = excluded_binding.validate().unwrap_err().to_string();
+        assert!(
+            excluded_error.contains("include_excluded=true"),
+            "unexpected excluded-row error: {excluded_error}"
+        );
+    }
+
+    #[test]
+    fn data_view_policy_requires_explicit_unsafe_flags_for_debug_views() {
+        let mut binding = binding();
+        binding.view_policy.fit_partition = DataRequestPartition::FullTrain;
+        binding.view_policy.include_augmented_validation = true;
+        binding.view_policy.include_excluded = true;
+        binding.view_policy.unsafe_flags = BTreeSet::from([
+            DataViewPolicy::ALLOW_FIT_CV_FULL_TRAIN_VIEW.to_string(),
+            DataViewPolicy::ALLOW_AUGMENTED_VALIDATION_VIEW.to_string(),
+            DataViewPolicy::ALLOW_EXCLUDED_ROWS.to_string(),
+        ]);
+
+        binding.validate().unwrap();
     }
 
     #[test]
