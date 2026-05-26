@@ -27,7 +27,9 @@ Definition of done:
 - `PredictionStore` and OOF join with leakage rejection;
 - runtime enforcement of `requires_oof` prediction edges before downstream
   training controllers can consume upstream prediction inputs;
-- deterministic `SeedContext`.
+- deterministic `SeedContext`;
+- identity-aligned regression metric reports for validated sample, target and
+  group prediction blocks, usable directly as selection candidate scores.
 
 Status: implemented as the first core slice. Remaining Phase 1 hardening is
 mostly richer fixtures and replacing smoke adapters with production host
