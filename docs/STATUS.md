@@ -127,6 +127,10 @@ Implemented:
 - C ABI data-provider vtable shape aligned with `dag-ml-data`
   materialize/view/identity/target/feature exports plus a tested Rust runtime
   adapter over the vtable;
+- C ABI prediction-cache vtable shape for host OOF cache stores, including
+  JSON block loading, prediction-handle materialization and explicit
+  host-returned byte release, plus a tested Rust runtime adapter over the
+  vtable;
 - C ABI mock replay execution helper that exercises execution-plan, bundle,
   replay request, data envelope and refit artifact handle materialization and
   returns a JSON summary including data view counts;

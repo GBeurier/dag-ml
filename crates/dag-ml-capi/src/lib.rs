@@ -9,21 +9,23 @@ use dag_ml_core::{
     DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
     ExternalDataPlanEnvelope, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
     InMemoryDataProvider, LineageId, LineageRecord, NodeResult, NodeTask, Phase, PredictionBlock,
-    PredictionPartition, ReplayPhaseRequest, RunContext, RunId, RuntimeController,
-    RuntimeControllerRegistry, RuntimeDataProvider, SampleId, SelectionDecision, SelectionPolicy,
-    SequentialScheduler,
+    PredictionCacheMaterializationRequest, PredictionPartition, ReplayPhaseRequest, RunContext,
+    RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
+    RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionPolicy, SequentialScheduler,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
 pub type DagMlHandle = u64;
 
-#[repr(C)]
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DagMlStatusCode {
-    Ok = 0,
-    InvalidArgument = 1,
-    ValidationError = 2,
-    Panic = 255,
+pub struct DagMlStatusCode(pub u32);
+
+impl DagMlStatusCode {
+    pub const OK: Self = Self(0);
+    pub const INVALID_ARGUMENT: Self = Self(1);
+    pub const VALIDATION_ERROR: Self = Self(2);
+    pub const PANIC: Self = Self(255);
 }
 
 #[repr(C)]
@@ -195,6 +197,30 @@ pub struct DagMlDataVTable {
     pub destroy: Option<unsafe extern "C" fn(user_data: *mut c_void)>,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DagMlPredictionCacheVTable {
+    pub abi_version: u32,
+    pub user_data: *mut c_void,
+    pub load_blocks: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            requirement_key: DagMlBytesView,
+            out_json: *mut DagMlOwnedBytes,
+        ) -> DagMlStatusCode,
+    >,
+    pub materialize: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            request_json: DagMlBytesView,
+            out_handle: *mut DagMlHandle,
+        ) -> DagMlStatusCode,
+    >,
+    pub release_bytes: Option<unsafe extern "C" fn(user_data: *mut c_void, bytes: DagMlOwnedBytes)>,
+    pub release: Option<unsafe extern "C" fn(user_data: *mut c_void, handle: DagMlHandle)>,
+    pub destroy: Option<unsafe extern "C" fn(user_data: *mut c_void)>,
+}
+
 #[no_mangle]
 pub extern "C" fn dagml_version() -> DagMlVersion {
     DagMlVersion {
@@ -329,7 +355,7 @@ pub unsafe extern "C" fn dagml_select_candidate_json(
         Ok(decision) => write_owned_json(out_json, error_out, &decision),
         Err(error) => {
             set_error(error_out, error.to_string());
-            DagMlStatusCode::ValidationError
+            DagMlStatusCode::VALIDATION_ERROR
         }
     }
 }
@@ -385,7 +411,7 @@ pub unsafe extern "C" fn dagml_select_candidate_groups_json(
         Ok(decisions) => write_owned_json(out_json, error_out, &decisions),
         Err(error) => {
             set_error(error_out, error.to_string());
-            DagMlStatusCode::ValidationError
+            DagMlStatusCode::VALIDATION_ERROR
         }
     }
 }
@@ -442,10 +468,10 @@ pub unsafe extern "C" fn dagml_execution_bundle_validate_replay_envelopes_json(
         Err(status) => return status,
     };
     match bundle.validate_replay_envelopes(&envelopes) {
-        Ok(()) => DagMlStatusCode::Ok,
+        Ok(()) => DagMlStatusCode::OK,
         Err(error) => {
             set_error(error_out, error.to_string());
-            DagMlStatusCode::ValidationError
+            DagMlStatusCode::VALIDATION_ERROR
         }
     }
 }
@@ -479,10 +505,10 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_json(
         Err(status) => return status,
     };
     match request.validate_for_bundle(&bundle) {
-        Ok(()) => DagMlStatusCode::Ok,
+        Ok(()) => DagMlStatusCode::OK,
         Err(error) => {
             set_error(error_out, error.to_string());
-            DagMlStatusCode::ValidationError
+            DagMlStatusCode::VALIDATION_ERROR
         }
     }
 }
@@ -516,10 +542,10 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_validate_for_bundle_json
         Err(status) => return status,
     };
     match payload.validate_against_bundle(&bundle) {
-        Ok(()) => DagMlStatusCode::Ok,
+        Ok(()) => DagMlStatusCode::OK,
         Err(error) => {
             set_error(error_out, error.to_string());
-            DagMlStatusCode::ValidationError
+            DagMlStatusCode::VALIDATION_ERROR
         }
     }
 }
@@ -567,10 +593,10 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_with_predictio
         Err(status) => return status,
     };
     match request.validate_for_bundle_with_prediction_cache_payloads(&bundle, Some(&payload)) {
-        Ok(()) => DagMlStatusCode::Ok,
+        Ok(()) => DagMlStatusCode::OK,
         Err(error) => {
             set_error(error_out, error.to_string());
-            DagMlStatusCode::ValidationError
+            DagMlStatusCode::VALIDATION_ERROR
         }
     }
 }
@@ -635,7 +661,7 @@ pub unsafe extern "C" fn dagml_mock_replay_execute_json(
         Ok(summary) => write_owned_json(out_json, error_out, &summary),
         Err(error) => {
             set_error(error_out, error.to_string());
-            DagMlStatusCode::ValidationError
+            DagMlStatusCode::VALIDATION_ERROR
         }
     }
 }
@@ -681,10 +707,10 @@ where
         Err(status) => return status,
     };
     match validate(&value) {
-        Ok(()) => DagMlStatusCode::Ok,
+        Ok(()) => DagMlStatusCode::OK,
         Err(error) => {
             set_error(error_out, error.to_string());
-            DagMlStatusCode::ValidationError
+            DagMlStatusCode::VALIDATION_ERROR
         }
     }
 }
@@ -700,12 +726,12 @@ where
 {
     if json_ptr.is_null() {
         set_error(error_out, format!("{label} json pointer is null"));
-        return Err(DagMlStatusCode::InvalidArgument);
+        return Err(DagMlStatusCode::INVALID_ARGUMENT);
     }
     let json = slice::from_raw_parts(json_ptr, json_len);
     serde_json::from_slice::<T>(json).map_err(|error| {
         set_error(error_out, format!("failed to parse {label} JSON: {error}"));
-        DagMlStatusCode::ValidationError
+        DagMlStatusCode::VALIDATION_ERROR
     })
 }
 
@@ -719,7 +745,7 @@ where
 {
     if out_json.is_null() {
         set_error(error_out, "output JSON pointer is null");
-        return DagMlStatusCode::InvalidArgument;
+        return DagMlStatusCode::INVALID_ARGUMENT;
     }
     match serde_json::to_vec(value) {
         Ok(mut data) => {
@@ -730,14 +756,14 @@ where
             };
             std::mem::forget(data);
             *out_json = owned;
-            DagMlStatusCode::Ok
+            DagMlStatusCode::OK
         }
         Err(error) => {
             set_error(
                 error_out,
                 format!("failed to serialize output JSON: {error}"),
             );
-            DagMlStatusCode::ValidationError
+            DagMlStatusCode::VALIDATION_ERROR
         }
     }
 }
@@ -848,6 +874,137 @@ impl RuntimeDataProvider for CAbiRuntimeDataProvider {
     }
 }
 
+#[derive(Clone)]
+pub struct CAbiRuntimePredictionCacheStore {
+    vtable: DagMlPredictionCacheVTable,
+}
+
+impl CAbiRuntimePredictionCacheStore {
+    pub fn new(vtable: DagMlPredictionCacheVTable) -> dag_ml_core::Result<Self> {
+        if vtable.abi_version < 1 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache ABI version {} is unsupported",
+                vtable.abi_version
+            )));
+        }
+        if vtable.load_blocks.is_none() {
+            return Err(DagMlError::RuntimeValidation(
+                "prediction cache vtable is missing load_blocks".to_string(),
+            ));
+        }
+        if vtable.materialize.is_none() {
+            return Err(DagMlError::RuntimeValidation(
+                "prediction cache vtable is missing materialize".to_string(),
+            ));
+        }
+        if vtable.release_bytes.is_none() {
+            return Err(DagMlError::RuntimeValidation(
+                "prediction cache vtable is missing release_bytes".to_string(),
+            ));
+        }
+        Ok(Self { vtable })
+    }
+}
+
+impl RuntimePredictionCacheStore for CAbiRuntimePredictionCacheStore {
+    fn load_blocks(&self, requirement_key: &str) -> dag_ml_core::Result<Vec<PredictionBlock>> {
+        let load_blocks = self.vtable.load_blocks.ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "prediction cache vtable is missing load_blocks".to_string(),
+            )
+        })?;
+        let release_bytes = self.vtable.release_bytes.ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "prediction cache vtable is missing release_bytes".to_string(),
+            )
+        })?;
+        let mut out_json = DagMlOwnedBytes::default();
+        let status = unsafe {
+            load_blocks(
+                self.vtable.user_data,
+                bytes_view(requirement_key.as_bytes()),
+                &mut out_json,
+            )
+        };
+        if status != DagMlStatusCode::OK {
+            if !out_json.ptr.is_null() {
+                unsafe { release_bytes(self.vtable.user_data, out_json) };
+            }
+            prediction_cache_status(status, "load_blocks")?;
+        }
+        if out_json.ptr.is_null() {
+            return Err(DagMlError::RuntimeValidation(
+                "prediction cache load_blocks returned null JSON".to_string(),
+            ));
+        }
+        let data = unsafe { slice::from_raw_parts(out_json.ptr, out_json.len) }.to_vec();
+        unsafe { release_bytes(self.vtable.user_data, out_json) };
+        serde_json::from_slice::<Vec<PredictionBlock>>(&data).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "prediction cache load_blocks returned invalid prediction block JSON: {error}"
+            ))
+        })
+    }
+
+    fn materialize(
+        &self,
+        request: &PredictionCacheMaterializationRequest,
+    ) -> dag_ml_core::Result<HandleRef> {
+        let materialize = self.vtable.materialize.ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "prediction cache vtable is missing materialize".to_string(),
+            )
+        })?;
+        let request_json = serde_json::to_vec(request).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to serialize prediction cache materialization request: {error}"
+            ))
+        })?;
+        let mut out_handle = 0;
+        let status = unsafe {
+            materialize(
+                self.vtable.user_data,
+                bytes_view(&request_json),
+                &mut out_handle,
+            )
+        };
+        prediction_cache_status(status, "materialize")?;
+        if out_handle == 0 {
+            return Err(DagMlError::RuntimeValidation(
+                "prediction cache materialize returned empty handle".to_string(),
+            ));
+        }
+        Ok(HandleRef {
+            handle: out_handle,
+            kind: HandleKind::Prediction,
+            owner_controller: request.producer_controller_id.clone(),
+        })
+    }
+}
+
+fn prediction_cache_status(status: DagMlStatusCode, action: &str) -> dag_ml_core::Result<()> {
+    if status == DagMlStatusCode::OK {
+        Ok(())
+    } else if status == DagMlStatusCode::INVALID_ARGUMENT {
+        Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache {action} rejected invalid arguments"
+        )))
+    } else if status == DagMlStatusCode::VALIDATION_ERROR {
+        Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache {action} rejected request"
+        )))
+    } else if status == DagMlStatusCode::PANIC {
+        Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache {action} reported panic"
+        )))
+    } else {
+        Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache {action} returned unknown status code {}",
+            status.0
+        )))
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct CAbiDataMaterializationJson {
     run_id: String,
@@ -905,17 +1062,25 @@ fn bytes_view(bytes: &[u8]) -> DagMlBytesView {
 }
 
 fn data_provider_status(status: DagMlStatusCode, action: &str) -> dag_ml_core::Result<()> {
-    match status {
-        DagMlStatusCode::Ok => Ok(()),
-        DagMlStatusCode::InvalidArgument => Err(DagMlError::RuntimeValidation(format!(
+    if status == DagMlStatusCode::OK {
+        Ok(())
+    } else if status == DagMlStatusCode::INVALID_ARGUMENT {
+        Err(DagMlError::RuntimeValidation(format!(
             "data provider {action} returned invalid argument"
-        ))),
-        DagMlStatusCode::ValidationError => Err(DagMlError::RuntimeValidation(format!(
+        )))
+    } else if status == DagMlStatusCode::VALIDATION_ERROR {
+        Err(DagMlError::RuntimeValidation(format!(
             "data provider {action} returned validation error"
-        ))),
-        DagMlStatusCode::Panic => Err(DagMlError::RuntimeValidation(format!(
+        )))
+    } else if status == DagMlStatusCode::PANIC {
+        Err(DagMlError::RuntimeValidation(format!(
             "data provider {action} panicked"
-        ))),
+        )))
+    } else {
+        Err(DagMlError::RuntimeValidation(format!(
+            "data provider {action} returned unknown status code {}",
+            status.0
+        )))
     }
 }
 
@@ -1193,8 +1358,9 @@ fn stable_handle(value: &str) -> u64 {
 mod tests {
     use super::*;
     use dag_ml_core::{
-        build_execution_plan, CampaignSpec, ControllerManifest, ControllerRegistry, DataBinding,
-        DataProviderViewSpec, DataRequestPartition, DataViewPolicy, FoldId, NodeId, VariantId,
+        build_execution_plan, build_prediction_cache_record, BundleId, BundlePredictionRequirement,
+        CampaignSpec, ControllerManifest, ControllerRegistry, DataBinding, DataProviderViewSpec,
+        DataRequestPartition, DataViewPolicy, FoldId, NodeId, VariantId,
     };
     use std::ffi::CStr;
 
@@ -1206,6 +1372,14 @@ mod tests {
         make_view_json: Vec<u8>,
     }
 
+    #[derive(Default)]
+    struct PredictionCacheStub {
+        load_key: Vec<u8>,
+        blocks_json: Vec<u8>,
+        release_count: usize,
+        materialize_json: Vec<u8>,
+    }
+
     unsafe extern "C" fn materialize_stub(
         user_data: *mut c_void,
         dataset: DagMlHandle,
@@ -1213,13 +1387,13 @@ mod tests {
         out_handle: *mut DagMlHandle,
     ) -> DagMlStatusCode {
         if user_data.is_null() || request_json.ptr.is_null() || out_handle.is_null() {
-            return DagMlStatusCode::InvalidArgument;
+            return DagMlStatusCode::INVALID_ARGUMENT;
         }
         let state = &mut *(user_data.cast::<DataProviderStub>());
         state.materialize_dataset = dataset;
         state.materialize_json = slice::from_raw_parts(request_json.ptr, request_json.len).to_vec();
         *out_handle = 41;
-        DagMlStatusCode::Ok
+        DagMlStatusCode::OK
     }
 
     unsafe extern "C" fn make_view_stub(
@@ -1229,13 +1403,13 @@ mod tests {
         out_view: *mut DagMlHandle,
     ) -> DagMlStatusCode {
         if user_data.is_null() || selector_json.ptr.is_null() || out_view.is_null() {
-            return DagMlStatusCode::InvalidArgument;
+            return DagMlStatusCode::INVALID_ARGUMENT;
         }
         let state = &mut *(user_data.cast::<DataProviderStub>());
         state.make_view_parent = data;
         state.make_view_json = slice::from_raw_parts(selector_json.ptr, selector_json.len).to_vec();
         *out_view = 42;
-        DagMlStatusCode::Ok
+        DagMlStatusCode::OK
     }
 
     unsafe extern "C" fn feature_arrow_stub(
@@ -1251,7 +1425,86 @@ mod tests {
         if !out_arrow_schema.is_null() {
             *out_arrow_schema = std::ptr::null_mut();
         }
-        DagMlStatusCode::Ok
+        DagMlStatusCode::OK
+    }
+
+    unsafe extern "C" fn prediction_cache_load_blocks_stub(
+        user_data: *mut c_void,
+        requirement_key: DagMlBytesView,
+        out_json: *mut DagMlOwnedBytes,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || requirement_key.ptr.is_null() || out_json.is_null() {
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let state = &mut *(user_data.cast::<PredictionCacheStub>());
+        state.load_key = slice::from_raw_parts(requirement_key.ptr, requirement_key.len).to_vec();
+        let mut data = state.blocks_json.clone();
+        *out_json = DagMlOwnedBytes {
+            ptr: data.as_mut_ptr(),
+            len: data.len(),
+            capacity: data.capacity(),
+        };
+        std::mem::forget(data);
+        DagMlStatusCode::OK
+    }
+
+    unsafe extern "C" fn prediction_cache_load_blocks_error_stub(
+        user_data: *mut c_void,
+        requirement_key: DagMlBytesView,
+        out_json: *mut DagMlOwnedBytes,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || requirement_key.ptr.is_null() || out_json.is_null() {
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let state = &mut *(user_data.cast::<PredictionCacheStub>());
+        state.load_key = slice::from_raw_parts(requirement_key.ptr, requirement_key.len).to_vec();
+        let mut data = b"[]".to_vec();
+        *out_json = DagMlOwnedBytes {
+            ptr: data.as_mut_ptr(),
+            len: data.len(),
+            capacity: data.capacity(),
+        };
+        std::mem::forget(data);
+        DagMlStatusCode::VALIDATION_ERROR
+    }
+
+    unsafe extern "C" fn prediction_cache_load_blocks_unknown_status_stub(
+        user_data: *mut c_void,
+        requirement_key: DagMlBytesView,
+        out_json: *mut DagMlOwnedBytes,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || requirement_key.ptr.is_null() || out_json.is_null() {
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let state = &mut *(user_data.cast::<PredictionCacheStub>());
+        state.load_key = slice::from_raw_parts(requirement_key.ptr, requirement_key.len).to_vec();
+        DagMlStatusCode(999)
+    }
+
+    unsafe extern "C" fn prediction_cache_materialize_stub(
+        user_data: *mut c_void,
+        request_json: DagMlBytesView,
+        out_handle: *mut DagMlHandle,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || request_json.ptr.is_null() || out_handle.is_null() {
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let state = &mut *(user_data.cast::<PredictionCacheStub>());
+        state.materialize_json = slice::from_raw_parts(request_json.ptr, request_json.len).to_vec();
+        *out_handle = 77;
+        DagMlStatusCode::OK
+    }
+
+    unsafe extern "C" fn prediction_cache_release_bytes_stub(
+        user_data: *mut c_void,
+        bytes: DagMlOwnedBytes,
+    ) {
+        if user_data.is_null() || bytes.ptr.is_null() {
+            return;
+        }
+        let state = &mut *(user_data.cast::<PredictionCacheStub>());
+        state.release_count += 1;
+        drop(Vec::from_raw_parts(bytes.ptr, bytes.len, bytes.capacity));
     }
 
     #[test]
@@ -1366,13 +1619,125 @@ mod tests {
     }
 
     #[test]
+    fn c_abi_prediction_cache_store_loads_blocks_and_materializes_handles() {
+        let requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("model:base").unwrap(),
+            source_port: "pred".to_string(),
+            consumer_node: NodeId::new("model:meta").unwrap(),
+            target_port: "pred".to_string(),
+            partition: PredictionPartition::Validation,
+            fold_ids: vec![FoldId::new("fold:0").unwrap()],
+            sample_ids: vec![SampleId::new("sample:1").unwrap()],
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let blocks = vec![PredictionBlock {
+            prediction_id: Some("prediction:model:base.fold0".to_string()),
+            producer_node: requirement.producer_node.clone(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: requirement.sample_ids.clone(),
+            values: vec![vec![0.42]],
+            target_names: vec!["y".to_string()],
+        }];
+        let cache = build_prediction_cache_record(&requirement, &blocks).unwrap();
+        let mut state = PredictionCacheStub {
+            blocks_json: serde_json::to_vec(&blocks).unwrap(),
+            ..Default::default()
+        };
+        let table = DagMlPredictionCacheVTable {
+            abi_version: 1,
+            user_data: (&mut state as *mut PredictionCacheStub).cast::<c_void>(),
+            load_blocks: Some(prediction_cache_load_blocks_stub),
+            materialize: Some(prediction_cache_materialize_stub),
+            release_bytes: Some(prediction_cache_release_bytes_stub),
+            release: None,
+            destroy: None,
+        };
+        let store = CAbiRuntimePredictionCacheStore::new(table).unwrap();
+        let loaded = store.load_blocks(&requirement.key()).unwrap();
+        assert_eq!(loaded, blocks);
+        assert_eq!(
+            String::from_utf8(state.load_key.clone()).unwrap(),
+            requirement.key()
+        );
+        assert_eq!(state.release_count, 1);
+
+        let handle = store
+            .materialize(&PredictionCacheMaterializationRequest {
+                run_id: RunId::new("run:prediction.cache.abi").unwrap(),
+                bundle_id: BundleId::new("bundle:prediction.cache.abi").unwrap(),
+                phase: Phase::Refit,
+                variant_id: None,
+                requirement: requirement.clone(),
+                cache,
+                producer_controller_id: ControllerId::new("controller:model").unwrap(),
+            })
+            .unwrap();
+        assert_eq!(handle.handle, 77);
+        assert_eq!(handle.kind, HandleKind::Prediction);
+        assert_eq!(
+            handle.owner_controller,
+            ControllerId::new("controller:model").unwrap()
+        );
+        let request_json: serde_json::Value =
+            serde_json::from_slice(&state.materialize_json).unwrap();
+        assert_eq!(request_json["requirement"]["producer_node"], "model:base");
+        assert_eq!(request_json["cache"]["requirement_key"], requirement.key());
+    }
+
+    #[test]
+    fn c_abi_prediction_cache_store_releases_error_buffers() {
+        let mut state = PredictionCacheStub::default();
+        let table = DagMlPredictionCacheVTable {
+            abi_version: 1,
+            user_data: (&mut state as *mut PredictionCacheStub).cast::<c_void>(),
+            load_blocks: Some(prediction_cache_load_blocks_error_stub),
+            materialize: Some(prediction_cache_materialize_stub),
+            release_bytes: Some(prediction_cache_release_bytes_stub),
+            release: None,
+            destroy: None,
+        };
+        let store = CAbiRuntimePredictionCacheStore::new(table).unwrap();
+        let error = store.load_blocks("requirement:error").unwrap_err();
+        assert!(format!("{error}").contains("prediction cache load_blocks rejected request"));
+        assert_eq!(
+            String::from_utf8(state.load_key.clone()).unwrap(),
+            "requirement:error"
+        );
+        assert_eq!(state.release_count, 1);
+    }
+
+    #[test]
+    fn c_abi_prediction_cache_store_rejects_unknown_status_codes() {
+        let mut state = PredictionCacheStub::default();
+        let table = DagMlPredictionCacheVTable {
+            abi_version: 1,
+            user_data: (&mut state as *mut PredictionCacheStub).cast::<c_void>(),
+            load_blocks: Some(prediction_cache_load_blocks_unknown_status_stub),
+            materialize: Some(prediction_cache_materialize_stub),
+            release_bytes: Some(prediction_cache_release_bytes_stub),
+            release: None,
+            destroy: None,
+        };
+        let store = CAbiRuntimePredictionCacheStore::new(table).unwrap();
+        let error = store.load_blocks("requirement:unknown").unwrap_err();
+        assert!(format!("{error}").contains("unknown status code 999"));
+        assert_eq!(
+            String::from_utf8(state.load_key.clone()).unwrap(),
+            "requirement:unknown"
+        );
+        assert_eq!(state.release_count, 0);
+    }
+
+    #[test]
     fn validates_graph_json_over_abi() {
         let graph = include_bytes!("../../../examples/minimal_graph.json");
         let mut error = DagMlString::default();
 
         let status = unsafe { dagml_graph_validate_json(graph.as_ptr(), graph.len(), &mut error) };
 
-        assert_eq!(status, DagMlStatusCode::Ok);
+        assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
     }
 
@@ -1398,7 +1763,7 @@ mod tests {
             )
         };
 
-        assert_eq!(status, DagMlStatusCode::Ok);
+        assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
         assert!(!out.ptr.is_null());
         let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
@@ -1423,7 +1788,7 @@ mod tests {
         let status = unsafe {
             dagml_execution_bundle_validate_json(bundle.as_ptr(), bundle.len(), &mut error)
         };
-        assert_eq!(status, DagMlStatusCode::Ok);
+        assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
 
         let status = unsafe {
@@ -1435,7 +1800,7 @@ mod tests {
                 &mut error,
             )
         };
-        assert_eq!(status, DagMlStatusCode::Ok);
+        assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
 
         let status = unsafe {
@@ -1447,7 +1812,7 @@ mod tests {
                 &mut error,
             )
         };
-        assert_eq!(status, DagMlStatusCode::Ok);
+        assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
     }
 
@@ -1473,7 +1838,7 @@ mod tests {
                 &mut error,
             )
         };
-        assert_eq!(status, DagMlStatusCode::Ok);
+        assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
 
         let status = unsafe {
@@ -1485,7 +1850,7 @@ mod tests {
                 &mut error,
             )
         };
-        assert_eq!(status, DagMlStatusCode::ValidationError);
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
         assert!(!error.ptr.is_null());
         unsafe { dagml_string_free(error) };
         error = DagMlString::default();
@@ -1501,7 +1866,7 @@ mod tests {
                 &mut error,
             )
         };
-        assert_eq!(status, DagMlStatusCode::Ok);
+        assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
     }
 
@@ -1532,7 +1897,7 @@ mod tests {
             )
         };
 
-        assert_eq!(status, DagMlStatusCode::Ok);
+        assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
         assert!(!out.ptr.is_null());
         let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
@@ -1555,7 +1920,7 @@ mod tests {
             dagml_execution_bundle_validate_json(invalid.as_ptr(), invalid.len(), &mut error)
         };
 
-        assert_eq!(status, DagMlStatusCode::ValidationError);
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
         assert!(!error.ptr.is_null());
         let message = unsafe { CStr::from_ptr(error.ptr) }
             .to_string_lossy()
@@ -1570,7 +1935,7 @@ mod tests {
 
         let status = unsafe { dagml_graph_validate_json(std::ptr::null(), 0, &mut error) };
 
-        assert_eq!(status, DagMlStatusCode::InvalidArgument);
+        assert_eq!(status, DagMlStatusCode::INVALID_ARGUMENT);
         assert!(!error.ptr.is_null());
         unsafe { dagml_string_free(error) };
     }
