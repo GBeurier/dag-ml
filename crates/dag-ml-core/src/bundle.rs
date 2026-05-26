@@ -823,6 +823,7 @@ pub struct RefitArtifactRecord {
 
 impl RefitArtifactRecord {
     pub fn validate(&self) -> Result<()> {
+        self.artifact.validate()?;
         if self.artifact.id.as_str().is_empty() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "refit artifact for `{}` has empty artifact id",
@@ -2106,7 +2107,12 @@ mod tests {
                 id: ArtifactId::new(format!("artifact:{}:refit", node_plan.node_id)).unwrap(),
                 kind: "mock_model".to_string(),
                 controller_id: node_plan.controller_id.clone(),
+                backend: None,
+                uri: None,
+                content_fingerprint: None,
                 size_bytes: Some(128),
+                plugin: None,
+                plugin_version: None,
             },
             params_fingerprint: node_plan.params_fingerprint.clone(),
             data_requirement_keys,
@@ -2219,7 +2225,12 @@ mod tests {
                 id: ArtifactId::new("artifact:model:base:refit").unwrap(),
                 kind: "sklearn_pickle".to_string(),
                 controller_id: model_plan.controller_id.clone(),
+                backend: None,
+                uri: None,
+                content_fingerprint: None,
                 size_bytes: Some(128),
+                plugin: None,
+                plugin_version: None,
             },
             params_fingerprint: model_plan.params_fingerprint.clone(),
             data_requirement_keys: vec!["model:base.x".to_string()],
@@ -2243,6 +2254,25 @@ mod tests {
 
         bundle.validate_against_plan(&plan).unwrap();
         assert_eq!(bundle.data_requirements.len(), 1);
+    }
+
+    #[test]
+    fn refit_artifact_validation_checks_portable_artifact_metadata() {
+        let plan = plan();
+        let mut artifact = model_base_refit_artifact(&plan);
+        artifact.artifact.backend = Some(crate::runtime::ArtifactBackend::Joblib);
+        artifact.artifact.uri = Some("artifacts/model.joblib".to_string());
+        artifact.artifact.content_fingerprint = Some("c".repeat(64));
+        artifact.artifact.plugin = Some("dagml.sklearn".to_string());
+        artifact.artifact.plugin_version = Some("1.0.0".to_string());
+        artifact.validate().unwrap();
+
+        artifact.artifact.content_fingerprint = Some("short".to_string());
+        assert!(artifact
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("artifact content fingerprint"));
     }
 
     #[test]
@@ -2479,7 +2509,12 @@ mod tests {
                     .unwrap(),
                 kind: "mock_model".to_string(),
                 controller_id: meta_plan.controller_id.clone(),
+                backend: None,
+                uri: None,
+                content_fingerprint: None,
                 size_bytes: Some(128),
+                plugin: None,
+                plugin_version: None,
             },
             params_fingerprint: meta_plan.params_fingerprint.clone(),
             data_requirement_keys: vec![

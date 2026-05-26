@@ -2894,7 +2894,12 @@ impl RuntimeController for CliMockController {
                 id: ArtifactId::new(format!("artifact:{}:refit", task.node_plan.node_id))?,
                 kind: "mock_model".to_string(),
                 controller_id: self.id.clone(),
+                backend: None,
+                uri: None,
+                content_fingerprint: None,
                 size_bytes: Some(128),
+                plugin: None,
+                plugin_version: None,
             }]
         } else {
             Vec::new()

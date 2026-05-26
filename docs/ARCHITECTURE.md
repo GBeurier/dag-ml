@@ -14,7 +14,7 @@ source for implementation work.
 | Graph contract | `GraphSpec`, nodes, ports, edges, variants | DSL syntax sugar |
 | Planning | phase order, edge validation, data-plan requests | source storage and representation search |
 | Execution control | fold identity, OOF joins, scheduler decisions | model fitting internals |
-| Stores | lineage/cache/artifact references | artifact byte formats owned by hosts |
+| Stores | lineage/cache/artifact references and portable artifact metadata | artifact byte formats owned by hosts |
 | ABI | controller/data vtables, handles, release contracts | host object allocation |
 
 ## Crates

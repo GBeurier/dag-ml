@@ -46,12 +46,70 @@ pub struct HandleRef {
     pub owner_controller: ControllerId,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactBackend {
+    Joblib,
+    Torch,
+    Tensorflow,
+    Onnx,
+    Safetensors,
+    Json,
+    Raw,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ArtifactRef {
     pub id: ArtifactId,
     pub kind: String,
     pub controller_id: ControllerId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<ArtifactBackend>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_fingerprint: Option<String>,
     pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_version: Option<String>,
+}
+
+impl ArtifactRef {
+    pub fn validate(&self) -> Result<()> {
+        if self.kind.trim().is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` has empty kind",
+                self.id
+            )));
+        }
+        validate_artifact_optional_text("uri", &self.uri, &self.id)?;
+        validate_artifact_optional_text("plugin", &self.plugin, &self.id)?;
+        validate_artifact_optional_text("plugin_version", &self.plugin_version, &self.id)?;
+        if self.plugin_version.is_some() && self.plugin.is_none() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` has plugin_version without plugin",
+                self.id
+            )));
+        }
+        if let Some(content_fingerprint) = &self.content_fingerprint {
+            validate_runtime_fingerprint("artifact content", content_fingerprint)?;
+        }
+        if self.uri.is_some() && self.backend.is_none() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` has uri without backend",
+                self.id
+            )));
+        }
+        if self.uri.is_some() && self.content_fingerprint.is_none() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` has uri without content_fingerprint",
+                self.id
+            )));
+        }
+        Ok(())
+    }
 }
 
 pub fn refit_artifact_input_key(artifact_id: &ArtifactId) -> String {
@@ -81,6 +139,7 @@ pub struct ArtifactHandleRecord {
 
 impl ArtifactHandleRecord {
     pub fn validate(&self) -> Result<()> {
+        self.artifact.validate()?;
         if !matches!(self.handle.kind, HandleKind::Model | HandleKind::Artifact) {
             return Err(DagMlError::RuntimeValidation(format!(
                 "artifact `{}` is registered with non-artifact/model handle kind {:?}",
@@ -287,6 +346,9 @@ impl LineageRecord {
                 "lineage `{}` has empty params fingerprint",
                 self.record_id
             )));
+        }
+        for artifact in &self.artifact_refs {
+            artifact.validate()?;
         }
         Ok(())
     }
@@ -1337,6 +1399,27 @@ fn validate_runtime_non_empty(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_artifact_optional_text(
+    label: &str,
+    value: &Option<String>,
+    artifact_id: &ArtifactId,
+) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.trim().is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "artifact `{artifact_id}` has empty {label}"
+        )));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "artifact `{artifact_id}` has control characters in {label}"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_runtime_fingerprint(label: &str, value: &str) -> Result<()> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(DagMlError::RuntimeValidation(format!(
@@ -1753,6 +1836,7 @@ impl NodeResult {
         }
         let mut artifact_ids = BTreeSet::new();
         for artifact in &self.artifacts {
+            artifact.validate()?;
             if !artifact_ids.insert(artifact.id.clone()) {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "node `{}` emitted duplicate artifact `{}`",
@@ -4225,7 +4309,12 @@ mod tests {
                         .unwrap(),
                     kind: "mock_model".to_string(),
                     controller_id: self.id.clone(),
+                    backend: None,
+                    uri: None,
+                    content_fingerprint: None,
                     size_bytes: Some(128),
+                    plugin: None,
+                    plugin_version: None,
                 }]
             } else {
                 Vec::new()
@@ -5049,7 +5138,12 @@ mod tests {
                     id: ArtifactId::new("artifact:model:base:refit").unwrap(),
                     kind: "mock_model".to_string(),
                     controller_id: model_plan.controller_id.clone(),
+                    backend: None,
+                    uri: None,
+                    content_fingerprint: None,
                     size_bytes: Some(128),
+                    plugin: None,
+                    plugin_version: None,
                 },
                 params_fingerprint: model_plan.params_fingerprint.clone(),
                 data_requirement_keys: vec!["model:base.x".to_string()],
@@ -6773,7 +6867,12 @@ mod tests {
             id: ArtifactId::new("artifact:model:pls:refit").unwrap(),
             kind: "mock_model".to_string(),
             controller_id: node_plan.controller_id.clone(),
+            backend: None,
+            uri: None,
+            content_fingerprint: None,
             size_bytes: Some(128),
+            plugin: None,
+            plugin_version: None,
         };
         let handle = HandleRef {
             handle: 77,
@@ -6838,6 +6937,88 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("lineage artifact ref"));
+    }
+
+    #[test]
+    fn artifact_ref_validates_portable_metadata() {
+        let content_fingerprint = "a".repeat(64);
+        let artifact = ArtifactRef {
+            id: ArtifactId::new("artifact:model:portable").unwrap(),
+            kind: "model".to_string(),
+            controller_id: ControllerId::new("controller:sklearn").unwrap(),
+            backend: Some(ArtifactBackend::Joblib),
+            uri: Some(format!("artifacts/{content_fingerprint}.joblib")),
+            content_fingerprint: Some(content_fingerprint.clone()),
+            size_bytes: Some(4096),
+            plugin: Some("dagml.sklearn".to_string()),
+            plugin_version: Some("1.0.0".to_string()),
+        };
+
+        artifact.validate().unwrap();
+        let encoded = serde_json::to_value(&artifact).unwrap();
+        assert_eq!(encoded["backend"].as_str(), Some("joblib"));
+        assert_eq!(
+            encoded["content_fingerprint"].as_str(),
+            Some(content_fingerprint.as_str())
+        );
+
+        let legacy: ArtifactRef = serde_json::from_value(serde_json::json!({
+            "id": "artifact:model:legacy",
+            "kind": "mock_model",
+            "controller_id": "controller:mock",
+            "size_bytes": 128
+        }))
+        .unwrap();
+        assert_eq!(legacy.backend, None);
+        assert_eq!(legacy.content_fingerprint, None);
+        legacy.validate().unwrap();
+    }
+
+    #[test]
+    fn artifact_ref_rejects_invalid_portable_metadata() {
+        let mut artifact = ArtifactRef {
+            id: ArtifactId::new("artifact:model:portable").unwrap(),
+            kind: "model".to_string(),
+            controller_id: ControllerId::new("controller:sklearn").unwrap(),
+            backend: Some(ArtifactBackend::Joblib),
+            uri: Some("artifacts/model.joblib".to_string()),
+            content_fingerprint: Some("b".repeat(64)),
+            size_bytes: Some(4096),
+            plugin: Some("dagml.sklearn".to_string()),
+            plugin_version: Some("1.0.0".to_string()),
+        };
+        artifact.validate().unwrap();
+
+        let mut bad_fingerprint = artifact.clone();
+        bad_fingerprint.content_fingerprint = Some("not-a-digest".to_string());
+        assert!(bad_fingerprint
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("artifact content fingerprint"));
+
+        let mut missing_backend = artifact.clone();
+        missing_backend.backend = None;
+        assert!(missing_backend
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("uri without backend"));
+
+        let mut missing_fingerprint = artifact.clone();
+        missing_fingerprint.content_fingerprint = None;
+        assert!(missing_fingerprint
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("uri without content_fingerprint"));
+
+        artifact.plugin = None;
+        assert!(artifact
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("plugin_version without plugin"));
     }
 
     #[test]

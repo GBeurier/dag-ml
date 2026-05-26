@@ -1454,6 +1454,8 @@ class ArtifactRef:
                   "ml_data_fitted_adapter", "metadata"]
     backend: Literal["joblib", "torch", "tensorflow", "onnx", "json", "raw"]
     size_bytes: int
+    uri: str | None = None                 # e.g. artifacts/<sha256>.<backend>
+    content_fingerprint: str | None = None # sha256 when payload is persisted
     plugin: str | None = None
     plugin_version: str | None = None
 
@@ -1471,6 +1473,10 @@ Implementations:
 - `FilesystemArtifactStore`: writes `<root>/artifacts/<sha256>.<backend>`.
 - `ContentAddressedArtifactStore`: dedupe-by-hash, used in workspaces.
 - `SQLiteArtifactStore`: metadata in SQLite, payload on disk.
+
+The Rust contract accepts legacy artifact refs without backend/URI while the
+portability contract is phased in. Any artifact ref that declares a URI must
+also declare a backend and a 64-character hex content fingerprint.
 
 ### 13.2 LineageRecord and LineageRecorder
 

@@ -621,7 +621,8 @@ After dispatch, the Rust core checks:
 - group/repetition/target leakage units remain on one side of a fold;
 - shape deltas are declared before downstream consumption;
 - aggregation level and prediction columns match the node policy;
-- artifact refs and handle lifetimes are registered;
+- artifact refs, portable backend/URI/content metadata and handle lifetimes are
+  registered;
 - lineage was recorded.
 
 ## OOF And Leakage Rules

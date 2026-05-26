@@ -84,6 +84,9 @@ Implemented:
   feature-set traceability;
 - runtime artifact-store trait plus in-memory refit artifact handle records,
   including capture of controller-emitted refit artifact handles during `REFIT`;
+- `ArtifactRef` now exposes typed optional backend, URI, content fingerprint and
+  plugin/version metadata, with bundle/runtime/lineage validation while keeping
+  legacy refit artifact JSON readable;
 - bundle replay executor that validates plan/bundle/request/data envelopes,
   materializes data and refit artifact handles, and invokes eligible runtime
   controllers for replay phases without CV folds;
@@ -295,7 +298,8 @@ Not implemented yet:
   overrides;
 - custom aggregation controllers and production persistent/Arrow replay
   backends for non-sample aggregated prediction blocks;
-- persistent artifact stores and non-JSON/non-file-cache backends;
+- persistent artifact payload stores and non-JSON/non-file-cache backends
+  beyond the validated portable artifact reference contract;
 - Arrow prediction storage and ABI-owned prediction tensors;
 - production host controller adapters with native libraries or
   language-specific bindings;
