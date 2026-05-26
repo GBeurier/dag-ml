@@ -142,6 +142,14 @@ pub struct DagMlControllerVTable {
             out_arrow_schema: *mut *mut ArrowSchema,
         ) -> DagMlStatusCode,
     >,
+    pub invoke: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            task_json: DagMlBytesView,
+            out_result_json: *mut DagMlOwnedBytes,
+        ) -> DagMlStatusCode,
+    >,
+    pub release_bytes: Option<unsafe extern "C" fn(user_data: *mut c_void, bytes: DagMlOwnedBytes)>,
     pub release: Option<unsafe extern "C" fn(user_data: *mut c_void, handle: DagMlHandle)>,
     pub destroy: Option<unsafe extern "C" fn(user_data: *mut c_void)>,
 }
@@ -875,6 +883,96 @@ impl RuntimeDataProvider for CAbiRuntimeDataProvider {
 }
 
 #[derive(Clone)]
+pub struct CAbiRuntimeController {
+    id: ControllerId,
+    vtable: DagMlControllerVTable,
+}
+
+impl CAbiRuntimeController {
+    pub fn new(id: ControllerId, vtable: DagMlControllerVTable) -> dag_ml_core::Result<Self> {
+        if vtable.abi_version < 2 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller ABI version {} is unsupported for generic invoke",
+                vtable.abi_version
+            )));
+        }
+        if vtable.invoke.is_none() {
+            return Err(DagMlError::RuntimeValidation(
+                "controller vtable is missing invoke".to_string(),
+            ));
+        }
+        if vtable.release_bytes.is_none() {
+            return Err(DagMlError::RuntimeValidation(
+                "controller vtable is missing release_bytes".to_string(),
+            ));
+        }
+        Ok(Self { id, vtable })
+    }
+}
+
+impl RuntimeController for CAbiRuntimeController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
+        let invoke = self.vtable.invoke.ok_or_else(|| {
+            DagMlError::RuntimeValidation("controller vtable is missing invoke".to_string())
+        })?;
+        let release_bytes = self.vtable.release_bytes.ok_or_else(|| {
+            DagMlError::RuntimeValidation("controller vtable is missing release_bytes".to_string())
+        })?;
+        let task_json = serde_json::to_vec(task).map_err(|error| {
+            DagMlError::RuntimeValidation(format!("failed to serialize node task: {error}"))
+        })?;
+        let mut out_json = DagMlOwnedBytes::default();
+        let status =
+            unsafe { invoke(self.vtable.user_data, bytes_view(&task_json), &mut out_json) };
+        if status != DagMlStatusCode::OK {
+            if !out_json.ptr.is_null() {
+                unsafe { release_bytes(self.vtable.user_data, out_json) };
+            }
+            controller_status(status, "invoke")?;
+        }
+        if out_json.ptr.is_null() {
+            return Err(DagMlError::RuntimeValidation(
+                "controller invoke returned null result JSON".to_string(),
+            ));
+        }
+        let data = unsafe { slice::from_raw_parts(out_json.ptr, out_json.len) }.to_vec();
+        unsafe { release_bytes(self.vtable.user_data, out_json) };
+        serde_json::from_slice::<NodeResult>(&data).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "controller invoke returned invalid node result JSON: {error}"
+            ))
+        })
+    }
+}
+
+fn controller_status(status: DagMlStatusCode, action: &str) -> dag_ml_core::Result<()> {
+    if status == DagMlStatusCode::OK {
+        Ok(())
+    } else if status == DagMlStatusCode::INVALID_ARGUMENT {
+        Err(DagMlError::RuntimeValidation(format!(
+            "controller {action} rejected invalid arguments"
+        )))
+    } else if status == DagMlStatusCode::VALIDATION_ERROR {
+        Err(DagMlError::RuntimeValidation(format!(
+            "controller {action} rejected request"
+        )))
+    } else if status == DagMlStatusCode::PANIC {
+        Err(DagMlError::RuntimeValidation(format!(
+            "controller {action} reported panic"
+        )))
+    } else {
+        Err(DagMlError::RuntimeValidation(format!(
+            "controller {action} returned unknown status code {}",
+            status.0
+        )))
+    }
+}
+
+#[derive(Clone)]
 pub struct CAbiRuntimePredictionCacheStore {
     vtable: DagMlPredictionCacheVTable,
 }
@@ -1360,7 +1458,7 @@ mod tests {
     use dag_ml_core::{
         build_execution_plan, build_prediction_cache_record, BundleId, BundlePredictionRequirement,
         CampaignSpec, ControllerManifest, ControllerRegistry, DataBinding, DataProviderViewSpec,
-        DataRequestPartition, DataViewPolicy, FoldId, NodeId, VariantId,
+        DataRequestPartition, DataViewPolicy, FoldId, NodeId, NodeKind, NodePlan, VariantId,
     };
     use std::ffi::CStr;
 
@@ -1370,6 +1468,13 @@ mod tests {
         materialize_json: Vec<u8>,
         make_view_parent: DagMlHandle,
         make_view_json: Vec<u8>,
+    }
+
+    #[derive(Default)]
+    struct ControllerStub {
+        task_json: Vec<u8>,
+        result_json: Vec<u8>,
+        release_count: usize,
     }
 
     #[derive(Default)]
@@ -1426,6 +1531,71 @@ mod tests {
             *out_arrow_schema = std::ptr::null_mut();
         }
         DagMlStatusCode::OK
+    }
+
+    unsafe extern "C" fn controller_invoke_stub(
+        user_data: *mut c_void,
+        task_json: DagMlBytesView,
+        out_result_json: *mut DagMlOwnedBytes,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || task_json.ptr.is_null() || out_result_json.is_null() {
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let state = &mut *(user_data.cast::<ControllerStub>());
+        state.task_json = slice::from_raw_parts(task_json.ptr, task_json.len).to_vec();
+        let mut data = state.result_json.clone();
+        *out_result_json = DagMlOwnedBytes {
+            ptr: data.as_mut_ptr(),
+            len: data.len(),
+            capacity: data.capacity(),
+        };
+        std::mem::forget(data);
+        DagMlStatusCode::OK
+    }
+
+    unsafe extern "C" fn controller_invoke_error_stub(
+        user_data: *mut c_void,
+        task_json: DagMlBytesView,
+        out_result_json: *mut DagMlOwnedBytes,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || task_json.ptr.is_null() || out_result_json.is_null() {
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let state = &mut *(user_data.cast::<ControllerStub>());
+        state.task_json = slice::from_raw_parts(task_json.ptr, task_json.len).to_vec();
+        let mut data = b"{}".to_vec();
+        *out_result_json = DagMlOwnedBytes {
+            ptr: data.as_mut_ptr(),
+            len: data.len(),
+            capacity: data.capacity(),
+        };
+        std::mem::forget(data);
+        DagMlStatusCode::VALIDATION_ERROR
+    }
+
+    unsafe extern "C" fn controller_invoke_unknown_status_stub(
+        user_data: *mut c_void,
+        task_json: DagMlBytesView,
+        out_result_json: *mut DagMlOwnedBytes,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || task_json.ptr.is_null() || out_result_json.is_null() {
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let state = &mut *(user_data.cast::<ControllerStub>());
+        state.task_json = slice::from_raw_parts(task_json.ptr, task_json.len).to_vec();
+        DagMlStatusCode(998)
+    }
+
+    unsafe extern "C" fn controller_release_bytes_stub(
+        user_data: *mut c_void,
+        bytes: DagMlOwnedBytes,
+    ) {
+        if user_data.is_null() || bytes.ptr.is_null() {
+            return;
+        }
+        let state = &mut *(user_data.cast::<ControllerStub>());
+        state.release_count += 1;
+        drop(Vec::from_raw_parts(bytes.ptr, bytes.len, bytes.capacity));
     }
 
     unsafe extern "C" fn prediction_cache_load_blocks_stub(
@@ -1505,6 +1675,70 @@ mod tests {
         let state = &mut *(user_data.cast::<PredictionCacheStub>());
         state.release_count += 1;
         drop(Vec::from_raw_parts(bytes.ptr, bytes.len, bytes.capacity));
+    }
+
+    fn controller_task_result_fixture() -> (ControllerId, NodeTask, NodeResult) {
+        let controller_id = ControllerId::new("controller:transform").unwrap();
+        let node_id = NodeId::new("transform:scale").unwrap();
+        let task = NodeTask {
+            run_id: RunId::new("run:cabi.controller").unwrap(),
+            node_plan: NodePlan {
+                node_id: node_id.clone(),
+                kind: NodeKind::Transform,
+                controller_id: controller_id.clone(),
+                controller_version: "0.1.0".to_string(),
+                supported_phases: BTreeSet::from([Phase::FitCv]),
+                input_nodes: Vec::new(),
+                output_nodes: Vec::new(),
+                shape_plan: None,
+                data_bindings: Vec::new(),
+                params_fingerprint: "params:controller-fixture".to_string(),
+            },
+            phase: Phase::FitCv,
+            variant_id: Some(VariantId::new("variant:controller").unwrap()),
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            branch_path: Vec::new(),
+            input_handles: BTreeMap::new(),
+            data_views: BTreeMap::new(),
+            prediction_inputs: BTreeMap::new(),
+            seed: Some(42),
+        };
+        let result = NodeResult {
+            node_id: node_id.clone(),
+            outputs: BTreeMap::from([(
+                "out".to_string(),
+                HandleRef {
+                    handle: 88,
+                    kind: HandleKind::Data,
+                    owner_controller: controller_id.clone(),
+                },
+            )]),
+            predictions: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new("lineage:cabi.controller").unwrap(),
+                run_id: task.run_id.clone(),
+                node_id,
+                phase: task.phase,
+                controller_id: controller_id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        };
+        result.validate_for_task(&task).unwrap();
+        (controller_id, task, result)
     }
 
     #[test]
@@ -1616,6 +1850,87 @@ mod tests {
         assert_eq!(view_json["fold_id"], "fold:0");
         assert_eq!(view_json["sample_ids"][0], "s1");
         assert_eq!(view_json["columns"][0], "abs_1000");
+    }
+
+    #[test]
+    fn c_abi_runtime_controller_routes_node_task_and_result_json() {
+        let (controller_id, task, expected) = controller_task_result_fixture();
+        let mut state = ControllerStub {
+            result_json: serde_json::to_vec(&expected).unwrap(),
+            ..Default::default()
+        };
+        let table = DagMlControllerVTable {
+            abi_version: 2,
+            user_data: (&mut state as *mut ControllerStub).cast::<c_void>(),
+            clone_with: None,
+            describe: None,
+            fit: None,
+            predict: None,
+            invoke: Some(controller_invoke_stub),
+            release_bytes: Some(controller_release_bytes_stub),
+            release: None,
+            destroy: None,
+        };
+        let controller = CAbiRuntimeController::new(controller_id.clone(), table).unwrap();
+        let actual = controller.invoke(&task).unwrap();
+        assert_eq!(controller.controller_id(), &controller_id);
+        assert_eq!(actual, expected);
+        assert_eq!(state.release_count, 1);
+
+        let task_json: serde_json::Value = serde_json::from_slice(&state.task_json).unwrap();
+        assert_eq!(task_json["node_plan"]["node_id"], "transform:scale");
+        assert_eq!(task_json["phase"], "FIT_CV");
+        assert_eq!(task_json["seed"], 42);
+    }
+
+    #[test]
+    fn c_abi_runtime_controller_releases_error_buffers() {
+        let (controller_id, task, _) = controller_task_result_fixture();
+        let mut state = ControllerStub::default();
+        let table = DagMlControllerVTable {
+            abi_version: 2,
+            user_data: (&mut state as *mut ControllerStub).cast::<c_void>(),
+            clone_with: None,
+            describe: None,
+            fit: None,
+            predict: None,
+            invoke: Some(controller_invoke_error_stub),
+            release_bytes: Some(controller_release_bytes_stub),
+            release: None,
+            destroy: None,
+        };
+        let controller = CAbiRuntimeController::new(controller_id, table).unwrap();
+        let error = controller.invoke(&task).unwrap_err();
+        assert!(format!("{error}").contains("controller invoke rejected request"));
+        assert_eq!(state.release_count, 1);
+
+        let task_json: serde_json::Value = serde_json::from_slice(&state.task_json).unwrap();
+        assert_eq!(task_json["node_plan"]["node_id"], "transform:scale");
+    }
+
+    #[test]
+    fn c_abi_runtime_controller_rejects_unknown_status_codes() {
+        let (controller_id, task, _) = controller_task_result_fixture();
+        let mut state = ControllerStub::default();
+        let table = DagMlControllerVTable {
+            abi_version: 2,
+            user_data: (&mut state as *mut ControllerStub).cast::<c_void>(),
+            clone_with: None,
+            describe: None,
+            fit: None,
+            predict: None,
+            invoke: Some(controller_invoke_unknown_status_stub),
+            release_bytes: Some(controller_release_bytes_stub),
+            release: None,
+            destroy: None,
+        };
+        let controller = CAbiRuntimeController::new(controller_id, table).unwrap();
+        let error = controller.invoke(&task).unwrap_err();
+        assert!(format!("{error}").contains("unknown status code 998"));
+        assert_eq!(state.release_count, 0);
+
+        let task_json: serde_json::Value = serde_json::from_slice(&state.task_json).unwrap();
+        assert_eq!(task_json["node_plan"]["node_id"], "transform:scale");
     }
 
     #[test]

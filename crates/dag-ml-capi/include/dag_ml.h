@@ -78,6 +78,8 @@ typedef struct DagMlControllerVTable {
     DagMlStatusCode (*describe)(void *user_data, DagMlHandle op, DagMlOwnedBytes *out_json);
     DagMlStatusCode (*fit)(void *user_data, DagMlHandle op, DagMlHandle data, DagMlBytesView context_json, DagMlHandle *out_fitted);
     DagMlStatusCode (*predict)(void *user_data, DagMlHandle fitted, DagMlHandle data, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);
+    DagMlStatusCode (*invoke)(void *user_data, DagMlBytesView task_json, DagMlOwnedBytes *out_result_json);
+    void (*release_bytes)(void *user_data, DagMlOwnedBytes bytes);
     void (*release)(void *user_data, DagMlHandle handle);
     void (*destroy)(void *user_data);
 } DagMlControllerVTable;

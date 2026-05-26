@@ -20,7 +20,9 @@ the host owns the underlying object behind each handle.
   materialization;
 - Arrow C Data `ArrowArray` and `ArrowSchema` structs for controller
   predictions and data-provider identity/target/feature exports;
-- `DagMlControllerVTable` for host operator controllers;
+- `DagMlControllerVTable` for host operator controllers, including generic
+  `invoke` over `NodeTask`/`NodeResult` JSON and explicit returned-byte
+  release;
 - `DagMlDataVTable` for host data providers, including `materialize`,
   `make_view`, `view_identity`, `target_arrow` and `feature_arrow`.
 - `DagMlPredictionCacheVTable` for host prediction-cache stores, including
@@ -42,6 +44,7 @@ Rust adapters do not claim ownership of the host context.
 | Object | Owner | Release path |
 |---|---|---|
 | Host data block | Host | `DataVTable.release` |
+| Host controller result JSON | Host allocation returned through controller vtable | `ControllerVTable.release_bytes` |
 | Host fitted model | Host | `ControllerVTable.release` |
 | Host prediction cache handle | Host | `PredictionCacheVTable.release` |
 | Rust error string | Rust allocation returned through ABI | `dagml_string_free` |
