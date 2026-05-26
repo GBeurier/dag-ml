@@ -58,6 +58,8 @@ Implemented:
 - CLI process campaign and replay execution that sends `NodeTask` JSON to an
   external adapter process over stdin, reads `NodeResult` JSON from stdout and
   validates the result through the scheduler;
+- persistent JSONL process-controller mode for campaign/replay smoke tests,
+  avoiding one process spawn per task and preparing stateful host adapters;
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph, selection decisions,

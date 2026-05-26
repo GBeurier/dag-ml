@@ -106,6 +106,41 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         process_campaign_stdout
     );
 
+    let persistent_process_campaign = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_nir.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--plan-id",
+            "plan:cli.process",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli run-process-campaign --persistent");
+    assert!(
+        persistent_process_campaign.status.success(),
+        "run-process-campaign --persistent failed: {}",
+        String::from_utf8_lossy(&persistent_process_campaign.stderr)
+    );
+    let persistent_process_campaign_stdout =
+        String::from_utf8_lossy(&persistent_process_campaign.stdout);
+    assert!(
+        persistent_process_campaign_stdout.contains("process campaign run: 8 result(s)")
+            && persistent_process_campaign_stdout.contains("4 prediction block(s)")
+            && persistent_process_campaign_stdout.contains("4 data handle(s)"),
+        "unexpected run-process-campaign --persistent output: {}",
+        persistent_process_campaign_stdout
+    );
+
     let validate = Command::new(cli())
         .current_dir(&root)
         .args([
