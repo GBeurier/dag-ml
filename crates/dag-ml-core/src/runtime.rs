@@ -3412,6 +3412,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::aggregation::{aggregate_observation_predictions, ObservationPredictionBlock};
     use crate::bundle::{
         build_execution_bundle, build_execution_bundle_with_prediction_contracts,
         build_prediction_cache_payload, build_prediction_cache_record,
@@ -3431,9 +3432,13 @@ mod tests {
         EdgeContract, EdgeSpec, GraphInterface, GraphSpec, NodeKind, NodeSpec, PortCardinality,
         PortKind, PortRef, PortSchema, PortSpec,
     };
-    use crate::ids::{ArtifactId, ControllerId, FoldId, NodeId, SampleId};
+    use crate::ids::{
+        ArtifactId, ControllerId, FoldId, GroupId, NodeId, ObservationId, SampleId, TargetId,
+    };
     use crate::oof::{PredictionBlock, PredictionPartition};
     use crate::plan::{build_execution_plan, CampaignSpec, SplitInvocation};
+    use crate::policy::{AggregationPolicy, LeakageUnitPolicy, SplitUnit};
+    use crate::relation::{SampleRelation, SampleRelationSet};
     use serde_json::json;
 
     struct MockController {
@@ -3907,6 +3912,103 @@ mod tests {
         }
     }
 
+    struct ExpectedRefitOofController {
+        id: ControllerId,
+        expected_fold_ids: Vec<FoldId>,
+        expected_sample_ids: Vec<SampleId>,
+        expected_target_names: Vec<String>,
+    }
+
+    impl RuntimeController for ExpectedRefitOofController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            if task.node_plan.node_id.as_str() == "model:meta" && task.phase == Phase::Refit {
+                let handle = task.input_handles.get("model:base.pred").ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "meta node did not receive grouped OOF prediction input".to_string(),
+                    )
+                })?;
+                if handle.kind != HandleKind::Prediction {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "meta node received {:?} instead of grouped OOF prediction input",
+                        handle.kind
+                    )));
+                }
+                let prediction_input =
+                    task.prediction_inputs
+                        .get("model:base.pred")
+                        .ok_or_else(|| {
+                            DagMlError::RuntimeValidation(
+                                "meta node did not receive grouped OOF prediction input spec"
+                                    .to_string(),
+                            )
+                        })?;
+                if prediction_input.producer_node.as_str() != "model:base"
+                    || prediction_input.source_port != "pred"
+                    || prediction_input.target_port != "pred"
+                    || prediction_input.partition != PredictionPartition::Validation
+                    || prediction_input.fold_id.is_some()
+                    || prediction_input.fold_ids != self.expected_fold_ids
+                    || prediction_input.sample_ids != self.expected_sample_ids
+                    || prediction_input.prediction_width != 1
+                    || prediction_input.target_names != self.expected_target_names
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "meta node received invalid grouped refit OOF spec: {:?}",
+                        prediction_input
+                    )));
+                }
+            }
+
+            let handle_id = if task.node_plan.node_id.as_str() == "model:base" {
+                303
+            } else {
+                404
+            };
+            Ok(NodeResult {
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([(
+                    "pred".to_string(),
+                    HandleRef {
+                        handle: handle_id,
+                        kind: HandleKind::Prediction,
+                        owner_controller: self.id.clone(),
+                    },
+                )]),
+                predictions: Vec::new(),
+                shape_deltas: Vec::new(),
+                artifacts: Vec::new(),
+                artifact_handles: BTreeMap::new(),
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:grouped-oof:{}:{:?}",
+                        task.node_plan.node_id, task.phase
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
     fn aligned_validation_samples(task: &NodeTask) -> Vec<SampleId> {
         match task.fold_id.as_ref().map(ToString::to_string).as_deref() {
             Some("fold:0") => vec![SampleId::new("s1").unwrap()],
@@ -4119,6 +4221,23 @@ mod tests {
         controllers
     }
 
+    fn expected_refit_oof_runtime_controllers(
+        expected_fold_ids: Vec<FoldId>,
+        expected_sample_ids: Vec<SampleId>,
+        expected_target_names: Vec<String>,
+    ) -> RuntimeControllerRegistry {
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(ExpectedRefitOofController {
+                id: ControllerId::new("controller:model").unwrap(),
+                expected_fold_ids,
+                expected_sample_ids,
+                expected_target_names,
+            }))
+            .unwrap();
+        controllers
+    }
+
     fn replay_runtime_controllers() -> RuntimeControllerRegistry {
         let mut controllers = RuntimeControllerRegistry::new();
         controllers
@@ -4161,6 +4280,154 @@ mod tests {
                 },
             ],
             sample_groups: BTreeMap::new(),
+        }
+    }
+
+    fn grouped_repetition_fold_set() -> FoldSet {
+        let s1 = SampleId::new("s1").unwrap();
+        let s1_rep = SampleId::new("s1_rep").unwrap();
+        let s2 = SampleId::new("s2").unwrap();
+        let s3 = SampleId::new("s3").unwrap();
+        FoldSet {
+            id: "outer:grouped-repetition".to_string(),
+            sample_ids: vec![s1.clone(), s1_rep.clone(), s2.clone(), s3.clone()],
+            folds: vec![
+                FoldAssignment {
+                    fold_id: FoldId::new("fold:0").unwrap(),
+                    train_sample_ids: vec![s2.clone(), s3.clone()],
+                    validation_sample_ids: vec![s1.clone(), s1_rep.clone()],
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("fold:1").unwrap(),
+                    train_sample_ids: vec![s1.clone(), s1_rep.clone(), s3.clone()],
+                    validation_sample_ids: vec![s2.clone()],
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("fold:2").unwrap(),
+                    train_sample_ids: vec![s1.clone(), s1_rep.clone(), s2.clone()],
+                    validation_sample_ids: vec![s3.clone()],
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            sample_groups: BTreeMap::from([
+                (s1, GroupId::new("group:product1").unwrap()),
+                (s1_rep, GroupId::new("group:product1").unwrap()),
+                (s2, GroupId::new("group:product2").unwrap()),
+                (s3, GroupId::new("group:product3").unwrap()),
+            ]),
+        }
+    }
+
+    fn grouped_leakage_policy() -> LeakageUnitPolicy {
+        LeakageUnitPolicy {
+            split_unit: SplitUnit::Group,
+            require_group_ids: true,
+            ..LeakageUnitPolicy::default()
+        }
+    }
+
+    fn sample_relation(
+        observation_id: &str,
+        sample_id: &str,
+        target_id: &str,
+        group_id: &str,
+        origin_sample_id: Option<&str>,
+        is_augmented: bool,
+    ) -> SampleRelation {
+        SampleRelation {
+            observation_id: ObservationId::new(observation_id).unwrap(),
+            sample_id: SampleId::new(sample_id).unwrap(),
+            target_id: Some(TargetId::new(target_id).unwrap()),
+            group_id: Some(GroupId::new(group_id).unwrap()),
+            origin_sample_id: origin_sample_id.map(|value| SampleId::new(value).unwrap()),
+            source_id: Some("nir".to_string()),
+            is_augmented,
+        }
+    }
+
+    fn grouped_repetition_relations() -> SampleRelationSet {
+        SampleRelationSet {
+            records: vec![
+                sample_relation(
+                    "obs:s1:a",
+                    "s1",
+                    "target:product1",
+                    "group:product1",
+                    None,
+                    false,
+                ),
+                sample_relation(
+                    "obs:s1:b",
+                    "s1",
+                    "target:product1",
+                    "group:product1",
+                    None,
+                    false,
+                ),
+                sample_relation(
+                    "obs:s1:aug0",
+                    "s1",
+                    "target:product1",
+                    "group:product1",
+                    Some("s1"),
+                    true,
+                ),
+                sample_relation(
+                    "obs:s1rep:a",
+                    "s1_rep",
+                    "target:product1",
+                    "group:product1",
+                    None,
+                    false,
+                ),
+                sample_relation(
+                    "obs:s2:a",
+                    "s2",
+                    "target:product2",
+                    "group:product2",
+                    None,
+                    false,
+                ),
+                sample_relation(
+                    "obs:s2:b",
+                    "s2",
+                    "target:product2",
+                    "group:product2",
+                    None,
+                    false,
+                ),
+                sample_relation(
+                    "obs:s3:a",
+                    "s3",
+                    "target:product3",
+                    "group:product3",
+                    None,
+                    false,
+                ),
+            ],
+        }
+    }
+
+    fn grouped_oof_campaign(fold_set: FoldSet) -> CampaignSpec {
+        let leakage_policy = grouped_leakage_policy();
+        CampaignSpec {
+            id: "campaign:oof.grouped-repetition".to_string(),
+            root_seed: Some(11),
+            leakage_policy: leakage_policy.clone(),
+            aggregation_policy: AggregationPolicy::default(),
+            split_invocation: Some(SplitInvocation {
+                id: "split:outer.grouped-repetition".to_string(),
+                controller_id: None,
+                leakage_policy,
+                params: BTreeMap::new(),
+                fold_set: Some(fold_set),
+            }),
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            metadata: BTreeMap::new(),
         }
     }
 
@@ -4740,6 +5007,138 @@ mod tests {
         let refit_controllers = oof_edge_runtime_controllers(None, OofSampleMode::Aligned);
         let refit_results = SequentialScheduler
             .execute_campaign_phase(&plan, &refit_controllers, &mut ctx, Phase::Refit)
+            .unwrap();
+
+        assert_eq!(refit_results.len(), 2);
+        assert_eq!(
+            refit_results
+                .iter()
+                .filter(|result| result.node_id.as_str() == "model:meta")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn refit_oof_accepts_grouped_repeated_aggregation_and_refuses_origin_leakage() {
+        let fold_set = grouped_repetition_fold_set();
+        let relations = grouped_repetition_relations();
+        let leakage_policy = grouped_leakage_policy();
+        relations
+            .validate_against_fold_set(&fold_set, &leakage_policy)
+            .unwrap();
+
+        let mut leaky_relations = relations.clone();
+        leaky_relations.records.push(sample_relation(
+            "obs:s1:leaky_aug",
+            "s1",
+            "target:product1",
+            "group:product1",
+            Some("s2"),
+            true,
+        ));
+        let leak_error = leaky_relations
+            .validate_against_fold_set(&fold_set, &leakage_policy)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            leak_error.contains("leaks origin sample"),
+            "unexpected leakage error: {leak_error}"
+        );
+
+        let plan = build_execution_plan(
+            "plan:oof.edge.grouped-repetition.refit",
+            oof_edge_graph(),
+            grouped_oof_campaign(fold_set.clone()),
+            &oof_edge_manifests(BTreeSet::from([Phase::Refit])),
+        )
+        .unwrap();
+        let mut ctx = RunContext::new(
+            RunId::new("run:oof.edge.grouped-repetition.refit").unwrap(),
+            Some(11),
+        );
+
+        let fold0 = aggregate_observation_predictions(
+            &ObservationPredictionBlock {
+                prediction_id: Some("pred:model:base:fold0:obs".to_string()),
+                producer_node: NodeId::new("model:base").unwrap(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                observation_ids: vec![
+                    ObservationId::new("obs:s1:a").unwrap(),
+                    ObservationId::new("obs:s1:b").unwrap(),
+                    ObservationId::new("obs:s1rep:a").unwrap(),
+                ],
+                values: vec![vec![1.0], vec![3.0], vec![4.0]],
+                target_names: vec!["y".to_string()],
+            },
+            &relations,
+            &AggregationPolicy::default(),
+            &[
+                SampleId::new("s1").unwrap(),
+                SampleId::new("s1_rep").unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(fold0.values, vec![vec![2.0], vec![4.0]]);
+        ctx.prediction_store.append(fold0).unwrap();
+
+        let fold1 = aggregate_observation_predictions(
+            &ObservationPredictionBlock {
+                prediction_id: Some("pred:model:base:fold1:obs".to_string()),
+                producer_node: NodeId::new("model:base").unwrap(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:1").unwrap()),
+                observation_ids: vec![
+                    ObservationId::new("obs:s2:a").unwrap(),
+                    ObservationId::new("obs:s2:b").unwrap(),
+                ],
+                values: vec![vec![10.0], vec![14.0]],
+                target_names: vec!["y".to_string()],
+            },
+            &relations,
+            &AggregationPolicy::default(),
+            &[SampleId::new("s2").unwrap()],
+        )
+        .unwrap();
+        assert_eq!(fold1.values, vec![vec![12.0]]);
+        ctx.prediction_store.append(fold1).unwrap();
+
+        let fold2 = aggregate_observation_predictions(
+            &ObservationPredictionBlock {
+                prediction_id: Some("pred:model:base:fold2:obs".to_string()),
+                producer_node: NodeId::new("model:base").unwrap(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:2").unwrap()),
+                observation_ids: vec![ObservationId::new("obs:s3:a").unwrap()],
+                values: vec![vec![20.0]],
+                target_names: vec!["y".to_string()],
+            },
+            &relations,
+            &AggregationPolicy::default(),
+            &[SampleId::new("s3").unwrap()],
+        )
+        .unwrap();
+        assert_eq!(fold2.values, vec![vec![20.0]]);
+        ctx.prediction_store.append(fold2).unwrap();
+        assert_eq!(ctx.prediction_store.blocks().len(), 3);
+
+        let controllers = expected_refit_oof_runtime_controllers(
+            vec![
+                FoldId::new("fold:0").unwrap(),
+                FoldId::new("fold:1").unwrap(),
+                FoldId::new("fold:2").unwrap(),
+            ],
+            vec![
+                SampleId::new("s1").unwrap(),
+                SampleId::new("s1_rep").unwrap(),
+                SampleId::new("s2").unwrap(),
+                SampleId::new("s3").unwrap(),
+            ],
+            vec!["y".to_string()],
+        );
+        let refit_results = SequentialScheduler
+            .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::Refit)
             .unwrap();
 
         assert_eq!(refit_results.len(), 2);
