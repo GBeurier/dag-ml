@@ -24,6 +24,9 @@ Implemented:
 - split invocation as a campaign-plan controller call;
 - deterministic generation/search-space scaffold with variant fingerprints and
   variant seeds;
+- optional graph `search_space_fingerprint` validation against the canonical
+  campaign `GenerationSpec` fingerprint during plan compilation, so graph and
+  campaign search spaces cannot drift silently;
 - generation choices can carry typed node parameter overrides; the scheduler
   lowers them into the controller-facing `NodePlan.params` and
   `params_fingerprint` for each variant while refusing conflicting overrides

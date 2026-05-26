@@ -271,8 +271,10 @@ Generation has two different meanings and the ownership must stay explicit:
 The current core represents compile-time generation through `GenerationSpec`
 and `VariantPlan`. Choices may carry typed node-parameter overrides; the
 scheduler lowers those into the effective `NodePlan.params` and
-`params_fingerprint` sent to controllers for that variant. Runtime generators
-are graph nodes/controllers with explicit capabilities such as
+`params_fingerprint` sent to controllers for that variant. When a graph declares
+`search_space_fingerprint`, plan compilation verifies it against the canonical
+campaign `GenerationSpec` fingerprint before variants are enumerated. Runtime
+generators are graph nodes/controllers with explicit capabilities such as
 `generates_data`, `generates_model` or `expands_variants`; they are not allowed
 to mutate identity or training boundaries without emitting relation and shape
 deltas.
