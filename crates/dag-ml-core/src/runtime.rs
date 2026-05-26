@@ -110,6 +110,23 @@ impl ArtifactRef {
         }
         Ok(())
     }
+
+    /// Validate that the artifact carries portable metadata: a backend, a safe
+    /// relative URI and a content fingerprint. Legacy artifacts that only carry
+    /// inline metadata stay readable through [`ArtifactRef::validate`] but are
+    /// refused here so persisted manifests can be moved with their payloads.
+    pub fn validate_portable(&self) -> Result<()> {
+        self.validate()?;
+        let Some(uri) = self.uri.as_deref() else {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` is not portable: requires backend, uri and content_fingerprint",
+                self.id
+            )));
+        };
+        // `validate` already guarantees that a present URI implies a backend and
+        // a 64-hex content fingerprint, so confirming the URI is enough here.
+        validate_relative_artifact_uri(&self.id, uri)
+    }
 }
 
 pub fn refit_artifact_input_key(artifact_id: &ArtifactId) -> String {
@@ -310,6 +327,201 @@ impl RuntimeArtifactStore for InMemoryArtifactStore {
         }
         record.validate()?;
         Ok(record.handle.clone())
+    }
+}
+
+pub const FILE_ARTIFACT_MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const FILE_ARTIFACT_MANIFEST_FILE: &str = "artifact_manifest.json";
+
+fn default_file_artifact_manifest_schema_version() -> u32 {
+    FILE_ARTIFACT_MANIFEST_SCHEMA_VERSION
+}
+
+/// One persisted artifact entry. Mirrors the bundle [`RefitArtifactRecord`]
+/// identity (node, controller, artifact and params fingerprint) while requiring
+/// the [`ArtifactRef`] to be portable so the manifest stays movable with its
+/// payloads.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FileArtifactManifestEntry {
+    pub node_id: NodeId,
+    pub controller_id: ControllerId,
+    pub artifact: ArtifactRef,
+    pub params_fingerprint: String,
+}
+
+impl FileArtifactManifestEntry {
+    fn from_refit_record(record: &RefitArtifactRecord) -> Result<Self> {
+        let entry = Self {
+            node_id: record.node_id.clone(),
+            controller_id: record.controller_id.clone(),
+            artifact: record.artifact.clone(),
+            params_fingerprint: record.params_fingerprint.clone(),
+        };
+        entry.validate()?;
+        Ok(entry)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.artifact.validate_portable()?;
+        if self.artifact.controller_id != self.controller_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact manifest entry `{}` controller `{}` does not match artifact controller `{}`",
+                self.artifact.id, self.controller_id, self.artifact.controller_id
+            )));
+        }
+        validate_runtime_fingerprint("artifact manifest params", &self.params_fingerprint)
+    }
+
+    fn matches_refit_record(&self, record: &RefitArtifactRecord) -> bool {
+        self.node_id == record.node_id
+            && self.controller_id == record.controller_id
+            && self.artifact == record.artifact
+            && self.params_fingerprint == record.params_fingerprint
+    }
+}
+
+/// Versioned, file-backed artifact manifest. This is a manifest/portability
+/// layer only: it records portable [`ArtifactRef`] metadata for a bundle's
+/// refit artifacts. It does not deserialize ML objects or materialize artifact
+/// payloads; payload stores remain future work.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FileArtifactManifest {
+    pub bundle_id: BundleId,
+    #[serde(default = "default_file_artifact_manifest_schema_version")]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub artifacts: Vec<FileArtifactManifestEntry>,
+}
+
+impl FileArtifactManifest {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != FILE_ARTIFACT_MANIFEST_SCHEMA_VERSION {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file artifact manifest for bundle `{}` uses unsupported schema_version {}, expected {}",
+                self.bundle_id, self.schema_version, FILE_ARTIFACT_MANIFEST_SCHEMA_VERSION
+            )));
+        }
+        let mut artifact_ids = BTreeSet::new();
+        let mut uris = BTreeSet::new();
+        for entry in &self.artifacts {
+            entry.validate()?;
+            if !artifact_ids.insert(entry.artifact.id.as_str()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "file artifact manifest for bundle `{}` has duplicate artifact id `{}`",
+                    self.bundle_id, entry.artifact.id
+                )));
+            }
+            // `entry.validate` guarantees a portable URI is present.
+            if let Some(uri) = entry.artifact.uri.as_deref() {
+                if !uris.insert(uri) {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "file artifact manifest for bundle `{}` has duplicate artifact uri `{}`",
+                        self.bundle_id, uri
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_against_bundle(&self, bundle: &ExecutionBundle) -> Result<()> {
+        self.validate()?;
+        bundle.validate()?;
+        if self.bundle_id != bundle.bundle_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file artifact manifest bundle `{}` does not match bundle `{}`",
+                self.bundle_id, bundle.bundle_id
+            )));
+        }
+        if self.artifacts.len() != bundle.refit_artifacts.len() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file artifact manifest for bundle `{}` has {} artifact(s) for {} bundle refit artifact(s)",
+                self.bundle_id,
+                self.artifacts.len(),
+                bundle.refit_artifacts.len()
+            )));
+        }
+        let entries_by_id = self
+            .artifacts
+            .iter()
+            .map(|entry| (entry.artifact.id.as_str(), entry))
+            .collect::<BTreeMap<_, _>>();
+        for record in &bundle.refit_artifacts {
+            let entry = entries_by_id
+                .get(record.artifact.id.as_str())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "file artifact manifest for bundle `{}` is missing refit artifact `{}`",
+                        self.bundle_id, record.artifact.id
+                    ))
+                })?;
+            if !entry.matches_refit_record(record) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "file artifact manifest entry `{}` does not match bundle refit artifact",
+                    entry.artifact.id
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// File-backed artifact manifest store rooted at a directory.
+///
+/// This is a portability/manifest layer: [`FileArtifactManifestStore::write`]
+/// serializes portable artifact references from a validated bundle and
+/// [`FileArtifactManifestStore::open`] reloads and revalidates them against the
+/// bundle. It never reads, writes or deserializes artifact payloads.
+#[derive(Clone, Debug)]
+pub struct FileArtifactManifestStore {
+    root: PathBuf,
+    manifest: FileArtifactManifest,
+}
+
+impl FileArtifactManifestStore {
+    pub fn write(root: impl AsRef<Path>, bundle: &ExecutionBundle) -> Result<FileArtifactManifest> {
+        bundle.validate()?;
+        let root = root.as_ref();
+        fs::create_dir_all(root).map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to create artifact manifest store `{}`: {err}",
+                root.display()
+            ))
+        })?;
+        let mut entries = Vec::with_capacity(bundle.refit_artifacts.len());
+        for record in &bundle.refit_artifacts {
+            entries.push(FileArtifactManifestEntry::from_refit_record(record)?);
+        }
+        entries.sort_by(|left, right| left.artifact.id.cmp(&right.artifact.id));
+        let manifest = FileArtifactManifest {
+            bundle_id: bundle.bundle_id.clone(),
+            schema_version: FILE_ARTIFACT_MANIFEST_SCHEMA_VERSION,
+            artifacts: entries,
+        };
+        manifest.validate_against_bundle(bundle)?;
+        write_runtime_json(
+            &root.join(FILE_ARTIFACT_MANIFEST_FILE),
+            &manifest,
+            "artifact manifest",
+        )?;
+        Ok(manifest)
+    }
+
+    pub fn open(root: impl Into<PathBuf>, bundle: &ExecutionBundle) -> Result<Self> {
+        bundle.validate()?;
+        let root = root.into();
+        let manifest: FileArtifactManifest =
+            read_runtime_json(&root.join(FILE_ARTIFACT_MANIFEST_FILE), "artifact manifest")?;
+        manifest.validate_against_bundle(bundle)?;
+        Ok(Self { root, manifest })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn manifest(&self) -> &FileArtifactManifest {
+        &self.manifest
     }
 }
 
@@ -682,7 +894,7 @@ impl FilePredictionCacheStore {
             validate_prediction_cache_payload_matches_record(payload, record)?;
             let entry = FilePredictionCacheEntry::from_payload(payload)?;
             let payload_path = root.join(&entry.file_name);
-            write_prediction_cache_json(&payload_path, payload, "prediction cache payload")?;
+            write_runtime_json(&payload_path, payload, "prediction cache payload")?;
             entries.push(entry);
         }
         entries.sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
@@ -692,7 +904,7 @@ impl FilePredictionCacheStore {
             caches: entries,
         };
         manifest.validate_against_bundle(bundle)?;
-        write_prediction_cache_json(
+        write_runtime_json(
             &root.join(FILE_PREDICTION_CACHE_MANIFEST_FILE),
             &manifest,
             "prediction cache manifest",
@@ -703,7 +915,7 @@ impl FilePredictionCacheStore {
     pub fn open(root: impl Into<PathBuf>, bundle: &ExecutionBundle) -> Result<Self> {
         bundle.validate()?;
         let root = root.into();
-        let manifest: FilePredictionCacheManifest = read_prediction_cache_json(
+        let manifest: FilePredictionCacheManifest = read_runtime_json(
             &root.join(FILE_PREDICTION_CACHE_MANIFEST_FILE),
             "prediction cache manifest",
         )?;
@@ -752,7 +964,7 @@ impl FilePredictionCacheStore {
                     "file prediction cache store has no bundle record for requirement `{requirement_key}`"
                 ))
             })?;
-        let payload: crate::bundle::BundlePredictionCachePayload = read_prediction_cache_json(
+        let payload: crate::bundle::BundlePredictionCachePayload = read_runtime_json(
             &self.root.join(&entry.file_name),
             "prediction cache payload",
         )?;
@@ -1420,6 +1632,55 @@ fn validate_artifact_optional_text(
     Ok(())
 }
 
+/// Deterministic path safety for relative artifact URIs. Rejects empty values,
+/// control characters, absolute paths (POSIX root, Windows root or drive
+/// prefix), URI schemes such as `http://`, `s3://` or `file://` (any colon in
+/// the leading path segment) and any `..` traversal component. Parsing is
+/// platform-independent so portable manifests validate identically everywhere;
+/// it adds no dependency.
+fn validate_relative_artifact_uri(artifact_id: &ArtifactId, uri: &str) -> Result<()> {
+    if uri.is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "artifact `{artifact_id}` has empty uri"
+        )));
+    }
+    if uri.chars().any(char::is_control) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "artifact `{artifact_id}` uri has control characters"
+        )));
+    }
+    if uri.starts_with('/') || uri.starts_with('\\') {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "artifact `{artifact_id}` uri `{uri}` must be a relative path"
+        )));
+    }
+    let mut prefix = uri.chars();
+    if let (Some(drive), Some(':')) = (prefix.next(), prefix.next()) {
+        if drive.is_ascii_alphabetic() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{artifact_id}` uri `{uri}` must be a relative path"
+            )));
+        }
+    }
+    // Reject URI schemes (`http://`, `s3://`, `file://`, ...) and any other
+    // colon in the leading path segment. A scheme always places a colon in the
+    // first segment, so a strictly relative artifact path never carries one.
+    let first_segment = uri.split(['/', '\\']).next().unwrap_or(uri);
+    if first_segment.contains(':') {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "artifact `{artifact_id}` uri `{uri}` must not include a scheme or colon in its first path segment"
+        )));
+    }
+    for segment in uri.split(['/', '\\']) {
+        if segment == ".." {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{artifact_id}` uri `{uri}` must not contain `..` components"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_runtime_fingerprint(label: &str, value: &str) -> Result<()> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(DagMlError::RuntimeValidation(format!(
@@ -1429,10 +1690,7 @@ fn validate_runtime_fingerprint(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_prediction_cache_json<T: serde::de::DeserializeOwned>(
-    path: &Path,
-    label: &str,
-) -> Result<T> {
+fn read_runtime_json<T: serde::de::DeserializeOwned>(path: &Path, label: &str) -> Result<T> {
     let data = fs::read(path).map_err(|err| {
         DagMlError::RuntimeValidation(format!(
             "failed to read {label} at {}: {err}",
@@ -1447,7 +1705,7 @@ fn read_prediction_cache_json<T: serde::de::DeserializeOwned>(
     })
 }
 
-fn write_prediction_cache_json<T: Serialize>(path: &Path, value: &T, label: &str) -> Result<()> {
+fn write_runtime_json<T: Serialize>(path: &Path, value: &T, label: &str) -> Result<()> {
     let mut data = serde_json::to_vec_pretty(value).map_err(|err| {
         DagMlError::RuntimeValidation(format!("failed to serialize {label}: {err}"))
     })?;
@@ -6211,6 +6469,195 @@ mod tests {
         let err = store.load_blocks(&requirement.key()).unwrap_err();
         assert!(
             err.to_string().contains("content fingerprint"),
+            "unexpected tamper error: {err}"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn portable_artifact_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBundle {
+        let model_plan = plan
+            .node_plans
+            .get(&NodeId::new("model:base").unwrap())
+            .unwrap();
+        let content_fingerprint = "a".repeat(64);
+        build_execution_bundle(
+            crate::ids::BundleId::new("bundle:artifact.manifest").unwrap(),
+            plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            vec![RefitArtifactRecord {
+                node_id: model_plan.node_id.clone(),
+                controller_id: model_plan.controller_id.clone(),
+                artifact: ArtifactRef {
+                    id: ArtifactId::new("artifact:model:base:refit").unwrap(),
+                    kind: "mock_model".to_string(),
+                    controller_id: model_plan.controller_id.clone(),
+                    backend: Some(ArtifactBackend::Joblib),
+                    uri: Some(format!("artifacts/{content_fingerprint}.joblib")),
+                    content_fingerprint: Some(content_fingerprint),
+                    size_bytes: Some(128),
+                    plugin: Some("dagml.mock".to_string()),
+                    plugin_version: Some("1.0.0".to_string()),
+                },
+                params_fingerprint: model_plan.params_fingerprint.clone(),
+                data_requirement_keys: vec!["model:base.x".to_string()],
+                prediction_requirement_keys: Vec::new(),
+            }],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn artifact_ref_validate_portable_rejects_unsafe_uris_and_legacy() {
+        let content_fingerprint = "c".repeat(64);
+        let base = ArtifactRef {
+            id: ArtifactId::new("artifact:model:portable").unwrap(),
+            kind: "model".to_string(),
+            controller_id: ControllerId::new("controller:sklearn").unwrap(),
+            backend: Some(ArtifactBackend::Joblib),
+            uri: Some(format!("artifacts/{content_fingerprint}.joblib")),
+            content_fingerprint: Some(content_fingerprint),
+            size_bytes: Some(4096),
+            plugin: Some("dagml.sklearn".to_string()),
+            plugin_version: Some("1.0.0".to_string()),
+        };
+        base.validate_portable().unwrap();
+
+        // Legacy artifact: still passes `validate` but is refused as non-portable.
+        let legacy = ArtifactRef {
+            backend: None,
+            uri: None,
+            content_fingerprint: None,
+            ..base.clone()
+        };
+        legacy.validate().unwrap();
+        assert!(legacy
+            .validate_portable()
+            .unwrap_err()
+            .to_string()
+            .contains("not portable"));
+
+        let mut absolute = base.clone();
+        absolute.uri = Some("/etc/passwd".to_string());
+        assert!(absolute
+            .validate_portable()
+            .unwrap_err()
+            .to_string()
+            .contains("must be a relative path"));
+
+        let mut traversal = base.clone();
+        traversal.uri = Some("artifacts/../../secret.joblib".to_string());
+        assert!(traversal
+            .validate_portable()
+            .unwrap_err()
+            .to_string()
+            .contains("`..`"));
+
+        let mut drive = base.clone();
+        drive.uri = Some("C:\\models\\model.joblib".to_string());
+        assert!(drive
+            .validate_portable()
+            .unwrap_err()
+            .to_string()
+            .contains("must be a relative path"));
+
+        // URI schemes and any other colon in the leading path segment are
+        // rejected: a strictly relative artifact path never carries a scheme.
+        for scheme_uri in [
+            "http://example.com/model.joblib",
+            "s3://bucket/model.joblib",
+            "file:///models/model.joblib",
+            "weird:thing/model.joblib",
+        ] {
+            let mut scheme = base.clone();
+            scheme.uri = Some(scheme_uri.to_string());
+            let err = scheme.validate_portable().unwrap_err().to_string();
+            assert!(
+                err.contains("first path segment"),
+                "unexpected scheme error for `{scheme_uri}`: {err}"
+            );
+        }
+
+        // A colon outside the first segment is allowed (not a scheme/drive).
+        let mut later_colon = base;
+        later_colon.uri = Some("artifacts/model:v1.joblib".to_string());
+        later_colon.validate_portable().unwrap();
+    }
+
+    #[test]
+    fn file_artifact_manifest_round_trips_portable_artifacts() {
+        let plan = fixture_plan("plan:artifact.manifest.round.trip");
+        let bundle = portable_artifact_bundle(&plan);
+        let root = temp_prediction_cache_dir("dag_ml_file_artifact_manifest");
+
+        let manifest = FileArtifactManifestStore::write(&root, &bundle).unwrap();
+        assert_eq!(
+            manifest.schema_version,
+            FILE_ARTIFACT_MANIFEST_SCHEMA_VERSION
+        );
+        assert_eq!(manifest.artifacts.len(), 1);
+        assert_eq!(
+            manifest.artifacts[0].artifact.id,
+            ArtifactId::new("artifact:model:base:refit").unwrap()
+        );
+        assert_eq!(
+            manifest.artifacts[0].artifact.backend,
+            Some(ArtifactBackend::Joblib)
+        );
+        assert_eq!(
+            manifest.artifacts[0].node_id,
+            bundle.refit_artifacts[0].node_id
+        );
+        assert!(root.join(FILE_ARTIFACT_MANIFEST_FILE).exists());
+
+        let store = FileArtifactManifestStore::open(root.clone(), &bundle).unwrap();
+        assert_eq!(store.root(), root.as_path());
+        assert_eq!(store.manifest().bundle_id, bundle.bundle_id);
+        assert_eq!(store.manifest().artifacts, manifest.artifacts);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_artifact_manifest_refuses_legacy_non_portable_artifacts() {
+        let plan = fixture_plan("plan:artifact.manifest.legacy");
+        // `replay_bundle` carries a legacy artifact (no backend/uri/content fingerprint).
+        let bundle = replay_bundle(&plan);
+        let root = temp_prediction_cache_dir("dag_ml_file_artifact_manifest_legacy");
+
+        let err = FileArtifactManifestStore::write(&root, &bundle).unwrap_err();
+        assert!(
+            err.to_string().contains("not portable"),
+            "unexpected legacy error: {err}"
+        );
+        assert!(!root.join(FILE_ARTIFACT_MANIFEST_FILE).exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_artifact_manifest_open_refuses_tampered_entries() {
+        let plan = fixture_plan("plan:artifact.manifest.tampered");
+        let bundle = portable_artifact_bundle(&plan);
+        let root = temp_prediction_cache_dir("dag_ml_file_artifact_manifest_tampered");
+
+        FileArtifactManifestStore::write(&root, &bundle).unwrap();
+        let manifest_path = root.join(FILE_ARTIFACT_MANIFEST_FILE);
+        let mut tampered: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let tampered_fingerprint = "b".repeat(64);
+        tampered["artifacts"][0]["params_fingerprint"] = json!(tampered_fingerprint);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&tampered).unwrap(),
+        )
+        .unwrap();
+
+        let err = FileArtifactManifestStore::open(root.clone(), &bundle).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not match bundle refit artifact"),
             "unexpected tamper error: {err}"
         );
 

@@ -86,7 +86,16 @@ Implemented:
   including capture of controller-emitted refit artifact handles during `REFIT`;
 - `ArtifactRef` now exposes typed optional backend, URI, content fingerprint and
   plugin/version metadata, with bundle/runtime/lineage validation while keeping
-  legacy refit artifact JSON readable;
+  legacy refit artifact JSON readable; portable URIs must be strictly relative
+  artifact paths, rejecting absolute paths, Windows drive prefixes, URI schemes
+  (`http://`, `s3://`, `file://`, any colon in the first path segment) and `..`
+  traversal components;
+- versioned file-backed artifact manifest store (`artifact_manifest.json`,
+  schema v1): serializes a bundle's portable refit `ArtifactRef`s with their
+  node/controller/params-fingerprint identity, revalidates the manifest against
+  the bundle on reopen, and refuses tampered, duplicated or non-portable
+  entries; it records artifact metadata only and never reads, writes or
+  materializes artifact payloads;
 - bundle replay executor that validates plan/bundle/request/data envelopes,
   materializes data and refit artifact handles, and invokes eligible runtime
   controllers for replay phases without CV folds;
@@ -298,8 +307,9 @@ Not implemented yet:
   overrides;
 - custom aggregation controllers and production persistent/Arrow replay
   backends for non-sample aggregated prediction blocks;
-- persistent artifact payload stores and non-JSON/non-file-cache backends
-  beyond the validated portable artifact reference contract;
+- persistent artifact payload stores and payload materialization (reading,
+  writing or deserializing the artifact binaries) beyond the implemented
+  portable artifact reference contract and file-backed artifact manifest;
 - Arrow prediction storage and ABI-owned prediction tensors;
 - production host controller adapters with native libraries or
   language-specific bindings;
