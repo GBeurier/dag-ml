@@ -1619,9 +1619,9 @@ fn controller_status(status: DagMlStatusCode, action: &str) -> dag_ml_core::Resu
     }
 }
 
-#[derive(Clone)]
 pub struct CAbiRuntimeArtifactStore {
     vtable: DagMlArtifactStoreVTable,
+    live_handles: Mutex<Vec<DagMlHandle>>,
 }
 
 impl CAbiRuntimeArtifactStore {
@@ -1637,7 +1637,25 @@ impl CAbiRuntimeArtifactStore {
                 "artifact store vtable is missing materialize".to_string(),
             ));
         }
-        Ok(Self { vtable })
+        Ok(Self {
+            vtable,
+            live_handles: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+impl Drop for CAbiRuntimeArtifactStore {
+    fn drop(&mut self) {
+        if let Some(release) = self.vtable.release {
+            let handles = self
+                .live_handles
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for handle in handles.iter().rev() {
+                unsafe { release(self.vtable.user_data, *handle) };
+            }
+            handles.clear();
+        }
     }
 }
 
@@ -1670,9 +1688,26 @@ impl RuntimeArtifactStore for CAbiRuntimeArtifactStore {
                 "artifact store materialize returned empty handle".to_string(),
             ));
         }
+        let kind = match handle_kind_from_abi(out_handle.kind) {
+            Ok(kind) => kind,
+            Err(error) => {
+                if let Some(release) = self.vtable.release {
+                    unsafe { release(self.vtable.user_data, out_handle.handle) };
+                }
+                return Err(error);
+            }
+        };
+        self.live_handles
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(
+                    "artifact store handle registry is poisoned".to_string(),
+                )
+            })?
+            .push(out_handle.handle);
         Ok(HandleRef {
             handle: out_handle.handle,
-            kind: handle_kind_from_abi(out_handle.kind)?,
+            kind,
             owner_controller: request.controller_id.clone(),
         })
     }
@@ -1715,9 +1750,9 @@ fn artifact_store_status(status: DagMlStatusCode, action: &str) -> dag_ml_core::
     }
 }
 
-#[derive(Clone)]
 pub struct CAbiRuntimePredictionCacheStore {
     vtable: DagMlPredictionCacheVTable,
+    live_handles: Mutex<Vec<DagMlHandle>>,
 }
 
 impl CAbiRuntimePredictionCacheStore {
@@ -1743,7 +1778,10 @@ impl CAbiRuntimePredictionCacheStore {
                 "prediction cache vtable is missing release_bytes".to_string(),
             ));
         }
-        Ok(Self { vtable })
+        Ok(Self {
+            vtable,
+            live_handles: Mutex::new(Vec::new()),
+        })
     }
 
     fn load_prediction_json(&self, requirement_key: &str) -> dag_ml_core::Result<Vec<u8>> {
@@ -1832,11 +1870,34 @@ impl RuntimePredictionCacheStore for CAbiRuntimePredictionCacheStore {
                 "prediction cache materialize returned empty handle".to_string(),
             ));
         }
+        self.live_handles
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(
+                    "prediction cache handle registry is poisoned".to_string(),
+                )
+            })?
+            .push(out_handle);
         Ok(HandleRef {
             handle: out_handle,
             kind: HandleKind::Prediction,
             owner_controller: request.producer_controller_id.clone(),
         })
+    }
+}
+
+impl Drop for CAbiRuntimePredictionCacheStore {
+    fn drop(&mut self) {
+        if let Some(release) = self.vtable.release {
+            let handles = self
+                .live_handles
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for handle in handles.iter().rev() {
+                unsafe { release(self.vtable.user_data, *handle) };
+            }
+            handles.clear();
+        }
     }
 }
 
@@ -2319,6 +2380,7 @@ mod tests {
         materialize_json: Vec<u8>,
         handle: DagMlHandleRef,
         status: DagMlStatusCode,
+        release_handles: Vec<DagMlHandle>,
     }
 
     #[derive(Default)]
@@ -2328,6 +2390,7 @@ mod tests {
         blocks_json: Vec<u8>,
         blocks_by_key: BTreeMap<String, Vec<u8>>,
         release_count: usize,
+        release_handles: Vec<DagMlHandle>,
         materialize_json: Vec<u8>,
         materialize_count: usize,
     }
@@ -2565,6 +2628,14 @@ mod tests {
         state.status
     }
 
+    unsafe extern "C" fn artifact_store_release_stub(user_data: *mut c_void, handle: DagMlHandle) {
+        if user_data.is_null() {
+            return;
+        }
+        let state = &mut *(user_data.cast::<ArtifactStoreStub>());
+        state.release_handles.push(handle);
+    }
+
     unsafe extern "C" fn prediction_cache_load_blocks_stub(
         user_data: *mut c_void,
         requirement_key: DagMlBytesView,
@@ -2649,6 +2720,17 @@ mod tests {
         let state = &mut *(user_data.cast::<PredictionCacheStub>());
         state.release_count += 1;
         drop(Vec::from_raw_parts(bytes.ptr, bytes.len, bytes.capacity));
+    }
+
+    unsafe extern "C" fn prediction_cache_release_stub(
+        user_data: *mut c_void,
+        handle: DagMlHandle,
+    ) {
+        if user_data.is_null() {
+            return;
+        }
+        let state = &mut *(user_data.cast::<PredictionCacheStub>());
+        state.release_handles.push(handle);
     }
 
     fn controller_task_result_fixture() -> (ControllerId, NodeTask, NodeResult) {
@@ -2991,6 +3073,57 @@ mod tests {
     }
 
     #[test]
+    fn c_abi_artifact_store_releases_materialized_handles_on_drop() {
+        let request = artifact_materialization_request_fixture();
+        let mut state = ArtifactStoreStub {
+            handle: DagMlHandleRef {
+                handle: 99,
+                kind: DAG_ML_HANDLE_KIND_MODEL,
+            },
+            ..Default::default()
+        };
+        {
+            let table = DagMlArtifactStoreVTable {
+                abi_version: 1,
+                user_data: (&mut state as *mut ArtifactStoreStub).cast::<c_void>(),
+                materialize: Some(artifact_store_materialize_stub),
+                release: Some(artifact_store_release_stub),
+                destroy: None,
+            };
+            let store = CAbiRuntimeArtifactStore::new(table).unwrap();
+            let handle = store.materialize(&request).unwrap();
+            assert_eq!(handle.handle, 99);
+            assert!(state.release_handles.is_empty());
+        }
+        assert_eq!(state.release_handles, vec![99]);
+    }
+
+    #[test]
+    fn c_abi_artifact_store_releases_unknown_kind_handles_immediately() {
+        let request = artifact_materialization_request_fixture();
+        let mut state = ArtifactStoreStub {
+            handle: DagMlHandleRef {
+                handle: 99,
+                kind: 999,
+            },
+            ..Default::default()
+        };
+        {
+            let table = DagMlArtifactStoreVTable {
+                abi_version: 1,
+                user_data: (&mut state as *mut ArtifactStoreStub).cast::<c_void>(),
+                materialize: Some(artifact_store_materialize_stub),
+                release: Some(artifact_store_release_stub),
+                destroy: None,
+            };
+            let store = CAbiRuntimeArtifactStore::new(table).unwrap();
+            let error = store.materialize(&request).unwrap_err();
+            assert!(format!("{error}").contains("unknown ABI handle kind 999"));
+        }
+        assert_eq!(state.release_handles, vec![99]);
+    }
+
+    #[test]
     fn c_abi_artifact_store_rejects_unknown_status_codes() {
         let request = artifact_materialization_request_fixture();
         let mut state = ArtifactStoreStub {
@@ -3149,6 +3282,63 @@ mod tests {
         );
         assert_eq!(request_json["requirement"]["unit_ids"][0]["id"], "target:1");
         assert_eq!(request_json["cache"]["unit_ids"][0]["level"], "target");
+    }
+
+    #[test]
+    fn c_abi_prediction_cache_store_releases_materialized_handles_on_drop() {
+        let requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("model:base").unwrap(),
+            source_port: "pred".to_string(),
+            consumer_node: NodeId::new("model:meta").unwrap(),
+            target_port: "pred".to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
+            fold_ids: vec![FoldId::new("fold:0").unwrap()],
+            unit_ids: Vec::new(),
+            sample_ids: vec![SampleId::new("sample:1").unwrap()],
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let blocks = vec![PredictionBlock {
+            prediction_id: Some("prediction:model:base.fold0".to_string()),
+            producer_node: requirement.producer_node.clone(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: requirement.sample_ids.clone(),
+            values: vec![vec![0.42]],
+            target_names: vec!["y".to_string()],
+        }];
+        let cache = build_prediction_cache_record(&requirement, &blocks).unwrap();
+        let mut state = PredictionCacheStub {
+            blocks_json: serde_json::to_vec(&blocks).unwrap(),
+            ..Default::default()
+        };
+        {
+            let table = DagMlPredictionCacheVTable {
+                abi_version: 1,
+                user_data: (&mut state as *mut PredictionCacheStub).cast::<c_void>(),
+                load_blocks: Some(prediction_cache_load_blocks_stub),
+                materialize: Some(prediction_cache_materialize_stub),
+                release_bytes: Some(prediction_cache_release_bytes_stub),
+                release: Some(prediction_cache_release_stub),
+                destroy: None,
+            };
+            let store = CAbiRuntimePredictionCacheStore::new(table).unwrap();
+            let handle = store
+                .materialize(&PredictionCacheMaterializationRequest {
+                    run_id: RunId::new("run:prediction.cache.abi.release").unwrap(),
+                    bundle_id: BundleId::new("bundle:prediction.cache.abi.release").unwrap(),
+                    phase: Phase::Refit,
+                    variant_id: None,
+                    requirement: requirement.clone(),
+                    cache,
+                    producer_controller_id: ControllerId::new("controller:model").unwrap(),
+                })
+                .unwrap();
+            assert_eq!(handle.handle, 77);
+            assert!(state.release_handles.is_empty());
+        }
+        assert_eq!(state.release_handles, vec![77]);
     }
 
     #[test]
