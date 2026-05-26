@@ -62,6 +62,8 @@ Implemented:
   fixture-backed integration tests;
 - CLI mock refit bundle command that runs `REFIT`, captures emitted model
   artifact handles and builds an `ExecutionBundle` from the captured records;
+- CLI process refit bundle command proving the same artifact capture path over
+  external `NodeTask`/`NodeResult` JSON adapters;
 - CLI mock replay execution through execution bundles, data envelopes,
   in-memory data provider, predict-scoped data views, in-memory artifact store
   and mock runtime controllers;
