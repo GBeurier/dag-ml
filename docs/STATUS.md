@@ -248,12 +248,14 @@ Implemented:
   host-returned byte release, plus a tested Rust runtime adapter over the
   vtable;
 - C ABI artifact-store vtable for replay REFIT artifacts, returning typed
-  `DagMlHandleRef` values and preserving host handle ownership, plus a tested
-  Rust runtime adapter over the vtable;
+  `DagMlHandleRef` values, preserving host handle ownership and releasing
+  materialized handles at adapter drop, plus a tested Rust runtime adapter over
+  the vtable;
 - C ABI prediction-cache vtable shape for host OOF cache stores, including
   JSON block loading for sample and target/group aggregated replay blocks,
-  prediction-handle materialization and explicit host-returned byte release,
-  plus a tested Rust runtime adapter over the vtable;
+  prediction-handle materialization, materialized handle release and explicit
+  host-returned byte release, plus a tested Rust runtime adapter over the
+  vtable;
 - C ABI non-mock replay execution helper that composes host controller,
   data-provider, artifact-store and optional prediction-cache vtables while
   Rust owns bundle validation, replay envelope validation, DAG scheduling,

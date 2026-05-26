@@ -57,9 +57,11 @@ ownership and naming before full execution is implemented.
 boundary type. Unknown host status codes are treated as runtime validation
 errors instead of being decoded as Rust enum discriminants.
 
-Vtable `user_data` lifetime remains host-owned in this scaffold. `release` and
-`destroy` callbacks define the ownership shape for bindings, but the current
-Rust adapters do not claim ownership of the host context.
+Vtable `user_data` lifetime remains host-owned in this scaffold. Rust releases
+data/view, replay-artifact and prediction-cache handles that it materializes
+through the vtables. `destroy` callbacks define the future ownership shape for
+bindings, but the current borrowed-vtable replay API does not claim ownership of
+the host context.
 
 ## Ownership Rules
 
