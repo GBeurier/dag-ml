@@ -44,6 +44,9 @@ Implemented:
   contract;
 - stdlib shared-contract validation script plus CI checkout of `dag-ml-data`
   so schema copies and coordinator fixtures cannot drift silently;
+- shared conformance-pack manifest with canonical schema/fixture digests, C ABI
+  requirements and required cross-repo checks, kept JSON-identical with
+  `dag-ml-data`;
 - external data-plan envelope validation by schema, plan and relation
   fingerprints;
 - campaign data envelopes with coordinator relations are checked against the
@@ -233,6 +236,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Promote the cross-repo provider contract into a shared conformance pack:
-versioned generated fixtures, schema validation, and CI that runs the provider
-replay test whenever the sibling checkout is available.
+Start productionizing host adapters: stable process pools/native binding
+contracts, controller lifecycle ownership, and larger replay stress fixtures
+over the shared conformance pack.

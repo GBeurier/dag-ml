@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "pack_id": "dag-ml.shared.conformance.v1",
+  "contracts": {
+    "coordinator_data_plan_envelope.v1": {
+      "kind": "json_schema",
+      "schema_version": 1,
+      "normalized_sha256": "7a55649f18fdf586601f77223cafd354c28e82ed8502784532f4419847834bc0"
+    },
+    "feature_fusion_selector.v1": {
+      "kind": "json_schema",
+      "schema_version": 1,
+      "normalized_sha256": "45ae4c55911873893d32630495d8a9546c3d51f63cccad864ff9aafb9e3492b6"
+    }
+  },
+  "fixtures": {
+    "coordinator_data_plan_envelope_nir.v1": {
+      "contract": "coordinator_data_plan_envelope.v1",
+      "canonical_json_sha256": "420a01e4897b3539a4c122ac03d629139261a2bf3a385b93c4b45bb6be082c94"
+    },
+    "feature_fusion_selector_nir_chem.v1": {
+      "contract": "feature_fusion_selector.v1",
+      "canonical_json_sha256": "09dd64df52e2b991b481d05acfa6599625293b2136501f078f20a13cf44b6dcd"
+    }
+  },
+  "c_abi": {
+    "data_provider_vtable_abi_version": 2,
+    "data_tensor_f64_abi_version": 1,
+    "required_provider_callbacks": [
+      "materialize",
+      "make_view",
+      "view_identity",
+      "target_arrow",
+      "feature_arrow",
+      "release",
+      "destroy"
+    ],
+    "required_dag_ml_data_symbols": [
+      "DagMlDataTensorF64",
+      "DagMlDataFeatureMatrixF64View",
+      "dagmldata_inmemory_provider_new_with_f64_feature_views",
+      "dagmldata_inmemory_provider_feature_collation_tensor_f64_json",
+      "dagmldata_inmemory_provider_data_feature_buffer_manifest_json"
+    ]
+  },
+  "cross_repo_conformance": {
+    "required_when_sibling_checkout_present": [
+      "contracts.schema_and_fixture_equivalence",
+      "headers.include_order",
+      "provider.f64_predict_replay"
+    ]
+  }
+}

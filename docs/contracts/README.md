@@ -11,6 +11,8 @@ Schema: `coordinator_data_plan_envelope.schema.json`
 
 Canonical fixture: `examples/fixtures/data/coordinator_data_plan_envelope_nir.json`
 
+Conformance pack: `conformance_pack.v1.json`
+
 Runtime type consumed here: `ExternalDataPlanEnvelope`
 
 Producer type in `dag-ml-data`: `CoordinatorDataPlanEnvelope`
@@ -25,9 +27,10 @@ Short-term policy: both repositories keep a JSON-identical conformance fixture
 for this envelope plus a copy of the v1 schema, and test that the published
 artifact declares the Rust-supported version. `scripts/validate_contracts.py`
 compares the fixture and schema copies when `DAG_ML_DATA_REPO` points to a
-sibling checkout, and CI checks out that peer explicitly. When development moves
-into a monorepo, this file should become a single generated or shared contract
-artifact used by both crates.
+sibling checkout, validates the shared conformance-pack digests, and CI checks
+out that peer explicitly. When development moves into a monorepo, this file
+should become a single generated or shared contract artifact used by both
+crates.
 
 ## Feature Fusion Selector v1
 

@@ -8,7 +8,7 @@
 | OOF | rejects train predictions, aligns by sample id, duplicate detection |
 | OOF campaign fixtures | UC6 joins, UC11 refuses, fold prediction samples match fold partitions, campaign fingerprint is stable |
 | RNG | same path gives same seed, different labels split streams |
-| Data binding | validates envelope schema version, published envelope JSON Schema version, envelope fingerprints, feature-set ids, refuses mismatches, checks coordinator relations against campaign folds/leakage policy, validates the sibling `dag-ml-data` coordinator fixture when available, idempotently registers the same envelope for multiple replay requirements, materializes in-memory handles and creates scoped data views |
+| Data binding | validates envelope schema version, published envelope JSON Schema version, shared conformance-pack digests, envelope fingerprints, feature-set ids, refuses mismatches, checks coordinator relations against campaign folds/leakage policy, validates the sibling `dag-ml-data` coordinator fixture when available, idempotently registers the same envelope for multiple replay requirements, materializes in-memory handles and creates scoped data views |
 | Selection | deterministic metric ranking, stable tie-breaking, grouped branch selection, sklearn demo merge selection |
 | Bundle/replay | bundle matches execution plan fingerprints, selected candidates match the plan and selected refittable nodes have artifacts, refit artifacts match node plans, typed prediction requirements and cache manifests match OOF edges, materialized prediction-cache payloads match manifests and refuse tampering, file-backed prediction-cache manifests match bundle cache records, REFIT replay refuses manifest-only OOF caches and accepts validated payload-backed or file-store-backed OOF caches, replay envelopes match data requirements, unsupported bundle schema version refused |
 | Runtime | sequential DAG order, precomputed phase node-level scheduling, campaign variant x fold execution, `NodeTask.variant` generation context, variant node-parameter override lowering, external adapter validation of effective generated params, data-provider-required paths, fold train/validation data view routing, `NodeTask.data_views`, `NodeTask.prediction_inputs`, validation prediction sample checks, `requires_oof` edge enforcement with missing/train/misaligned refusal and refit OOF coverage checks, in-memory, columnar and file prediction-cache store loading/materialization, columnar cache manifest/value-count checks, file cache tamper refusal, refit artifact-handle capture, replay materializes predict views, prediction-cache handles and refit artifact handles, external controller result conformance |
@@ -63,6 +63,7 @@ cargo run -p dag-ml-cli -- run-process-replay --bundle examples/generated/execut
 python examples/sklearn_complex_oof_demo.py
 cargo run -p dag-ml-cli -- validate-oof-campaign examples/generated/sklearn_complex_oof_campaign.json
 python3 -m json.tool docs/contracts/coordinator_data_plan_envelope.schema.json >/dev/null
+python3 -m json.tool docs/contracts/conformance_pack.v1.json >/dev/null
 DAG_ML_DATA_REPO=../dag-ml-data python3 scripts/validate_contracts.py
 ```
 
