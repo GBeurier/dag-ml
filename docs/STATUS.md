@@ -324,8 +324,9 @@ Implemented:
 - persistent process workers now have a coordinator-side watchdog
   (`--process-timeout-ms`) and opt-in task retry (`--process-retries`) that
   kills, replaces and replays a task on the targeted worker after timeout, EOF
-  or transport failure; the flaky adapter fixture proves both timeout refusal
-  and timeout/restart/retry recovery;
+  transport failure or adapter-emitted retryable error frames; the flaky adapter
+  fixture proves timeout refusal, timeout/restart/retry recovery and
+  retryable-error recovery;
 - one-shot process adapters are also guarded by `--process-timeout-ms`, so a
   non-persistent host adapter cannot block the coordinator indefinitely;
 - process adapters now expose a required `--describe` JSON handshake declaring

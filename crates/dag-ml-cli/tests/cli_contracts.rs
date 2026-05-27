@@ -2576,6 +2576,16 @@ fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
         std::process::id(),
         unique_suffix()
     ));
+    let error_no_retry_marker_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_flaky_error_no_retry_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let error_retry_marker_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_flaky_error_retry_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
 
     let timeout_run_id = format!("run:cli.process.timeout.{}", unique_suffix());
     let timeout = Command::new(cli())
@@ -2667,6 +2677,88 @@ fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
         retry_lifecycle_dir.display()
     );
 
+    let error_no_retry_run_id = format!("run:cli.process.retryable-error.{}", unique_suffix());
+    let error_no_retry = Command::new(cli())
+        .current_dir(&root)
+        .env("DAG_ML_FLAKY_MARKER_DIR", &error_no_retry_marker_dir)
+        .env("DAG_ML_FLAKY_ERROR_ONCE", "1")
+        .env("DAG_ML_FLAKY_SLEEP_SECONDS", "0.0")
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/flaky_process_controller.py",
+            "--persistent",
+            "--process-timeout-ms",
+            "2000",
+            "--plan-id",
+            "plan:cli.process.retryable-error.no-retry",
+            "--run-id",
+            error_no_retry_run_id.as_str(),
+        ])
+        .output()
+        .expect("failed to run flaky process campaign with retryable error");
+    assert!(
+        !error_no_retry.status.success(),
+        "flaky retryable-error campaign unexpectedly succeeded without retry: {}",
+        String::from_utf8_lossy(&error_no_retry.stdout)
+    );
+    let error_no_retry_stderr = String::from_utf8_lossy(&error_no_retry.stderr);
+    assert!(
+        error_no_retry_stderr.contains("adapter task returned error `retryable_test_error`")
+            && error_no_retry_stderr.contains("after 1 attempt(s)"),
+        "unexpected retryable adapter error without retry: {}",
+        error_no_retry_stderr
+    );
+
+    let error_retry_run_id = format!("run:cli.process.retryable-error-retry.{}", unique_suffix());
+    let error_retry = Command::new(cli())
+        .current_dir(&root)
+        .env("DAG_ML_FLAKY_MARKER_DIR", &error_retry_marker_dir)
+        .env("DAG_ML_FLAKY_ERROR_ONCE", "1")
+        .env("DAG_ML_FLAKY_SLEEP_SECONDS", "0.0")
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/flaky_process_controller.py",
+            "--persistent",
+            "--process-timeout-ms",
+            "2000",
+            "--process-retries",
+            "1",
+            "--plan-id",
+            "plan:cli.process.retryable-error.retry",
+            "--run-id",
+            error_retry_run_id.as_str(),
+        ])
+        .output()
+        .expect("failed to run flaky process campaign with retryable error and retry");
+    assert!(
+        error_retry.status.success(),
+        "flaky retryable-error campaign with retry failed: {}",
+        String::from_utf8_lossy(&error_retry.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&error_retry.stdout).contains("process campaign run: 8 result(s)"),
+        "unexpected retryable-error retry output: {}",
+        String::from_utf8_lossy(&error_retry.stdout)
+    );
+
     let one_shot_timeout_run_id = format!("run:cli.process.one-shot-timeout.{}", unique_suffix());
     let one_shot_timeout = Command::new(cli())
         .current_dir(&root)
@@ -2745,6 +2837,8 @@ fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
     let _ = std::fs::remove_dir_all(retry_marker_dir);
     let _ = std::fs::remove_dir_all(retry_lifecycle_dir);
     let _ = std::fs::remove_dir_all(one_shot_timeout_marker_dir);
+    let _ = std::fs::remove_dir_all(error_no_retry_marker_dir);
+    let _ = std::fs::remove_dir_all(error_retry_marker_dir);
 }
 
 #[test]
