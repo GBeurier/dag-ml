@@ -63,6 +63,41 @@ can reject malformed graph JSON before controller resolution or scheduling.
 Rust validation remains the semantic authority for uniqueness, endpoint checks,
 port-kind alignment and cycle refusal.
 
+## ModelInputSpec v1
+
+Schema: `model_input_spec.schema.json`
+
+Canonical fixture:
+`examples/fixtures/data/model_input_spec_tabular_regressor.json`
+
+Runtime type: `ModelInputSpec`
+
+C ABI: `DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION`,
+`dagml_model_input_spec_contract_json`,
+`dagml_model_input_spec_validate_json`
+
+This neutral contract is the data/model compatibility request declared by a
+controller or binding. It lists required input ports, accepted
+representations/types, tensor rank expectations, multi-source support and the
+default fusion policy to ask from a data planner.
+
+## DataPlan v1
+
+Schema: `data_plan.schema.json`
+
+Canonical fixture: `examples/fixtures/data/data_plan_tabular_fusion.json`
+
+Runtime type: `DataPlan`
+
+C ABI: `DAG_ML_DATA_PLAN_SCHEMA_VERSION`, `dagml_data_plan_contract_json`,
+`dagml_data_plan_validate_json`
+
+This neutral contract is the data-planner answer to a `ModelInputSpec`: a
+deterministic sequence of materialize/adapt/align/join/collate steps plus the
+named outputs that feed model ports. DAG-ML validates ordering, output
+references and refusal metadata before such a plan can become part of an
+execution plan or bundle.
+
 ## DAG-ML OpenLineage Facets v1
 
 Schema: `openlineage_dagml_facets.schema.json`

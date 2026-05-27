@@ -13,9 +13,23 @@ use crate::runtime::{
 };
 
 pub const EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION: u32 = 1;
+pub const MODEL_INPUT_SPEC_SCHEMA_VERSION: u32 = 1;
+pub const MODEL_INPUT_SPEC_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/model_input_spec.v1.schema.json";
+pub const DATA_PLAN_SCHEMA_VERSION: u32 = 1;
+pub const DATA_PLAN_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/data_plan.v1.schema.json";
 
 fn default_external_data_plan_envelope_schema_version() -> u32 {
     EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
+}
+
+fn default_model_input_spec_schema_version() -> u32 {
+    MODEL_INPUT_SPEC_SCHEMA_VERSION
+}
+
+fn default_data_plan_schema_version() -> u32 {
+    DATA_PLAN_SCHEMA_VERSION
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -25,6 +39,294 @@ pub enum DataRequestPartition {
     FoldValidation,
     FullTrain,
     Predict,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelInputFusionMode {
+    SingleSource,
+    ConcatenateFeatures,
+    StackSamples,
+    DictBySource,
+    Custom,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelInputFusionPolicy {
+    pub mode: ModelInputFusionMode,
+    #[serde(default)]
+    pub alignment: Option<String>,
+    #[serde(default)]
+    pub adapter_id: Option<String>,
+    #[serde(default)]
+    pub params: BTreeMap<String, serde_json::Value>,
+}
+
+impl ModelInputFusionPolicy {
+    pub fn validate(&self) -> Result<()> {
+        if self
+            .alignment
+            .as_ref()
+            .is_some_and(|alignment| alignment.trim().is_empty())
+        {
+            return Err(DagMlError::CampaignValidation(
+                "model input fusion policy has empty alignment".to_string(),
+            ));
+        }
+        if self
+            .adapter_id
+            .as_ref()
+            .is_some_and(|adapter_id| adapter_id.trim().is_empty())
+        {
+            return Err(DagMlError::CampaignValidation(
+                "model input fusion policy has empty adapter_id".to_string(),
+            ));
+        }
+        if self.mode == ModelInputFusionMode::Custom && self.adapter_id.is_none() {
+            return Err(DagMlError::CampaignValidation(
+                "custom model input fusion policy requires adapter_id".to_string(),
+            ));
+        }
+        for key in self.params.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(
+                    "model input fusion policy contains an empty param key".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelInputPortSpec {
+    pub name: String,
+    pub accepted_representations: Vec<String>,
+    pub accepted_types: Vec<String>,
+    #[serde(default)]
+    pub rank: Option<u32>,
+    #[serde(default)]
+    pub multi_source: bool,
+    #[serde(default)]
+    pub optional: bool,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl ModelInputPortSpec {
+    pub fn validate(&self) -> Result<()> {
+        validate_non_empty("model input port name", &self.name)?;
+        validate_non_empty_list(
+            "model input port accepted_representations",
+            &self.accepted_representations,
+        )?;
+        validate_non_empty_list("model input port accepted_types", &self.accepted_types)?;
+        validate_unique_strings(
+            "model input port accepted_representations",
+            &self.accepted_representations,
+        )?;
+        validate_unique_strings("model input port accepted_types", &self.accepted_types)?;
+        if self.rank.is_some_and(|rank| rank > 16) {
+            return Err(DagMlError::CampaignValidation(format!(
+                "model input port `{}` rank must be <= 16",
+                self.name
+            )));
+        }
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "model input port `{}` contains an empty metadata key",
+                    self.name
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelInputSpec {
+    #[serde(default = "default_model_input_spec_schema_version")]
+    pub schema_version: u32,
+    pub ports: Vec<ModelInputPortSpec>,
+    #[serde(default)]
+    pub default_fusion: Option<ModelInputFusionPolicy>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl ModelInputSpec {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != MODEL_INPUT_SPEC_SCHEMA_VERSION {
+            return Err(DagMlError::CampaignValidation(format!(
+                "model input spec uses unsupported schema_version {}, expected {}",
+                self.schema_version, MODEL_INPUT_SPEC_SCHEMA_VERSION
+            )));
+        }
+        if self.ports.is_empty() {
+            return Err(DagMlError::CampaignValidation(
+                "model input spec must declare at least one port".to_string(),
+            ));
+        }
+        let mut names = BTreeSet::new();
+        for port in &self.ports {
+            port.validate()?;
+            if !names.insert(port.name.as_str()) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "model input spec contains duplicate port `{}`",
+                    port.name
+                )));
+            }
+        }
+        if let Some(default_fusion) = &self.default_fusion {
+            default_fusion.validate()?;
+        }
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(
+                    "model input spec contains an empty metadata key".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataPlanStepKind {
+    Materialize,
+    Adapt,
+    Align,
+    Join,
+    Collate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataPlanStep {
+    pub kind: DataPlanStepKind,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    pub output: String,
+    #[serde(default)]
+    pub adapter_id: Option<String>,
+    #[serde(default)]
+    pub params: BTreeMap<String, serde_json::Value>,
+}
+
+impl DataPlanStep {
+    pub fn validate(&self, previous_outputs: &BTreeSet<String>) -> Result<()> {
+        validate_non_empty("data plan step output", &self.output)?;
+        if self.kind != DataPlanStepKind::Materialize && self.inputs.is_empty() {
+            return Err(DagMlError::CampaignValidation(format!(
+                "data plan step `{}` requires at least one input",
+                self.output
+            )));
+        }
+        for (index, input) in self.inputs.iter().enumerate() {
+            validate_non_empty("data plan step input", input)?;
+            if self.kind != DataPlanStepKind::Materialize && !previous_outputs.contains(input) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "data plan step `{}` input #{index} references `{input}` before it is produced",
+                    self.output
+                )));
+            }
+        }
+        if self
+            .adapter_id
+            .as_ref()
+            .is_some_and(|adapter_id| adapter_id.trim().is_empty())
+        {
+            return Err(DagMlError::CampaignValidation(format!(
+                "data plan step `{}` has empty adapter_id",
+                self.output
+            )));
+        }
+        for key in self.params.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "data plan step `{}` contains an empty param key",
+                    self.output
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataPlan {
+    #[serde(default = "default_data_plan_schema_version")]
+    pub schema_version: u32,
+    pub id: String,
+    pub steps: Vec<DataPlanStep>,
+    pub output_ports: BTreeMap<String, String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub requires_user_choice: Vec<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl DataPlan {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != DATA_PLAN_SCHEMA_VERSION {
+            return Err(DagMlError::CampaignValidation(format!(
+                "data plan uses unsupported schema_version {}, expected {}",
+                self.schema_version, DATA_PLAN_SCHEMA_VERSION
+            )));
+        }
+        validate_non_empty("data plan id", &self.id)?;
+        if self.steps.is_empty() {
+            return Err(DagMlError::CampaignValidation(format!(
+                "data plan `{}` must contain at least one step",
+                self.id
+            )));
+        }
+        let mut outputs = BTreeSet::new();
+        for step in &self.steps {
+            step.validate(&outputs)?;
+            if !outputs.insert(step.output.clone()) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "data plan `{}` contains duplicate step output `{}`",
+                    self.id, step.output
+                )));
+            }
+        }
+        if self.output_ports.is_empty() {
+            return Err(DagMlError::CampaignValidation(format!(
+                "data plan `{}` must declare at least one output port",
+                self.id
+            )));
+        }
+        for (port_name, output) in &self.output_ports {
+            validate_non_empty("data plan output port", port_name)?;
+            validate_non_empty("data plan output reference", output)?;
+            if !outputs.contains(output) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "data plan `{}` output port `{port_name}` references unknown output `{output}`",
+                    self.id
+                )));
+            }
+        }
+        validate_string_list_entries("data plan warnings", &self.warnings)?;
+        validate_string_list_entries("data plan requires_user_choice", &self.requires_user_choice)?;
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "data plan `{}` contains an empty metadata key",
+                    self.id
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -542,6 +844,47 @@ fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_non_empty(label: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(DagMlError::CampaignValidation(format!(
+            "{label} must be a non-empty string"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_non_empty_list(label: &str, values: &[String]) -> Result<()> {
+    if values.is_empty() {
+        return Err(DagMlError::CampaignValidation(format!(
+            "{label} must be a non-empty list"
+        )));
+    }
+    validate_string_list_entries(label, values)
+}
+
+fn validate_string_list_entries(label: &str, values: &[String]) -> Result<()> {
+    for (index, value) in values.iter().enumerate() {
+        if value.trim().is_empty() {
+            return Err(DagMlError::CampaignValidation(format!(
+                "{label}[{index}] must be a non-empty string"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique_strings(label: &str, values: &[String]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for value in values {
+        if !seen.insert(value.as_str()) {
+            return Err(DagMlError::CampaignValidation(format!(
+                "{label} contains duplicate value `{value}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,6 +917,79 @@ mod tests {
         let binding = binding();
         binding.validate().unwrap();
         assert_eq!(binding.feature_set_id(), "x");
+    }
+
+    #[test]
+    fn published_model_input_and_data_plan_schemas_declare_current_contract() {
+        let model_input_schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/model_input_spec.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(model_input_schema["$id"], MODEL_INPUT_SPEC_SCHEMA_ID);
+        assert_eq!(
+            model_input_schema["properties"]["schema_version"]["const"].as_u64(),
+            Some(MODEL_INPUT_SPEC_SCHEMA_VERSION as u64)
+        );
+        assert!(model_input_schema["$defs"]["input_port"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("accepted_representations")));
+
+        let data_plan_schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/data_plan.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(data_plan_schema["$id"], DATA_PLAN_SCHEMA_ID);
+        assert_eq!(
+            data_plan_schema["properties"]["schema_version"]["const"].as_u64(),
+            Some(DATA_PLAN_SCHEMA_VERSION as u64)
+        );
+        assert!(data_plan_schema["$defs"]["data_plan_step_kind"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|kind| kind.as_str() == Some("collate")));
+    }
+
+    #[test]
+    fn validates_model_input_and_data_plan_fixtures() {
+        let model_input: ModelInputSpec = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/model_input_spec_tabular_regressor.json"
+        ))
+        .unwrap();
+        model_input.validate().unwrap();
+        assert_eq!(model_input.ports[0].rank, Some(2));
+        assert!(model_input.ports[0].multi_source);
+
+        let data_plan: DataPlan = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/data_plan_tabular_fusion.json"
+        ))
+        .unwrap();
+        data_plan.validate().unwrap();
+        assert_eq!(data_plan.output_ports.get("x").unwrap(), "x_collated");
+    }
+
+    #[test]
+    fn data_plan_rejects_forward_step_references() {
+        let data_plan = DataPlan {
+            schema_version: DATA_PLAN_SCHEMA_VERSION,
+            id: "data-plan:bad".to_string(),
+            steps: vec![DataPlanStep {
+                kind: DataPlanStepKind::Adapt,
+                inputs: vec!["missing".to_string()],
+                output: "adapted".to_string(),
+                adapter_id: Some("adapter:adapt".to_string()),
+                params: BTreeMap::new(),
+            }],
+            output_ports: BTreeMap::from([("x".to_string(), "adapted".to_string())]),
+            warnings: Vec::new(),
+            requires_user_choice: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+
+        let error = data_plan.validate().unwrap_err().to_string();
+        assert!(error.contains("before it is produced"));
     }
 
     #[test]

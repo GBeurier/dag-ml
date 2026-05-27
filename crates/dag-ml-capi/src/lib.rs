@@ -12,16 +12,18 @@ use dag_ml_core::{
     AggregatedPredictionBlock, ArtifactMaterializationRequest, BundlePredictionCachePayload,
     BundlePredictionCachePayloadSet, BundleReplayExecution, CampaignSpec, CandidateScore,
     ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataMaterializationRequest,
-    DataOutputProvenance, DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
-    ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest, GraphSpec,
-    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
-    NodeResult, NodeTask, OpenLineageRunEventOptions, Phase, PipelineDslSpec, PredictionBlock,
-    PredictionCacheMaterializationRequest, PredictionLevel, PredictionPartition, PredictionUnitId,
-    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
-    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
-    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionPolicy,
-    SequentialScheduler, DATA_OUTPUT_PROVENANCE_KEY, DATA_OUTPUT_PROVENANCE_SCHEMA_ID,
-    DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION, GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION,
+    DataOutputProvenance, DataPlan, DataRequestPartition, DataViewRequest, ExecutionBundle,
+    ExecutionPlan, ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest,
+    GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId,
+    LineageRecord, ModelInputSpec, NodeResult, NodeTask, OpenLineageRunEventOptions, Phase,
+    PipelineDslSpec, PredictionBlock, PredictionCacheMaterializationRequest, PredictionLevel,
+    PredictionPartition, PredictionUnitId, RegressionMetricKind, RegressionMetricReport,
+    RegressionTargetBlock, ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore,
+    RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
+    SampleId, SelectionDecision, SelectionPolicy, SequentialScheduler, DATA_OUTPUT_PROVENANCE_KEY,
+    DATA_OUTPUT_PROVENANCE_SCHEMA_ID, DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION, DATA_PLAN_SCHEMA_ID,
+    DATA_PLAN_SCHEMA_VERSION, GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION,
+    MODEL_INPUT_SPEC_SCHEMA_ID, MODEL_INPUT_SPEC_SCHEMA_VERSION,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -34,6 +36,8 @@ pub const DAG_ML_PREDICTION_CACHE_VTABLE_BORROWED_ABI_VERSION: u32 = 1;
 pub const DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION: u32 = 1;
 pub const DAG_ML_GRAPH_SPEC_SCHEMA_VERSION: u32 = GRAPH_SPEC_SCHEMA_VERSION;
+pub const DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION: u32 = MODEL_INPUT_SPEC_SCHEMA_VERSION;
+pub const DAG_ML_DATA_PLAN_SCHEMA_VERSION: u32 = DATA_PLAN_SCHEMA_VERSION;
 pub const DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
@@ -45,6 +49,18 @@ pub const DAG_ML_HANDLE_KIND_RELATION: u32 = 6;
 
 #[derive(Serialize)]
 struct GraphSpecContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct ModelInputSpecContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct DataPlanContractInfo {
     schema_version: u32,
     schema_id: &'static str,
 }
@@ -414,6 +430,84 @@ pub unsafe extern "C" fn dagml_graph_validate_json(
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
     validate_json::<GraphSpec>(json_ptr, json_len, error_out, "graph", GraphSpec::validate)
+}
+
+/// Returns the public C ABI contract for canonical `ModelInputSpec` JSON.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_model_input_spec_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = ModelInputSpecContractInfo {
+        schema_version: DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION,
+        schema_id: MODEL_INPUT_SPEC_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
+}
+
+/// Validates a canonical JSON `ModelInputSpec`.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_model_input_spec_validate_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    validate_json::<ModelInputSpec>(
+        json_ptr,
+        json_len,
+        error_out,
+        "model input spec",
+        ModelInputSpec::validate,
+    )
+}
+
+/// Returns the public C ABI contract for canonical `DataPlan` JSON.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_data_plan_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = DataPlanContractInfo {
+        schema_version: DAG_ML_DATA_PLAN_SCHEMA_VERSION,
+        schema_id: DATA_PLAN_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
+}
+
+/// Validates a canonical JSON `DataPlan`.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_data_plan_validate_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    validate_json::<DataPlan>(
+        json_ptr,
+        json_len,
+        error_out,
+        "data plan",
+        DataPlan::validate,
+    )
 }
 
 /// Returns the public C ABI contract for propagated data-output provenance.
@@ -4703,6 +4797,51 @@ mod tests {
         assert_eq!(contract["schema_version"], 1);
         assert_eq!(contract["schema_id"], dag_ml_core::GRAPH_SPEC_SCHEMA_ID);
         unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn validates_model_input_and_data_plan_contracts_over_abi() {
+        let model_input = include_bytes!(
+            "../../../examples/fixtures/data/model_input_spec_tabular_regressor.json"
+        );
+        let data_plan =
+            include_bytes!("../../../examples/fixtures/data/data_plan_tabular_fusion.json");
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe { dagml_model_input_spec_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(
+            contract["schema_id"],
+            dag_ml_core::MODEL_INPUT_SPEC_SCHEMA_ID
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let status = unsafe {
+            dagml_model_input_spec_validate_json(
+                model_input.as_ptr(),
+                model_input.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe { dagml_data_plan_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(contract["schema_id"], dag_ml_core::DATA_PLAN_SCHEMA_ID);
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let status = unsafe {
+            dagml_data_plan_validate_json(data_plan.as_ptr(), data_plan.len(), &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
     }
 
     #[test]
