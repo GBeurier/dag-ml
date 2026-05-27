@@ -55,6 +55,8 @@ the host owns the underlying object behind each handle.
   JSON-level Rust contracts with optional typed backend, URI, content
   fingerprint and plugin/version metadata; the ABI still transports them inside
   owned JSON payloads so C structs do not freeze a storage layout too early.
+  Artifact-store vtable ABI v1 is borrowed; v2 is opt-in owned lifecycle with
+  `destroy(user_data)` after materialized artifact handles are released.
 - `DagMlPredictionCacheVTable` for host prediction-cache stores, including
   `load_blocks`, `materialize` and explicit returned-byte release.
   `load_blocks` is the single JSON load callback for replay prediction
@@ -62,6 +64,8 @@ the host owns the underlying object behind each handle.
   target/group requirements return `AggregatedPredictionBlock[]` keyed by typed
   `PredictionUnitId` values. Rust selects and validates the expected block
   shape from the bundle requirement before materializing a prediction handle.
+  Prediction-cache vtable ABI v1 is borrowed; v2 is opt-in owned lifecycle with
+  `destroy(user_data)` after materialized prediction handles are released.
 
 The vtables are intentionally small in this scaffold. They establish shape,
 ownership and naming before full execution is implemented.
@@ -73,10 +77,12 @@ errors instead of being decoded as Rust enum discriminants.
 Vtable `user_data` lifetime is explicit per ABI surface. Controller vtable v2 is
 borrowed for backwards compatibility, while controller vtable v3 opts into
 Rust-owned lifecycle and calls `destroy(user_data)` after handle release on drop.
-Data-provider, artifact-store and prediction-cache vtables remain borrowed in
-the current replay API. Rust releases controller-result, data/view,
-replay-artifact and prediction-cache handles that it receives or materializes
-through the vtables.
+Artifact-store and prediction-cache vtable v1 are also borrowed; their v2
+surfaces opt into Rust-owned lifecycle with `destroy(user_data)` after
+materialized handles are released. Data-provider vtables remain borrowed in the
+current replay API because that ABI is shared with `dag-ml-data`. Rust releases
+controller-result, data/view, replay-artifact and prediction-cache handles that
+it receives or materializes through the vtables.
 
 ## Ownership Rules
 

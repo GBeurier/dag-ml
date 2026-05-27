@@ -306,12 +306,14 @@ Implemented:
 - C ABI artifact-store vtable for replay REFIT artifacts, returning typed
   `DagMlHandleRef` values, preserving host handle ownership and releasing
   materialized handles at adapter drop, plus a tested Rust runtime adapter over
-  the vtable;
+  the vtable. Artifact-store ABI v1 remains borrowed, while ABI v2 opts into
+  Rust-owned teardown after materialized handles are released;
 - C ABI prediction-cache vtable shape for host OOF cache stores, including
   JSON block loading for sample and target/group aggregated replay blocks,
   prediction-handle materialization, materialized handle release and explicit
   host-returned byte release, plus a tested Rust runtime adapter over the
-  vtable;
+  vtable. Prediction-cache ABI v1 remains borrowed, while ABI v2 opts into
+  Rust-owned teardown after materialized handles are released;
 - C ABI non-mock replay execution helper that composes host controller,
   data-provider, artifact-store and optional prediction-cache vtables while
   Rust owns bundle validation, replay envelope validation, DAG scheduling,
