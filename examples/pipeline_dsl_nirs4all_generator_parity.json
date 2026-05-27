@@ -1,0 +1,118 @@
+{
+  "id": "dsl-nirs4all-generator-parity",
+  "campaign_id": "campaign:dsl.nirs4all.generator.parity",
+  "root_seed": 42,
+  "steps": [
+    {
+      "kind": "sequential",
+      "id": "seq:preflight",
+      "steps": [
+        {
+          "kind": "sample_filter",
+          "id": "filter:y_outlier",
+          "operator": {
+            "class": "nirs4all.operators.filters.YOutlierFilter"
+          },
+          "params": {
+            "mode": "any",
+            "report": true
+          }
+        }
+      ]
+    },
+    {
+      "kind": "generator",
+      "id": "generator:preproc_model_cartesian",
+      "mode": "cartesian",
+      "stages": [
+        {
+          "id": "preproc",
+          "branches": [
+            {
+              "id": "snv",
+              "steps": [
+                {
+                  "kind": "transform",
+                  "id": "transform:snv",
+                  "operator": {
+                    "class": "nirs4all.operators.transforms.StandardNormalVariate"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "msc",
+              "steps": [
+                {
+                  "kind": "transform",
+                  "id": "transform:msc",
+                  "operator": {
+                    "class": "nirs4all.operators.transforms.MultiplicativeScatterCorrection"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "model",
+          "branches": [
+            {
+              "id": "pls",
+              "steps": [
+                {
+                  "kind": "model",
+                  "id": "model:pls",
+                  "operator": {
+                    "class": "sklearn.cross_decomposition.PLSRegression"
+                  },
+                  "params": {
+                    "n_components": 8
+                  }
+                }
+              ]
+            },
+            {
+              "id": "ridge",
+              "steps": [
+                {
+                  "kind": "model",
+                  "id": "model:ridge",
+                  "operator": {
+                    "class": "sklearn.linear_model.Ridge"
+                  },
+                  "params": {
+                    "alpha": 1.0
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge",
+      "id": "merge:generator_predictions",
+      "merge_mode": "predictions",
+      "output_as": "features",
+      "include_original_data": false,
+      "selectors": [
+        {
+          "branch": "generator:preproc_model_cartesian:choice0",
+          "select": "all"
+        }
+      ]
+    },
+    {
+      "kind": "model",
+      "id": "model:meta",
+      "operator": {
+        "class": "sklearn.linear_model.Ridge"
+      }
+    }
+  ],
+  "metadata": {
+    "demo": "nirs4all structural generator parity: sequential sample filter plus cartesian preproc/model choices"
+  }
+}

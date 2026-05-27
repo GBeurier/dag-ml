@@ -131,6 +131,12 @@ Implemented:
   modes, reject `top_k` above the matched scope and require a metric for
   `best`/`top_k`, while still leaving actual score computation to external
   selection/merge controllers;
+- DSL structural containers now cover nirs4all-style `sequential`,
+  `sample_filter`/`filter`, structural `_or_` and structural `_cartesian_`:
+  generator choices are expanded into explicit OOF-producing branch choices,
+  child node ids are namespaced per generated choice to avoid graph collisions,
+  and generator mode/choice labels are preserved as node metadata for
+  controller-side selection/refit policy;
 - the same DSL profile extracts node-level parameter variants into a canonical
   `GenerationSpec`, accepts compact nirs4all-style parameter generators
   (`or`, `range`, `log_range`, `grid`, `pick`, `arrange` with deterministic

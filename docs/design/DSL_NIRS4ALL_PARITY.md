@@ -33,9 +33,11 @@ nirs4all-style Python/YAML shorthand into this form.
 | model step, named model, explicit params | `kind: "model"`, `operator`, `params`, `metadata` | compiled to `NodeKind::Model` |
 | target/y processing | `kind: "y_transform"` | compiled to `NodeKind::YTransform` with target ports |
 | splitters (`KFold`, `GroupKFold`, SPXY, fold files) | top-level `split_invocation` in campaign template | deliberately outside graph nodes |
+| sequential grouping (`[...]`) | `kind: "sequential"` | inlined during compilation while preserving child node contracts |
 | sample augmentation | `kind: "sample_augmentation"` plus mandatory `shape.augmentation_policy` | compiled as augmentation with `dsl_augmentation_kind=sample`; unsafe scopes refused |
 | feature augmentation | `kind: "feature_augmentation"` plus `shape` | compiled as augmentation with `dsl_augmentation_kind=feature` |
 | feature selection / shape-changing processing | `shape.selection_policy`, `feature_namespace`, schema fingerprints | shape plan validated and attached to campaign |
+| sample filters | `kind: "sample_filter"` or `kind: "filter"` | compiled to exclusion/filter nodes with explicit `dsl_filter_kind` metadata |
 | concat transform / multi-view feature fusion | `kind: "concat_transform"` with branch transforms | compiled to `NodeKind::FeatureJoin` |
 | duplicated branches | `kind: "branch"`, `mode: "duplication"` | multiple branch predictions retained |
 | separation branches by source/metadata/tag/filter | `branch.mode`, `branch.selector`, per-branch selectors | graph intent compiled; controller/data-provider semantics remain host-side |
@@ -46,7 +48,9 @@ nirs4all-style Python/YAML shorthand into this form.
 | per-branch/per-model selection (`best`, `top_k`, `all`) | `merge.selectors` with branch/model/input scopes | selector targets and `top_k`/metric requirements are compile-validated; scoring remains controller policy |
 | finetune / hyperparameter search | `tuning` or `finetune_params`, plus generation dimensions/variants | intent compiled into metadata; concrete tuning engine remains controller-side |
 | final train params | `train_params` | preserved as `dsl_train_params` metadata |
-| `_or_`, `_range_`, `_log_range_`, `_grid_`, `pick`, `arrange`, `count` | `variants`, explicit `generation_dimensions`, or compact `generators` on DSL nodes | compiled into deterministic `GenerationSpec` dimensions |
+| `_range_`, `_log_range_`, `_grid_`, param `_or_`, `pick`, `arrange`, `count` | `variants`, explicit `generation_dimensions`, or compact `generators` on DSL nodes | compiled into deterministic `GenerationSpec` dimensions |
+| structural `_or_` over step chains | `kind: "generator"`, `mode: "or"`, `branches`, `pick`/`arrange`/`count` | expanded into explicit OOF-producing choices with namespaced node ids and generator metadata |
+| structural `_cartesian_` over pipeline stages | `kind: "generator"`, `mode: "cartesian"`, `stages` | expanded into explicit Cartesian OOF-producing choices with namespaced node ids and fold-safe downstream merge inputs |
 | multisource data | `data_bindings.source_ids`, branch/source selectors, source joins | contract surface present; richer materialization belongs to dag-ml-data |
 | repetition/sample/group aggregation | top-level/shape `aggregation_policy`, target/group OOF cache contracts | core runtime implemented for sample/target/group OOF |
 | tag/exclude filters | `kind: "tag"` and `kind: "exclude"` | compiled to graph nodes |
