@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::controller::ControllerRegistry;
-use crate::data::DataBinding;
+use crate::data::{BranchViewMode, BranchViewPlan, DataBinding, DataViewSelector};
 use crate::error::{DagMlError, Result};
 use crate::generation::{
     generation_spec_fingerprint, GenerationChoice, GenerationDimension, GenerationParamOverride,
@@ -506,6 +506,8 @@ pub struct CompiledPipelineDsl {
     pub shape_plans: BTreeMap<NodeId, DataModelShapePlan>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub data_bindings: BTreeMap<NodeId, Vec<DataBinding>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branch_view_plans: Vec<BranchViewPlan>,
     pub campaign_template: CampaignSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_fingerprint: Option<String>,
@@ -591,6 +593,7 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
         edges: Vec::new(),
         generation_dimensions: Vec::new(),
         shape_plans: BTreeMap::new(),
+        branch_view_plans: Vec::new(),
     };
     let mut sequence_state = SequenceCompileState::new(external_data.clone());
 
@@ -629,13 +632,19 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
     graph.validate()?;
     validate_shape_plan_targets(&compiler.shape_plans, &graph)?;
     let data_bindings = compile_data_bindings(&spec.data_bindings, &graph)?;
-    let campaign_template =
-        build_campaign_template(spec, &generation, &compiler.shape_plans, &data_bindings)?;
+    let campaign_template = build_campaign_template(
+        spec,
+        &generation,
+        &compiler.shape_plans,
+        &data_bindings,
+        &compiler.branch_view_plans,
+    )?;
     Ok(CompiledPipelineDsl {
         graph,
         generation,
         shape_plans: compiler.shape_plans,
         data_bindings,
+        branch_view_plans: compiler.branch_view_plans,
         campaign_template,
         generation_fingerprint,
     })
@@ -830,6 +839,7 @@ struct PipelineCompiler {
     edges: Vec<EdgeSpec>,
     generation_dimensions: Vec<GenerationDimension>,
     shape_plans: BTreeMap<NodeId, DataModelShapePlan>,
+    branch_view_plans: Vec<BranchViewPlan>,
 }
 
 #[derive(Clone, Debug)]
@@ -3806,8 +3816,20 @@ impl PipelineCompiler {
                     branch.id
                 )));
             }
+            let branch_view_plan = compile_branch_view_plan(step, branch)?;
             let mut branch_state = SequenceCompileState::new(current_data.clone());
             let mut branch_metadata = branch_context_metadata(step, branch)?;
+            if let Some(plan) = &branch_view_plan {
+                branch_metadata.insert(
+                    "dsl_branch_view_plan".to_string(),
+                    serde_json::to_value(plan).map_err(|error| {
+                        DagMlError::GraphValidation(format!(
+                            "failed to serialize branch view plan for `{}`: {error}",
+                            branch.id
+                        ))
+                    })?,
+                );
+            }
             branch_metadata.extend(extra_metadata.clone());
             for branch_step in &branch.steps {
                 self.compile_sequence_step(
@@ -3826,6 +3848,9 @@ impl PipelineCompiler {
                     "pipeline DSL branch `{}` must produce at least one model, merge prediction or transformed data output",
                     branch.id
                 )));
+            }
+            if let Some(plan) = branch_view_plan {
+                self.collect_branch_view_plan(plan)?;
             }
             let data_input_name = format!("{}_x", branch_input_prefix(&branch.id, index));
             data_sources.push(BranchDataSource {
@@ -4489,6 +4514,23 @@ impl PipelineCompiler {
         Ok(())
     }
 
+    fn collect_branch_view_plan(&mut self, plan: BranchViewPlan) -> Result<()> {
+        plan.validate()
+            .map_err(|error| DagMlError::GraphValidation(error.to_string()))?;
+        if self
+            .branch_view_plans
+            .iter()
+            .any(|existing| existing.view_id == plan.view_id)
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL graph `{}` produced duplicate branch view `{}`",
+                self.graph_id, plan.view_id
+            )));
+        }
+        self.branch_view_plans.push(plan);
+        Ok(())
+    }
+
     fn connect_data(
         &mut self,
         input: &DataSource,
@@ -4661,6 +4703,7 @@ fn build_campaign_template(
     generation: &GenerationSpec,
     shape_plans: &BTreeMap<NodeId, DataModelShapePlan>,
     data_bindings: &BTreeMap<NodeId, Vec<DataBinding>>,
+    branch_view_plans: &[BranchViewPlan],
 ) -> Result<CampaignSpec> {
     let campaign = CampaignSpec {
         id: spec
@@ -4674,6 +4717,7 @@ fn build_campaign_template(
         generation: generation.clone(),
         shape_plans: shape_plans.clone(),
         data_bindings: data_bindings.clone(),
+        branch_view_plans: branch_view_plans.to_vec(),
         metadata: spec.campaign_metadata.clone(),
     };
     campaign.validate()?;
@@ -5486,6 +5530,298 @@ fn branch_context_metadata(
         );
     }
     Ok(metadata)
+}
+
+fn compile_branch_view_plan(
+    branch_step: &PipelineDslBranchStep,
+    branch: &PipelineDslBranch,
+) -> Result<Option<BranchViewPlan>> {
+    let Some(mode) = branch_view_mode(branch_step.mode) else {
+        return Ok(None);
+    };
+    let selector = branch_view_selector(mode, branch_step.selector.as_ref(), branch)?;
+    let mut metadata = branch.metadata.clone();
+    if let Some(step_selector) = &branch_step.selector {
+        metadata.insert(
+            "dsl_branch_step_selector".to_string(),
+            step_selector.clone(),
+        );
+    }
+    if let Some(branch_selector) = &branch.selector {
+        metadata.insert("dsl_branch_selector".to_string(), branch_selector.clone());
+    }
+    if !branch_step.metadata.is_empty() {
+        metadata.insert(
+            "dsl_branch_step_metadata".to_string(),
+            serde_json::to_value(&branch_step.metadata).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to serialize pipeline DSL branch step metadata for `{}`: {error}",
+                    branch.id
+                ))
+            })?,
+        );
+    }
+    let plan = BranchViewPlan {
+        view_id: format!("branch_view:{}", branch.id),
+        branch_id: branch.id.clone(),
+        mode,
+        selector,
+        allow_overlap: branch_overlap_allowed(branch_step, branch),
+        metadata,
+    };
+    plan.validate()
+        .map_err(|error| DagMlError::GraphValidation(error.to_string()))?;
+    Ok(Some(plan))
+}
+
+fn branch_view_mode(mode: PipelineDslBranchMode) -> Option<BranchViewMode> {
+    match mode {
+        PipelineDslBranchMode::Duplication => None,
+        PipelineDslBranchMode::Separation => Some(BranchViewMode::Separation),
+        PipelineDslBranchMode::BySource => Some(BranchViewMode::BySource),
+        PipelineDslBranchMode::ByMetadata => Some(BranchViewMode::ByMetadata),
+        PipelineDslBranchMode::ByTag => Some(BranchViewMode::ByTag),
+        PipelineDslBranchMode::ByFilter => Some(BranchViewMode::ByFilter),
+    }
+}
+
+fn branch_view_selector(
+    mode: BranchViewMode,
+    step_selector: Option<&serde_json::Value>,
+    branch: &PipelineDslBranch,
+) -> Result<DataViewSelector> {
+    match mode {
+        BranchViewMode::BySource => branch_view_selector_by_source(branch),
+        BranchViewMode::ByMetadata => branch_view_selector_by_metadata(step_selector, branch),
+        BranchViewMode::ByTag => branch_view_selector_by_tag(branch),
+        BranchViewMode::ByFilter => branch_view_selector_by_filter(branch),
+        BranchViewMode::Separation => branch_view_selector_generic(step_selector, branch),
+    }
+}
+
+fn branch_view_selector_by_source(branch: &PipelineDslBranch) -> Result<DataViewSelector> {
+    let Some(selector) = &branch.selector else {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL by_source branch `{}` requires a selector",
+            branch.id
+        )));
+    };
+    let source_ids = selector_strings(selector, &["source", "source_id"], &["sources", "source_ids"])
+        .or_else(|| selector.as_str().map(|value| vec![value.to_string()]))
+        .ok_or_else(|| {
+            DagMlError::GraphValidation(format!(
+                "pipeline DSL by_source branch `{}` selector must be a source string or object with source/source_ids",
+                branch.id
+            ))
+        })?;
+    Ok(DataViewSelector {
+        source_ids,
+        ..DataViewSelector::default()
+    })
+}
+
+fn branch_view_selector_by_metadata(
+    step_selector: Option<&serde_json::Value>,
+    branch: &PipelineDslBranch,
+) -> Result<DataViewSelector> {
+    let Some(selector) = &branch.selector else {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL by_metadata branch `{}` requires a selector",
+            branch.id
+        )));
+    };
+    if let Some(metadata) = selector_metadata_map(selector)? {
+        return Ok(DataViewSelector {
+            metadata,
+            ..DataViewSelector::default()
+        });
+    }
+    let branch_key = selector
+        .as_object()
+        .and_then(|_| selector_metadata_key(selector));
+    let key = branch_key
+        .or_else(|| step_selector.and_then(selector_metadata_key))
+        .ok_or_else(|| {
+            DagMlError::GraphValidation(format!(
+                "pipeline DSL by_metadata branch `{}` requires a metadata key on the branch or branch step selector",
+                branch.id
+            ))
+        })?;
+    let value = selector_value(selector).ok_or_else(|| {
+        DagMlError::GraphValidation(format!(
+            "pipeline DSL by_metadata branch `{}` requires a metadata value",
+            branch.id
+        ))
+    })?;
+    Ok(DataViewSelector {
+        metadata: BTreeMap::from([(key, value)]),
+        ..DataViewSelector::default()
+    })
+}
+
+fn branch_view_selector_by_tag(branch: &PipelineDslBranch) -> Result<DataViewSelector> {
+    let Some(selector) = &branch.selector else {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL by_tag branch `{}` requires a selector",
+            branch.id
+        )));
+    };
+    let tags = selector_strings(selector, &["tag"], &["tags"])
+        .or_else(|| selector.as_str().map(|value| vec![value.to_string()]))
+        .ok_or_else(|| {
+            DagMlError::GraphValidation(format!(
+                "pipeline DSL by_tag branch `{}` selector must be a tag string or object with tag/tags",
+                branch.id
+            ))
+        })?;
+    Ok(DataViewSelector {
+        tags,
+        ..DataViewSelector::default()
+    })
+}
+
+fn branch_view_selector_by_filter(branch: &PipelineDslBranch) -> Result<DataViewSelector> {
+    let Some(selector) = &branch.selector else {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL by_filter branch `{}` requires a selector",
+            branch.id
+        )));
+    };
+    let filter = selector
+        .as_object()
+        .and_then(|object| object.get("filter").cloned())
+        .unwrap_or_else(|| selector.clone());
+    Ok(DataViewSelector {
+        filter: Some(filter),
+        ..DataViewSelector::default()
+    })
+}
+
+fn branch_view_selector_generic(
+    step_selector: Option<&serde_json::Value>,
+    branch: &PipelineDslBranch,
+) -> Result<DataViewSelector> {
+    let Some(selector) = &branch.selector else {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL separation branch `{}` requires a selector",
+            branch.id
+        )));
+    };
+    if selector_strings(
+        selector,
+        &["source", "source_id"],
+        &["sources", "source_ids"],
+    )
+    .is_some()
+        || selector
+            .as_object()
+            .is_some_and(|object| object.contains_key("source") || object.contains_key("sources"))
+    {
+        return branch_view_selector_by_source(branch);
+    }
+    if selector_metadata_map(selector)?.is_some()
+        || selector
+            .as_object()
+            .and_then(|_| selector_metadata_key(selector))
+            .is_some()
+        || step_selector.and_then(selector_metadata_key).is_some()
+    {
+        return branch_view_selector_by_metadata(step_selector, branch);
+    }
+    if selector_strings(selector, &["tag"], &["tags"]).is_some() {
+        return branch_view_selector_by_tag(branch);
+    }
+    if selector
+        .as_object()
+        .is_some_and(|object| object.contains_key("filter"))
+    {
+        return branch_view_selector_by_filter(branch);
+    }
+    Err(DagMlError::GraphValidation(format!(
+        "pipeline DSL separation branch `{}` selector must declare source_ids, metadata, tags or filter",
+        branch.id
+    )))
+}
+
+fn selector_strings(
+    value: &serde_json::Value,
+    singular_keys: &[&str],
+    plural_keys: &[&str],
+) -> Option<Vec<String>> {
+    let object = value.as_object()?;
+    for key in singular_keys {
+        if let Some(text) = object.get(*key).and_then(serde_json::Value::as_str) {
+            return Some(vec![text.to_string()]);
+        }
+    }
+    for key in plural_keys {
+        if let Some(values) = object.get(*key).and_then(serde_json::Value::as_array) {
+            let parsed = values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if parsed.len() == values.len() {
+                return Some(parsed);
+            }
+        }
+    }
+    None
+}
+
+fn selector_metadata_map(
+    value: &serde_json::Value,
+) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+    let Some(object) = value.as_object() else {
+        return Ok(None);
+    };
+    let Some(metadata) = object.get("metadata") else {
+        return Ok(None);
+    };
+    let Some(metadata) = metadata.as_object() else {
+        return Err(DagMlError::GraphValidation(
+            "pipeline DSL branch metadata selector must be an object".to_string(),
+        ));
+    };
+    Ok(Some(
+        metadata
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    ))
+}
+
+fn selector_metadata_key(value: &serde_json::Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    let object = value.as_object()?;
+    ["metadata_key", "column", "key", "by_metadata"]
+        .into_iter()
+        .find_map(|key| object.get(key).and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+}
+
+fn selector_value(value: &serde_json::Value) -> Option<serde_json::Value> {
+    match value {
+        serde_json::Value::String(_)
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_) => Some(value.clone()),
+        serde_json::Value::Object(object) => object
+            .get("value")
+            .or_else(|| object.get("equals"))
+            .cloned(),
+        _ => None,
+    }
+}
+
+fn branch_overlap_allowed(branch_step: &PipelineDslBranchStep, branch: &PipelineDslBranch) -> bool {
+    branch
+        .metadata
+        .get("allow_overlap")
+        .or_else(|| branch_step.metadata.get("allow_overlap"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn branch_id_from_metadata(metadata: &BTreeMap<String, serde_json::Value>) -> Option<String> {
@@ -6547,6 +6883,99 @@ mod tests {
             == "branch:b1.augment:noise"
             && edge.target.node_id.as_str() == "branch:b1.model:rf"));
         graph.validate().unwrap();
+    }
+
+    #[test]
+    fn compiles_separation_branch_view_plans() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-separation-branch-views",
+  "steps": [
+    {
+      "kind": "branch",
+      "mode": "by_metadata",
+      "selector": {"metadata_key": "site"},
+      "branches": [
+        {
+          "id": "site_a",
+          "selector": "A",
+          "steps": [
+            {"kind": "model", "id": "model:site.a", "operator": {"type": "PLSRegression"}}
+          ]
+        },
+        {
+          "id": "site_b",
+          "selector": {"value": "B"},
+          "steps": [
+            {"kind": "model", "id": "model:site.b", "operator": {"type": "Ridge"}}
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge_model",
+      "id": "model:site.meta",
+      "operator": {"type": "Ridge"},
+      "include_original_data": false
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+
+        assert_eq!(compiled.branch_view_plans.len(), 2);
+        assert_eq!(
+            compiled.campaign_template.branch_view_plans,
+            compiled.branch_view_plans
+        );
+        assert_eq!(
+            compiled.branch_view_plans[0].mode,
+            BranchViewMode::ByMetadata
+        );
+        assert_eq!(compiled.branch_view_plans[0].selector.metadata["site"], "A");
+        assert_eq!(compiled.branch_view_plans[1].selector.metadata["site"], "B");
+        let site_model = compiled
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "model:site.a")
+            .unwrap();
+        assert_eq!(
+            site_model.metadata["dsl_branch_view_plan"]["selector"]["metadata"]["site"],
+            "A"
+        );
+    }
+
+    #[test]
+    fn refuses_separation_branch_without_selector() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-bad-separation-branch",
+  "steps": [
+    {
+      "kind": "branch",
+      "mode": "by_source",
+      "branches": [
+        {
+          "id": "nir",
+          "steps": [
+            {"kind": "model", "id": "model:nir", "operator": {"type": "Ridge"}}
+          ]
+        }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = compile_pipeline_dsl_with_generation(&spec)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("by_source branch `nir` requires a selector"));
     }
 
     #[test]

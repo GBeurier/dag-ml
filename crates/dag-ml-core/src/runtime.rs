@@ -7437,6 +7437,7 @@ mod tests {
             generation: Default::default(),
             shape_plans: BTreeMap::new(),
             data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
             metadata: BTreeMap::new(),
         };
         let mut manifest = controller_manifest("controller:agg.custom", NodeKind::Aggregator);
@@ -7528,6 +7529,7 @@ mod tests {
             generation: Default::default(),
             shape_plans,
             data_bindings,
+            branch_view_plans: Vec::new(),
             metadata: BTreeMap::new(),
         };
         let mut model_manifest = controller_manifest("controller:model.obs", NodeKind::Model);
@@ -7657,6 +7659,7 @@ mod tests {
             generation: Default::default(),
             shape_plans: BTreeMap::from([(base_id.clone(), shape_plan)]),
             data_bindings: BTreeMap::from([(base_id.clone(), vec![data_binding(&base_id)])]),
+            branch_view_plans: Vec::new(),
             metadata: BTreeMap::new(),
         };
         let mut manifest = controller_manifest("controller:model", NodeKind::Model);
@@ -8131,6 +8134,7 @@ mod tests {
             generation: Default::default(),
             shape_plans: BTreeMap::new(),
             data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
             metadata: BTreeMap::new(),
         }
     }
@@ -8172,6 +8176,7 @@ mod tests {
             generation: Default::default(),
             shape_plans: BTreeMap::new(),
             data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
             metadata: BTreeMap::new(),
         }
     }
@@ -8215,6 +8220,7 @@ mod tests {
             },
             shape_plans: BTreeMap::new(),
             data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
             metadata: BTreeMap::new(),
         }
     }
@@ -8357,6 +8363,7 @@ mod tests {
                 generation: Default::default(),
                 shape_plans: BTreeMap::new(),
                 data_bindings: BTreeMap::new(),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifests(),
@@ -8471,6 +8478,7 @@ mod tests {
                 generation: Default::default(),
                 shape_plans: BTreeMap::new(),
                 data_bindings: BTreeMap::new(),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifests(),
@@ -8853,6 +8861,7 @@ mod tests {
                 },
                 shape_plans: BTreeMap::new(),
                 data_bindings: BTreeMap::new(),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifests(),
@@ -8923,6 +8932,7 @@ mod tests {
                 },
                 shape_plans: BTreeMap::new(),
                 data_bindings: BTreeMap::new(),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifests(),
@@ -10373,6 +10383,7 @@ mod tests {
                 generation: Default::default(),
                 shape_plans: BTreeMap::new(),
                 data_bindings: BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifests(),
@@ -10441,6 +10452,7 @@ mod tests {
                     model_id,
                     vec![data_binding(&NodeId::new("model:pls").unwrap())],
                 )]),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifests(),
@@ -10594,6 +10606,7 @@ mod tests {
                     augment_id.clone(),
                     vec![data_binding(&augment_id)],
                 )]),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifest_registry,
@@ -11146,6 +11159,7 @@ mod tests {
                 generation: Default::default(),
                 shape_plans: BTreeMap::new(),
                 data_bindings: BTreeMap::new(),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifests(),
@@ -11237,6 +11251,7 @@ mod tests {
                 generation: Default::default(),
                 shape_plans: BTreeMap::from([(model_id.clone(), shape_plan.clone())]),
                 data_bindings: BTreeMap::new(),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifests(),
@@ -11318,6 +11333,7 @@ mod tests {
                 generation: Default::default(),
                 shape_plans: BTreeMap::new(),
                 data_bindings: BTreeMap::new(),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifests(),
@@ -11527,6 +11543,7 @@ mod tests {
                 generation: Default::default(),
                 shape_plans: BTreeMap::new(),
                 data_bindings: BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &manifests(),

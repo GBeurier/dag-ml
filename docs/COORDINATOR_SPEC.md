@@ -534,6 +534,9 @@ Rules:
 - train-only exclusion cannot silently remove validation samples from scoring;
 - separation branches must produce disjoint or explicitly overlapping identity
   sets according to branch policy;
+- selector-driven separation branches are declared as campaign
+  `branch_view_plans` over source ids, metadata, tags or provider-native filter
+  expressions before host data providers materialize branch-local views;
 - all filters emit a `row_delta` with before/after identity fingerprints.
 
 ### Source Fusion And Merge

@@ -7,7 +7,7 @@ use crate::controller::{
     ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
     ControllerRegistry, RngPolicy,
 };
-use crate::data::{DataBinding, ExternalDataPlanEnvelope};
+use crate::data::{BranchViewPlan, DataBinding, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::fold::FoldSet;
 use crate::generation::{
@@ -69,6 +69,8 @@ pub struct CampaignSpec {
     pub shape_plans: BTreeMap<NodeId, DataModelShapePlan>,
     #[serde(default)]
     pub data_bindings: BTreeMap<NodeId, Vec<DataBinding>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branch_view_plans: Vec<BranchViewPlan>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
@@ -104,6 +106,16 @@ impl CampaignSpec {
                     )));
                 }
                 binding.validate()?;
+            }
+        }
+        let mut branch_views = BTreeSet::new();
+        for plan in &self.branch_view_plans {
+            plan.validate()?;
+            if !branch_views.insert(plan.view_id.as_str()) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "campaign `{}` contains duplicate branch view `{}`",
+                    self.id, plan.view_id
+                )));
             }
         }
         Ok(())
@@ -826,6 +838,14 @@ mod tests {
             .as_object()
             .unwrap()
             .contains_key("view_policy"));
+        assert!(schema["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("branch_view_plans"));
+        assert!(schema["$defs"]["branch_view_plan"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("selector"));
     }
 
     #[test]
@@ -923,6 +943,7 @@ mod tests {
                 },
             )]),
             data_bindings: BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]),
+            branch_view_plans: Vec::new(),
             metadata: BTreeMap::new(),
         };
 
@@ -1035,6 +1056,7 @@ mod tests {
                 },
             )]),
             data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
             metadata: BTreeMap::new(),
         };
 
@@ -1062,6 +1084,7 @@ mod tests {
                 generation: Default::default(),
                 shape_plans: BTreeMap::new(),
                 data_bindings: BTreeMap::new(),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &registry,
@@ -1097,6 +1120,7 @@ mod tests {
                 generation: Default::default(),
                 shape_plans: BTreeMap::new(),
                 data_bindings: BTreeMap::new(),
+                branch_view_plans: Vec::new(),
                 metadata: BTreeMap::new(),
             },
             &registry,
@@ -1140,6 +1164,7 @@ mod tests {
             },
             shape_plans: BTreeMap::new(),
             data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
             metadata: BTreeMap::new(),
         };
 
@@ -1178,6 +1203,7 @@ mod tests {
             },
             shape_plans: BTreeMap::new(),
             data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
             metadata: BTreeMap::new(),
         };
         let mut graph = graph();
