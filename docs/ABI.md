@@ -103,6 +103,11 @@ the host owns the underlying object behind each handle.
   `destroy(user_data)` after materialized prediction handles are released.
 - `docs/contracts/process_adapter_description.schema.json` documents the
   required process-adapter `--describe` JSON used by CLI-managed host adapters.
+- `docs/contracts/process_adapter_frame.schema.json` documents the
+  `control_frames_v1` JSONL protocol used by persistent process adapters:
+  coordinator `init`/`task`/`close` request frames and adapter
+  `ack`/`result`/`error` response frames wrapping the published
+  `NodeTask`/`NodeResult` contracts.
 - `docs/contracts/graph_spec.schema.json` documents the canonical graph JSON
   consumed by the planner and C ABI.
 - `docs/contracts/model_input_spec.schema.json` and

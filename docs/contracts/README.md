@@ -266,6 +266,28 @@ explicit JSON task/result capabilities. Persistent worker and parallel
 scheduler features remain opt-in capabilities layered on the same description
 object.
 
+## Process Adapter Frame v1
+
+Schema: `process_adapter_frame.schema.json`
+
+Canonical fixtures:
+`examples/fixtures/runtime/process_adapter_frame_init.json`,
+`process_adapter_frame_task_transform_scale.json`,
+`process_adapter_frame_result_transform_scale.json`,
+`process_adapter_frame_ack_initialized.json`,
+`process_adapter_frame_error_retryable_timeout.json`,
+`process_adapter_frame_close.json`
+
+Runtime shape used by persistent JSONL process adapters:
+`init | task | close` coordinator request frames and
+`ack | result | error` adapter response frames.
+
+This contract is enabled only when the adapter description declares
+`control_frames_v1`. It gives host adapters a stable lifecycle and error
+surface: `init` carries controller and worker identity, `task` wraps a
+published `NodeTask`, `result` wraps a published `NodeResult`, `error` carries
+typed retryability, and `close` gives the coordinator a bounded shutdown path.
+
 ## Research Provenance Package Profile v1
 
 Profile: `research_provenance_package_profile.v1.json`

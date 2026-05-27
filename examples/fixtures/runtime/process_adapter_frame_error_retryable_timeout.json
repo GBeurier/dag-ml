@@ -1,0 +1,9 @@
+{
+  "type": "error",
+  "schema_version": 1,
+  "error": {
+    "code": "timeout_recoverable",
+    "message": "worker timed out while executing a retryable task",
+    "retryable": true
+  }
+}

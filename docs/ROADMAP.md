@@ -74,10 +74,11 @@ per controller. Pool routing spreads `FIT_CV` by node/variant/fold while keeping
 on the worker that produced them. Process adapters must expose a `--describe`
 JSON handshake so the CLI can reject unsupported protocol versions or modes
 before a campaign starts; that description now has a published JSON Schema and
-canonical fixture. Persistent workers use `control_frames_v1` for
-explicit `init`, framed `task`, typed `error` and `close` messages. They are
-guarded by coordinator-side timeouts and opt-in retry/restart, with a flaky
-adapter fixture covering timeout refusal and recovery. A stateful sklearn smoke
+canonical fixture. Persistent workers use published `control_frames_v1` JSON
+Schema fixtures for explicit `init`, framed `task`, typed `error`, `result`,
+`ack` and `close` messages. They are guarded by coordinator-side timeouts and
+opt-in retry/restart, with a flaky adapter fixture covering timeout refusal and
+recovery. A stateful sklearn smoke
 now fits a real sklearn pipeline during `REFIT`, stores it behind an opaque model
 handle, and replays `PREDICT` through that handle in the same persistent pool.
 The handshake now also gates persistent-worker, worker-env and

@@ -1,0 +1,7 @@
+{
+  "type": "init",
+  "schema_version": 1,
+  "controller_id": "controller:transform.mock",
+  "worker_index": 0,
+  "worker_count": 2
+}
