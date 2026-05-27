@@ -25,6 +25,10 @@ use serde::{de::DeserializeOwned, Serialize};
 pub type DagMlHandle = u64;
 pub const DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION: u32 = 3;
+pub const DAG_ML_ARTIFACT_STORE_VTABLE_BORROWED_ABI_VERSION: u32 = 1;
+pub const DAG_ML_ARTIFACT_STORE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
+pub const DAG_ML_PREDICTION_CACHE_VTABLE_BORROWED_ABI_VERSION: u32 = 1;
+pub const DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
 pub const DAG_ML_HANDLE_KIND_DATA_VIEW: u32 = 2;
@@ -1921,7 +1925,7 @@ pub struct CAbiRuntimeArtifactStore {
 
 impl CAbiRuntimeArtifactStore {
     pub fn new(vtable: DagMlArtifactStoreVTable) -> dag_ml_core::Result<Self> {
-        if vtable.abi_version < 1 {
+        if vtable.abi_version < DAG_ML_ARTIFACT_STORE_VTABLE_BORROWED_ABI_VERSION {
             return Err(DagMlError::RuntimeValidation(format!(
                 "artifact store ABI version {} is unsupported",
                 vtable.abi_version
@@ -1950,6 +1954,11 @@ impl Drop for CAbiRuntimeArtifactStore {
                 unsafe { release(self.vtable.user_data, *handle) };
             }
             handles.clear();
+        }
+        if self.vtable.abi_version >= DAG_ML_ARTIFACT_STORE_VTABLE_OWNED_ABI_VERSION {
+            if let Some(destroy) = self.vtable.destroy {
+                unsafe { destroy(self.vtable.user_data) };
+            }
         }
     }
 }
@@ -2052,7 +2061,7 @@ pub struct CAbiRuntimePredictionCacheStore {
 
 impl CAbiRuntimePredictionCacheStore {
     pub fn new(vtable: DagMlPredictionCacheVTable) -> dag_ml_core::Result<Self> {
-        if vtable.abi_version < 1 {
+        if vtable.abi_version < DAG_ML_PREDICTION_CACHE_VTABLE_BORROWED_ABI_VERSION {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache ABI version {} is unsupported",
                 vtable.abi_version
@@ -2192,6 +2201,11 @@ impl Drop for CAbiRuntimePredictionCacheStore {
                 unsafe { release(self.vtable.user_data, *handle) };
             }
             handles.clear();
+        }
+        if self.vtable.abi_version >= DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION {
+            if let Some(destroy) = self.vtable.destroy {
+                unsafe { destroy(self.vtable.user_data) };
+            }
         }
     }
 }
@@ -2678,6 +2692,7 @@ mod tests {
         handle: DagMlHandleRef,
         status: DagMlStatusCode,
         release_handles: Vec<DagMlHandle>,
+        destroy_count: usize,
     }
 
     #[derive(Default)]
@@ -2690,6 +2705,7 @@ mod tests {
         release_handles: Vec<DagMlHandle>,
         materialize_json: Vec<u8>,
         materialize_count: usize,
+        destroy_count: usize,
     }
 
     fn error_message(error: &DagMlString) -> String {
@@ -2949,6 +2965,14 @@ mod tests {
         state.release_handles.push(handle);
     }
 
+    unsafe extern "C" fn artifact_store_destroy_stub(user_data: *mut c_void) {
+        if user_data.is_null() {
+            return;
+        }
+        let state = &mut *(user_data.cast::<ArtifactStoreStub>());
+        state.destroy_count += 1;
+    }
+
     unsafe extern "C" fn prediction_cache_load_blocks_stub(
         user_data: *mut c_void,
         requirement_key: DagMlBytesView,
@@ -3044,6 +3068,14 @@ mod tests {
         }
         let state = &mut *(user_data.cast::<PredictionCacheStub>());
         state.release_handles.push(handle);
+    }
+
+    unsafe extern "C" fn prediction_cache_destroy_stub(user_data: *mut c_void) {
+        if user_data.is_null() {
+            return;
+        }
+        let state = &mut *(user_data.cast::<PredictionCacheStub>());
+        state.destroy_count += 1;
     }
 
     fn controller_task_result_fixture() -> (ControllerId, NodeTask, NodeResult) {
@@ -3494,7 +3526,7 @@ mod tests {
                 user_data: (&mut state as *mut ArtifactStoreStub).cast::<c_void>(),
                 materialize: Some(artifact_store_materialize_stub),
                 release: Some(artifact_store_release_stub),
-                destroy: None,
+                destroy: Some(artifact_store_destroy_stub),
             };
             let store = CAbiRuntimeArtifactStore::new(table).unwrap();
             let handle = store.materialize(&request).unwrap();
@@ -3502,6 +3534,35 @@ mod tests {
             assert!(state.release_handles.is_empty());
         }
         assert_eq!(state.release_handles, vec![99]);
+        assert_eq!(state.destroy_count, 0);
+    }
+
+    #[test]
+    fn c_abi_artifact_store_owned_vtable_destroys_user_data_after_handles() {
+        let request = artifact_materialization_request_fixture();
+        let mut state = ArtifactStoreStub {
+            handle: DagMlHandleRef {
+                handle: 99,
+                kind: DAG_ML_HANDLE_KIND_MODEL,
+            },
+            ..Default::default()
+        };
+        {
+            let table = DagMlArtifactStoreVTable {
+                abi_version: DAG_ML_ARTIFACT_STORE_VTABLE_OWNED_ABI_VERSION,
+                user_data: (&mut state as *mut ArtifactStoreStub).cast::<c_void>(),
+                materialize: Some(artifact_store_materialize_stub),
+                release: Some(artifact_store_release_stub),
+                destroy: Some(artifact_store_destroy_stub),
+            };
+            let store = CAbiRuntimeArtifactStore::new(table).unwrap();
+            let handle = store.materialize(&request).unwrap();
+            assert_eq!(handle.handle, 99);
+            assert!(state.release_handles.is_empty());
+            assert_eq!(state.destroy_count, 0);
+        }
+        assert_eq!(state.release_handles, vec![99]);
+        assert_eq!(state.destroy_count, 1);
     }
 
     #[test]
@@ -3727,7 +3788,7 @@ mod tests {
                 materialize: Some(prediction_cache_materialize_stub),
                 release_bytes: Some(prediction_cache_release_bytes_stub),
                 release: Some(prediction_cache_release_stub),
-                destroy: None,
+                destroy: Some(prediction_cache_destroy_stub),
             };
             let store = CAbiRuntimePredictionCacheStore::new(table).unwrap();
             let handle = store
@@ -3745,6 +3806,66 @@ mod tests {
             assert!(state.release_handles.is_empty());
         }
         assert_eq!(state.release_handles, vec![77]);
+        assert_eq!(state.destroy_count, 0);
+    }
+
+    #[test]
+    fn c_abi_prediction_cache_store_owned_vtable_destroys_user_data_after_handles() {
+        let requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("model:base").unwrap(),
+            source_port: "pred".to_string(),
+            consumer_node: NodeId::new("model:meta").unwrap(),
+            target_port: "pred".to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
+            fold_ids: vec![FoldId::new("fold:0").unwrap()],
+            unit_ids: Vec::new(),
+            sample_ids: vec![SampleId::new("sample:1").unwrap()],
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let blocks = vec![PredictionBlock {
+            prediction_id: Some("prediction:model:base.fold0".to_string()),
+            producer_node: requirement.producer_node.clone(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: requirement.sample_ids.clone(),
+            values: vec![vec![0.42]],
+            target_names: vec!["y".to_string()],
+        }];
+        let cache = build_prediction_cache_record(&requirement, &blocks).unwrap();
+        let mut state = PredictionCacheStub {
+            blocks_json: serde_json::to_vec(&blocks).unwrap(),
+            ..Default::default()
+        };
+        {
+            let table = DagMlPredictionCacheVTable {
+                abi_version: DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION,
+                user_data: (&mut state as *mut PredictionCacheStub).cast::<c_void>(),
+                load_blocks: Some(prediction_cache_load_blocks_stub),
+                materialize: Some(prediction_cache_materialize_stub),
+                release_bytes: Some(prediction_cache_release_bytes_stub),
+                release: Some(prediction_cache_release_stub),
+                destroy: Some(prediction_cache_destroy_stub),
+            };
+            let store = CAbiRuntimePredictionCacheStore::new(table).unwrap();
+            let handle = store
+                .materialize(&PredictionCacheMaterializationRequest {
+                    run_id: RunId::new("run:prediction.cache.abi.owned").unwrap(),
+                    bundle_id: BundleId::new("bundle:prediction.cache.abi.owned").unwrap(),
+                    phase: Phase::Refit,
+                    variant_id: None,
+                    requirement: requirement.clone(),
+                    cache,
+                    producer_controller_id: ControllerId::new("controller:model").unwrap(),
+                })
+                .unwrap();
+            assert_eq!(handle.handle, 77);
+            assert!(state.release_handles.is_empty());
+            assert_eq!(state.destroy_count, 0);
+        }
+        assert_eq!(state.release_handles, vec![77]);
+        assert_eq!(state.destroy_count, 1);
     }
 
     #[test]
