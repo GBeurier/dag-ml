@@ -38,6 +38,12 @@ PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL = Path(
 PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_REL = Path(
     "docs/contracts/prediction_cache_columnar_tensor_metadata.schema.json"
 )
+AGGREGATION_CONTROLLER_TASK_SCHEMA_REL = Path(
+    "docs/contracts/aggregation_controller_task.schema.json"
+)
+AGGREGATION_CONTROLLER_RESULT_SCHEMA_REL = Path(
+    "docs/contracts/aggregation_controller_result.schema.json"
+)
 DATA_OUTPUT_PROVENANCE_SCHEMA_REL = Path(
     "docs/contracts/data_output_provenance.schema.json"
 )
@@ -157,6 +163,14 @@ PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_ID = (
 PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "prediction_cache_columnar_tensor_metadata.v1.schema.json"
+)
+AGGREGATION_CONTROLLER_TASK_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "aggregation_controller_task.v1.schema.json"
+)
+AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "aggregation_controller_result.v1.schema.json"
 )
 DATA_OUTPUT_PROVENANCE_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
@@ -411,6 +425,7 @@ def validate_campaign_spec_schema(schema: Any, label: str) -> None:
     for definition_name in (
         "leakage_policy",
         "aggregation_policy",
+        "aggregation_controller_spec",
         "fold_set",
         "split_invocation",
         "generation_spec",
@@ -640,6 +655,7 @@ def validate_controller_manifest_schema(schema: Any, label: str) -> None:
             "generates_data",
             "generates_model",
             "expands_variants",
+            "aggregates_predictions",
         ],
         f"{label} ControllerManifest capability enum is not aligned",
     )
@@ -901,6 +917,115 @@ def validate_prediction_cache_columnar_tensor_metadata_schema(
         isinstance(defs, dict) and "block_metadata" in defs and "prediction_unit_id" in defs,
         f"{label} prediction-cache columnar tensor metadata schema definitions are incomplete",
     )
+
+
+def validate_aggregation_controller_task_schema(schema: Any, label: str) -> None:
+    require(
+        isinstance(schema, dict),
+        f"{label} aggregation-controller task schema must be an object",
+    )
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} aggregation-controller task schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == AGGREGATION_CONTROLLER_TASK_SCHEMA_ID,
+        f"{label} aggregation-controller task schema has unexpected $id",
+    )
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} aggregation-controller task schema root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(
+        isinstance(required, list),
+        f"{label} aggregation-controller task schema required list is missing",
+    )
+    for field in ("schema_version", "task_id", "controller_id", "policy", "input"):
+        require(
+            field in required,
+            f"{label} aggregation-controller task schema must require `{field}`",
+        )
+    properties = schema.get("properties")
+    require(
+        isinstance(properties, dict),
+        f"{label} aggregation-controller task schema properties are missing",
+    )
+    require(
+        properties.get("schema_version", {}).get("const") == 1,
+        f"{label} aggregation-controller task schema_version const must be 1",
+    )
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} aggregation-controller task $defs missing")
+    for definition_name in (
+        "aggregation_policy",
+        "aggregation_controller_spec",
+        "observation_to_sample_input",
+        "sample_to_unit_input",
+        "observation_prediction_block",
+        "prediction_block",
+        "sample_relation_set",
+        "prediction_unit_id",
+    ):
+        require(
+            definition_name in defs,
+            f"{label} aggregation-controller task schema misses `{definition_name}`",
+        )
+    require(
+        defs["aggregation_policy"]["properties"]["method"].get("const") == "custom_controller",
+        f"{label} aggregation-controller task policy must pin custom_controller method",
+    )
+
+
+def validate_aggregation_controller_result_schema(schema: Any, label: str) -> None:
+    require(
+        isinstance(schema, dict),
+        f"{label} aggregation-controller result schema must be an object",
+    )
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} aggregation-controller result schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID,
+        f"{label} aggregation-controller result schema has unexpected $id",
+    )
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} aggregation-controller result schema root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(
+        isinstance(required, list),
+        f"{label} aggregation-controller result schema required list is missing",
+    )
+    for field in ("schema_version", "task_id", "output"):
+        require(
+            field in required,
+            f"{label} aggregation-controller result schema must require `{field}`",
+        )
+    properties = schema.get("properties")
+    require(
+        isinstance(properties, dict),
+        f"{label} aggregation-controller result schema properties are missing",
+    )
+    require(
+        properties.get("schema_version", {}).get("const") == 1,
+        f"{label} aggregation-controller result schema_version const must be 1",
+    )
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} aggregation-controller result $defs missing")
+    for definition_name in (
+        "sample_output",
+        "unit_output",
+        "prediction_block",
+        "aggregated_prediction_block",
+        "prediction_unit_id",
+    ):
+        require(
+            definition_name in defs,
+            f"{label} aggregation-controller result schema misses `{definition_name}`",
+        )
 
 
 def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
@@ -2584,6 +2709,21 @@ def validate_dag_ml_process_adapter_header(header: str, label: str) -> None:
         require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
+def validate_dag_ml_aggregation_controller_header(header: str, label: str) -> None:
+    for macro in (
+        "#define DAG_ML_AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION 1u",
+        "#define DAG_ML_AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION 1u",
+    ):
+        require(macro in header, f"{label} header must declare `{macro}`")
+    for symbol in (
+        "dagml_aggregation_controller_task_contract_json",
+        "dagml_aggregation_controller_result_contract_json",
+        "dagml_aggregation_controller_task_validate_json",
+        "dagml_aggregation_controller_result_validate_for_task_json",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
+
+
 def validate_dag_ml_graph_header(header: str, label: str) -> None:
     require(
         "#define DAG_ML_GRAPH_SPEC_SCHEMA_VERSION 1u" in header,
@@ -3007,6 +3147,12 @@ def main() -> int:
         local_prediction_cache_columnar_tensor_metadata_schema = load_json(
             ROOT / PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_REL
         )
+        local_aggregation_controller_task_schema = load_json(
+            ROOT / AGGREGATION_CONTROLLER_TASK_SCHEMA_REL
+        )
+        local_aggregation_controller_result_schema = load_json(
+            ROOT / AGGREGATION_CONTROLLER_RESULT_SCHEMA_REL
+        )
         local_data_output_provenance_schema = load_json(
             ROOT / DATA_OUTPUT_PROVENANCE_SCHEMA_REL
         )
@@ -3068,6 +3214,14 @@ def main() -> int:
             local_prediction_cache_columnar_tensor_metadata_schema,
             "dag-ml",
         )
+        validate_aggregation_controller_task_schema(
+            local_aggregation_controller_task_schema,
+            "dag-ml",
+        )
+        validate_aggregation_controller_result_schema(
+            local_aggregation_controller_result_schema,
+            "dag-ml",
+        )
         validate_data_output_provenance_schema(
             local_data_output_provenance_schema,
             "dag-ml",
@@ -3113,6 +3267,7 @@ def main() -> int:
         validate_dag_ml_prediction_cache_tensor_header(local_header, "dag-ml")
         validate_dag_ml_controller_result_header(local_header, "dag-ml")
         validate_dag_ml_process_adapter_header(local_header, "dag-ml")
+        validate_dag_ml_aggregation_controller_header(local_header, "dag-ml")
         validate_dag_ml_graph_header(local_header, "dag-ml")
         validate_dag_ml_campaign_header(local_header, "dag-ml")
         validate_dag_ml_execution_plan_header(local_header, "dag-ml")

@@ -817,6 +817,10 @@ mod tests {
             .as_object()
             .unwrap()
             .contains_key("selection_metric_level"));
+        assert!(schema["$defs"]["aggregation_policy"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("custom_controller"));
         assert!(schema["$defs"]["data_binding"]["properties"]
             .as_object()
             .unwrap()

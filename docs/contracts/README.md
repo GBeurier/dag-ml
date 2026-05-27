@@ -304,6 +304,25 @@ surface: `init` carries controller and worker identity, `task` wraps a
 published `NodeTask`, `result` wraps a published `NodeResult`, `error` carries
 typed retryability, and `close` gives the coordinator a bounded shutdown path.
 
+## Aggregation Controller Task/Result v1
+
+Schemas: `aggregation_controller_task.schema.json` and
+`aggregation_controller_result.schema.json`
+
+C ABI: `DAG_ML_AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION`,
+`DAG_ML_AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION`,
+`dagml_aggregation_controller_task_contract_json`,
+`dagml_aggregation_controller_result_contract_json`,
+`dagml_aggregation_controller_task_validate_json`,
+`dagml_aggregation_controller_result_validate_for_task_json`
+
+These contracts define the leakage-sensitive payloads used when aggregation is
+delegated to an external controller through `AggregationMethod::CustomController`.
+The task carries the custom aggregation policy, controller id, repeated
+observation or sample-to-unit inputs, relation metadata and requested output
+order. The result is validated against the exact task so custom reducers cannot
+change sample/unit coverage, fold scope, target names or prediction level.
+
 ## Research Provenance Package Profile v1
 
 Profile: `research_provenance_package_profile.v1.json`

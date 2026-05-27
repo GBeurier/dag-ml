@@ -4,10 +4,17 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, Result};
-use crate::ids::{FoldId, GroupId, NodeId, ObservationId, SampleId, TargetId};
+use crate::ids::{ControllerId, FoldId, GroupId, NodeId, ObservationId, SampleId, TargetId};
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::policy::{AggregationMethod, AggregationPolicy, AggregationWeights, PredictionLevel};
 use crate::relation::SampleRelationSet;
+
+pub const AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION: u32 = 1;
+pub const AGGREGATION_CONTROLLER_TASK_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json";
+pub const AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION: u32 = 1;
+pub const AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_result.v1.schema.json";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ObservationPredictionBlock {
@@ -190,6 +197,350 @@ impl ObservationPredictionBlock {
         }
         Ok(width)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AggregationControllerTask {
+    #[serde(default = "default_aggregation_controller_task_schema_version")]
+    pub schema_version: u32,
+    pub task_id: String,
+    pub controller_id: ControllerId,
+    pub policy: AggregationPolicy,
+    pub input: AggregationControllerInput,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "input_kind", rename_all = "snake_case")]
+pub enum AggregationControllerInput {
+    ObservationToSample {
+        block: ObservationPredictionBlock,
+        relations: SampleRelationSet,
+        requested_sample_order: Vec<SampleId>,
+    },
+    SampleToUnit {
+        block: PredictionBlock,
+        relations: SampleRelationSet,
+        requested_unit_order: Vec<PredictionUnitId>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AggregationControllerResult {
+    #[serde(default = "default_aggregation_controller_result_schema_version")]
+    pub schema_version: u32,
+    pub task_id: String,
+    pub output: AggregationControllerOutput,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "output_kind", rename_all = "snake_case")]
+pub enum AggregationControllerOutput {
+    Sample { block: PredictionBlock },
+    Unit { block: AggregatedPredictionBlock },
+}
+
+impl AggregationControllerTask {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION {
+            return Err(DagMlError::OofValidation(format!(
+                "aggregation controller task `{}` uses unsupported schema_version {}",
+                self.task_id, self.schema_version
+            )));
+        }
+        if self.task_id.trim().is_empty() {
+            return Err(DagMlError::OofValidation(
+                "aggregation controller task_id is empty".to_string(),
+            ));
+        }
+        self.policy.validate()?;
+        if self.policy.method != AggregationMethod::CustomController {
+            return Err(DagMlError::OofValidation(format!(
+                "aggregation controller task `{}` must use custom_controller method",
+                self.task_id
+            )));
+        }
+        let controller = self
+            .policy
+            .custom_controller
+            .as_ref()
+            .expect("custom_controller policy validation requires controller spec");
+        if controller.controller_id != self.controller_id {
+            return Err(DagMlError::OofValidation(format!(
+                "aggregation controller task `{}` targets controller `{}` but policy targets `{}`",
+                self.task_id, self.controller_id, controller.controller_id
+            )));
+        }
+        match &self.input {
+            AggregationControllerInput::ObservationToSample {
+                block,
+                relations,
+                requested_sample_order,
+            } => validate_aggregation_controller_observation_input(
+                block,
+                relations,
+                &self.policy,
+                requested_sample_order,
+            ),
+            AggregationControllerInput::SampleToUnit {
+                block,
+                relations,
+                requested_unit_order,
+            } => validate_aggregation_controller_sample_input(
+                block,
+                relations,
+                &self.policy,
+                requested_unit_order,
+            ),
+        }
+    }
+}
+
+impl AggregationControllerResult {
+    pub fn validate_for_task(&self, task: &AggregationControllerTask) -> Result<()> {
+        task.validate()?;
+        if self.schema_version != AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION {
+            return Err(DagMlError::OofValidation(format!(
+                "aggregation controller result `{}` uses unsupported schema_version {}",
+                self.task_id, self.schema_version
+            )));
+        }
+        if self.task_id != task.task_id {
+            return Err(DagMlError::OofValidation(format!(
+                "aggregation controller result task_id `{}` does not match task `{}`",
+                self.task_id, task.task_id
+            )));
+        }
+        match (&task.input, &self.output) {
+            (
+                AggregationControllerInput::ObservationToSample {
+                    block: input_block,
+                    requested_sample_order,
+                    ..
+                },
+                AggregationControllerOutput::Sample { block },
+            ) => validate_aggregation_controller_sample_output(
+                input_block,
+                requested_sample_order,
+                block,
+            ),
+            (
+                AggregationControllerInput::SampleToUnit {
+                    block: input_block,
+                    requested_unit_order,
+                    ..
+                },
+                AggregationControllerOutput::Unit { block },
+            ) => validate_aggregation_controller_unit_output(
+                input_block,
+                requested_unit_order,
+                task.policy.aggregation_level,
+                block,
+            ),
+            (AggregationControllerInput::ObservationToSample { .. }, _) => {
+                Err(DagMlError::OofValidation(format!(
+                    "aggregation controller result `{}` must return sample output for observation input",
+                    self.task_id
+                )))
+            }
+            (AggregationControllerInput::SampleToUnit { .. }, _) => {
+                Err(DagMlError::OofValidation(format!(
+                    "aggregation controller result `{}` must return unit output for sample input",
+                    self.task_id
+                )))
+            }
+        }
+    }
+}
+
+fn validate_aggregation_controller_observation_input(
+    block: &ObservationPredictionBlock,
+    relations: &SampleRelationSet,
+    policy: &AggregationPolicy,
+    requested_sample_order: &[SampleId],
+) -> Result<()> {
+    block.validate_shape()?;
+    relations.validate()?;
+    if policy.aggregation_level != PredictionLevel::Sample {
+        return Err(DagMlError::OofValidation(format!(
+            "observation aggregation controller task must output sample predictions, got {:?}",
+            policy.aggregation_level
+        )));
+    }
+    validate_unique_order(requested_sample_order, "requested_sample_order")?;
+    if matches!(
+        policy.weights,
+        AggregationWeights::ControllerEmitted | AggregationWeights::Quality
+    ) && block.weights.is_empty()
+    {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller task with {:?} weights requires observation weights",
+            policy.weights
+        )));
+    }
+    let requested = requested_sample_order.iter().collect::<BTreeSet<_>>();
+    let mut covered = BTreeSet::new();
+    for observation_id in &block.observation_ids {
+        let sample_id = relations
+            .sample_for_observation(observation_id)
+            .ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "observation prediction `{observation_id}` has no sample relation"
+                ))
+            })?;
+        if !requested.contains(sample_id) {
+            return Err(DagMlError::OofValidation(format!(
+                "observation prediction `{observation_id}` maps to unexpected sample `{sample_id}`"
+            )));
+        }
+        covered.insert(sample_id);
+    }
+    for sample_id in requested_sample_order {
+        if !covered.contains(sample_id) {
+            return Err(DagMlError::OofValidation(format!(
+                "sample `{sample_id}` has no observation predictions for aggregation controller task"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_aggregation_controller_sample_input(
+    block: &PredictionBlock,
+    relations: &SampleRelationSet,
+    policy: &AggregationPolicy,
+    requested_unit_order: &[PredictionUnitId],
+) -> Result<()> {
+    validate_sample_prediction_block(block)?;
+    relations.validate()?;
+    if policy.aggregation_level == PredictionLevel::Observation {
+        return Err(DagMlError::OofValidation(
+            "sample aggregation controller task cannot output observation-level predictions"
+                .to_string(),
+        ));
+    }
+    if matches!(
+        policy.weights,
+        AggregationWeights::ControllerEmitted | AggregationWeights::Quality
+    ) {
+        return Err(DagMlError::OofValidation(format!(
+            "sample aggregation controller task cannot use {:?} weights without sample weights",
+            policy.weights
+        )));
+    }
+    validate_unique_order(requested_unit_order, "requested_unit_order")?;
+    if requested_unit_order
+        .iter()
+        .any(|unit_id| unit_id.level() != policy.aggregation_level)
+    {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller requested units do not match level {:?}",
+            policy.aggregation_level
+        )));
+    }
+    let requested = requested_unit_order.iter().collect::<BTreeSet<_>>();
+    let mut covered = BTreeSet::new();
+    for sample_id in &block.sample_ids {
+        let unit_id = unit_for_sample(relations, policy.aggregation_level, sample_id)?;
+        if !requested.contains(&unit_id) {
+            return Err(DagMlError::OofValidation(format!(
+                "sample prediction `{sample_id}` maps to unexpected aggregation unit `{unit_id}`"
+            )));
+        }
+        covered.insert(unit_id);
+    }
+    for unit_id in requested_unit_order {
+        if !covered.contains(unit_id) {
+            return Err(DagMlError::OofValidation(format!(
+                "aggregation unit `{unit_id}` has no sample predictions for aggregation controller task"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_aggregation_controller_sample_output(
+    input_block: &ObservationPredictionBlock,
+    requested_sample_order: &[SampleId],
+    block: &PredictionBlock,
+) -> Result<()> {
+    validate_sample_prediction_block(block)?;
+    if block.producer_node != input_block.producer_node
+        || block.partition != input_block.partition
+        || block.fold_id != input_block.fold_id
+    {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller sample output for `{}` does not preserve producer, partition and fold",
+            input_block.producer_node
+        )));
+    }
+    if block.target_names != input_block.target_names {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller sample output for `{}` does not preserve target names",
+            input_block.producer_node
+        )));
+    }
+    if block.sample_ids != requested_sample_order {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller sample output for `{}` does not match requested sample order",
+            input_block.producer_node
+        )));
+    }
+    Ok(())
+}
+
+fn validate_aggregation_controller_unit_output(
+    input_block: &PredictionBlock,
+    requested_unit_order: &[PredictionUnitId],
+    expected_level: PredictionLevel,
+    block: &AggregatedPredictionBlock,
+) -> Result<()> {
+    block.validate_shape()?;
+    if block.producer_node != input_block.producer_node
+        || block.partition != input_block.partition
+        || block.fold_id != input_block.fold_id
+    {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller unit output for `{}` does not preserve producer, partition and fold",
+            input_block.producer_node
+        )));
+    }
+    if block.target_names != input_block.target_names {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller unit output for `{}` does not preserve target names",
+            input_block.producer_node
+        )));
+    }
+    if block.level != expected_level {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller unit output for `{}` has level {:?}, expected {:?}",
+            input_block.producer_node, block.level, expected_level
+        )));
+    }
+    if block.unit_ids != requested_unit_order {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller unit output for `{}` does not match requested unit order",
+            input_block.producer_node
+        )));
+    }
+    Ok(())
+}
+
+fn validate_unique_order<T>(values: &[T], label: &str) -> Result<()>
+where
+    T: Ord,
+{
+    if values.is_empty() {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller {label} is empty"
+        )));
+    }
+    let unique = values.iter().collect::<BTreeSet<_>>();
+    if unique.len() != values.len() {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller {label} contains duplicates"
+        )));
+    }
+    Ok(())
 }
 
 pub fn aggregate_observation_predictions(
@@ -728,10 +1079,18 @@ fn mode_sorted(values: &[f64]) -> f64 {
     }
 }
 
+fn default_aggregation_controller_task_schema_version() -> u32 {
+    AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION
+}
+
+fn default_aggregation_controller_result_schema_version() -> u32 {
+    AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{GroupId, TargetId};
+    use crate::ids::{ControllerId, GroupId, TargetId};
     use crate::relation::SampleRelation;
 
     fn sid(value: &str) -> SampleId {
@@ -769,6 +1128,166 @@ mod tests {
             source_id: None,
             is_augmented: false,
         }
+    }
+
+    fn custom_policy(level: PredictionLevel) -> AggregationPolicy {
+        AggregationPolicy {
+            aggregation_level: level,
+            method: AggregationMethod::CustomController,
+            custom_controller: Some(crate::policy::AggregationControllerSpec {
+                controller_id: ControllerId::new("controller:agg.trimmed").unwrap(),
+                params: serde_json::json!({ "trim_fraction": 0.1 }),
+            }),
+            ..AggregationPolicy::default()
+        }
+    }
+
+    #[test]
+    fn validates_custom_observation_aggregation_controller_result() {
+        let task = AggregationControllerTask {
+            schema_version: AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
+            task_id: "agg-task:obs.sample.fold0".to_string(),
+            controller_id: ControllerId::new("controller:agg.trimmed").unwrap(),
+            policy: custom_policy(PredictionLevel::Sample),
+            input: AggregationControllerInput::ObservationToSample {
+                block: ObservationPredictionBlock {
+                    prediction_id: Some("prediction:model.fold0".to_string()),
+                    producer_node: NodeId::new("model:pls").unwrap(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(FoldId::new("fold:0").unwrap()),
+                    observation_ids: vec![oid("obs:1"), oid("obs:2"), oid("obs:3")],
+                    values: vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![9.0, 10.0]],
+                    weights: Vec::new(),
+                    target_names: vec!["moisture".to_string(), "protein".to_string()],
+                },
+                relations: SampleRelationSet {
+                    records: vec![
+                        relation("obs:1", "sample:1"),
+                        relation("obs:2", "sample:1"),
+                        relation("obs:3", "sample:2"),
+                    ],
+                },
+                requested_sample_order: vec![sid("sample:1"), sid("sample:2")],
+            },
+        };
+        task.validate().unwrap();
+
+        let result = AggregationControllerResult {
+            schema_version: AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+            task_id: task.task_id.clone(),
+            output: AggregationControllerOutput::Sample {
+                block: PredictionBlock {
+                    prediction_id: Some("prediction:model.fold0:custom_sample_agg".to_string()),
+                    producer_node: NodeId::new("model:pls").unwrap(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(FoldId::new("fold:0").unwrap()),
+                    sample_ids: vec![sid("sample:1"), sid("sample:2")],
+                    values: vec![vec![2.0, 3.0], vec![9.0, 10.0]],
+                    target_names: vec!["moisture".to_string(), "protein".to_string()],
+                },
+            },
+        };
+
+        result.validate_for_task(&task).unwrap();
+    }
+
+    #[test]
+    fn custom_aggregation_controller_result_refuses_order_mismatch() {
+        let task = AggregationControllerTask {
+            schema_version: AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
+            task_id: "agg-task:obs.sample.fold0".to_string(),
+            controller_id: ControllerId::new("controller:agg.trimmed").unwrap(),
+            policy: custom_policy(PredictionLevel::Sample),
+            input: AggregationControllerInput::ObservationToSample {
+                block: ObservationPredictionBlock {
+                    prediction_id: None,
+                    producer_node: NodeId::new("model:pls").unwrap(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: None,
+                    observation_ids: vec![oid("obs:1"), oid("obs:2")],
+                    values: vec![vec![1.0], vec![2.0]],
+                    weights: Vec::new(),
+                    target_names: vec!["y".to_string()],
+                },
+                relations: SampleRelationSet {
+                    records: vec![relation("obs:1", "sample:1"), relation("obs:2", "sample:2")],
+                },
+                requested_sample_order: vec![sid("sample:1"), sid("sample:2")],
+            },
+        };
+        let result = AggregationControllerResult {
+            schema_version: AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+            task_id: task.task_id.clone(),
+            output: AggregationControllerOutput::Sample {
+                block: PredictionBlock {
+                    prediction_id: None,
+                    producer_node: NodeId::new("model:pls").unwrap(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: None,
+                    sample_ids: vec![sid("sample:2"), sid("sample:1")],
+                    values: vec![vec![2.0], vec![1.0]],
+                    target_names: vec!["y".to_string()],
+                },
+            },
+        };
+
+        let error = result.validate_for_task(&task).unwrap_err().to_string();
+        assert!(error.contains("requested sample order"));
+    }
+
+    #[test]
+    fn validates_custom_sample_to_group_aggregation_controller_result() {
+        let task = AggregationControllerTask {
+            schema_version: AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
+            task_id: "agg-task:sample.group.fold0".to_string(),
+            controller_id: ControllerId::new("controller:agg.trimmed").unwrap(),
+            policy: custom_policy(PredictionLevel::Group),
+            input: AggregationControllerInput::SampleToUnit {
+                block: PredictionBlock {
+                    prediction_id: Some("prediction:model.fold0".to_string()),
+                    producer_node: NodeId::new("model:pls").unwrap(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(FoldId::new("fold:0").unwrap()),
+                    sample_ids: vec![sid("sample:1"), sid("sample:2"), sid("sample:3")],
+                    values: vec![vec![1.0], vec![3.0], vec![10.0]],
+                    target_names: vec!["y".to_string()],
+                },
+                relations: SampleRelationSet {
+                    records: vec![
+                        relation_with_units("obs:1", "sample:1", "target:1", "group:left"),
+                        relation_with_units("obs:2", "sample:2", "target:2", "group:left"),
+                        relation_with_units("obs:3", "sample:3", "target:3", "group:right"),
+                    ],
+                },
+                requested_unit_order: vec![
+                    PredictionUnitId::Group(GroupId::new("group:left").unwrap()),
+                    PredictionUnitId::Group(GroupId::new("group:right").unwrap()),
+                ],
+            },
+        };
+        task.validate().unwrap();
+
+        let result = AggregationControllerResult {
+            schema_version: AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+            task_id: task.task_id.clone(),
+            output: AggregationControllerOutput::Unit {
+                block: AggregatedPredictionBlock {
+                    prediction_id: Some("prediction:model.fold0:custom_group_agg".to_string()),
+                    producer_node: NodeId::new("model:pls").unwrap(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(FoldId::new("fold:0").unwrap()),
+                    level: PredictionLevel::Group,
+                    unit_ids: vec![
+                        PredictionUnitId::Group(GroupId::new("group:left").unwrap()),
+                        PredictionUnitId::Group(GroupId::new("group:right").unwrap()),
+                    ],
+                    values: vec![vec![2.0], vec![10.0]],
+                    target_names: vec!["y".to_string()],
+                },
+            },
+        };
+
+        result.validate_for_task(&task).unwrap();
     }
 
     #[test]
