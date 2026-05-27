@@ -2490,6 +2490,19 @@ def validate_dag_ml_controller_result_header(header: str, label: str) -> None:
         require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
+def validate_dag_ml_process_adapter_header(header: str, label: str) -> None:
+    for macro in (
+        "#define DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION 1u",
+        "#define DAG_ML_PROCESS_ADAPTER_FRAME_SCHEMA_VERSION 1u",
+    ):
+        require(macro in header, f"{label} header must declare `{macro}`")
+    for symbol in (
+        "dagml_process_adapter_description_contract_json",
+        "dagml_process_adapter_frame_contract_json",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
+
+
 def validate_dag_ml_graph_header(header: str, label: str) -> None:
     require(
         "#define DAG_ML_GRAPH_SPEC_SCHEMA_VERSION 1u" in header,
@@ -3011,6 +3024,7 @@ def main() -> int:
         validate_data_provider_header(local_header, "dag-ml")
         validate_dag_ml_prediction_cache_tensor_header(local_header, "dag-ml")
         validate_dag_ml_controller_result_header(local_header, "dag-ml")
+        validate_dag_ml_process_adapter_header(local_header, "dag-ml")
         validate_dag_ml_graph_header(local_header, "dag-ml")
         validate_dag_ml_campaign_header(local_header, "dag-ml")
         validate_dag_ml_execution_plan_header(local_header, "dag-ml")

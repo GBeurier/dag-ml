@@ -49,6 +49,8 @@ pub const DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION: u32 = CONTROLLER_MANIFEST_S
 pub const DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION;
 pub const DAG_ML_NODE_TASK_SCHEMA_VERSION: u32 = NODE_TASK_SCHEMA_VERSION;
 pub const DAG_ML_NODE_RESULT_SCHEMA_VERSION: u32 = NODE_RESULT_SCHEMA_VERSION;
+pub const DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION: u32 = 1;
+pub const DAG_ML_PROCESS_ADAPTER_FRAME_SCHEMA_VERSION: u32 = 1;
 pub const DAG_ML_SELECTION_POLICY_SCHEMA_VERSION: u32 = SELECTION_POLICY_SCHEMA_VERSION;
 pub const DAG_ML_SELECTION_DECISION_SCHEMA_VERSION: u32 = SELECTION_DECISION_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
@@ -58,6 +60,10 @@ pub const DAG_ML_HANDLE_KIND_MODEL: u32 = 3;
 pub const DAG_ML_HANDLE_KIND_ARTIFACT: u32 = 4;
 pub const DAG_ML_HANDLE_KIND_PREDICTION: u32 = 5;
 pub const DAG_ML_HANDLE_KIND_RELATION: u32 = 6;
+const PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/process_adapter_description.v1.schema.json";
+const PROCESS_ADAPTER_FRAME_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/process_adapter_frame.v1.schema.json";
 
 #[derive(Serialize)]
 struct GraphSpecContractInfo {
@@ -110,6 +116,18 @@ struct NodeTaskContractInfo {
 
 #[derive(Serialize)]
 struct NodeResultContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct ProcessAdapterDescriptionContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct ProcessAdapterFrameContractInfo {
     schema_version: u32,
     schema_id: &'static str,
 }
@@ -774,6 +792,52 @@ pub unsafe extern "C" fn dagml_node_result_contract_json(
     let contract = NodeResultContractInfo {
         schema_version: DAG_ML_NODE_RESULT_SCHEMA_VERSION,
         schema_id: NODE_RESULT_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
+}
+
+/// Returns the public process-adapter description JSON contract.
+///
+/// This is the `--describe` handshake used by CLI-managed process adapters.
+/// Native wrappers can use it to pin the adapter protocol before wiring a
+/// language-specific host process.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_process_adapter_description_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = ProcessAdapterDescriptionContractInfo {
+        schema_version: DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION,
+        schema_id: PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
+}
+
+/// Returns the public persistent process-adapter frame JSON contract.
+///
+/// The frame contract covers coordinator `init`/`task`/`close` request frames
+/// and adapter `ack`/`result`/`error` response frames. Task/result frames wrap
+/// the published `NodeTask` and `NodeResult` contracts.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_process_adapter_frame_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = ProcessAdapterFrameContractInfo {
+        schema_version: DAG_ML_PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
+        schema_id: PROCESS_ADAPTER_FRAME_SCHEMA_ID,
     };
     write_owned_json(out_json, error_out, &contract)
 }
@@ -5352,6 +5416,30 @@ mod tests {
         assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
         assert!(error_message(&error).contains("returned result"));
         unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn exposes_process_adapter_contracts_over_abi() {
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status =
+            unsafe { dagml_process_adapter_description_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(contract["schema_id"], PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID);
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe { dagml_process_adapter_frame_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(contract["schema_id"], PROCESS_ADAPTER_FRAME_SCHEMA_ID);
+        unsafe { dagml_owned_bytes_free(out) };
     }
 
     #[test]

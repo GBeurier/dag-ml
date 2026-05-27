@@ -259,6 +259,9 @@ Canonical fixture:
 Runtime shape returned by process adapters from `--describe`:
 `{ schema_version, protocol, adapter_id, supported_modes, capabilities }`.
 
+C ABI: `DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION`,
+`dagml_process_adapter_description_contract_json`
+
 This CLI/runtime contract lets the coordinator reject unsupported process
 adapters before any `NodeTask` is sent. Version 1 requires protocol
 `dag-ml-process-adapter`, mode declarations for `one_shot`/`jsonl` support and
@@ -281,6 +284,9 @@ Canonical fixtures:
 Runtime shape used by persistent JSONL process adapters:
 `init | task | close` coordinator request frames and
 `ack | result | error` adapter response frames.
+
+C ABI: `DAG_ML_PROCESS_ADAPTER_FRAME_SCHEMA_VERSION`,
+`dagml_process_adapter_frame_contract_json`
 
 This contract is enabled only when the adapter description declares
 `control_frames_v1`. It gives host adapters a stable lifecycle and error
