@@ -782,6 +782,7 @@ int main(int argc, char **argv) {
     if (DAG_ML_GRAPH_SPEC_SCHEMA_VERSION != 1u ||
         DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION != 1u ||
         DAG_ML_DATA_PLAN_SCHEMA_VERSION != 1u ||
+        DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION != 1u ||
         DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION != 1u ||
         strcmp(DAG_ML_DATA_OUTPUT_PROVENANCE_EXTRA_KEY, "dag_ml_output") != 0) {
         fprintf(stderr, "C schema macros are not aligned\n");
@@ -805,6 +806,33 @@ int main(int argc, char **argv) {
         !contains_bytes(contract.ptr, contract.len, "\"schema_version\":1") ||
         !contains_bytes(contract.ptr, contract.len, "graph_spec.v1.schema.json")) {
         fprintf(stderr, "unexpected graph spec contract: %.*s\n",
+            (int)contract.len,
+            contract.ptr ? (char *)contract.ptr : "");
+        if (contract.ptr) {
+            dagml_owned_bytes_free(contract);
+        }
+        return 1;
+    }
+    dagml_owned_bytes_free(contract);
+
+    contract.ptr = NULL;
+    contract.len = 0;
+    contract.capacity = 0;
+    status = dagml_controller_manifest_contract_json(&contract, &error);
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "controller manifest contract export failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+    if (!contract.ptr ||
+        !contains_bytes(contract.ptr, contract.len, "\"schema_version\":1") ||
+        !contains_bytes(contract.ptr, contract.len, "controller_manifest.v1.schema.json")) {
+        fprintf(stderr, "unexpected controller manifest contract: %.*s\n",
             (int)contract.len,
             contract.ptr ? (char *)contract.ptr : "");
         if (contract.ptr) {

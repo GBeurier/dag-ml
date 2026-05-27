@@ -8,6 +8,10 @@ use crate::graph::{NodeKind, NodeSpec, PortKind, PortSpec};
 use crate::ids::ControllerId;
 use crate::phase::Phase;
 
+pub const CONTROLLER_MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const CONTROLLER_MANIFEST_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/controller_manifest.v1.schema.json";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControllerCapability {
@@ -55,6 +59,7 @@ pub enum ArtifactPolicy {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ControllerManifest {
     pub controller_id: ControllerId,
     pub controller_version: String,
@@ -452,5 +457,29 @@ mod tests {
             .capabilities
             .insert(ControllerCapability::ProcessSafe);
         assert!(manifest.supports_parallel_invocation());
+    }
+
+    #[test]
+    fn published_controller_manifest_schema_declares_current_contract() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/controller_manifest.schema.json"
+        ))
+        .unwrap();
+
+        assert_eq!(schema["$id"], CONTROLLER_MANIFEST_SCHEMA_ID);
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("controller_id")));
+        assert!(schema["$defs"]["controller_capability"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability.as_str() == Some("emits_predictions")));
+        assert_eq!(
+            schema["$defs"]["model_input_spec"]["properties"]["schema_version"]["const"].as_u64(),
+            Some(crate::data::MODEL_INPUT_SPEC_SCHEMA_VERSION as u64)
+        );
     }
 }

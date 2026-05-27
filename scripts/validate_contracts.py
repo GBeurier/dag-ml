@@ -25,6 +25,7 @@ FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.
 GRAPH_SPEC_SCHEMA_REL = Path("docs/contracts/graph_spec.schema.json")
 MODEL_INPUT_SPEC_SCHEMA_REL = Path("docs/contracts/model_input_spec.schema.json")
 DATA_PLAN_SCHEMA_REL = Path("docs/contracts/data_plan.schema.json")
+CONTROLLER_MANIFEST_SCHEMA_REL = Path("docs/contracts/controller_manifest.schema.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
 OPENLINEAGE_FACETS_SCHEMA_REL = Path("docs/contracts/openlineage_dagml_facets.schema.json")
 PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL = Path(
@@ -48,6 +49,10 @@ LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL = Path(
     "examples/fixtures/data/model_input_spec_tabular_regressor.json"
 )
 LOCAL_DATA_PLAN_FIXTURE_REL = Path("examples/fixtures/data/data_plan_tabular_fusion.json")
+LOCAL_CONTROLLER_MANIFEST_FIXTURE_REL = Path(
+    "examples/fixtures/runtime/controller_manifest_data_aware_model.json"
+)
+LOCAL_CONTROLLER_MANIFEST_LIST_FIXTURE_REL = Path("examples/controller_manifests.json")
 LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL = Path(
     "examples/fixtures/runtime/data_output_provenance_augmented_view.json"
 )
@@ -81,6 +86,10 @@ MODEL_INPUT_SPEC_SCHEMA_ID = (
 DATA_PLAN_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "data_plan.v1.schema.json"
+)
+CONTROLLER_MANIFEST_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "controller_manifest.v1.schema.json"
 )
 SIBLING_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml-data/schemas/"
@@ -366,6 +375,108 @@ def validate_data_plan_schema(schema: Any, label: str) -> None:
         == ["materialize", "adapt", "align", "join", "collate"],
         f"{label} DataPlan step kinds are not aligned",
     )
+
+
+def validate_controller_manifest_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} ControllerManifest schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} ControllerManifest schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == CONTROLLER_MANIFEST_SCHEMA_ID,
+        f"{label} ControllerManifest schema $id mismatch",
+    )
+    require(schema.get("type") == "object", f"{label} ControllerManifest root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} ControllerManifest root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} ControllerManifest required list missing")
+    for field in (
+        "controller_id",
+        "controller_version",
+        "operator_kind",
+        "supported_phases",
+        "fit_scope",
+        "rng_policy",
+        "artifact_policy",
+    ):
+        require(field in required, f"{label} ControllerManifest schema must require `{field}`")
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} ControllerManifest $defs missing")
+    require(
+        defs.get("node_kind", {}).get("enum")
+        == [
+            "transform",
+            "y_transform",
+            "split",
+            "model",
+            "fork",
+            "map",
+            "feature_join",
+            "prediction_join",
+            "mixed_join",
+            "source_join",
+            "tag",
+            "exclude",
+            "augmentation",
+            "adapter",
+            "aggregator",
+            "generator",
+            "restructure",
+            "tuner",
+            "subgraph",
+            "chart",
+        ],
+        f"{label} ControllerManifest node_kind enum is not aligned",
+    )
+    require(
+        defs.get("controller_capability", {}).get("enum")
+        == [
+            "deterministic",
+            "thread_safe",
+            "process_safe",
+            "needs_python_gil",
+            "emits_predictions",
+            "consumes_oof_predictions",
+            "emits_artifacts",
+            "stateful",
+            "emits_relation",
+            "uses_core_rng",
+            "shape_changing",
+            "generates_data",
+            "generates_model",
+            "expands_variants",
+        ],
+        f"{label} ControllerManifest capability enum is not aligned",
+    )
+    require(
+        defs.get("controller_fit_scope", {}).get("enum")
+        == ["stateless", "fold_train", "full_train", "inference_only"],
+        f"{label} ControllerManifest fit_scope enum is not aligned",
+    )
+    require(
+        defs.get("rng_policy", {}).get("enum")
+        == [
+            "uses_core_seed",
+            "ignores_seed",
+            "externally_deterministic",
+            "nondeterministic",
+        ],
+        f"{label} ControllerManifest rng_policy enum is not aligned",
+    )
+    require(
+        defs.get("artifact_policy", {}).get("enum")
+        == ["serializable", "host_only", "content_addressed", "replay_required"],
+        f"{label} ControllerManifest artifact_policy enum is not aligned",
+    )
+    for definition_name in ("port_spec", "model_input_spec", "model_input_fusion_policy"):
+        require(
+            definition_name in defs,
+            f"{label} ControllerManifest schema misses `{definition_name}`",
+        )
 
 
 def validate_openlineage_facets_schema(schema: Any, label: str) -> None:
@@ -920,6 +1031,138 @@ def validate_data_plan(value: Any, label: str) -> None:
             require_non_empty_string(item, f"{label}.{field}[{index}]")
 
 
+def validate_controller_manifest(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} ControllerManifest must be an object")
+    require_identifier(value.get("controller_id"), f"{label}.controller_id")
+    require_non_empty_string(value.get("controller_version"), f"{label}.controller_version")
+    require(
+        value.get("operator_kind")
+        in {
+            "transform",
+            "y_transform",
+            "split",
+            "model",
+            "fork",
+            "map",
+            "feature_join",
+            "prediction_join",
+            "mixed_join",
+            "source_join",
+            "tag",
+            "exclude",
+            "augmentation",
+            "adapter",
+            "aggregator",
+            "generator",
+            "restructure",
+            "tuner",
+            "subgraph",
+            "chart",
+        },
+        f"{label}.operator_kind is invalid",
+    )
+    priority = value.get("priority", 0)
+    require(isinstance(priority, int) and 0 <= priority <= 4294967295, f"{label}.priority invalid")
+
+    phases = value.get("supported_phases")
+    require(isinstance(phases, list) and phases, f"{label}.supported_phases must be non-empty")
+    require(len(set(phases)) == len(phases), f"{label}.supported_phases contain duplicates")
+    for index, phase in enumerate(phases):
+        require(
+            phase in {"COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"},
+            f"{label}.supported_phases[{index}] is invalid",
+        )
+
+    for field in ("input_ports", "output_ports"):
+        ports = value.get(field, [])
+        require(isinstance(ports, list), f"{label}.{field} must be an array")
+        seen: set[str] = set()
+        for index, port in enumerate(ports):
+            port_label = f"{label}.{field}[{index}]"
+            require(isinstance(port, dict), f"{port_label} must be an object")
+            name = port.get("name")
+            require_non_empty_string(name, f"{port_label}.name")
+            require(name not in seen, f"{label}.{field} duplicate port `{name}`")
+            seen.add(name)
+            require(
+                port.get("kind") in {"data", "target", "prediction", "artifact", "metric", "control"},
+                f"{port_label}.kind is invalid",
+            )
+            representation = port.get("representation")
+            if representation is not None:
+                require_non_empty_string(representation, f"{port_label}.representation")
+            require(
+                port.get("cardinality") in {"one", "many", "optional"},
+                f"{port_label}.cardinality is invalid",
+            )
+
+    data_requirements = value.get("data_requirements")
+    if data_requirements is not None:
+        validate_model_input_spec(data_requirements, f"{label}.data_requirements")
+
+    capabilities = value.get("capabilities", [])
+    require(isinstance(capabilities, list), f"{label}.capabilities must be an array")
+    require(len(set(capabilities)) == len(capabilities), f"{label}.capabilities contain duplicates")
+    for index, capability in enumerate(capabilities):
+        require(
+            capability
+            in {
+                "deterministic",
+                "thread_safe",
+                "process_safe",
+                "needs_python_gil",
+                "emits_predictions",
+                "consumes_oof_predictions",
+                "emits_artifacts",
+                "stateful",
+                "emits_relation",
+                "uses_core_rng",
+                "shape_changing",
+                "generates_data",
+                "generates_model",
+                "expands_variants",
+            },
+            f"{label}.capabilities[{index}] is invalid",
+        )
+    require(
+        value.get("fit_scope") in {"stateless", "fold_train", "full_train", "inference_only"},
+        f"{label}.fit_scope is invalid",
+    )
+    require(
+        value.get("rng_policy")
+        in {"uses_core_seed", "ignores_seed", "externally_deterministic", "nondeterministic"},
+        f"{label}.rng_policy is invalid",
+    )
+    require(
+        value.get("artifact_policy")
+        in {"serializable", "host_only", "content_addressed", "replay_required"},
+        f"{label}.artifact_policy is invalid",
+    )
+    if "deterministic" in capabilities and value.get("rng_policy") == "nondeterministic":
+        raise ContractError(f"{label} cannot be deterministic with nondeterministic RNG")
+    if any(port.get("kind") == "prediction" for port in value.get("output_ports", [])):
+        require(
+            "emits_predictions" in capabilities,
+            f"{label} prediction outputs require emits_predictions capability",
+        )
+    if any(port.get("kind") == "artifact" for port in value.get("output_ports", [])):
+        require(
+            "emits_artifacts" in capabilities,
+            f"{label} artifact outputs require emits_artifacts capability",
+        )
+
+
+def validate_controller_manifest_list(value: Any, label: str) -> None:
+    require(isinstance(value, list) and value, f"{label} must be a non-empty manifest array")
+    seen: set[str] = set()
+    for index, manifest in enumerate(value):
+        manifest_label = f"{label}[{index}]"
+        validate_controller_manifest(manifest, manifest_label)
+        controller_id = manifest["controller_id"]
+        require(controller_id not in seen, f"{label} duplicate controller id `{controller_id}`")
+        seen.add(controller_id)
+
+
 def validate_data_output_provenance(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} data-output provenance must be an object")
     require(value.get("schema_version") == 1, f"{label} schema_version must be 1")
@@ -1055,7 +1298,12 @@ def validate_dag_ml_prediction_cache_tensor_header(header: str, label: str) -> N
 
 
 def validate_dag_ml_controller_result_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION=1",
+    )
     for symbol in (
+        "dagml_controller_manifest_contract_json",
         "dagml_node_result_validate_for_task_json",
         "dagml_controller_manifest_validate_json",
         "dagml_controller_manifest_list_validate_json",
@@ -1435,6 +1683,7 @@ def main() -> int:
         local_graph_spec_schema = load_json(ROOT / GRAPH_SPEC_SCHEMA_REL)
         local_model_input_spec_schema = load_json(ROOT / MODEL_INPUT_SPEC_SCHEMA_REL)
         local_data_plan_schema = load_json(ROOT / DATA_PLAN_SCHEMA_REL)
+        local_controller_manifest_schema = load_json(ROOT / CONTROLLER_MANIFEST_SCHEMA_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
         local_openlineage_facets_schema = load_json(ROOT / OPENLINEAGE_FACETS_SCHEMA_REL)
         local_prediction_cache_tensor_metadata_schema = load_json(
@@ -1452,6 +1701,12 @@ def main() -> int:
         local_graph_spec_fixture = load_json(ROOT / LOCAL_GRAPH_SPEC_FIXTURE_REL)
         local_model_input_spec_fixture = load_json(ROOT / LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL)
         local_data_plan_fixture = load_json(ROOT / LOCAL_DATA_PLAN_FIXTURE_REL)
+        local_controller_manifest_fixture = load_json(
+            ROOT / LOCAL_CONTROLLER_MANIFEST_FIXTURE_REL
+        )
+        local_controller_manifest_list_fixture = load_json(
+            ROOT / LOCAL_CONTROLLER_MANIFEST_LIST_FIXTURE_REL
+        )
         local_data_output_provenance_fixture = load_json(
             ROOT / LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL
         )
@@ -1468,6 +1723,7 @@ def main() -> int:
         validate_graph_spec_schema(local_graph_spec_schema, "dag-ml")
         validate_model_input_spec_schema(local_model_input_spec_schema, "dag-ml")
         validate_data_plan_schema(local_data_plan_schema, "dag-ml")
+        validate_controller_manifest_schema(local_controller_manifest_schema, "dag-ml")
         validate_openlineage_facets_schema(local_openlineage_facets_schema, "dag-ml")
         validate_prediction_cache_tensor_metadata_schema(
             local_prediction_cache_tensor_metadata_schema,
@@ -1486,6 +1742,11 @@ def main() -> int:
         validate_graph_spec(local_graph_spec_fixture, "dag-ml")
         validate_model_input_spec(local_model_input_spec_fixture, "dag-ml")
         validate_data_plan(local_data_plan_fixture, "dag-ml")
+        validate_controller_manifest(local_controller_manifest_fixture, "dag-ml")
+        validate_controller_manifest_list(
+            local_controller_manifest_list_fixture,
+            "dag-ml controller manifest list",
+        )
         validate_data_output_provenance(local_data_output_provenance_fixture, "dag-ml")
         validate_process_adapter_description(
             local_process_adapter_description_fixture,

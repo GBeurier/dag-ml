@@ -1,0 +1,72 @@
+{
+  "controller_id": "controller:data-aware.model",
+  "controller_version": "0.1.0",
+  "operator_kind": "model",
+  "priority": 10,
+  "supported_phases": ["FIT_CV", "REFIT", "PREDICT"],
+  "input_ports": [
+    {
+      "name": "x",
+      "kind": "data",
+      "representation": "tabular_numeric",
+      "cardinality": "one",
+      "description": "model features"
+    }
+  ],
+  "output_ports": [
+    {
+      "name": "y_hat",
+      "kind": "prediction",
+      "representation": null,
+      "cardinality": "one",
+      "description": "model predictions"
+    },
+    {
+      "name": "model",
+      "kind": "artifact",
+      "representation": null,
+      "cardinality": "one",
+      "description": "refit model artifact"
+    }
+  ],
+  "data_requirements": {
+    "schema_version": 1,
+    "ports": [
+      {
+        "name": "x",
+        "accepted_representations": ["tabular_numeric", "columnar_f64"],
+        "accepted_types": ["f64"],
+        "rank": 2,
+        "multi_source": true,
+        "optional": false,
+        "metadata": {
+          "role": "features"
+        }
+      }
+    ],
+    "default_fusion": {
+      "mode": "concatenate_features",
+      "alignment": "sample_id",
+      "adapter_id": null,
+      "params": {
+        "namespace_columns": true
+      }
+    },
+    "metadata": {
+      "binding_profile": "tabular_regressor"
+    }
+  },
+  "capabilities": [
+    "deterministic",
+    "thread_safe",
+    "process_safe",
+    "emits_predictions",
+    "consumes_oof_predictions",
+    "emits_artifacts",
+    "stateful",
+    "uses_core_rng"
+  ],
+  "fit_scope": "fold_train",
+  "rng_policy": "uses_core_seed",
+  "artifact_policy": "serializable"
+}

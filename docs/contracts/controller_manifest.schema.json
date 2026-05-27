@@ -1,0 +1,274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/controller_manifest.v1.schema.json",
+  "title": "DAG-ML ControllerManifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "controller_id",
+    "controller_version",
+    "operator_kind",
+    "supported_phases",
+    "fit_scope",
+    "rng_policy",
+    "artifact_policy"
+  ],
+  "properties": {
+    "controller_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "controller_version": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "operator_kind": {
+      "$ref": "#/$defs/node_kind"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "supported_phases": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/phase"
+      }
+    },
+    "input_ports": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/port_spec"
+      }
+    },
+    "output_ports": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/port_spec"
+      }
+    },
+    "data_requirements": {
+      "anyOf": [
+        { "$ref": "#/$defs/model_input_spec" },
+        { "type": "null" }
+      ]
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/controller_capability"
+      }
+    },
+    "fit_scope": {
+      "$ref": "#/$defs/controller_fit_scope"
+    },
+    "rng_policy": {
+      "$ref": "#/$defs/rng_policy"
+    },
+    "artifact_policy": {
+      "$ref": "#/$defs/artifact_policy"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "node_kind": {
+      "enum": [
+        "transform",
+        "y_transform",
+        "split",
+        "model",
+        "fork",
+        "map",
+        "feature_join",
+        "prediction_join",
+        "mixed_join",
+        "source_join",
+        "tag",
+        "exclude",
+        "augmentation",
+        "adapter",
+        "aggregator",
+        "generator",
+        "restructure",
+        "tuner",
+        "subgraph",
+        "chart"
+      ]
+    },
+    "phase": {
+      "enum": ["COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"]
+    },
+    "port_kind": {
+      "enum": ["data", "target", "prediction", "artifact", "metric", "control"]
+    },
+    "port_cardinality": {
+      "enum": ["one", "many", "optional"]
+    },
+    "port_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "representation", "cardinality"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "kind": {
+          "$ref": "#/$defs/port_kind"
+        },
+        "representation": {
+          "anyOf": [
+            { "$ref": "#/$defs/non_empty_string" },
+            { "type": "null" }
+          ]
+        },
+        "cardinality": {
+          "$ref": "#/$defs/port_cardinality"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "controller_capability": {
+      "enum": [
+        "deterministic",
+        "thread_safe",
+        "process_safe",
+        "needs_python_gil",
+        "emits_predictions",
+        "consumes_oof_predictions",
+        "emits_artifacts",
+        "stateful",
+        "emits_relation",
+        "uses_core_rng",
+        "shape_changing",
+        "generates_data",
+        "generates_model",
+        "expands_variants"
+      ]
+    },
+    "controller_fit_scope": {
+      "enum": ["stateless", "fold_train", "full_train", "inference_only"]
+    },
+    "rng_policy": {
+      "enum": [
+        "uses_core_seed",
+        "ignores_seed",
+        "externally_deterministic",
+        "nondeterministic"
+      ]
+    },
+    "artifact_policy": {
+      "enum": ["serializable", "host_only", "content_addressed", "replay_required"]
+    },
+    "model_input_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "ports"],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "ports": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/model_input_port"
+          }
+        },
+        "default_fusion": {
+          "anyOf": [
+            { "$ref": "#/$defs/model_input_fusion_policy" },
+            { "type": "null" }
+          ]
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "model_input_port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "accepted_representations", "accepted_types"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "accepted_representations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "accepted_types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16
+            },
+            { "type": "null" }
+          ]
+        },
+        "multi_source": {
+          "type": "boolean"
+        },
+        "optional": {
+          "type": "boolean"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "model_input_fusion_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "enum": [
+            "single_source",
+            "concatenate_features",
+            "stack_samples",
+            "dict_by_source",
+            "custom"
+          ]
+        },
+        "alignment": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "adapter_id": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "params": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

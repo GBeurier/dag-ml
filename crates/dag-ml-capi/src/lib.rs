@@ -20,7 +20,8 @@ use dag_ml_core::{
     PredictionPartition, PredictionUnitId, RegressionMetricKind, RegressionMetricReport,
     RegressionTargetBlock, ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore,
     RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
-    SampleId, SelectionDecision, SelectionPolicy, SequentialScheduler, DATA_OUTPUT_PROVENANCE_KEY,
+    SampleId, SelectionDecision, SelectionPolicy, SequentialScheduler,
+    CONTROLLER_MANIFEST_SCHEMA_ID, CONTROLLER_MANIFEST_SCHEMA_VERSION, DATA_OUTPUT_PROVENANCE_KEY,
     DATA_OUTPUT_PROVENANCE_SCHEMA_ID, DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION, DATA_PLAN_SCHEMA_ID,
     DATA_PLAN_SCHEMA_VERSION, GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION,
     MODEL_INPUT_SPEC_SCHEMA_ID, MODEL_INPUT_SPEC_SCHEMA_VERSION,
@@ -38,6 +39,7 @@ pub const DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION: u32 = 1;
 pub const DAG_ML_GRAPH_SPEC_SCHEMA_VERSION: u32 = GRAPH_SPEC_SCHEMA_VERSION;
 pub const DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION: u32 = MODEL_INPUT_SPEC_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PLAN_SCHEMA_VERSION: u32 = DATA_PLAN_SCHEMA_VERSION;
+pub const DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION: u32 = CONTROLLER_MANIFEST_SCHEMA_VERSION;
 pub const DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
@@ -61,6 +63,12 @@ struct ModelInputSpecContractInfo {
 
 #[derive(Serialize)]
 struct DataPlanContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct ControllerManifestContractInfo {
     schema_version: u32,
     schema_id: &'static str,
 }
@@ -508,6 +516,25 @@ pub unsafe extern "C" fn dagml_data_plan_validate_json(
         "data plan",
         DataPlan::validate,
     )
+}
+
+/// Returns the public C ABI contract for canonical `ControllerManifest` JSON.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_controller_manifest_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = ControllerManifestContractInfo {
+        schema_version: DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION,
+        schema_id: CONTROLLER_MANIFEST_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
 }
 
 /// Validates a single canonical JSON `ControllerManifest`.
@@ -4897,29 +4924,22 @@ mod tests {
     #[test]
     fn validates_controller_manifests_over_abi() {
         let manifests = include_bytes!("../../../examples/controller_manifests.json");
-        let manifest = br#"{
-  "controller_id": "controller:data-aware",
-  "controller_version": "0.1.0",
-  "operator_kind": "model",
-  "priority": 0,
-  "supported_phases": ["FIT_CV"],
-  "input_ports": [],
-  "output_ports": [],
-  "data_requirements": {
-    "schema_version": 1,
-    "ports": [{
-      "name": "x",
-      "accepted_representations": ["tabular_numeric"],
-      "accepted_types": ["f64"],
-      "rank": 2
-    }]
-  },
-  "capabilities": ["deterministic"],
-  "fit_scope": "fold_train",
-  "rng_policy": "uses_core_seed",
-  "artifact_policy": "serializable"
-}"#;
+        let manifest = include_bytes!(
+            "../../../examples/fixtures/runtime/controller_manifest_data_aware_model.json"
+        );
+        let mut out = DagMlOwnedBytes::default();
         let mut error = DagMlString::default();
+
+        let status = unsafe { dagml_controller_manifest_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(
+            contract["schema_id"],
+            dag_ml_core::CONTROLLER_MANIFEST_SCHEMA_ID
+        );
+        unsafe { dagml_owned_bytes_free(out) };
 
         let status = unsafe {
             dagml_controller_manifest_validate_json(manifest.as_ptr(), manifest.len(), &mut error)
