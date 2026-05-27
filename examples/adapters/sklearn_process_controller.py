@@ -158,7 +158,16 @@ def require_data_handles(task: dict[str, Any]) -> None:
 def data_view(task: dict[str, Any], suffix: str = "") -> dict[str, Any] | None:
     bindings = task["node_plan"].get("data_bindings", [])
     if not bindings:
-        return None
+        key_suffix = suffix
+        if key_suffix:
+            for key, view in task.get("data_views", {}).items():
+                if key.endswith(key_suffix):
+                    return view
+            return None
+        for view in task.get("data_views", {}).values():
+            if view.get("partition") != "fold_validation":
+                return view
+        return next(iter(task.get("data_views", {}).values()), None)
     input_name = bindings[0]["input_name"]
     return task.get("data_views", {}).get(f"data:{input_name}{suffix}")
 
@@ -333,6 +342,31 @@ def model_result(task: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[
     return predictions, artifacts, artifact_handles
 
 
+def output_handles(task: dict[str, Any], handle_value: int) -> dict[str, Any]:
+    node_plan = task["node_plan"]
+    controller_id = node_plan["controller_id"]
+    outputs = {
+        "out": {
+            "handle": handle_value,
+            "kind": "data",
+            "owner_controller": controller_id,
+        }
+    }
+    if node_plan.get("kind") == "model":
+        outputs["oof"] = {
+            "handle": handle_value,
+            "kind": "prediction",
+            "owner_controller": controller_id,
+        }
+    else:
+        outputs["x_out"] = {
+            "handle": handle_value,
+            "kind": "data",
+            "owner_controller": controller_id,
+        }
+    return outputs
+
+
 def build_result(task: dict[str, Any]) -> dict[str, Any]:
     node_plan = task["node_plan"]
     node_id = node_plan["node_id"]
@@ -363,13 +397,7 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "node_id": node_id,
-        "outputs": {
-            "out": {
-                "handle": handle_value,
-                "kind": "data",
-                "owner_controller": controller_id,
-            }
-        },
+        "outputs": output_handles(task, handle_value),
         "predictions": predictions,
         "shape_deltas": [],
         "artifacts": artifacts,

@@ -229,6 +229,38 @@ def require_variant_param_overrides(task: dict[str, Any]) -> None:
                     )
 
 
+def first_view_sample_ids(task: dict[str, Any], partition: str) -> list[str] | None:
+    for view in task.get("data_views", {}).values():
+        if view.get("partition") == partition and view.get("sample_ids"):
+            return list(view["sample_ids"])
+    return None
+
+
+def output_handles(task: dict[str, Any], handle_value: int) -> dict[str, Any]:
+    node_plan = task["node_plan"]
+    controller_id = node_plan["controller_id"]
+    outputs = {
+        "out": {
+            "handle": handle_value,
+            "kind": "data",
+            "owner_controller": controller_id,
+        }
+    }
+    if node_plan.get("kind") == "model":
+        outputs["oof"] = {
+            "handle": handle_value,
+            "kind": "prediction",
+            "owner_controller": controller_id,
+        }
+    else:
+        outputs["x_out"] = {
+            "handle": handle_value,
+            "kind": "data",
+            "owner_controller": controller_id,
+        }
+    return outputs
+
+
 def build_result(task: dict[str, Any]) -> dict[str, Any]:
     node_plan = task["node_plan"]
     node_id = node_plan["node_id"]
@@ -243,12 +275,14 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
     predictions = []
     if node_plan.get("kind") == "model":
         prediction_sample_ids = ["sample:process"]
-        data_bindings = node_plan.get("data_bindings", [])
-        if phase == "FIT_CV" and data_bindings:
-            input_name = data_bindings[0]["input_name"]
-            validation_view = task.get("data_views", {}).get(f"data:{input_name}:validation")
-            if validation_view is not None:
-                prediction_sample_ids = validation_view.get("sample_ids") or prediction_sample_ids
+        if phase == "FIT_CV":
+            prediction_sample_ids = first_view_sample_ids(task, "fold_validation") or prediction_sample_ids
+        elif phase in {"REFIT", "PREDICT"}:
+            prediction_sample_ids = (
+                first_view_sample_ids(task, "full_train")
+                or first_view_sample_ids(task, "predict")
+                or prediction_sample_ids
+            )
         predictions.append(
             {
                 "prediction_id": f"pred:{node_id}:{phase}",
@@ -293,13 +327,7 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "node_id": node_id,
-        "outputs": {
-            "out": {
-                "handle": handle_value,
-                "kind": "data",
-                "owner_controller": controller_id,
-            }
-        },
+        "outputs": output_handles(task, handle_value),
         "predictions": predictions,
         "shape_deltas": [],
         "artifacts": artifacts,

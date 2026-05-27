@@ -45,9 +45,12 @@ the campaign layer rather than graph operators, and CLI/C ABI can feed that
 template straight into execution-plan building. CLI process smokes can now run
 an executable branch/merge DSL through CV+refit bundle capture and stateful
 sklearn CV+refit+replay, with refit artifacts validated against the selected
-generation variant's effective parameters. The remaining DSL work is
-compatibility with the broader nirs4all surface, data-producing operator/view
-propagation beyond smoke-level data handles, and richer search-space syntax.
+generation variant's effective parameters. The runtime now propagates scoped
+data-view contracts across data-producing graph edges, so train-only
+augmentation can feed downstream branch models without reclassifying splits as
+operators. The remaining DSL work is compatibility with broader pipeline
+surfaces, richer search-space syntax, and production materialization semantics
+for transformed data instead of smoke-level adapter handles.
 
 ## Phase 2: Host Controllers
 

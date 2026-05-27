@@ -3206,6 +3206,8 @@ impl SequentialScheduler {
     ) -> Result<Vec<NodeResult>> {
         let mut results = Vec::new();
         let mut output_handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
+        let mut output_data_views =
+            BTreeMap::<NodeId, BTreeMap<String, DataProviderViewSpec>>::new();
         let mut input_lineage = BTreeMap::<NodeId, LineageId>::new();
 
         for level in plan.node_parallel_levels_for_phase(scope.phase)? {
@@ -3224,6 +3226,7 @@ impl SequentialScheduler {
                     plan,
                     node_plan,
                     &output_handles,
+                    &output_data_views,
                     &resources,
                     ctx,
                     &scope,
@@ -3292,7 +3295,9 @@ impl SequentialScheduler {
                     ctx.prediction_store.append(prediction.clone())?;
                 }
                 ctx.lineage.record(result.lineage.clone())?;
+                let data_views = derive_output_data_views(plan, &task, &result)?;
                 output_handles.insert(node_id.clone(), result.outputs.clone());
+                output_data_views.insert(node_id.clone(), data_views);
                 input_lineage.insert(node_id.clone(), result.lineage.record_id.clone());
                 results.push(result);
             }
@@ -3612,6 +3617,8 @@ impl ParallelScheduler {
         plan.validate_parallel_controller_capabilities(self.max_workers, scope.phase)?;
         let mut results = Vec::new();
         let mut output_handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
+        let mut output_data_views =
+            BTreeMap::<NodeId, BTreeMap<String, DataProviderViewSpec>>::new();
         let mut input_lineage = BTreeMap::<NodeId, LineageId>::new();
 
         for level in plan.node_parallel_levels_for_phase(scope.phase)? {
@@ -3625,6 +3632,7 @@ impl ParallelScheduler {
                     plan,
                     node_plan,
                     &output_handles,
+                    &output_data_views,
                     &resources,
                     ctx,
                     &scope,
@@ -3728,7 +3736,9 @@ impl ParallelScheduler {
                         ctx.prediction_store.append(prediction.clone())?;
                     }
                     ctx.lineage.record(result.lineage.clone())?;
+                    let data_views = derive_output_data_views(plan, &prepared_task.task, &result)?;
                     output_handles.insert(prepared_task.node_id.clone(), result.outputs.clone());
+                    output_data_views.insert(prepared_task.node_id.clone(), data_views);
                     input_lineage.insert(
                         prepared_task.node_id.clone(),
                         result.lineage.record_id.clone(),
@@ -3797,6 +3807,7 @@ fn collect_input_handles(
     plan: &ExecutionPlan,
     node_plan: &NodePlan,
     output_handles: &BTreeMap<NodeId, BTreeMap<String, HandleRef>>,
+    output_data_views: &BTreeMap<NodeId, BTreeMap<String, DataProviderViewSpec>>,
     resources: &PhaseScopeResources<'_>,
     ctx: &RunContext,
     scope: &PhaseScope,
@@ -3809,6 +3820,11 @@ fn collect_input_handles(
         .iter()
         .map(|edge| edge.source.node_id.clone())
         .collect::<BTreeSet<_>>();
+    let bound_data_inputs = node_plan
+        .data_bindings
+        .iter()
+        .map(|binding| binding.input_name.clone())
+        .collect::<BTreeSet<_>>();
     for upstream in &node_plan.input_nodes {
         if training_oof_sources.contains(upstream) {
             continue;
@@ -3816,6 +3832,54 @@ fn collect_input_handles(
         if let Some(handles) = output_handles.get(upstream) {
             for (port, handle) in handles {
                 inputs.insert(format!("{upstream}.{port}"), handle.clone());
+            }
+        }
+    }
+    for edge in plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == node_plan.node_id)
+        .filter(|edge| edge.contract.kind == PortKind::Data && !edge.contract.requires_oof)
+    {
+        if bound_data_inputs.contains(&edge.target.port_name) {
+            continue;
+        }
+        let Some(handles) = output_handles.get(&edge.source.node_id) else {
+            continue;
+        };
+        let Some(handle) = handles.get(&edge.source.port_name) else {
+            continue;
+        };
+        let key = data_view_key(&edge.target.port_name);
+        if inputs.insert(key.clone(), handle.clone()).is_some() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` received duplicate data edge input `{key}`",
+                node_plan.node_id
+            )));
+        }
+        if let Some(source_views) = output_data_views.get(&edge.source.node_id) {
+            if let Some(view) = source_views.get(&edge.source.port_name) {
+                if data_views.insert(key.clone(), view.clone()).is_some() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received duplicate data edge view `{key}`",
+                        node_plan.node_id
+                    )));
+                }
+            }
+            let source_validation_key = validation_data_view_key(&edge.source.port_name);
+            if let Some(view) = source_views.get(&source_validation_key) {
+                let validation_key = format!("{key}:validation");
+                if data_views
+                    .insert(validation_key.clone(), view.clone())
+                    .is_some()
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received duplicate data edge validation view `{validation_key}`",
+                        node_plan.node_id
+                    )));
+                }
             }
         }
     }
@@ -3854,7 +3918,7 @@ fn collect_input_handles(
                 binding: binding.clone(),
             })?;
             let view = data_view_for_scope(binding, plan.fold_set.as_ref(), scope)?;
-            let key = format!("data:{}", binding.input_name);
+            let key = data_view_key(&binding.input_name);
             let view_handle = make_data_view_handle(
                 data_provider,
                 ctx,
@@ -3864,13 +3928,23 @@ fn collect_input_handles(
                 &materialized,
                 &view,
             )?;
-            data_views.insert(key.clone(), view);
-            inputs.insert(key, view_handle);
+            if data_views.insert(key.clone(), view).is_some() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` received duplicate data view `{key}`",
+                    node_plan.node_id
+                )));
+            }
+            if inputs.insert(key.clone(), view_handle).is_some() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` received duplicate data input `{key}`",
+                    node_plan.node_id
+                )));
+            }
 
             if let Some(validation_view) =
                 validation_data_view_for_scope(binding, plan.fold_set.as_ref(), scope)?
             {
-                let validation_key = format!("data:{}:validation", binding.input_name);
+                let validation_key = format!("{key}:validation");
                 let validation_handle = make_data_view_handle(
                     data_provider,
                     ctx,
@@ -3880,8 +3954,24 @@ fn collect_input_handles(
                     &materialized,
                     &validation_view,
                 )?;
-                data_views.insert(validation_key.clone(), validation_view);
-                inputs.insert(validation_key, validation_handle);
+                if data_views
+                    .insert(validation_key.clone(), validation_view)
+                    .is_some()
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received duplicate validation data view `{validation_key}`",
+                        node_plan.node_id
+                    )));
+                }
+                if inputs
+                    .insert(validation_key.clone(), validation_handle)
+                    .is_some()
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received duplicate validation data input `{validation_key}`",
+                        node_plan.node_id
+                    )));
+                }
             }
         }
     }
@@ -4380,6 +4470,68 @@ struct CollectedInputs {
     handles: BTreeMap<String, HandleRef>,
     data_views: BTreeMap<String, DataProviderViewSpec>,
     prediction_inputs: BTreeMap<String, PredictionInputSpec>,
+}
+
+fn data_view_key(input_name: &str) -> String {
+    format!("data:{input_name}")
+}
+
+fn validation_data_view_key(input_name: &str) -> String {
+    format!("{input_name}:validation")
+}
+
+fn derive_output_data_views(
+    plan: &ExecutionPlan,
+    task: &NodeTask,
+    result: &NodeResult,
+) -> Result<BTreeMap<String, DataProviderViewSpec>> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == task.node_plan.node_id)
+        .expect("execution plan was validated");
+    let mut views = BTreeMap::new();
+    for port in node
+        .ports
+        .outputs
+        .iter()
+        .filter(|port| port.kind == PortKind::Data)
+    {
+        let Some(handle) = result.outputs.get(&port.name) else {
+            continue;
+        };
+        if !matches!(handle.kind, HandleKind::Data | HandleKind::DataView) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted data output `{}` with non-data/data-view handle kind {:?}",
+                task.node_plan.node_id, port.name, handle.kind
+            )));
+        }
+        if let Some(view) = primary_output_data_view(task) {
+            views.insert(port.name.clone(), view.clone());
+        }
+        if let Some(validation_view) = validation_output_data_view(task) {
+            views.insert(
+                validation_data_view_key(&port.name),
+                validation_view.clone(),
+            );
+        }
+    }
+    Ok(views)
+}
+
+fn primary_output_data_view(task: &NodeTask) -> Option<&DataProviderViewSpec> {
+    task.data_views
+        .values()
+        .find(|view| view.partition != DataRequestPartition::FoldValidation)
+        .or_else(|| task.data_views.values().next())
+}
+
+fn validation_output_data_view(task: &NodeTask) -> Option<&DataProviderViewSpec> {
+    task.data_views
+        .values()
+        .find(|view| view.partition == DataRequestPartition::FoldValidation)
 }
 
 fn make_data_view_handle(
@@ -4894,6 +5046,11 @@ mod tests {
                 kind: HandleKind::Data,
                 owner_controller: self.id.clone(),
             };
+            let prediction_output = HandleRef {
+                handle: self.handle,
+                kind: HandleKind::Prediction,
+                owner_controller: self.id.clone(),
+            };
             let prediction_sample_ids = validation_view_sample_ids(task)
                 .map(|ids| ids.into_iter().collect::<Vec<_>>())
                 .unwrap_or_else(|| vec![SampleId::new("s1").unwrap()]);
@@ -4912,7 +5069,13 @@ mod tests {
                 .collect::<Vec<_>>();
             Ok(NodeResult {
                 node_id: task.node_plan.node_id.clone(),
-                outputs: BTreeMap::from([("out".to_string(), output)]),
+                outputs: BTreeMap::from([
+                    ("out".to_string(), output.clone()),
+                    ("x".to_string(), output.clone()),
+                    ("x_out".to_string(), output),
+                    ("pred".to_string(), prediction_output.clone()),
+                    ("oof".to_string(), prediction_output),
+                ]),
                 predictions,
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
@@ -7910,6 +8073,133 @@ mod tests {
         assert_eq!(
             validation_views[1].view.sample_ids,
             Some(vec![SampleId::new("s2").unwrap()])
+        );
+    }
+
+    #[test]
+    fn data_edges_propagate_fold_views_from_data_producing_nodes() {
+        let augment_id = NodeId::new("augment:noise").unwrap();
+        let model_id = NodeId::new("model:branch").unwrap();
+        let graph = GraphSpec {
+            id: "g:data.edge.views".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    augment_id.as_str(),
+                    NodeKind::Augmentation,
+                    vec![port("x", PortKind::Data)],
+                    vec![port("x_out", PortKind::Data)],
+                ),
+                node(
+                    model_id.as_str(),
+                    NodeKind::Model,
+                    vec![port("x", PortKind::Data)],
+                    vec![port("oof", PortKind::Prediction)],
+                ),
+            ],
+            edges: vec![EdgeSpec {
+                source: PortRef {
+                    node_id: augment_id.clone(),
+                    port_name: "x_out".to_string(),
+                },
+                target: PortRef {
+                    node_id: model_id.clone(),
+                    port_name: "x".to_string(),
+                },
+                contract: EdgeContract {
+                    kind: PortKind::Data,
+                    representation: None,
+                    requires_oof: false,
+                    requires_fold_alignment: false,
+                    propagates_lineage: true,
+                },
+            }],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+        let mut manifest_registry = manifests();
+        manifest_registry
+            .register(controller_manifest(
+                "controller:augmentation",
+                NodeKind::Augmentation,
+            ))
+            .unwrap();
+        let plan = build_execution_plan(
+            "plan:data.edge.views",
+            graph,
+            CampaignSpec {
+                id: "campaign:data.edge.views".to_string(),
+                root_seed: Some(11),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: Some(SplitInvocation {
+                    id: "split:outer".to_string(),
+                    controller_id: None,
+                    leakage_policy: Default::default(),
+                    params: BTreeMap::new(),
+                    fold_set: Some(two_fold_set()),
+                }),
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::from([(
+                    augment_id.clone(),
+                    vec![data_binding(&augment_id)],
+                )]),
+                metadata: BTreeMap::new(),
+            },
+            &manifest_registry,
+        )
+        .unwrap();
+        let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        let provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider").unwrap(),
+            envelope,
+        )
+        .unwrap();
+        let mut controllers = runtime_controllers();
+        controllers
+            .register(Box::new(MockController {
+                id: ControllerId::new("controller:augmentation").unwrap(),
+                handle: 3,
+                emit_prediction: false,
+            }))
+            .unwrap();
+        let mut ctx = RunContext::new(RunId::new("run:data.edge.views").unwrap(), Some(11));
+
+        let results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 4);
+        assert_eq!(provider.view_records().len(), 4);
+        let samples_by_fold = ctx
+            .prediction_store
+            .blocks()
+            .iter()
+            .filter(|block| block.producer_node == model_id)
+            .map(|block| {
+                (
+                    block.fold_id.as_ref().unwrap().to_string(),
+                    block.sample_ids.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            samples_by_fold["fold:0"],
+            vec![SampleId::new("s1").unwrap()]
+        );
+        assert_eq!(
+            samples_by_fold["fold:1"],
+            vec![SampleId::new("s2").unwrap()]
         );
     }
 
