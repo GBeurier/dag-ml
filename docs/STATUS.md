@@ -146,6 +146,11 @@ Implemented:
   data-producing operators to downstream consumers, so the executable DSL smoke
   now covers train-only augmentation feeding a branch model before OOF stacking
   and refit/replay;
+- propagated data views now carry reserved `dag_ml_output` provenance metadata
+  for the producing node/port/phase, selected variant/fold, shape-plan and
+  aggregation fingerprints, current feature schema fingerprint and emitted
+  shape deltas, making downstream controller inputs auditable beyond opaque
+  smoke handles;
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate
