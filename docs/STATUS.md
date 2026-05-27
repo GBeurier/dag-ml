@@ -215,7 +215,8 @@ Implemented:
   channels. During execution the scheduler can aggregate controller-emitted
   observation predictions through the declared `DataModelShapePlan`, coordinator
   relations from data providers/envelopes, and either built-in reducers or a
-  custom aggregation controller before OOF sample blocks are stored;
+  custom aggregation controller before storing live OOF sample or target/group
+  blocks;
 - execution-bundle validation now checks selected candidates against the
   rebuilt plan and requires refit artifacts for selected refittable nodes;
 - explicit execution-bundle schema version with unsupported-version refusal;
@@ -479,8 +480,8 @@ Not implemented yet:
   `PipelineDslSpec` profile;
 - advanced search-space compiler/lowering beyond typed node-parameter variants
   and coordinated override dimensions from `PipelineDslSpec`;
-- live target/group OOF joins and production persistent/Arrow replay backends
-  for non-sample aggregated prediction blocks;
+- production persistent/Arrow replay backends for non-sample aggregated
+  prediction blocks;
 - artifact binary deserialization/loading into host-native model objects beyond
   the implemented portable artifact reference contract, file-backed artifact
   manifest and file-backed artifact payload store;
