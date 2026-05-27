@@ -1775,6 +1775,44 @@ fn cli_exports_and_validates_artifact_manifest() {
         String::from_utf8_lossy(&validate_payload_store.stdout)
     );
 
+    let replay_with_payload_store = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-mock-replay",
+            "--bundle",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--replay-request",
+            "examples/fixtures/bundle/replay_request_predict.json",
+            "--artifact-payload-store",
+            temp_payload_store_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.bundle",
+            "--run-id",
+            "run:cli.artifact.payload.replay",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli run-mock-replay with artifact payload store");
+    assert!(
+        replay_with_payload_store.status.success(),
+        "run-mock-replay with artifact payload store failed: {}",
+        String::from_utf8_lossy(&replay_with_payload_store.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&replay_with_payload_store.stdout).contains("1 artifact handle(s)"),
+        "unexpected run-mock-replay with artifact payload store output: {}",
+        String::from_utf8_lossy(&replay_with_payload_store.stdout)
+    );
+
     let validate_bundle = Command::new(cli())
         .current_dir(&root)
         .args([
