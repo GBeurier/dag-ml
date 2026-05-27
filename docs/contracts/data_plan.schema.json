@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/data_plan.v1.schema.json",
+  "title": "DAG-ML DataPlan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "steps", "output_ports"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/data_plan_step"
+      }
+    },
+    "output_ports": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
+    "requires_user_choice": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "data_plan_step_kind": {
+      "enum": ["materialize", "adapt", "align", "join", "collate"]
+    },
+    "data_plan_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "inputs", "output"],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/data_plan_step_kind"
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "output": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "adapter_id": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "params": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

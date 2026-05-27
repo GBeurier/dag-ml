@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 GRAPH_SPEC_SCHEMA_REL = Path("docs/contracts/graph_spec.schema.json")
+MODEL_INPUT_SPEC_SCHEMA_REL = Path("docs/contracts/model_input_spec.schema.json")
+DATA_PLAN_SCHEMA_REL = Path("docs/contracts/data_plan.schema.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
 OPENLINEAGE_FACETS_SCHEMA_REL = Path("docs/contracts/openlineage_dagml_facets.schema.json")
 PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL = Path(
@@ -42,6 +44,10 @@ LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
 )
 LOCAL_GRAPH_SPEC_FIXTURE_REL = Path("examples/branch_merge_oof_graph.json")
+LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL = Path(
+    "examples/fixtures/data/model_input_spec_tabular_regressor.json"
+)
+LOCAL_DATA_PLAN_FIXTURE_REL = Path("examples/fixtures/data/data_plan_tabular_fusion.json")
 LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL = Path(
     "examples/fixtures/runtime/data_output_provenance_augmented_view.json"
 )
@@ -67,6 +73,14 @@ LOCAL_FEATURE_FUSION_SCHEMA_ID = (
 GRAPH_SPEC_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "graph_spec.v1.schema.json"
+)
+MODEL_INPUT_SPEC_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "model_input_spec.v1.schema.json"
+)
+DATA_PLAN_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "data_plan.v1.schema.json"
 )
 SIBLING_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml-data/schemas/"
@@ -278,6 +292,80 @@ def validate_graph_spec_schema(schema: Any, label: str) -> None:
             definition_name in defs,
             f"{label} GraphSpec schema misses `{definition_name}`",
         )
+
+
+def validate_model_input_spec_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} ModelInputSpec schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} ModelInputSpec schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == MODEL_INPUT_SPEC_SCHEMA_ID,
+        f"{label} ModelInputSpec schema $id mismatch",
+    )
+    require(schema.get("type") == "object", f"{label} ModelInputSpec root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} ModelInputSpec root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} ModelInputSpec required list missing")
+    for field in ("schema_version", "ports"):
+        require(field in required, f"{label} ModelInputSpec schema must require `{field}`")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} ModelInputSpec properties missing")
+    require(
+        properties.get("schema_version", {}).get("const") == 1,
+        f"{label} ModelInputSpec schema_version const must be 1",
+    )
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} ModelInputSpec $defs missing")
+    require("input_port" in defs, f"{label} ModelInputSpec schema misses input_port")
+    require("fusion_policy" in defs, f"{label} ModelInputSpec schema misses fusion_policy")
+    require(
+        defs.get("fusion_policy", {}).get("properties", {}).get("mode", {}).get("enum")
+        == [
+            "single_source",
+            "concatenate_features",
+            "stack_samples",
+            "dict_by_source",
+            "custom",
+        ],
+        f"{label} ModelInputSpec fusion modes are not aligned",
+    )
+
+
+def validate_data_plan_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} DataPlan schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} DataPlan schema must declare Draft 2020-12",
+    )
+    require(schema.get("$id") == DATA_PLAN_SCHEMA_ID, f"{label} DataPlan schema $id mismatch")
+    require(schema.get("type") == "object", f"{label} DataPlan root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} DataPlan root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} DataPlan required list missing")
+    for field in ("schema_version", "id", "steps", "output_ports"):
+        require(field in required, f"{label} DataPlan schema must require `{field}`")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} DataPlan properties missing")
+    require(
+        properties.get("schema_version", {}).get("const") == 1,
+        f"{label} DataPlan schema_version const must be 1",
+    )
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} DataPlan $defs missing")
+    require("data_plan_step" in defs, f"{label} DataPlan schema misses data_plan_step")
+    require(
+        defs.get("data_plan_step_kind", {}).get("enum")
+        == ["materialize", "adapt", "align", "join", "collate"],
+        f"{label} DataPlan step kinds are not aligned",
+    )
 
 
 def validate_openlineage_facets_schema(schema: Any, label: str) -> None:
@@ -728,6 +816,110 @@ def graph_port_kinds(ports: Any, label: str) -> dict[str, str]:
     return seen
 
 
+def validate_model_input_spec(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} ModelInputSpec must be an object")
+    require(value.get("schema_version") == 1, f"{label}.schema_version must be 1")
+    ports = value.get("ports")
+    require(isinstance(ports, list) and ports, f"{label}.ports must be non-empty")
+    port_names: list[str] = []
+    for index, port in enumerate(ports):
+        port_label = f"{label}.ports[{index}]"
+        require(isinstance(port, dict), f"{port_label} must be an object")
+        require_non_empty_string(port.get("name"), f"{port_label}.name")
+        port_names.append(port["name"])
+        for field in ("accepted_representations", "accepted_types"):
+            values = port.get(field)
+            require(isinstance(values, list) and values, f"{port_label}.{field} must be non-empty")
+            require(len(set(values)) == len(values), f"{port_label}.{field} has duplicates")
+            for value_index, item in enumerate(values):
+                require_non_empty_string(item, f"{port_label}.{field}[{value_index}]")
+        rank = port.get("rank")
+        if rank is not None:
+            require(isinstance(rank, int) and 0 <= rank <= 16, f"{port_label}.rank is invalid")
+        for field in ("multi_source", "optional"):
+            if field in port:
+                require(isinstance(port[field], bool), f"{port_label}.{field} must be boolean")
+        metadata = port.get("metadata")
+        if metadata is not None:
+            require(isinstance(metadata, dict), f"{port_label}.metadata must be an object")
+    require(len(set(port_names)) == len(port_names), f"{label}.ports contain duplicate names")
+
+    fusion = value.get("default_fusion")
+    if fusion is not None:
+        require(isinstance(fusion, dict), f"{label}.default_fusion must be an object")
+        mode = fusion.get("mode")
+        require(
+            mode
+            in {
+                "single_source",
+                "concatenate_features",
+                "stack_samples",
+                "dict_by_source",
+                "custom",
+            },
+            f"{label}.default_fusion.mode is invalid",
+        )
+        for field in ("alignment", "adapter_id"):
+            field_value = fusion.get(field)
+            if field_value is not None:
+                require_non_empty_string(field_value, f"{label}.default_fusion.{field}")
+        if mode == "custom":
+            require_non_empty_string(
+                fusion.get("adapter_id"),
+                f"{label}.default_fusion.adapter_id",
+            )
+
+
+def validate_data_plan(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} DataPlan must be an object")
+    require(value.get("schema_version") == 1, f"{label}.schema_version must be 1")
+    require_non_empty_string(value.get("id"), f"{label}.id")
+    steps = value.get("steps")
+    require(isinstance(steps, list) and steps, f"{label}.steps must be non-empty")
+    outputs: set[str] = set()
+    for index, step in enumerate(steps):
+        step_label = f"{label}.steps[{index}]"
+        require(isinstance(step, dict), f"{step_label} must be an object")
+        kind = step.get("kind")
+        require(
+            kind in {"materialize", "adapt", "align", "join", "collate"},
+            f"{step_label}.kind is invalid",
+        )
+        inputs = step.get("inputs", [])
+        require(isinstance(inputs, list), f"{step_label}.inputs must be an array")
+        if kind != "materialize":
+            require(inputs, f"{step_label}.inputs must be non-empty")
+        for input_index, input_name in enumerate(inputs):
+            require_non_empty_string(input_name, f"{step_label}.inputs[{input_index}]")
+            if kind != "materialize":
+                require(
+                    input_name in outputs,
+                    f"{step_label}.inputs[{input_index}] references an unknown prior output",
+                )
+        output = step.get("output")
+        require_non_empty_string(output, f"{step_label}.output")
+        require(output not in outputs, f"{step_label}.output duplicates a prior output")
+        outputs.add(output)
+        adapter_id = step.get("adapter_id")
+        if adapter_id is not None:
+            require_non_empty_string(adapter_id, f"{step_label}.adapter_id")
+        params = step.get("params")
+        if params is not None:
+            require(isinstance(params, dict), f"{step_label}.params must be an object")
+
+    output_ports = value.get("output_ports")
+    require(isinstance(output_ports, dict) and output_ports, f"{label}.output_ports must be non-empty")
+    for port_name, output in output_ports.items():
+        require_non_empty_string(port_name, f"{label}.output_ports key")
+        require_non_empty_string(output, f"{label}.output_ports[{port_name}]")
+        require(output in outputs, f"{label}.output_ports[{port_name}] references unknown output")
+    for field in ("warnings", "requires_user_choice"):
+        values = value.get(field, [])
+        require(isinstance(values, list), f"{label}.{field} must be an array")
+        for index, item in enumerate(values):
+            require_non_empty_string(item, f"{label}.{field}[{index}]")
+
+
 def validate_data_output_provenance(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} data-output provenance must be an object")
     require(value.get("schema_version") == 1, f"{label} schema_version must be 1")
@@ -875,6 +1067,21 @@ def validate_dag_ml_graph_header(header: str, label: str) -> None:
         f"{label} header must declare DAG_ML_GRAPH_SPEC_SCHEMA_VERSION=1",
     )
     for symbol in ("dagml_graph_spec_contract_json", "dagml_graph_validate_json"):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
+
+
+def validate_dag_ml_data_shape_header(header: str, label: str) -> None:
+    for macro in (
+        "#define DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION 1u",
+        "#define DAG_ML_DATA_PLAN_SCHEMA_VERSION 1u",
+    ):
+        require(macro in header, f"{label} header must declare `{macro}`")
+    for symbol in (
+        "dagml_model_input_spec_contract_json",
+        "dagml_model_input_spec_validate_json",
+        "dagml_data_plan_contract_json",
+        "dagml_data_plan_validate_json",
+    ):
         require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
@@ -1224,6 +1431,8 @@ def main() -> int:
         local_schema = load_json(ROOT / SCHEMA_REL)
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_graph_spec_schema = load_json(ROOT / GRAPH_SPEC_SCHEMA_REL)
+        local_model_input_spec_schema = load_json(ROOT / MODEL_INPUT_SPEC_SCHEMA_REL)
+        local_data_plan_schema = load_json(ROOT / DATA_PLAN_SCHEMA_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
         local_openlineage_facets_schema = load_json(ROOT / OPENLINEAGE_FACETS_SCHEMA_REL)
         local_prediction_cache_tensor_metadata_schema = load_json(
@@ -1239,6 +1448,8 @@ def main() -> int:
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
         local_graph_spec_fixture = load_json(ROOT / LOCAL_GRAPH_SPEC_FIXTURE_REL)
+        local_model_input_spec_fixture = load_json(ROOT / LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL)
+        local_data_plan_fixture = load_json(ROOT / LOCAL_DATA_PLAN_FIXTURE_REL)
         local_data_output_provenance_fixture = load_json(
             ROOT / LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL
         )
@@ -1253,6 +1464,8 @@ def main() -> int:
             "dag-ml",
         )
         validate_graph_spec_schema(local_graph_spec_schema, "dag-ml")
+        validate_model_input_spec_schema(local_model_input_spec_schema, "dag-ml")
+        validate_data_plan_schema(local_data_plan_schema, "dag-ml")
         validate_openlineage_facets_schema(local_openlineage_facets_schema, "dag-ml")
         validate_prediction_cache_tensor_metadata_schema(
             local_prediction_cache_tensor_metadata_schema,
@@ -1269,6 +1482,8 @@ def main() -> int:
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
         validate_graph_spec(local_graph_spec_fixture, "dag-ml")
+        validate_model_input_spec(local_model_input_spec_fixture, "dag-ml")
+        validate_data_plan(local_data_plan_fixture, "dag-ml")
         validate_data_output_provenance(local_data_output_provenance_fixture, "dag-ml")
         validate_process_adapter_description(
             local_process_adapter_description_fixture,
@@ -1278,6 +1493,7 @@ def main() -> int:
         validate_dag_ml_prediction_cache_tensor_header(local_header, "dag-ml")
         validate_dag_ml_controller_result_header(local_header, "dag-ml")
         validate_dag_ml_graph_header(local_header, "dag-ml")
+        validate_dag_ml_data_shape_header(local_header, "dag-ml")
         validate_dag_ml_data_output_provenance_header(local_header, "dag-ml")
         validate_conformance_pack(
             local_pack,

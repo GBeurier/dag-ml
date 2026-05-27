@@ -775,11 +775,13 @@ static int contains_bytes(const uint8_t *haystack, size_t haystack_len, const ch
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s PROVENANCE_FIXTURE\n", argv[0]);
+    if (argc != 4) {
+        fprintf(stderr, "usage: %s PROVENANCE_FIXTURE MODEL_INPUT_FIXTURE DATA_PLAN_FIXTURE\n", argv[0]);
         return 2;
     }
     if (DAG_ML_GRAPH_SPEC_SCHEMA_VERSION != 1u ||
+        DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION != 1u ||
+        DAG_ML_DATA_PLAN_SCHEMA_VERSION != 1u ||
         DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION != 1u ||
         strcmp(DAG_ML_DATA_OUTPUT_PROVENANCE_EXTRA_KEY, "dag_ml_output") != 0) {
         fprintf(stderr, "C schema macros are not aligned\n");
@@ -803,6 +805,60 @@ int main(int argc, char **argv) {
         !contains_bytes(contract.ptr, contract.len, "\"schema_version\":1") ||
         !contains_bytes(contract.ptr, contract.len, "graph_spec.v1.schema.json")) {
         fprintf(stderr, "unexpected graph spec contract: %.*s\n",
+            (int)contract.len,
+            contract.ptr ? (char *)contract.ptr : "");
+        if (contract.ptr) {
+            dagml_owned_bytes_free(contract);
+        }
+        return 1;
+    }
+    dagml_owned_bytes_free(contract);
+
+    contract.ptr = NULL;
+    contract.len = 0;
+    contract.capacity = 0;
+    status = dagml_model_input_spec_contract_json(&contract, &error);
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "model input contract export failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+    if (!contract.ptr ||
+        !contains_bytes(contract.ptr, contract.len, "\"schema_version\":1") ||
+        !contains_bytes(contract.ptr, contract.len, "model_input_spec.v1.schema.json")) {
+        fprintf(stderr, "unexpected model input spec contract: %.*s\n",
+            (int)contract.len,
+            contract.ptr ? (char *)contract.ptr : "");
+        if (contract.ptr) {
+            dagml_owned_bytes_free(contract);
+        }
+        return 1;
+    }
+    dagml_owned_bytes_free(contract);
+
+    contract.ptr = NULL;
+    contract.len = 0;
+    contract.capacity = 0;
+    status = dagml_data_plan_contract_json(&contract, &error);
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "data plan contract export failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+    if (!contract.ptr ||
+        !contains_bytes(contract.ptr, contract.len, "\"schema_version\":1") ||
+        !contains_bytes(contract.ptr, contract.len, "data_plan.v1.schema.json")) {
+        fprintf(stderr, "unexpected data plan contract: %.*s\n",
             (int)contract.len,
             contract.ptr ? (char *)contract.ptr : "");
         if (contract.ptr) {
@@ -849,6 +905,42 @@ int main(int argc, char **argv) {
     free(provenance.ptr);
     if (status != DAG_ML_STATUS_OK) {
         fprintf(stderr, "provenance fixture validation failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+
+    Buffer model_input = read_file(argv[2]);
+    status = dagml_model_input_spec_validate_json(
+        model_input.ptr,
+        model_input.len,
+        &error
+    );
+    free(model_input.ptr);
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "model input fixture validation failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+
+    Buffer data_plan = read_file(argv[3]);
+    status = dagml_data_plan_validate_json(
+        data_plan.ptr,
+        data_plan.len,
+        &error
+    );
+    free(data_plan.ptr);
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "data plan fixture validation failed with status %u: %.*s\n",
             status,
             (int)error.len,
             error.ptr ? error.ptr : "");
@@ -1906,6 +1998,8 @@ fn c_program_validates_data_output_provenance_against_c_abi() {
 
     let run_output = Command::new(&exe_path)
         .arg(workspace.join("examples/fixtures/runtime/data_output_provenance_augmented_view.json"))
+        .arg(workspace.join("examples/fixtures/data/model_input_spec_tabular_regressor.json"))
+        .arg(workspace.join("examples/fixtures/data/data_plan_tabular_fusion.json"))
         .output()
         .expect("run data-output provenance C conformance executable");
     assert!(

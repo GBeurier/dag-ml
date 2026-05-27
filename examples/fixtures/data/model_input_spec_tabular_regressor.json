@@ -1,0 +1,27 @@
+{
+  "default_fusion": {
+    "adapter_id": null,
+    "alignment": "sample_id",
+    "mode": "concatenate_features",
+    "params": {
+      "namespace_columns": true
+    }
+  },
+  "metadata": {
+    "example": "tabular regressor consuming fused numeric features"
+  },
+  "ports": [
+    {
+      "accepted_representations": ["tabular_numeric"],
+      "accepted_types": ["f32", "f64"],
+      "metadata": {
+        "semantic_axes": ["sample", "feature"]
+      },
+      "multi_source": true,
+      "name": "x",
+      "optional": false,
+      "rank": 2
+    }
+  ],
+  "schema_version": 1
+}

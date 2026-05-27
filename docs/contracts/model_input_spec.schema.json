@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/model_input_spec.v1.schema.json",
+  "title": "DAG-ML ModelInputSpec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "ports"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "ports": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/input_port"
+      }
+    },
+    "default_fusion": {
+      "anyOf": [
+        { "$ref": "#/$defs/fusion_policy" },
+        { "type": "null" }
+      ]
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "accepted_representations", "accepted_types"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "accepted_representations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "accepted_types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16
+            },
+            { "type": "null" }
+          ]
+        },
+        "multi_source": {
+          "type": "boolean"
+        },
+        "optional": {
+          "type": "boolean"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "fusion_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "enum": [
+            "single_source",
+            "concatenate_features",
+            "stack_samples",
+            "dict_by_source",
+            "custom"
+          ]
+        },
+        "alignment": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "adapter_id": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "params": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

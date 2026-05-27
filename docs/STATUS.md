@@ -406,6 +406,9 @@ Implemented:
 - published `GraphSpec` JSON Schema with the branch/merge graph as canonical
   fixture, contract validation in `scripts/validate_contracts.py`, and C ABI
   contract discovery through `dagml_graph_spec_contract_json`;
+- published neutral `ModelInputSpec` and `DataPlan` contracts with JSON
+  Schemas, canonical tabular-fusion fixtures, Rust validators and C ABI
+  contract/validation helpers for controller and data-planner bindings;
 - C ABI graph validation entry point;
 - `dag-ml-data` fixture integration through schema, plan and relation
   fingerprints;
