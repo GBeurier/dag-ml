@@ -321,7 +321,8 @@ Implemented:
 - process adapters now expose a required `--describe` JSON handshake declaring
   the adapter protocol version, supported modes and JSON task/result
   capabilities; the CLI validates this contract before one-shot or JSONL
-  execution;
+  execution, and the description now has a published JSON Schema plus canonical
+  fixture validated by `scripts/validate_contracts.py`;
 - process adapters must explicitly declare persistent-worker, worker-env and
   parallel-invocation capabilities before the CLI enables those execution
   modes;

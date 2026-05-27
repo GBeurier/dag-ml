@@ -2527,6 +2527,8 @@ fn process_adapters_describe_supported_protocol_modes() {
             String::from_utf8_lossy(&describe.stderr)
         );
         let stdout = String::from_utf8_lossy(&describe.stdout);
+        let description: serde_json::Value =
+            serde_json::from_slice(&describe.stdout).expect("adapter description JSON");
         assert!(
             stdout.contains("\"protocol\": \"dag-ml-process-adapter\"")
                 && stdout.contains("\"schema_version\": 1")
@@ -2541,6 +2543,13 @@ fn process_adapters_describe_supported_protocol_modes() {
             "unexpected adapter `{adapter}` describe output: {}",
             stdout
         );
+        if adapter == "examples/adapters/python_process_controller.py" {
+            let fixture: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../examples/fixtures/runtime/process_adapter_description_python.json"
+            ))
+            .unwrap();
+            assert_eq!(description, fixture);
+        }
     }
 }
 

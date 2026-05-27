@@ -1,0 +1,15 @@
+{
+  "adapter_id": "dag-ml-python-process-controller",
+  "capabilities": [
+    "control_frames_v1",
+    "node_result_json_v1",
+    "node_task_json_v1",
+    "parallel_invocation_v1",
+    "persistent_workers",
+    "stateful_refit_artifacts",
+    "worker_env"
+  ],
+  "protocol": "dag-ml-process-adapter",
+  "schema_version": 1,
+  "supported_modes": ["one_shot", "jsonl"]
+}
