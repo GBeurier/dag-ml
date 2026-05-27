@@ -144,6 +144,19 @@ Implemented:
   canonical `PipelineDslSpec`; data-only preprocessing generators are fused
   with downstream model/generator stages before compilation so every expanded
   choice remains an OOF-producing branch;
+- that compatibility importer also accepts minimal aliases and plain operator
+  references (`SNV`, `PLSRegression`, `chart_2d`, `{"class": ...}`,
+  `{"function": ...}`, `{"name": ..., "step": ...}`); Rust only infers the
+  safe planning category, keeps operators external for host controller
+  resolution, and folds successive nirs4all splitter declarations into one
+  campaign `SplitInvocation` chain instead of graph split nodes;
+- the public Pipeline DSL input contract is now published as
+  `docs/contracts/pipeline_dsl.schema.json`, checked by
+  `scripts/validate_contracts.py`, and exposed through C ABI
+  `DAG_ML_PIPELINE_DSL_SCHEMA_VERSION`, `dagml_pipeline_dsl_contract_json` and
+  `dagml_pipeline_dsl_validate_json`, so non-Rust bindings can discover and
+  preflight both canonical and nirs4all-compatible DSL profiles before
+  compilation;
 - the same DSL profile extracts node-level parameter variants into a canonical
   `GenerationSpec`, accepts compact nirs4all-style parameter generators
   (`or`, `range`, `log_range`, `grid`, `pick`, `arrange` with deterministic

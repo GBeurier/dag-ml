@@ -169,6 +169,10 @@ typedef struct ArrowSchema {
 #define DAG_ML_NODE_RESULT_SCHEMA_VERSION 1u
 #endif
 
+#ifndef DAG_ML_PIPELINE_DSL_SCHEMA_VERSION
+#define DAG_ML_PIPELINE_DSL_SCHEMA_VERSION 1u
+#endif
+
 #ifndef DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION
 #define DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION 1u
 #endif
@@ -280,6 +284,8 @@ DagMlStatusCode dagml_aggregation_controller_result_contract_json(DagMlOwnedByte
 DagMlStatusCode dagml_aggregation_controller_task_validate_json(const uint8_t *task_ptr, size_t task_len, DagMlString *error_out);
 DagMlStatusCode dagml_aggregation_controller_result_validate_for_task_json(const uint8_t *task_ptr, size_t task_len, const uint8_t *result_ptr, size_t result_len, DagMlString *error_out);
 DagMlStatusCode dagml_node_result_validate_for_task_json(const uint8_t *task_ptr, size_t task_len, const uint8_t *result_ptr, size_t result_len, DagMlString *error_out);
+DagMlStatusCode dagml_pipeline_dsl_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_pipeline_dsl_validate_json(const uint8_t *dsl_ptr, size_t dsl_len, DagMlString *error_out);
 DagMlStatusCode dagml_pipeline_dsl_compile_json(const uint8_t *dsl_ptr, size_t dsl_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_pipeline_dsl_compile_artifact_json(const uint8_t *dsl_ptr, size_t dsl_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_pipeline_dsl_execution_plan_build_json(

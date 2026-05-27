@@ -236,8 +236,18 @@ fn cli_compiles_pipeline_dsl_to_graph() {
     )
     .expect("compiled compat DSL artifact is JSON");
     assert_eq!(
-        compat_artifact["campaign_template"]["split_invocation"]["params"]["type"],
+        compat_artifact["campaign_template"]["split_invocation"]["params"]["kind"],
+        "compat_split_chain"
+    );
+    assert_eq!(
+        compat_artifact["campaign_template"]["split_invocation"]["params"]["compat_split_chain"][0]
+            ["params"]["type"],
         "GroupKFold"
+    );
+    assert_eq!(
+        compat_artifact["campaign_template"]["split_invocation"]["params"]["compat_split_chain"][1]
+            ["params"]["class"],
+        "sklearn.model_selection.KFold"
     );
     assert!(compat_artifact["graph"]["edges"]
         .as_array()

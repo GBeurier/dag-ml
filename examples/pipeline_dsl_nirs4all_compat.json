@@ -2,7 +2,16 @@
   "id": "dsl-nirs4all-compat-smoke",
   "pipeline": [
     {
+      "_comment": "comments are accepted and ignored by the compatibility importer"
+    },
+    {
       "sources": ["nir"]
+    },
+    {
+      "class": "sklearn.preprocessing.MinMaxScaler",
+      "params": {
+        "feature_range": [0, 1]
+      }
     },
     {
       "_cartesian_": [
@@ -27,6 +36,14 @@
       "split": {
         "type": "GroupKFold",
         "n_splits": 3
+      }
+    },
+    {
+      "class": "sklearn.model_selection.KFold",
+      "params": {
+        "n_splits": 3,
+        "shuffle": true,
+        "random_state": 42
       }
     },
     {
