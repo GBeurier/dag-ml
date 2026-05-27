@@ -127,7 +127,9 @@ Implemented:
   augmentation scope is validated instead of implicit, and tuning/train params
   are visible in public DSL fields instead of hidden controller state;
 - the same DSL profile extracts node-level parameter variants into a canonical
-  `GenerationSpec`, also accepts coordinated generation dimensions that can
+  `GenerationSpec`, accepts compact nirs4all-style parameter generators
+  (`or`, `range`, `log_range`, `grid`, `pick`, `arrange` with deterministic
+  `count` caps), also accepts coordinated generation dimensions that can
   override several branch/merge/model nodes together, validates per-node
   `DataModelShapePlan` declarations for augmentation/selection/aggregation
   safety, writes the generation fingerprint into

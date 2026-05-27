@@ -38,17 +38,18 @@ transform/target-transform/tag/exclude/augmentation/model steps, explicit
 sample and feature augmentation, concat feature fusion, branch model variants,
 multiple models per branch, standalone merge/join nodes and heterogeneous
 prediction-plus-original-data merge models into canonical `GraphSpec`. It also
-extracts node-parameter variants and coordinated multi-node override dimensions
-into `GenerationSpec`, preserves tuning/train params as public DSL metadata,
-validates per-node data/model shape plans, requires explicit shape plans for
-augmentation steps, and binds the resulting search-space fingerprint into the
-graph. It also emits a `CampaignSpec` template so split invocation, generation,
-data bindings and shape plans stay in the campaign layer rather than graph
-operators, and CLI/C ABI can feed that template straight into execution-plan
-building. CLI process smokes can now run an executable branch/merge DSL through
-CV+refit bundle capture and stateful sklearn CV+refit+replay, with refit
-artifacts validated against the selected generation variant's effective
-parameters. The runtime now propagates scoped
+extracts node-parameter variants, compact parameter generators (`or`, `range`,
+`log_range`, `grid`, `pick`, `arrange`) and coordinated multi-node override
+dimensions into `GenerationSpec`, preserves tuning/train params as public DSL
+metadata, validates per-node data/model shape plans, requires explicit shape
+plans for augmentation steps, and binds the resulting search-space fingerprint
+into the graph. It also emits a `CampaignSpec` template so split invocation,
+generation, data bindings and shape plans stay in the campaign layer rather
+than graph operators, and CLI/C ABI can feed that template straight into
+execution-plan building. CLI process smokes can now run an executable
+branch/merge DSL through CV+refit bundle capture and stateful sklearn
+CV+refit+replay, with refit artifacts validated against the selected generation
+variant's effective parameters. The runtime now propagates scoped
 data-view contracts across data-producing graph edges, so train-only
 augmentation can feed downstream branch models without reclassifying splits as
 operators. Those propagated views also carry reserved shape provenance
@@ -56,9 +57,9 @@ operators. Those propagated views also carry reserved shape provenance
 fingerprints, current feature schema and emitted shape deltas; the Rust core
 now parses and validates that metadata through a typed `DataOutputProvenance`
 contract, and the JSON Schema/fixture are part of the local contract
-validation. The remaining DSL work is compatibility with broader pipeline
-surfaces, richer search-space syntax, and production materialization semantics
-for transformed data instead of smoke-level adapter handles.
+validation. The remaining DSL work is compatibility import from legacy
+nirs4all-style Python/YAML and production materialization semantics for
+transformed data instead of smoke-level adapter handles.
 
 ## Phase 2: Host Controllers
 

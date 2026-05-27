@@ -1,0 +1,62 @@
+{
+  "id": "dsl-compact-generation",
+  "max_variants": 2000,
+  "steps": [
+    {
+      "kind": "transform",
+      "id": "transform:preprocess",
+      "operator": {"type": "ConfigurablePreprocess"},
+      "generators": [
+        {
+          "kind": "or",
+          "name": "preprocess_family",
+          "param": "method",
+          "values": [
+            {"label": "snv", "value": "snv"},
+            {"label": "msc", "value": "msc"},
+            {"label": "derivative", "value": "first_derivative"}
+          ]
+        },
+        {
+          "kind": "pick",
+          "param": "views",
+          "values": ["raw", "snv", "msc", "derivative"],
+          "sizes": [1, 2],
+          "count": 5
+        }
+      ]
+    },
+    {
+      "kind": "model",
+      "id": "model:base",
+      "operator": {"type": "ConfigurableRegressor"},
+      "generators": [
+        {
+          "kind": "range",
+          "param": "n_components",
+          "start": 2,
+          "stop": 10,
+          "step": 2
+        },
+        {
+          "kind": "log_range",
+          "param": "alpha",
+          "start": 0.001,
+          "stop": 10.0,
+          "count": 5
+        },
+        {
+          "kind": "grid",
+          "name": "tree_profile",
+          "params": {
+            "max_depth": [4, 8],
+            "n_estimators": [64, 128]
+          }
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "demo": "compact nirs4all-style generator syntax lowered to GenerationSpec"
+  }
+}
