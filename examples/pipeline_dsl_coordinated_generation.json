@@ -1,0 +1,101 @@
+{
+  "id": "dsl-coordinated-generation-branch-merge",
+  "max_variants": 2,
+  "generation_dimensions": [
+    {
+      "name": "stack_profile",
+      "choices": [
+        {
+          "label": "linear_stack",
+          "param_overrides": [
+            {
+              "node_id": "branch:b0.model:ridge",
+              "params": {
+                "alpha": 0.1
+              }
+            },
+            {
+              "node_id": "branch:b1.model:rf",
+              "params": {
+                "max_depth": 4,
+                "n_estimators": 64
+              }
+            },
+            {
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "params": {
+                "alpha": 0.05
+              }
+            }
+          ]
+        },
+        {
+          "label": "robust_stack",
+          "param_overrides": [
+            {
+              "node_id": "branch:b0.model:ridge",
+              "params": {
+                "alpha": 1.0
+              }
+            },
+            {
+              "node_id": "branch:b1.model:rf",
+              "params": {
+                "max_depth": 8,
+                "n_estimators": 128
+              }
+            },
+            {
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "params": {
+                "alpha": 0.5
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "kind": "branch",
+      "branches": [
+        {
+          "id": "b0",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "branch:b0.model:ridge",
+              "operator": {
+                "type": "Ridge"
+              }
+            }
+          ]
+        },
+        {
+          "id": "b1",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "branch:b1.model:rf",
+              "operator": {
+                "type": "RandomForestRegressor"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge_model",
+      "id": "merge:stack.pred_plus_original.meta:ridge",
+      "operator": {
+        "type": "RidgeMetaStacker"
+      },
+      "include_original_data": true
+    }
+  ],
+  "metadata": {
+    "demo": "coordinated search-space dimension across branch models and merge model"
+  }
+}

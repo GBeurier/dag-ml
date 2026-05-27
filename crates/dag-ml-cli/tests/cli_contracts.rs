@@ -148,6 +148,47 @@ fn cli_compiles_pipeline_dsl_to_graph() {
         shape_artifact["shape_plans"]["transform:select"]["selection_policy"]["scope"],
         "supervised_fold_train"
     );
+
+    let coordinated_artifact_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_compiled_dsl_coordinated_artifact_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let compile_coordinated_artifact = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "compile-pipeline-dsl",
+            "--dsl",
+            "examples/pipeline_dsl_coordinated_generation.json",
+            "--artifact",
+            "--output",
+            coordinated_artifact_path
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect(
+            "failed to run dag-ml-cli compile-pipeline-dsl --artifact for coordinated generation",
+        );
+    assert!(
+        compile_coordinated_artifact.status.success(),
+        "compile-pipeline-dsl --artifact coordinated generation failed: {}",
+        String::from_utf8_lossy(&compile_coordinated_artifact.stderr)
+    );
+    let coordinated_artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&coordinated_artifact_path)
+            .expect("compiled DSL coordinated artifact was written"),
+    )
+    .expect("compiled DSL coordinated artifact is JSON");
+    assert_eq!(
+        coordinated_artifact["generation"]["dimensions"][0]["name"],
+        "stack_profile"
+    );
+    assert_eq!(
+        coordinated_artifact["generation"]["dimensions"][0]["choices"][1]["param_overrides"][2]
+            ["node_id"],
+        "merge:stack.pred_plus_original.meta:ridge"
+    );
 }
 
 #[test]

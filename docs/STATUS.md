@@ -124,9 +124,11 @@ Implemented:
   operators; augmentation steps must declare a shape plan so sample/feature
   augmentation scope is validated instead of implicit;
 - the same DSL profile extracts node-level parameter variants into a canonical
-  `GenerationSpec`, validates per-node `DataModelShapePlan` declarations for
-  augmentation/selection/aggregation safety, writes the generation fingerprint
-  into `GraphSpec.search_space_fingerprint`, and exposes graph-only or
+  `GenerationSpec`, also accepts coordinated generation dimensions that can
+  override several branch/merge/model nodes together, validates per-node
+  `DataModelShapePlan` declarations for augmentation/selection/aggregation
+  safety, writes the generation fingerprint into
+  `GraphSpec.search_space_fingerprint`, and exposes graph-only or
   graph+generation+shape artifact outputs through CLI and C ABI;
 - CLI and C ABI entry points compile that DSL surface to validated graph JSON
   or graph+generation+shape artifact JSON, with branch/merge OOF, generation
@@ -381,8 +383,8 @@ Not implemented yet:
 
 - full nirs4all-compatible DSL compiler beyond the initial strict JSON
   `PipelineDslSpec` profile;
-- advanced search-space compiler/lowering beyond initial typed node-parameter
-  variant extraction from `PipelineDslSpec`;
+- advanced search-space compiler/lowering beyond typed node-parameter variants
+  and coordinated override dimensions from `PipelineDslSpec`;
 - custom aggregation controllers and production persistent/Arrow replay
   backends for non-sample aggregated prediction blocks;
 - artifact binary deserialization/loading into host-native model objects beyond

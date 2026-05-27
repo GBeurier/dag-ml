@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +28,8 @@ pub struct PipelineDslSpec {
     pub generation_strategy: Option<GenerationStrategy>,
     #[serde(default)]
     pub max_variants: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generation_dimensions: Vec<PipelineDslGenerationDimension>,
     #[serde(default)]
     pub steps: Vec<PipelineDslStep>,
     #[serde(default)]
@@ -106,6 +108,29 @@ pub struct PipelineDslVariantChoice {
     pub params: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub value: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslGenerationDimension {
+    pub name: String,
+    #[serde(default)]
+    pub choices: Vec<PipelineDslGenerationChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslGenerationChoice {
+    pub label: String,
+    #[serde(default)]
+    pub value: Option<serde_json::Value>,
+    #[serde(default)]
+    pub param_overrides: Vec<PipelineDslGenerationParamOverride>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslGenerationParamOverride {
+    pub node_id: NodeId,
+    #[serde(default)]
+    pub params: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -206,10 +231,13 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
         )?;
     }
 
+    let mut generation_dimensions =
+        compile_explicit_generation_dimensions(&spec.generation_dimensions, &compiler.nodes)?;
+    generation_dimensions.extend(compiler.generation_dimensions);
     let generation = build_generation_spec(
         spec.generation_strategy,
         spec.max_variants,
-        compiler.generation_dimensions,
+        generation_dimensions,
     )?;
     let generation_fingerprint = if generation.strategy == GenerationStrategy::None {
         None
@@ -694,6 +722,92 @@ fn validate_shape_plan_targets(
     Ok(())
 }
 
+fn compile_explicit_generation_dimensions(
+    dimensions: &[PipelineDslGenerationDimension],
+    nodes: &[NodeSpec],
+) -> Result<Vec<GenerationDimension>> {
+    if dimensions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let node_ids = nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    dimensions
+        .iter()
+        .map(|dimension| compile_explicit_generation_dimension(dimension, &node_ids))
+        .collect()
+}
+
+fn compile_explicit_generation_dimension(
+    dimension: &PipelineDslGenerationDimension,
+    node_ids: &BTreeSet<NodeId>,
+) -> Result<GenerationDimension> {
+    let choices = dimension
+        .choices
+        .iter()
+        .map(|choice| compile_explicit_generation_choice(&dimension.name, choice, node_ids))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(GenerationDimension {
+        name: dimension.name.clone(),
+        choices,
+    })
+}
+
+fn compile_explicit_generation_choice(
+    dimension_name: &str,
+    choice: &PipelineDslGenerationChoice,
+    node_ids: &BTreeSet<NodeId>,
+) -> Result<GenerationChoice> {
+    if choice.param_overrides.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generation choice `{}` in dimension `{dimension_name}` has no param_overrides",
+            choice.label
+        )));
+    }
+    let param_overrides = choice
+        .param_overrides
+        .iter()
+        .map(|override_spec| {
+            if !node_ids.contains(&override_spec.node_id) {
+                return Err(DagMlError::GraphValidation(format!(
+                    "pipeline DSL generation choice `{}` in dimension `{dimension_name}` references unknown node `{}`",
+                    choice.label, override_spec.node_id
+                )));
+            }
+            Ok(GenerationParamOverride {
+                node_id: override_spec.node_id.clone(),
+                params: override_spec.params.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let value = match &choice.value {
+        Some(value) => value.clone(),
+        None => explicit_generation_choice_value(&param_overrides)?,
+    };
+    Ok(GenerationChoice {
+        label: choice.label.clone(),
+        value,
+        param_overrides,
+    })
+}
+
+fn explicit_generation_choice_value(
+    param_overrides: &[GenerationParamOverride],
+) -> Result<serde_json::Value> {
+    let mut by_node = serde_json::Map::new();
+    for override_spec in param_overrides {
+        let value = serde_json::to_value(&override_spec.params).map_err(|error| {
+            DagMlError::GraphValidation(format!(
+                "failed to serialize DSL generation override for node `{}`: {error}",
+                override_spec.node_id
+            ))
+        })?;
+        by_node.insert(override_spec.node_id.to_string(), value);
+    }
+    Ok(serde_json::Value::Object(by_node))
+}
+
 fn build_generation_spec(
     requested_strategy: Option<GenerationStrategy>,
     max_variants: Option<usize>,
@@ -997,6 +1111,132 @@ mod tests {
             compiled.generation_fingerprint
         );
         compiled.graph.validate().unwrap();
+    }
+
+    #[test]
+    fn compiles_coordinated_generation_dimensions() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-coordinated-generation",
+  "max_variants": 2,
+  "generation_dimensions": [
+    {
+      "name": "stack_profile",
+      "choices": [
+        {
+          "label": "linear_stack",
+          "param_overrides": [
+            {"node_id": "branch:b0.model:ridge", "params": {"alpha": 0.1}},
+            {"node_id": "branch:b1.model:rf", "params": {"max_depth": 4}},
+            {"node_id": "merge:stack.pred_plus_original.meta:ridge", "params": {"alpha": 0.05}}
+          ]
+        },
+        {
+          "label": "robust_stack",
+          "param_overrides": [
+            {"node_id": "branch:b0.model:ridge", "params": {"alpha": 1.0}},
+            {"node_id": "branch:b1.model:rf", "params": {"max_depth": 8}},
+            {"node_id": "merge:stack.pred_plus_original.meta:ridge", "params": {"alpha": 0.5}}
+          ]
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "kind": "branch",
+      "branches": [
+        {
+          "id": "b0",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "branch:b0.model:ridge",
+              "operator": {"type": "Ridge"}
+            }
+          ]
+        },
+        {
+          "id": "b1",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "branch:b1.model:rf",
+              "operator": {"type": "RandomForestRegressor"}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge_model",
+      "id": "merge:stack.pred_plus_original.meta:ridge",
+      "operator": {"type": "RidgeMetaStacker"}
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+
+        assert_eq!(compiled.generation.strategy, GenerationStrategy::Cartesian);
+        assert_eq!(compiled.generation.max_variants, Some(2));
+        assert_eq!(compiled.generation.dimensions.len(), 1);
+        assert_eq!(compiled.generation.dimensions[0].name, "stack_profile");
+        assert_eq!(
+            compiled.generation.dimensions[0].choices[0]
+                .param_overrides
+                .len(),
+            3
+        );
+        assert_eq!(
+            compiled.generation.dimensions[0].choices[1].param_overrides[2].node_id,
+            NodeId::new("merge:stack.pred_plus_original.meta:ridge").unwrap()
+        );
+        assert_eq!(
+            compiled.generation.dimensions[0].choices[1].value
+                ["merge:stack.pred_plus_original.meta:ridge"]["alpha"],
+            0.5
+        );
+        assert_eq!(
+            compiled.graph.search_space_fingerprint,
+            compiled.generation_fingerprint
+        );
+        compiled.graph.validate().unwrap();
+    }
+
+    #[test]
+    fn refuses_coordinated_generation_for_unknown_node() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-bad-generation-target",
+  "generation_dimensions": [
+    {
+      "name": "bad_target",
+      "choices": [
+        {
+          "label": "bad",
+          "param_overrides": [
+            {"node_id": "model:missing", "params": {"alpha": 0.1}}
+          ]
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "kind": "model",
+      "id": "model:base",
+      "operator": {"type": "Ridge"}
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = compile_pipeline_dsl_with_generation(&spec).unwrap_err();
+        assert!(format!("{error}").contains("references unknown node `model:missing`"));
     }
 
     #[test]
