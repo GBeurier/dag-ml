@@ -12,7 +12,7 @@ use dag_ml_core::{
     AggregatedPredictionBlock, ArtifactMaterializationRequest, BundlePredictionCachePayload,
     BundlePredictionCachePayloadSet, BundleReplayExecution, CampaignSpec, CandidateScore,
     ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataMaterializationRequest,
-    DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
+    DataOutputProvenance, DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
     ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest, GraphSpec,
     HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
     NodeResult, NodeTask, OpenLineageRunEventOptions, Phase, PipelineDslSpec, PredictionBlock,
@@ -20,7 +20,8 @@ use dag_ml_core::{
     RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
     RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
     RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionPolicy,
-    SequentialScheduler,
+    SequentialScheduler, DATA_OUTPUT_PROVENANCE_KEY, DATA_OUTPUT_PROVENANCE_SCHEMA_ID,
+    DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -32,6 +33,7 @@ pub const DAG_ML_ARTIFACT_STORE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_PREDICTION_CACHE_VTABLE_BORROWED_ABI_VERSION: u32 = 1;
 pub const DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION: u32 = 1;
+pub const DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
 pub const DAG_ML_HANDLE_KIND_DATA_VIEW: u32 = 2;
@@ -39,6 +41,13 @@ pub const DAG_ML_HANDLE_KIND_MODEL: u32 = 3;
 pub const DAG_ML_HANDLE_KIND_ARTIFACT: u32 = 4;
 pub const DAG_ML_HANDLE_KIND_PREDICTION: u32 = 5;
 pub const DAG_ML_HANDLE_KIND_RELATION: u32 = 6;
+
+#[derive(Serialize)]
+struct DataOutputProvenanceContractInfo {
+    schema_version: u32,
+    extra_key: &'static str,
+    schema_id: &'static str,
+}
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -376,6 +385,55 @@ pub unsafe extern "C" fn dagml_graph_validate_json(
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
     validate_json::<GraphSpec>(json_ptr, json_len, error_out, "graph", GraphSpec::validate)
+}
+
+/// Returns the public C ABI contract for propagated data-output provenance.
+///
+/// Host bindings should look for `extra_key` inside `DataProviderViewSpec.extra`
+/// and parse that value as the schema identified by `schema_id`.
+///
+/// # Safety
+///
+/// `out_json` must point to writable memory for one `DagMlOwnedBytes`. Any
+/// returned bytes must be released with `dagml_owned_bytes_free`.
+/// `error_out` follows the same ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_data_output_provenance_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = DataOutputProvenanceContractInfo {
+        schema_version: DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION,
+        extra_key: DATA_OUTPUT_PROVENANCE_KEY,
+        schema_id: DATA_OUTPUT_PROVENANCE_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
+}
+
+/// Validates a `DataOutputProvenance` JSON object.
+///
+/// This lets non-Rust controllers reject unsupported provenance schema versions,
+/// malformed fingerprints and inconsistent shape deltas before trusting a
+/// propagated data view's `extra[DAG_ML_DATA_OUTPUT_PROVENANCE_EXTRA_KEY]`.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_data_output_provenance_validate_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    validate_json::<DataOutputProvenance>(
+        json_ptr,
+        json_len,
+        error_out,
+        "data output provenance",
+        DataOutputProvenance::validate,
+    )
 }
 
 /// Compiles a strict JSON `PipelineDslSpec` into a canonical `GraphSpec` JSON.
@@ -4563,6 +4621,59 @@ mod tests {
 
         assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
+    }
+
+    #[test]
+    fn exposes_data_output_provenance_contract_over_abi() {
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe { dagml_data_output_provenance_contract_json(&mut out, &mut error) };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let contract: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(contract["extra_key"], "dag_ml_output");
+        assert_eq!(
+            contract["schema_id"],
+            dag_ml_core::DATA_OUTPUT_PROVENANCE_SCHEMA_ID
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn validates_data_output_provenance_over_abi() {
+        let provenance = include_bytes!(
+            "../../../examples/fixtures/runtime/data_output_provenance_augmented_view.json"
+        );
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_data_output_provenance_validate_json(
+                provenance.as_ptr(),
+                provenance.len(),
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+
+        let invalid = br#"{
+  "schema_version": 2,
+  "producer_node": "branch:b1.augment:noise",
+  "producer_port": "x_out",
+  "producer_phase": "FIT_CV"
+}"#;
+        let status = unsafe {
+            dagml_data_output_provenance_validate_json(invalid.as_ptr(), invalid.len(), &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(error_message(&error).contains("unsupported schema_version"));
+        unsafe { dagml_string_free(error) };
     }
 
     #[test]
