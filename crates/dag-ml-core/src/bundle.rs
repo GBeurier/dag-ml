@@ -1040,18 +1040,20 @@ impl ExecutionBundle {
                 self.bundle_id
             )));
         }
-        if let Some(selected_variant_id) = &self.selected_variant_id {
-            if !plan
-                .variants
-                .iter()
-                .any(|variant| &variant.variant_id == selected_variant_id)
-            {
-                return Err(DagMlError::RuntimeValidation(format!(
-                    "bundle `{}` selected unknown variant `{selected_variant_id}`",
-                    self.bundle_id
-                )));
-            }
-        }
+        let selected_variant = match &self.selected_variant_id {
+            Some(selected_variant_id) => Some(
+                plan.variants
+                    .iter()
+                    .find(|variant| &variant.variant_id == selected_variant_id)
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "bundle `{}` selected unknown variant `{selected_variant_id}`",
+                            self.bundle_id
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
         self.validate_selections_against_plan(plan)?;
         let expected_requirements = collect_data_requirements(plan)?;
         if self.data_requirements != expected_requirements {
@@ -1073,7 +1075,9 @@ impl ExecutionBundle {
                     self.bundle_id, artifact.node_id
                 )));
             }
-            if artifact.params_fingerprint != node_plan.params_fingerprint {
+            let expected_params_fingerprint =
+                expected_refit_artifact_params_fingerprint(node_plan, selected_variant)?;
+            if artifact.params_fingerprint != expected_params_fingerprint {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "bundle `{}` artifact params for `{}` do not match plan",
                     self.bundle_id, artifact.node_id
@@ -1189,6 +1193,18 @@ impl ExecutionBundle {
         }
         Ok(())
     }
+}
+
+fn expected_refit_artifact_params_fingerprint(
+    node_plan: &crate::plan::NodePlan,
+    selected_variant: Option<&crate::generation::VariantPlan>,
+) -> Result<String> {
+    let Some(variant) = selected_variant else {
+        return Ok(node_plan.params_fingerprint.clone());
+    };
+    let effective_params =
+        variant.effective_params_for_node(&node_plan.node_id, &node_plan.params)?;
+    stable_json_fingerprint(&effective_params)
 }
 
 fn validate_prediction_requirement_against_plan(
@@ -2042,6 +2058,7 @@ impl ReplayPhaseRequest {
 mod tests {
     use super::*;
     use crate::controller::{ControllerManifest, ControllerRegistry};
+    use crate::dsl::{compile_pipeline_dsl_with_generation, PipelineDslSpec};
     use crate::graph::GraphSpec;
     use crate::ids::{ArtifactId, FoldId, SampleId, TargetId};
     use crate::plan::{build_execution_plan, CampaignSpec};
@@ -2083,6 +2100,28 @@ mod tests {
             registry.register(manifest).unwrap();
         }
         build_execution_plan("plan:branch.merge.bundle", graph, campaign, &registry).unwrap()
+    }
+
+    fn executable_dsl_plan() -> ExecutionPlan {
+        let spec: PipelineDslSpec = serde_json::from_str(include_str!(
+            "../../../examples/pipeline_dsl_branch_merge_executable.json"
+        ))
+        .unwrap();
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+        let manifests: Vec<ControllerManifest> =
+            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
+                .unwrap();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        build_execution_plan(
+            "plan:dsl.branch.merge.bundle",
+            compiled.graph,
+            compiled.campaign_template,
+            &registry,
+        )
+        .unwrap()
     }
 
     fn branch_merge_selection_decisions() -> BTreeMap<String, SelectionDecision> {
@@ -2331,6 +2370,61 @@ mod tests {
             vec![artifact],
         )
         .is_err());
+    }
+
+    #[test]
+    fn bundle_artifact_params_follow_selected_generation_variant() {
+        let plan = executable_dsl_plan();
+        let selected_variant = &plan.variants[0];
+        let node_plan = plan
+            .node_plans
+            .get(&NodeId::new("branch:b0.model:ridge").unwrap())
+            .unwrap();
+        let effective_params = selected_variant
+            .effective_params_for_node(&node_plan.node_id, &node_plan.params)
+            .unwrap();
+        let effective_fingerprint = stable_json_fingerprint(&effective_params).unwrap();
+        assert_ne!(effective_fingerprint, node_plan.params_fingerprint);
+
+        let artifact = RefitArtifactRecord {
+            node_id: node_plan.node_id.clone(),
+            controller_id: node_plan.controller_id.clone(),
+            artifact: ArtifactRef {
+                id: ArtifactId::new("artifact:branch:b0.model:ridge:refit").unwrap(),
+                kind: "mock_model".to_string(),
+                controller_id: node_plan.controller_id.clone(),
+                backend: None,
+                uri: None,
+                content_fingerprint: None,
+                size_bytes: Some(128),
+                plugin: None,
+                plugin_version: None,
+            },
+            params_fingerprint: effective_fingerprint,
+            data_requirement_keys: vec!["branch:b0.model:ridge.x".to_string()],
+            prediction_requirement_keys: Vec::new(),
+        };
+
+        build_execution_bundle(
+            BundleId::new("bundle:dsl.variant.params").unwrap(),
+            &plan,
+            Some(selected_variant.variant_id.clone()),
+            BTreeMap::new(),
+            vec![artifact.clone()],
+        )
+        .unwrap();
+
+        let mut stale_artifact = artifact;
+        stale_artifact.params_fingerprint = node_plan.params_fingerprint.clone();
+        let error = build_execution_bundle(
+            BundleId::new("bundle:dsl.variant.params.stale").unwrap(),
+            &plan,
+            Some(selected_variant.variant_id.clone()),
+            BTreeMap::new(),
+            vec![stale_artifact],
+        )
+        .unwrap_err();
+        assert!(format!("{error}").contains("artifact params"));
     }
 
     #[test]

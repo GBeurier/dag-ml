@@ -365,6 +365,21 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_dsl_branch_merge_cv_refit_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_dsl_branch_merge_cv_refit_bundle_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_dsl_branch_merge_lineage = std::env::temp_dir().join(format!(
+        "dag_ml_cli_dsl_branch_merge_lineage_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_dsl_branch_merge_prediction_cache = std::env::temp_dir().join(format!(
+        "dag_ml_cli_dsl_branch_merge_prediction_cache_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
     let temp_branch_merge_prediction_cache_store = std::env::temp_dir().join(format!(
         "dag_ml_cli_branch_merge_prediction_cache_store_{}_{}",
         std::process::id(),
@@ -910,6 +925,102 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         "unexpected branch/merge prediction cache payload JSON: {}",
         branch_merge_prediction_cache_json
     );
+
+    let dsl_branch_merge_cv_refit_bundle = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-dsl-cv-refit-bundle",
+            "--dsl",
+            "examples/pipeline_dsl_branch_merge_executable.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--process-workers",
+            "2",
+            "--bundle-id",
+            "bundle:cli.dsl.branch.merge.cv.refit",
+            "--selections",
+            "examples/fixtures/bundle/selection_decisions_branch_merge.json",
+            "--output",
+            temp_dsl_branch_merge_cv_refit_bundle
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--lineage-output",
+            temp_dsl_branch_merge_lineage
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--prediction-cache-output",
+            temp_dsl_branch_merge_prediction_cache
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            "plan:cli.dsl.branch.merge.cv.refit",
+            "--run-id",
+            "run:cli.dsl.branch.merge.cv.refit",
+        ])
+        .output()
+        .expect("failed to run DSL branch/merge CV+refit process bundle");
+    assert!(
+        dsl_branch_merge_cv_refit_bundle.status.success(),
+        "DSL branch/merge CV+refit process bundle failed: {}",
+        String::from_utf8_lossy(&dsl_branch_merge_cv_refit_bundle.stderr)
+    );
+    let dsl_branch_merge_stdout = String::from_utf8_lossy(&dsl_branch_merge_cv_refit_bundle.stdout);
+    assert!(
+        dsl_branch_merge_stdout.contains("process DSL cv refit bundle run: 6 fit_cv result(s)")
+            && dsl_branch_merge_stdout.contains("6 OOF prediction block(s)")
+            && dsl_branch_merge_stdout.contains("3 refit result(s)")
+            && dsl_branch_merge_stdout.contains("3 captured artifact handle(s)")
+            && dsl_branch_merge_stdout.contains("2 prediction cache(s)")
+            && dsl_branch_merge_stdout.contains("configured process worker(s)=2")
+            && dsl_branch_merge_stdout.contains("observed process worker(s)=2"),
+        "unexpected DSL branch/merge CV+refit process bundle output: {}",
+        dsl_branch_merge_stdout
+    );
+    let dsl_branch_merge_bundle_json =
+        std::fs::read_to_string(&temp_dsl_branch_merge_cv_refit_bundle)
+            .expect("DSL branch/merge CV+refit bundle was written");
+    assert!(
+        dsl_branch_merge_bundle_json.contains("\"selected_variant_id\": \"variant:")
+            && dsl_branch_merge_bundle_json.contains("artifact:branch:b0.model:ridge:refit")
+            && dsl_branch_merge_bundle_json.contains("artifact:branch:b1.model:rf:refit")
+            && dsl_branch_merge_bundle_json
+                .contains("artifact:merge:stack.pred_plus_original.meta:ridge:refit")
+            && dsl_branch_merge_bundle_json.contains(
+                "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof"
+            )
+            && dsl_branch_merge_bundle_json.contains(
+                "branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof"
+            ),
+        "unexpected DSL branch/merge CV+refit bundle JSON: {}",
+        dsl_branch_merge_bundle_json
+    );
+    let dsl_branch_merge_lineage_json = std::fs::read_to_string(&temp_dsl_branch_merge_lineage)
+        .expect("DSL branch/merge lineage records were written");
+    assert!(
+        dsl_branch_merge_lineage_json.contains("variant:a964828b1417c6e7")
+            && dsl_branch_merge_lineage_json.contains("merge:stack.pred_plus_original.meta:ridge")
+            && dsl_branch_merge_lineage_json.contains("input_lineage"),
+        "unexpected DSL branch/merge lineage JSON: {}",
+        dsl_branch_merge_lineage_json
+    );
+    let dsl_branch_merge_prediction_cache_json =
+        std::fs::read_to_string(&temp_dsl_branch_merge_prediction_cache)
+            .expect("DSL branch/merge prediction cache payload was written");
+    assert!(
+        dsl_branch_merge_prediction_cache_json
+            .contains("\"bundle_id\": \"bundle:cli.dsl.branch.merge.cv.refit\"")
+            && dsl_branch_merge_prediction_cache_json.contains("\"schema_version\": 1")
+            && dsl_branch_merge_prediction_cache_json.contains("prediction-cache:branch:b0")
+            && dsl_branch_merge_prediction_cache_json.contains("prediction-cache:branch:b1"),
+        "unexpected DSL branch/merge prediction cache payload JSON: {}",
+        dsl_branch_merge_prediction_cache_json
+    );
+
     let validate_prediction_cache = Command::new(cli())
         .current_dir(&root)
         .args([
@@ -1501,6 +1612,53 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         branch_merge_sklearn_stdout
     );
 
+    let dsl_branch_merge_sklearn_cv_refit_replay = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-dsl-cv-refit-replay",
+            "--dsl",
+            "examples/pipeline_dsl_branch_merge_executable.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/sklearn_process_controller.py",
+            "--process-workers",
+            "2",
+            "--bundle-id",
+            "bundle:cli.dsl.branch.merge.sklearn.cv.refit.replay",
+            "--selections",
+            "examples/fixtures/bundle/selection_decisions_branch_merge.json",
+            "--plan-id",
+            "plan:cli.dsl.branch.merge.sklearn.cv.refit.replay",
+            "--run-id",
+            "run:cli.dsl.branch.merge.sklearn.cv.refit.replay",
+        ])
+        .output()
+        .expect("failed to run DSL branch/merge sklearn CV+refit+replay");
+    assert!(
+        dsl_branch_merge_sklearn_cv_refit_replay.status.success(),
+        "DSL branch/merge sklearn CV+refit+replay failed: {}",
+        String::from_utf8_lossy(&dsl_branch_merge_sklearn_cv_refit_replay.stderr)
+    );
+    let dsl_branch_merge_sklearn_stdout =
+        String::from_utf8_lossy(&dsl_branch_merge_sklearn_cv_refit_replay.stdout);
+    assert!(
+        dsl_branch_merge_sklearn_stdout
+            .contains("process DSL cv refit replay run: 6 fit_cv result(s)")
+            && dsl_branch_merge_sklearn_stdout.contains("6 OOF prediction block(s)")
+            && dsl_branch_merge_sklearn_stdout.contains("3 refit result(s)")
+            && dsl_branch_merge_sklearn_stdout.contains("3 replay result(s)")
+            && dsl_branch_merge_sklearn_stdout.contains("3 replay prediction block(s)")
+            && dsl_branch_merge_sklearn_stdout.contains("3 captured artifact handle(s)")
+            && dsl_branch_merge_sklearn_stdout.contains("2 prediction cache(s)")
+            && dsl_branch_merge_sklearn_stdout.contains("configured process worker(s)=2")
+            && dsl_branch_merge_sklearn_stdout.contains("observed process worker(s)=2"),
+        "unexpected DSL branch/merge sklearn CV+refit+replay output: {}",
+        dsl_branch_merge_sklearn_stdout
+    );
+
     let validate = Command::new(cli())
         .current_dir(&root)
         .args([
@@ -1773,6 +1931,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     let _ = std::fs::remove_file(temp_branch_merge_cv_refit_bundle);
     let _ = std::fs::remove_file(temp_branch_merge_lineage);
     let _ = std::fs::remove_file(temp_branch_merge_prediction_cache);
+    let _ = std::fs::remove_file(temp_dsl_branch_merge_cv_refit_bundle);
+    let _ = std::fs::remove_file(temp_dsl_branch_merge_lineage);
+    let _ = std::fs::remove_file(temp_dsl_branch_merge_prediction_cache);
     let _ = std::fs::remove_file(temp_branch_merge_prediction_cache_tampered);
     let _ = std::fs::remove_dir_all(temp_branch_merge_prediction_cache_store);
     let _ = std::fs::remove_dir_all(temp_branch_merge_artifact_manifest_dir);
