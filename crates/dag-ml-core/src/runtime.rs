@@ -1,9 +1,11 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::aggregation::{AggregatedPredictionBlock, PredictionUnitId};
 use crate::bundle::{
@@ -522,6 +524,209 @@ impl FileArtifactManifestStore {
 
     pub fn manifest(&self) -> &FileArtifactManifest {
         &self.manifest
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactPayloadMaterializationRecord {
+    pub run_id: RunId,
+    pub bundle_id: BundleId,
+    pub node_id: NodeId,
+    pub phase: Phase,
+    pub variant_id: Option<VariantId>,
+    pub artifact_id: ArtifactId,
+    pub payload_uri: String,
+    pub content_fingerprint: String,
+    pub size_bytes: u64,
+    pub handle: HandleRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ArtifactPayloadMetadata {
+    uri: String,
+    content_fingerprint: String,
+    size_bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileArtifactPayloadStore {
+    root: PathBuf,
+    manifest: FileArtifactManifest,
+    records_by_artifact_id: BTreeMap<ArtifactId, RefitArtifactRecord>,
+    materialization_records: RefCell<Vec<ArtifactPayloadMaterializationRecord>>,
+}
+
+impl FileArtifactPayloadStore {
+    pub fn write_from_source(
+        output_root: impl AsRef<Path>,
+        source_root: impl AsRef<Path>,
+        bundle: &ExecutionBundle,
+    ) -> Result<Self> {
+        bundle.validate()?;
+        let output_root = output_root.as_ref();
+        let source_root = source_root.as_ref();
+        fs::create_dir_all(output_root).map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to create artifact payload store `{}`: {err}",
+                output_root.display()
+            ))
+        })?;
+        for record in &bundle.refit_artifacts {
+            record.artifact.validate_portable()?;
+            validate_artifact_payload_file(source_root, &record.artifact)?;
+            let source_path = artifact_payload_path(source_root, &record.artifact)?;
+            let output_path = artifact_payload_path(output_root, &record.artifact)?;
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent).map_err(|err| {
+                    DagMlError::RuntimeValidation(format!(
+                        "failed to create artifact payload directory `{}`: {err}",
+                        parent.display()
+                    ))
+                })?;
+            }
+            if source_path != output_path {
+                fs::copy(&source_path, &output_path).map_err(|err| {
+                    DagMlError::RuntimeValidation(format!(
+                        "failed to copy artifact payload `{}` from {} to {}: {err}",
+                        record.artifact.id,
+                        source_path.display(),
+                        output_path.display()
+                    ))
+                })?;
+            }
+        }
+        FileArtifactManifestStore::write(output_root, bundle)?;
+        Self::open(output_root.to_path_buf(), bundle)
+    }
+
+    pub fn open(root: impl Into<PathBuf>, bundle: &ExecutionBundle) -> Result<Self> {
+        bundle.validate()?;
+        let root = root.into();
+        let manifest_store = FileArtifactManifestStore::open(root.clone(), bundle)?;
+        let records_by_artifact_id = bundle
+            .refit_artifacts
+            .iter()
+            .cloned()
+            .map(|record| (record.artifact.id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        let store = Self {
+            root,
+            manifest: manifest_store.manifest().clone(),
+            records_by_artifact_id,
+            materialization_records: RefCell::new(Vec::new()),
+        };
+        store.validate_payloads()?;
+        Ok(store)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn manifest(&self) -> &FileArtifactManifest {
+        &self.manifest
+    }
+
+    pub fn payload_count(&self) -> usize {
+        self.manifest.artifacts.len()
+    }
+
+    pub fn materialization_records(&self) -> Vec<ArtifactPayloadMaterializationRecord> {
+        self.materialization_records.borrow().clone()
+    }
+
+    pub fn validate_payloads(&self) -> Result<()> {
+        self.manifest.validate()?;
+        for entry in &self.manifest.artifacts {
+            let record = self
+                .records_by_artifact_id
+                .get(&entry.artifact.id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "artifact payload store for bundle `{}` has no bundle record for `{}`",
+                        self.manifest.bundle_id, entry.artifact.id
+                    ))
+                })?;
+            if !entry.matches_refit_record(record) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "artifact payload store entry `{}` does not match bundle refit artifact",
+                    entry.artifact.id
+                )));
+            }
+            validate_artifact_payload_file(&self.root, &entry.artifact)?;
+        }
+        Ok(())
+    }
+}
+
+impl RuntimeArtifactStore for FileArtifactPayloadStore {
+    fn materialize(&self, request: &ArtifactMaterializationRequest) -> Result<HandleRef> {
+        request.artifact.validate_portable()?;
+        let record = self
+            .records_by_artifact_id
+            .get(&request.artifact.id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "artifact payload store is missing refit artifact `{}` for bundle `{}`",
+                    request.artifact.id, request.bundle_id
+                ))
+            })?;
+        if record.node_id != request.node_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` is registered for node `{}` but requested for `{}`",
+                request.artifact.id, record.node_id, request.node_id
+            )));
+        }
+        if record.controller_id != request.controller_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` is registered for controller `{}` but requested for `{}`",
+                request.artifact.id, record.controller_id, request.controller_id
+            )));
+        }
+        if record.artifact != request.artifact {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` metadata does not match bundle record",
+                request.artifact.id
+            )));
+        }
+        if record.params_fingerprint != request.params_fingerprint {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` params fingerprint does not match bundle record",
+                request.artifact.id
+            )));
+        }
+        let metadata = validate_artifact_payload_file(&self.root, &request.artifact)?;
+        let fingerprint = stable_json_fingerprint(&(
+            &request.run_id,
+            &request.bundle_id,
+            &request.node_id,
+            request.phase,
+            &request.variant_id,
+            &request.artifact.id,
+            &metadata.content_fingerprint,
+            &request.params_fingerprint,
+        ))?;
+        let handle = HandleRef {
+            handle: u64::from_str_radix(&fingerprint[..16], 16)
+                .expect("sha256 hex prefix should fit into u64"),
+            kind: HandleKind::Artifact,
+            owner_controller: request.controller_id.clone(),
+        };
+        self.materialization_records
+            .borrow_mut()
+            .push(ArtifactPayloadMaterializationRecord {
+                run_id: request.run_id.clone(),
+                bundle_id: request.bundle_id.clone(),
+                node_id: request.node_id.clone(),
+                phase: request.phase,
+                variant_id: request.variant_id.clone(),
+                artifact_id: request.artifact.id.clone(),
+                payload_uri: metadata.uri,
+                content_fingerprint: metadata.content_fingerprint,
+                size_bytes: metadata.size_bytes,
+                handle: handle.clone(),
+            });
+        Ok(handle)
     }
 }
 
@@ -1630,6 +1835,135 @@ fn validate_artifact_optional_text(
         )));
     }
     Ok(())
+}
+
+fn artifact_payload_path(root: &Path, artifact: &ArtifactRef) -> Result<PathBuf> {
+    artifact.validate_portable()?;
+    let uri = artifact
+        .uri
+        .as_deref()
+        .expect("portable artifact validation requires uri");
+    Ok(root.join(uri))
+}
+
+fn validate_artifact_payload_file(
+    root: &Path,
+    artifact: &ArtifactRef,
+) -> Result<ArtifactPayloadMetadata> {
+    artifact.validate_portable()?;
+    let uri = artifact
+        .uri
+        .as_deref()
+        .expect("portable artifact validation requires uri")
+        .to_string();
+    let path = artifact_payload_path(root, artifact)?;
+    validate_payload_path_stays_within_root(root, &path, artifact)?;
+    let metadata = fs::metadata(&path).map_err(|err| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to stat artifact payload `{}` at {}: {err}",
+            artifact.id,
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "artifact payload `{}` at {} is not a regular file",
+            artifact.id,
+            path.display()
+        )));
+    }
+    let size_bytes = metadata.len();
+    if let Some(expected_size) = artifact.size_bytes {
+        if expected_size != size_bytes {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact payload `{}` size mismatch: expected {}, got {}",
+                artifact.id, expected_size, size_bytes
+            )));
+        }
+    }
+    let content_fingerprint =
+        sha256_file_hex(&path, &format!("artifact payload `{}`", artifact.id))?;
+    let expected_fingerprint = artifact
+        .content_fingerprint
+        .as_deref()
+        .expect("portable artifact validation requires content_fingerprint");
+    if !content_fingerprint.eq_ignore_ascii_case(expected_fingerprint) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "artifact payload `{}` content fingerprint mismatch",
+            artifact.id
+        )));
+    }
+    Ok(ArtifactPayloadMetadata {
+        uri,
+        content_fingerprint,
+        size_bytes,
+    })
+}
+
+fn validate_payload_path_stays_within_root(
+    root: &Path,
+    path: &Path,
+    artifact: &ArtifactRef,
+) -> Result<()> {
+    let root = fs::canonicalize(root).map_err(|err| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to canonicalize artifact payload root `{}`: {err}",
+            root.display()
+        ))
+    })?;
+    let path = fs::canonicalize(path).map_err(|err| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to canonicalize artifact payload `{}` at {}: {err}",
+            artifact.id,
+            path.display()
+        ))
+    })?;
+    if !path.starts_with(&root) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "artifact payload `{}` resolves outside store root `{}`",
+            artifact.id,
+            root.display()
+        )));
+    }
+    Ok(())
+}
+
+fn sha256_file_hex(path: &Path, label: &str) -> Result<String> {
+    let mut file = fs::File::open(path).map_err(|err| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to open {label} at {}: {err}",
+            path.display()
+        ))
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to read {label} at {}: {err}",
+                path.display()
+            ))
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(bytes_to_hex(&hasher.finalize()))
+}
+
+#[cfg(test)]
+fn sha256_bytes_hex(bytes: &[u8]) -> String {
+    bytes_to_hex(&Sha256::digest(bytes))
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    out
 }
 
 /// Deterministic path safety for relative artifact URIs. Rejects empty values,
@@ -4319,7 +4653,7 @@ mod tests {
     use std::{
         collections::{BTreeMap, BTreeSet},
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::{
             atomic::{AtomicUsize, Ordering},
             Arc, Mutex,
@@ -7058,6 +7392,28 @@ mod tests {
         .unwrap()
     }
 
+    fn portable_artifact_bundle_with_payload(
+        plan: &ExecutionPlan,
+        payload: &[u8],
+    ) -> crate::bundle::ExecutionBundle {
+        let mut bundle = portable_artifact_bundle(plan);
+        let content_fingerprint = sha256_bytes_hex(payload);
+        let artifact = &mut bundle.refit_artifacts[0].artifact;
+        artifact.uri = Some(format!("artifacts/{content_fingerprint}.joblib"));
+        artifact.content_fingerprint = Some(content_fingerprint);
+        artifact.size_bytes = Some(payload.len() as u64);
+        bundle.validate().unwrap();
+        bundle
+    }
+
+    fn write_artifact_payload(root: &Path, bundle: &ExecutionBundle, payload: &[u8]) -> PathBuf {
+        let uri = bundle.refit_artifacts[0].artifact.uri.as_deref().unwrap();
+        let path = root.join(uri);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, payload).unwrap();
+        path
+    }
+
     #[test]
     fn artifact_ref_validate_portable_rejects_unsafe_uris_and_legacy() {
         let content_fingerprint = "c".repeat(64);
@@ -7212,6 +7568,79 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_artifact_payload_store_validates_payloads_and_materializes_handles() {
+        let plan = fixture_plan("plan:artifact.payload.round.trip");
+        let payload = b"portable dag-ml artifact payload\n";
+        let bundle = portable_artifact_bundle_with_payload(&plan, payload);
+        let source_root = temp_prediction_cache_dir("dag_ml_file_artifact_payload_source");
+        let store_root = temp_prediction_cache_dir("dag_ml_file_artifact_payload_store");
+        let source_path = write_artifact_payload(&source_root, &bundle, payload);
+
+        let store = FileArtifactPayloadStore::write_from_source(&store_root, &source_root, &bundle)
+            .unwrap();
+        assert_eq!(store.root(), store_root.as_path());
+        assert_eq!(store.payload_count(), 1);
+        assert!(store_root
+            .join(bundle.refit_artifacts[0].artifact.uri.as_deref().unwrap())
+            .exists());
+        assert!(source_path.exists());
+        assert_eq!(store.manifest().bundle_id, bundle.bundle_id);
+
+        let artifact = &bundle.refit_artifacts[0];
+        let handle = store
+            .materialize(&ArtifactMaterializationRequest {
+                run_id: RunId::new("run:artifact.payload.materialize").unwrap(),
+                bundle_id: bundle.bundle_id.clone(),
+                node_id: artifact.node_id.clone(),
+                phase: Phase::Predict,
+                variant_id: bundle.selected_variant_id.clone(),
+                controller_id: artifact.controller_id.clone(),
+                artifact: artifact.artifact.clone(),
+                params_fingerprint: artifact.params_fingerprint.clone(),
+            })
+            .unwrap();
+        assert_eq!(handle.kind, HandleKind::Artifact);
+        assert_eq!(handle.owner_controller, artifact.controller_id);
+        let records = store.materialization_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].artifact_id, artifact.artifact.id);
+        assert_eq!(records[0].size_bytes, payload.len() as u64);
+        assert_eq!(
+            records[0].content_fingerprint,
+            artifact.artifact.content_fingerprint.clone().unwrap()
+        );
+
+        let reopened = FileArtifactPayloadStore::open(store_root.clone(), &bundle).unwrap();
+        reopened.validate_payloads().unwrap();
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[test]
+    fn file_artifact_payload_store_refuses_tampered_payloads() {
+        let plan = fixture_plan("plan:artifact.payload.tampered");
+        let payload = b"portable dag-ml artifact payload\n";
+        let bundle = portable_artifact_bundle_with_payload(&plan, payload);
+        let source_root = temp_prediction_cache_dir("dag_ml_file_artifact_payload_source_tamper");
+        let store_root = temp_prediction_cache_dir("dag_ml_file_artifact_payload_store_tamper");
+        write_artifact_payload(&source_root, &bundle, payload);
+        FileArtifactPayloadStore::write_from_source(&store_root, &source_root, &bundle).unwrap();
+
+        let payload_path =
+            store_root.join(bundle.refit_artifacts[0].artifact.uri.as_deref().unwrap());
+        fs::write(&payload_path, vec![b'x'; payload.len()]).unwrap();
+        let err = FileArtifactPayloadStore::open(store_root.clone(), &bundle).unwrap_err();
+        assert!(
+            err.to_string().contains("content fingerprint mismatch"),
+            "unexpected tamper error: {err}"
+        );
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(store_root);
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde_json::json;
+use sha2::{Digest, Sha256};
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -11,6 +14,16 @@ fn repo_root() -> PathBuf {
 
 fn cli() -> &'static str {
     env!("CARGO_BIN_EXE_dag-ml-cli")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    out
 }
 
 #[test]
@@ -1566,6 +1579,16 @@ fn cli_exports_and_validates_artifact_manifest() {
         std::process::id(),
         unique_suffix()
     ));
+    let temp_payload_source_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_artifact_payload_source_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let temp_payload_store_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_artifact_payload_store_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
     let temp_legacy_bundle = std::env::temp_dir().join(format!(
         "dag_ml_cli_artifact_manifest_legacy_bundle_{}_{}.json",
         std::process::id(),
@@ -1602,6 +1625,29 @@ fn cli_exports_and_validates_artifact_manifest() {
         "build-bundle failed: {}",
         String::from_utf8_lossy(&build.stderr)
     );
+    let payload_bytes = b"dag-ml cli portable artifact payload\n";
+    let payload_fingerprint = sha256_hex(payload_bytes);
+    let payload_uri = format!("artifacts/{payload_fingerprint}.joblib");
+    let mut bundle_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&temp_bundle).expect("bundle was written"))
+            .expect("bundle JSON parses");
+    bundle_json["refit_artifacts"][0]["artifact"]["uri"] = json!(payload_uri);
+    bundle_json["refit_artifacts"][0]["artifact"]["content_fingerprint"] =
+        json!(payload_fingerprint);
+    bundle_json["refit_artifacts"][0]["artifact"]["size_bytes"] = json!(payload_bytes.len());
+    std::fs::write(
+        &temp_bundle,
+        serde_json::to_vec_pretty(&bundle_json).expect("bundle JSON serializes"),
+    )
+    .expect("portable payload bundle was written");
+    let payload_path = temp_payload_source_dir.join(
+        bundle_json["refit_artifacts"][0]["artifact"]["uri"]
+            .as_str()
+            .expect("payload uri is string"),
+    );
+    std::fs::create_dir_all(payload_path.parent().expect("payload has parent"))
+        .expect("payload source dir was created");
+    std::fs::write(&payload_path, payload_bytes).expect("payload source was written");
 
     let export = Command::new(cli())
         .current_dir(&root)
@@ -1662,6 +1708,71 @@ fn cli_exports_and_validates_artifact_manifest() {
             .contains("valid artifact manifest: bundle=bundle:cli.demo, artifact(s)=1"),
         "unexpected validate-artifact-manifest output: {}",
         String::from_utf8_lossy(&validate_manifest.stdout)
+    );
+
+    let export_payload_store = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "export-artifact-payload-store",
+            "--bundle",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--source-dir",
+            temp_payload_source_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--output-dir",
+            temp_payload_store_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli export-artifact-payload-store");
+    assert!(
+        export_payload_store.status.success(),
+        "export-artifact-payload-store failed: {}",
+        String::from_utf8_lossy(&export_payload_store.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&export_payload_store.stdout)
+            .contains("wrote artifact payload store: bundle=bundle:cli.demo, artifact(s)=1"),
+        "unexpected export-artifact-payload-store output: {}",
+        String::from_utf8_lossy(&export_payload_store.stdout)
+    );
+    assert!(
+        temp_payload_store_dir
+            .join(
+                bundle_json["refit_artifacts"][0]["artifact"]["uri"]
+                    .as_str()
+                    .expect("payload uri is string")
+            )
+            .exists(),
+        "artifact payload was not copied into {}",
+        temp_payload_store_dir.display()
+    );
+
+    let validate_payload_store = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-artifact-payload-store",
+            "--bundle",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--store-dir",
+            temp_payload_store_dir
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli validate-artifact-payload-store");
+    assert!(
+        validate_payload_store.status.success(),
+        "validate-artifact-payload-store failed: {}",
+        String::from_utf8_lossy(&validate_payload_store.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&validate_payload_store.stdout)
+            .contains("valid artifact payload store: bundle=bundle:cli.demo, artifact(s)=1"),
+        "unexpected validate-artifact-payload-store output: {}",
+        String::from_utf8_lossy(&validate_payload_store.stdout)
     );
 
     let validate_bundle = Command::new(cli())
@@ -1768,6 +1879,8 @@ fn cli_exports_and_validates_artifact_manifest() {
     );
 
     let _ = std::fs::remove_file(temp_bundle);
+    let _ = std::fs::remove_dir_all(temp_payload_source_dir);
+    let _ = std::fs::remove_dir_all(temp_payload_store_dir);
     let _ = std::fs::remove_dir_all(temp_manifest_dir);
     let _ = std::fs::remove_file(temp_legacy_bundle);
     let _ = std::fs::remove_dir_all(temp_legacy_manifest_dir);

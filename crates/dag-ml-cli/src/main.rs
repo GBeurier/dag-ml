@@ -21,14 +21,14 @@ use dag_ml_core::{
     BundlePredictionCacheRecord, BundlePredictionRequirement, BundleReplayExecution, CampaignSpec,
     CandidateScore, ColumnarPredictionCacheStore, ControllerId, ControllerManifest,
     ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle,
-    ExternalDataPlanEnvelope, FileArtifactManifestStore, FilePredictionCacheStore, GraphSpec,
-    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
-    MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, ParallelScheduler, Phase,
-    PredictionBlock, PredictionLevel, PredictionPartition, RefitArtifactRecord,
-    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
-    ResearchProvenancePackage, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric,
-    SelectionPolicy, SequentialScheduler, VariantId,
+    ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
+    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
+    InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
+    OofCampaign, ParallelScheduler, Phase, PredictionBlock, PredictionLevel, PredictionPartition,
+    RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
+    ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId, RuntimeController,
+    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
+    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -547,6 +547,20 @@ enum Command {
         bundle: PathBuf,
         #[arg(long)]
         manifest_dir: PathBuf,
+    },
+    ExportArtifactPayloadStore {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        source_dir: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    ValidateArtifactPayloadStore {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        store_dir: PathBuf,
     },
     ExportResearchProvenance {
         #[arg(long)]
@@ -1438,6 +1452,32 @@ fn main() -> Result<()> {
                 store.manifest().bundle_id,
                 store.manifest().artifacts.len(),
                 manifest_dir.display()
+            );
+        }
+        Command::ExportArtifactPayloadStore {
+            bundle,
+            source_dir,
+            output_dir,
+        } => {
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let store =
+                FileArtifactPayloadStore::write_from_source(&output_dir, &source_dir, &bundle)
+                    .with_context(|| "failed to export artifact payload store")?;
+            println!(
+                "wrote artifact payload store: bundle={}, artifact(s)={}, dir={}",
+                store.manifest().bundle_id,
+                store.payload_count(),
+                output_dir.display()
+            );
+        }
+        Command::ValidateArtifactPayloadStore { bundle, store_dir } => {
+            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let store = validate_file_artifact_payload_store(&bundle, &store_dir)?;
+            println!(
+                "valid artifact payload store: bundle={}, artifact(s)={}, dir={}",
+                store.manifest().bundle_id,
+                store.payload_count(),
+                store_dir.display()
             );
         }
         Command::ExportResearchProvenance {
@@ -3711,12 +3751,23 @@ fn validate_file_prediction_cache_store(
             )
         })?;
     for entry in &store.manifest().caches {
-        store.load_blocks(&entry.requirement_key).with_context(|| {
-            format!(
-                "prediction cache store cannot load `{}`",
-                entry.requirement_key
-            )
-        })?;
+        if entry.prediction_level == PredictionLevel::Sample {
+            store.load_blocks(&entry.requirement_key).with_context(|| {
+                format!(
+                    "prediction cache store cannot load `{}`",
+                    entry.requirement_key
+                )
+            })?;
+        } else {
+            store
+                .load_aggregated_blocks(&entry.requirement_key)
+                .with_context(|| {
+                    format!(
+                        "prediction cache store cannot load aggregated `{}`",
+                        entry.requirement_key
+                    )
+                })?;
+        }
     }
     Ok(store)
 }
@@ -3731,6 +3782,26 @@ fn validate_file_artifact_manifest_store(
             manifest_dir.display()
         )
     })
+}
+
+fn validate_file_artifact_payload_store(
+    bundle: &ExecutionBundle,
+    store_dir: &Path,
+) -> Result<FileArtifactPayloadStore> {
+    let store =
+        FileArtifactPayloadStore::open(store_dir.to_path_buf(), bundle).with_context(|| {
+            format!(
+                "artifact payload store is invalid at {}",
+                store_dir.display()
+            )
+        })?;
+    store.validate_payloads().with_context(|| {
+        format!(
+            "artifact payload store cannot validate payloads at {}",
+            store_dir.display()
+        )
+    })?;
+    Ok(store)
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Result<T> {
