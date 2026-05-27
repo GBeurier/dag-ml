@@ -1055,10 +1055,12 @@ def validate_dag_ml_prediction_cache_tensor_header(header: str, label: str) -> N
 
 
 def validate_dag_ml_controller_result_header(header: str, label: str) -> None:
-    require(
-        "dagml_node_result_validate_for_task_json" in header,
-        f"{label} header must expose `dagml_node_result_validate_for_task_json`",
-    )
+    for symbol in (
+        "dagml_node_result_validate_for_task_json",
+        "dagml_controller_manifest_validate_json",
+        "dagml_controller_manifest_list_validate_json",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
 def validate_dag_ml_graph_header(header: str, label: str) -> None:

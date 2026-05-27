@@ -17,6 +17,9 @@ the host owns the underlying object behind each handle.
   `dagml_model_input_spec_validate_json`, `dagml_data_plan_contract_json` and
   `dagml_data_plan_validate_json` for non-Rust bindings that need to exchange
   neutral data/model compatibility requests and data-planner answers;
+- `dagml_controller_manifest_validate_json` and
+  `dagml_controller_manifest_list_validate_json` so bindings can preflight
+  controller manifests and registry uniqueness before plan building;
 - `dagml_data_output_provenance_contract_json` and
   `dagml_data_output_provenance_validate_json` so bindings can discover the
   reserved `DataProviderViewSpec.extra` key and validate propagated data-view
