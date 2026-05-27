@@ -142,6 +142,10 @@ Implemented:
   CV+refit bundle capture and stateful sklearn CV+refit+replay, including
   coordinated generation variants, heterogeneous prediction+original-data merge
   inputs and OOF prediction-cache contracts;
+- runtime data edges propagate scoped `DataProviderViewSpec` contracts from
+  data-producing operators to downstream consumers, so the executable DSL smoke
+  now covers train-only augmentation feeding a branch model before OOF stacking
+  and refit/replay;
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate

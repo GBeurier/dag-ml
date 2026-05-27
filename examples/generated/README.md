@@ -92,7 +92,8 @@ handle in a persistent JSONL process. The branch/merge sklearn CV+refit+replay
 smoke keeps three captured model handles alive through replay inside the same
 persistent adapter process; the DSL variant of the same smoke starts from
 `pipeline_dsl_branch_merge_executable.json`, so split, generation, data
-bindings and merge topology are all compiled before execution. The artifact
+bindings, train-only augmentation, branch data edges and merge topology are all
+compiled before execution. The artifact
 manifest export writes a portable
 `artifact_manifest.json` recording the bundle's refit `ArtifactRef` metadata
 (backend, strictly relative URI, content fingerprint and plugin/version);

@@ -971,9 +971,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     );
     let dsl_branch_merge_stdout = String::from_utf8_lossy(&dsl_branch_merge_cv_refit_bundle.stdout);
     assert!(
-        dsl_branch_merge_stdout.contains("process DSL cv refit bundle run: 6 fit_cv result(s)")
+        dsl_branch_merge_stdout.contains("process DSL cv refit bundle run: 8 fit_cv result(s)")
             && dsl_branch_merge_stdout.contains("6 OOF prediction block(s)")
-            && dsl_branch_merge_stdout.contains("3 refit result(s)")
+            && dsl_branch_merge_stdout.contains("4 refit result(s)")
             && dsl_branch_merge_stdout.contains("3 captured artifact handle(s)")
             && dsl_branch_merge_stdout.contains("2 prediction cache(s)")
             && dsl_branch_merge_stdout.contains("configured process worker(s)=2")
@@ -986,6 +986,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             .expect("DSL branch/merge CV+refit bundle was written");
     assert!(
         dsl_branch_merge_bundle_json.contains("\"selected_variant_id\": \"variant:")
+            && dsl_branch_merge_bundle_json.contains("\"node_id\": \"branch:b1.augment:noise\"")
             && dsl_branch_merge_bundle_json.contains("artifact:branch:b0.model:ridge:refit")
             && dsl_branch_merge_bundle_json.contains("artifact:branch:b1.model:rf:refit")
             && dsl_branch_merge_bundle_json
@@ -1003,6 +1004,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         .expect("DSL branch/merge lineage records were written");
     assert!(
         dsl_branch_merge_lineage_json.contains("variant:a964828b1417c6e7")
+            && dsl_branch_merge_lineage_json.contains("branch:b1.augment:noise")
             && dsl_branch_merge_lineage_json.contains("merge:stack.pred_plus_original.meta:ridge")
             && dsl_branch_merge_lineage_json.contains("input_lineage"),
         "unexpected DSL branch/merge lineage JSON: {}",
@@ -1646,10 +1648,10 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         String::from_utf8_lossy(&dsl_branch_merge_sklearn_cv_refit_replay.stdout);
     assert!(
         dsl_branch_merge_sklearn_stdout
-            .contains("process DSL cv refit replay run: 6 fit_cv result(s)")
+            .contains("process DSL cv refit replay run: 8 fit_cv result(s)")
             && dsl_branch_merge_sklearn_stdout.contains("6 OOF prediction block(s)")
-            && dsl_branch_merge_sklearn_stdout.contains("3 refit result(s)")
-            && dsl_branch_merge_sklearn_stdout.contains("3 replay result(s)")
+            && dsl_branch_merge_sklearn_stdout.contains("4 refit result(s)")
+            && dsl_branch_merge_sklearn_stdout.contains("4 replay result(s)")
             && dsl_branch_merge_sklearn_stdout.contains("3 replay prediction block(s)")
             && dsl_branch_merge_sklearn_stdout.contains("3 captured artifact handle(s)")
             && dsl_branch_merge_sklearn_stdout.contains("2 prediction cache(s)")

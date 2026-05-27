@@ -133,7 +133,7 @@
       "require_relations": true
     },
     {
-      "node_id": "branch:b1.model:rf",
+      "node_id": "branch:b1.augment:noise",
       "input_name": "x",
       "request_id": "nir-to-tabular",
       "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
@@ -187,6 +187,29 @@
         {
           "id": "b1",
           "steps": [
+            {
+              "kind": "augmentation",
+              "id": "branch:b1.augment:noise",
+              "operator": {
+                "type": "GaussianNoise"
+              },
+              "params": {
+                "scope": "train_only",
+                "std": 0.01
+              },
+              "seed_label": "branch:b1.augment",
+              "shape": {
+                "fit_rows": "fold_train",
+                "predict_rows": "fold_validation",
+                "augmentation_policy": {
+                  "sample_scope": "train_only",
+                  "feature_scope": "none",
+                  "require_origin_id": true,
+                  "inherit_group": true,
+                  "inherit_target": true
+                }
+              }
+            },
             {
               "kind": "model",
               "id": "branch:b1.model:rf",
