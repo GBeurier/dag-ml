@@ -711,6 +711,7 @@ mod tests {
             output_ports: Vec::new(),
             data_requirements: None,
             capabilities,
+            operator_selectors: Vec::new(),
             fit_scope: ControllerFitScope::FoldTrain,
             rng_policy: RngPolicy::UsesCoreSeed,
             artifact_policy: ArtifactPolicy::Serializable,

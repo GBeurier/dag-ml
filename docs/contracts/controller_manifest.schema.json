@@ -61,6 +61,12 @@
         "$ref": "#/$defs/controller_capability"
       }
     },
+    "operator_selectors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/operator_selector"
+      }
+    },
     "fit_scope": {
       "$ref": "#/$defs/controller_fit_scope"
     },
@@ -158,6 +164,46 @@
         "expands_variants",
         "aggregates_predictions"
       ]
+    },
+    "operator_selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [
+        { "required": ["aliases"] },
+        { "required": ["classes"] },
+        { "required": ["class_prefixes"] },
+        { "required": ["functions"] },
+        { "required": ["refs"] },
+        { "required": ["types"] }
+      ],
+      "properties": {
+        "aliases": {
+          "$ref": "#/$defs/non_empty_string_set"
+        },
+        "classes": {
+          "$ref": "#/$defs/non_empty_string_set"
+        },
+        "class_prefixes": {
+          "$ref": "#/$defs/non_empty_string_set"
+        },
+        "functions": {
+          "$ref": "#/$defs/non_empty_string_set"
+        },
+        "refs": {
+          "$ref": "#/$defs/non_empty_string_set"
+        },
+        "types": {
+          "$ref": "#/$defs/non_empty_string_set"
+        }
+      }
+    },
+    "non_empty_string_set": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
     },
     "controller_fit_scope": {
       "enum": ["stateless", "fold_train", "full_train", "inference_only"]

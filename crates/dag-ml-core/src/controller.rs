@@ -59,6 +59,54 @@ pub enum ArtifactPolicy {
     ReplayRequired,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorSelector {
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub aliases: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub classes: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub class_prefixes: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub functions: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub refs: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub types: BTreeSet<String>,
+}
+
+impl OperatorSelector {
+    fn validate(&self, controller_id: &ControllerId) -> Result<()> {
+        if self.aliases.is_empty()
+            && self.classes.is_empty()
+            && self.class_prefixes.is_empty()
+            && self.functions.is_empty()
+            && self.refs.is_empty()
+            && self.types.is_empty()
+        {
+            return Err(DagMlError::ControllerValidation(format!(
+                "controller `{controller_id}` has an empty operator selector"
+            )));
+        }
+        for (field, values) in [
+            ("aliases", &self.aliases),
+            ("classes", &self.classes),
+            ("class_prefixes", &self.class_prefixes),
+            ("functions", &self.functions),
+            ("refs", &self.refs),
+            ("types", &self.types),
+        ] {
+            if values.iter().any(|value| value.trim().is_empty()) {
+                return Err(DagMlError::ControllerValidation(format!(
+                    "controller `{controller_id}` operator selector `{field}` contains an empty value"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControllerManifest {
@@ -77,6 +125,8 @@ pub struct ControllerManifest {
     pub data_requirements: Option<serde_json::Value>,
     #[serde(default)]
     pub capabilities: BTreeSet<ControllerCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operator_selectors: Vec<OperatorSelector>,
     pub fit_scope: ControllerFitScope,
     pub rng_policy: RngPolicy,
     pub artifact_policy: ArtifactPolicy,
@@ -106,6 +156,9 @@ impl ControllerManifest {
         }
         validate_ports(&self.controller_id, "input", &self.input_ports)?;
         validate_ports(&self.controller_id, "output", &self.output_ports)?;
+        for selector in &self.operator_selectors {
+            selector.validate(&self.controller_id)?;
+        }
         if self.rng_policy == RngPolicy::Nondeterministic
             && self
                 .capabilities
@@ -243,12 +296,17 @@ impl ControllerRegistry {
         let mut candidates = self
             .manifests
             .values()
-            .filter(|manifest| manifest.operator_kind == node.kind)
+            .filter_map(|manifest| controller_candidate(manifest, node))
             .collect::<Vec<_>>();
         candidates.sort_by(|left, right| {
-            left.priority
-                .cmp(&right.priority)
-                .then_with(|| left.controller_id.cmp(&right.controller_id))
+            left.rank
+                .cmp(&right.rank)
+                .then_with(|| left.manifest.priority.cmp(&right.manifest.priority))
+                .then_with(|| {
+                    left.manifest
+                        .controller_id
+                        .cmp(&right.manifest.controller_id)
+                })
         });
         let Some(first) = candidates.first() else {
             return Err(DagMlError::Planning(format!(
@@ -256,16 +314,155 @@ impl ControllerRegistry {
                 node.id, node.kind
             )));
         };
-        if candidates
-            .get(1)
-            .is_some_and(|second| second.priority == first.priority)
-        {
+        if candidates.get(1).is_some_and(|second| {
+            second.rank == first.rank && second.manifest.priority == first.manifest.priority
+        }) {
             return Err(DagMlError::Planning(format!(
                 "node `{}` has ambiguous controllers for kind {:?}; set metadata.controller_id",
                 node.id, node.kind
             )));
         }
-        Ok((*first).clone())
+        Ok(first.manifest.clone())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum ControllerMatchRank {
+    OperatorSelector,
+    GenericKind,
+}
+
+struct ControllerCandidate<'a> {
+    manifest: &'a ControllerManifest,
+    rank: ControllerMatchRank,
+}
+
+fn controller_candidate<'a>(
+    manifest: &'a ControllerManifest,
+    node: &NodeSpec,
+) -> Option<ControllerCandidate<'a>> {
+    if manifest.operator_kind != node.kind {
+        return None;
+    }
+    if manifest.operator_selectors.is_empty() {
+        return Some(ControllerCandidate {
+            manifest,
+            rank: ControllerMatchRank::GenericKind,
+        });
+    }
+    let operator = node.operator.as_ref()?;
+    manifest
+        .operator_selectors
+        .iter()
+        .any(|selector| selector_matches_operator(selector, operator))
+        .then_some(ControllerCandidate {
+            manifest,
+            rank: ControllerMatchRank::OperatorSelector,
+        })
+}
+
+fn selector_matches_operator(selector: &OperatorSelector, operator: &serde_json::Value) -> bool {
+    let descriptor = OperatorDescriptor::from_value(operator);
+    selector_matches_any(
+        &selector.aliases,
+        descriptor.alias_candidates.iter().copied(),
+    ) || descriptor
+        .class
+        .is_some_and(|class| selector_matches_exact(&selector.classes, class))
+        || descriptor.class.is_some_and(|class| {
+            selector
+                .class_prefixes
+                .iter()
+                .any(|prefix| normalized_starts_with(class, prefix))
+        })
+        || descriptor
+            .function
+            .is_some_and(|function| selector_matches_exact(&selector.functions, function))
+        || descriptor
+            .reference
+            .is_some_and(|reference| selector_matches_exact(&selector.refs, reference))
+        || descriptor
+            .operator_type
+            .is_some_and(|operator_type| selector_matches_exact(&selector.types, operator_type))
+}
+
+fn selector_matches_any<'a>(
+    values: &BTreeSet<String>,
+    mut candidates: impl Iterator<Item = &'a str>,
+) -> bool {
+    candidates.any(|candidate| selector_matches_exact(values, candidate))
+}
+
+fn selector_matches_exact(values: &BTreeSet<String>, candidate: &str) -> bool {
+    values
+        .iter()
+        .any(|value| normalized_eq(value.as_str(), candidate))
+}
+
+fn normalized_eq(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
+}
+
+fn normalized_starts_with(value: &str, prefix: &str) -> bool {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with(&prefix.trim().to_ascii_lowercase())
+}
+
+struct OperatorDescriptor<'a> {
+    class: Option<&'a str>,
+    function: Option<&'a str>,
+    reference: Option<&'a str>,
+    operator_type: Option<&'a str>,
+    alias_candidates: Vec<&'a str>,
+}
+
+impl<'a> OperatorDescriptor<'a> {
+    fn from_value(value: &'a serde_json::Value) -> Self {
+        let mut descriptor = Self {
+            class: None,
+            function: None,
+            reference: None,
+            operator_type: None,
+            alias_candidates: Vec::new(),
+        };
+        match value {
+            serde_json::Value::String(reference) => {
+                descriptor.reference = Some(reference);
+                descriptor.push_alias_candidates(reference);
+            }
+            serde_json::Value::Object(object) => {
+                descriptor.class = object.get("class").and_then(serde_json::Value::as_str);
+                descriptor.function = object.get("function").and_then(serde_json::Value::as_str);
+                descriptor.reference = object.get("ref").and_then(serde_json::Value::as_str);
+                descriptor.operator_type = object.get("type").and_then(serde_json::Value::as_str);
+                for value in [
+                    descriptor.operator_type,
+                    descriptor.reference,
+                    descriptor.class,
+                    descriptor.function,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    descriptor.push_alias_candidates(value);
+                }
+            }
+            _ => {}
+        }
+        descriptor
+    }
+
+    fn push_alias_candidates(&mut self, value: &'a str) {
+        self.alias_candidates.push(value);
+        if let Some(short) = value
+            .rsplit(['.', ':'])
+            .next()
+            .filter(|short| *short != value)
+        {
+            self.alias_candidates.push(short);
+        }
     }
 }
 
@@ -324,6 +521,7 @@ mod tests {
             output_ports: Vec::new(),
             data_requirements: None,
             capabilities: BTreeSet::from([ControllerCapability::Deterministic]),
+            operator_selectors: Vec::new(),
             fit_scope: ControllerFitScope::FoldTrain,
             rng_policy: RngPolicy::UsesCoreSeed,
             artifact_policy: ArtifactPolicy::Serializable,
@@ -339,6 +537,20 @@ mod tests {
             ports: PortSchema::default(),
             metadata: BTreeMap::new(),
             seed_label: None,
+        }
+    }
+
+    fn node_with_operator(kind: NodeKind, operator: serde_json::Value) -> NodeSpec {
+        NodeSpec {
+            operator: Some(operator),
+            ..node(kind)
+        }
+    }
+
+    fn alias_selector(alias: &str) -> OperatorSelector {
+        OperatorSelector {
+            aliases: BTreeSet::from([alias.to_string()]),
+            ..OperatorSelector::default()
         }
     }
 
@@ -386,6 +598,105 @@ mod tests {
             .unwrap();
 
         assert!(registry.resolve_for_node(&node(NodeKind::Model)).is_err());
+    }
+
+    #[test]
+    fn operator_selector_prefers_specific_controller_over_generic() {
+        let mut registry = ControllerRegistry::new();
+        registry
+            .register(manifest(
+                "controller:transform.generic",
+                NodeKind::Transform,
+                0,
+            ))
+            .unwrap();
+        let mut specific = manifest("controller:transform.snv", NodeKind::Transform, 0);
+        specific.operator_selectors.push(alias_selector("SNV"));
+        registry.register(specific).unwrap();
+        let node = node_with_operator(NodeKind::Transform, json!("SNV"));
+
+        let resolved = registry.resolve_for_node(&node).unwrap();
+
+        assert_eq!(resolved.controller_id.as_str(), "controller:transform.snv");
+    }
+
+    #[test]
+    fn operator_selector_matches_plain_class_basename_alias() {
+        let mut registry = ControllerRegistry::new();
+        registry
+            .register(manifest(
+                "controller:transform.generic",
+                NodeKind::Transform,
+                0,
+            ))
+            .unwrap();
+        let mut specific = manifest("controller:transform.mixin", NodeKind::Transform, 0);
+        specific
+            .operator_selectors
+            .push(alias_selector("StandardScaler"));
+        registry.register(specific).unwrap();
+        let node = node_with_operator(
+            NodeKind::Transform,
+            json!({"class": "sklearn.preprocessing.StandardScaler"}),
+        );
+
+        let resolved = registry.resolve_for_node(&node).unwrap();
+
+        assert_eq!(
+            resolved.controller_id.as_str(),
+            "controller:transform.mixin"
+        );
+    }
+
+    #[test]
+    fn operator_selector_matches_class_prefix() {
+        let mut registry = ControllerRegistry::new();
+        let mut sklearn = manifest("controller:sklearn.transform", NodeKind::Transform, 0);
+        sklearn.operator_selectors.push(OperatorSelector {
+            class_prefixes: BTreeSet::from(["sklearn.preprocessing.".to_string()]),
+            ..OperatorSelector::default()
+        });
+        registry.register(sklearn).unwrap();
+        let node = node_with_operator(
+            NodeKind::Transform,
+            json!({"class": "sklearn.preprocessing.MinMaxScaler"}),
+        );
+
+        let resolved = registry.resolve_for_node(&node).unwrap();
+
+        assert_eq!(
+            resolved.controller_id.as_str(),
+            "controller:sklearn.transform"
+        );
+    }
+
+    #[test]
+    fn equal_priority_operator_selector_matches_are_ambiguous() {
+        let mut registry = ControllerRegistry::new();
+        let mut first = manifest("controller:snv.a", NodeKind::Transform, 0);
+        first.operator_selectors.push(alias_selector("SNV"));
+        let mut second = manifest("controller:snv.b", NodeKind::Transform, 0);
+        second.operator_selectors.push(alias_selector("SNV"));
+        registry.register(first).unwrap();
+        registry.register(second).unwrap();
+        let node = node_with_operator(NodeKind::Transform, json!({"type": "SNV"}));
+
+        let error = registry.resolve_for_node(&node).unwrap_err().to_string();
+
+        assert!(error.contains("ambiguous controllers"));
+    }
+
+    #[test]
+    fn selector_only_controller_does_not_catch_unmatched_operator() {
+        let mut registry = ControllerRegistry::new();
+        let mut snv = manifest("controller:transform.snv", NodeKind::Transform, 0);
+        snv.operator_selectors.push(alias_selector("SNV"));
+        registry.register(snv).unwrap();
+        let node = node_with_operator(NodeKind::Transform, json!("MSC"));
+
+        let error = registry.resolve_for_node(&node).unwrap_err().to_string();
+
+        assert!(error.contains("no controller registered"));
     }
 
     #[test]
@@ -451,6 +762,18 @@ mod tests {
     }
 
     #[test]
+    fn manifest_rejects_empty_operator_selector() {
+        let mut manifest = manifest("controller:empty-selector", NodeKind::Transform, 0);
+        manifest
+            .operator_selectors
+            .push(OperatorSelector::default());
+
+        let error = manifest.validate().unwrap_err().to_string();
+
+        assert!(error.contains("empty operator selector"));
+    }
+
+    #[test]
     fn manifest_reports_parallel_invocation_support() {
         let mut manifest = manifest("controller:parallel", NodeKind::Model, 0);
         assert!(!manifest.supports_parallel_invocation());
@@ -483,6 +806,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|capability| capability.as_str() == Some("aggregates_predictions")));
+        assert!(schema["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("operator_selectors"));
         assert_eq!(
             schema["$defs"]["model_input_spec"]["properties"]["schema_version"]["const"].as_u64(),
             Some(crate::data::MODEL_INPUT_SPEC_SCHEMA_VERSION as u64)
