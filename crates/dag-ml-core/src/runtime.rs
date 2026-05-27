@@ -4480,6 +4480,8 @@ fn validation_data_view_key(input_name: &str) -> String {
     format!("{input_name}:validation")
 }
 
+const OUTPUT_DATA_VIEW_PROVENANCE_KEY: &str = "dag_ml_output";
+
 fn derive_output_data_views(
     plan: &ExecutionPlan,
     task: &NodeTask,
@@ -4509,16 +4511,108 @@ fn derive_output_data_views(
             )));
         }
         if let Some(view) = primary_output_data_view(task) {
-            views.insert(port.name.clone(), view.clone());
+            views.insert(
+                port.name.clone(),
+                output_data_view_for_port(task, result, &port.name, view)?,
+            );
         }
         if let Some(validation_view) = validation_output_data_view(task) {
             views.insert(
                 validation_data_view_key(&port.name),
-                validation_view.clone(),
+                output_data_view_for_port(task, result, &port.name, validation_view)?,
             );
         }
     }
     Ok(views)
+}
+
+fn output_data_view_for_port(
+    task: &NodeTask,
+    result: &NodeResult,
+    port_name: &str,
+    base_view: &DataProviderViewSpec,
+) -> Result<DataProviderViewSpec> {
+    let mut view = base_view.clone();
+    if view.extra.contains_key(OUTPUT_DATA_VIEW_PROVENANCE_KEY) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "node `{}` cannot propagate data output `{port_name}` because input view metadata already contains reserved key `{OUTPUT_DATA_VIEW_PROVENANCE_KEY}`",
+            task.node_plan.node_id
+        )));
+    }
+    let mut provenance = serde_json::Map::new();
+    provenance.insert(
+        "producer_node".to_string(),
+        serde_json::Value::String(task.node_plan.node_id.to_string()),
+    );
+    provenance.insert(
+        "producer_port".to_string(),
+        serde_json::Value::String(port_name.to_string()),
+    );
+    provenance.insert(
+        "producer_phase".to_string(),
+        serde_json::to_value(task.phase)?,
+    );
+    provenance.insert(
+        "variant_id".to_string(),
+        serde_json::to_value(&task.variant_id)?,
+    );
+    provenance.insert("fold_id".to_string(), serde_json::to_value(&task.fold_id)?);
+
+    if let Some(shape_plan) = &task.node_plan.shape_plan {
+        provenance.insert(
+            "shape_plan_fingerprint".to_string(),
+            serde_json::Value::String(stable_json_fingerprint(shape_plan)?),
+        );
+        provenance.insert(
+            "aggregation_policy_fingerprint".to_string(),
+            serde_json::Value::String(stable_json_fingerprint(&shape_plan.aggregation_policy)?),
+        );
+        if let Some(namespace) = &shape_plan.feature_namespace {
+            provenance.insert(
+                "feature_namespace".to_string(),
+                serde_json::Value::String(namespace.clone()),
+            );
+        }
+        if let Some(fingerprint) = output_feature_schema_fingerprint(shape_plan, result) {
+            provenance.insert(
+                "feature_schema_fingerprint".to_string(),
+                serde_json::Value::String(fingerprint),
+            );
+        }
+    }
+
+    let shape_deltas = result
+        .shape_deltas
+        .iter()
+        .filter(|delta| delta.node_id == task.node_plan.node_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !shape_deltas.is_empty() {
+        provenance.insert(
+            "shape_deltas".to_string(),
+            serde_json::to_value(&shape_deltas)?,
+        );
+    }
+
+    view.extra.insert(
+        OUTPUT_DATA_VIEW_PROVENANCE_KEY.to_string(),
+        serde_json::Value::Object(provenance),
+    );
+    view.validate()?;
+    Ok(view)
+}
+
+fn output_feature_schema_fingerprint(
+    shape_plan: &crate::policy::DataModelShapePlan,
+    result: &NodeResult,
+) -> Option<String> {
+    result
+        .shape_deltas
+        .iter()
+        .rev()
+        .find(|delta| delta.kind == ShapeDeltaKind::Feature)
+        .map(|delta| delta.after_fingerprint.clone())
+        .or_else(|| shape_plan.feature_schema_fingerprint.clone())
 }
 
 fn primary_output_data_view(task: &NodeTask) -> Option<&DataProviderViewSpec> {
@@ -4966,6 +5060,153 @@ mod tests {
                     record_id: LineageId::new(format!(
                         "lineage:{}:{:?}:{variant_label}",
                         task.node_plan.node_id, task.phase
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
+    struct ShapeDataController {
+        id: ControllerId,
+        handle: u64,
+        before_feature_schema: String,
+        after_feature_schema: String,
+    }
+
+    impl RuntimeController for ShapeDataController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            let shape_plan = task.node_plan.shape_plan.as_ref().ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "shape data controller `{}` expected a shape plan",
+                    task.node_plan.node_id
+                ))
+            })?;
+            let output = HandleRef {
+                handle: self.handle,
+                kind: HandleKind::Data,
+                owner_controller: self.id.clone(),
+            };
+            let shape_delta = ShapeDelta {
+                node_id: task.node_plan.node_id.clone(),
+                kind: ShapeDeltaKind::Feature,
+                before_fingerprint: self.before_feature_schema.clone(),
+                after_fingerprint: self.after_feature_schema.clone(),
+                metadata: BTreeMap::from([(
+                    "feature_namespace".to_string(),
+                    serde_json::Value::String("augmented.noise".to_string()),
+                )]),
+            };
+            Ok(NodeResult {
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([("x_out".to_string(), output)]),
+                predictions: Vec::new(),
+                shape_deltas: vec![shape_delta],
+                artifacts: Vec::new(),
+                artifact_handles: BTreeMap::new(),
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:{}:{:?}:{}:shape",
+                        task.node_plan.node_id,
+                        task.phase,
+                        task.fold_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "nofold".to_string())
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: Some(stable_json_fingerprint(shape_plan)?),
+                    aggregation_policy_fingerprint: Some(stable_json_fingerprint(
+                        &shape_plan.aggregation_policy,
+                    )?),
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
+    struct DataViewProbeController {
+        id: ControllerId,
+        observed_views: Arc<Mutex<Vec<BTreeMap<String, DataProviderViewSpec>>>>,
+    }
+
+    impl RuntimeController for DataViewProbeController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            self.observed_views
+                .lock()
+                .unwrap()
+                .push(task.data_views.clone());
+            let prediction_sample_ids = validation_view_sample_ids(task)
+                .map(|ids| ids.into_iter().collect::<Vec<_>>())
+                .unwrap_or_else(|| vec![SampleId::new("s1").unwrap()]);
+            Ok(NodeResult {
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([(
+                    "oof".to_string(),
+                    HandleRef {
+                        handle: 44,
+                        kind: HandleKind::Prediction,
+                        owner_controller: self.id.clone(),
+                    },
+                )]),
+                predictions: vec![PredictionBlock {
+                    prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                    producer_node: task.node_plan.node_id.clone(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: task.fold_id.clone(),
+                    sample_ids: prediction_sample_ids.clone(),
+                    values: vec![vec![1.0]; prediction_sample_ids.len()],
+                    target_names: vec!["y".to_string()],
+                }],
+                shape_deltas: Vec::new(),
+                artifacts: Vec::new(),
+                artifact_handles: BTreeMap::new(),
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:{}:{:?}:{}:probe",
+                        task.node_plan.node_id,
+                        task.phase,
+                        task.fold_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "nofold".to_string())
                     ))
                     .unwrap(),
                     run_id: task.run_id.clone(),
@@ -8080,6 +8321,22 @@ mod tests {
     fn data_edges_propagate_fold_views_from_data_producing_nodes() {
         let augment_id = NodeId::new("augment:noise").unwrap();
         let model_id = NodeId::new("model:branch").unwrap();
+        let before_feature_schema = "a".repeat(64);
+        let after_feature_schema = "b".repeat(64);
+        let shape_plan = DataModelShapePlan {
+            node_id: augment_id.clone(),
+            input_granularity: Granularity::Sample,
+            target_granularity: Granularity::Sample,
+            fit_rows: FitBoundary::FoldTrain,
+            predict_rows: FitBoundary::FoldValidation,
+            feature_namespace: Some("augmented.noise".to_string()),
+            feature_schema_fingerprint: Some(before_feature_schema.clone()),
+            target_space: "raw".to_string(),
+            aggregation_policy: AggregationPolicy::default(),
+            augmentation_policy: Default::default(),
+            selection_policy: Default::default(),
+        };
+        let shape_plan_fingerprint = stable_json_fingerprint(&shape_plan).unwrap();
         let graph = GraphSpec {
             id: "g:data.edge.views".to_string(),
             interface: GraphInterface::default(),
@@ -8117,11 +8374,17 @@ mod tests {
             search_space_fingerprint: None,
             metadata: BTreeMap::new(),
         };
-        let mut manifest_registry = manifests();
+        let mut manifest_registry = ControllerRegistry::new();
         manifest_registry
             .register(controller_manifest(
                 "controller:augmentation",
                 NodeKind::Augmentation,
+            ))
+            .unwrap();
+        manifest_registry
+            .register(controller_manifest(
+                "controller:model.probe",
+                NodeKind::Model,
             ))
             .unwrap();
         let plan = build_execution_plan(
@@ -8140,7 +8403,7 @@ mod tests {
                     fold_set: Some(two_fold_set()),
                 }),
                 generation: Default::default(),
-                shape_plans: BTreeMap::new(),
+                shape_plans: BTreeMap::from([(augment_id.clone(), shape_plan)]),
                 data_bindings: BTreeMap::from([(
                     augment_id.clone(),
                     vec![data_binding(&augment_id)],
@@ -8159,12 +8422,20 @@ mod tests {
             envelope,
         )
         .unwrap();
-        let mut controllers = runtime_controllers();
+        let observed_views = Arc::new(Mutex::new(Vec::new()));
+        let mut controllers = RuntimeControllerRegistry::new();
         controllers
-            .register(Box::new(MockController {
+            .register(Box::new(ShapeDataController {
                 id: ControllerId::new("controller:augmentation").unwrap(),
                 handle: 3,
-                emit_prediction: false,
+                before_feature_schema,
+                after_feature_schema: after_feature_schema.clone(),
+            }))
+            .unwrap();
+        controllers
+            .register(Box::new(DataViewProbeController {
+                id: ControllerId::new("controller:model.probe").unwrap(),
+                observed_views: observed_views.clone(),
             }))
             .unwrap();
         let mut ctx = RunContext::new(RunId::new("run:data.edge.views").unwrap(), Some(11));
@@ -8181,6 +8452,44 @@ mod tests {
 
         assert_eq!(results.len(), 4);
         assert_eq!(provider.view_records().len(), 4);
+        let observed_views = observed_views.lock().unwrap();
+        assert_eq!(observed_views.len(), 2);
+        for views in observed_views.iter() {
+            let primary = views.get("data:x").expect("primary propagated data view");
+            let validation = views
+                .get("data:x:validation")
+                .expect("validation propagated data view");
+            for view in [primary, validation] {
+                let provenance = view
+                    .extra
+                    .get(OUTPUT_DATA_VIEW_PROVENANCE_KEY)
+                    .and_then(serde_json::Value::as_object)
+                    .expect("output data provenance metadata");
+                assert_eq!(
+                    provenance.get("producer_node"),
+                    Some(&serde_json::Value::String("augment:noise".to_string()))
+                );
+                assert_eq!(
+                    provenance.get("producer_port"),
+                    Some(&serde_json::Value::String("x_out".to_string()))
+                );
+                assert_eq!(
+                    provenance.get("shape_plan_fingerprint"),
+                    Some(&serde_json::Value::String(shape_plan_fingerprint.clone()))
+                );
+                assert_eq!(
+                    provenance.get("feature_schema_fingerprint"),
+                    Some(&serde_json::Value::String(after_feature_schema.clone()))
+                );
+                assert_eq!(
+                    provenance
+                        .get("shape_deltas")
+                        .and_then(serde_json::Value::as_array)
+                        .map(Vec::len),
+                    Some(1)
+                );
+            }
+        }
         let samples_by_fold = ctx
             .prediction_store
             .blocks()

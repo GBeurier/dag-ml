@@ -48,9 +48,12 @@ sklearn CV+refit+replay, with refit artifacts validated against the selected
 generation variant's effective parameters. The runtime now propagates scoped
 data-view contracts across data-producing graph edges, so train-only
 augmentation can feed downstream branch models without reclassifying splits as
-operators. The remaining DSL work is compatibility with broader pipeline
-surfaces, richer search-space syntax, and production materialization semantics
-for transformed data instead of smoke-level adapter handles.
+operators. Those propagated views also carry reserved shape provenance
+(`dag_ml_output`) with producer identity, selected scope, shape-plan
+fingerprints, current feature schema and emitted shape deltas. The remaining
+DSL work is compatibility with broader pipeline surfaces, richer search-space
+syntax, and production materialization semantics for transformed data instead
+of smoke-level adapter handles.
 
 ## Phase 2: Host Controllers
 
