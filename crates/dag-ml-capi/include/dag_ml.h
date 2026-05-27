@@ -157,6 +157,14 @@ typedef struct ArrowSchema {
 #define DAG_ML_NODE_RESULT_SCHEMA_VERSION 1u
 #endif
 
+#ifndef DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION
+#define DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION 1u
+#endif
+
+#ifndef DAG_ML_PROCESS_ADAPTER_FRAME_SCHEMA_VERSION
+#define DAG_ML_PROCESS_ADAPTER_FRAME_SCHEMA_VERSION 1u
+#endif
+
 #ifndef DAG_ML_SELECTION_POLICY_SCHEMA_VERSION
 #define DAG_ML_SELECTION_POLICY_SCHEMA_VERSION 1u
 #endif
@@ -244,6 +252,8 @@ DagMlStatusCode dagml_data_output_provenance_contract_json(DagMlOwnedBytes *out_
 DagMlStatusCode dagml_data_output_provenance_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_node_task_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_node_result_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_process_adapter_description_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_process_adapter_frame_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_node_result_validate_for_task_json(const uint8_t *task_ptr, size_t task_len, const uint8_t *result_ptr, size_t result_len, DagMlString *error_out);
 DagMlStatusCode dagml_pipeline_dsl_compile_json(const uint8_t *dsl_ptr, size_t dsl_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_pipeline_dsl_compile_artifact_json(const uint8_t *dsl_ptr, size_t dsl_len, DagMlOwnedBytes *out_json, DagMlString *error_out);

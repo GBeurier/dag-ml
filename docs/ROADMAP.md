@@ -83,7 +83,8 @@ adapter-emitted retryable errors and recovery. A stateful sklearn smoke
 now fits a real sklearn pipeline during `REFIT`, stores it behind an opaque model
 handle, and replays `PREDICT` through that handle in the same persistent pool.
 The handshake now also gates persistent-worker, worker-env and
-parallel-invocation capabilities. The C ABI also publishes the `GraphSpec`
+parallel-invocation capabilities. The C ABI also publishes the process-adapter
+description/frame schema ids for native binding discovery, the `GraphSpec`
 schema contract for non-Rust graph validation, `ModelInputSpec` and `DataPlan`
 schema contracts for data/model compatibility handshakes, the
 `DataOutputProvenance` version/key contract plus JSON validation helpers so

@@ -333,7 +333,8 @@ Implemented:
   the adapter protocol version, supported modes and JSON task/result
   capabilities; the CLI validates this contract before one-shot or JSONL
   execution, and the description now has a published JSON Schema plus canonical
-  fixture validated by `scripts/validate_contracts.py`;
+  fixture validated by `scripts/validate_contracts.py`, with C ABI contract
+  discovery for native bindings;
 - process adapters must explicitly declare persistent-worker, worker-env and
   parallel-invocation capabilities before the CLI enables those execution
   modes;
@@ -342,7 +343,8 @@ Implemented:
   `ack`, `result`, or `error` frames, giving the coordinator a stable lifecycle
   and error surface before native bindings exist; that frame protocol now has a
   published JSON Schema plus canonical fixtures validated alongside the
-  `NodeTask`/`NodeResult` contracts;
+  `NodeTask`/`NodeResult` contracts, with C ABI contract discovery for native
+  bindings;
 - `dag-ml-core` now has a bounded `ParallelScheduler` for parallel DAG levels:
   controllers are `Send + Sync`, independent nodes in the same compiled level
   are invoked concurrently, and results are committed back into prediction,

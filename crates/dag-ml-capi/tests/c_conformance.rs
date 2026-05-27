@@ -1246,6 +1246,50 @@ int main(int argc, char **argv) {
     }
     dagml_owned_bytes_free(result_contract);
 
+    DagMlOwnedBytes adapter_description_contract = {0};
+    status = dagml_process_adapter_description_contract_json(&adapter_description_contract, &error);
+    if (status != DAG_ML_STATUS_OK ||
+        !adapter_description_contract.ptr ||
+        !contains_bytes(adapter_description_contract.ptr, adapter_description_contract.len, "process_adapter_description.v1.schema.json")) {
+        fprintf(stderr, "dagml_process_adapter_description_contract_json failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        free(task.ptr);
+        free(valid.ptr);
+        free(invalid.ptr);
+        if (adapter_description_contract.ptr) {
+            dagml_owned_bytes_free(adapter_description_contract);
+        }
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+    dagml_owned_bytes_free(adapter_description_contract);
+
+    DagMlOwnedBytes adapter_frame_contract = {0};
+    status = dagml_process_adapter_frame_contract_json(&adapter_frame_contract, &error);
+    if (status != DAG_ML_STATUS_OK ||
+        !adapter_frame_contract.ptr ||
+        !contains_bytes(adapter_frame_contract.ptr, adapter_frame_contract.len, "process_adapter_frame.v1.schema.json")) {
+        fprintf(stderr, "dagml_process_adapter_frame_contract_json failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        free(task.ptr);
+        free(valid.ptr);
+        free(invalid.ptr);
+        if (adapter_frame_contract.ptr) {
+            dagml_owned_bytes_free(adapter_frame_contract);
+        }
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+    dagml_owned_bytes_free(adapter_frame_contract);
+
     status = dagml_node_result_validate_for_task_json(
         task.ptr,
         task.len,
