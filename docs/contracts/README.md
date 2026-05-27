@@ -227,6 +227,16 @@ key, cache id, prediction level, block offsets, fold ids, sample ids, unit ids
 and target names required to interpret rows without hiding traceability inside
 the value buffer.
 
+## Prediction Cache Columnar Tensor Metadata v1
+
+Schema: `prediction_cache_columnar_tensor_metadata.schema.json`
+
+This C ABI metadata contract accompanies
+`dagml_prediction_cache_payload_f64_columnar_tensor_json`. It keeps the same
+traceability fields as the row-major export and adds `layout:
+column_major_f64` plus `column_offsets` so host bindings can read each target
+column contiguously without guessing buffer order.
+
 ## Data Output Provenance v1
 
 Schema: `data_output_provenance.schema.json`

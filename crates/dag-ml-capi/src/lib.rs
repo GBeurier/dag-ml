@@ -40,6 +40,7 @@ pub const DAG_ML_ARTIFACT_STORE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_PREDICTION_CACHE_VTABLE_BORROWED_ABI_VERSION: u32 = 1;
 pub const DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION: u32 = 1;
+pub const DAG_ML_PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_VERSION: u32 = 1;
 pub const DAG_ML_GRAPH_SPEC_SCHEMA_VERSION: u32 = GRAPH_SPEC_SCHEMA_VERSION;
 pub const DAG_ML_CAMPAIGN_SPEC_SCHEMA_VERSION: u32 = CAMPAIGN_SPEC_SCHEMA_VERSION;
 pub const DAG_ML_EXECUTION_PLAN_SCHEMA_VERSION: u32 = EXECUTION_PLAN_SCHEMA_VERSION;
@@ -228,6 +229,28 @@ pub struct DagMlF64Tensor {
 }
 
 impl Default for DagMlF64Tensor {
+    fn default() -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            capacity: 0,
+            rows: 0,
+            cols: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlF64ColumnarTensor {
+    pub ptr: *mut f64,
+    pub len: usize,
+    pub capacity: usize,
+    pub rows: usize,
+    pub cols: usize,
+}
+
+impl Default for DagMlF64ColumnarTensor {
     fn default() -> Self {
         Self {
             ptr: std::ptr::null_mut(),
@@ -460,6 +483,20 @@ pub unsafe extern "C" fn dagml_owned_bytes_free(value: DagMlOwnedBytes) {
 /// freeing the same tensor twice, is undefined behavior.
 #[no_mangle]
 pub unsafe extern "C" fn dagml_f64_tensor_free(value: DagMlF64Tensor) {
+    if !value.ptr.is_null() {
+        drop(Vec::from_raw_parts(value.ptr, value.len, value.capacity));
+    }
+}
+
+/// Releases a column-major F64 tensor allocated by DAG-ML.
+///
+/// # Safety
+///
+/// `value.ptr` must either be null or a pointer previously returned by a
+/// DAG-ML C ABI function in a `DagMlF64ColumnarTensor`. Passing any other
+/// pointer, or freeing the same tensor twice, is undefined behavior.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_f64_columnar_tensor_free(value: DagMlF64ColumnarTensor) {
     if !value.ptr.is_null() {
         drop(Vec::from_raw_parts(value.ptr, value.len, value.capacity));
     }
@@ -1785,48 +1822,18 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_f64_tensor_json(
         set_error(error_out, "output metadata JSON pointer is null");
         return DagMlStatusCode::INVALID_ARGUMENT;
     }
-    let bundle =
-        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
-            Ok(bundle) => bundle,
-            Err(status) => return status,
-        };
-    let payload_set = match parse_json_ptr::<BundlePredictionCachePayloadSet>(
+    let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
+        bundle_ptr,
+        bundle_len,
         payload_ptr,
         payload_len,
+        requirement_key,
         error_out,
-        "prediction cache payload set",
     ) {
-        Ok(payload) => payload,
+        Ok(selection) => selection,
         Err(status) => return status,
     };
-    if let Err(error) = payload_set.validate_against_bundle(&bundle) {
-        return validation_error(error_out, error);
-    }
-    let requirement_key = match parse_utf8_view(requirement_key, error_out, "requirement key") {
-        Ok(requirement_key) => requirement_key,
-        Err(status) => return status,
-    };
-    if requirement_key.trim().is_empty() {
-        set_error(error_out, "requirement key is empty");
-        return DagMlStatusCode::VALIDATION_ERROR;
-    }
-    let payload = match payload_set
-        .caches
-        .iter()
-        .find(|payload| payload.requirement_key == requirement_key)
-    {
-        Some(payload) => payload,
-        None => {
-            set_error(
-                error_out,
-                format!(
-                    "prediction cache payload set for bundle `{}` has no requirement `{}`",
-                    payload_set.bundle_id, requirement_key
-                ),
-            );
-            return DagMlStatusCode::VALIDATION_ERROR;
-        }
-    };
+    let payload = &payload_set.caches[payload_index];
     let (values, metadata) = match prediction_cache_payload_to_f64_tensor(payload) {
         Ok(output) => output,
         Err(error) => return validation_error(error_out, error),
@@ -1842,6 +1849,78 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_f64_tensor_json(
         }
     };
     let status = write_f64_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
+    if status != DagMlStatusCode::OK {
+        return status;
+    }
+    write_owned_vec(out_metadata_json, metadata_json);
+    DagMlStatusCode::OK
+}
+
+/// Exports one validated prediction-cache payload requirement as an owned
+/// column-major F64 tensor plus JSON metadata.
+///
+/// The payload set is first validated against the bundle, then the requested
+/// requirement's blocks are concatenated in payload order and transposed into
+/// column-major order. Column `c` starts at `column_offsets[c]` in the returned
+/// buffer and contains all rows for that target. Returned values must be
+/// released with `dagml_f64_columnar_tensor_free` and
+/// `dagml_owned_bytes_free`.
+///
+/// # Safety
+///
+/// Same pointer ownership rules as `dagml_graph_validate_json`.
+/// `requirement_key` must point to UTF-8 bytes. `out_tensor` and
+/// `out_metadata_json` must point to writable output structs.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_prediction_cache_payload_f64_columnar_tensor_json(
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+    requirement_key: DagMlBytesView,
+    out_tensor: *mut DagMlF64ColumnarTensor,
+    out_metadata_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_f64_columnar_tensor(out_tensor);
+    clear_owned_bytes(out_metadata_json);
+    if out_tensor.is_null() {
+        set_error(error_out, "output columnar F64 tensor pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    if out_metadata_json.is_null() {
+        set_error(error_out, "output metadata JSON pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
+        bundle_ptr,
+        bundle_len,
+        payload_ptr,
+        payload_len,
+        requirement_key,
+        error_out,
+    ) {
+        Ok(selection) => selection,
+        Err(status) => return status,
+    };
+    let payload = &payload_set.caches[payload_index];
+    let (values, metadata) = match prediction_cache_payload_to_f64_columnar_tensor(payload) {
+        Ok(output) => output,
+        Err(error) => return validation_error(error_out, error),
+    };
+    let metadata_json = match serde_json::to_vec(&metadata) {
+        Ok(metadata_json) => metadata_json,
+        Err(error) => {
+            set_error(
+                error_out,
+                format!("failed to serialize output metadata JSON: {error}"),
+            );
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+    };
+    let status =
+        write_f64_columnar_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
     if status != DagMlStatusCode::OK {
         return status;
     }
@@ -2373,6 +2452,12 @@ unsafe fn clear_f64_tensor(out_tensor: *mut DagMlF64Tensor) {
     }
 }
 
+unsafe fn clear_f64_columnar_tensor(out_tensor: *mut DagMlF64ColumnarTensor) {
+    if !out_tensor.is_null() {
+        *out_tensor = DagMlF64ColumnarTensor::default();
+    }
+}
+
 unsafe fn set_error(error_out: *mut DagMlString, message: impl Into<String>) {
     if error_out.is_null() {
         return;
@@ -2443,6 +2528,49 @@ where
         return Ok(None);
     }
     parse_json_ptr::<T>(json_ptr, json_len, error_out, label).map(Some)
+}
+
+unsafe fn select_validated_prediction_cache_payload(
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+    requirement_key: DagMlBytesView,
+    error_out: *mut DagMlString,
+) -> Result<(BundlePredictionCachePayloadSet, usize), DagMlStatusCode> {
+    let bundle = parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle")?;
+    let payload_set = parse_json_ptr::<BundlePredictionCachePayloadSet>(
+        payload_ptr,
+        payload_len,
+        error_out,
+        "prediction cache payload set",
+    )?;
+    if let Err(error) = payload_set.validate_against_bundle(&bundle) {
+        return Err(validation_error(error_out, error));
+    }
+    let requirement_key = parse_utf8_view(requirement_key, error_out, "requirement key")?;
+    if requirement_key.trim().is_empty() {
+        set_error(error_out, "requirement key is empty");
+        return Err(DagMlStatusCode::VALIDATION_ERROR);
+    }
+    let payload_index = match payload_set
+        .caches
+        .iter()
+        .position(|payload| payload.requirement_key == requirement_key)
+    {
+        Some(payload_index) => payload_index,
+        None => {
+            set_error(
+                error_out,
+                format!(
+                    "prediction cache payload set for bundle `{}` has no requirement `{}`",
+                    payload_set.bundle_id, requirement_key
+                ),
+            );
+            return Err(DagMlStatusCode::VALIDATION_ERROR);
+        }
+    };
+    Ok((payload_set, payload_index))
 }
 
 unsafe fn write_owned_json<T>(
@@ -2531,6 +2659,49 @@ unsafe fn write_f64_tensor(
     DagMlStatusCode::OK
 }
 
+unsafe fn write_f64_columnar_tensor(
+    out_tensor: *mut DagMlF64ColumnarTensor,
+    error_out: *mut DagMlString,
+    mut values: Vec<f64>,
+    rows: usize,
+    cols: usize,
+) -> DagMlStatusCode {
+    if out_tensor.is_null() {
+        set_error(error_out, "output columnar F64 tensor pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    let expected_len = match rows.checked_mul(cols) {
+        Some(expected_len) => expected_len,
+        None => {
+            set_error(error_out, "columnar F64 tensor shape overflows usize");
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+    };
+    if values.len() != expected_len {
+        set_error(
+            error_out,
+            format!(
+                "columnar F64 tensor has {} value(s), expected {} for shape {}x{}",
+                values.len(),
+                expected_len,
+                rows,
+                cols
+            ),
+        );
+        return DagMlStatusCode::VALIDATION_ERROR;
+    }
+    let tensor = DagMlF64ColumnarTensor {
+        ptr: values.as_mut_ptr(),
+        len: values.len(),
+        capacity: values.capacity(),
+        rows,
+        cols,
+    };
+    std::mem::forget(values);
+    *out_tensor = tensor;
+    DagMlStatusCode::OK
+}
+
 fn flatten_f64_rows(
     label: &str,
     producer_node: &str,
@@ -2586,6 +2757,22 @@ struct PredictionCacheTensorBlockMetadata {
     unit_ids: Vec<PredictionUnitId>,
 }
 
+#[derive(Serialize)]
+struct PredictionCacheColumnarTensorMetadata {
+    schema_version: u32,
+    requirement_key: String,
+    cache_id: String,
+    prediction_level: PredictionLevel,
+    block_count: usize,
+    row_count: usize,
+    rows: usize,
+    cols: usize,
+    layout: &'static str,
+    target_names: Vec<String>,
+    column_offsets: Vec<usize>,
+    blocks: Vec<PredictionCacheTensorBlockMetadata>,
+}
+
 fn prediction_cache_payload_to_f64_tensor(
     payload: &BundlePredictionCachePayload,
 ) -> dag_ml_core::Result<(Vec<f64>, PredictionCacheTensorMetadata)> {
@@ -2600,6 +2787,58 @@ fn prediction_cache_payload_to_f64_tensor(
             aggregated_prediction_cache_payload_to_f64_tensor(payload)
         }
     }
+}
+
+fn prediction_cache_payload_to_f64_columnar_tensor(
+    payload: &BundlePredictionCachePayload,
+) -> dag_ml_core::Result<(Vec<f64>, PredictionCacheColumnarTensorMetadata)> {
+    let (row_major_values, metadata) = prediction_cache_payload_to_f64_tensor(payload)?;
+    let values =
+        row_major_f64_to_column_major_f64(&row_major_values, metadata.rows, metadata.cols)?;
+    let column_offsets = (0..metadata.cols)
+        .map(|column| column * metadata.rows)
+        .collect::<Vec<_>>();
+    let metadata = PredictionCacheColumnarTensorMetadata {
+        schema_version: DAG_ML_PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_VERSION,
+        requirement_key: metadata.requirement_key,
+        cache_id: metadata.cache_id,
+        prediction_level: metadata.prediction_level,
+        block_count: metadata.block_count,
+        row_count: metadata.row_count,
+        rows: metadata.rows,
+        cols: metadata.cols,
+        layout: "column_major_f64",
+        target_names: metadata.target_names,
+        column_offsets,
+        blocks: metadata.blocks,
+    };
+    Ok((values, metadata))
+}
+
+fn row_major_f64_to_column_major_f64(
+    row_major_values: &[f64],
+    rows: usize,
+    cols: usize,
+) -> dag_ml_core::Result<Vec<f64>> {
+    let expected_len = rows.checked_mul(cols).ok_or_else(|| {
+        DagMlError::RuntimeValidation("prediction cache tensor shape overflows usize".to_string())
+    })?;
+    if row_major_values.len() != expected_len {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache row-major tensor has {} value(s), expected {} for shape {}x{}",
+            row_major_values.len(),
+            expected_len,
+            rows,
+            cols
+        )));
+    }
+    let mut column_major_values = Vec::with_capacity(expected_len);
+    for column in 0..cols {
+        for row in 0..rows {
+            column_major_values.push(row_major_values[row * cols + column]);
+        }
+    }
+    Ok(column_major_values)
 }
 
 fn sample_prediction_cache_payload_to_f64_tensor(
@@ -3857,11 +4096,11 @@ fn stable_handle(value: &str) -> u64 {
 mod tests {
     use super::*;
     use dag_ml_core::{
-        build_aggregated_prediction_cache_record, build_prediction_cache_record, ArtifactId,
-        ArtifactPolicy, ArtifactRef, BundleId, BundlePredictionRequirement, ControllerCapability,
-        ControllerFitScope, DataBinding, DataProviderViewSpec, DataRequestPartition,
-        DataViewPolicy, FoldId, NodeId, NodeKind, NodePlan, PredictionLevel, PredictionUnitId,
-        RngPolicy, TargetId, VariantId,
+        build_aggregated_prediction_cache_record, build_prediction_cache_payload,
+        build_prediction_cache_record, ArtifactId, ArtifactPolicy, ArtifactRef, BundleId,
+        BundlePredictionRequirement, ControllerCapability, ControllerFitScope, DataBinding,
+        DataProviderViewSpec, DataRequestPartition, DataViewPolicy, FoldId, NodeId, NodeKind,
+        NodePlan, PredictionLevel, PredictionUnitId, RngPolicy, TargetId, VariantId,
     };
     use std::ffi::CStr;
 
@@ -6119,6 +6358,120 @@ mod tests {
         assert_eq!(metadata["blocks"][1]["row_offset"], 2);
         unsafe { dagml_f64_tensor_free(tensor) };
         unsafe { dagml_owned_bytes_free(metadata_out) };
+    }
+
+    #[test]
+    fn exports_prediction_cache_payload_f64_columnar_tensor_over_abi() {
+        let bundle = include_bytes!(
+            "../../../examples/generated/execution_bundle_branch_merge_cv_refit.json"
+        );
+        let payload = include_bytes!(
+            "../../../examples/generated/prediction_cache_branch_merge_cv_refit.json"
+        );
+        let requirement_key =
+            b"branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof";
+        let mut tensor = DagMlF64ColumnarTensor::default();
+        let mut metadata_out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_prediction_cache_payload_f64_columnar_tensor_json(
+                bundle.as_ptr(),
+                bundle.len(),
+                payload.as_ptr(),
+                payload.len(),
+                bytes_view(requirement_key),
+                &mut tensor,
+                &mut metadata_out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!tensor.ptr.is_null());
+        assert_eq!(tensor.rows, 4);
+        assert_eq!(tensor.cols, 1);
+        assert_eq!(tensor.len, 4);
+        let values = unsafe { slice::from_raw_parts(tensor.ptr, tensor.len) };
+        assert_eq!(values, &[9931.0, 9931.0, 9932.0, 9932.0]);
+
+        assert!(!metadata_out.ptr.is_null());
+        let metadata_json = unsafe { slice::from_raw_parts(metadata_out.ptr, metadata_out.len) };
+        let metadata: serde_json::Value = serde_json::from_slice(metadata_json).unwrap();
+        assert_eq!(metadata["schema_version"], 1);
+        assert_eq!(metadata["layout"], "column_major_f64");
+        assert_eq!(metadata["column_offsets"][0], 0);
+        assert_eq!(metadata["prediction_level"], "sample");
+        assert_eq!(metadata["blocks"][1]["row_offset"], 2);
+        assert_eq!(metadata["blocks"][1]["sample_ids"][1], "sample:4");
+        unsafe { dagml_f64_columnar_tensor_free(tensor) };
+        unsafe { dagml_owned_bytes_free(metadata_out) };
+    }
+
+    #[test]
+    fn prediction_cache_columnar_tensor_exports_multi_target_columns() {
+        let requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("model:multi").unwrap(),
+            source_port: "pred".to_string(),
+            consumer_node: NodeId::new("model:meta").unwrap(),
+            target_port: "pred".to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
+            fold_ids: vec![
+                FoldId::new("fold:0").unwrap(),
+                FoldId::new("fold:1").unwrap(),
+            ],
+            unit_ids: Vec::new(),
+            sample_ids: vec![
+                SampleId::new("sample:1").unwrap(),
+                SampleId::new("sample:2").unwrap(),
+                SampleId::new("sample:3").unwrap(),
+                SampleId::new("sample:4").unwrap(),
+            ],
+            prediction_width: 2,
+            target_names: vec!["moisture".to_string(), "protein".to_string()],
+        };
+        let blocks = vec![
+            PredictionBlock {
+                prediction_id: Some("prediction:model:multi.fold0".to_string()),
+                producer_node: requirement.producer_node.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                sample_ids: vec![
+                    SampleId::new("sample:1").unwrap(),
+                    SampleId::new("sample:2").unwrap(),
+                ],
+                values: vec![vec![1.0, 10.0], vec![2.0, 20.0]],
+                target_names: requirement.target_names.clone(),
+            },
+            PredictionBlock {
+                prediction_id: Some("prediction:model:multi.fold1".to_string()),
+                producer_node: requirement.producer_node.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:1").unwrap()),
+                sample_ids: vec![
+                    SampleId::new("sample:3").unwrap(),
+                    SampleId::new("sample:4").unwrap(),
+                ],
+                values: vec![vec![3.0, 30.0], vec![4.0, 40.0]],
+                target_names: requirement.target_names.clone(),
+            },
+        ];
+        let payload = build_prediction_cache_payload(&requirement, &blocks).unwrap();
+
+        let (values, metadata) = prediction_cache_payload_to_f64_columnar_tensor(&payload).unwrap();
+
+        assert_eq!(values, &[1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(metadata.rows, 4);
+        assert_eq!(metadata.cols, 2);
+        assert_eq!(metadata.layout, "column_major_f64");
+        assert_eq!(metadata.column_offsets, vec![0, 4]);
+        assert_eq!(metadata.target_names, vec!["moisture", "protein"]);
+        assert_eq!(metadata.blocks[0].row_offset, 0);
+        assert_eq!(metadata.blocks[0].row_count, 2);
+        assert_eq!(metadata.blocks[1].row_offset, 2);
+        assert_eq!(metadata.blocks[1].fold_id.as_deref(), Some("fold:1"));
     }
 
     #[test]

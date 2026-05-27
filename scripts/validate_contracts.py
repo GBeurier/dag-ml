@@ -35,6 +35,9 @@ OPENLINEAGE_FACETS_SCHEMA_REL = Path("docs/contracts/openlineage_dagml_facets.sc
 PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL = Path(
     "docs/contracts/prediction_cache_tensor_metadata.schema.json"
 )
+PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_REL = Path(
+    "docs/contracts/prediction_cache_columnar_tensor_metadata.schema.json"
+)
 DATA_OUTPUT_PROVENANCE_SCHEMA_REL = Path(
     "docs/contracts/data_output_provenance.schema.json"
 )
@@ -150,6 +153,10 @@ OPENLINEAGE_FACETS_SCHEMA_ID = (
 PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "prediction_cache_tensor_metadata.v1.schema.json"
+)
+PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "prediction_cache_columnar_tensor_metadata.v1.schema.json"
 )
 DATA_OUTPUT_PROVENANCE_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
@@ -826,6 +833,73 @@ def validate_prediction_cache_tensor_metadata_schema(schema: Any, label: str) ->
     require(
         isinstance(defs, dict) and "block_metadata" in defs and "prediction_unit_id" in defs,
         f"{label} prediction-cache tensor metadata schema definitions are incomplete",
+    )
+
+
+def validate_prediction_cache_columnar_tensor_metadata_schema(
+    schema: Any, label: str
+) -> None:
+    require(
+        isinstance(schema, dict),
+        f"{label} prediction-cache columnar tensor metadata schema must be an object",
+    )
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} prediction-cache columnar tensor metadata schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_ID,
+        f"{label} prediction-cache columnar tensor metadata schema has unexpected $id",
+    )
+    require(
+        schema.get("type") == "object",
+        f"{label} prediction-cache columnar tensor metadata root must be an object",
+    )
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} prediction-cache columnar tensor metadata root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(
+        isinstance(required, list),
+        f"{label} prediction-cache columnar tensor metadata required list is missing",
+    )
+    for field in (
+        "schema_version",
+        "requirement_key",
+        "cache_id",
+        "prediction_level",
+        "rows",
+        "cols",
+        "layout",
+        "column_offsets",
+        "blocks",
+    ):
+        require(
+            field in required,
+            f"{label} prediction-cache columnar tensor metadata must require `{field}`",
+        )
+    properties = schema.get("properties")
+    require(
+        isinstance(properties, dict),
+        f"{label} prediction-cache columnar tensor metadata properties are missing",
+    )
+    require(
+        properties.get("schema_version", {}).get("const") == 1,
+        f"{label} prediction-cache columnar tensor metadata schema_version const must be 1",
+    )
+    require(
+        properties.get("layout", {}).get("const") == "column_major_f64",
+        f"{label} prediction-cache columnar tensor metadata layout const mismatch",
+    )
+    require(
+        properties.get("prediction_level", {}).get("enum") == ["sample", "target", "group"],
+        f"{label} prediction-cache columnar tensor metadata prediction_level enum mismatch",
+    )
+    defs = schema.get("$defs")
+    require(
+        isinstance(defs, dict) and "block_metadata" in defs and "prediction_unit_id" in defs,
+        f"{label} prediction-cache columnar tensor metadata schema definitions are incomplete",
     )
 
 
@@ -2461,10 +2535,17 @@ def validate_dag_ml_prediction_cache_tensor_header(header: str, label: str) -> N
         "#define DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION 1u" in header,
         f"{label} header must declare DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION=1",
     )
+    require(
+        "#define DAG_ML_PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_VERSION=1",
+    )
     for symbol in (
         "DagMlF64Tensor",
+        "DagMlF64ColumnarTensor",
         "dagml_f64_tensor_free",
+        "dagml_f64_columnar_tensor_free",
         "dagml_prediction_cache_payload_f64_tensor_json",
+        "dagml_prediction_cache_payload_f64_columnar_tensor_json",
     ):
         require(symbol in header, f"{label} header must expose `{symbol}`")
 
@@ -2923,6 +3004,9 @@ def main() -> int:
         local_prediction_cache_tensor_metadata_schema = load_json(
             ROOT / PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL
         )
+        local_prediction_cache_columnar_tensor_metadata_schema = load_json(
+            ROOT / PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_REL
+        )
         local_data_output_provenance_schema = load_json(
             ROOT / DATA_OUTPUT_PROVENANCE_SCHEMA_REL
         )
@@ -2978,6 +3062,10 @@ def main() -> int:
         validate_openlineage_facets_schema(local_openlineage_facets_schema, "dag-ml")
         validate_prediction_cache_tensor_metadata_schema(
             local_prediction_cache_tensor_metadata_schema,
+            "dag-ml",
+        )
+        validate_prediction_cache_columnar_tensor_metadata_schema(
+            local_prediction_cache_columnar_tensor_metadata_schema,
             "dag-ml",
         )
         validate_data_output_provenance_schema(
