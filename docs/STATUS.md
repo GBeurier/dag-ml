@@ -160,6 +160,10 @@ Implemented:
   cannot emit OOF rows outside its fold-validation view;
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
+- C ABI exposes the data-output provenance contract for host bindings through
+  stable version/key macros plus JSON contract introspection and standalone
+  validation helpers, so non-Rust controllers can trust propagated data views
+  without hardcoding Rust-only constants;
 - deterministic metric selection contracts, including grouped candidate
   selection, stable tie-breaking and optional metric-level guards that reject
   sample/target/group score mismatches before ranking;

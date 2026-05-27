@@ -75,12 +75,18 @@ Canonical fixture:
 
 Runtime type: `DataOutputProvenance`
 
+C ABI: `DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION`,
+`DAG_ML_DATA_OUTPUT_PROVENANCE_EXTRA_KEY`,
+`dagml_data_output_provenance_contract_json`,
+`dagml_data_output_provenance_validate_json`
+
 This DAG-ML runtime contract is embedded under the reserved
 `DataProviderViewSpec.extra["dag_ml_output"]` key when a data-producing DAG node
 emits a downstream data view. It records the producer node/port/phase,
 variant/fold scope, shape-plan and aggregation fingerprints, current feature
 schema fingerprint and emitted shape deltas. Controllers and host bindings can
-parse this metadata without reverse-engineering free-form JSON.
+discover and validate this metadata without reverse-engineering free-form JSON
+or hardcoding Rust-only constants.
 
 ## Research Provenance Package Profile v1
 

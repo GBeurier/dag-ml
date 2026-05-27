@@ -121,6 +121,14 @@ typedef struct ArrowSchema {
 #define DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION 1u
 #endif
 
+#ifndef DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION
+#define DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION 1u
+#endif
+
+#ifndef DAG_ML_DATA_OUTPUT_PROVENANCE_EXTRA_KEY
+#define DAG_ML_DATA_OUTPUT_PROVENANCE_EXTRA_KEY "dag_ml_output"
+#endif
+
 typedef struct DagMlControllerVTable {
     uint32_t abi_version;
     void *user_data;
@@ -181,6 +189,8 @@ void dagml_string_free(DagMlString value);
 void dagml_owned_bytes_free(DagMlOwnedBytes value);
 void dagml_f64_tensor_free(DagMlF64Tensor value);
 DagMlStatusCode dagml_graph_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
+DagMlStatusCode dagml_data_output_provenance_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_data_output_provenance_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_pipeline_dsl_compile_json(const uint8_t *dsl_ptr, size_t dsl_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_pipeline_dsl_compile_artifact_json(const uint8_t *dsl_ptr, size_t dsl_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_pipeline_dsl_execution_plan_build_json(

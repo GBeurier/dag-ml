@@ -564,6 +564,22 @@ def validate_dag_ml_prediction_cache_tensor_header(header: str, label: str) -> N
         require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
+def validate_dag_ml_data_output_provenance_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION=1",
+    )
+    require(
+        '#define DAG_ML_DATA_OUTPUT_PROVENANCE_EXTRA_KEY "dag_ml_output"' in header,
+        f"{label} header must declare the data-output provenance extra key",
+    )
+    for symbol in (
+        "dagml_data_output_provenance_contract_json",
+        "dagml_data_output_provenance_validate_json",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
+
+
 def canonical_json_sha256(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
@@ -928,6 +944,7 @@ def main() -> int:
         validate_data_output_provenance(local_data_output_provenance_fixture, "dag-ml")
         validate_data_provider_header(local_header, "dag-ml")
         validate_dag_ml_prediction_cache_tensor_header(local_header, "dag-ml")
+        validate_dag_ml_data_output_provenance_header(local_header, "dag-ml")
         validate_conformance_pack(
             local_pack,
             local_schema,

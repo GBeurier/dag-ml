@@ -2682,6 +2682,8 @@ pub struct DataProviderViewSpec {
 
 pub const DATA_OUTPUT_PROVENANCE_KEY: &str = "dag_ml_output";
 pub const DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = 1;
+pub const DATA_OUTPUT_PROVENANCE_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/data_output_provenance.v1.schema.json";
 
 fn default_data_output_provenance_schema_version() -> u32 {
     DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION
@@ -8736,6 +8738,7 @@ mod tests {
             schema["properties"]["schema_version"]["const"].as_u64(),
             Some(u64::from(DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION))
         );
+        assert_eq!(schema["$id"], DATA_OUTPUT_PROVENANCE_SCHEMA_ID);
         let required = schema["required"].as_array().unwrap();
         assert!(required
             .iter()
