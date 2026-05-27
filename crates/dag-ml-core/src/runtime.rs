@@ -2618,7 +2618,7 @@ fn validate_prediction_scope(prediction: &PredictionBlock, task: &NodeTask) -> R
     }
     if task.phase == Phase::FitCv
         && task.fold_id.is_some()
-        && !task.node_plan.data_bindings.is_empty()
+        && (!task.node_plan.data_bindings.is_empty() || !task.data_views.is_empty())
     {
         let validation_sample_ids = validation_view_sample_ids(task).ok_or_else(|| {
             DagMlError::RuntimeValidation(format!(
@@ -5161,6 +5161,7 @@ mod tests {
     struct DataViewProbeController {
         id: ControllerId,
         observed_views: Arc<Mutex<Vec<BTreeMap<String, DataProviderViewSpec>>>>,
+        prediction_sample_ids: Option<Vec<SampleId>>,
     }
 
     impl RuntimeController for DataViewProbeController {
@@ -5173,9 +5174,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(task.data_views.clone());
-            let prediction_sample_ids = validation_view_sample_ids(task)
-                .map(|ids| ids.into_iter().collect::<Vec<_>>())
-                .unwrap_or_else(|| vec![SampleId::new("s1").unwrap()]);
+            let prediction_sample_ids = self.prediction_sample_ids.clone().unwrap_or_else(|| {
+                validation_view_sample_ids(task)
+                    .map(|ids| ids.into_iter().collect::<Vec<_>>())
+                    .unwrap_or_else(|| vec![SampleId::new("s1").unwrap()])
+            });
             Ok(NodeResult {
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
@@ -8428,7 +8431,7 @@ mod tests {
             .register(Box::new(ShapeDataController {
                 id: ControllerId::new("controller:augmentation").unwrap(),
                 handle: 3,
-                before_feature_schema,
+                before_feature_schema: before_feature_schema.clone(),
                 after_feature_schema: after_feature_schema.clone(),
             }))
             .unwrap();
@@ -8436,6 +8439,7 @@ mod tests {
             .register(Box::new(DataViewProbeController {
                 id: ControllerId::new("controller:model.probe").unwrap(),
                 observed_views: observed_views.clone(),
+                prediction_sample_ids: None,
             }))
             .unwrap();
         let mut ctx = RunContext::new(RunId::new("run:data.edge.views").unwrap(), Some(11));
@@ -8509,6 +8513,41 @@ mod tests {
         assert_eq!(
             samples_by_fold["fold:1"],
             vec![SampleId::new("s2").unwrap()]
+        );
+
+        let mut bad_controllers = RuntimeControllerRegistry::new();
+        bad_controllers
+            .register(Box::new(ShapeDataController {
+                id: ControllerId::new("controller:augmentation").unwrap(),
+                handle: 5,
+                before_feature_schema,
+                after_feature_schema,
+            }))
+            .unwrap();
+        bad_controllers
+            .register(Box::new(DataViewProbeController {
+                id: ControllerId::new("controller:model.probe").unwrap(),
+                observed_views: Arc::new(Mutex::new(Vec::new())),
+                prediction_sample_ids: Some(vec![SampleId::new("s-outside").unwrap()]),
+            }))
+            .unwrap();
+        let mut bad_ctx = RunContext::new(
+            RunId::new("run:data.edge.views.bad-prediction").unwrap(),
+            Some(11),
+        );
+        let error = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &bad_controllers,
+                &provider,
+                &mut bad_ctx,
+                Phase::FitCv,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("outside its validation view"),
+            "unexpected propagated-view validation error: {error}"
         );
     }
 

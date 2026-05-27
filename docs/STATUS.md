@@ -151,6 +151,9 @@ Implemented:
   aggregation fingerprints, current feature schema fingerprint and emitted
   shape deltas, making downstream controller inputs auditable beyond opaque
   smoke handles;
+- validation prediction sample checks now apply to propagated data views as
+  well as direct data bindings, so a branch model fed by an augmentation edge
+  cannot emit OOF rows outside its fold-validation view;
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate
