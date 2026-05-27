@@ -11,6 +11,7 @@ implementation work can be traced back to the design decisions.
 | `source/dag_ml_polyglot_core_design.md` | Rust/C ABI and polyglot design deliberation |
 | `source/dag_ml_use_cases.md` | Concrete use cases and leakage invariants |
 | `source/dag_ml_externalization_from_code.md` | Notes from the current nirs4all runtime |
+| `DSL_NIRS4ALL_PARITY.md` | Working parity matrix between the strict dag-ml DSL and nirs4all pipeline expressivity |
 
 The companion ML_DATA contract now lives in the `dag-ml-data` repository at
 `docs/design/source/ml_data_specification_v1.md`.
