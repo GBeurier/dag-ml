@@ -27,6 +27,8 @@ CAMPAIGN_SPEC_SCHEMA_REL = Path("docs/contracts/campaign_spec.schema.json")
 MODEL_INPUT_SPEC_SCHEMA_REL = Path("docs/contracts/model_input_spec.schema.json")
 DATA_PLAN_SCHEMA_REL = Path("docs/contracts/data_plan.schema.json")
 CONTROLLER_MANIFEST_SCHEMA_REL = Path("docs/contracts/controller_manifest.schema.json")
+SELECTION_POLICY_SCHEMA_REL = Path("docs/contracts/selection_policy.schema.json")
+SELECTION_DECISION_SCHEMA_REL = Path("docs/contracts/selection_decision.schema.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
 OPENLINEAGE_FACETS_SCHEMA_REL = Path("docs/contracts/openlineage_dagml_facets.schema.json")
 PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL = Path(
@@ -55,6 +57,10 @@ LOCAL_CONTROLLER_MANIFEST_FIXTURE_REL = Path(
     "examples/fixtures/runtime/controller_manifest_data_aware_model.json"
 )
 LOCAL_CONTROLLER_MANIFEST_LIST_FIXTURE_REL = Path("examples/controller_manifests.json")
+LOCAL_SELECTION_POLICY_FIXTURE_REL = Path("examples/fixtures/bundle/selection_policy_rmse.json")
+LOCAL_SELECTION_DECISION_FIXTURE_REL = Path(
+    "examples/fixtures/bundle/selection_decision_branch_b0.json"
+)
 LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL = Path(
     "examples/fixtures/runtime/data_output_provenance_augmented_view.json"
 )
@@ -96,6 +102,14 @@ DATA_PLAN_SCHEMA_ID = (
 CONTROLLER_MANIFEST_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "controller_manifest.v1.schema.json"
+)
+SELECTION_POLICY_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "selection_policy.v1.schema.json"
+)
+SELECTION_DECISION_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "selection_decision.v1.schema.json"
 )
 SIBLING_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml-data/schemas/"
@@ -536,6 +550,79 @@ def validate_controller_manifest_schema(schema: Any, label: str) -> None:
             definition_name in defs,
             f"{label} ControllerManifest schema misses `{definition_name}`",
         )
+
+
+def validate_selection_policy_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} SelectionPolicy schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} SelectionPolicy schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == SELECTION_POLICY_SCHEMA_ID,
+        f"{label} SelectionPolicy $id mismatch",
+    )
+    require(schema.get("type") == "object", f"{label} SelectionPolicy root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} SelectionPolicy root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} SelectionPolicy required list missing")
+    for field in ("id", "metric"):
+        require(field in required, f"{label} SelectionPolicy schema must require `{field}`")
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} SelectionPolicy $defs missing")
+    require(
+        defs.get("metric_objective", {}).get("enum") == ["minimize", "maximize"],
+        f"{label} SelectionPolicy objective enum is not aligned",
+    )
+    require(
+        defs.get("prediction_level", {}).get("enum")
+        == ["observation", "sample", "target", "group"],
+        f"{label} SelectionPolicy prediction level enum is not aligned",
+    )
+    require("selection_metric" in defs, f"{label} SelectionPolicy misses selection_metric")
+
+
+def validate_selection_decision_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} SelectionDecision schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} SelectionDecision schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == SELECTION_DECISION_SCHEMA_ID,
+        f"{label} SelectionDecision $id mismatch",
+    )
+    require(schema.get("type") == "object", f"{label} SelectionDecision root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} SelectionDecision root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} SelectionDecision required list missing")
+    for field in (
+        "policy_id",
+        "selected_candidate_id",
+        "metric_name",
+        "objective",
+        "selected_score",
+        "ranked_candidates",
+    ):
+        require(field in required, f"{label} SelectionDecision schema must require `{field}`")
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} SelectionDecision $defs missing")
+    require(
+        defs.get("metric_objective", {}).get("enum") == ["minimize", "maximize"],
+        f"{label} SelectionDecision objective enum is not aligned",
+    )
+    require(
+        defs.get("prediction_level", {}).get("enum")
+        == ["observation", "sample", "target", "group"],
+        f"{label} SelectionDecision prediction level enum is not aligned",
+    )
+    require("ranked_candidate" in defs, f"{label} SelectionDecision misses ranked_candidate")
 
 
 def validate_openlineage_facets_schema(schema: Any, label: str) -> None:
@@ -1511,6 +1598,50 @@ def validate_controller_manifest_list(value: Any, label: str) -> None:
         seen.add(controller_id)
 
 
+def validate_selection_policy(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} SelectionPolicy must be an object")
+    require_non_empty_string(value.get("id"), f"{label}.id")
+    metric = value.get("metric")
+    require(isinstance(metric, dict), f"{label}.metric must be an object")
+    require_non_empty_string(metric.get("name"), f"{label}.metric.name")
+    require(metric.get("objective") in {"minimize", "maximize"}, f"{label}.metric.objective invalid")
+    level = value.get("required_metric_level")
+    if level is not None:
+        require(level in {"observation", "sample", "target", "group"}, f"{label}.required_metric_level invalid")
+    if "require_finite" in value:
+        require(isinstance(value["require_finite"], bool), f"{label}.require_finite must be boolean")
+
+
+def validate_selection_decision(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} SelectionDecision must be an object")
+    require_non_empty_string(value.get("policy_id"), f"{label}.policy_id")
+    selected_candidate = value.get("selected_candidate_id")
+    require_non_empty_string(selected_candidate, f"{label}.selected_candidate_id")
+    require_non_empty_string(value.get("metric_name"), f"{label}.metric_name")
+    require(value.get("objective") in {"minimize", "maximize"}, f"{label}.objective invalid")
+    metric_level = value.get("metric_level")
+    if metric_level is not None:
+        require(metric_level in {"observation", "sample", "target", "group"}, f"{label}.metric_level invalid")
+    selected_score = value.get("selected_score")
+    require(isinstance(selected_score, (int, float)), f"{label}.selected_score must be numeric")
+    ranked = value.get("ranked_candidates")
+    require(isinstance(ranked, list) and ranked, f"{label}.ranked_candidates must be non-empty")
+    require(
+        ranked[0].get("candidate_id") == selected_candidate,
+        f"{label} first ranked candidate must match selected_candidate_id",
+    )
+    seen: set[str] = set()
+    for index, candidate in enumerate(ranked):
+        candidate_label = f"{label}.ranked_candidates[{index}]"
+        require(isinstance(candidate, dict), f"{candidate_label} must be an object")
+        candidate_id = candidate.get("candidate_id")
+        require_non_empty_string(candidate_id, f"{candidate_label}.candidate_id")
+        require(candidate_id not in seen, f"{label} duplicate ranked candidate `{candidate_id}`")
+        seen.add(candidate_id)
+        require(isinstance(candidate.get("score"), (int, float)), f"{candidate_label}.score numeric")
+        require(candidate.get("rank") == index + 1, f"{candidate_label}.rank must be {index + 1}")
+
+
 def validate_data_output_provenance(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} data-output provenance must be an object")
     require(value.get("schema_version") == 1, f"{label} schema_version must be 1")
@@ -1704,6 +1835,21 @@ def validate_dag_ml_data_output_provenance_header(header: str, label: str) -> No
     for symbol in (
         "dagml_data_output_provenance_contract_json",
         "dagml_data_output_provenance_validate_json",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
+
+
+def validate_dag_ml_selection_header(header: str, label: str) -> None:
+    for macro in (
+        "#define DAG_ML_SELECTION_POLICY_SCHEMA_VERSION 1u",
+        "#define DAG_ML_SELECTION_DECISION_SCHEMA_VERSION 1u",
+    ):
+        require(macro in header, f"{label} header must declare `{macro}`")
+    for symbol in (
+        "dagml_selection_policy_contract_json",
+        "dagml_selection_policy_validate_json",
+        "dagml_selection_decision_contract_json",
+        "dagml_selection_decision_validate_json",
     ):
         require(symbol in header, f"{label} header must expose `{symbol}`")
 
@@ -2042,6 +2188,8 @@ def main() -> int:
         local_model_input_spec_schema = load_json(ROOT / MODEL_INPUT_SPEC_SCHEMA_REL)
         local_data_plan_schema = load_json(ROOT / DATA_PLAN_SCHEMA_REL)
         local_controller_manifest_schema = load_json(ROOT / CONTROLLER_MANIFEST_SCHEMA_REL)
+        local_selection_policy_schema = load_json(ROOT / SELECTION_POLICY_SCHEMA_REL)
+        local_selection_decision_schema = load_json(ROOT / SELECTION_DECISION_SCHEMA_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
         local_openlineage_facets_schema = load_json(ROOT / OPENLINEAGE_FACETS_SCHEMA_REL)
         local_prediction_cache_tensor_metadata_schema = load_json(
@@ -2066,6 +2214,8 @@ def main() -> int:
         local_controller_manifest_list_fixture = load_json(
             ROOT / LOCAL_CONTROLLER_MANIFEST_LIST_FIXTURE_REL
         )
+        local_selection_policy_fixture = load_json(ROOT / LOCAL_SELECTION_POLICY_FIXTURE_REL)
+        local_selection_decision_fixture = load_json(ROOT / LOCAL_SELECTION_DECISION_FIXTURE_REL)
         local_data_output_provenance_fixture = load_json(
             ROOT / LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL
         )
@@ -2084,6 +2234,8 @@ def main() -> int:
         validate_model_input_spec_schema(local_model_input_spec_schema, "dag-ml")
         validate_data_plan_schema(local_data_plan_schema, "dag-ml")
         validate_controller_manifest_schema(local_controller_manifest_schema, "dag-ml")
+        validate_selection_policy_schema(local_selection_policy_schema, "dag-ml")
+        validate_selection_decision_schema(local_selection_decision_schema, "dag-ml")
         validate_openlineage_facets_schema(local_openlineage_facets_schema, "dag-ml")
         validate_prediction_cache_tensor_metadata_schema(
             local_prediction_cache_tensor_metadata_schema,
@@ -2108,6 +2260,8 @@ def main() -> int:
             local_controller_manifest_list_fixture,
             "dag-ml controller manifest list",
         )
+        validate_selection_policy(local_selection_policy_fixture, "dag-ml")
+        validate_selection_decision(local_selection_decision_fixture, "dag-ml")
         validate_data_output_provenance(local_data_output_provenance_fixture, "dag-ml")
         validate_process_adapter_description(
             local_process_adapter_description_fixture,
@@ -2120,6 +2274,7 @@ def main() -> int:
         validate_dag_ml_campaign_header(local_header, "dag-ml")
         validate_dag_ml_data_shape_header(local_header, "dag-ml")
         validate_dag_ml_data_output_provenance_header(local_header, "dag-ml")
+        validate_dag_ml_selection_header(local_header, "dag-ml")
         validate_conformance_pack(
             local_pack,
             local_schema,

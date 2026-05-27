@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/selection_policy.v1.schema.json",
+  "title": "DAG-ML SelectionPolicy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "metric"],
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "metric": {
+      "$ref": "#/$defs/selection_metric"
+    },
+    "required_metric_level": {
+      "anyOf": [
+        { "$ref": "#/$defs/prediction_level" },
+        { "type": "null" }
+      ]
+    },
+    "require_finite": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "metric_objective": {
+      "enum": ["minimize", "maximize"]
+    },
+    "prediction_level": {
+      "enum": ["observation", "sample", "target", "group"]
+    },
+    "selection_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "objective"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "objective": {
+          "$ref": "#/$defs/metric_objective"
+        }
+      }
+    }
+  }
+}

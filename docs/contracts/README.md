@@ -138,6 +138,29 @@ portable shape; Rust validation remains the authority for registry uniqueness,
 phase/fit-scope consistency, capability/port consistency and typed
 `data_requirements` semantics.
 
+## SelectionPolicy / SelectionDecision v1
+
+Schemas: `selection_policy.schema.json`, `selection_decision.schema.json`
+
+Canonical fixtures: `examples/fixtures/bundle/selection_policy_rmse.json`,
+`examples/fixtures/bundle/selection_decision_branch_b0.json`
+
+Runtime types: `SelectionPolicy`, `SelectionDecision`
+
+C ABI: `DAG_ML_SELECTION_POLICY_SCHEMA_VERSION`,
+`DAG_ML_SELECTION_DECISION_SCHEMA_VERSION`,
+`dagml_selection_policy_contract_json`,
+`dagml_selection_decision_contract_json`,
+`dagml_selection_policy_validate_json`,
+`dagml_selection_decision_validate_json`
+
+These contracts preserve the selection boundary used before refit/replay:
+metric name/objective, optional required prediction level
+(`observation`/`sample`/`target`/`group`), selected candidate, selected score
+and the deterministic ranked candidate list. Rust validation remains the
+semantic authority for rank continuity, selected-candidate consistency,
+duplicate candidates and finite selected scores.
+
 ## DAG-ML OpenLineage Facets v1
 
 Schema: `openlineage_dagml_facets.schema.json`

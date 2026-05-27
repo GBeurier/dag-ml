@@ -145,6 +145,14 @@ typedef struct ArrowSchema {
 #define DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION 1u
 #endif
 
+#ifndef DAG_ML_SELECTION_POLICY_SCHEMA_VERSION
+#define DAG_ML_SELECTION_POLICY_SCHEMA_VERSION 1u
+#endif
+
+#ifndef DAG_ML_SELECTION_DECISION_SCHEMA_VERSION
+#define DAG_ML_SELECTION_DECISION_SCHEMA_VERSION 1u
+#endif
+
 #ifndef DAG_ML_DATA_OUTPUT_PROVENANCE_EXTRA_KEY
 #define DAG_ML_DATA_OUTPUT_PROVENANCE_EXTRA_KEY "dag_ml_output"
 #endif
@@ -252,8 +260,10 @@ DagMlStatusCode dagml_execution_plan_schedule_json(
     size_t plan_len,
     DagMlBytesView phase,
     DagMlOwnedBytes *out_json,
-    DagMlString *error_out);
+        DagMlString *error_out);
+DagMlStatusCode dagml_selection_policy_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_selection_policy_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
+DagMlStatusCode dagml_selection_decision_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_selection_decision_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_groups_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, const uint8_t *groups_ptr, size_t groups_len, DagMlOwnedBytes *out_json, DagMlString *error_out);

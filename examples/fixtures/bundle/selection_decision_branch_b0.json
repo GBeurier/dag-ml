@@ -1,0 +1,20 @@
+{
+  "policy_id": "select:branch:b0.rmse_sample",
+  "selected_candidate_id": "branch:b0.model:ridge",
+  "metric_name": "rmse_sample",
+  "objective": "minimize",
+  "metric_level": "sample",
+  "selected_score": 0.118,
+  "ranked_candidates": [
+    {
+      "candidate_id": "branch:b0.model:ridge",
+      "score": 0.118,
+      "rank": 1
+    },
+    {
+      "candidate_id": "branch:b0.model:lasso",
+      "score": 0.143,
+      "rank": 2
+    }
+  ]
+}

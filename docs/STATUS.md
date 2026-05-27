@@ -422,6 +422,11 @@ Implemented:
   fit/RNG/artifact policies and typed data requirements;
 - C ABI exposes single-manifest and manifest-list validation helpers, including
   `ModelInputSpec` data-requirement checks and duplicate controller-id refusal;
+- published `SelectionPolicy` and `SelectionDecision` JSON Schemas with
+  canonical fixtures, contract validation in `scripts/validate_contracts.py`,
+  and C ABI contract discovery/validation helpers, so refit selection records
+  expose metric level, objective and deterministic ranking as binding-level
+  contracts;
 - C ABI graph validation entry point;
 - `dag-ml-data` fixture integration through schema, plan and relation
   fingerprints;
