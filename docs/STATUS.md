@@ -173,6 +173,9 @@ Implemented:
   non-Rust host bindings to preflight a `NodeResult` against the exact
   `NodeTask` before returning it to the scheduler; the scheduler still runs
   the same validation as the authoritative boundary;
+- published `NodeTask` and `NodeResult` contracts with JSON Schemas,
+  canonical task/result fixtures and C ABI contract discovery, covering the
+  actual controller wire protocol used by process/C/Python bindings;
 - deterministic metric selection contracts, including grouped candidate
   selection, stable tie-breaking and optional metric-level guards that reject
   sample/target/group score mismatches before ranking;

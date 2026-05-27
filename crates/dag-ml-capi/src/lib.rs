@@ -26,7 +26,8 @@ use dag_ml_core::{
     DATA_OUTPUT_PROVENANCE_SCHEMA_ID, DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION, DATA_PLAN_SCHEMA_ID,
     DATA_PLAN_SCHEMA_VERSION, EXECUTION_PLAN_SCHEMA_ID, EXECUTION_PLAN_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION, MODEL_INPUT_SPEC_SCHEMA_ID,
-    MODEL_INPUT_SPEC_SCHEMA_VERSION, SELECTION_DECISION_SCHEMA_ID,
+    MODEL_INPUT_SPEC_SCHEMA_VERSION, NODE_RESULT_SCHEMA_ID, NODE_RESULT_SCHEMA_VERSION,
+    NODE_TASK_SCHEMA_ID, NODE_TASK_SCHEMA_VERSION, SELECTION_DECISION_SCHEMA_ID,
     SELECTION_DECISION_SCHEMA_VERSION, SELECTION_POLICY_SCHEMA_ID, SELECTION_POLICY_SCHEMA_VERSION,
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -46,6 +47,8 @@ pub const DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION: u32 = MODEL_INPUT_SPEC_SCHEMA_
 pub const DAG_ML_DATA_PLAN_SCHEMA_VERSION: u32 = DATA_PLAN_SCHEMA_VERSION;
 pub const DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION: u32 = CONTROLLER_MANIFEST_SCHEMA_VERSION;
 pub const DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION;
+pub const DAG_ML_NODE_TASK_SCHEMA_VERSION: u32 = NODE_TASK_SCHEMA_VERSION;
+pub const DAG_ML_NODE_RESULT_SCHEMA_VERSION: u32 = NODE_RESULT_SCHEMA_VERSION;
 pub const DAG_ML_SELECTION_POLICY_SCHEMA_VERSION: u32 = SELECTION_POLICY_SCHEMA_VERSION;
 pub const DAG_ML_SELECTION_DECISION_SCHEMA_VERSION: u32 = SELECTION_DECISION_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
@@ -96,6 +99,18 @@ struct ControllerManifestContractInfo {
 struct DataOutputProvenanceContractInfo {
     schema_version: u32,
     extra_key: &'static str,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct NodeTaskContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct NodeResultContractInfo {
+    schema_version: u32,
     schema_id: &'static str,
 }
 
@@ -723,6 +738,44 @@ pub unsafe extern "C" fn dagml_data_output_provenance_validate_json(
         "data output provenance",
         DataOutputProvenance::validate,
     )
+}
+
+/// Returns the public C ABI contract for controller `NodeTask` JSON.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_node_task_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = NodeTaskContractInfo {
+        schema_version: DAG_ML_NODE_TASK_SCHEMA_VERSION,
+        schema_id: NODE_TASK_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
+}
+
+/// Returns the public C ABI contract for controller `NodeResult` JSON.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_node_result_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = NodeResultContractInfo {
+        schema_version: DAG_ML_NODE_RESULT_SCHEMA_VERSION,
+        schema_id: NODE_RESULT_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
 }
 
 /// Validates a controller-produced `NodeResult` against the exact `NodeTask`
@@ -5236,7 +5289,40 @@ mod tests {
         let (_, task, result) = controller_task_result_fixture();
         let task_json = serde_json::to_vec(&task).unwrap();
         let result_json = serde_json::to_vec(&result).unwrap();
+        let task_fixture =
+            include_bytes!("../../../examples/fixtures/runtime/node_task_transform_scale.json");
+        let result_fixture =
+            include_bytes!("../../../examples/fixtures/runtime/node_result_transform_scale.json");
+        let mut out = DagMlOwnedBytes::default();
         let mut error = DagMlString::default();
+
+        let status = unsafe { dagml_node_task_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(contract["schema_id"], dag_ml_core::NODE_TASK_SCHEMA_ID);
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe { dagml_node_result_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(contract["schema_id"], dag_ml_core::NODE_RESULT_SCHEMA_ID);
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let status = unsafe {
+            dagml_node_result_validate_for_task_json(
+                task_fixture.as_ptr(),
+                task_fixture.len(),
+                result_fixture.as_ptr(),
+                result_fixture.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
 
         let status = unsafe {
             dagml_node_result_validate_for_task_json(

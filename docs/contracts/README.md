@@ -159,6 +159,30 @@ portable shape; Rust validation remains the authority for registry uniqueness,
 phase/fit-scope consistency, capability/port consistency and typed
 `data_requirements` semantics.
 
+## NodeTask / NodeResult v1
+
+Schemas: `node_task.schema.json`, `node_result.schema.json`
+
+Canonical fixtures:
+`examples/fixtures/runtime/node_task_transform_scale.json`,
+`examples/fixtures/runtime/node_result_transform_scale.json`
+
+Runtime types: `NodeTask`, `NodeResult`
+
+C ABI: `DAG_ML_NODE_TASK_SCHEMA_VERSION`,
+`DAG_ML_NODE_RESULT_SCHEMA_VERSION`, `dagml_node_task_contract_json`,
+`dagml_node_result_contract_json`,
+`dagml_node_result_validate_for_task_json`
+
+These are the direct wire contracts between the Rust coordinator and external
+operator controllers. `NodeTask` carries the resolved node plan, phase,
+variant/fold context, handles, data views, OOF prediction inputs, refit artifact
+inputs and deterministic seed. `NodeResult` returns output handles,
+predictions, shape deltas, artifacts and lineage. Rust validates every result
+against the exact task before committing it, including node/run/phase/fold,
+variant, controller, seed, params fingerprint, shape fingerprints, output
+ownership and artifact handle consistency.
+
 ## SelectionPolicy / SelectionDecision v1
 
 Schemas: `selection_policy.schema.json`, `selection_decision.schema.json`

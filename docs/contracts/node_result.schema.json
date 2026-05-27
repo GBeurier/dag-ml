@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json",
+  "title": "DAG-ML NodeResult v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["node_id", "lineage"],
+  "properties": {
+    "node_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/handle_ref"
+      }
+    },
+    "predictions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/prediction_block"
+      }
+    },
+    "shape_deltas": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/shape_delta"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact_ref"
+      }
+    },
+    "artifact_handles": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/handle_ref"
+      }
+    },
+    "lineage": {
+      "$ref": "#/$defs/lineage_record"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fingerprint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "phase": {
+      "enum": ["COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"]
+    },
+    "handle_kind": {
+      "enum": ["data", "data_view", "model", "artifact", "prediction", "relation"]
+    },
+    "prediction_partition": {
+      "enum": ["train", "validation", "test", "final"]
+    },
+    "shape_delta_kind": {
+      "enum": ["row", "feature", "target", "prediction"]
+    },
+    "artifact_backend": {
+      "enum": ["joblib", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
+    },
+    "handle_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handle", "kind", "owner_controller"],
+      "properties": {
+        "handle": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "$ref": "#/$defs/handle_kind"
+        },
+        "owner_controller": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "prediction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_node",
+        "partition",
+        "fold_id",
+        "sample_ids",
+        "values"
+      ],
+      "properties": {
+        "prediction_id": {
+          "type": ["string", "null"]
+        },
+        "producer_node": {
+          "$ref": "#/$defs/identifier"
+        },
+        "partition": {
+          "$ref": "#/$defs/prediction_partition"
+        },
+        "fold_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "sample_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "target_names": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "shape_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "kind", "before_fingerprint", "after_fingerprint"],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "$ref": "#/$defs/shape_delta_kind"
+        },
+        "before_fingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "after_fingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "artifact_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "controller_id", "size_bytes"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "backend": {
+          "anyOf": [
+            { "$ref": "#/$defs/artifact_backend" },
+            { "type": "null" }
+          ]
+        },
+        "uri": {
+          "type": ["string", "null"]
+        },
+        "content_fingerprint": {
+          "type": ["string", "null"]
+        },
+        "size_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "plugin": {
+          "type": ["string", "null"]
+        },
+        "plugin_version": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "lineage_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_id",
+        "run_id",
+        "node_id",
+        "phase",
+        "controller_id",
+        "controller_version",
+        "variant_id",
+        "fold_id",
+        "params_fingerprint",
+        "data_model_shape_fingerprint",
+        "aggregation_policy_fingerprint",
+        "seed"
+      ],
+      "properties": {
+        "record_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "run_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "phase": {
+          "$ref": "#/$defs/phase"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "controller_version": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "variant_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "fold_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "branch_path": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "input_lineage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "artifact_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact_ref"
+          }
+        },
+        "params_fingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "data_model_shape_fingerprint": {
+          "type": ["string", "null"]
+        },
+        "aggregation_policy_fingerprint": {
+          "type": ["string", "null"]
+        },
+        "seed": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "unsafe_flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  }
+}

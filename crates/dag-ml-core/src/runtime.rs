@@ -2684,6 +2684,12 @@ pub const DATA_OUTPUT_PROVENANCE_KEY: &str = "dag_ml_output";
 pub const DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = 1;
 pub const DATA_OUTPUT_PROVENANCE_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/data_output_provenance.v1.schema.json";
+pub const NODE_TASK_SCHEMA_VERSION: u32 = 1;
+pub const NODE_TASK_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/node_task.v1.schema.json";
+pub const NODE_RESULT_SCHEMA_VERSION: u32 = 1;
+pub const NODE_RESULT_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json";
 
 fn default_data_output_provenance_schema_version() -> u32 {
     DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION
@@ -8746,6 +8752,50 @@ mod tests {
         assert!(required
             .iter()
             .any(|field| field.as_str() == Some("producer_node")));
+    }
+
+    #[test]
+    fn published_node_task_and_result_schemas_declare_current_contracts() {
+        let task_schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/node_task.schema.json"
+        ))
+        .unwrap();
+        let result_schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/node_result.schema.json"
+        ))
+        .unwrap();
+
+        assert_eq!(task_schema["$id"], NODE_TASK_SCHEMA_ID);
+        assert_eq!(result_schema["$id"], NODE_RESULT_SCHEMA_ID);
+        assert!(task_schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("node_plan")));
+        assert!(result_schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("lineage")));
+    }
+
+    #[test]
+    fn published_node_task_result_fixtures_validate_current_contract() {
+        let task: NodeTask = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/runtime/node_task_transform_scale.json"
+        ))
+        .unwrap();
+        let result: NodeResult = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/runtime/node_result_transform_scale.json"
+        ))
+        .unwrap();
+
+        result.validate_for_task(&task).unwrap();
+        assert_eq!(
+            task.node_plan.node_id,
+            NodeId::new("transform:scale").unwrap()
+        );
+        assert_eq!(result.outputs.len(), 1);
     }
 
     #[test]

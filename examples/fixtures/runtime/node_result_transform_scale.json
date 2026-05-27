@@ -1,0 +1,33 @@
+{
+  "node_id": "transform:scale",
+  "outputs": {
+    "x_out": {
+      "handle": 88,
+      "kind": "data",
+      "owner_controller": "controller:transform.mock"
+    }
+  },
+  "predictions": [],
+  "shape_deltas": [],
+  "artifacts": [],
+  "artifact_handles": {},
+  "lineage": {
+    "record_id": "lineage:fixture.node-result",
+    "run_id": "run:fixture.node-task",
+    "node_id": "transform:scale",
+    "phase": "FIT_CV",
+    "controller_id": "controller:transform.mock",
+    "controller_version": "0.1.0",
+    "variant_id": "variant:fixture",
+    "fold_id": "fold:0",
+    "branch_path": [],
+    "input_lineage": [],
+    "artifact_refs": [],
+    "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "data_model_shape_fingerprint": null,
+    "aggregation_policy_fingerprint": null,
+    "seed": 42,
+    "unsafe_flags": [],
+    "metrics": {}
+  }
+}

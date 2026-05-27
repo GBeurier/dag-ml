@@ -1202,7 +1202,51 @@ int main(int argc, char **argv) {
     Buffer valid = read_file(argv[2]);
     Buffer invalid = read_file(argv[3]);
     DagMlString error = {0};
-    DagMlStatusCode status = dagml_node_result_validate_for_task_json(
+    DagMlOwnedBytes task_contract = {0};
+    DagMlStatusCode status = dagml_node_task_contract_json(&task_contract, &error);
+    if (status != DAG_ML_STATUS_OK ||
+        !task_contract.ptr ||
+        !contains_bytes(task_contract.ptr, task_contract.len, "node_task.v1.schema.json")) {
+        fprintf(stderr, "dagml_node_task_contract_json failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        free(task.ptr);
+        free(valid.ptr);
+        free(invalid.ptr);
+        if (task_contract.ptr) {
+            dagml_owned_bytes_free(task_contract);
+        }
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+    dagml_owned_bytes_free(task_contract);
+
+    DagMlOwnedBytes result_contract = {0};
+    status = dagml_node_result_contract_json(&result_contract, &error);
+    if (status != DAG_ML_STATUS_OK ||
+        !result_contract.ptr ||
+        !contains_bytes(result_contract.ptr, result_contract.len, "node_result.v1.schema.json")) {
+        fprintf(stderr, "dagml_node_result_contract_json failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        free(task.ptr);
+        free(valid.ptr);
+        free(invalid.ptr);
+        if (result_contract.ptr) {
+            dagml_owned_bytes_free(result_contract);
+        }
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+    dagml_owned_bytes_free(result_contract);
+
+    status = dagml_node_result_validate_for_task_json(
         task.ptr,
         task.len,
         valid.ptr,
