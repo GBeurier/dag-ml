@@ -11,7 +11,7 @@ leakage guarantees.
 | Capability | `dag-ml` responsibility | `dag-ml-data` / controller responsibility | OOF / leakage invariant |
 |---|---|---|---|
 | Multisource | graph/source join nodes, phase control | source descriptors, alignment, presence masks, fusion plans | sample ids are canonical across sources; missing-source policy is explicit |
-| Repetitions | split unit and aggregation decisions | `SampleRelation` observation/sample/target mapping | no observation from the same leakage unit crosses train/validation |
+| Repetitions | split unit, aggregation decisions and custom aggregation-controller task/result validation | `SampleRelation` observation/sample/target mapping; optional external custom reducers | no observation from the same leakage unit crosses train/validation, and custom aggregation outputs must preserve requested sample/unit coverage |
 | Grouped samples | group-aware split validation | expose group ids in sample relations | group id cannot appear in both train and validation for a fold |
 | Augmentation | train-only phase gating, origin checks | expose `origin_id`, augmentation adapter declarations | validation origins cannot be augmented into train leakage or vice versa |
 | Processings | node lineage and fit scope | representation adapters and fitted adapter refs | stateful processing fits only on fold train during CV |

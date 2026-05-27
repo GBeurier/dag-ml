@@ -9,19 +9,22 @@ use dag_ml_core::{
     compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
-    AggregatedPredictionBlock, ArtifactMaterializationRequest, BundlePredictionCachePayload,
-    BundlePredictionCachePayloadSet, BundleReplayExecution, CampaignSpec, CandidateScore,
-    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataMaterializationRequest,
-    DataOutputProvenance, DataPlan, DataRequestPartition, DataViewRequest, ExecutionBundle,
-    ExecutionPlan, ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest,
-    GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId,
-    LineageRecord, ModelInputSpec, NodeResult, NodeTask, OpenLineageRunEventOptions, Phase,
-    PipelineDslSpec, PredictionBlock, PredictionCacheMaterializationRequest, PredictionLevel,
-    PredictionPartition, PredictionUnitId, RegressionMetricKind, RegressionMetricReport,
-    RegressionTargetBlock, ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore,
-    RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
-    SampleId, SelectionDecision, SelectionPolicy, SequentialScheduler, CAMPAIGN_SPEC_SCHEMA_ID,
-    CAMPAIGN_SPEC_SCHEMA_VERSION, CONTROLLER_MANIFEST_SCHEMA_ID,
+    AggregatedPredictionBlock, AggregationControllerResult, AggregationControllerTask,
+    ArtifactMaterializationRequest, BundlePredictionCachePayload, BundlePredictionCachePayloadSet,
+    BundleReplayExecution, CampaignSpec, CandidateScore, ControllerId, ControllerManifest,
+    ControllerRegistry, DagMlError, DataMaterializationRequest, DataOutputProvenance, DataPlan,
+    DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
+    ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest, GraphSpec,
+    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
+    ModelInputSpec, NodeResult, NodeTask, OpenLineageRunEventOptions, Phase, PipelineDslSpec,
+    PredictionBlock, PredictionCacheMaterializationRequest, PredictionLevel, PredictionPartition,
+    PredictionUnitId, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
+    ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
+    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
+    SelectionDecision, SelectionPolicy, SequentialScheduler,
+    AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID, AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+    AGGREGATION_CONTROLLER_TASK_SCHEMA_ID, AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
+    CAMPAIGN_SPEC_SCHEMA_ID, CAMPAIGN_SPEC_SCHEMA_VERSION, CONTROLLER_MANIFEST_SCHEMA_ID,
     CONTROLLER_MANIFEST_SCHEMA_VERSION, DATA_OUTPUT_PROVENANCE_KEY,
     DATA_OUTPUT_PROVENANCE_SCHEMA_ID, DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION, DATA_PLAN_SCHEMA_ID,
     DATA_PLAN_SCHEMA_VERSION, EXECUTION_PLAN_SCHEMA_ID, EXECUTION_PLAN_SCHEMA_VERSION,
@@ -54,6 +57,10 @@ pub const DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION: u32 = 1;
 pub const DAG_ML_PROCESS_ADAPTER_FRAME_SCHEMA_VERSION: u32 = 1;
 pub const DAG_ML_SELECTION_POLICY_SCHEMA_VERSION: u32 = SELECTION_POLICY_SCHEMA_VERSION;
 pub const DAG_ML_SELECTION_DECISION_SCHEMA_VERSION: u32 = SELECTION_DECISION_SCHEMA_VERSION;
+pub const DAG_ML_AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION: u32 =
+    AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION;
+pub const DAG_ML_AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION: u32 =
+    AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
 pub const DAG_ML_HANDLE_KIND_DATA_VIEW: u32 = 2;
@@ -129,6 +136,18 @@ struct ProcessAdapterDescriptionContractInfo {
 
 #[derive(Serialize)]
 struct ProcessAdapterFrameContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct AggregationControllerTaskContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct AggregationControllerResultContractInfo {
     schema_version: u32,
     schema_id: &'static str,
 }
@@ -877,6 +896,103 @@ pub unsafe extern "C" fn dagml_process_adapter_frame_contract_json(
         schema_id: PROCESS_ADAPTER_FRAME_SCHEMA_ID,
     };
     write_owned_json(out_json, error_out, &contract)
+}
+
+/// Returns the public custom aggregation-controller task JSON contract.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_aggregation_controller_task_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = AggregationControllerTaskContractInfo {
+        schema_version: DAG_ML_AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
+        schema_id: AGGREGATION_CONTROLLER_TASK_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
+}
+
+/// Returns the public custom aggregation-controller result JSON contract.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_aggregation_controller_result_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = AggregationControllerResultContractInfo {
+        schema_version: DAG_ML_AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+        schema_id: AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
+}
+
+/// Validates a custom aggregation-controller task JSON payload.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_aggregation_controller_task_validate_json(
+    task_ptr: *const u8,
+    task_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    validate_json::<AggregationControllerTask>(
+        task_ptr,
+        task_len,
+        error_out,
+        "aggregation controller task",
+        |task| task.validate(),
+    )
+}
+
+/// Validates a custom aggregation-controller result against the exact task sent
+/// to the host aggregation controller.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_node_result_validate_for_task_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_aggregation_controller_result_validate_for_task_json(
+    task_ptr: *const u8,
+    task_len: usize,
+    result_ptr: *const u8,
+    result_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    let task = match parse_json_ptr::<AggregationControllerTask>(
+        task_ptr,
+        task_len,
+        error_out,
+        "aggregation controller task",
+    ) {
+        Ok(task) => task,
+        Err(status) => return status,
+    };
+    let result = match parse_json_ptr::<AggregationControllerResult>(
+        result_ptr,
+        result_len,
+        error_out,
+        "aggregation controller result",
+    ) {
+        Ok(result) => result,
+        Err(status) => return status,
+    };
+    match result.validate_for_task(&task) {
+        Ok(()) => DagMlStatusCode::OK,
+        Err(error) => validation_error(error_out, error),
+    }
 }
 
 /// Validates a controller-produced `NodeResult` against the exact `NodeTask`
@@ -5679,6 +5795,158 @@ mod tests {
         assert_eq!(contract["schema_version"], 1);
         assert_eq!(contract["schema_id"], PROCESS_ADAPTER_FRAME_SCHEMA_ID);
         unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn exposes_aggregation_controller_contracts_over_abi() {
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status =
+            unsafe { dagml_aggregation_controller_task_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(
+            contract["schema_id"],
+            dag_ml_core::AGGREGATION_CONTROLLER_TASK_SCHEMA_ID
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let mut out = DagMlOwnedBytes::default();
+        let status =
+            unsafe { dagml_aggregation_controller_result_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(
+            contract["schema_id"],
+            dag_ml_core::AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn validates_aggregation_controller_result_over_abi() {
+        let task = br#"{
+  "schema_version": 1,
+  "task_id": "agg-task:obs.sample.fold0",
+  "controller_id": "controller:agg.trimmed",
+  "policy": {
+    "aggregation_level": "sample",
+    "method": "custom_controller",
+    "weights": "none",
+    "custom_controller": {
+      "controller_id": "controller:agg.trimmed",
+      "params": { "trim_fraction": 0.1 }
+    },
+    "emit_parallel_metrics": true,
+    "selection_metric_level": "sample",
+    "store_raw_predictions": true,
+    "store_aggregated_predictions": true
+  },
+  "input": {
+    "input_kind": "observation_to_sample",
+    "block": {
+      "prediction_id": "prediction:model.fold0",
+      "producer_node": "model:pls",
+      "partition": "validation",
+      "fold_id": "fold:0",
+      "observation_ids": ["obs:1", "obs:2"],
+      "values": [[1.0], [3.0]],
+      "target_names": ["y"]
+    },
+    "relations": {
+      "records": [
+        {
+          "observation_id": "obs:1",
+          "sample_id": "sample:1",
+          "target_id": "target:1",
+          "group_id": null,
+          "origin_sample_id": null,
+          "source_id": null,
+          "is_augmented": false
+        },
+        {
+          "observation_id": "obs:2",
+          "sample_id": "sample:1",
+          "target_id": "target:1",
+          "group_id": null,
+          "origin_sample_id": null,
+          "source_id": null,
+          "is_augmented": false
+        }
+      ]
+    },
+    "requested_sample_order": ["sample:1"]
+  }
+}"#;
+        let result = br#"{
+  "schema_version": 1,
+  "task_id": "agg-task:obs.sample.fold0",
+  "output": {
+    "output_kind": "sample",
+    "block": {
+      "prediction_id": "prediction:model.fold0:custom_sample_agg",
+      "producer_node": "model:pls",
+      "partition": "validation",
+      "fold_id": "fold:0",
+      "sample_ids": ["sample:1"],
+      "values": [[2.0]],
+      "target_names": ["y"]
+    }
+  }
+}"#;
+        let wrong_result = br#"{
+  "schema_version": 1,
+  "task_id": "agg-task:obs.sample.fold0",
+  "output": {
+    "output_kind": "sample",
+    "block": {
+      "prediction_id": "prediction:model.fold0:custom_sample_agg",
+      "producer_node": "model:pls",
+      "partition": "validation",
+      "fold_id": "fold:0",
+      "sample_ids": ["sample:2"],
+      "values": [[2.0]],
+      "target_names": ["y"]
+    }
+  }
+}"#;
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_aggregation_controller_task_validate_json(task.as_ptr(), task.len(), &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+
+        let status = unsafe {
+            dagml_aggregation_controller_result_validate_for_task_json(
+                task.as_ptr(),
+                task.len(),
+                result.as_ptr(),
+                result.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+
+        let status = unsafe {
+            dagml_aggregation_controller_result_validate_for_task_json(
+                task.as_ptr(),
+                task.len(),
+                wrong_result.as_ptr(),
+                wrong_result.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(error_message(&error).contains("requested sample order"));
+        unsafe { dagml_string_free(error) };
     }
 
     #[test]

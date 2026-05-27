@@ -29,6 +29,7 @@ pub enum ControllerCapability {
     GeneratesData,
     GeneratesModel,
     ExpandsVariants,
+    AggregatesPredictions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -477,6 +478,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|capability| capability.as_str() == Some("emits_predictions")));
+        assert!(schema["$defs"]["controller_capability"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability.as_str() == Some("aggregates_predictions")));
         assert_eq!(
             schema["$defs"]["model_input_spec"]["properties"]["schema_version"]["const"].as_u64(),
             Some(crate::data::MODEL_INPUT_SPEC_SCHEMA_VERSION as u64)

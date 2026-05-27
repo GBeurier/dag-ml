@@ -21,6 +21,10 @@ the host owns the underlying object behind each handle.
 - `dagml_controller_manifest_validate_json` and
   `dagml_controller_manifest_list_validate_json` so bindings can preflight
   controller manifests and registry uniqueness before plan building;
+- custom aggregation-controller task/result contract discovery and validation,
+  including result-vs-task checks that preserve requested sample/unit order,
+  fold scope, prediction level and target names before a host aggregation
+  controller result can be trusted by the coordinator;
 - `dagml_data_output_provenance_contract_json` and
   `dagml_data_output_provenance_validate_json` so bindings can discover the
   reserved `DataProviderViewSpec.extra` key and validate propagated data-view

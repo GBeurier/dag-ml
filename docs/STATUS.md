@@ -201,6 +201,12 @@ Implemented:
   `unit_ids`, and file/in-memory/columnar cache stores can validate, load and
   materialize aggregated replay handles without preloading them into the
   sample-level OOF store;
+- custom aggregation-controller policy support and task/result contracts:
+  `AggregationMethod::CustomController` now requires an explicit controller
+  spec, controller manifests can declare `aggregates_predictions`, and C ABI
+  helpers publish/validate aggregation tasks and validate controller results
+  against the exact requested sample/unit order, fold scope, prediction level
+  and target names;
 - execution-bundle validation now checks selected candidates against the
   rebuilt plan and requires refit artifacts for selected refittable nodes;
 - explicit execution-bundle schema version with unsupported-version refusal;
@@ -399,6 +405,9 @@ Implemented:
 - C ABI row-major and column-major F64 tensor exports for bundle-validated
   prediction-cache payload requirements, returning values as contiguous tensors
   and versioned traceability metadata as owned JSON with published JSON Schemas;
+- C ABI aggregation-controller task/result contract discovery and validation,
+  including result-vs-task checks for external custom reducers before their
+  sample/unit predictions can enter a leakage-sensitive pipeline;
 - C ABI non-mock replay execution helper that composes host controller,
   data-provider, artifact-store and optional prediction-cache vtables while
   Rust owns bundle validation, replay envelope validation, DAG scheduling,
@@ -461,8 +470,8 @@ Not implemented yet:
   `PipelineDslSpec` profile;
 - advanced search-space compiler/lowering beyond typed node-parameter variants
   and coordinated override dimensions from `PipelineDslSpec`;
-- custom aggregation controllers and production persistent/Arrow replay
-  backends for non-sample aggregated prediction blocks;
+- runtime dispatch to custom aggregation controllers and production
+  persistent/Arrow replay backends for non-sample aggregated prediction blocks;
 - artifact binary deserialization/loading into host-native model objects beyond
   the implemented portable artifact reference contract, file-backed artifact
   manifest and file-backed artifact payload store;
@@ -476,6 +485,7 @@ Not implemented yet:
 
 Next recommended task:
 
-Continue productionizing host adapters: native binding contracts, controller
-lifecycle ownership, failure recovery/timeouts, and larger replay stress
-fixtures over the shared conformance pack.
+Wire custom aggregation-controller dispatch into runtime execution, then continue
+productionizing host adapters: controller lifecycle ownership, failure
+recovery/timeouts, and larger replay stress fixtures over the shared conformance
+pack.

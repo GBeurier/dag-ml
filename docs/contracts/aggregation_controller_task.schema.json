@@ -1,0 +1,263 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json",
+  "title": "DAG-ML Aggregation Controller Task v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "controller_id", "policy", "input"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "task_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "controller_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "policy": {
+      "$ref": "#/$defs/aggregation_policy"
+    },
+    "input": {
+      "oneOf": [
+        { "$ref": "#/$defs/observation_to_sample_input" },
+        { "$ref": "#/$defs/sample_to_unit_input" }
+      ]
+    }
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "prediction_level": {
+      "enum": ["observation", "sample", "target", "group"]
+    },
+    "prediction_partition": {
+      "enum": ["train", "validation", "test", "final"]
+    },
+    "aggregation_method": {
+      "enum": ["none", "mean", "weighted_mean", "median", "vote", "custom_controller"]
+    },
+    "aggregation_weights": {
+      "enum": ["none", "quality", "repetition_count", "controller_emitted"]
+    },
+    "aggregation_controller_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controller_id"],
+      "properties": {
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "params": {
+          "not": { "type": "null" }
+        }
+      }
+    },
+    "aggregation_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "custom_controller"],
+      "properties": {
+        "aggregation_level": {
+          "$ref": "#/$defs/prediction_level"
+        },
+        "method": {
+          "const": "custom_controller"
+        },
+        "weights": {
+          "$ref": "#/$defs/aggregation_weights"
+        },
+        "custom_controller": {
+          "$ref": "#/$defs/aggregation_controller_spec"
+        },
+        "emit_parallel_metrics": {
+          "type": "boolean"
+        },
+        "selection_metric_level": {
+          "$ref": "#/$defs/prediction_level"
+        },
+        "store_raw_predictions": {
+          "type": "boolean"
+        },
+        "store_aggregated_predictions": {
+          "type": "boolean"
+        }
+      }
+    },
+    "observation_to_sample_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_kind", "block", "relations", "requested_sample_order"],
+      "properties": {
+        "input_kind": {
+          "const": "observation_to_sample"
+        },
+        "block": {
+          "$ref": "#/$defs/observation_prediction_block"
+        },
+        "relations": {
+          "$ref": "#/$defs/sample_relation_set"
+        },
+        "requested_sample_order": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
+        }
+      }
+    },
+    "sample_to_unit_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_kind", "block", "relations", "requested_unit_order"],
+      "properties": {
+        "input_kind": {
+          "const": "sample_to_unit"
+        },
+        "block": {
+          "$ref": "#/$defs/prediction_block"
+        },
+        "relations": {
+          "$ref": "#/$defs/sample_relation_set"
+        },
+        "requested_unit_order": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/prediction_unit_id" }
+        }
+      }
+    },
+    "observation_prediction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_node", "partition", "fold_id", "observation_ids", "values", "target_names"],
+      "properties": {
+        "prediction_id": {
+          "type": ["string", "null"]
+        },
+        "producer_node": {
+          "$ref": "#/$defs/identifier"
+        },
+        "partition": {
+          "$ref": "#/$defs/prediction_partition"
+        },
+        "fold_id": {
+          "type": ["string", "null"]
+        },
+        "observation_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "values": {
+          "$ref": "#/$defs/f64_matrix"
+        },
+        "weights": {
+          "type": "array",
+          "items": { "type": "number" }
+        },
+        "target_names": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "prediction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_node", "partition", "fold_id", "sample_ids", "values", "target_names"],
+      "properties": {
+        "prediction_id": {
+          "type": ["string", "null"]
+        },
+        "producer_node": {
+          "$ref": "#/$defs/identifier"
+        },
+        "partition": {
+          "$ref": "#/$defs/prediction_partition"
+        },
+        "fold_id": {
+          "type": ["string", "null"]
+        },
+        "sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "values": {
+          "$ref": "#/$defs/f64_matrix"
+        },
+        "target_names": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "sample_relation_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["records"],
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sample_relation" }
+        }
+      }
+    },
+    "sample_relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation_id", "sample_id", "target_id", "group_id", "origin_sample_id", "source_id", "is_augmented"],
+      "properties": {
+        "observation_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "sample_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "target_id": {
+          "type": ["string", "null"]
+        },
+        "group_id": {
+          "type": ["string", "null"]
+        },
+        "origin_sample_id": {
+          "type": ["string", "null"]
+        },
+        "source_id": {
+          "type": ["string", "null"]
+        },
+        "is_augmented": {
+          "type": "boolean"
+        }
+      }
+    },
+    "prediction_unit_id": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "id"],
+      "properties": {
+        "level": {
+          "enum": ["sample", "target", "group"]
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "f64_matrix": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "items": { "type": "number" }
+      }
+    }
+  }
+}

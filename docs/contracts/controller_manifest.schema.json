@@ -155,7 +155,8 @@
         "shape_changing",
         "generates_data",
         "generates_model",
-        "expands_variants"
+        "expands_variants",
+        "aggregates_predictions"
       ]
     },
     "controller_fit_scope": {

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, Result};
-use crate::ids::NodeId;
+use crate::ids::{ControllerId, NodeId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -92,6 +92,25 @@ pub enum AggregationWeights {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AggregationControllerSpec {
+    pub controller_id: ControllerId,
+    #[serde(default = "default_json_object")]
+    pub params: serde_json::Value,
+}
+
+impl AggregationControllerSpec {
+    pub fn validate(&self) -> Result<()> {
+        if self.params.is_null() {
+            return Err(DagMlError::CampaignValidation(format!(
+                "custom aggregation controller `{}` params cannot be null",
+                self.controller_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AggregationPolicy {
     #[serde(default = "default_prediction_level")]
     pub aggregation_level: PredictionLevel,
@@ -99,6 +118,8 @@ pub struct AggregationPolicy {
     pub method: AggregationMethod,
     #[serde(default = "default_aggregation_weights")]
     pub weights: AggregationWeights,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_controller: Option<AggregationControllerSpec>,
     #[serde(default = "default_true")]
     pub emit_parallel_metrics: bool,
     #[serde(default = "default_prediction_level")]
@@ -115,6 +136,7 @@ impl Default for AggregationPolicy {
             aggregation_level: PredictionLevel::Sample,
             method: AggregationMethod::Mean,
             weights: AggregationWeights::None,
+            custom_controller: None,
             emit_parallel_metrics: true,
             selection_metric_level: PredictionLevel::Sample,
             store_raw_predictions: true,
@@ -140,12 +162,28 @@ impl AggregationPolicy {
             ));
         }
         if self.method != AggregationMethod::WeightedMean
+            && self.method != AggregationMethod::CustomController
             && self.weights != AggregationWeights::None
         {
             return Err(DagMlError::CampaignValidation(format!(
                 "aggregation weights {:?} are only valid with weighted_mean",
                 self.weights
             )));
+        }
+        match (&self.method, &self.custom_controller) {
+            (AggregationMethod::CustomController, Some(controller)) => controller.validate()?,
+            (AggregationMethod::CustomController, None) => {
+                return Err(DagMlError::CampaignValidation(
+                    "custom_controller aggregation requires a custom_controller spec".to_string(),
+                ));
+            }
+            (_, Some(controller)) => {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "aggregation controller `{}` is only valid with custom_controller method",
+                    controller.controller_id
+                )));
+            }
+            (_, None) => {}
         }
         if !self.store_raw_predictions && !self.store_aggregated_predictions {
             return Err(DagMlError::CampaignValidation(
@@ -166,6 +204,10 @@ fn default_aggregation_method() -> AggregationMethod {
 
 fn default_aggregation_weights() -> AggregationWeights {
     AggregationWeights::None
+}
+
+fn default_json_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 fn default_true() -> bool {
@@ -511,6 +553,35 @@ mod tests {
         let valid = AggregationPolicy {
             method: AggregationMethod::WeightedMean,
             weights: AggregationWeights::ControllerEmitted,
+            ..AggregationPolicy::default()
+        };
+        valid.validate().unwrap();
+    }
+
+    #[test]
+    fn custom_aggregation_requires_controller_spec() {
+        let missing_controller = AggregationPolicy {
+            method: AggregationMethod::CustomController,
+            ..AggregationPolicy::default()
+        };
+        assert!(missing_controller.validate().is_err());
+
+        let stray_controller = AggregationPolicy {
+            custom_controller: Some(AggregationControllerSpec {
+                controller_id: ControllerId::new("controller:agg").unwrap(),
+                params: serde_json::json!({}),
+            }),
+            ..AggregationPolicy::default()
+        };
+        assert!(stray_controller.validate().is_err());
+
+        let valid = AggregationPolicy {
+            method: AggregationMethod::CustomController,
+            weights: AggregationWeights::ControllerEmitted,
+            custom_controller: Some(AggregationControllerSpec {
+                controller_id: ControllerId::new("controller:agg").unwrap(),
+                params: serde_json::json!({ "trim": 0.1 }),
+            }),
             ..AggregationPolicy::default()
         };
         valid.validate().unwrap();

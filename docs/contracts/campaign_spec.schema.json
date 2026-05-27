@@ -112,6 +112,12 @@
         "weights": {
           "$ref": "#/$defs/aggregation_weights"
         },
+        "custom_controller": {
+          "anyOf": [
+            { "$ref": "#/$defs/aggregation_controller_spec" },
+            { "type": "null" }
+          ]
+        },
         "emit_parallel_metrics": {
           "type": "boolean"
         },
@@ -123,6 +129,19 @@
         },
         "store_aggregated_predictions": {
           "type": "boolean"
+        }
+      }
+    },
+    "aggregation_controller_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controller_id"],
+      "properties": {
+        "controller_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "params": {
+          "not": { "type": "null" }
         }
       }
     },
