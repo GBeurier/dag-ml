@@ -164,6 +164,10 @@ Implemented:
   stable version/key macros plus JSON contract introspection and standalone
   validation helpers, so non-Rust controllers can trust propagated data views
   without hardcoding Rust-only constants;
+- C ABI exposes `dagml_node_result_validate_for_task_json`, allowing
+  non-Rust host bindings to preflight a `NodeResult` against the exact
+  `NodeTask` before returning it to the scheduler; the scheduler still runs
+  the same validation as the authoritative boundary;
 - deterministic metric selection contracts, including grouped candidate
   selection, stable tie-breaking and optional metric-level guards that reject
   sample/target/group score mismatches before ranking;

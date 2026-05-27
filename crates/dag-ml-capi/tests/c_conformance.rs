@@ -3,10 +3,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use dag_ml_core::{
-    build_execution_bundle, build_execution_plan, ArtifactId, ArtifactRef, BundleId, CampaignSpec,
-    ControllerId, ControllerManifest, ControllerRegistry, GraphSpec, NodeId, RefitArtifactRecord,
+    build_execution_bundle, build_execution_plan, ArtifactId, ArtifactPolicy, ArtifactRef,
+    BundleId, CampaignSpec, ControllerCapability, ControllerFitScope, ControllerId,
+    ControllerManifest, ControllerRegistry, FoldId, GraphSpec, HandleKind, HandleRef, LineageId,
+    LineageRecord, NodeId, NodeKind, NodePlan, NodeResult, NodeTask, Phase, RefitArtifactRecord,
+    RngPolicy, RunId, VariantId,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const C_CONFORMANCE_SOURCE: &str = r#"
 #include "dag_ml.h"
@@ -843,6 +846,121 @@ int main(int argc, char **argv) {
     }
     if (!contains_bytes((const uint8_t *)error.ptr, error.len, "unsupported schema_version")) {
         fprintf(stderr, "unexpected invalid provenance error: %.*s\n",
+            (int)error.len,
+            error.ptr);
+        dagml_string_free(error);
+        return 1;
+    }
+    dagml_string_free(error);
+    return 0;
+}
+"#;
+
+const C_NODE_RESULT_VALIDATION_SOURCE: &str = r#"
+#include "dag_ml.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct Buffer {
+    uint8_t *ptr;
+    size_t len;
+} Buffer;
+
+static Buffer read_file(const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        fprintf(stderr, "failed to open %s\n", path);
+        exit(2);
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fprintf(stderr, "failed to seek %s\n", path);
+        exit(2);
+    }
+    long size = ftell(file);
+    if (size < 0) {
+        fprintf(stderr, "failed to tell %s\n", path);
+        exit(2);
+    }
+    if (fseek(file, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "failed to rewind %s\n", path);
+        exit(2);
+    }
+    uint8_t *data = (uint8_t *)malloc((size_t)size);
+    if (!data) {
+        fprintf(stderr, "allocation failure\n");
+        exit(2);
+    }
+    if (fread(data, 1, (size_t)size, file) != (size_t)size) {
+        fprintf(stderr, "failed to read %s\n", path);
+        exit(2);
+    }
+    fclose(file);
+    Buffer buffer = { data, (size_t)size };
+    return buffer;
+}
+
+static int contains_bytes(const uint8_t *haystack, size_t haystack_len, const char *needle) {
+    size_t needle_len = strlen(needle);
+    if (!haystack || needle_len == 0 || needle_len > haystack_len) {
+        return 0;
+    }
+    for (size_t i = 0; i + needle_len <= haystack_len; i++) {
+        if (memcmp(haystack + i, needle, needle_len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 4) {
+        fprintf(stderr, "usage: %s TASK VALID_RESULT INVALID_RESULT\n", argv[0]);
+        return 2;
+    }
+    Buffer task = read_file(argv[1]);
+    Buffer valid = read_file(argv[2]);
+    Buffer invalid = read_file(argv[3]);
+    DagMlString error = {0};
+    DagMlStatusCode status = dagml_node_result_validate_for_task_json(
+        task.ptr,
+        task.len,
+        valid.ptr,
+        valid.len,
+        &error
+    );
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "valid NodeResult failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        free(task.ptr);
+        free(valid.ptr);
+        free(invalid.ptr);
+        return 1;
+    }
+
+    status = dagml_node_result_validate_for_task_json(
+        task.ptr,
+        task.len,
+        invalid.ptr,
+        invalid.len,
+        &error
+    );
+    free(task.ptr);
+    free(valid.ptr);
+    free(invalid.ptr);
+    if (status != DAG_ML_STATUS_VALIDATION_ERROR || !error.ptr) {
+        fprintf(stderr, "invalid NodeResult did not fail as expected, status=%u\n", status);
+        return 1;
+    }
+    if (!contains_bytes((const uint8_t *)error.ptr, error.len, "returned result")) {
+        fprintf(stderr, "unexpected invalid NodeResult error: %.*s\n",
             (int)error.len,
             error.ptr);
         dagml_string_free(error);
@@ -1765,6 +1883,155 @@ fn c_program_validates_data_output_provenance_against_c_abi() {
     assert!(
         run_output.status.success(),
         "data-output provenance C conformance executable failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+}
+
+fn node_task_result_fixture() -> (NodeTask, NodeResult) {
+    let controller_id = ControllerId::new("controller:transform").unwrap();
+    let node_id = NodeId::new("transform:scale").unwrap();
+    let task = NodeTask {
+        run_id: RunId::new("run:c.conformance.node-result").unwrap(),
+        node_plan: NodePlan {
+            node_id: node_id.clone(),
+            kind: NodeKind::Transform,
+            controller_id: controller_id.clone(),
+            controller_version: "0.1.0".to_string(),
+            supported_phases: BTreeSet::from([Phase::FitCv]),
+            controller_capabilities: BTreeSet::from([
+                ControllerCapability::Deterministic,
+                ControllerCapability::ThreadSafe,
+            ]),
+            fit_scope: ControllerFitScope::FoldTrain,
+            rng_policy: RngPolicy::UsesCoreSeed,
+            artifact_policy: ArtifactPolicy::Serializable,
+            input_nodes: Vec::new(),
+            output_nodes: Vec::new(),
+            shape_plan: None,
+            data_bindings: Vec::new(),
+            params: BTreeMap::new(),
+            params_fingerprint: "params:c-conformance".to_string(),
+        },
+        phase: Phase::FitCv,
+        variant_id: Some(VariantId::new("variant:c-conformance").unwrap()),
+        variant: None,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        branch_path: Vec::new(),
+        input_handles: BTreeMap::new(),
+        data_views: BTreeMap::new(),
+        prediction_inputs: BTreeMap::new(),
+        artifact_inputs: BTreeMap::new(),
+        seed: Some(42),
+    };
+    let result = NodeResult {
+        node_id: node_id.clone(),
+        outputs: BTreeMap::from([(
+            "out".to_string(),
+            HandleRef {
+                handle: 88,
+                kind: HandleKind::Data,
+                owner_controller: controller_id.clone(),
+            },
+        )]),
+        predictions: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        lineage: LineageRecord {
+            record_id: LineageId::new("lineage:c.conformance.node-result").unwrap(),
+            run_id: task.run_id.clone(),
+            node_id,
+            phase: task.phase,
+            controller_id,
+            controller_version: task.node_plan.controller_version.clone(),
+            variant_id: task.variant_id.clone(),
+            fold_id: task.fold_id.clone(),
+            branch_path: task.branch_path.clone(),
+            input_lineage: Vec::new(),
+            artifact_refs: Vec::new(),
+            params_fingerprint: task.node_plan.params_fingerprint.clone(),
+            data_model_shape_fingerprint: None,
+            aggregation_policy_fingerprint: None,
+            seed: task.seed,
+            unsafe_flags: BTreeSet::new(),
+            metrics: BTreeMap::new(),
+        },
+    };
+    result.validate_for_task(&task).unwrap();
+    (task, result)
+}
+
+#[test]
+fn c_program_validates_node_result_against_task_c_abi() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target_debug = std::env::current_exe()
+        .expect("current test exe path")
+        .parent()
+        .and_then(Path::parent)
+        .expect("test exe lives under target/debug/deps")
+        .to_path_buf();
+    let dynamic_lib = find_dynamic_library(&target_debug);
+    let dynamic_lib_dir = dynamic_lib
+        .parent()
+        .expect("dynamic library has parent directory")
+        .to_path_buf();
+    let temp = std::env::temp_dir().join(format!(
+        "dag_ml_node_result_conformance_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&temp).expect("create node-result conformance temp dir");
+
+    let c_path = temp.join("node_result_validation.c");
+    let exe_path = temp.join("node_result_validation");
+    let task_path = temp.join("task.json");
+    let valid_result_path = temp.join("valid_result.json");
+    let invalid_result_path = temp.join("invalid_result.json");
+    fs::write(&c_path, C_NODE_RESULT_VALIDATION_SOURCE)
+        .expect("write node-result C conformance source");
+    let (task, result) = node_task_result_fixture();
+    let mut invalid_result = result.clone();
+    invalid_result.node_id = NodeId::new("transform:other").unwrap();
+    fs::write(&task_path, serde_json::to_vec(&task).unwrap()).expect("write task JSON");
+    fs::write(&valid_result_path, serde_json::to_vec(&result).unwrap())
+        .expect("write valid result JSON");
+    fs::write(
+        &invalid_result_path,
+        serde_json::to_vec(&invalid_result).unwrap(),
+    )
+    .expect("write invalid result JSON");
+
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let mut compile = Command::new(cc);
+    compile
+        .arg("-std=c11")
+        .arg(&c_path)
+        .arg("-I")
+        .arg(manifest_dir.join("include"))
+        .arg(&dynamic_lib)
+        .arg("-o")
+        .arg(&exe_path);
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
+        compile.arg(format!("-Wl,-rpath,{}", dynamic_lib_dir.display()));
+    }
+    let compile_output = compile.output().expect("run C compiler");
+    assert!(
+        compile_output.status.success(),
+        "node-result C conformance compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile_output.stdout),
+        String::from_utf8_lossy(&compile_output.stderr)
+    );
+
+    let run_output = Command::new(&exe_path)
+        .arg(&task_path)
+        .arg(&valid_result_path)
+        .arg(&invalid_result_path)
+        .output()
+        .expect("run node-result C conformance executable");
+    assert!(
+        run_output.status.success(),
+        "node-result C conformance executable failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&run_output.stdout),
         String::from_utf8_lossy(&run_output.stderr)
     );
