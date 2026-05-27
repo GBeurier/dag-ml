@@ -111,6 +111,43 @@ fn cli_compiles_pipeline_dsl_to_graph() {
         artifact["graph"]["search_space_fingerprint"],
         artifact["generation_fingerprint"]
     );
+
+    let shape_artifact_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_compiled_dsl_shape_artifact_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let compile_shape_artifact = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "compile-pipeline-dsl",
+            "--dsl",
+            "examples/pipeline_dsl_shape_plan.json",
+            "--artifact",
+            "--output",
+            shape_artifact_path
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli compile-pipeline-dsl --artifact for shape plan");
+    assert!(
+        compile_shape_artifact.status.success(),
+        "compile-pipeline-dsl --artifact shape plan failed: {}",
+        String::from_utf8_lossy(&compile_shape_artifact.stderr)
+    );
+    let shape_artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&shape_artifact_path).expect("compiled DSL shape artifact was written"),
+    )
+    .expect("compiled DSL shape artifact is JSON");
+    assert_eq!(
+        shape_artifact["shape_plans"]["augment:synthetic"]["augmentation_policy"]["sample_scope"],
+        "train_only"
+    );
+    assert_eq!(
+        shape_artifact["shape_plans"]["transform:select"]["selection_policy"]["scope"],
+        "supervised_fold_train"
+    );
 }
 
 #[test]

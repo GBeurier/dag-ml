@@ -36,9 +36,11 @@ mostly richer fixtures and replacing smoke adapters with production host
 controllers. A first strict JSON `PipelineDslSpec` compiler now lowers linear
 transform/augmentation/model steps, branch model variants and heterogeneous
 prediction-plus-original-data merge models into canonical `GraphSpec`. It also
-extracts node-parameter variants into `GenerationSpec` and binds the resulting
-fingerprint into the graph. The remaining DSL work is compatibility with the
-broader nirs4all surface and richer search-space syntax.
+extracts node-parameter variants into `GenerationSpec`, validates per-node
+data/model shape plans, requires explicit shape plans for augmentation steps,
+and binds the resulting search-space fingerprint into the graph. The remaining
+DSL work is compatibility with the broader nirs4all surface and richer
+search-space syntax.
 
 ## Phase 2: Host Controllers
 
