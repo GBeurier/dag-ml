@@ -96,12 +96,16 @@ pub enum PipelineDslStep {
     YTransform(PipelineDslOperatorStep),
     Tag(PipelineDslOperatorStep),
     Exclude(PipelineDslOperatorStep),
+    Filter(PipelineDslOperatorStep),
+    SampleFilter(PipelineDslOperatorStep),
     Augmentation(PipelineDslOperatorStep),
     FeatureAugmentation(PipelineDslOperatorStep),
     SampleAugmentation(PipelineDslOperatorStep),
     ConcatTransform(PipelineDslConcatTransformStep),
     Model(PipelineDslOperatorStep),
     Branch(PipelineDslBranchStep),
+    Generator(PipelineDslGeneratorStep),
+    Sequential(PipelineDslSequenceStep),
     Merge(PipelineDslMergeStep),
     MergeModel(PipelineDslMergeModelStep),
     Chart(PipelineDslOperatorStep),
@@ -289,6 +293,65 @@ pub struct PipelineDslBranch {
     pub metadata: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub steps: Vec<PipelineDslStep>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslSequenceStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<NodeId>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub steps: Vec<PipelineDslStep>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslGeneratorStep {
+    pub id: NodeId,
+    #[serde(default)]
+    pub mode: PipelineDslGeneratorMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<PipelineDslBranch>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<PipelineDslGeneratorStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pick: Option<PipelineDslSelectionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrange: Option<PipelineDslSelectionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then_pick: Option<PipelineDslSelectionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then_arrange: Option<PipelineDslSelectionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineDslGeneratorMode {
+    #[default]
+    Or,
+    Cartesian,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslGeneratorStage {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub branches: Vec<PipelineDslBranch>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PipelineDslSelectionSpec {
+    Single(usize),
+    Range([usize; 2]),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -570,6 +633,14 @@ enum MergeOutputSource {
     Prediction(PredictionSource),
 }
 
+#[derive(Clone, Debug)]
+struct GeneratedSequence {
+    id: String,
+    labels: Vec<String>,
+    steps: Vec<PipelineDslStep>,
+    metadata: BTreeMap<String, serde_json::Value>,
+}
+
 impl PipelineCompiler {
     fn compile_top_level_step(
         &mut self,
@@ -578,61 +649,146 @@ impl PipelineCompiler {
         current_data: &mut DataSource,
         pending_predictions: &mut Vec<PredictionSource>,
     ) -> Result<()> {
+        self.compile_sequence_step(
+            step,
+            external_data,
+            current_data,
+            pending_predictions,
+            None,
+            BTreeMap::new(),
+        )
+    }
+
+    fn compile_sequence_step(
+        &mut self,
+        step: &PipelineDslStep,
+        original_data: &DataSource,
+        current_data: &mut DataSource,
+        pending_predictions: &mut Vec<PredictionSource>,
+        branch_id: Option<&str>,
+        extra_metadata: BTreeMap<String, serde_json::Value>,
+    ) -> Result<()> {
         match step {
             PipelineDslStep::Transform(step) => {
-                *current_data =
-                    self.compile_data_operator(NodeKind::Transform, step, current_data)?;
+                *current_data = self.compile_data_operator_with_extra(
+                    NodeKind::Transform,
+                    step,
+                    current_data,
+                    extra_metadata,
+                )?;
                 pending_predictions.clear();
                 Ok(())
             }
             PipelineDslStep::YTransform(step) => {
-                self.compile_y_transform(step)?;
+                self.compile_y_transform_with_extra(step, extra_metadata)?;
                 pending_predictions.clear();
                 Ok(())
             }
             PipelineDslStep::Tag(step) => {
-                *current_data = self.compile_data_operator(NodeKind::Tag, step, current_data)?;
+                *current_data = self.compile_data_operator_with_extra(
+                    NodeKind::Tag,
+                    step,
+                    current_data,
+                    extra_metadata,
+                )?;
                 pending_predictions.clear();
                 Ok(())
             }
             PipelineDslStep::Exclude(step) => {
+                *current_data = self.compile_data_operator_with_extra(
+                    NodeKind::Exclude,
+                    step,
+                    current_data,
+                    extra_metadata,
+                )?;
+                pending_predictions.clear();
+                Ok(())
+            }
+            PipelineDslStep::Filter(step) => {
                 *current_data =
-                    self.compile_data_operator(NodeKind::Exclude, step, current_data)?;
+                    self.compile_filter_operator("filter", step, current_data, extra_metadata)?;
+                pending_predictions.clear();
+                Ok(())
+            }
+            PipelineDslStep::SampleFilter(step) => {
+                *current_data =
+                    self.compile_filter_operator("sample", step, current_data, extra_metadata)?;
                 pending_predictions.clear();
                 Ok(())
             }
             PipelineDslStep::Augmentation(step) => {
-                *current_data =
-                    self.compile_data_operator(NodeKind::Augmentation, step, current_data)?;
+                *current_data = self.compile_data_operator_with_extra(
+                    NodeKind::Augmentation,
+                    step,
+                    current_data,
+                    extra_metadata,
+                )?;
                 pending_predictions.clear();
                 Ok(())
             }
             PipelineDslStep::FeatureAugmentation(step) => {
-                *current_data =
-                    self.compile_augmentation_operator("feature", step, current_data)?;
+                *current_data = self.compile_augmentation_operator_with_extra(
+                    "feature",
+                    step,
+                    current_data,
+                    extra_metadata,
+                )?;
                 pending_predictions.clear();
                 Ok(())
             }
             PipelineDslStep::SampleAugmentation(step) => {
-                *current_data = self.compile_augmentation_operator("sample", step, current_data)?;
+                *current_data = self.compile_augmentation_operator_with_extra(
+                    "sample",
+                    step,
+                    current_data,
+                    extra_metadata,
+                )?;
                 pending_predictions.clear();
                 Ok(())
             }
             PipelineDslStep::ConcatTransform(step) => {
-                *current_data = self.compile_concat_transform(step, current_data)?;
+                *current_data =
+                    self.compile_concat_transform_with_extra(step, current_data, extra_metadata)?;
                 pending_predictions.clear();
                 Ok(())
             }
             PipelineDslStep::Model(step) => {
-                pending_predictions.push(self.compile_model(step, current_data, None)?);
+                pending_predictions.push(self.compile_model_with_extra(
+                    step,
+                    current_data,
+                    branch_id,
+                    extra_metadata,
+                )?);
                 Ok(())
             }
             PipelineDslStep::Branch(step) => {
-                *pending_predictions = self.compile_branch(step, current_data)?;
+                *pending_predictions =
+                    self.compile_branch_with_extra(step, current_data, extra_metadata)?;
+                Ok(())
+            }
+            PipelineDslStep::Generator(step) => {
+                *pending_predictions =
+                    self.compile_generator_with_extra(step, current_data, extra_metadata)?;
+                Ok(())
+            }
+            PipelineDslStep::Sequential(step) => {
+                self.compile_sequence_container(
+                    step,
+                    original_data,
+                    current_data,
+                    pending_predictions,
+                    branch_id,
+                    extra_metadata,
+                )?;
                 Ok(())
             }
             PipelineDslStep::Merge(step) => {
-                match self.compile_merge(step, pending_predictions, external_data)? {
+                match self.compile_merge_with_extra(
+                    step,
+                    pending_predictions,
+                    original_data,
+                    extra_metadata,
+                )? {
                     MergeOutputSource::Data(data) => {
                         *current_data = data;
                         pending_predictions.clear();
@@ -645,24 +801,77 @@ impl PipelineCompiler {
                 Ok(())
             }
             PipelineDslStep::MergeModel(step) => {
-                let prediction =
-                    self.compile_merge_model(step, pending_predictions, external_data)?;
+                let prediction = self.compile_merge_model_with_extra(
+                    step,
+                    pending_predictions,
+                    original_data,
+                    extra_metadata,
+                )?;
                 pending_predictions.clear();
                 pending_predictions.push(prediction);
                 Ok(())
             }
             PipelineDslStep::Chart(step) => {
-                *current_data = self.compile_data_operator(NodeKind::Chart, step, current_data)?;
+                *current_data = self.compile_data_operator_with_extra(
+                    NodeKind::Chart,
+                    step,
+                    current_data,
+                    extra_metadata,
+                )?;
                 pending_predictions.clear();
                 Ok(())
             }
         }
     }
 
-    fn compile_branch(
+    fn compile_sequence_container(
+        &mut self,
+        step: &PipelineDslSequenceStep,
+        original_data: &DataSource,
+        current_data: &mut DataSource,
+        pending_predictions: &mut Vec<PredictionSource>,
+        branch_id: Option<&str>,
+        mut extra_metadata: BTreeMap<String, serde_json::Value>,
+    ) -> Result<()> {
+        if step.steps.is_empty() {
+            return Err(DagMlError::GraphValidation(
+                "pipeline DSL sequential step has no child steps".to_string(),
+            ));
+        }
+        if let Some(sequence_id) = &step.id {
+            extra_metadata.insert(
+                "dsl_sequence".to_string(),
+                serde_json::Value::String(sequence_id.to_string()),
+            );
+        }
+        if !step.metadata.is_empty() {
+            extra_metadata.insert(
+                "dsl_sequence_metadata".to_string(),
+                serde_json::to_value(&step.metadata).map_err(|error| {
+                    DagMlError::GraphValidation(format!(
+                        "failed to serialize pipeline DSL sequential metadata: {error}"
+                    ))
+                })?,
+            );
+        }
+        for child in &step.steps {
+            self.compile_sequence_step(
+                child,
+                original_data,
+                current_data,
+                pending_predictions,
+                branch_id,
+                extra_metadata.clone(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn compile_branch_with_extra(
         &mut self,
         step: &PipelineDslBranchStep,
         current_data: &DataSource,
+        extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<Vec<PredictionSource>> {
         if step.branches.is_empty() {
             return Err(DagMlError::GraphValidation(format!(
@@ -681,114 +890,17 @@ impl PipelineCompiler {
             }
             let mut branch_data = current_data.clone();
             let mut branch_predictions = Vec::new();
-            let branch_metadata = branch_context_metadata(step, branch)?;
+            let mut branch_metadata = branch_context_metadata(step, branch)?;
+            branch_metadata.extend(extra_metadata.clone());
             for branch_step in &branch.steps {
-                match branch_step {
-                    PipelineDslStep::Transform(step) => {
-                        branch_data = self.compile_data_operator_with_extra(
-                            NodeKind::Transform,
-                            step,
-                            &branch_data,
-                            branch_metadata.clone(),
-                        )?;
-                    }
-                    PipelineDslStep::YTransform(step) => {
-                        self.compile_y_transform_with_extra(step, branch_metadata.clone())?;
-                    }
-                    PipelineDslStep::Tag(step) => {
-                        branch_data = self.compile_data_operator_with_extra(
-                            NodeKind::Tag,
-                            step,
-                            &branch_data,
-                            branch_metadata.clone(),
-                        )?;
-                    }
-                    PipelineDslStep::Exclude(step) => {
-                        branch_data = self.compile_data_operator_with_extra(
-                            NodeKind::Exclude,
-                            step,
-                            &branch_data,
-                            branch_metadata.clone(),
-                        )?;
-                    }
-                    PipelineDslStep::Augmentation(step) => {
-                        branch_data = self.compile_data_operator_with_extra(
-                            NodeKind::Augmentation,
-                            step,
-                            &branch_data,
-                            branch_metadata.clone(),
-                        )?;
-                    }
-                    PipelineDslStep::FeatureAugmentation(step) => {
-                        branch_data = self.compile_augmentation_operator_with_extra(
-                            "feature",
-                            step,
-                            &branch_data,
-                            branch_metadata.clone(),
-                        )?;
-                    }
-                    PipelineDslStep::SampleAugmentation(step) => {
-                        branch_data = self.compile_augmentation_operator_with_extra(
-                            "sample",
-                            step,
-                            &branch_data,
-                            branch_metadata.clone(),
-                        )?;
-                    }
-                    PipelineDslStep::ConcatTransform(step) => {
-                        branch_data = self.compile_concat_transform_with_extra(
-                            step,
-                            &branch_data,
-                            branch_metadata.clone(),
-                        )?;
-                    }
-                    PipelineDslStep::Model(step) => {
-                        branch_predictions.push(self.compile_model_with_extra(
-                            step,
-                            &branch_data,
-                            Some(&branch.id),
-                            branch_metadata.clone(),
-                        )?);
-                    }
-                    PipelineDslStep::Branch(step) => {
-                        branch_predictions.extend(self.compile_branch(step, &branch_data)?);
-                    }
-                    PipelineDslStep::Merge(step) => {
-                        match self.compile_merge_with_extra(
-                            step,
-                            &branch_predictions,
-                            current_data,
-                            branch_metadata.clone(),
-                        )? {
-                            MergeOutputSource::Data(data) => {
-                                branch_data = data;
-                                branch_predictions.clear();
-                            }
-                            MergeOutputSource::Prediction(prediction) => {
-                                branch_predictions.clear();
-                                branch_predictions.push(prediction);
-                            }
-                        }
-                    }
-                    PipelineDslStep::MergeModel(step) => {
-                        let prediction = self.compile_merge_model_with_extra(
-                            step,
-                            &branch_predictions,
-                            current_data,
-                            branch_metadata.clone(),
-                        )?;
-                        branch_predictions.clear();
-                        branch_predictions.push(prediction);
-                    }
-                    PipelineDslStep::Chart(step) => {
-                        branch_data = self.compile_data_operator_with_extra(
-                            NodeKind::Chart,
-                            step,
-                            &branch_data,
-                            branch_metadata.clone(),
-                        )?;
-                    }
-                }
+                self.compile_sequence_step(
+                    branch_step,
+                    current_data,
+                    &mut branch_data,
+                    &mut branch_predictions,
+                    Some(&branch.id),
+                    branch_metadata.clone(),
+                )?;
             }
             if branch_predictions.is_empty() {
                 return Err(DagMlError::GraphValidation(format!(
@@ -817,6 +929,70 @@ impl PipelineCompiler {
         Ok(predictions)
     }
 
+    fn compile_generator_with_extra(
+        &mut self,
+        step: &PipelineDslGeneratorStep,
+        current_data: &DataSource,
+        extra_metadata: BTreeMap<String, serde_json::Value>,
+    ) -> Result<Vec<PredictionSource>> {
+        let choices = expand_generator_sequences(step)?;
+        if choices.is_empty() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generator `{}` produced no choices",
+                step.id
+            )));
+        }
+        let mut predictions = Vec::new();
+        for (choice_index, choice) in choices.into_iter().enumerate() {
+            let choice = namespace_generated_sequence(step, choice, choice_index)?;
+            validate_branch_id(&choice.id)?;
+            if choice.steps.is_empty() {
+                return Err(DagMlError::GraphValidation(format!(
+                    "pipeline DSL generator `{}` choice `{}` has no steps",
+                    step.id, choice.id
+                )));
+            }
+            let mut choice_data = current_data.clone();
+            let mut choice_predictions = Vec::new();
+            let mut choice_metadata = generator_choice_metadata(step, &choice)?;
+            choice_metadata.extend(extra_metadata.clone());
+            for choice_step in &choice.steps {
+                self.compile_sequence_step(
+                    choice_step,
+                    current_data,
+                    &mut choice_data,
+                    &mut choice_predictions,
+                    Some(&choice.id),
+                    choice_metadata.clone(),
+                )?;
+            }
+            if choice_predictions.is_empty() {
+                return Err(DagMlError::GraphValidation(format!(
+                    "pipeline DSL generator `{}` choice `{}` must produce at least one model or merge prediction",
+                    step.id, choice.id
+                )));
+            }
+            let prediction_count = choice_predictions.len();
+            for (prediction_index, prediction) in choice_predictions.into_iter().enumerate() {
+                let input_name = if prediction_count == 1 {
+                    format!("{}_oof", branch_input_prefix(&choice.id, choice_index))
+                } else {
+                    branch_prediction_input_name(
+                        &choice.id,
+                        choice_index,
+                        prediction_index,
+                        &prediction.node_id,
+                    )
+                };
+                predictions.push(PredictionSource {
+                    input_name,
+                    ..prediction
+                });
+            }
+        }
+        Ok(predictions)
+    }
+
     fn compile_data_operator(
         &mut self,
         kind: NodeKind,
@@ -826,18 +1002,18 @@ impl PipelineCompiler {
         self.compile_data_operator_with_extra(kind, step, input, BTreeMap::new())
     }
 
-    fn compile_augmentation_operator(
+    fn compile_filter_operator(
         &mut self,
-        augmentation_kind: &str,
+        filter_kind: &str,
         step: &PipelineDslOperatorStep,
         input: &DataSource,
+        mut extra: BTreeMap<String, serde_json::Value>,
     ) -> Result<DataSource> {
-        self.compile_augmentation_operator_with_extra(
-            augmentation_kind,
-            step,
-            input,
-            BTreeMap::new(),
-        )
+        extra.insert(
+            "dsl_filter_kind".to_string(),
+            serde_json::Value::String(filter_kind.to_string()),
+        );
+        self.compile_data_operator_with_extra(NodeKind::Exclude, step, input, extra)
     }
 
     fn compile_augmentation_operator_with_extra(
@@ -897,10 +1073,6 @@ impl PipelineCompiler {
         })
     }
 
-    fn compile_y_transform(&mut self, step: &PipelineDslOperatorStep) -> Result<()> {
-        self.compile_y_transform_with_extra(step, BTreeMap::new())
-    }
-
     fn compile_y_transform_with_extra(
         &mut self,
         step: &PipelineDslOperatorStep,
@@ -923,14 +1095,6 @@ impl PipelineCompiler {
         self.push_node(node)?;
         self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
         self.collect_shape_plan(&step.id, step.shape.as_ref())
-    }
-
-    fn compile_concat_transform(
-        &mut self,
-        step: &PipelineDslConcatTransformStep,
-        input: &DataSource,
-    ) -> Result<DataSource> {
-        self.compile_concat_transform_with_extra(step, input, BTreeMap::new())
     }
 
     fn compile_concat_transform_with_extra(
@@ -993,15 +1157,6 @@ impl PipelineCompiler {
         })
     }
 
-    fn compile_model(
-        &mut self,
-        step: &PipelineDslOperatorStep,
-        input: &DataSource,
-        branch_id: Option<&str>,
-    ) -> Result<PredictionSource> {
-        self.compile_model_with_extra(step, input, branch_id, BTreeMap::new())
-    }
-
     fn compile_model_with_extra(
         &mut self,
         step: &PipelineDslOperatorStep,
@@ -1033,15 +1188,6 @@ impl PipelineCompiler {
             input_name: "oof".to_string(),
             branch_id: branch_id.map(str::to_string),
         })
-    }
-
-    fn compile_merge(
-        &mut self,
-        step: &PipelineDslMergeStep,
-        predictions: &[PredictionSource],
-        original_data: &DataSource,
-    ) -> Result<MergeOutputSource> {
-        self.compile_merge_with_extra(step, predictions, original_data, BTreeMap::new())
     }
 
     fn compile_merge_with_extra(
@@ -1167,15 +1313,6 @@ impl PipelineCompiler {
                 representation,
             }))
         }
-    }
-
-    fn compile_merge_model(
-        &mut self,
-        step: &PipelineDslMergeModelStep,
-        predictions: &[PredictionSource],
-        external_data: &DataSource,
-    ) -> Result<PredictionSource> {
-        self.compile_merge_model_with_extra(step, predictions, external_data, BTreeMap::new())
     }
 
     fn compile_merge_model_with_extra(
@@ -2310,6 +2447,583 @@ fn branch_id_from_metadata(metadata: &BTreeMap<String, serde_json::Value>) -> Op
         .get("dsl_branch")
         .and_then(|value| value.as_str())
         .map(str::to_string)
+}
+
+fn expand_generator_sequences(step: &PipelineDslGeneratorStep) -> Result<Vec<GeneratedSequence>> {
+    if step.count == Some(0) {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` count cannot be zero",
+            step.id
+        )));
+    }
+    match step.mode {
+        PipelineDslGeneratorMode::Or => expand_or_generator_sequences(step),
+        PipelineDslGeneratorMode::Cartesian => expand_cartesian_generator_sequences(step),
+    }
+}
+
+fn expand_or_generator_sequences(
+    step: &PipelineDslGeneratorStep,
+) -> Result<Vec<GeneratedSequence>> {
+    if !step.stages.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` uses mode `or` but declares cartesian stages",
+            step.id
+        )));
+    }
+    if step.branches.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` has no branches",
+            step.id
+        )));
+    }
+    let options = step
+        .branches
+        .iter()
+        .enumerate()
+        .map(|(index, branch)| {
+            validate_branch_id(&branch.id)?;
+            Ok(GeneratedSequence {
+                id: generator_choice_id(&step.id, index),
+                labels: vec![branch.id.clone()],
+                steps: branch.steps.clone(),
+                metadata: branch.metadata.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let choices = if let Some(sizes) = selection_sizes(step.pick)? {
+        generated_pick_sequences(&options, &step.id, "pick", &sizes, step.count)?
+    } else if let Some(sizes) = selection_sizes(step.arrange)? {
+        generated_arrange_sequences(&options, &step.id, "arrange", &sizes, step.count)?
+    } else {
+        truncate_generated_sequences(options, step.count)
+    };
+
+    let choices = if let Some(sizes) = selection_sizes(step.then_pick)? {
+        generated_pick_sequences(&choices, &step.id, "then_pick", &sizes, step.count)?
+    } else if let Some(sizes) = selection_sizes(step.then_arrange)? {
+        generated_arrange_sequences(&choices, &step.id, "then_arrange", &sizes, step.count)?
+    } else {
+        choices
+    };
+    Ok(truncate_generated_sequences(choices, step.count))
+}
+
+fn expand_cartesian_generator_sequences(
+    step: &PipelineDslGeneratorStep,
+) -> Result<Vec<GeneratedSequence>> {
+    if !step.branches.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` uses mode `cartesian` but declares direct branches",
+            step.id
+        )));
+    }
+    if step.stages.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` has no cartesian stages",
+            step.id
+        )));
+    }
+    if step.pick.is_some()
+        || step.arrange.is_some()
+        || step.then_pick.is_some()
+        || step.then_arrange.is_some()
+    {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` cannot combine cartesian mode with pick/arrange selectors",
+            step.id
+        )));
+    }
+
+    let mut stage_options = Vec::<Vec<GeneratedSequence>>::new();
+    for (stage_index, stage) in step.stages.iter().enumerate() {
+        validate_branch_id(&stage.id)?;
+        if stage.branches.is_empty() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generator `{}` stage `{}` has no branches",
+                step.id, stage.id
+            )));
+        }
+        let mut options = Vec::new();
+        for branch in &stage.branches {
+            validate_branch_id(&branch.id)?;
+            let mut metadata = branch.metadata.clone();
+            if let Some(selector) = &stage.selector {
+                metadata.insert("dsl_generator_stage_selector".to_string(), selector.clone());
+            }
+            if !stage.metadata.is_empty() {
+                metadata.insert(
+                    "dsl_generator_stage_metadata".to_string(),
+                    serde_json::to_value(&stage.metadata).map_err(|error| {
+                        DagMlError::GraphValidation(format!(
+                            "failed to serialize pipeline DSL generator `{}` stage `{}` metadata: {error}",
+                            step.id, stage.id
+                        ))
+                    })?,
+                );
+            }
+            options.push(GeneratedSequence {
+                id: format!("{stage_index}:{}", branch.id),
+                labels: vec![format!("{}:{}", stage.id, branch.id)],
+                steps: branch.steps.clone(),
+                metadata,
+            });
+        }
+        stage_options.push(options);
+    }
+
+    let mut rows = Vec::<Vec<usize>>::new();
+    build_cartesian_indices(&stage_options, 0, &mut Vec::new(), &mut rows, step.count);
+    let mut choices = Vec::with_capacity(rows.len());
+    for (choice_index, row) in rows.into_iter().enumerate() {
+        let selected = row
+            .into_iter()
+            .enumerate()
+            .map(|(stage_index, option_index)| stage_options[stage_index][option_index].clone())
+            .collect::<Vec<_>>();
+        choices.push(merge_generated_sequence(
+            generator_choice_id(&step.id, choice_index),
+            selected,
+        )?);
+    }
+    Ok(choices)
+}
+
+fn generated_pick_sequences(
+    options: &[GeneratedSequence],
+    generator_id: &NodeId,
+    mode: &str,
+    sizes: &[usize],
+    count: Option<usize>,
+) -> Result<Vec<GeneratedSequence>> {
+    let mut selections = Vec::<Vec<usize>>::new();
+    for size in sizes {
+        if *size == 0 || *size > options.len() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generator `{generator_id}` {mode} size {size} is outside 1..={}",
+                options.len()
+            )));
+        }
+        build_combinations(
+            options.len(),
+            *size,
+            0,
+            &mut Vec::new(),
+            &mut selections,
+            count,
+        );
+    }
+    selections
+        .into_iter()
+        .enumerate()
+        .map(|(index, selection)| {
+            let selected = selection
+                .into_iter()
+                .map(|option_index| options[option_index].clone())
+                .collect::<Vec<_>>();
+            merge_generated_sequence(generator_choice_id(generator_id, index), selected)
+        })
+        .collect()
+}
+
+fn generated_arrange_sequences(
+    options: &[GeneratedSequence],
+    generator_id: &NodeId,
+    mode: &str,
+    sizes: &[usize],
+    count: Option<usize>,
+) -> Result<Vec<GeneratedSequence>> {
+    let mut selections = Vec::<Vec<usize>>::new();
+    for size in sizes {
+        if *size == 0 || *size > options.len() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generator `{generator_id}` {mode} size {size} is outside 1..={}",
+                options.len()
+            )));
+        }
+        build_permutations(
+            options.len(),
+            *size,
+            &mut BTreeSet::new(),
+            &mut Vec::new(),
+            &mut selections,
+            count,
+        );
+    }
+    selections
+        .into_iter()
+        .enumerate()
+        .map(|(index, selection)| {
+            let selected = selection
+                .into_iter()
+                .map(|option_index| options[option_index].clone())
+                .collect::<Vec<_>>();
+            merge_generated_sequence(generator_choice_id(generator_id, index), selected)
+        })
+        .collect()
+}
+
+fn merge_generated_sequence(
+    id: String,
+    sequences: Vec<GeneratedSequence>,
+) -> Result<GeneratedSequence> {
+    if sequences.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generated sequence `{id}` has no selected options"
+        )));
+    }
+    let mut labels = Vec::new();
+    let mut steps = Vec::new();
+    let mut metadata = BTreeMap::new();
+    for sequence in sequences {
+        labels.extend(sequence.labels);
+        steps.extend(sequence.steps);
+        if !sequence.metadata.is_empty() {
+            metadata.insert(
+                format!("option:{}", metadata.len()),
+                serde_json::to_value(sequence.metadata).map_err(|error| {
+                    DagMlError::GraphValidation(format!(
+                        "failed to serialize generated sequence `{id}` metadata: {error}"
+                    ))
+                })?,
+            );
+        }
+    }
+    Ok(GeneratedSequence {
+        id,
+        labels,
+        steps,
+        metadata,
+    })
+}
+
+fn truncate_generated_sequences(
+    mut sequences: Vec<GeneratedSequence>,
+    count: Option<usize>,
+) -> Vec<GeneratedSequence> {
+    if let Some(limit) = count {
+        sequences.truncate(limit);
+    }
+    sequences
+}
+
+fn build_cartesian_indices<T>(
+    stages: &[Vec<T>],
+    stage_index: usize,
+    current: &mut Vec<usize>,
+    rows: &mut Vec<Vec<usize>>,
+    count: Option<usize>,
+) {
+    if count.is_some_and(|limit| rows.len() >= limit) {
+        return;
+    }
+    if stage_index == stages.len() {
+        rows.push(current.clone());
+        return;
+    }
+    for option_index in 0..stages[stage_index].len() {
+        current.push(option_index);
+        build_cartesian_indices(stages, stage_index + 1, current, rows, count);
+        current.pop();
+        if count.is_some_and(|limit| rows.len() >= limit) {
+            break;
+        }
+    }
+}
+
+fn selection_sizes(selection: Option<PipelineDslSelectionSpec>) -> Result<Option<Vec<usize>>> {
+    selection
+        .map(|selection| match selection {
+            PipelineDslSelectionSpec::Single(size) => {
+                if size == 0 {
+                    return Err(DagMlError::GraphValidation(
+                        "pipeline DSL generator selection size cannot be zero".to_string(),
+                    ));
+                }
+                Ok(vec![size])
+            }
+            PipelineDslSelectionSpec::Range([start, stop]) => {
+                if start == 0 || stop == 0 || start > stop {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "pipeline DSL generator selection range [{start}, {stop}] is invalid"
+                    )));
+                }
+                Ok((start..=stop).collect())
+            }
+        })
+        .transpose()
+}
+
+fn generator_choice_id(generator_id: &NodeId, choice_index: usize) -> String {
+    format!("{generator_id}:choice{choice_index}")
+}
+
+fn generator_choice_metadata(
+    step: &PipelineDslGeneratorStep,
+    choice: &GeneratedSequence,
+) -> Result<BTreeMap<String, serde_json::Value>> {
+    let mut metadata = step.metadata.clone();
+    metadata.insert(
+        "dsl_generator".to_string(),
+        serde_json::Value::String(step.id.to_string()),
+    );
+    metadata.insert(
+        "dsl_generator_mode".to_string(),
+        serde_json::to_value(step.mode).map_err(|error| {
+            DagMlError::GraphValidation(format!(
+                "failed to serialize pipeline DSL generator `{}` mode: {error}",
+                step.id
+            ))
+        })?,
+    );
+    metadata.insert(
+        "dsl_generator_choice".to_string(),
+        serde_json::Value::String(choice.id.clone()),
+    );
+    metadata.insert(
+        "dsl_generator_labels".to_string(),
+        serde_json::to_value(&choice.labels).map_err(|error| {
+            DagMlError::GraphValidation(format!(
+                "failed to serialize pipeline DSL generator `{}` choice labels: {error}",
+                step.id
+            ))
+        })?,
+    );
+    if !choice.metadata.is_empty() {
+        metadata.insert(
+            "dsl_generator_choice_metadata".to_string(),
+            serde_json::to_value(&choice.metadata).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to serialize pipeline DSL generator `{}` choice metadata: {error}",
+                    step.id
+                ))
+            })?,
+        );
+    }
+    Ok(metadata)
+}
+
+fn namespace_generated_sequence(
+    generator: &PipelineDslGeneratorStep,
+    mut choice: GeneratedSequence,
+    choice_index: usize,
+) -> Result<GeneratedSequence> {
+    let mut node_map = BTreeMap::<NodeId, NodeId>::new();
+    let mut counter = 0usize;
+    for step in &mut choice.steps {
+        namespace_step_ids(generator, choice_index, step, &mut counter, &mut node_map)?;
+    }
+    for step in &mut choice.steps {
+        rewrite_step_node_refs(step, &node_map);
+    }
+    Ok(choice)
+}
+
+fn namespace_step_ids(
+    generator: &PipelineDslGeneratorStep,
+    choice_index: usize,
+    step: &mut PipelineDslStep,
+    counter: &mut usize,
+    node_map: &mut BTreeMap<NodeId, NodeId>,
+) -> Result<()> {
+    match step {
+        PipelineDslStep::Transform(step)
+        | PipelineDslStep::YTransform(step)
+        | PipelineDslStep::Tag(step)
+        | PipelineDslStep::Exclude(step)
+        | PipelineDslStep::Filter(step)
+        | PipelineDslStep::SampleFilter(step)
+        | PipelineDslStep::Augmentation(step)
+        | PipelineDslStep::FeatureAugmentation(step)
+        | PipelineDslStep::SampleAugmentation(step)
+        | PipelineDslStep::Model(step)
+        | PipelineDslStep::Chart(step) => {
+            namespace_operator_step_id(generator, choice_index, step, counter, node_map)?;
+        }
+        PipelineDslStep::ConcatTransform(step) => {
+            namespace_node_id_field(generator, choice_index, &mut step.id, counter, node_map)?;
+            for branch in &mut step.branches {
+                for branch_step in &mut branch.steps {
+                    namespace_operator_step_id(
+                        generator,
+                        choice_index,
+                        branch_step,
+                        counter,
+                        node_map,
+                    )?;
+                }
+            }
+        }
+        PipelineDslStep::Branch(step) => {
+            for branch in &mut step.branches {
+                for branch_step in &mut branch.steps {
+                    namespace_step_ids(generator, choice_index, branch_step, counter, node_map)?;
+                }
+            }
+        }
+        PipelineDslStep::Generator(step) => {
+            namespace_node_id_field(generator, choice_index, &mut step.id, counter, node_map)?;
+            for branch in &mut step.branches {
+                for branch_step in &mut branch.steps {
+                    namespace_step_ids(generator, choice_index, branch_step, counter, node_map)?;
+                }
+            }
+            for stage in &mut step.stages {
+                for branch in &mut stage.branches {
+                    for branch_step in &mut branch.steps {
+                        namespace_step_ids(
+                            generator,
+                            choice_index,
+                            branch_step,
+                            counter,
+                            node_map,
+                        )?;
+                    }
+                }
+            }
+        }
+        PipelineDslStep::Sequential(step) => {
+            if let Some(id) = &mut step.id {
+                namespace_node_id_field(generator, choice_index, id, counter, node_map)?;
+            }
+            for child in &mut step.steps {
+                namespace_step_ids(generator, choice_index, child, counter, node_map)?;
+            }
+        }
+        PipelineDslStep::Merge(step) => {
+            namespace_node_id_field(generator, choice_index, &mut step.id, counter, node_map)?;
+        }
+        PipelineDslStep::MergeModel(step) => {
+            namespace_node_id_field(generator, choice_index, &mut step.id, counter, node_map)?;
+        }
+    }
+    Ok(())
+}
+
+fn namespace_operator_step_id(
+    generator: &PipelineDslGeneratorStep,
+    choice_index: usize,
+    step: &mut PipelineDslOperatorStep,
+    counter: &mut usize,
+    node_map: &mut BTreeMap<NodeId, NodeId>,
+) -> Result<()> {
+    namespace_node_id_field(generator, choice_index, &mut step.id, counter, node_map)
+}
+
+fn namespace_node_id_field(
+    generator: &PipelineDslGeneratorStep,
+    choice_index: usize,
+    node_id: &mut NodeId,
+    counter: &mut usize,
+    node_map: &mut BTreeMap<NodeId, NodeId>,
+) -> Result<()> {
+    let original = node_id.clone();
+    if node_map.contains_key(&original) {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` choice `{}` reuses node id `{original}`; generated choices require unique node ids inside each expanded sequence",
+            generator.id, choice_index
+        )));
+    }
+    let next = namespaced_generated_node_id(&generator.id, choice_index, *counter, &original)?;
+    *counter += 1;
+    *node_id = next.clone();
+    node_map.insert(original, next);
+    Ok(())
+}
+
+fn namespaced_generated_node_id(
+    generator_id: &NodeId,
+    choice_index: usize,
+    node_index: usize,
+    original: &NodeId,
+) -> Result<NodeId> {
+    let generator = sanitized_id_fragment(generator_id.as_str(), 32);
+    let suffix = sanitized_id_fragment(original.as_str(), 28);
+    NodeId::new(format!(
+        "gen:{generator}:c{choice_index}:n{node_index}.{suffix}"
+    ))
+}
+
+fn sanitized_id_fragment(input: &str, max_len: usize) -> String {
+    let sanitized = sanitize_generation_label(input);
+    let mut fragment = sanitized.chars().take(max_len).collect::<String>();
+    if fragment.is_empty() {
+        fragment = "x".to_string();
+    }
+    fragment
+}
+
+fn rewrite_step_node_refs(step: &mut PipelineDslStep, node_map: &BTreeMap<NodeId, NodeId>) {
+    match step {
+        PipelineDslStep::Transform(_)
+        | PipelineDslStep::YTransform(_)
+        | PipelineDslStep::Tag(_)
+        | PipelineDslStep::Exclude(_)
+        | PipelineDslStep::Filter(_)
+        | PipelineDslStep::SampleFilter(_)
+        | PipelineDslStep::Augmentation(_)
+        | PipelineDslStep::FeatureAugmentation(_)
+        | PipelineDslStep::SampleAugmentation(_)
+        | PipelineDslStep::Model(_)
+        | PipelineDslStep::Chart(_) => {}
+        PipelineDslStep::ConcatTransform(step) => {
+            for branch in &mut step.branches {
+                for branch_step in &mut branch.steps {
+                    rewrite_operator_step_refs(branch_step, node_map);
+                }
+            }
+        }
+        PipelineDslStep::Branch(step) => {
+            for branch in &mut step.branches {
+                for branch_step in &mut branch.steps {
+                    rewrite_step_node_refs(branch_step, node_map);
+                }
+            }
+        }
+        PipelineDslStep::Generator(step) => {
+            for branch in &mut step.branches {
+                for branch_step in &mut branch.steps {
+                    rewrite_step_node_refs(branch_step, node_map);
+                }
+            }
+            for stage in &mut step.stages {
+                for branch in &mut stage.branches {
+                    for branch_step in &mut branch.steps {
+                        rewrite_step_node_refs(branch_step, node_map);
+                    }
+                }
+            }
+        }
+        PipelineDslStep::Sequential(step) => {
+            for child in &mut step.steps {
+                rewrite_step_node_refs(child, node_map);
+            }
+        }
+        PipelineDslStep::Merge(step) => {
+            rewrite_merge_selectors(&mut step.selectors, node_map);
+        }
+        PipelineDslStep::MergeModel(_) => {}
+    }
+}
+
+fn rewrite_operator_step_refs(
+    _step: &mut PipelineDslOperatorStep,
+    _node_map: &BTreeMap<NodeId, NodeId>,
+) {
+}
+
+fn rewrite_merge_selectors(
+    selectors: &mut [PipelineDslMergeSelector],
+    node_map: &BTreeMap<NodeId, NodeId>,
+) {
+    for selector in selectors {
+        if let Some(model) = &selector.model {
+            if let Some(rewritten) = node_map.get(model) {
+                selector.model = Some(rewritten.clone());
+            }
+        }
+    }
 }
 
 fn validate_merge_selectors(
@@ -3690,6 +4404,253 @@ mod tests {
         );
         assert_eq!(compiled.generation.strategy, GenerationStrategy::None);
         compiled.graph.validate().unwrap();
+    }
+
+    #[test]
+    fn compiles_sequential_filter_and_or_generator_surface() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-generator-or-parity",
+  "steps": [
+    {
+      "kind": "sequential",
+      "id": "seq:pre",
+      "steps": [
+        {
+          "kind": "sample_filter",
+          "id": "filter:y_outlier",
+          "operator": {"class": "nirs4all.operators.filters.YOutlierFilter"},
+          "params": {"mode": "any"}
+        },
+        {
+          "kind": "transform",
+          "id": "transform:scale",
+          "operator": {"class": "sklearn.preprocessing.StandardScaler"}
+        }
+      ]
+    },
+    {
+      "kind": "generator",
+      "id": "generator:model_choices",
+      "mode": "or",
+      "pick": 1,
+      "branches": [
+        {
+          "id": "pls",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "model:pls",
+              "operator": {"class": "sklearn.cross_decomposition.PLSRegression"},
+              "params": {"n_components": 8}
+            }
+          ]
+        },
+        {
+          "id": "rf",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "model:rf",
+              "operator": {"class": "sklearn.ensemble.RandomForestRegressor"},
+              "params": {"n_estimators": 64}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge",
+      "id": "merge:generated",
+      "output_as": "features",
+      "include_original_data": false,
+      "selectors": [
+        {"branch": "generator:model_choices:choice0", "select": "all"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        graph.validate().unwrap();
+        let filter = graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "filter:y_outlier")
+            .unwrap();
+        assert_eq!(filter.kind, NodeKind::Exclude);
+        assert_eq!(filter.metadata["dsl_filter_kind"], "sample");
+
+        let generated_models = graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Model)
+            .collect::<Vec<_>>();
+        assert_eq!(generated_models.len(), 2);
+        assert!(generated_models
+            .iter()
+            .all(|node| node.id.as_str().starts_with("gen:generator_model_choices")));
+        assert!(generated_models.iter().all(|node| {
+            node.metadata
+                .get("dsl_generator")
+                .and_then(|value| value.as_str())
+                == Some("generator:model_choices")
+        }));
+
+        let merge_inputs = graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "merge:generated")
+            .unwrap()
+            .ports
+            .inputs
+            .iter()
+            .map(|port| port.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            merge_inputs,
+            vec![
+                "generator_model_choices_choice0_oof",
+                "generator_model_choices_choice1_oof"
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_cartesian_generator_as_explicit_prediction_choices() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-generator-cartesian-parity",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:cartesian",
+      "mode": "cartesian",
+      "stages": [
+        {
+          "id": "preproc",
+          "branches": [
+            {
+              "id": "snv",
+              "steps": [
+                {
+                  "kind": "transform",
+                  "id": "transform:snv",
+                  "operator": {"class": "nirs4all.operators.transforms.StandardNormalVariate"}
+                }
+              ]
+            },
+            {
+              "id": "msc",
+              "steps": [
+                {
+                  "kind": "transform",
+                  "id": "transform:msc",
+                  "operator": {"class": "nirs4all.operators.transforms.MultiplicativeScatterCorrection"}
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "model",
+          "branches": [
+            {
+              "id": "ridge",
+              "steps": [
+                {
+                  "kind": "model",
+                  "id": "model:ridge",
+                  "operator": {"class": "sklearn.linear_model.Ridge"}
+                }
+              ]
+            },
+            {
+              "id": "lasso",
+              "steps": [
+                {
+                  "kind": "model",
+                  "id": "model:lasso",
+                  "operator": {"class": "sklearn.linear_model.Lasso"}
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge",
+      "id": "merge:cartesian",
+      "output_as": "features",
+      "include_original_data": false
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        graph.validate().unwrap();
+        let models = graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Model)
+            .collect::<Vec<_>>();
+        assert_eq!(models.len(), 4);
+        assert!(models.iter().all(|node| {
+            node.metadata
+                .get("dsl_generator_mode")
+                .and_then(|value| value.as_str())
+                == Some("cartesian")
+        }));
+        let merge = graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "merge:cartesian")
+            .unwrap();
+        assert_eq!(merge.ports.inputs.len(), 4);
+        assert_eq!(
+            graph
+                .edges
+                .iter()
+                .filter(|edge| edge.target.node_id.as_str() == "merge:cartesian")
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn refuses_generator_choice_without_prediction_output() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-generator-bad-choice",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:bad",
+      "branches": [
+        {
+          "id": "transform_only",
+          "steps": [
+            {
+              "kind": "transform",
+              "id": "transform:only",
+              "operator": {"class": "sklearn.preprocessing.StandardScaler"}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = compile_pipeline_dsl(&spec).unwrap_err();
+        assert!(format!("{error}").contains("must produce at least one model or merge prediction"));
     }
 
     #[test]

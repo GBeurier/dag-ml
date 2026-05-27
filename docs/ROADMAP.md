@@ -38,12 +38,15 @@ transform/target-transform/tag/exclude/augmentation/model steps, explicit
 sample and feature augmentation, concat feature fusion, branch model variants,
 multiple models per branch, standalone merge/join nodes and heterogeneous
 prediction-plus-original-data merge models into canonical `GraphSpec`. It also
-extracts node-parameter variants, compact parameter generators (`or`, `range`,
-`log_range`, `grid`, `pick`, `arrange`) and coordinated multi-node override
-dimensions into `GenerationSpec`, validates merge selector scopes and top-k
-contracts against pending branch/model OOF inputs, preserves tuning/train params
-as public DSL metadata, validates per-node data/model shape plans, requires
-explicit shape plans for augmentation steps, and binds the resulting
+supports nirs4all-style sequential containers, sample-filter/filter aliases and
+structural `or`/`cartesian` generator containers by expanding them into
+explicit namespaced OOF-producing choices before downstream merge/selection.
+It extracts node-parameter variants, compact parameter generators (`or`,
+`range`, `log_range`, `grid`, `pick`, `arrange`) and coordinated multi-node
+override dimensions into `GenerationSpec`, validates merge selector scopes and
+top-k contracts against pending branch/model OOF inputs, preserves tuning/train
+params as public DSL metadata, validates per-node data/model shape plans,
+requires explicit shape plans for augmentation steps, and binds the resulting
 search-space fingerprint into the graph. It also emits a `CampaignSpec`
 template so split invocation, generation, data bindings and shape plans stay in
 the campaign layer rather than graph operators, and CLI/C ABI can feed that
