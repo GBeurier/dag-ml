@@ -403,6 +403,9 @@ Implemented:
 - CLI validator for the sklearn complex demonstrator that revalidates the OOF
   campaign in Rust, recomputes branch/merge selections from report metrics and
   checks final-refit feature/sample contracts;
+- published `GraphSpec` JSON Schema with the branch/merge graph as canonical
+  fixture, contract validation in `scripts/validate_contracts.py`, and C ABI
+  contract discovery through `dagml_graph_spec_contract_json`;
 - C ABI graph validation entry point;
 - `dag-ml-data` fixture integration through schema, plan and relation
   fingerprints;

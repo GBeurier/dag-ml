@@ -81,9 +81,10 @@ adapter fixture covering timeout refusal and recovery. A stateful sklearn smoke
 now fits a real sklearn pipeline during `REFIT`, stores it behind an opaque model
 handle, and replays `PREDICT` through that handle in the same persistent pool.
 The handshake now also gates persistent-worker, worker-env and
-parallel-invocation capabilities. The C ABI also publishes the
-`DataOutputProvenance` version/key contract plus JSON validation helpers so
-host bindings can safely consume propagated data-view provenance, and a
+parallel-invocation capabilities. The C ABI also publishes the `GraphSpec`
+schema contract for non-Rust graph validation, the `DataOutputProvenance`
+version/key contract plus JSON validation helpers so host bindings can safely
+consume propagated data-view provenance, and a
 `NodeResult`-against-`NodeTask` validation helper so bindings can preflight
 controller output before returning it to the scheduler. This is intentionally
 not yet a production

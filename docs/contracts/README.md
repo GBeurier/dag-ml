@@ -45,6 +45,24 @@ source maps a `source_id` to a provider-owned `feature_set_id` and optional
 column subset. This keeps `DagMlDataVTable` ABI-compatible while making feature
 fusion explicit.
 
+## GraphSpec v1
+
+Schema: `graph_spec.schema.json`
+
+Canonical fixture: `examples/branch_merge_oof_graph.json`
+
+Runtime type: `GraphSpec`
+
+C ABI: `DAG_ML_GRAPH_SPEC_SCHEMA_VERSION`,
+`dagml_graph_spec_contract_json`, `dagml_graph_validate_json`
+
+This is the portable graph object produced by the DSL compiler and consumed by
+the execution-plan builder. The schema documents node kinds, ports, edge
+contracts, OOF prediction edges and lineage propagation flags so host bindings
+can reject malformed graph JSON before controller resolution or scheduling.
+Rust validation remains the semantic authority for uniqueness, endpoint checks,
+port-kind alignment and cycle refusal.
+
 ## DAG-ML OpenLineage Facets v1
 
 Schema: `openlineage_dagml_facets.schema.json`
