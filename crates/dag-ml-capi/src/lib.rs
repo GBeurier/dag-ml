@@ -21,7 +21,7 @@ use dag_ml_core::{
     RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
     RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionPolicy,
     SequentialScheduler, DATA_OUTPUT_PROVENANCE_KEY, DATA_OUTPUT_PROVENANCE_SCHEMA_ID,
-    DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION,
+    DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION, GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -33,6 +33,7 @@ pub const DAG_ML_ARTIFACT_STORE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_PREDICTION_CACHE_VTABLE_BORROWED_ABI_VERSION: u32 = 1;
 pub const DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION: u32 = 1;
+pub const DAG_ML_GRAPH_SPEC_SCHEMA_VERSION: u32 = GRAPH_SPEC_SCHEMA_VERSION;
 pub const DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
@@ -41,6 +42,12 @@ pub const DAG_ML_HANDLE_KIND_MODEL: u32 = 3;
 pub const DAG_ML_HANDLE_KIND_ARTIFACT: u32 = 4;
 pub const DAG_ML_HANDLE_KIND_PREDICTION: u32 = 5;
 pub const DAG_ML_HANDLE_KIND_RELATION: u32 = 6;
+
+#[derive(Serialize)]
+struct GraphSpecContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
 
 #[derive(Serialize)]
 struct DataOutputProvenanceContractInfo {
@@ -368,6 +375,28 @@ pub unsafe extern "C" fn dagml_f64_tensor_free(value: DagMlF64Tensor) {
     if !value.ptr.is_null() {
         drop(Vec::from_raw_parts(value.ptr, value.len, value.capacity));
     }
+}
+
+/// Returns the public C ABI contract for canonical `GraphSpec` JSON.
+///
+/// # Safety
+///
+/// `out_json` must point to writable memory for one `DagMlOwnedBytes`. Any
+/// returned bytes must be released with `dagml_owned_bytes_free`.
+/// `error_out` may be null; when non-null it follows the same ownership rules
+/// as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_graph_spec_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = GraphSpecContractInfo {
+        schema_version: DAG_ML_GRAPH_SPEC_SCHEMA_VERSION,
+        schema_id: GRAPH_SPEC_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
 }
 
 /// Validates a canonical JSON `GraphSpec`.
@@ -4657,6 +4686,23 @@ mod tests {
 
         assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
+    }
+
+    #[test]
+    fn exposes_graph_spec_contract_over_abi() {
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe { dagml_graph_spec_contract_json(&mut out, &mut error) };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let contract: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(contract["schema_id"], dag_ml_core::GRAPH_SPEC_SCHEMA_ID);
+        unsafe { dagml_owned_bytes_free(out) };
     }
 
     #[test]

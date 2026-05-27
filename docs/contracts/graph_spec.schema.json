@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/graph_spec.v1.schema.json",
+  "title": "DAG-ML GraphSpec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "nodes"],
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "interface": {
+      "$ref": "#/$defs/graph_interface"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/node_spec"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge_spec"
+      }
+    },
+    "search_space_fingerprint": {
+      "anyOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "node_kind": {
+      "enum": [
+        "transform",
+        "y_transform",
+        "split",
+        "model",
+        "fork",
+        "map",
+        "feature_join",
+        "prediction_join",
+        "mixed_join",
+        "source_join",
+        "tag",
+        "exclude",
+        "augmentation",
+        "adapter",
+        "aggregator",
+        "generator",
+        "restructure",
+        "tuner",
+        "subgraph",
+        "chart"
+      ]
+    },
+    "port_kind": {
+      "enum": ["data", "target", "prediction", "artifact", "metric", "control"]
+    },
+    "port_cardinality": {
+      "enum": ["one", "many", "optional"]
+    },
+    "port_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "representation", "cardinality"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "kind": {
+          "$ref": "#/$defs/port_kind"
+        },
+        "representation": {
+          "anyOf": [
+            { "$ref": "#/$defs/non_empty_string" },
+            { "type": "null" }
+          ]
+        },
+        "cardinality": {
+          "$ref": "#/$defs/port_cardinality"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "port_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port_spec"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port_spec"
+          }
+        }
+      }
+    },
+    "port_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "port_name"],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "port_name": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "edge_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "representation"],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/port_kind"
+        },
+        "representation": {
+          "anyOf": [
+            { "$ref": "#/$defs/non_empty_string" },
+            { "type": "null" }
+          ]
+        },
+        "requires_oof": {
+          "type": "boolean"
+        },
+        "requires_fold_alignment": {
+          "type": "boolean"
+        },
+        "propagates_lineage": {
+          "type": "boolean"
+        }
+      }
+    },
+    "edge_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "target", "contract"],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/port_ref"
+        },
+        "target": {
+          "$ref": "#/$defs/port_ref"
+        },
+        "contract": {
+          "$ref": "#/$defs/edge_contract"
+        }
+      }
+    },
+    "graph_interface": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port_spec"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port_spec"
+          }
+        }
+      }
+    },
+    "node_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "operator"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "$ref": "#/$defs/node_kind"
+        },
+        "operator": {},
+        "params": {
+          "type": "object"
+        },
+        "ports": {
+          "$ref": "#/$defs/port_schema"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "seed_label": {
+          "type": ["string", "null"]
+        }
+      }
+    }
+  }
+}

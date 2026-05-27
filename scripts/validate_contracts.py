@@ -22,6 +22,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
+GRAPH_SPEC_SCHEMA_REL = Path("docs/contracts/graph_spec.schema.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
 OPENLINEAGE_FACETS_SCHEMA_REL = Path("docs/contracts/openlineage_dagml_facets.schema.json")
 PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL = Path(
@@ -40,6 +41,7 @@ LOCAL_FIXTURE_REL = Path("examples/fixtures/data/coordinator_data_plan_envelope_
 LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
 )
+LOCAL_GRAPH_SPEC_FIXTURE_REL = Path("examples/branch_merge_oof_graph.json")
 LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL = Path(
     "examples/fixtures/runtime/data_output_provenance_augmented_view.json"
 )
@@ -62,6 +64,10 @@ LOCAL_FEATURE_FUSION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "feature_fusion_selector.v1.schema.json"
 )
+GRAPH_SPEC_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "graph_spec.v1.schema.json"
+)
 SIBLING_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml-data/schemas/"
     "coordinator_data_plan_envelope.v1.schema.json"
@@ -71,6 +77,7 @@ SIBLING_FEATURE_FUSION_SCHEMA_ID = (
     "feature_fusion_selector.v1.schema.json"
 )
 SHA256_RE = re.compile(r"^[0-9A-Fa-f]{64}$")
+IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 CONFORMANCE_PACK_ID = "dag-ml.shared.conformance.v1"
 OPENLINEAGE_FACETS_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
@@ -125,6 +132,13 @@ def require_sha256(value: Any, label: str) -> None:
     require(
         isinstance(value, str) and SHA256_RE.fullmatch(value) is not None,
         f"{label} must be a 64-character hex digest",
+    )
+
+
+def require_identifier(value: Any, label: str) -> None:
+    require(
+        isinstance(value, str) and IDENTIFIER_RE.fullmatch(value) is not None,
+        f"{label} must be a DAG-ML identifier",
     )
 
 
@@ -196,6 +210,74 @@ def validate_feature_fusion_schema_artifact(schema: Any, expected_id: str, label
     require(isinstance(defs, dict), f"{label} feature-fusion $defs are missing")
     for name in ("source", "alignment", "presence_mask"):
         require(name in defs, f"{label} feature-fusion schema misses `{name}` definition")
+
+
+def validate_graph_spec_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} GraphSpec schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} GraphSpec schema must declare Draft 2020-12",
+    )
+    require(schema.get("$id") == GRAPH_SPEC_SCHEMA_ID, f"{label} GraphSpec schema $id mismatch")
+    require(schema.get("type") == "object", f"{label} GraphSpec root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} GraphSpec root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} GraphSpec required list is missing")
+    for field in ("id", "nodes"):
+        require(field in required, f"{label} GraphSpec schema must require `{field}`")
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} GraphSpec schema definitions are missing")
+    expected_node_kinds = [
+        "transform",
+        "y_transform",
+        "split",
+        "model",
+        "fork",
+        "map",
+        "feature_join",
+        "prediction_join",
+        "mixed_join",
+        "source_join",
+        "tag",
+        "exclude",
+        "augmentation",
+        "adapter",
+        "aggregator",
+        "generator",
+        "restructure",
+        "tuner",
+        "subgraph",
+        "chart",
+    ]
+    require(
+        defs.get("node_kind", {}).get("enum") == expected_node_kinds,
+        f"{label} GraphSpec node_kind enum is not aligned with Rust",
+    )
+    require(
+        defs.get("port_kind", {}).get("enum")
+        == ["data", "target", "prediction", "artifact", "metric", "control"],
+        f"{label} GraphSpec port_kind enum is not aligned with Rust",
+    )
+    require(
+        defs.get("port_cardinality", {}).get("enum") == ["one", "many", "optional"],
+        f"{label} GraphSpec port_cardinality enum is not aligned with Rust",
+    )
+    for definition_name in (
+        "port_spec",
+        "port_schema",
+        "port_ref",
+        "edge_contract",
+        "edge_spec",
+        "graph_interface",
+        "node_spec",
+    ):
+        require(
+            definition_name in defs,
+            f"{label} GraphSpec schema misses `{definition_name}`",
+        )
 
 
 def validate_openlineage_facets_schema(schema: Any, label: str) -> None:
@@ -547,6 +629,105 @@ def validate_feature_fusion_selector(selector: Any, label: str) -> None:
             )
 
 
+def validate_graph_spec(graph: Any, label: str) -> None:
+    require(isinstance(graph, dict), f"{label} GraphSpec must be a JSON object")
+    require_non_empty_string(graph.get("id"), f"{label}.id")
+    nodes = graph.get("nodes")
+    require(isinstance(nodes, list) and nodes, f"{label}.nodes must be non-empty")
+
+    node_ports: dict[str, dict[str, dict[str, str]]] = {}
+    for index, node in enumerate(nodes):
+        node_label = f"{label}.nodes[{index}]"
+        require(isinstance(node, dict), f"{node_label} must be an object")
+        node_id = node.get("id")
+        require_identifier(node_id, f"{node_label}.id")
+        require(node_id not in node_ports, f"{label} has duplicate node id `{node_id}`")
+        require(
+            node.get("kind")
+            in {
+                "transform",
+                "y_transform",
+                "split",
+                "model",
+                "fork",
+                "map",
+                "feature_join",
+                "prediction_join",
+                "mixed_join",
+                "source_join",
+                "tag",
+                "exclude",
+                "augmentation",
+                "adapter",
+                "aggregator",
+                "generator",
+                "restructure",
+                "tuner",
+                "subgraph",
+                "chart",
+            },
+            f"{node_label}.kind is invalid",
+        )
+        ports = node.get("ports", {})
+        require(isinstance(ports, dict), f"{node_label}.ports must be an object when present")
+        node_ports[node_id] = {
+            "inputs": graph_port_kinds(ports.get("inputs", []), f"{node_label}.ports.inputs"),
+            "outputs": graph_port_kinds(ports.get("outputs", []), f"{node_label}.ports.outputs"),
+        }
+
+    edges = graph.get("edges", [])
+    require(isinstance(edges, list), f"{label}.edges must be an array when present")
+    for index, edge in enumerate(edges):
+        edge_label = f"{label}.edges[{index}]"
+        require(isinstance(edge, dict), f"{edge_label} must be an object")
+        source = edge.get("source")
+        target = edge.get("target")
+        contract = edge.get("contract")
+        require(isinstance(source, dict), f"{edge_label}.source must be an object")
+        require(isinstance(target, dict), f"{edge_label}.target must be an object")
+        require(isinstance(contract, dict), f"{edge_label}.contract must be an object")
+
+        source_node = source.get("node_id")
+        target_node = target.get("node_id")
+        require_identifier(source_node, f"{edge_label}.source.node_id")
+        require_identifier(target_node, f"{edge_label}.target.node_id")
+        require(source_node in node_ports, f"{edge_label} references missing source `{source_node}`")
+        require(target_node in node_ports, f"{edge_label} references missing target `{target_node}`")
+        source_port = source.get("port_name")
+        target_port = target.get("port_name")
+        require_non_empty_string(source_port, f"{edge_label}.source.port_name")
+        require_non_empty_string(target_port, f"{edge_label}.target.port_name")
+        source_kind = node_ports[source_node]["outputs"].get(source_port)
+        target_kind = node_ports[target_node]["inputs"].get(target_port)
+        require(source_kind is not None, f"{edge_label} source port `{source_port}` is missing")
+        require(target_kind is not None, f"{edge_label} target port `{target_port}` is missing")
+        edge_kind = contract.get("kind")
+        require(
+            edge_kind == source_kind == target_kind,
+            f"{edge_label} kind `{edge_kind}` does not match endpoint ports",
+        )
+        if contract.get("requires_oof") is True:
+            require(edge_kind == "prediction", f"{edge_label} requires OOF on non-prediction edge")
+
+
+def graph_port_kinds(ports: Any, label: str) -> dict[str, str]:
+    require(isinstance(ports, list), f"{label} must be an array")
+    seen: dict[str, str] = {}
+    for index, port in enumerate(ports):
+        port_label = f"{label}[{index}]"
+        require(isinstance(port, dict), f"{port_label} must be an object")
+        name = port.get("name")
+        require_non_empty_string(name, f"{port_label}.name")
+        require(name not in seen, f"{label} contains duplicate port `{name}`")
+        kind = port.get("kind")
+        require(
+            kind in {"data", "target", "prediction", "artifact", "metric", "control"},
+            f"{port_label}.kind is invalid",
+        )
+        seen[name] = kind
+    return seen
+
+
 def validate_data_output_provenance(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} data-output provenance must be an object")
     require(value.get("schema_version") == 1, f"{label} schema_version must be 1")
@@ -686,6 +867,15 @@ def validate_dag_ml_controller_result_header(header: str, label: str) -> None:
         "dagml_node_result_validate_for_task_json" in header,
         f"{label} header must expose `dagml_node_result_validate_for_task_json`",
     )
+
+
+def validate_dag_ml_graph_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_GRAPH_SPEC_SCHEMA_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_GRAPH_SPEC_SCHEMA_VERSION=1",
+    )
+    for symbol in ("dagml_graph_spec_contract_json", "dagml_graph_validate_json"):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
 def validate_dag_ml_data_output_provenance_header(header: str, label: str) -> None:
@@ -1033,6 +1223,7 @@ def main() -> int:
     try:
         local_schema = load_json(ROOT / SCHEMA_REL)
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
+        local_graph_spec_schema = load_json(ROOT / GRAPH_SPEC_SCHEMA_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
         local_openlineage_facets_schema = load_json(ROOT / OPENLINEAGE_FACETS_SCHEMA_REL)
         local_prediction_cache_tensor_metadata_schema = load_json(
@@ -1047,6 +1238,7 @@ def main() -> int:
         local_research_provenance_profile = load_json(ROOT / RESEARCH_PROVENANCE_PROFILE_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
+        local_graph_spec_fixture = load_json(ROOT / LOCAL_GRAPH_SPEC_FIXTURE_REL)
         local_data_output_provenance_fixture = load_json(
             ROOT / LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL
         )
@@ -1060,6 +1252,7 @@ def main() -> int:
             LOCAL_FEATURE_FUSION_SCHEMA_ID,
             "dag-ml",
         )
+        validate_graph_spec_schema(local_graph_spec_schema, "dag-ml")
         validate_openlineage_facets_schema(local_openlineage_facets_schema, "dag-ml")
         validate_prediction_cache_tensor_metadata_schema(
             local_prediction_cache_tensor_metadata_schema,
@@ -1075,6 +1268,7 @@ def main() -> int:
         )
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
+        validate_graph_spec(local_graph_spec_fixture, "dag-ml")
         validate_data_output_provenance(local_data_output_provenance_fixture, "dag-ml")
         validate_process_adapter_description(
             local_process_adapter_description_fixture,
@@ -1083,6 +1277,7 @@ def main() -> int:
         validate_data_provider_header(local_header, "dag-ml")
         validate_dag_ml_prediction_cache_tensor_header(local_header, "dag-ml")
         validate_dag_ml_controller_result_header(local_header, "dag-ml")
+        validate_dag_ml_graph_header(local_header, "dag-ml")
         validate_dag_ml_data_output_provenance_header(local_header, "dag-ml")
         validate_conformance_pack(
             local_pack,

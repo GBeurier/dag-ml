@@ -11,7 +11,8 @@ the host owns the underlying object behind each handle.
 - owned byte release helper for JSON outputs returned by Rust;
 - owned row-major `DagMlF64Tensor` release helper for Rust-allocated
   prediction buffers returned to host bindings;
-- `dagml_graph_validate_json` for graph contract checks;
+- `dagml_graph_spec_contract_json` and `dagml_graph_validate_json` for
+  GraphSpec contract discovery and graph validation before plan building;
 - `dagml_data_output_provenance_contract_json` and
   `dagml_data_output_provenance_validate_json` so bindings can discover the
   reserved `DataProviderViewSpec.extra` key and validate propagated data-view
@@ -95,6 +96,8 @@ the host owns the underlying object behind each handle.
   `destroy(user_data)` after materialized prediction handles are released.
 - `docs/contracts/process_adapter_description.schema.json` documents the
   required process-adapter `--describe` JSON used by CLI-managed host adapters.
+- `docs/contracts/graph_spec.schema.json` documents the canonical graph JSON
+  consumed by the planner and C ABI.
 
 The vtables are intentionally small in this scaffold. They establish shape,
 ownership and naming before full execution is implemented.
@@ -133,8 +136,8 @@ it receives or materializes through the vtables.
 
 1. Freeze `DagMlBytesView`, `DagMlOwnedBytes`, `DagMlF64Tensor`, handle and
    status conventions.
-2. Add the remaining canonical JSON schemas for `GraphSpec`, `ModelInputSpec`
-   and `DataPlan` blobs.
+2. Add the remaining canonical JSON schemas for `ModelInputSpec` and `DataPlan`
+   blobs.
 3. Add conformance tests that call the C ABI from a small C program.
 4. Add C conformance tests that drive non-mock replay through the vtable
    surface.

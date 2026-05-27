@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::error::{DagMlError, Result};
 use crate::ids::NodeId;
 
+pub const GRAPH_SPEC_SCHEMA_VERSION: u32 = 1;
+pub const GRAPH_SPEC_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/graph_spec.v1.schema.json";
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
@@ -603,5 +607,32 @@ mod tests {
         };
 
         assert!(graph.validate().is_err());
+    }
+
+    #[test]
+    fn published_graph_spec_schema_declares_current_contract() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/graph_spec.schema.json"
+        ))
+        .unwrap();
+
+        assert_eq!(schema["$id"], GRAPH_SPEC_SCHEMA_ID);
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("nodes")));
+        assert_eq!(
+            schema["$defs"]["node_kind"]["enum"]
+                .as_array()
+                .unwrap()
+                .len(),
+            20
+        );
+        assert!(schema["$defs"]["port_kind"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|kind| kind.as_str() == Some("prediction")));
     }
 }
