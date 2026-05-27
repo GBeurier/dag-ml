@@ -63,6 +63,24 @@ can reject malformed graph JSON before controller resolution or scheduling.
 Rust validation remains the semantic authority for uniqueness, endpoint checks,
 port-kind alignment and cycle refusal.
 
+## CampaignSpec v1
+
+Schema: `campaign_spec.schema.json`
+
+Canonical fixture: `examples/campaign_oof_generation.json`
+
+Runtime type: `CampaignSpec`
+
+C ABI: `DAG_ML_CAMPAIGN_SPEC_SCHEMA_VERSION`,
+`dagml_campaign_spec_contract_json`, `dagml_campaign_validate_json`
+
+This is the portable experimental-plan contract layered beside the graph. It
+keeps split invocation, concrete fold sets, leakage-unit policy, repeated-sample
+aggregation policy, generation/search dimensions, data/model shape plans and
+data bindings outside operator nodes. Rust validation remains the semantic
+authority for fold membership, leakage guards, generation consistency,
+shape-plan/key alignment and data-binding fingerprint requirements.
+
 ## ModelInputSpec v1
 
 Schema: `model_input_spec.schema.json`

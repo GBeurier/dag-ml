@@ -406,6 +406,10 @@ Implemented:
 - published `GraphSpec` JSON Schema with the branch/merge graph as canonical
   fixture, contract validation in `scripts/validate_contracts.py`, and C ABI
   contract discovery through `dagml_graph_spec_contract_json`;
+- published `CampaignSpec` JSON Schema with the OOF generation campaign as
+  canonical fixture, contract validation in `scripts/validate_contracts.py`,
+  and C ABI contract discovery/validation through
+  `dagml_campaign_spec_contract_json` and `dagml_campaign_validate_json`;
 - published neutral `ModelInputSpec` and `DataPlan` contracts with JSON
   Schemas, canonical tabular-fusion fixtures, Rust validators and C ABI
   contract/validation helpers for controller and data-planner bindings;

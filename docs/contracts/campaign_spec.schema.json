@@ -1,0 +1,477 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/campaign_spec.v1.schema.json",
+  "title": "DAG-ML CampaignSpec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "root_seed": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "leakage_policy": {
+      "$ref": "#/$defs/leakage_policy"
+    },
+    "aggregation_policy": {
+      "$ref": "#/$defs/aggregation_policy"
+    },
+    "split_invocation": {
+      "anyOf": [
+        { "$ref": "#/$defs/split_invocation" },
+        { "type": "null" }
+      ]
+    },
+    "generation": {
+      "$ref": "#/$defs/generation_spec"
+    },
+    "shape_plans": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/data_model_shape_plan"
+      }
+    },
+    "data_bindings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/data_binding"
+        }
+      }
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "split_unit": {
+      "enum": ["observation", "sample", "target", "group"]
+    },
+    "prediction_level": {
+      "enum": ["observation", "sample", "target", "group"]
+    },
+    "aggregation_method": {
+      "enum": ["none", "mean", "weighted_mean", "median", "vote", "custom_controller"]
+    },
+    "aggregation_weights": {
+      "enum": ["none", "quality", "repetition_count", "controller_emitted"]
+    },
+    "leakage_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "split_unit": {
+          "$ref": "#/$defs/split_unit"
+        },
+        "forbid_origin_cross_fold": {
+          "type": "boolean"
+        },
+        "allow_observation_split_with_shared_target": {
+          "type": "boolean"
+        },
+        "require_group_ids": {
+          "type": "boolean"
+        },
+        "unsafe_flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "aggregation_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "aggregation_level": {
+          "$ref": "#/$defs/prediction_level"
+        },
+        "method": {
+          "$ref": "#/$defs/aggregation_method"
+        },
+        "weights": {
+          "$ref": "#/$defs/aggregation_weights"
+        },
+        "emit_parallel_metrics": {
+          "type": "boolean"
+        },
+        "selection_metric_level": {
+          "$ref": "#/$defs/prediction_level"
+        },
+        "store_raw_predictions": {
+          "type": "boolean"
+        },
+        "store_aggregated_predictions": {
+          "type": "boolean"
+        }
+      }
+    },
+    "fold_assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fold_id", "train_sample_ids", "validation_sample_ids"],
+      "properties": {
+        "fold_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "train_sample_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "validation_sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "fold_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sample_ids", "folds"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "folds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/fold_assignment"
+          }
+        },
+        "sample_groups": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/identifier"
+          }
+        }
+      }
+    },
+    "split_invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "controller_id": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "leakage_policy": {
+          "$ref": "#/$defs/leakage_policy"
+        },
+        "params": {
+          "type": "object"
+        },
+        "fold_set": {
+          "anyOf": [
+            { "$ref": "#/$defs/fold_set" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "generation_strategy": {
+      "enum": ["none", "cartesian", "zip"]
+    },
+    "generation_param_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "params"],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "params": {
+          "type": "object",
+          "minProperties": 1
+        }
+      }
+    },
+    "generation_choice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "value"],
+      "properties": {
+        "label": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "value": {},
+        "param_overrides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/generation_param_override"
+          }
+        }
+      }
+    },
+    "generation_dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/generation_choice"
+          }
+        }
+      }
+    },
+    "generation_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "$ref": "#/$defs/generation_strategy"
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/generation_dimension"
+          }
+        },
+        "max_variants": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        }
+      }
+    },
+    "granularity": {
+      "enum": ["observation", "sample", "target", "group"]
+    },
+    "fit_boundary": {
+      "enum": ["fold_train", "fold_validation", "full_train", "predict"]
+    },
+    "augmentation_scope": {
+      "enum": ["none", "train_only", "all_partitions"]
+    },
+    "augmentation_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sample_scope": {
+          "$ref": "#/$defs/augmentation_scope"
+        },
+        "feature_scope": {
+          "$ref": "#/$defs/augmentation_scope"
+        },
+        "require_origin_id": {
+          "type": "boolean"
+        },
+        "inherit_group": {
+          "type": "boolean"
+        },
+        "inherit_target": {
+          "type": "boolean"
+        },
+        "unsafe_flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "feature_selection_scope": {
+      "enum": ["none", "unsupervised", "supervised_fold_train"]
+    },
+    "feature_selection_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/feature_selection_scope"
+        },
+        "store_masks": {
+          "type": "boolean"
+        },
+        "allow_schema_mismatch_on_join": {
+          "type": "boolean"
+        }
+      }
+    },
+    "data_model_shape_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id"],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "input_granularity": {
+          "$ref": "#/$defs/granularity"
+        },
+        "target_granularity": {
+          "$ref": "#/$defs/granularity"
+        },
+        "fit_rows": {
+          "$ref": "#/$defs/fit_boundary"
+        },
+        "predict_rows": {
+          "$ref": "#/$defs/fit_boundary"
+        },
+        "feature_namespace": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "feature_schema_fingerprint": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "target_space": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "aggregation_policy": {
+          "$ref": "#/$defs/aggregation_policy"
+        },
+        "augmentation_policy": {
+          "$ref": "#/$defs/augmentation_policy"
+        },
+        "selection_policy": {
+          "$ref": "#/$defs/feature_selection_policy"
+        }
+      }
+    },
+    "data_request_partition": {
+      "enum": ["fold_train", "fold_validation", "full_train", "predict"]
+    },
+    "data_view_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fit_partition": {
+          "$ref": "#/$defs/data_request_partition"
+        },
+        "predict_partition": {
+          "$ref": "#/$defs/data_request_partition"
+        },
+        "include_augmented_train": {
+          "type": "boolean"
+        },
+        "include_augmented_validation": {
+          "type": "boolean"
+        },
+        "include_excluded": {
+          "type": "boolean"
+        },
+        "require_sample_ids": {
+          "type": "boolean"
+        },
+        "unsafe_flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "data_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "input_name",
+        "request_id",
+        "schema_fingerprint",
+        "plan_fingerprint",
+        "output_representation"
+      ],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "input_name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "request_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "schema_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "plan_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "relation_fingerprint": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "output_representation": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "feature_set_id": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "source_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "require_relations": {
+          "type": "boolean"
+        },
+        "view_policy": {
+          "$ref": "#/$defs/data_view_policy"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}
