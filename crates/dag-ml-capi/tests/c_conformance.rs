@@ -538,6 +538,25 @@ int main(int argc, char **argv) {
         }
         return 1;
     }
+    DagMlStatusCode plan_validate_status = dagml_execution_plan_validate_json(
+        plan.ptr,
+        plan.len,
+        &error
+    );
+    if (plan_validate_status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "dagml_execution_plan_validate_json failed with status %u: %.*s\n",
+            plan_validate_status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        free(bundle.ptr);
+        free(request.ptr);
+        free(envelopes.ptr);
+        dagml_owned_bytes_free(plan);
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
 
     DagMlStatusCode status = dagml_replay_execute_json(
         plan.ptr,
@@ -1749,6 +1768,22 @@ int main(int argc, char **argv) {
             plan_status,
             (int)error.len,
             error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+    DagMlStatusCode plan_validate_status = dagml_execution_plan_validate_json(
+        plan.ptr,
+        plan.len,
+        &error
+    );
+    if (plan_validate_status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "dagml_execution_plan_validate_json failed with status %u: %.*s\n",
+            plan_validate_status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        dagml_owned_bytes_free(plan);
         if (error.ptr) {
             dagml_string_free(error);
         }

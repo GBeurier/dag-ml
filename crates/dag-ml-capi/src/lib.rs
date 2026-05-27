@@ -953,6 +953,26 @@ pub unsafe extern "C" fn dagml_execution_plan_schedule_json(
     }
 }
 
+/// Validates a canonical JSON `ExecutionPlan`.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_execution_plan_validate_json(
+    plan_ptr: *const u8,
+    plan_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    validate_json::<ExecutionPlan>(
+        plan_ptr,
+        plan_len,
+        error_out,
+        "execution plan",
+        ExecutionPlan::validate,
+    )
+}
+
 struct ExecutionPlanBuildJsonArgs {
     graph_ptr: *const u8,
     graph_len: usize,
@@ -6370,6 +6390,10 @@ mod tests {
         assert!(error.ptr.is_null());
         assert!(!out.ptr.is_null());
         let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let status =
+            unsafe { dagml_execution_plan_validate_json(json.as_ptr(), json.len(), &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
         let plan: ExecutionPlan = serde_json::from_slice(json).unwrap();
         plan.validate().unwrap();
         assert_eq!(plan.id, "plan:cabi.build");
