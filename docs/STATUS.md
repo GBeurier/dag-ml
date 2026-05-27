@@ -150,7 +150,9 @@ Implemented:
   for the producing node/port/phase, selected variant/fold, shape-plan and
   aggregation fingerprints, current feature schema fingerprint and emitted
   shape deltas, making downstream controller inputs auditable beyond opaque
-  smoke handles;
+  smoke handles; the metadata is exposed as the typed
+  `DataOutputProvenance` contract and validated when parsing
+  `DataProviderViewSpec`;
 - validation prediction sample checks now apply to propagated data views as
   well as direct data bindings, so a branch model fed by an augmentation edge
   cannot emit OOF rows outside its fold-validation view;

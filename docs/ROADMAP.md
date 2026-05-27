@@ -50,10 +50,11 @@ data-view contracts across data-producing graph edges, so train-only
 augmentation can feed downstream branch models without reclassifying splits as
 operators. Those propagated views also carry reserved shape provenance
 (`dag_ml_output`) with producer identity, selected scope, shape-plan
-fingerprints, current feature schema and emitted shape deltas. The remaining
-DSL work is compatibility with broader pipeline surfaces, richer search-space
-syntax, and production materialization semantics for transformed data instead
-of smoke-level adapter handles.
+fingerprints, current feature schema and emitted shape deltas; the Rust core
+now parses and validates that metadata through a typed `DataOutputProvenance`
+contract. The remaining DSL work is compatibility with broader pipeline
+surfaces, richer search-space syntax, and production materialization semantics
+for transformed data instead of smoke-level adapter handles.
 
 ## Phase 2: Host Controllers
 
