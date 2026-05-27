@@ -47,8 +47,9 @@ It extracts node-parameter variants, compact parameter generators (`or`,
 override dimensions into `GenerationSpec`, validates merge selector scopes and
 top-k contracts against pending branch/model OOF inputs, preserves tuning/train
 params as public DSL metadata, validates per-node data/model shape plans,
-requires explicit shape plans for augmentation steps, and binds the resulting
-search-space fingerprint into the graph. It also emits a `CampaignSpec`
+requires explicit shape plans for augmentation and runtime data-generation
+steps, and binds the resulting search-space fingerprint into the graph. It also
+emits a `CampaignSpec`
 template so split invocation, generation, data bindings and shape plans stay in
 the campaign layer rather than graph operators, and CLI/C ABI can feed that
 template straight into execution-plan building. CLI process smokes can now run

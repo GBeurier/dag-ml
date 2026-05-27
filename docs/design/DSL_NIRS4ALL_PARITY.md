@@ -47,6 +47,7 @@ YAML frontends should be thin host-side serializers around the same importer.
 | sequential grouping (`[...]`) | `kind: "sequential"` | inlined during compilation while preserving child node contracts |
 | sample augmentation | `kind: "sample_augmentation"` plus mandatory `shape.augmentation_policy` | compiled as augmentation with `dsl_augmentation_kind=sample`; unsafe scopes refused |
 | feature augmentation | `kind: "feature_augmentation"` plus `shape` | compiled as augmentation with `dsl_augmentation_kind=feature` |
+| runtime data generation / synthetic samples | `kind: "data_generation"` or alias `kind: "generation"` plus mandatory `shape` | compiled as `NodeKind::Generator` with `dsl_generation_kind=data`; actual generation remains external, while Rust validates seed, fold scope, origin/group/target inheritance and shape contracts |
 | feature selection / shape-changing processing | `shape.selection_policy`, `feature_namespace`, schema fingerprints | shape plan validated and attached to campaign |
 | sample filters | `kind: "sample_filter"` or `kind: "filter"` | compiled to exclusion/filter nodes with explicit `dsl_filter_kind` metadata |
 | concat transform / multi-view feature fusion | `kind: "concat_transform"` with branch transforms | compiled to `NodeKind::FeatureJoin` |
@@ -87,9 +88,11 @@ YAML frontends should be thin host-side serializers around the same importer.
 - Merge selector scopes and basic selection contracts are compile-validated, and
   OOF edges are enforced; actual metric scoring and ranking remain the
   responsibility of selection and merge controllers.
-- Synthetic generation is not settled as a separate library boundary yet. The
-  DSL should represent generator nodes/controllers, but actual generators should
-  stay external unless they are pure DAG/campaign coordination primitives.
+- Runtime generation is represented as external generator nodes/controllers for
+  data-producing generators. The next open boundary is richer generated-model
+  and provider-native generation backends; actual generator implementations
+  should stay outside Rust unless they are pure DAG/campaign coordination
+  primitives.
 
 ## Required Regression Coverage
 

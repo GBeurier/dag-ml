@@ -408,6 +408,8 @@ def validate_pipeline_dsl_schema(schema: Any, label: str) -> None:
         "augmentation",
         "feature_augmentation",
         "sample_augmentation",
+        "data_generation",
+        "generation",
         "concat_transform",
         "model",
         "branch",

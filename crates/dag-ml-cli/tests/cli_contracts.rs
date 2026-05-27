@@ -2796,6 +2796,153 @@ fn cli_executes_mixed_branch_merge_with_minimal_aliases() {
 }
 
 #[test]
+fn cli_executes_runtime_data_generation_operator() {
+    let root = repo_root();
+    let suffix = unique_suffix();
+    let temp_plan = std::env::temp_dir().join(format!(
+        "dag_ml_cli_runtime_generation_plan_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let temp_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_runtime_generation_bundle_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let temp_lineage = std::env::temp_dir().join(format!(
+        "dag_ml_cli_runtime_generation_lineage_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let temp_prediction_cache = std::env::temp_dir().join(format!(
+        "dag_ml_cli_runtime_generation_prediction_cache_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let bundle_id = format!("bundle:cli.runtime-generation.{suffix}");
+    let plan_id = format!("plan:cli.runtime-generation.{suffix}");
+    let run_id = format!("run:cli.runtime-generation.{suffix}");
+
+    let build_plan = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "build-pipeline-dsl-plan",
+            "--dsl",
+            "examples/pipeline_dsl_runtime_generation_executable.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--plan-id",
+            plan_id.as_str(),
+            "--output",
+            temp_plan.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to build runtime generation DSL plan");
+    assert!(
+        build_plan.status.success(),
+        "runtime generation DSL plan failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build_plan.stdout),
+        String::from_utf8_lossy(&build_plan.stderr)
+    );
+    let plan_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&temp_plan).expect("plan was written"))
+            .expect("plan is JSON");
+    assert_eq!(
+        plan_json["node_plans"]["generator:synthetic.train"]["kind"],
+        "generator"
+    );
+    assert_eq!(
+        plan_json["node_plans"]["generator:synthetic.train"]["controller_id"],
+        "controller:data-generator.mock"
+    );
+    assert_eq!(
+        plan_json["graph_plan"]["graph"]["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .find(|node| node["id"] == "generator:synthetic.train")
+            .expect("generator node")["metadata"]["dsl_generation_kind"],
+        "data"
+    );
+    assert!(plan_json["campaign"]["shape_plans"]
+        .as_object()
+        .expect("shape plans")
+        .contains_key("generator:synthetic.train"));
+
+    let run = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-dsl-cv-refit-bundle",
+            "--dsl",
+            "examples/pipeline_dsl_runtime_generation_executable.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--process-workers",
+            "2",
+            "--bundle-id",
+            bundle_id.as_str(),
+            "--output",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--lineage-output",
+            temp_lineage.to_str().expect("temp path is valid utf-8"),
+            "--prediction-cache-output",
+            temp_prediction_cache
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            plan_id.as_str(),
+            "--run-id",
+            run_id.as_str(),
+        ])
+        .output()
+        .expect("failed to run runtime generation DSL bundle");
+    assert!(
+        run.status.success(),
+        "runtime generation DSL bundle failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        stdout.contains("process DSL cv refit bundle run: 4 fit_cv result(s)")
+            && stdout.contains("2 OOF prediction block(s)")
+            && stdout.contains("2 refit result(s)")
+            && stdout.contains("1 captured artifact handle(s)")
+            && stdout.contains("0 prediction cache(s)")
+            && stdout.contains("configured process worker(s)=2")
+            && stdout.contains("observed process worker(s)=2"),
+        "unexpected runtime generation DSL bundle output: {}",
+        stdout
+    );
+    let bundle_json =
+        std::fs::read_to_string(&temp_bundle).expect("runtime generation bundle was written");
+    assert!(
+        bundle_json.contains("generator:synthetic.train")
+            && bundle_json.contains("model:ridge.after-generation"),
+        "unexpected runtime generation bundle JSON: {}",
+        bundle_json
+    );
+    let lineage_json =
+        std::fs::read_to_string(&temp_lineage).expect("runtime generation lineage was written");
+    assert!(
+        lineage_json.contains("generator:synthetic.train")
+            && lineage_json.contains("model:ridge.after-generation"),
+        "unexpected runtime generation lineage JSON: {}",
+        lineage_json
+    );
+
+    let _ = std::fs::remove_file(temp_plan);
+    let _ = std::fs::remove_file(temp_bundle);
+    let _ = std::fs::remove_file(temp_lineage);
+    let _ = std::fs::remove_file(temp_prediction_cache);
+}
+
+#[test]
 fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
     let root = repo_root();
     let timeout_marker_dir = std::env::temp_dir().join(format!(

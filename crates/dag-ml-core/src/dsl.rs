@@ -105,6 +105,8 @@ pub enum PipelineDslStep {
     Augmentation(PipelineDslOperatorStep),
     FeatureAugmentation(PipelineDslOperatorStep),
     SampleAugmentation(PipelineDslOperatorStep),
+    #[serde(alias = "generation")]
+    DataGeneration(PipelineDslOperatorStep),
     ConcatTransform(PipelineDslConcatTransformStep),
     Model(PipelineDslOperatorStep),
     Branch(PipelineDslBranchStep),
@@ -1029,6 +1031,19 @@ impl CompatDslLowerer {
                             operator,
                             None,
                             Some(compat_augmentation_shape("both", object)?),
+                        )?,
+                    )]);
+                }
+                if let Some(operator) =
+                    first_object_value(object, &["data_generation", "generation"])
+                {
+                    return Ok(vec![PipelineDslStep::DataGeneration(
+                        self.compat_operator_step(
+                            Some(object),
+                            "data_generation",
+                            operator,
+                            None,
+                            None,
                         )?,
                     )]);
                 }
@@ -2320,6 +2335,7 @@ fn annotate_named_step(step: &mut PipelineDslStep, name: &str) {
         | PipelineDslStep::Augmentation(step)
         | PipelineDslStep::FeatureAugmentation(step)
         | PipelineDslStep::SampleAugmentation(step)
+        | PipelineDslStep::DataGeneration(step)
         | PipelineDslStep::Model(step)
         | PipelineDslStep::Chart(step) => {
             step.metadata.insert("dsl_name".to_string(), value);
@@ -2458,6 +2474,7 @@ fn compat_node_prefix(keyword: &str) -> &'static str {
         "tag" => "tag",
         "exclude" | "filter" | "sample_filter" => "filter",
         "sample_augmentation" | "feature_augmentation" | "augmentation" => "augment",
+        "data_generation" | "generation" => "generator",
         "chart" => "chart",
         _ => "transform",
     }
@@ -2472,6 +2489,7 @@ fn compat_param_aliases(keyword: &str) -> &'static [&'static str] {
             "transform_params",
         ],
         "sample_augmentation" | "feature_augmentation" | "augmentation" => &["augmentation_params"],
+        "data_generation" | "generation" => &["generation_params"],
         _ => &[],
     }
 }
@@ -2496,6 +2514,7 @@ fn compat_wrapper_param_keys(keyword: &str) -> &'static [&'static str] {
             "action",
             "report",
         ],
+        "data_generation" | "generation" => &["size", "count", "random_state", "mode", "report"],
         _ => &[],
     }
 }
@@ -3305,6 +3324,15 @@ impl PipelineCompiler {
                 state.clear_pending();
                 Ok(())
             }
+            PipelineDslStep::DataGeneration(step) => {
+                state.current_data = self.compile_data_generation_with_extra(
+                    step,
+                    &state.current_data,
+                    extra_metadata,
+                )?;
+                state.clear_pending();
+                Ok(())
+            }
             PipelineDslStep::ConcatTransform(step) => {
                 state.current_data = self.compile_concat_transform_with_extra(
                     step,
@@ -3607,6 +3635,25 @@ impl PipelineCompiler {
             serde_json::Value::String(augmentation_kind.to_string()),
         );
         self.compile_data_operator_with_extra(NodeKind::Augmentation, step, input, extra)
+    }
+
+    fn compile_data_generation_with_extra(
+        &mut self,
+        step: &PipelineDslOperatorStep,
+        input: &DataSource,
+        mut extra: BTreeMap<String, serde_json::Value>,
+    ) -> Result<DataSource> {
+        if step.shape.is_none() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL data_generation `{}` requires a shape plan for leakage-safe runtime generation",
+                step.id
+            )));
+        }
+        extra.insert(
+            "dsl_generation_kind".to_string(),
+            serde_json::Value::String("data".to_string()),
+        );
+        self.compile_data_operator_with_extra(NodeKind::Generator, step, input, extra)
     }
 
     fn compile_data_operator_with_extra(
@@ -5479,6 +5526,7 @@ fn namespace_step_ids(
         | PipelineDslStep::Augmentation(step)
         | PipelineDslStep::FeatureAugmentation(step)
         | PipelineDslStep::SampleAugmentation(step)
+        | PipelineDslStep::DataGeneration(step)
         | PipelineDslStep::Model(step)
         | PipelineDslStep::Chart(step) => {
             namespace_operator_step_id(generator, choice_index, step, counter, node_map)?;
@@ -5607,6 +5655,7 @@ fn rewrite_step_node_refs(step: &mut PipelineDslStep, node_map: &BTreeMap<NodeId
         | PipelineDslStep::Augmentation(_)
         | PipelineDslStep::FeatureAugmentation(_)
         | PipelineDslStep::SampleAugmentation(_)
+        | PipelineDslStep::DataGeneration(_)
         | PipelineDslStep::Model(_)
         | PipelineDslStep::Chart(_) => {}
         PipelineDslStep::ConcatTransform(step) => {
@@ -7572,6 +7621,102 @@ mod tests {
     }
 
     #[test]
+    fn compiles_runtime_data_generation_as_external_generator_node() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-runtime-data-generation",
+  "steps": [
+    {
+      "kind": "generation",
+      "id": "generator:synthetic.train",
+      "operator": "SMOTE",
+      "params": {"ratio": 0.5},
+      "shape": {
+        "fit_rows": "fold_train",
+        "predict_rows": "fold_validation",
+        "augmentation_policy": {
+          "sample_scope": "train_only",
+          "feature_scope": "none",
+          "require_origin_id": true,
+          "inherit_group": true,
+          "inherit_target": true
+        }
+      }
+    },
+    {
+      "kind": "model",
+      "id": "model:ridge",
+      "operator": "Ridge"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+        compiled.graph.validate().unwrap();
+        let generator = compiled
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "generator:synthetic.train")
+            .unwrap();
+        assert_eq!(generator.kind, NodeKind::Generator);
+        assert_eq!(generator.operator.as_ref().unwrap().as_str(), Some("SMOTE"));
+        assert_eq!(generator.metadata["dsl_generation_kind"], "data");
+        assert!(compiled
+            .shape_plans
+            .contains_key(&NodeId::new("generator:synthetic.train").unwrap()));
+        assert!(compiled.graph.edges.iter().any(|edge| {
+            edge.source.node_id.as_str() == "generator:synthetic.train"
+                && edge.source.port_name == "x_out"
+                && edge.target.node_id.as_str() == "model:ridge"
+                && edge.target.port_name == "x"
+                && edge.contract.kind == PortKind::Data
+        }));
+    }
+
+    #[test]
+    fn parses_compat_runtime_generation_step() {
+        let spec = parse_pipeline_dsl_json(
+            br#"{
+  "id": "dsl-compat-runtime-generation",
+  "pipeline": [
+    {
+      "generation": "SMOTE",
+      "id": "generator:compat.synthetic",
+      "generation_params": {"ratio": 0.25},
+      "shape": {
+        "fit_rows": "fold_train",
+        "predict_rows": "fold_validation",
+        "augmentation_policy": {
+          "sample_scope": "train_only",
+          "feature_scope": "none",
+          "require_origin_id": true,
+          "inherit_group": true,
+          "inherit_target": true
+        }
+      }
+    },
+    "Ridge"
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+        let generator = compiled
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "generator:compat.synthetic")
+            .unwrap();
+        assert_eq!(generator.kind, NodeKind::Generator);
+        assert_eq!(generator.params["ratio"], 0.25);
+        assert_eq!(generator.metadata["dsl_compat_keyword"], "data_generation");
+    }
+
+    #[test]
     fn parses_nirs4all_compat_feature_branch_merge_dict() {
         let spec = parse_pipeline_dsl_json(
             br#"{
@@ -7626,6 +7771,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|value| value.as_str() == Some("generator")));
+        assert!(schema["$defs"]["canonical_step_kind"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("data_generation")));
         assert!(schema["$defs"]["compat_generator_key"]["enum"]
             .as_array()
             .unwrap()
@@ -7676,6 +7826,26 @@ mod tests {
       "kind": "augmentation",
       "id": "augment:missing-shape",
       "operator": {"type": "GaussianNoise"}
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = compile_pipeline_dsl_with_generation(&spec).unwrap_err();
+        assert!(format!("{error}").contains("requires a shape plan"));
+    }
+
+    #[test]
+    fn refuses_data_generation_without_shape_plan() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-generation-without-shape",
+  "steps": [
+    {
+      "kind": "data_generation",
+      "id": "generator:missing-shape",
+      "operator": {"type": "SMOTE"}
     }
   ]
 }"#,
