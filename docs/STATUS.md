@@ -252,7 +252,8 @@ Implemented:
   `prediction_requirements` and deterministic `prediction_caches`, links the
   meta refit artifact to the OOF requirements it consumed, accepts validated
   selection decisions for branch and merge choices, and keeps an OOF summary
-  (producer, folds, samples, prediction width and targets) in bundle metadata;
+  (producer, prediction level, folds, samples or target/group units, prediction
+  width and targets) in bundle metadata;
 - materialized OOF prediction-cache payload sets for CV+refit bundles: payload
   JSON stores the actual validation `PredictionBlock` or
   `AggregatedPredictionBlock` values, validates by cache id, requirement key,
