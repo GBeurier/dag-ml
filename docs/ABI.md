@@ -9,6 +9,8 @@ the host owns the underlying object behind each handle.
 
 - version and string-free helpers;
 - owned byte release helper for JSON outputs returned by Rust;
+- owned row-major `DagMlF64Tensor` release helper for Rust-allocated
+  prediction buffers returned to host bindings;
 - `dagml_graph_validate_json` for graph contract checks;
 - `dagml_graph_parallel_levels_json` for deterministic node batches that
   bindings can use to prepare parallel schedulers;
@@ -17,6 +19,9 @@ the host owns the underlying object behind each handle.
 - `dagml_execution_plan_schedule_json` for exporting deterministic
   phase/variant/fold node-level schedules from a compiled `ExecutionPlan`;
 - selection policy/decision validation and candidate selection JSON helpers;
+- sample-level and target/group aggregated prediction block conversion helpers
+  that validate canonical JSON blocks and return contiguous row-major `double`
+  buffers with explicit `rows`, `cols`, `len` and `capacity`;
 - execution bundle validation, replay-envelope validation, replay-request
   validation and prediction-cache payload validation helpers;
 - `dagml_research_provenance_export_json` for building the standards-facing
@@ -95,13 +100,15 @@ it receives or materializes through the vtables.
 | Host prediction cache handle | Host | `PredictionCacheVTable.release` |
 | Rust error string | Rust allocation returned through ABI | `dagml_string_free` |
 | Rust JSON byte output | Rust allocation returned through ABI | `dagml_owned_bytes_free` |
+| Rust F64 tensor output | Rust allocation returned through ABI | `dagml_f64_tensor_free` |
 | Host JSON byte output | Host allocation returned through prediction-cache vtable | `PredictionCacheVTable.release_bytes` |
 | Arrow arrays | Producer of the Arrow array | Arrow C Data Interface release callback |
 | JSON blobs | Caller-provided view unless returned as owned bytes | ABI-specific free function |
 
 ## ABI Roadmap
 
-1. Freeze `DagMlBytesView`, `DagMlOwnedBytes`, handle and status conventions.
+1. Freeze `DagMlBytesView`, `DagMlOwnedBytes`, `DagMlF64Tensor`, handle and
+   status conventions.
 2. Add canonical JSON schemas for `describe`, `GraphSpec`, `ModelInputSpec` and
    `DataPlan` blobs.
 3. Add conformance tests that call the C ABI from a small C program.
