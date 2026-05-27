@@ -129,6 +129,10 @@ typedef struct ArrowSchema {
 #define DAG_ML_CAMPAIGN_SPEC_SCHEMA_VERSION 1u
 #endif
 
+#ifndef DAG_ML_EXECUTION_PLAN_SCHEMA_VERSION
+#define DAG_ML_EXECUTION_PLAN_SCHEMA_VERSION 1u
+#endif
+
 #ifndef DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION
 #define DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION 1u
 #endif
@@ -220,6 +224,7 @@ DagMlStatusCode dagml_graph_spec_contract_json(DagMlOwnedBytes *out_json, DagMlS
 DagMlStatusCode dagml_graph_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_campaign_spec_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_campaign_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
+DagMlStatusCode dagml_execution_plan_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_model_input_spec_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_model_input_spec_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_data_plan_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);

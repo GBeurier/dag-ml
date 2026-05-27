@@ -24,6 +24,7 @@ SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 GRAPH_SPEC_SCHEMA_REL = Path("docs/contracts/graph_spec.schema.json")
 CAMPAIGN_SPEC_SCHEMA_REL = Path("docs/contracts/campaign_spec.schema.json")
+EXECUTION_PLAN_SCHEMA_REL = Path("docs/contracts/execution_plan.schema.json")
 MODEL_INPUT_SPEC_SCHEMA_REL = Path("docs/contracts/model_input_spec.schema.json")
 DATA_PLAN_SCHEMA_REL = Path("docs/contracts/data_plan.schema.json")
 CONTROLLER_MANIFEST_SCHEMA_REL = Path("docs/contracts/controller_manifest.schema.json")
@@ -49,6 +50,9 @@ LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
 )
 LOCAL_GRAPH_SPEC_FIXTURE_REL = Path("examples/branch_merge_oof_graph.json")
 LOCAL_CAMPAIGN_SPEC_FIXTURE_REL = Path("examples/campaign_oof_generation.json")
+LOCAL_EXECUTION_PLAN_FIXTURE_REL = Path(
+    "examples/fixtures/runtime/execution_plan_branch_merge_executable.json"
+)
 LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL = Path(
     "examples/fixtures/data/model_input_spec_tabular_regressor.json"
 )
@@ -90,6 +94,10 @@ GRAPH_SPEC_SCHEMA_ID = (
 CAMPAIGN_SPEC_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "campaign_spec.v1.schema.json"
+)
+EXECUTION_PLAN_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "execution_plan.v1.schema.json"
 )
 MODEL_INPUT_SPEC_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
@@ -374,6 +382,79 @@ def validate_campaign_spec_schema(schema: Any, label: str) -> None:
         "data_binding",
     ):
         require(definition_name in defs, f"{label} CampaignSpec schema misses `{definition_name}`")
+
+
+def validate_execution_plan_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} ExecutionPlan schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} ExecutionPlan schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == EXECUTION_PLAN_SCHEMA_ID,
+        f"{label} ExecutionPlan schema $id mismatch",
+    )
+    require(schema.get("type") == "object", f"{label} ExecutionPlan root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} ExecutionPlan root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} ExecutionPlan required list missing")
+    for field in (
+        "id",
+        "graph_plan",
+        "campaign",
+        "node_plans",
+        "controller_manifests",
+        "variants",
+        "graph_fingerprint",
+        "campaign_fingerprint",
+        "controller_fingerprint",
+    ):
+        require(field in required, f"{label} ExecutionPlan schema must require `{field}`")
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} ExecutionPlan $defs missing")
+    require(
+        defs.get("phase", {}).get("enum")
+        == ["COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"],
+        f"{label} ExecutionPlan phase enum is not aligned",
+    )
+    require(
+        defs.get("node_kind", {}).get("enum")
+        == [
+            "transform",
+            "y_transform",
+            "split",
+            "model",
+            "fork",
+            "map",
+            "feature_join",
+            "prediction_join",
+            "mixed_join",
+            "source_join",
+            "tag",
+            "exclude",
+            "augmentation",
+            "adapter",
+            "aggregator",
+            "generator",
+            "restructure",
+            "tuner",
+            "subgraph",
+            "chart",
+        ],
+        f"{label} ExecutionPlan node_kind enum is not aligned",
+    )
+    for definition_name in (
+        "graph_plan",
+        "node_plan",
+        "variant_plan",
+        "generation_choice",
+        "generation_param_override",
+        "fold_set",
+    ):
+        require(definition_name in defs, f"{label} ExecutionPlan schema misses `{definition_name}`")
 
 
 def validate_model_input_spec_schema(schema: Any, label: str) -> None:
@@ -1362,6 +1443,180 @@ def validate_campaign_spec(value: Any, label: str) -> None:
     require(isinstance(metadata, dict), f"{label}.metadata must be an object")
 
 
+def validate_execution_plan(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} ExecutionPlan must be an object")
+    require_non_empty_string(value.get("id"), f"{label}.id")
+    graph_plan = value.get("graph_plan")
+    require(isinstance(graph_plan, dict), f"{label}.graph_plan must be an object")
+    graph = graph_plan.get("graph")
+    validate_graph_spec(graph, f"{label}.graph_plan.graph")
+    graph_node_ids = [node["id"] for node in graph["nodes"]]
+    graph_node_id_set = set(graph_node_ids)
+
+    topological_order = graph_plan.get("topological_order")
+    require(
+        isinstance(topological_order, list) and topological_order,
+        f"{label}.graph_plan.topological_order must be non-empty",
+    )
+    for index, node_id in enumerate(topological_order):
+        require_identifier(node_id, f"{label}.graph_plan.topological_order[{index}]")
+    require(
+        set(topological_order) == graph_node_id_set,
+        f"{label}.graph_plan.topological_order must cover graph nodes",
+    )
+
+    parallel_levels = graph_plan.get("parallel_levels", [])
+    require(isinstance(parallel_levels, list), f"{label}.graph_plan.parallel_levels must be an array")
+    flattened_levels: list[str] = []
+    for level_index, level in enumerate(parallel_levels):
+        require(isinstance(level, list), f"{label}.graph_plan.parallel_levels[{level_index}] array")
+        for node_index, node_id in enumerate(level):
+            require_identifier(
+                node_id,
+                f"{label}.graph_plan.parallel_levels[{level_index}][{node_index}]",
+            )
+            flattened_levels.append(node_id)
+    if flattened_levels:
+        require(
+            set(flattened_levels) == graph_node_id_set,
+            f"{label}.graph_plan.parallel_levels must cover graph nodes",
+        )
+
+    validate_campaign_spec(value.get("campaign"), f"{label}.campaign")
+    node_plans = value.get("node_plans")
+    require(isinstance(node_plans, dict) and node_plans, f"{label}.node_plans must be non-empty")
+    require(set(node_plans.keys()) == graph_node_id_set, f"{label}.node_plans must match graph nodes")
+    controllers = value.get("controller_manifests")
+    require(
+        isinstance(controllers, dict) and controllers,
+        f"{label}.controller_manifests must be non-empty",
+    )
+    for controller_id, manifest in controllers.items():
+        require_identifier(controller_id, f"{label}.controller_manifests key")
+        validate_controller_manifest(manifest, f"{label}.controller_manifests[{controller_id}]")
+        require(
+            manifest.get("controller_id") == controller_id,
+            f"{label}.controller_manifests key `{controller_id}` mismatch",
+        )
+
+    for key, node_plan in node_plans.items():
+        node_label = f"{label}.node_plans[{key}]"
+        require(isinstance(node_plan, dict), f"{node_label} must be an object")
+        require(node_plan.get("node_id") == key, f"{node_label}.node_id must match key")
+        require(
+            node_plan.get("kind")
+            in {
+                "transform",
+                "y_transform",
+                "split",
+                "model",
+                "fork",
+                "map",
+                "feature_join",
+                "prediction_join",
+                "mixed_join",
+                "source_join",
+                "tag",
+                "exclude",
+                "augmentation",
+                "adapter",
+                "aggregator",
+                "generator",
+                "restructure",
+                "tuner",
+                "subgraph",
+                "chart",
+            },
+            f"{node_label}.kind invalid",
+        )
+        controller_id = node_plan.get("controller_id")
+        require_identifier(controller_id, f"{node_label}.controller_id")
+        require(controller_id in controllers, f"{node_label}.controller_id has no manifest")
+        require_non_empty_string(node_plan.get("controller_version"), f"{node_label}.controller_version")
+        phases = node_plan.get("supported_phases")
+        require(isinstance(phases, list) and phases, f"{node_label}.supported_phases non-empty")
+        for phase_index, phase in enumerate(phases):
+            require(
+                phase in {"COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"},
+                f"{node_label}.supported_phases[{phase_index}] invalid",
+            )
+        capabilities = node_plan.get("controller_capabilities", [])
+        require(isinstance(capabilities, list), f"{node_label}.controller_capabilities array")
+        require(
+            node_plan.get("fit_scope")
+            in {"stateless", "fold_train", "full_train", "inference_only"},
+            f"{node_label}.fit_scope invalid",
+        )
+        require(
+            node_plan.get("rng_policy")
+            in {
+                "uses_core_seed",
+                "ignores_seed",
+                "externally_deterministic",
+                "nondeterministic",
+            },
+            f"{node_label}.rng_policy invalid",
+        )
+        require(
+            node_plan.get("artifact_policy")
+            in {"serializable", "host_only", "content_addressed", "replay_required"},
+            f"{node_label}.artifact_policy invalid",
+        )
+        for field in ("input_nodes", "output_nodes"):
+            node_refs = node_plan.get(field)
+            require(isinstance(node_refs, list), f"{node_label}.{field} must be an array")
+            for ref_index, node_ref in enumerate(node_refs):
+                require_identifier(node_ref, f"{node_label}.{field}[{ref_index}]")
+                require(node_ref in graph_node_id_set, f"{node_label}.{field}[{ref_index}] unknown")
+        shape_plan = node_plan.get("shape_plan")
+        if shape_plan is not None:
+            validate_data_model_shape_plan(shape_plan, f"{node_label}.shape_plan")
+            require(shape_plan.get("node_id") == key, f"{node_label}.shape_plan node_id mismatch")
+        data_bindings = node_plan.get("data_bindings", [])
+        require(isinstance(data_bindings, list), f"{node_label}.data_bindings must be an array")
+        for binding_index, binding in enumerate(data_bindings):
+            validate_data_binding(binding, f"{node_label}.data_bindings[{binding_index}]")
+            require(binding.get("node_id") == key, f"{node_label}.data_bindings node_id mismatch")
+        params = node_plan.get("params", {})
+        require(isinstance(params, dict), f"{node_label}.params must be an object")
+        require_sha256(node_plan.get("params_fingerprint"), f"{node_label}.params_fingerprint")
+
+    variants = value.get("variants")
+    require(isinstance(variants, list) and variants, f"{label}.variants must be non-empty")
+    for index, variant in enumerate(variants):
+        variant_label = f"{label}.variants[{index}]"
+        require(isinstance(variant, dict), f"{variant_label} must be an object")
+        require_identifier(variant.get("variant_id"), f"{variant_label}.variant_id")
+        require_sha256(variant.get("fingerprint"), f"{variant_label}.fingerprint")
+        seed = variant.get("seed")
+        if seed is not None:
+            require(isinstance(seed, int) and seed >= 0, f"{variant_label}.seed invalid")
+        choices = variant.get("choices", {})
+        require(isinstance(choices, dict), f"{variant_label}.choices must be an object")
+        for dimension_name, choice in choices.items():
+            choice_label = f"{variant_label}.choices[{dimension_name}]"
+            require_non_empty_string(dimension_name, f"{choice_label}.dimension")
+            require(isinstance(choice, dict), f"{choice_label} must be an object")
+            require_non_empty_string(choice.get("label"), f"{choice_label}.label")
+            overrides = choice.get("param_overrides", [])
+            require(isinstance(overrides, list), f"{choice_label}.param_overrides must be an array")
+            for override_index, override in enumerate(overrides):
+                override_label = f"{choice_label}.param_overrides[{override_index}]"
+                require(isinstance(override, dict), f"{override_label} must be an object")
+                override_node = override.get("node_id")
+                require_identifier(override_node, f"{override_label}.node_id")
+                require(override_node in graph_node_id_set, f"{override_label}.node_id unknown")
+                override_params = override.get("params", {})
+                require(isinstance(override_params, dict), f"{override_label}.params must be object")
+
+    fold_set = value.get("fold_set")
+    if fold_set is not None:
+        validate_fold_set(fold_set, f"{label}.fold_set")
+    require_sha256(value.get("graph_fingerprint"), f"{label}.graph_fingerprint")
+    require_sha256(value.get("campaign_fingerprint"), f"{label}.campaign_fingerprint")
+    require_sha256(value.get("controller_fingerprint"), f"{label}.controller_fingerprint")
+
+
 def validate_model_input_spec(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} ModelInputSpec must be an object")
     require(value.get("schema_version") == 1, f"{label}.schema_version must be 1")
@@ -1809,7 +2064,12 @@ def validate_dag_ml_campaign_header(header: str, label: str) -> None:
 
 
 def validate_dag_ml_execution_plan_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_EXECUTION_PLAN_SCHEMA_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_EXECUTION_PLAN_SCHEMA_VERSION=1",
+    )
     for symbol in (
+        "dagml_execution_plan_contract_json",
         "dagml_execution_plan_build_json",
         "dagml_execution_plan_schedule_json",
         "dagml_execution_plan_validate_json",
@@ -2194,6 +2454,7 @@ def main() -> int:
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_graph_spec_schema = load_json(ROOT / GRAPH_SPEC_SCHEMA_REL)
         local_campaign_spec_schema = load_json(ROOT / CAMPAIGN_SPEC_SCHEMA_REL)
+        local_execution_plan_schema = load_json(ROOT / EXECUTION_PLAN_SCHEMA_REL)
         local_model_input_spec_schema = load_json(ROOT / MODEL_INPUT_SPEC_SCHEMA_REL)
         local_data_plan_schema = load_json(ROOT / DATA_PLAN_SCHEMA_REL)
         local_controller_manifest_schema = load_json(ROOT / CONTROLLER_MANIFEST_SCHEMA_REL)
@@ -2215,6 +2476,7 @@ def main() -> int:
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
         local_graph_spec_fixture = load_json(ROOT / LOCAL_GRAPH_SPEC_FIXTURE_REL)
         local_campaign_spec_fixture = load_json(ROOT / LOCAL_CAMPAIGN_SPEC_FIXTURE_REL)
+        local_execution_plan_fixture = load_json(ROOT / LOCAL_EXECUTION_PLAN_FIXTURE_REL)
         local_model_input_spec_fixture = load_json(ROOT / LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL)
         local_data_plan_fixture = load_json(ROOT / LOCAL_DATA_PLAN_FIXTURE_REL)
         local_controller_manifest_fixture = load_json(
@@ -2240,6 +2502,7 @@ def main() -> int:
         )
         validate_graph_spec_schema(local_graph_spec_schema, "dag-ml")
         validate_campaign_spec_schema(local_campaign_spec_schema, "dag-ml")
+        validate_execution_plan_schema(local_execution_plan_schema, "dag-ml")
         validate_model_input_spec_schema(local_model_input_spec_schema, "dag-ml")
         validate_data_plan_schema(local_data_plan_schema, "dag-ml")
         validate_controller_manifest_schema(local_controller_manifest_schema, "dag-ml")
@@ -2262,6 +2525,7 @@ def main() -> int:
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
         validate_graph_spec(local_graph_spec_fixture, "dag-ml")
         validate_campaign_spec(local_campaign_spec_fixture, "dag-ml")
+        validate_execution_plan(local_execution_plan_fixture, "dag-ml")
         validate_model_input_spec(local_model_input_spec_fixture, "dag-ml")
         validate_data_plan(local_data_plan_fixture, "dag-ml")
         validate_controller_manifest(local_controller_manifest_fixture, "dag-ml")

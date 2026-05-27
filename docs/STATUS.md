@@ -138,6 +138,10 @@ Implemented:
 - CLI and C ABI can build a validated `ExecutionPlan` directly from a
   `PipelineDslSpec` plus controller manifests, using the compiled campaign
   template rather than requiring separate graph and campaign JSON files;
+- published `ExecutionPlan` contract with JSON Schema, branch/merge executable
+  fixture, C ABI contract discovery and standalone validation, making the
+  compiled scheduler-ready plan a first-class portable contract rather than an
+  implicit Rust-only artifact;
 - CLI process commands can run a compiled DSL branch/merge campaign through
   CV+refit bundle capture and stateful sklearn CV+refit+replay, including
   coordinated generation variants, heterogeneous prediction+original-data merge

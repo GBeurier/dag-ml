@@ -24,8 +24,9 @@ use dag_ml_core::{
     CAMPAIGN_SPEC_SCHEMA_VERSION, CONTROLLER_MANIFEST_SCHEMA_ID,
     CONTROLLER_MANIFEST_SCHEMA_VERSION, DATA_OUTPUT_PROVENANCE_KEY,
     DATA_OUTPUT_PROVENANCE_SCHEMA_ID, DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION, DATA_PLAN_SCHEMA_ID,
-    DATA_PLAN_SCHEMA_VERSION, GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION,
-    MODEL_INPUT_SPEC_SCHEMA_ID, MODEL_INPUT_SPEC_SCHEMA_VERSION, SELECTION_DECISION_SCHEMA_ID,
+    DATA_PLAN_SCHEMA_VERSION, EXECUTION_PLAN_SCHEMA_ID, EXECUTION_PLAN_SCHEMA_VERSION,
+    GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION, MODEL_INPUT_SPEC_SCHEMA_ID,
+    MODEL_INPUT_SPEC_SCHEMA_VERSION, SELECTION_DECISION_SCHEMA_ID,
     SELECTION_DECISION_SCHEMA_VERSION, SELECTION_POLICY_SCHEMA_ID, SELECTION_POLICY_SCHEMA_VERSION,
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -40,6 +41,7 @@ pub const DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION: u32 = 1;
 pub const DAG_ML_GRAPH_SPEC_SCHEMA_VERSION: u32 = GRAPH_SPEC_SCHEMA_VERSION;
 pub const DAG_ML_CAMPAIGN_SPEC_SCHEMA_VERSION: u32 = CAMPAIGN_SPEC_SCHEMA_VERSION;
+pub const DAG_ML_EXECUTION_PLAN_SCHEMA_VERSION: u32 = EXECUTION_PLAN_SCHEMA_VERSION;
 pub const DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION: u32 = MODEL_INPUT_SPEC_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PLAN_SCHEMA_VERSION: u32 = DATA_PLAN_SCHEMA_VERSION;
 pub const DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION: u32 = CONTROLLER_MANIFEST_SCHEMA_VERSION;
@@ -62,6 +64,12 @@ struct GraphSpecContractInfo {
 
 #[derive(Serialize)]
 struct CampaignSpecContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct ExecutionPlanContractInfo {
     schema_version: u32,
     schema_id: &'static str,
 }
@@ -500,6 +508,25 @@ pub unsafe extern "C" fn dagml_campaign_validate_json(
         "campaign",
         CampaignSpec::validate,
     )
+}
+
+/// Returns the public C ABI contract for canonical `ExecutionPlan` JSON.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_execution_plan_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = ExecutionPlanContractInfo {
+        schema_version: DAG_ML_EXECUTION_PLAN_SCHEMA_VERSION,
+        schema_id: EXECUTION_PLAN_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
 }
 
 /// Returns the public C ABI contract for canonical `ModelInputSpec` JSON.
@@ -5016,6 +5043,31 @@ mod tests {
         let status =
             unsafe { dagml_campaign_validate_json(campaign.as_ptr(), campaign.len(), &mut error) };
 
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+    }
+
+    #[test]
+    fn exposes_execution_plan_contract_over_abi() {
+        let plan = include_bytes!(
+            "../../../examples/fixtures/runtime/execution_plan_branch_merge_executable.json"
+        );
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe { dagml_execution_plan_contract_json(&mut out, &mut error) };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let contract: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(contract["schema_id"], dag_ml_core::EXECUTION_PLAN_SCHEMA_ID);
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let status =
+            unsafe { dagml_execution_plan_validate_json(plan.as_ptr(), plan.len(), &mut error) };
         assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
     }

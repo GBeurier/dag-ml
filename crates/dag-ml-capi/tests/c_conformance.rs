@@ -511,6 +511,33 @@ int main(int argc, char **argv) {
     DagMlOwnedBytes plan = {0};
     DagMlOwnedBytes out = {0};
     DagMlString error = {0};
+    DagMlOwnedBytes plan_contract = {0};
+    DagMlStatusCode contract_status = dagml_execution_plan_contract_json(
+        &plan_contract,
+        &error
+    );
+    if (contract_status != DAG_ML_STATUS_OK ||
+        !plan_contract.ptr ||
+        !contains_bytes(plan_contract.ptr, plan_contract.len, "execution_plan.v1.schema.json")) {
+        fprintf(stderr, "dagml_execution_plan_contract_json failed with status %u: %.*s\n",
+            contract_status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        free(graph.ptr);
+        free(campaign.ptr);
+        free(controllers.ptr);
+        free(bundle.ptr);
+        free(request.ptr);
+        free(envelopes.ptr);
+        if (plan_contract.ptr) {
+            dagml_owned_bytes_free(plan_contract);
+        }
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+    dagml_owned_bytes_free(plan_contract);
     DagMlStatusCode plan_status = dagml_execution_plan_build_json(
         graph.ptr,
         graph.len,
