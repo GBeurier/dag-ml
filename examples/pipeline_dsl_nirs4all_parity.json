@@ -1,0 +1,154 @@
+{
+  "id": "dsl-nirs4all-parity-smoke",
+  "campaign_id": "campaign:dsl.nirs4all.parity",
+  "root_seed": 42,
+  "leakage_policy": {
+    "split_unit": "group",
+    "require_group_ids": true
+  },
+  "split_invocation": {
+    "id": "split:group-kfold",
+    "leakage_policy": {
+      "split_unit": "group",
+      "require_group_ids": true
+    },
+    "params": {
+      "n_splits": 3,
+      "shuffle": true,
+      "random_state": 42
+    }
+  },
+  "steps": [
+    {
+      "kind": "transform",
+      "id": "transform:scale",
+      "operator": {"class": "sklearn.preprocessing.MinMaxScaler"}
+    },
+    {
+      "kind": "y_transform",
+      "id": "target:scale",
+      "operator": {"class": "sklearn.preprocessing.StandardScaler"}
+    },
+    {
+      "kind": "sample_augmentation",
+      "id": "augment:sample.noise",
+      "operator": {"class": "nirs4all.operators.transforms.GaussianAdditiveNoise"},
+      "params": {"sigma": 0.005, "count": 2, "selection": "random"},
+      "shape": {
+        "fit_rows": "fold_train",
+        "predict_rows": "fold_validation",
+        "augmentation_policy": {
+          "sample_scope": "train_only",
+          "feature_scope": "none",
+          "require_origin_id": true,
+          "inherit_group": true,
+          "inherit_target": true
+        }
+      }
+    },
+    {
+      "kind": "branch",
+      "mode": "duplication",
+      "branches": [
+        {
+          "id": "pls_path",
+          "steps": [
+            {
+              "kind": "transform",
+              "id": "branch:pls.transform:snv",
+              "operator": {"class": "nirs4all.operators.transforms.StandardNormalVariate"}
+            },
+            {
+              "kind": "model",
+              "id": "branch:pls.model:pls5",
+              "operator": {"class": "sklearn.cross_decomposition.PLSRegression"},
+              "params": {"n_components": 5}
+            },
+            {
+              "kind": "model",
+              "id": "branch:pls.model:pls10",
+              "operator": {"class": "sklearn.cross_decomposition.PLSRegression"},
+              "params": {"n_components": 10}
+            }
+          ]
+        },
+        {
+          "id": "rf_path",
+          "steps": [
+            {
+              "kind": "concat_transform",
+              "id": "branch:rf.concat:multi_view",
+              "branches": [
+                {
+                  "id": "pca",
+                  "steps": [
+                    {
+                      "id": "branch:rf.concat:pca",
+                      "operator": {"class": "sklearn.decomposition.PCA"},
+                      "params": {"n_components": 20}
+                    }
+                  ]
+                },
+                {
+                  "id": "derivative_pca",
+                  "steps": [
+                    {
+                      "id": "branch:rf.concat:derivative",
+                      "operator": {"class": "nirs4all.operators.transforms.FirstDerivative"}
+                    },
+                    {
+                      "id": "branch:rf.concat:derivative.pca",
+                      "operator": {"class": "sklearn.decomposition.PCA"},
+                      "params": {"n_components": 10}
+                    }
+                  ]
+                }
+              ],
+              "shape": {
+                "fit_rows": "fold_train",
+                "feature_namespace": "branch.rf.concat",
+                "selection_policy": {"scope": "unsupervised"}
+              }
+            },
+            {
+              "kind": "model",
+              "id": "branch:rf.model:rf",
+              "operator": {"class": "sklearn.ensemble.RandomForestRegressor"},
+              "params": {"n_estimators": 64, "random_state": 42}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge",
+      "id": "merge:stack.predictions_plus_original",
+      "merge_mode": "predictions_plus_original",
+      "output_as": "features",
+      "include_original_data": true,
+      "on_missing": "error",
+      "selectors": [
+        {"branch": "pls_path", "select": "best", "metric": "rmse"},
+        {"branch": "rf_path", "select": "all"}
+      ]
+    },
+    {
+      "kind": "model",
+      "id": "model:meta.ridge",
+      "operator": {"class": "sklearn.linear_model.Ridge"},
+      "finetune_params": {
+        "n_trials": 10,
+        "approach": "single",
+        "eval_mode": "mean",
+        "sampler": "random",
+        "metric": "rmse",
+        "model_params": {
+          "alpha": [0.1, 0.5, 1.0]
+        }
+      },
+      "train_params": {
+        "sample_weight": "balanced"
+      }
+    }
+  ]
+}

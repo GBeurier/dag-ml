@@ -118,11 +118,14 @@ Implemented:
 - deterministic graph parallel-level planner for future node-batch execution
   without changing topological semantics;
 - initial strict JSON pipeline DSL compiler: `PipelineDslSpec` lowers linear
-  transform/augmentation/model steps, model branches and heterogeneous
+  transform/augmentation/model steps, target processing, tag/exclude nodes,
+  explicit sample/feature augmentation, concat feature fusion, model branches,
+  multiple models per branch, standalone merge/join nodes and heterogeneous
   prediction-plus-original-data merge models into canonical `GraphSpec` while
   keeping split/fold planning in campaign contracts rather than graph
   operators; augmentation steps must declare a shape plan so sample/feature
-  augmentation scope is validated instead of implicit;
+  augmentation scope is validated instead of implicit, and tuning/train params
+  are visible in public DSL fields instead of hidden controller state;
 - the same DSL profile extracts node-level parameter variants into a canonical
   `GenerationSpec`, also accepts coordinated generation dimensions that can
   override several branch/merge/model nodes together, validates per-node
@@ -135,6 +138,9 @@ Implemented:
 - CLI and C ABI entry points compile that DSL surface to validated graph JSON
   or graph+generation+shape+campaign artifact JSON, with branch/merge OOF,
   generation, data-binding, shape-plan and campaign-template smoke coverage;
+- `docs/design/DSL_NIRS4ALL_PARITY.md` records the working parity matrix
+  against nirs4all pipeline features, separating canonical strict DSL support
+  from future shorthand import and host-controller execution work;
 - CLI and C ABI can build a validated `ExecutionPlan` directly from a
   `PipelineDslSpec` plus controller manifests, using the compiled campaign
   template rather than requiring separate graph and campaign JSON files;
