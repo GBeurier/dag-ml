@@ -325,6 +325,9 @@ Implemented:
   host-returned byte release, plus a tested Rust runtime adapter over the
   vtable. Prediction-cache ABI v1 remains borrowed, while ABI v2 opts into
   Rust-owned teardown after materialized handles are released;
+- C ABI row-major F64 tensor export for validated sample-level and
+  target/group aggregated prediction blocks, with explicit Rust allocation
+  ownership and `dagml_f64_tensor_free` release;
 - C ABI non-mock replay execution helper that composes host controller,
   data-provider, artifact-store and optional prediction-cache vtables while
   Rust owns bundle validation, replay envelope validation, DAG scheduling,
@@ -367,7 +370,8 @@ Not implemented yet:
 - artifact binary deserialization/loading into host-native model objects beyond
   the implemented portable artifact reference contract, file-backed artifact
   manifest and file-backed artifact payload store;
-- Arrow prediction storage and ABI-owned prediction tensors;
+- Arrow prediction storage and broader typed tensor/cache ABI surfaces beyond
+  the initial owned row-major F64 prediction-block export;
 - production host controller adapters with native libraries or
   language-specific bindings;
 - production `dag-ml-data` provider backends beyond the current in-memory C
