@@ -78,6 +78,39 @@ fn cli_compiles_pipeline_dsl_to_graph() {
         "validate-graph failed for compiled DSL graph: {}",
         String::from_utf8_lossy(&validate.stderr)
     );
+
+    let artifact_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_compiled_dsl_artifact_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let compile_artifact = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "compile-pipeline-dsl",
+            "--dsl",
+            "examples/pipeline_dsl_generation.json",
+            "--artifact",
+            "--output",
+            artifact_path.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli compile-pipeline-dsl --artifact");
+    assert!(
+        compile_artifact.status.success(),
+        "compile-pipeline-dsl --artifact failed: {}",
+        String::from_utf8_lossy(&compile_artifact.stderr)
+    );
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&artifact_path).expect("compiled DSL artifact output was written"),
+    )
+    .expect("compiled DSL artifact output is JSON");
+    assert_eq!(artifact["generation"]["strategy"], "cartesian");
+    assert_eq!(artifact["generation"]["max_variants"], 4);
+    assert_eq!(
+        artifact["graph"]["search_space_fingerprint"],
+        artifact["generation_fingerprint"]
+    );
 }
 
 #[test]

@@ -122,8 +122,13 @@ Implemented:
   prediction-plus-original-data merge models into canonical `GraphSpec` while
   keeping split/fold planning in campaign contracts rather than graph
   operators;
-- CLI and C ABI entry points compile that DSL surface to validated graph JSON,
-  with branch/merge OOF smoke coverage;
+- the same DSL profile extracts node-level parameter variants into a canonical
+  `GenerationSpec`, writes the generation fingerprint into
+  `GraphSpec.search_space_fingerprint`, and exposes both graph-only and
+  graph+generation artifact outputs through CLI and C ABI;
+- CLI and C ABI entry points compile that DSL surface to validated graph JSON
+  or graph+generation artifact JSON, with branch/merge OOF and generation
+  smoke coverage;
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate
@@ -374,8 +379,8 @@ Not implemented yet:
 
 - full nirs4all-compatible DSL compiler beyond the initial strict JSON
   `PipelineDslSpec` profile;
-- advanced search-space compiler/lowering beyond typed node-parameter
-  overrides;
+- advanced search-space compiler/lowering beyond initial typed node-parameter
+  variant extraction from `PipelineDslSpec`;
 - custom aggregation controllers and production persistent/Arrow replay
   backends for non-sample aggregated prediction blocks;
 - artifact binary deserialization/loading into host-native model objects beyond

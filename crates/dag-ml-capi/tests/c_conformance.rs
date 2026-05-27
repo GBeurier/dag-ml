@@ -424,6 +424,45 @@ static int verify_pipeline_dsl_compile(void) {
         return 0;
     }
     dagml_owned_bytes_free(graph);
+    const char *dsl_generation =
+        "{\"id\":\"dsl:c.generation\","
+        "\"max_variants\":2,"
+        "\"steps\":[{\"kind\":\"model\","
+        "\"id\":\"model:base\","
+        "\"operator\":{\"type\":\"Ridge\"},"
+        "\"variants\":["
+        "{\"label\":\"low\",\"params\":{\"alpha\":0.1}},"
+        "{\"label\":\"high\",\"params\":{\"alpha\":1.0}}]}]}";
+    DagMlOwnedBytes artifact = {0};
+    status = dagml_pipeline_dsl_compile_artifact_json(
+        (const uint8_t *)dsl_generation,
+        strlen(dsl_generation),
+        &artifact,
+        &error
+    );
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "pipeline DSL artifact compile failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 0;
+    }
+    if (!artifact.ptr ||
+        !contains_bytes(artifact.ptr, artifact.len, "\"strategy\":\"cartesian\"") ||
+        !contains_bytes(artifact.ptr, artifact.len, "\"generation_fingerprint\"") ||
+        !contains_bytes(artifact.ptr, artifact.len, "\"node_id\":\"model:base\"")) {
+        fprintf(stderr, "unexpected compiled DSL artifact: %.*s\n",
+            (int)artifact.len,
+            artifact.ptr ? (char *)artifact.ptr : "");
+        if (artifact.ptr) {
+            dagml_owned_bytes_free(artifact);
+        }
+        return 0;
+    }
+    dagml_owned_bytes_free(artifact);
     return 1;
 }
 

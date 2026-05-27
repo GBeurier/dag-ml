@@ -35,9 +35,10 @@ Status: implemented as the first core slice. Remaining Phase 1 hardening is
 mostly richer fixtures and replacing smoke adapters with production host
 controllers. A first strict JSON `PipelineDslSpec` compiler now lowers linear
 transform/augmentation/model steps, branch model variants and heterogeneous
-prediction-plus-original-data merge models into canonical `GraphSpec`; the
-remaining DSL work is compatibility with the broader nirs4all surface and
-search-space syntax.
+prediction-plus-original-data merge models into canonical `GraphSpec`. It also
+extracts node-parameter variants into `GenerationSpec` and binds the resulting
+fingerprint into the graph. The remaining DSL work is compatibility with the
+broader nirs4all surface and richer search-space syntax.
 
 ## Phase 2: Host Controllers
 

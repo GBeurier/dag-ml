@@ -6,7 +6,8 @@ use std::sync::Mutex;
 
 use dag_ml_core::{
     build_execution_plan, build_openlineage_run_event, build_research_provenance_export,
-    compile_pipeline_dsl, regression_report_to_candidate_score, score_regression_aggregated_block,
+    compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
+    regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
     AggregatedPredictionBlock, ArtifactMaterializationRequest, BundlePredictionCachePayload,
     BundlePredictionCachePayloadSet, BundleReplayExecution, CampaignSpec, CandidateScore,
@@ -402,6 +403,34 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_compile_json(
     };
     match compile_pipeline_dsl(&dsl) {
         Ok(graph) => write_owned_json(out_json, error_out, &graph),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Compiles a strict JSON `PipelineDslSpec` into `CompiledPipelineDsl` JSON.
+///
+/// The artifact contains the canonical graph, extracted `GenerationSpec`, and
+/// the generation fingerprint copied into `graph.search_space_fingerprint`
+/// when variants are present.
+///
+/// # Safety
+///
+/// Same pointer and output ownership rules as `dagml_pipeline_dsl_compile_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_pipeline_dsl_compile_artifact_json(
+    dsl_ptr: *const u8,
+    dsl_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let dsl = match parse_json_ptr::<PipelineDslSpec>(dsl_ptr, dsl_len, error_out, "pipeline DSL") {
+        Ok(dsl) => dsl,
+        Err(status) => return status,
+    };
+    match compile_pipeline_dsl_with_generation(&dsl) {
+        Ok(compiled) => write_owned_json(out_json, error_out, &compiled),
         Err(error) => validation_error(error_out, error),
     }
 }
@@ -4489,6 +4518,42 @@ mod tests {
             && edge.target.node_id.as_str() == "merge:stack.pred_plus_original.meta:ridge"
             && edge.target.port_name == "b0_oof"));
         graph.validate().unwrap();
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn compiles_pipeline_dsl_generation_artifact_over_abi() {
+        let dsl = include_bytes!("../../../examples/pipeline_dsl_generation.json");
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_pipeline_dsl_compile_artifact_json(dsl.as_ptr(), dsl.len(), &mut out, &mut error)
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let artifact: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(artifact["graph"]["id"], "dsl-generation-smoke");
+        assert_eq!(artifact["generation"]["strategy"], "cartesian");
+        assert_eq!(
+            artifact["generation"]["dimensions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            artifact["generation"]["dimensions"][1]["choices"][1]["param_overrides"][0]["params"]
+                ["alpha"],
+            1.0
+        );
+        assert_eq!(
+            artifact["graph"]["search_space_fingerprint"],
+            artifact["generation_fingerprint"]
+        );
         unsafe { dagml_owned_bytes_free(out) };
     }
 

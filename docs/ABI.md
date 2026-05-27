@@ -13,7 +13,9 @@ the host owns the underlying object behind each handle.
   prediction buffers returned to host bindings;
 - `dagml_graph_validate_json` for graph contract checks;
 - `dagml_pipeline_dsl_compile_json` for pure compilation of the strict JSON
-  `PipelineDslSpec` surface into canonical `GraphSpec` JSON;
+  `PipelineDslSpec` surface into canonical `GraphSpec` JSON, plus
+  `dagml_pipeline_dsl_compile_artifact_json` when bindings also need the
+  extracted `GenerationSpec` and search-space fingerprint;
 - `dagml_graph_parallel_levels_json` for deterministic node batches that
   bindings can use to prepare parallel schedulers;
 - `dagml_execution_plan_build_json` for compiling graph/campaign/controller

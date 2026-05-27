@@ -1,0 +1,36 @@
+{
+  "id": "dsl-generation-smoke",
+  "max_variants": 4,
+  "steps": [
+    {
+      "kind": "transform",
+      "id": "transform:preprocess",
+      "operator": { "type": "Preprocess" },
+      "variants": [
+        {
+          "label": "snv",
+          "params": { "method": "snv" }
+        },
+        {
+          "label": "msc",
+          "params": { "method": "msc" }
+        }
+      ]
+    },
+    {
+      "kind": "model",
+      "id": "model:base",
+      "operator": { "type": "Ridge" },
+      "variants": [
+        {
+          "label": "low",
+          "params": { "alpha": 0.1 }
+        },
+        {
+          "label": "high",
+          "params": { "alpha": 1.0 }
+        }
+      ]
+    }
+  ]
+}
