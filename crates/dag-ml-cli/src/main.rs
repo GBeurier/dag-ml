@@ -3088,6 +3088,20 @@ impl RuntimeController for CliMockController {
                         task.node_plan.node_id
                     )));
                 }
+                let artifact_input = task.artifact_inputs.get(key).ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "node `{}` did not receive replay artifact metadata `{key}`",
+                        task.node_plan.node_id
+                    ))
+                })?;
+                if artifact_input.node_id != task.node_plan.node_id
+                    || artifact_input.controller_id != task.node_plan.controller_id
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received mismatched replay artifact metadata `{key}`",
+                        task.node_plan.node_id
+                    )));
+                }
                 if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact) {
                     return Err(DagMlError::RuntimeValidation(format!(
                         "node `{}` received invalid replay artifact handle `{key}`",

@@ -82,6 +82,9 @@ Implemented:
   target names beside the opaque prediction handle;
 - controller-facing `NodeTask.data_views` map carrying the scoped view spec
   beside each data-view handle;
+- controller-facing `NodeTask.artifact_inputs` map carrying refit artifact
+  metadata beside each replay artifact handle, including artifact backend/URI,
+  content fingerprint, params fingerprint and data/prediction dependency keys;
 - in-memory runtime data provider with handle records for schema/plan/relation
   traceability and child data-view records for sample partition, source and
   feature-set traceability;
@@ -239,7 +242,8 @@ Implemented:
 - CLI contract proving direct branch/merge `REFIT` without a preceding
   in-context `FIT_CV` is refused because OOF validation predictions are absent;
 - process-controller replay fixtures now verify that a model receives its own
-  refit artifact handle, not just any artifact handle in the task inputs;
+  refit artifact handle and matching `NodeTask.artifact_inputs` metadata, not
+  just any artifact handle in the task inputs;
 - stateful sklearn process-controller smoke that fits a real sklearn pipeline
   during `REFIT`, stores it behind an opaque model handle, then replays
   `PREDICT` through the captured handle in the same persistent process;

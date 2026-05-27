@@ -204,7 +204,7 @@ Minimum controller-facing request/response shapes:
 |---|---|
 | `ControllerPlanRequest` | node id, operator params, phase set, data requirements, input/output ports, data schema fingerprint |
 | `SplitRequest` | identity table, sample relation table, split policy, seed context |
-| `TaskRequest` | phase, node id, fold id, branch path, variant id plus generated choices/fingerprint, data view, data-plan refs, input handles, seed context |
+| `TaskRequest` | phase, node id, fold id, branch path, variant id plus generated choices/fingerprint, data view, data-plan refs, input handles, prediction input metadata, artifact input metadata, seed context |
 | `TaskResponse` | output handles, prediction blocks, sample relation deltas, metrics, artifacts, lineage payload |
 
 Every shape-changing operation must declare the affected domain:
