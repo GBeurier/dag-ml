@@ -345,6 +345,7 @@ def model_result(task: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[
 def output_handles(task: dict[str, Any], handle_value: int) -> dict[str, Any]:
     node_plan = task["node_plan"]
     controller_id = node_plan["controller_id"]
+    node_kind = node_plan.get("kind")
     outputs = {
         "out": {
             "handle": handle_value,
@@ -352,8 +353,14 @@ def output_handles(task: dict[str, Any], handle_value: int) -> dict[str, Any]:
             "owner_controller": controller_id,
         }
     }
-    if node_plan.get("kind") == "model":
+    if node_kind == "model":
         outputs["oof"] = {
+            "handle": handle_value,
+            "kind": "prediction",
+            "owner_controller": controller_id,
+        }
+    elif node_kind == "prediction_join":
+        outputs["prediction"] = {
             "handle": handle_value,
             "kind": "prediction",
             "owner_controller": controller_id,

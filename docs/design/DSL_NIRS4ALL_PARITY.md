@@ -30,6 +30,11 @@ YAML frontends should be thin host-side serializers around the same importer.
   or native controller registry resolves it through manifest
   `operator_selectors` to the matching controller. Verbose forms are reserved
   for parameters, explicit ids, controller hints or ambiguous routing.
+- Bindings should therefore expose registry aliases as first-class UX, not as a
+  compatibility afterthought. A bare alias such as `SNV` or `StandardScaler`
+  remains the representation in the graph; a `TransformerMixin` controller may
+  build the concrete object and execute it after Rust has selected that
+  controller by alias/class/function/ref/type selectors.
 
 ## Parity Matrix
 

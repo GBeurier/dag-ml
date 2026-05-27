@@ -5703,11 +5703,20 @@ fn output_data_view_for_port(
     base_view: &DataProviderViewSpec,
 ) -> Result<DataProviderViewSpec> {
     let mut view = base_view.clone();
-    if view.extra.contains_key(DATA_OUTPUT_PROVENANCE_KEY) {
-        return Err(DagMlError::RuntimeValidation(format!(
-            "node `{}` cannot propagate data output `{port_name}` because input view metadata already contains reserved key `{DATA_OUTPUT_PROVENANCE_KEY}`",
-            task.node_plan.node_id
-        )));
+    if let Some(upstream_provenance) = view.extra.remove(DATA_OUTPUT_PROVENANCE_KEY) {
+        let provenance: DataOutputProvenance =
+            serde_json::from_value(upstream_provenance).map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "node `{}` cannot propagate data output `{port_name}` because upstream data output provenance is invalid JSON: {error}",
+                    task.node_plan.node_id
+                ))
+            })?;
+        provenance.validate().map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "node `{}` cannot propagate data output `{port_name}` because upstream data output provenance is invalid: {error}",
+                task.node_plan.node_id
+            ))
+        })?;
     }
     let shape_deltas = result
         .shape_deltas
