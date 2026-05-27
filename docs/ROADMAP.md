@@ -73,7 +73,8 @@ per controller. Pool routing spreads `FIT_CV` by node/variant/fold while keeping
 `REFIT` and `PREDICT` sticky by node/variant so stateful artifact handles replay
 on the worker that produced them. Process adapters must expose a `--describe`
 JSON handshake so the CLI can reject unsupported protocol versions or modes
-before a campaign starts. Persistent workers use `control_frames_v1` for
+before a campaign starts; that description now has a published JSON Schema and
+canonical fixture. Persistent workers use `control_frames_v1` for
 explicit `init`, framed `task`, typed `error` and `close` messages. They are
 guarded by coordinator-side timeouts and opt-in retry/restart, with a flaky
 adapter fixture covering timeout refusal and recovery. A stateful sklearn smoke

@@ -30,6 +30,9 @@ PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL = Path(
 DATA_OUTPUT_PROVENANCE_SCHEMA_REL = Path(
     "docs/contracts/data_output_provenance.schema.json"
 )
+PROCESS_ADAPTER_DESCRIPTION_SCHEMA_REL = Path(
+    "docs/contracts/process_adapter_description.schema.json"
+)
 RESEARCH_PROVENANCE_PROFILE_REL = Path(
     "docs/contracts/research_provenance_package_profile.v1.json"
 )
@@ -39,6 +42,9 @@ LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
 )
 LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL = Path(
     "examples/fixtures/runtime/data_output_provenance_augmented_view.json"
+)
+LOCAL_PROCESS_ADAPTER_DESCRIPTION_FIXTURE_REL = Path(
+    "examples/fixtures/runtime/process_adapter_description_python.json"
 )
 LOCAL_C_HEADER_REL = Path("crates/dag-ml-capi/include/dag_ml.h")
 SIBLING_FIXTURE_REL = Path(
@@ -77,6 +83,10 @@ PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_ID = (
 DATA_OUTPUT_PROVENANCE_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "data_output_provenance.v1.schema.json"
+)
+PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "process_adapter_description.v1.schema.json"
 )
 RESEARCH_PROVENANCE_PROFILE_ID = "dag-ml.research_provenance_package.v1"
 
@@ -353,6 +363,79 @@ def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
     )
 
 
+def validate_process_adapter_description_schema(schema: Any, label: str) -> None:
+    require(
+        isinstance(schema, dict),
+        f"{label} process-adapter description schema must be an object",
+    )
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} process-adapter description schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID,
+        f"{label} process-adapter description schema has unexpected $id",
+    )
+    require(
+        schema.get("type") == "object",
+        f"{label} process-adapter description root must be an object",
+    )
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} process-adapter description root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(
+        isinstance(required, list),
+        f"{label} process-adapter description required list is missing",
+    )
+    for field in (
+        "schema_version",
+        "protocol",
+        "adapter_id",
+        "supported_modes",
+        "capabilities",
+    ):
+        require(
+            field in required,
+            f"{label} process-adapter description must require `{field}`",
+        )
+    properties = schema.get("properties")
+    require(
+        isinstance(properties, dict),
+        f"{label} process-adapter description properties are missing",
+    )
+    require(
+        properties.get("schema_version", {}).get("const") == 1,
+        f"{label} process-adapter description schema_version const must be 1",
+    )
+    require(
+        properties.get("protocol", {}).get("const") == "dag-ml-process-adapter",
+        f"{label} process-adapter protocol const mismatch",
+    )
+    supported_modes = properties.get("supported_modes")
+    require(
+        isinstance(supported_modes, dict)
+        and supported_modes.get("uniqueItems") is True
+        and supported_modes.get("items", {}).get("enum") == ["one_shot", "jsonl"],
+        f"{label} process-adapter supported_modes contract mismatch",
+    )
+    capabilities = properties.get("capabilities")
+    require(
+        isinstance(capabilities, dict)
+        and capabilities.get("uniqueItems") is True
+        and capabilities.get("minItems") == 2,
+        f"{label} process-adapter capabilities contract mismatch",
+    )
+    defs = schema.get("$defs")
+    require(
+        isinstance(defs, dict)
+        and "identifier" in defs
+        and "capability" in defs,
+        f"{label} process-adapter schema definitions are incomplete",
+    )
+
+
 def validate_envelope(envelope: Any, label: str) -> None:
     require(isinstance(envelope, dict), f"{label} envelope must be a JSON object")
     require(envelope.get("schema_version") == 1, f"{label} envelope schema_version must be 1")
@@ -511,6 +594,40 @@ def validate_data_output_provenance(value: Any, label: str) -> None:
         require(
             value.get("feature_schema_fingerprint") == last_feature_after,
             f"{label}.feature_schema_fingerprint must match the last feature delta",
+        )
+
+
+def validate_process_adapter_description(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} process-adapter description must be an object")
+    require(value.get("schema_version") == 1, f"{label}.schema_version must be 1")
+    require(
+        value.get("protocol") == "dag-ml-process-adapter",
+        f"{label}.protocol must be dag-ml-process-adapter",
+    )
+    require_non_empty_string(value.get("adapter_id"), f"{label}.adapter_id")
+    modes = value.get("supported_modes")
+    require(isinstance(modes, list) and modes, f"{label}.supported_modes must be non-empty")
+    require(len(set(modes)) == len(modes), f"{label}.supported_modes contain duplicates")
+    for index, mode in enumerate(modes):
+        require(
+            mode in {"one_shot", "jsonl"},
+            f"{label}.supported_modes[{index}] is invalid",
+        )
+    capabilities = value.get("capabilities")
+    require(
+        isinstance(capabilities, list) and capabilities,
+        f"{label}.capabilities must be non-empty",
+    )
+    require(
+        len(set(capabilities)) == len(capabilities),
+        f"{label}.capabilities contain duplicates",
+    )
+    for index, capability in enumerate(capabilities):
+        require_non_empty_string(capability, f"{label}.capabilities[{index}]")
+    for required_capability in ("node_task_json_v1", "node_result_json_v1"):
+        require(
+            required_capability in capabilities,
+            f"{label}.capabilities must include `{required_capability}`",
         )
 
 
@@ -924,11 +1041,17 @@ def main() -> int:
         local_data_output_provenance_schema = load_json(
             ROOT / DATA_OUTPUT_PROVENANCE_SCHEMA_REL
         )
+        local_process_adapter_description_schema = load_json(
+            ROOT / PROCESS_ADAPTER_DESCRIPTION_SCHEMA_REL
+        )
         local_research_provenance_profile = load_json(ROOT / RESEARCH_PROVENANCE_PROFILE_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
         local_data_output_provenance_fixture = load_json(
             ROOT / LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL
+        )
+        local_process_adapter_description_fixture = load_json(
+            ROOT / LOCAL_PROCESS_ADAPTER_DESCRIPTION_FIXTURE_REL
         )
         local_header = load_text(ROOT / LOCAL_C_HEADER_REL)
         validate_schema_artifact(local_schema, LOCAL_SCHEMA_ID, "dag-ml")
@@ -946,9 +1069,17 @@ def main() -> int:
             local_data_output_provenance_schema,
             "dag-ml",
         )
+        validate_process_adapter_description_schema(
+            local_process_adapter_description_schema,
+            "dag-ml",
+        )
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
         validate_data_output_provenance(local_data_output_provenance_fixture, "dag-ml")
+        validate_process_adapter_description(
+            local_process_adapter_description_fixture,
+            "dag-ml",
+        )
         validate_data_provider_header(local_header, "dag-ml")
         validate_dag_ml_prediction_cache_tensor_header(local_header, "dag-ml")
         validate_dag_ml_controller_result_header(local_header, "dag-ml")

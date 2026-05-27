@@ -88,6 +88,23 @@ schema fingerprint and emitted shape deltas. Controllers and host bindings can
 discover and validate this metadata without reverse-engineering free-form JSON
 or hardcoding Rust-only constants.
 
+## Process Adapter Description v1
+
+Schema: `process_adapter_description.schema.json`
+
+Canonical fixture:
+`examples/fixtures/runtime/process_adapter_description_python.json`
+
+Runtime shape returned by process adapters from `--describe`:
+`{ schema_version, protocol, adapter_id, supported_modes, capabilities }`.
+
+This CLI/runtime contract lets the coordinator reject unsupported process
+adapters before any `NodeTask` is sent. Version 1 requires protocol
+`dag-ml-process-adapter`, mode declarations for `one_shot`/`jsonl` support and
+explicit JSON task/result capabilities. Persistent worker and parallel
+scheduler features remain opt-in capabilities layered on the same description
+object.
+
 ## Research Provenance Package Profile v1
 
 Profile: `research_provenance_package_profile.v1.json`

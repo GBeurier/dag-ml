@@ -93,6 +93,8 @@ the host owns the underlying object behind each handle.
   shape from the bundle requirement before materializing a prediction handle.
   Prediction-cache vtable ABI v1 is borrowed; v2 is opt-in owned lifecycle with
   `destroy(user_data)` after materialized prediction handles are released.
+- `docs/contracts/process_adapter_description.schema.json` documents the
+  required process-adapter `--describe` JSON used by CLI-managed host adapters.
 
 The vtables are intentionally small in this scaffold. They establish shape,
 ownership and naming before full execution is implemented.
@@ -131,8 +133,8 @@ it receives or materializes through the vtables.
 
 1. Freeze `DagMlBytesView`, `DagMlOwnedBytes`, `DagMlF64Tensor`, handle and
    status conventions.
-2. Add canonical JSON schemas for `describe`, `GraphSpec`, `ModelInputSpec` and
-   `DataPlan` blobs.
+2. Add the remaining canonical JSON schemas for `GraphSpec`, `ModelInputSpec`
+   and `DataPlan` blobs.
 3. Add conformance tests that call the C ABI from a small C program.
 4. Add C conformance tests that drive non-mock replay through the vtable
    surface.
