@@ -39,8 +39,10 @@ prediction-plus-original-data merge models into canonical `GraphSpec`. It also
 extracts node-parameter variants and coordinated multi-node override dimensions
 into `GenerationSpec`, validates per-node data/model shape plans, requires
 explicit shape plans for augmentation steps, and binds the resulting
-search-space fingerprint into the graph. The remaining DSL work is
-compatibility with the broader nirs4all surface and richer search-space syntax.
+search-space fingerprint into the graph. It also emits a `CampaignSpec`
+template so split invocation, generation and shape plans stay in the campaign
+layer rather than graph operators. The remaining DSL work is compatibility with
+the broader nirs4all surface and richer search-space syntax.
 
 ## Phase 2: Host Controllers
 

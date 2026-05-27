@@ -1,5 +1,21 @@
 {
   "id": "dsl-coordinated-generation-branch-merge",
+  "campaign_id": "campaign:dsl.coordinated-generation",
+  "root_seed": 20260527,
+  "leakage_policy": {
+    "split_unit": "group",
+    "require_group_ids": true
+  },
+  "split_invocation": {
+    "id": "split:group-kfold",
+    "leakage_policy": {
+      "split_unit": "group",
+      "require_group_ids": true
+    },
+    "params": {
+      "n_splits": 5
+    }
+  },
   "max_variants": 2,
   "generation_dimensions": [
     {

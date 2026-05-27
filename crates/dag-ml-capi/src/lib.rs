@@ -4554,6 +4554,10 @@ mod tests {
             artifact["graph"]["search_space_fingerprint"],
             artifact["generation_fingerprint"]
         );
+        assert_eq!(
+            artifact["campaign_template"]["generation"],
+            artifact["generation"]
+        );
         unsafe { dagml_owned_bytes_free(out) };
     }
 
@@ -4583,6 +4587,14 @@ mod tests {
         assert_eq!(
             artifact["graph"]["search_space_fingerprint"],
             artifact["generation_fingerprint"]
+        );
+        assert_eq!(
+            artifact["campaign_template"]["split_invocation"]["id"],
+            "split:group-kfold"
+        );
+        assert_eq!(
+            artifact["campaign_template"]["generation"],
+            artifact["generation"]
         );
         unsafe { dagml_owned_bytes_free(out) };
     }
