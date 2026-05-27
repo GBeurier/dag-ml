@@ -1808,6 +1808,15 @@ def validate_dag_ml_campaign_header(header: str, label: str) -> None:
         require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
+def validate_dag_ml_execution_plan_header(header: str, label: str) -> None:
+    for symbol in (
+        "dagml_execution_plan_build_json",
+        "dagml_execution_plan_schedule_json",
+        "dagml_execution_plan_validate_json",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
+
+
 def validate_dag_ml_data_shape_header(header: str, label: str) -> None:
     for macro in (
         "#define DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION 1u",
@@ -2272,6 +2281,7 @@ def main() -> int:
         validate_dag_ml_controller_result_header(local_header, "dag-ml")
         validate_dag_ml_graph_header(local_header, "dag-ml")
         validate_dag_ml_campaign_header(local_header, "dag-ml")
+        validate_dag_ml_execution_plan_header(local_header, "dag-ml")
         validate_dag_ml_data_shape_header(local_header, "dag-ml")
         validate_dag_ml_data_output_provenance_header(local_header, "dag-ml")
         validate_dag_ml_selection_header(local_header, "dag-ml")

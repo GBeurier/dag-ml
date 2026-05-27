@@ -158,8 +158,9 @@ Implemented:
 - validation prediction sample checks now apply to propagated data views as
   well as direct data bindings, so a branch model fed by an augmentation edge
   cannot emit OOF rows outside its fold-validation view;
-- C ABI exports both compiled execution plans and phase execution schedules as
-  owned JSON for non-Rust bindings;
+- C ABI exports compiled execution plans, validates canonical `ExecutionPlan`
+  JSON directly, and returns phase execution schedules as owned JSON for
+  non-Rust bindings;
 - C ABI exposes the data-output provenance contract for host bindings through
   stable version/key macros plus JSON contract introspection and standalone
   validation helpers, so non-Rust controllers can trust propagated data views
@@ -340,7 +341,7 @@ Implemented:
 - Python process-controller adapter fixture for campaign/replay smoke tests,
   including data-handle, fold and refit-artifact-handle checks;
 - C ABI validation and JSON output helpers for graph validation,
-  graph parallel levels, execution-plan build, regression metric reports,
+  graph parallel levels, execution-plan build/validation, regression metric reports,
   selection decisions, grouped selection, execution bundles, replay envelopes,
   replay requests and prediction-cache payload sets;
 - C ABI research provenance export helper that returns the same validated
@@ -391,8 +392,8 @@ Implemented:
   `REFIT` replay covered through a host OOF prediction-cache vtable;
 - C ABI C-language conformance test that compiles and runs a small C program
   against `dag_ml.h` and `libdag_ml_capi`, builds an execution plan through
-  the ABI, then drives non-mock replay through controller, data-provider and
-  artifact-store vtables;
+  the ABI, validates it through the same public ABI, then drives non-mock
+  replay through controller, data-provider and artifact-store vtables;
 - C ABI mock replay execution helper that exercises execution-plan, bundle,
   replay request, data envelope and refit artifact handle materialization and
   returns a JSON summary including data view counts;
