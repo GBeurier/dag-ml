@@ -81,6 +81,27 @@ data bindings outside operator nodes. Rust validation remains the semantic
 authority for fold membership, leakage guards, generation consistency,
 shape-plan/key alignment and data-binding fingerprint requirements.
 
+## ExecutionPlan v1
+
+Schema: `execution_plan.schema.json`
+
+Canonical fixture:
+`examples/fixtures/runtime/execution_plan_branch_merge_executable.json`
+
+Runtime type: `ExecutionPlan`
+
+C ABI: `DAG_ML_EXECUTION_PLAN_SCHEMA_VERSION`,
+`dagml_execution_plan_contract_json`,
+`dagml_execution_plan_validate_json`
+
+This is the compiled, scheduler-ready DAG contract. It binds the validated
+graph, campaign, resolved controller manifests, per-node execution policies,
+generation variants, fold set and canonical fingerprints used later by bundles,
+replay and provenance exports. The schema documents the portable envelope and
+critical coordination fields; Rust validation remains the authority for DAG
+topology, controller-policy consistency, OOF capability checks, fold semantics,
+shape/data binding checks and fingerprint consistency.
+
 ## ModelInputSpec v1
 
 Schema: `model_input_spec.schema.json`

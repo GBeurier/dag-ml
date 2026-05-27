@@ -21,6 +21,9 @@ use crate::policy::{AggregationPolicy, DataModelShapePlan, LeakageUnitPolicy};
 pub const CAMPAIGN_SPEC_SCHEMA_VERSION: u32 = 1;
 pub const CAMPAIGN_SPEC_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/campaign_spec.v1.schema.json";
+pub const EXECUTION_PLAN_SCHEMA_VERSION: u32 = 1;
+pub const EXECUTION_PLAN_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/execution_plan.v1.schema.json";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SplitInvocation {
@@ -818,6 +821,46 @@ mod tests {
             .as_object()
             .unwrap()
             .contains_key("view_policy"));
+    }
+
+    #[test]
+    fn published_execution_plan_schema_declares_current_contract() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/execution_plan.schema.json"
+        ))
+        .unwrap();
+
+        assert_eq!(schema["$id"], EXECUTION_PLAN_SCHEMA_ID);
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("node_plans")));
+        assert!(schema["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("controller_fingerprint"));
+        assert!(schema["$defs"]["node_plan"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("shape_plan"));
+        assert!(schema["$defs"]["variant_plan"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("choices"));
+    }
+
+    #[test]
+    fn published_execution_plan_fixture_validates_current_contract() {
+        let plan: ExecutionPlan = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/runtime/execution_plan_branch_merge_executable.json"
+        ))
+        .unwrap();
+
+        plan.validate().unwrap();
+        assert_eq!(plan.id, "plan:fixture.execution.branch_merge");
+        assert_eq!(plan.variants.len(), 2);
+        assert_eq!(plan.node_plans.len(), plan.graph_plan.graph.nodes.len());
     }
 
     #[test]
