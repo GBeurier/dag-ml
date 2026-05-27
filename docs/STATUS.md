@@ -117,6 +117,13 @@ Implemented:
   stay deterministic;
 - deterministic graph parallel-level planner for future node-batch execution
   without changing topological semantics;
+- initial strict JSON pipeline DSL compiler: `PipelineDslSpec` lowers linear
+  transform/augmentation/model steps, model branches and heterogeneous
+  prediction-plus-original-data merge models into canonical `GraphSpec` while
+  keeping split/fold planning in campaign contracts rather than graph
+  operators;
+- CLI and C ABI entry points compile that DSL surface to validated graph JSON,
+  with branch/merge OOF smoke coverage;
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate
@@ -365,7 +372,8 @@ Implemented:
 
 Not implemented yet:
 
-- full DSL compiler;
+- full nirs4all-compatible DSL compiler beyond the initial strict JSON
+  `PipelineDslSpec` profile;
 - advanced search-space compiler/lowering beyond typed node-parameter
   overrides;
 - custom aggregation controllers and production persistent/Arrow replay

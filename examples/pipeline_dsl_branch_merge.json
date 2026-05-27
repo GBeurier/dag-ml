@@ -1,0 +1,63 @@
+{
+  "id": "dsl-branch-merge-oof-smoke",
+  "input": {
+    "name": "x",
+    "representation": "tabular_numeric",
+    "description": "original tabular features"
+  },
+  "output": {
+    "name": "prediction",
+    "description": "meta model prediction"
+  },
+  "steps": [
+    {
+      "kind": "branch",
+      "branches": [
+        {
+          "id": "b0",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "branch:b0.model:ridge",
+              "operator": { "type": "Ridge" },
+              "params": { "alpha": 0.3 },
+              "seed_label": "branch:b0"
+            }
+          ]
+        },
+        {
+          "id": "b1",
+          "steps": [
+            {
+              "kind": "augmentation",
+              "id": "branch:b1.augment:noise",
+              "operator": { "type": "GaussianNoise" },
+              "params": {
+                "scope": "train_only",
+                "std": 0.01
+              },
+              "seed_label": "branch:b1.augment"
+            },
+            {
+              "kind": "model",
+              "id": "branch:b1.model:rf",
+              "operator": { "type": "RandomForestRegressor" },
+              "params": { "n_estimators": 64 },
+              "seed_label": "branch:b1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge_model",
+      "id": "merge:stack.pred_plus_original.meta:ridge",
+      "operator": { "type": "RidgeMetaStacker" },
+      "params": { "alpha": 0.2 },
+      "seed_label": "merge:stack"
+    }
+  ],
+  "metadata": {
+    "demo": "DSL compiler branch/merge OOF smoke"
+  }
+}
