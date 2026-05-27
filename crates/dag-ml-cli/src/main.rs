@@ -194,6 +194,16 @@ enum Command {
         #[arg(long)]
         artifact: bool,
     },
+    BuildPipelineDslPlan {
+        #[arg(long)]
+        dsl: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long, default_value = "plan:cli.dsl")]
+        plan_id: String,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     ValidateOofCampaign {
         path: PathBuf,
         #[arg(long)]
@@ -709,6 +719,30 @@ fn main() -> Result<()> {
                 })?;
                 emit_json(output.as_ref(), &graph, "compiled graph")?;
             }
+        }
+        Command::BuildPipelineDslPlan {
+            dsl,
+            controllers,
+            plan_id,
+            output,
+        } => {
+            let spec: PipelineDslSpec = read_json(&dsl, "pipeline DSL")?;
+            let compiled = compile_pipeline_dsl_with_generation(&spec)
+                .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
+            let registry = controller_registry_from_path(&controllers)?;
+            let plan = build_execution_plan(
+                plan_id,
+                compiled.graph,
+                compiled.campaign_template,
+                &registry,
+            )
+            .with_context(|| {
+                format!(
+                    "failed to build execution plan from pipeline DSL at {}",
+                    dsl.display()
+                )
+            })?;
+            emit_json(output.as_ref(), &plan, "pipeline DSL execution plan")?;
         }
         Command::ValidateOofCampaign {
             path,

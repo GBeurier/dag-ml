@@ -206,6 +206,43 @@ fn cli_compiles_pipeline_dsl_to_graph() {
         coordinated_artifact["campaign_template"]["data_bindings"],
         coordinated_artifact["data_bindings"]
     );
+
+    let dsl_plan_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_dsl_execution_plan_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let build_dsl_plan = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "build-pipeline-dsl-plan",
+            "--dsl",
+            "examples/pipeline_dsl_coordinated_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--plan-id",
+            "plan:cli.dsl.coordinated",
+            "--output",
+            dsl_plan_path.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli build-pipeline-dsl-plan");
+    assert!(
+        build_dsl_plan.status.success(),
+        "build-pipeline-dsl-plan failed: {}",
+        String::from_utf8_lossy(&build_dsl_plan.stderr)
+    );
+    let dsl_plan: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&dsl_plan_path).expect("compiled DSL execution plan was written"),
+    )
+    .expect("compiled DSL execution plan is JSON");
+    assert_eq!(dsl_plan["id"], "plan:cli.dsl.coordinated");
+    assert_eq!(dsl_plan["variants"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        dsl_plan["campaign"]["data_bindings"]["merge:stack.pred_plus_original.meta:ridge"][0]
+            ["input_name"],
+        "x_original"
+    );
 }
 
 #[test]
