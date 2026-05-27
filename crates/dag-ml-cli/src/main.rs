@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use dag_ml_core::{
+    build_aggregated_prediction_cache_payload, build_aggregated_prediction_cache_record,
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
     build_openlineage_run_event_from_package_files, build_prediction_cache_payload,
     build_prediction_cache_record, build_research_provenance_package, compile_pipeline_dsl,
@@ -26,11 +27,11 @@ use dag_ml_core::{
     FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
     InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
     OofCampaign, ParallelScheduler, Phase, PipelineDslSpec, PredictionBlock, PredictionLevel,
-    PredictionPartition, RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport,
-    RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId,
-    RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
-    RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric, SelectionPolicy,
-    SequentialScheduler, VariantId,
+    PredictionPartition, PredictionUnitId, RefitArtifactRecord, RegressionMetricKind,
+    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage,
+    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
+    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric,
+    SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2480,17 +2481,35 @@ fn build_bundle_from_cv_then_captured_refit(
         .blocks()
         .iter()
         .filter(|block| block.partition == PredictionPartition::Validation)
-        .count();
+        .count()
+        + ctx
+            .aggregated_prediction_store
+            .blocks()
+            .iter()
+            .filter(|block| block.partition == PredictionPartition::Validation)
+            .count();
     if fit_cv_oof_prediction_block_count == 0 {
         bail!("FIT_CV did not produce any validation OOF prediction blocks before refit");
     }
-    let prediction_requirements =
-        oof_prediction_requirements(input.plan, ctx.prediction_store.blocks())?;
-    let prediction_caches =
-        oof_prediction_caches(&prediction_requirements, ctx.prediction_store.blocks())?;
-    let prediction_cache_payloads =
-        oof_prediction_cache_payloads(&prediction_requirements, ctx.prediction_store.blocks())?;
-    let oof_prediction_summary = oof_prediction_summary(ctx.prediction_store.blocks())?;
+    let prediction_requirements = oof_prediction_requirements(
+        input.plan,
+        ctx.prediction_store.blocks(),
+        ctx.aggregated_prediction_store.blocks(),
+    )?;
+    let prediction_caches = oof_prediction_caches(
+        &prediction_requirements,
+        ctx.prediction_store.blocks(),
+        ctx.aggregated_prediction_store.blocks(),
+    )?;
+    let prediction_cache_payloads = oof_prediction_cache_payloads(
+        &prediction_requirements,
+        ctx.prediction_store.blocks(),
+        ctx.aggregated_prediction_store.blocks(),
+    )?;
+    let oof_prediction_summary = oof_prediction_summary(
+        ctx.prediction_store.blocks(),
+        ctx.aggregated_prediction_store.blocks(),
+    )?;
 
     let refit_results = execute_campaign_phase_with_artifact_store_and_scheduler(
         input.scheduler,
@@ -2587,6 +2606,7 @@ fn replay_envelope_map_for_bundle(
 fn oof_prediction_requirements(
     plan: &dag_ml_core::ExecutionPlan,
     blocks: &[PredictionBlock],
+    aggregated_blocks: &[AggregatedPredictionBlock],
 ) -> Result<Vec<BundlePredictionRequirement>> {
     let mut requirements = Vec::new();
     for edge in plan
@@ -2596,42 +2616,94 @@ fn oof_prediction_requirements(
         .iter()
         .filter(|edge| edge.contract.requires_oof)
     {
-        let edge_blocks = blocks
-            .iter()
-            .filter(|block| {
-                block.producer_node == edge.source.node_id
-                    && block.partition == PredictionPartition::Validation
-            })
-            .collect::<Vec<_>>();
-        if edge_blocks.is_empty() {
-            bail!(
-                "OOF prediction requirement `{}` -> `{}` has no validation blocks",
-                edge.source.node_id,
-                edge.target.node_id
-            );
+        let prediction_level = oof_prediction_level_for_edge(plan, &edge.source.node_id)?;
+        match prediction_level {
+            PredictionLevel::Sample => {
+                let edge_blocks = blocks
+                    .iter()
+                    .filter(|block| {
+                        block.producer_node == edge.source.node_id
+                            && block.partition == PredictionPartition::Validation
+                    })
+                    .collect::<Vec<_>>();
+                if edge_blocks.is_empty() {
+                    bail!(
+                        "OOF prediction requirement `{}` -> `{}` has no validation sample blocks",
+                        edge.source.node_id,
+                        edge.target.node_id
+                    );
+                }
+                let summary = summarize_oof_blocks(&edge.source.node_id, &edge_blocks)?;
+                requirements.push(BundlePredictionRequirement {
+                    producer_node: edge.source.node_id.clone(),
+                    source_port: edge.source.port_name.clone(),
+                    consumer_node: edge.target.node_id.clone(),
+                    target_port: edge.target.port_name.clone(),
+                    partition: PredictionPartition::Validation,
+                    prediction_level,
+                    fold_ids: summary
+                        .fold_ids
+                        .into_iter()
+                        .map(dag_ml_core::FoldId::new)
+                        .collect::<dag_ml_core::Result<Vec<_>>>()?,
+                    sample_ids: summary
+                        .sample_ids
+                        .into_iter()
+                        .map(SampleId::new)
+                        .collect::<dag_ml_core::Result<Vec<_>>>()?,
+                    unit_ids: Vec::new(),
+                    prediction_width: summary.prediction_width.unwrap_or_default(),
+                    target_names: summary.target_names.unwrap_or_default(),
+                });
+            }
+            PredictionLevel::Target | PredictionLevel::Group => {
+                let edge_blocks = aggregated_blocks
+                    .iter()
+                    .filter(|block| {
+                        block.producer_node == edge.source.node_id
+                            && block.partition == PredictionPartition::Validation
+                            && block.level == prediction_level
+                    })
+                    .collect::<Vec<_>>();
+                if edge_blocks.is_empty() {
+                    bail!(
+                        "OOF prediction requirement `{}` -> `{}` has no validation {:?} blocks",
+                        edge.source.node_id,
+                        edge.target.node_id,
+                        prediction_level
+                    );
+                }
+                let summary = summarize_aggregated_oof_blocks(
+                    &edge.source.node_id,
+                    prediction_level,
+                    &edge_blocks,
+                )?;
+                requirements.push(BundlePredictionRequirement {
+                    producer_node: edge.source.node_id.clone(),
+                    source_port: edge.source.port_name.clone(),
+                    consumer_node: edge.target.node_id.clone(),
+                    target_port: edge.target.port_name.clone(),
+                    partition: PredictionPartition::Validation,
+                    prediction_level,
+                    fold_ids: summary
+                        .fold_ids
+                        .into_iter()
+                        .map(dag_ml_core::FoldId::new)
+                        .collect::<dag_ml_core::Result<Vec<_>>>()?,
+                    unit_ids: summary.unit_ids.into_iter().collect(),
+                    sample_ids: Vec::new(),
+                    prediction_width: summary.prediction_width.unwrap_or_default(),
+                    target_names: summary.target_names.unwrap_or_default(),
+                });
+            }
+            PredictionLevel::Observation => {
+                bail!(
+                    "OOF prediction requirement `{}` -> `{}` cannot be captured at observation level; aggregate before refit",
+                    edge.source.node_id,
+                    edge.target.node_id
+                );
+            }
         }
-        let summary = summarize_oof_blocks(&edge.source.node_id, &edge_blocks)?;
-        requirements.push(BundlePredictionRequirement {
-            producer_node: edge.source.node_id.clone(),
-            source_port: edge.source.port_name.clone(),
-            consumer_node: edge.target.node_id.clone(),
-            target_port: edge.target.port_name.clone(),
-            partition: PredictionPartition::Validation,
-            prediction_level: PredictionLevel::Sample,
-            fold_ids: summary
-                .fold_ids
-                .into_iter()
-                .map(dag_ml_core::FoldId::new)
-                .collect::<dag_ml_core::Result<Vec<_>>>()?,
-            sample_ids: summary
-                .sample_ids
-                .into_iter()
-                .map(SampleId::new)
-                .collect::<dag_ml_core::Result<Vec<_>>>()?,
-            unit_ids: Vec::new(),
-            prediction_width: summary.prediction_width.unwrap_or_default(),
-            target_names: summary.target_names.unwrap_or_default(),
-        });
     }
     requirements.sort_by_key(BundlePredictionRequirement::key);
     for requirement in &requirements {
@@ -2640,23 +2712,58 @@ fn oof_prediction_requirements(
     Ok(requirements)
 }
 
+fn oof_prediction_level_for_edge(
+    plan: &dag_ml_core::ExecutionPlan,
+    source_node: &NodeId,
+) -> Result<PredictionLevel> {
+    let source_plan = plan
+        .node_plans
+        .get(source_node)
+        .with_context(|| format!("OOF edge source `{source_node}` has no node plan"))?;
+    Ok(source_plan
+        .shape_plan
+        .as_ref()
+        .map(|shape_plan| shape_plan.aggregation_policy.aggregation_level)
+        .unwrap_or(PredictionLevel::Sample))
+}
+
 fn oof_prediction_caches(
     requirements: &[BundlePredictionRequirement],
     blocks: &[PredictionBlock],
+    aggregated_blocks: &[AggregatedPredictionBlock],
 ) -> dag_ml_core::Result<Vec<BundlePredictionCacheRecord>> {
     requirements
         .iter()
-        .map(|requirement| build_prediction_cache_record(requirement, blocks))
+        .map(|requirement| match requirement.prediction_level {
+            PredictionLevel::Sample => build_prediction_cache_record(requirement, blocks),
+            PredictionLevel::Target | PredictionLevel::Group => {
+                build_aggregated_prediction_cache_record(requirement, aggregated_blocks)
+            }
+            PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache requirement `{}` cannot use observation-level predictions",
+                requirement.key()
+            ))),
+        })
         .collect()
 }
 
 fn oof_prediction_cache_payloads(
     requirements: &[BundlePredictionRequirement],
     blocks: &[PredictionBlock],
+    aggregated_blocks: &[AggregatedPredictionBlock],
 ) -> dag_ml_core::Result<Vec<BundlePredictionCachePayload>> {
     requirements
         .iter()
-        .map(|requirement| build_prediction_cache_payload(requirement, blocks))
+        .map(|requirement| match requirement.prediction_level {
+            PredictionLevel::Sample => build_prediction_cache_payload(requirement, blocks),
+            PredictionLevel::Target | PredictionLevel::Group => {
+                build_aggregated_prediction_cache_payload(requirement, aggregated_blocks)
+            }
+            PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache requirement `{}` cannot use observation-level predictions",
+                requirement.key()
+            ))),
+        })
         .collect()
 }
 
@@ -2669,7 +2776,20 @@ struct OofPredictionSummary {
     target_names: Option<Vec<String>>,
 }
 
-fn oof_prediction_summary(blocks: &[PredictionBlock]) -> Result<Vec<serde_json::Value>> {
+#[derive(Default)]
+struct AggregatedOofPredictionSummary {
+    block_count: usize,
+    prediction_level: Option<PredictionLevel>,
+    fold_ids: BTreeSet<String>,
+    unit_ids: BTreeSet<PredictionUnitId>,
+    prediction_width: Option<usize>,
+    target_names: Option<Vec<String>>,
+}
+
+fn oof_prediction_summary(
+    blocks: &[PredictionBlock],
+    aggregated_blocks: &[AggregatedPredictionBlock],
+) -> Result<Vec<serde_json::Value>> {
     let mut summaries = BTreeMap::<NodeId, OofPredictionSummary>::new();
     for block in blocks
         .iter()
@@ -2706,11 +2826,12 @@ fn oof_prediction_summary(blocks: &[PredictionBlock]) -> Result<Vec<serde_json::
         }
         entry.target_names = Some(block.target_names.clone());
     }
-    Ok(summaries
+    let mut output = summaries
         .into_iter()
         .map(|(producer_node, summary)| {
             serde_json::json!({
                 "producer_node": producer_node,
+                "prediction_level": PredictionLevel::Sample,
                 "block_count": summary.block_count,
                 "fold_ids": summary.fold_ids.into_iter().collect::<Vec<_>>(),
                 "sample_ids": summary.sample_ids.into_iter().collect::<Vec<_>>(),
@@ -2718,7 +2839,64 @@ fn oof_prediction_summary(blocks: &[PredictionBlock]) -> Result<Vec<serde_json::
                 "target_names": summary.target_names.unwrap_or_default(),
             })
         })
-        .collect())
+        .collect::<Vec<_>>();
+
+    let mut aggregated_summaries =
+        BTreeMap::<(NodeId, PredictionLevel), AggregatedOofPredictionSummary>::new();
+    for block in aggregated_blocks
+        .iter()
+        .filter(|block| block.partition == PredictionPartition::Validation)
+    {
+        let width = block.validate_shape()?;
+        let key = (block.producer_node.clone(), block.level);
+        let entry = aggregated_summaries.entry(key).or_default();
+        entry.block_count += 1;
+        entry.prediction_level = Some(block.level);
+        if let Some(fold_id) = &block.fold_id {
+            entry.fold_ids.insert(fold_id.to_string());
+        }
+        entry.unit_ids.extend(block.unit_ids.iter().cloned());
+        if entry
+            .prediction_width
+            .is_some_and(|expected| expected != width)
+        {
+            bail!(
+                "OOF aggregated prediction summary for `{}` has inconsistent prediction width",
+                block.producer_node
+            );
+        }
+        entry.prediction_width = Some(width);
+        let target_names = if block.target_names.is_empty() {
+            (0..width).map(|index| format!("p{index}")).collect()
+        } else {
+            block.target_names.clone()
+        };
+        if entry
+            .target_names
+            .as_ref()
+            .is_some_and(|expected| expected != &target_names)
+        {
+            bail!(
+                "OOF aggregated prediction summary for `{}` has inconsistent target names",
+                block.producer_node
+            );
+        }
+        entry.target_names = Some(target_names);
+    }
+    output.extend(aggregated_summaries.into_iter().map(
+        |((producer_node, prediction_level), summary)| {
+            serde_json::json!({
+                "producer_node": producer_node,
+                "prediction_level": prediction_level,
+                "block_count": summary.block_count,
+                "fold_ids": summary.fold_ids.into_iter().collect::<Vec<_>>(),
+                "unit_ids": summary.unit_ids.into_iter().collect::<Vec<_>>(),
+                "prediction_width": summary.prediction_width.unwrap_or_default(),
+                "target_names": summary.target_names.unwrap_or_default(),
+            })
+        },
+    ));
+    Ok(output)
 }
 
 fn summarize_oof_blocks(
@@ -2753,6 +2931,55 @@ fn summarize_oof_blocks(
             .is_some_and(|expected| expected != &target_names)
         {
             bail!("OOF prediction requirement for `{producer_node}` has inconsistent target names");
+        }
+        summary.target_names = Some(target_names);
+    }
+    Ok(summary)
+}
+
+fn summarize_aggregated_oof_blocks(
+    producer_node: &NodeId,
+    prediction_level: PredictionLevel,
+    blocks: &[&AggregatedPredictionBlock],
+) -> Result<AggregatedOofPredictionSummary> {
+    let mut summary = AggregatedOofPredictionSummary::default();
+    for block in blocks {
+        let width = block.validate_shape()?;
+        if block.level != prediction_level {
+            bail!(
+                "OOF aggregated prediction requirement for `{producer_node}` selected {:?} block, expected {:?}",
+                block.level,
+                prediction_level
+            );
+        }
+        summary.block_count += 1;
+        summary.prediction_level = Some(block.level);
+        if let Some(fold_id) = &block.fold_id {
+            summary.fold_ids.insert(fold_id.to_string());
+        }
+        summary.unit_ids.extend(block.unit_ids.iter().cloned());
+        if summary
+            .prediction_width
+            .is_some_and(|expected| expected != width)
+        {
+            bail!(
+                "OOF aggregated prediction requirement for `{producer_node}` has inconsistent prediction width"
+            );
+        }
+        summary.prediction_width = Some(width);
+        let target_names = if block.target_names.is_empty() {
+            (0..width).map(|index| format!("p{index}")).collect()
+        } else {
+            block.target_names.clone()
+        };
+        if summary
+            .target_names
+            .as_ref()
+            .is_some_and(|expected| expected != &target_names)
+        {
+            bail!(
+                "OOF aggregated prediction requirement for `{producer_node}` has inconsistent target names"
+            );
         }
         summary.target_names = Some(target_names);
     }
@@ -4419,4 +4646,237 @@ fn emit_json<T: Serialize>(output: Option<&PathBuf>, value: &T, label: &str) -> 
         println!("{}", String::from_utf8(data)?);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn group_oof_plan() -> dag_ml_core::ExecutionPlan {
+        let graph: GraphSpec = serde_json::from_str(
+            r#"
+            {
+              "id": "graph:cli.group.oof.capture",
+              "interface": {"inputs": [], "outputs": []},
+              "nodes": [
+                {
+                  "id": "model:base",
+                  "kind": "model",
+                  "operator": null,
+                  "params": {},
+                  "ports": {
+                    "inputs": [],
+                    "outputs": [
+                      {"name": "pred", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}
+                    ]
+                  },
+                  "metadata": {},
+                  "seed_label": null
+                },
+                {
+                  "id": "model:meta",
+                  "kind": "model",
+                  "operator": null,
+                  "params": {},
+                  "ports": {
+                    "inputs": [
+                      {"name": "pred", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}
+                    ],
+                    "outputs": [
+                      {"name": "pred", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}
+                    ]
+                  },
+                  "metadata": {},
+                  "seed_label": null
+                }
+              ],
+              "edges": [
+                {
+                  "source": {"node_id": "model:base", "port_name": "pred"},
+                  "target": {"node_id": "model:meta", "port_name": "pred"},
+                  "contract": {
+                    "kind": "prediction",
+                    "representation": null,
+                    "requires_oof": true,
+                    "requires_fold_alignment": true,
+                    "propagates_lineage": true
+                  }
+                }
+              ],
+              "search_space_fingerprint": null,
+              "metadata": {}
+            }
+            "#,
+        )
+        .unwrap();
+        let campaign: CampaignSpec = serde_json::from_str(
+            r#"
+            {
+              "id": "campaign:cli.group.oof.capture",
+              "root_seed": 7,
+              "leakage_policy": {
+                "split_unit": "group",
+                "forbid_origin_cross_fold": true,
+                "allow_observation_split_with_shared_target": false,
+                "require_group_ids": true,
+                "unsafe_flags": []
+              },
+              "aggregation_policy": {
+                "aggregation_level": "sample",
+                "method": "mean",
+                "weights": "none",
+                "emit_parallel_metrics": true,
+                "selection_metric_level": "sample",
+                "store_raw_predictions": true,
+                "store_aggregated_predictions": true
+              },
+              "split_invocation": {
+                "id": "split:cli.group.oof.capture",
+                "controller_id": null,
+                "leakage_policy": {
+                  "split_unit": "group",
+                  "forbid_origin_cross_fold": true,
+                  "allow_observation_split_with_shared_target": false,
+                  "require_group_ids": true,
+                  "unsafe_flags": []
+                },
+                "params": {},
+                "fold_set": {
+                  "id": "folds:cli.group.oof.capture",
+                  "sample_ids": ["sample:1", "sample:2"],
+                  "folds": [
+                    {
+                      "fold_id": "fold:0",
+                      "train_sample_ids": ["sample:2"],
+                      "validation_sample_ids": ["sample:1"],
+                      "metadata": {}
+                    },
+                    {
+                      "fold_id": "fold:1",
+                      "train_sample_ids": ["sample:1"],
+                      "validation_sample_ids": ["sample:2"],
+                      "metadata": {}
+                    }
+                  ],
+                  "sample_groups": {
+                    "sample:1": "group:a",
+                    "sample:2": "group:b"
+                  }
+                }
+              },
+              "generation": {
+                "strategy": "none",
+                "dimensions": [],
+                "max_variants": 1
+              },
+              "shape_plans": {
+                "model:base": {
+                  "node_id": "model:base",
+                  "input_granularity": "observation",
+                  "target_granularity": "sample",
+                  "fit_rows": "fold_train",
+                  "predict_rows": "fold_validation",
+                  "feature_namespace": "x",
+                  "feature_schema_fingerprint": null,
+                  "target_space": "regression:y",
+                  "aggregation_policy": {
+                    "aggregation_level": "group",
+                    "method": "mean",
+                    "weights": "none",
+                    "emit_parallel_metrics": true,
+                    "selection_metric_level": "group",
+                    "store_raw_predictions": true,
+                    "store_aggregated_predictions": true
+                  }
+                }
+              },
+              "data_bindings": {},
+              "metadata": {}
+            }
+            "#,
+        )
+        .unwrap();
+        let manifests: Vec<ControllerManifest> = serde_json::from_str(
+            r#"
+            [
+              {
+                "controller_id": "controller:model",
+                "controller_version": "0.1.0",
+                "operator_kind": "model",
+                "priority": 0,
+                "supported_phases": ["FIT_CV", "REFIT"],
+                "input_ports": [],
+                "output_ports": [],
+                "data_requirements": null,
+                "capabilities": [
+                  "deterministic",
+                  "thread_safe",
+                  "process_safe",
+                  "emits_predictions",
+                  "consumes_oof_predictions",
+                  "emits_artifacts",
+                  "stateful"
+                ],
+                "fit_scope": "fold_train",
+                "rng_policy": "uses_core_seed",
+                "artifact_policy": "serializable"
+              }
+            ]
+            "#,
+        )
+        .unwrap();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        build_execution_plan("plan:cli.group.oof.capture", graph, campaign, &registry).unwrap()
+    }
+
+    #[test]
+    fn cv_refit_bundle_helpers_capture_aggregated_oof_units() {
+        let plan = group_oof_plan();
+        let producer = NodeId::new("model:base").unwrap();
+        let group_a = PredictionUnitId::Group(dag_ml_core::GroupId::new("group:a").unwrap());
+        let group_b = PredictionUnitId::Group(dag_ml_core::GroupId::new("group:b").unwrap());
+        let blocks = vec![
+            AggregatedPredictionBlock {
+                prediction_id: Some("pred:group:fold0".to_string()),
+                producer_node: producer.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(dag_ml_core::FoldId::new("fold:0").unwrap()),
+                level: PredictionLevel::Group,
+                unit_ids: vec![group_a.clone()],
+                values: vec![vec![0.2]],
+                target_names: vec!["y".to_string()],
+            },
+            AggregatedPredictionBlock {
+                prediction_id: Some("pred:group:fold1".to_string()),
+                producer_node: producer,
+                partition: PredictionPartition::Validation,
+                fold_id: Some(dag_ml_core::FoldId::new("fold:1").unwrap()),
+                level: PredictionLevel::Group,
+                unit_ids: vec![group_b.clone()],
+                values: vec![vec![0.8]],
+                target_names: vec!["y".to_string()],
+            },
+        ];
+
+        let requirements = oof_prediction_requirements(&plan, &[], &blocks).unwrap();
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].prediction_level, PredictionLevel::Group);
+        assert!(requirements[0].sample_ids.is_empty());
+        assert_eq!(requirements[0].unit_ids, vec![group_a, group_b]);
+
+        let caches = oof_prediction_caches(&requirements, &[], &blocks).unwrap();
+        let payloads = oof_prediction_cache_payloads(&requirements, &[], &blocks).unwrap();
+        assert_eq!(caches.len(), 1);
+        assert_eq!(caches[0].prediction_level, PredictionLevel::Group);
+        assert_eq!(payloads[0].blocks.len(), 0);
+        assert_eq!(payloads[0].aggregated_blocks.len(), 2);
+
+        let summary = oof_prediction_summary(&[], &blocks).unwrap();
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0]["prediction_level"], "group");
+        assert_eq!(summary[0]["block_count"], 2);
+    }
 }
