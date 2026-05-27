@@ -1,0 +1,39 @@
+{
+  "type": "task",
+  "schema_version": 1,
+  "task": {
+    "run_id": "run:fixture.node-task",
+    "node_plan": {
+      "node_id": "transform:scale",
+      "kind": "transform",
+      "controller_id": "controller:transform.mock",
+      "controller_version": "0.1.0",
+      "supported_phases": ["FIT_CV"],
+      "controller_capabilities": ["deterministic", "thread_safe"],
+      "fit_scope": "fold_train",
+      "rng_policy": "uses_core_seed",
+      "artifact_policy": "serializable",
+      "input_nodes": [],
+      "output_nodes": [],
+      "shape_plan": null,
+      "data_bindings": [],
+      "params": {},
+      "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "phase": "FIT_CV",
+    "variant_id": "variant:fixture",
+    "variant": {
+      "variant_id": "variant:fixture",
+      "choices": {},
+      "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "seed": 42
+    },
+    "fold_id": "fold:0",
+    "branch_path": [],
+    "input_handles": {},
+    "data_views": {},
+    "prediction_inputs": {},
+    "artifact_inputs": {},
+    "seed": 42
+  }
+}

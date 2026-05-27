@@ -337,7 +337,9 @@ Implemented:
 - persistent process adapters now use `control_frames_v1`: workers receive
   explicit `init`, framed `task`, and `close` JSONL messages and return typed
   `ack`, `result`, or `error` frames, giving the coordinator a stable lifecycle
-  and error surface before native bindings exist;
+  and error surface before native bindings exist; that frame protocol now has a
+  published JSON Schema plus canonical fixtures validated alongside the
+  `NodeTask`/`NodeResult` contracts;
 - `dag-ml-core` now has a bounded `ParallelScheduler` for parallel DAG levels:
   controllers are `Send + Sync`, independent nodes in the same compiled level
   are invoked concurrently, and results are committed back into prediction,

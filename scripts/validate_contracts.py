@@ -43,6 +43,7 @@ NODE_RESULT_SCHEMA_REL = Path("docs/contracts/node_result.schema.json")
 PROCESS_ADAPTER_DESCRIPTION_SCHEMA_REL = Path(
     "docs/contracts/process_adapter_description.schema.json"
 )
+PROCESS_ADAPTER_FRAME_SCHEMA_REL = Path("docs/contracts/process_adapter_frame.schema.json")
 RESEARCH_PROVENANCE_PROFILE_REL = Path(
     "docs/contracts/research_provenance_package_profile.v1.json"
 )
@@ -75,6 +76,14 @@ LOCAL_NODE_RESULT_FIXTURE_REL = Path("examples/fixtures/runtime/node_result_tran
 LOCAL_PROCESS_ADAPTER_DESCRIPTION_FIXTURE_REL = Path(
     "examples/fixtures/runtime/process_adapter_description_python.json"
 )
+LOCAL_PROCESS_ADAPTER_FRAME_FIXTURE_RELS = [
+    Path("examples/fixtures/runtime/process_adapter_frame_init.json"),
+    Path("examples/fixtures/runtime/process_adapter_frame_task_transform_scale.json"),
+    Path("examples/fixtures/runtime/process_adapter_frame_result_transform_scale.json"),
+    Path("examples/fixtures/runtime/process_adapter_frame_ack_initialized.json"),
+    Path("examples/fixtures/runtime/process_adapter_frame_error_retryable_timeout.json"),
+    Path("examples/fixtures/runtime/process_adapter_frame_close.json"),
+]
 LOCAL_C_HEADER_REL = Path("crates/dag-ml-capi/include/dag_ml.h")
 SIBLING_FIXTURE_REL = Path(
     "examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
@@ -158,6 +167,10 @@ PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "process_adapter_description.v1.schema.json"
 )
+PROCESS_ADAPTER_FRAME_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "process_adapter_frame.v1.schema.json"
+)
 RESEARCH_PROVENANCE_PROFILE_ID = "dag-ml.research_provenance_package.v1"
 
 
@@ -203,6 +216,11 @@ def require_identifier(value: Any, label: str) -> None:
         isinstance(value, str) and IDENTIFIER_RE.fullmatch(value) is not None,
         f"{label} must be a DAG-ML identifier",
     )
+
+
+def require_no_unknown_keys(value: dict[str, Any], allowed: set[str], label: str) -> None:
+    extra = set(value) - allowed
+    require(not extra, f"{label} contains unknown field(s): {sorted(extra)}")
 
 
 def validate_schema_artifact(schema: Any, expected_id: str, label: str) -> None:
@@ -1030,6 +1048,112 @@ def validate_process_adapter_description_schema(schema: Any, label: str) -> None
         and "identifier" in defs
         and "capability" in defs,
         f"{label} process-adapter schema definitions are incomplete",
+    )
+
+
+def validate_process_adapter_frame_schema(schema: Any, label: str) -> None:
+    require(
+        isinstance(schema, dict),
+        f"{label} process-adapter frame schema must be an object",
+    )
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} process-adapter frame schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == PROCESS_ADAPTER_FRAME_SCHEMA_ID,
+        f"{label} process-adapter frame schema has unexpected $id",
+    )
+    require(
+        schema.get("type") == "object",
+        f"{label} process-adapter frame root must be an object",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} process-adapter frame required list is missing")
+    for field in ("type", "schema_version"):
+        require(field in required, f"{label} process-adapter frame must require `{field}`")
+
+    one_of = schema.get("oneOf")
+    require(
+        isinstance(one_of, list) and len(one_of) == 6,
+        f"{label} process-adapter frame must declare six concrete frame variants",
+    )
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} process-adapter frame definitions are missing")
+    for definition_name in (
+        "schema_version",
+        "identifier",
+        "non_empty_string",
+        "worker_index",
+        "worker_count",
+        "node_task",
+        "node_result",
+        "init_frame",
+        "task_frame",
+        "close_frame",
+        "ack_frame",
+        "result_frame",
+        "adapter_error",
+        "error_frame",
+        "request_frame",
+        "response_frame",
+    ):
+        require(
+            definition_name in defs,
+            f"{label} process-adapter frame schema misses `{definition_name}`",
+        )
+    require(
+        defs["schema_version"].get("const") == 1,
+        f"{label} process-adapter frame schema_version const must be 1",
+    )
+    require(
+        defs["node_task"].get("$ref") == NODE_TASK_SCHEMA_ID,
+        f"{label} process-adapter frame NodeTask reference mismatch",
+    )
+    require(
+        defs["node_result"].get("$ref") == NODE_RESULT_SCHEMA_ID,
+        f"{label} process-adapter frame NodeResult reference mismatch",
+    )
+    expected_frame_defs = {
+        "init_frame": (
+            "init",
+            {"type", "schema_version", "controller_id", "worker_index", "worker_count"},
+        ),
+        "task_frame": ("task", {"type", "schema_version", "task"}),
+        "close_frame": ("close", {"type", "schema_version"}),
+        "ack_frame": ("ack", {"type", "schema_version", "status"}),
+        "result_frame": ("result", {"type", "schema_version", "result"}),
+        "error_frame": ("error", {"type", "schema_version", "error"}),
+    }
+    for definition_name, (frame_type, required_fields) in expected_frame_defs.items():
+        definition = defs[definition_name]
+        require(
+            definition.get("type") == "object",
+            f"{label} {definition_name} must be an object",
+        )
+        require(
+            definition.get("additionalProperties") is False,
+            f"{label} {definition_name} must reject unknown fields",
+        )
+        variant_required = definition.get("required")
+        require(
+            isinstance(variant_required, list) and set(variant_required) == required_fields,
+            f"{label} {definition_name} required fields mismatch",
+        )
+        properties = definition.get("properties")
+        require(isinstance(properties, dict), f"{label} {definition_name} properties are missing")
+        require(
+            properties.get("type", {}).get("const") == frame_type,
+            f"{label} {definition_name} type const mismatch",
+        )
+        require(
+            properties.get("schema_version", {}).get("$ref") == "#/$defs/schema_version",
+            f"{label} {definition_name} schema_version reference mismatch",
+        )
+    require(
+        defs["ack_frame"]["properties"].get("status", {}).get("enum")
+        == ["initialized", "closed"],
+        f"{label} process-adapter ack status enum mismatch",
     )
 
 
@@ -2197,6 +2321,104 @@ def validate_process_adapter_description(value: Any, label: str) -> None:
         )
 
 
+def validate_process_adapter_frame(
+    value: Any,
+    label: str,
+    task_fixture: Any,
+    result_fixture: Any,
+) -> None:
+    require(isinstance(value, dict), f"{label} process-adapter frame must be an object")
+    require(value.get("schema_version") == 1, f"{label}.schema_version must be 1")
+    frame_type = value.get("type")
+    require(
+        frame_type in {"init", "task", "close", "ack", "result", "error"},
+        f"{label}.type is not a supported process-adapter frame",
+    )
+
+    if frame_type == "init":
+        require_no_unknown_keys(
+            value,
+            {"type", "schema_version", "controller_id", "worker_index", "worker_count"},
+            label,
+        )
+        require_identifier(value.get("controller_id"), f"{label}.controller_id")
+        worker_index = value.get("worker_index")
+        worker_count = value.get("worker_count")
+        require(
+            isinstance(worker_index, int) and worker_index >= 0,
+            f"{label}.worker_index must be a non-negative integer",
+        )
+        require(
+            isinstance(worker_count, int) and worker_count >= 1,
+            f"{label}.worker_count must be a positive integer",
+        )
+        require(
+            worker_index < worker_count,
+            f"{label}.worker_index must be lower than worker_count",
+        )
+        return
+
+    if frame_type == "task":
+        require_no_unknown_keys(value, {"type", "schema_version", "task"}, label)
+        task = value.get("task")
+        validate_node_task(task, f"{label}.task")
+        require(task == task_fixture, f"{label}.task must match the canonical NodeTask fixture")
+        return
+
+    if frame_type == "close":
+        require_no_unknown_keys(value, {"type", "schema_version"}, label)
+        return
+
+    if frame_type == "ack":
+        require_no_unknown_keys(value, {"type", "schema_version", "status"}, label)
+        require(
+            value.get("status") in {"initialized", "closed"},
+            f"{label}.status must be initialized or closed",
+        )
+        return
+
+    if frame_type == "result":
+        require_no_unknown_keys(value, {"type", "schema_version", "result"}, label)
+        result = value.get("result")
+        validate_node_result(result, f"{label}.result")
+        require(
+            result == result_fixture,
+            f"{label}.result must match the canonical NodeResult fixture",
+        )
+        return
+
+    require_no_unknown_keys(value, {"type", "schema_version", "error"}, label)
+    error = value.get("error")
+    require(isinstance(error, dict), f"{label}.error must be an object")
+    require_no_unknown_keys(error, {"code", "message", "retryable"}, f"{label}.error")
+    require_identifier(error.get("code"), f"{label}.error.code")
+    require_non_empty_string(error.get("message"), f"{label}.error.message")
+    if "retryable" in error:
+        require(isinstance(error["retryable"], bool), f"{label}.error.retryable must be boolean")
+
+
+def validate_process_adapter_frame_fixtures(
+    fixtures: list[tuple[Path, Any]],
+    task_fixture: Any,
+    result_fixture: Any,
+    label: str,
+) -> None:
+    expected_types = ["init", "task", "result", "ack", "error", "close"]
+    observed_types: list[str] = []
+    for path, value in fixtures:
+        validate_process_adapter_frame(
+            value,
+            f"{label} {path.name}",
+            task_fixture,
+            result_fixture,
+        )
+        observed_types.append(value["type"])
+    require(
+        observed_types == expected_types,
+        f"{label} process-adapter frame fixture order/type set mismatch",
+    )
+
+
 def validate_data_provider_header(header: str, label: str) -> None:
     require(
         "#define DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION 2u" in header,
@@ -2696,6 +2918,7 @@ def main() -> int:
         local_process_adapter_description_schema = load_json(
             ROOT / PROCESS_ADAPTER_DESCRIPTION_SCHEMA_REL
         )
+        local_process_adapter_frame_schema = load_json(ROOT / PROCESS_ADAPTER_FRAME_SCHEMA_REL)
         local_research_provenance_profile = load_json(ROOT / RESEARCH_PROVENANCE_PROFILE_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
@@ -2720,6 +2943,10 @@ def main() -> int:
         local_process_adapter_description_fixture = load_json(
             ROOT / LOCAL_PROCESS_ADAPTER_DESCRIPTION_FIXTURE_REL
         )
+        local_process_adapter_frame_fixtures = [
+            (fixture_rel, load_json(ROOT / fixture_rel))
+            for fixture_rel in LOCAL_PROCESS_ADAPTER_FRAME_FIXTURE_RELS
+        ]
         local_header = load_text(ROOT / LOCAL_C_HEADER_REL)
         validate_schema_artifact(local_schema, LOCAL_SCHEMA_ID, "dag-ml")
         validate_feature_fusion_schema_artifact(
@@ -2750,6 +2977,7 @@ def main() -> int:
             local_process_adapter_description_schema,
             "dag-ml",
         )
+        validate_process_adapter_frame_schema(local_process_adapter_frame_schema, "dag-ml")
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
         validate_graph_spec(local_graph_spec_fixture, "dag-ml")
@@ -2772,6 +3000,12 @@ def main() -> int:
         )
         validate_process_adapter_description(
             local_process_adapter_description_fixture,
+            "dag-ml",
+        )
+        validate_process_adapter_frame_fixtures(
+            local_process_adapter_frame_fixtures,
+            local_node_task_fixture,
+            local_node_result_fixture,
             "dag-ml",
         )
         validate_data_provider_header(local_header, "dag-ml")
