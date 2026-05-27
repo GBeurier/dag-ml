@@ -12,6 +12,13 @@ the host owns the underlying object behind each handle.
 - owned row-major `DagMlF64Tensor` release helper for Rust-allocated
   prediction buffers returned to host bindings;
 - `dagml_graph_validate_json` for graph contract checks;
+- `dagml_data_output_provenance_contract_json` and
+  `dagml_data_output_provenance_validate_json` so bindings can discover the
+  reserved `DataProviderViewSpec.extra` key and validate propagated data-view
+  provenance before using it;
+- `dagml_node_result_validate_for_task_json` so host bindings can preflight a
+  controller-produced `NodeResult` against the exact `NodeTask` before handing
+  the JSON back to the scheduler;
 - `dagml_pipeline_dsl_compile_json` for pure compilation of the strict JSON
   `PipelineDslSpec` surface into canonical `GraphSpec` JSON, plus
   `dagml_pipeline_dsl_compile_artifact_json` when bindings also need the

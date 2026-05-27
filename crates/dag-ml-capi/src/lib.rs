@@ -436,6 +436,42 @@ pub unsafe extern "C" fn dagml_data_output_provenance_validate_json(
     )
 }
 
+/// Validates a controller-produced `NodeResult` against the exact `NodeTask`
+/// that was sent to the host controller.
+///
+/// Bindings can call this helper before returning result JSON to Rust. The
+/// scheduler still performs the same validation internally, so this function is
+/// an early, binding-friendly conformance check rather than a trust boundary.
+///
+/// # Safety
+///
+/// `task_ptr` and `result_ptr` must point to readable JSON byte ranges for the
+/// duration of the call. `error_out` follows the same ownership rules as
+/// `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_node_result_validate_for_task_json(
+    task_ptr: *const u8,
+    task_len: usize,
+    result_ptr: *const u8,
+    result_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    let task = match parse_json_ptr::<NodeTask>(task_ptr, task_len, error_out, "node task") {
+        Ok(task) => task,
+        Err(status) => return status,
+    };
+    let result =
+        match parse_json_ptr::<NodeResult>(result_ptr, result_len, error_out, "node result") {
+            Ok(result) => result,
+            Err(status) => return status,
+        };
+    match result.validate_for_task(&task) {
+        Ok(()) => DagMlStatusCode::OK,
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
 /// Compiles a strict JSON `PipelineDslSpec` into a canonical `GraphSpec` JSON.
 ///
 /// This compiler is pure: it lowers host-declared operator references and
@@ -4673,6 +4709,43 @@ mod tests {
         };
         assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
         assert!(error_message(&error).contains("unsupported schema_version"));
+        unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn validates_node_result_against_task_over_abi() {
+        let (_, task, result) = controller_task_result_fixture();
+        let task_json = serde_json::to_vec(&task).unwrap();
+        let result_json = serde_json::to_vec(&result).unwrap();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_node_result_validate_for_task_json(
+                task_json.as_ptr(),
+                task_json.len(),
+                result_json.as_ptr(),
+                result_json.len(),
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+
+        let mut wrong_result = result;
+        wrong_result.node_id = NodeId::new("transform:other").unwrap();
+        let wrong_result_json = serde_json::to_vec(&wrong_result).unwrap();
+        let status = unsafe {
+            dagml_node_result_validate_for_task_json(
+                task_json.as_ptr(),
+                task_json.len(),
+                wrong_result_json.as_ptr(),
+                wrong_result_json.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(error_message(&error).contains("returned result"));
         unsafe { dagml_string_free(error) };
     }
 
