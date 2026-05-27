@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 GRAPH_SPEC_SCHEMA_REL = Path("docs/contracts/graph_spec.schema.json")
+CAMPAIGN_SPEC_SCHEMA_REL = Path("docs/contracts/campaign_spec.schema.json")
 MODEL_INPUT_SPEC_SCHEMA_REL = Path("docs/contracts/model_input_spec.schema.json")
 DATA_PLAN_SCHEMA_REL = Path("docs/contracts/data_plan.schema.json")
 CONTROLLER_MANIFEST_SCHEMA_REL = Path("docs/contracts/controller_manifest.schema.json")
@@ -45,6 +46,7 @@ LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
 )
 LOCAL_GRAPH_SPEC_FIXTURE_REL = Path("examples/branch_merge_oof_graph.json")
+LOCAL_CAMPAIGN_SPEC_FIXTURE_REL = Path("examples/campaign_oof_generation.json")
 LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL = Path(
     "examples/fixtures/data/model_input_spec_tabular_regressor.json"
 )
@@ -78,6 +80,10 @@ LOCAL_FEATURE_FUSION_SCHEMA_ID = (
 GRAPH_SPEC_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "graph_spec.v1.schema.json"
+)
+CAMPAIGN_SPEC_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "campaign_spec.v1.schema.json"
 )
 MODEL_INPUT_SPEC_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
@@ -301,6 +307,59 @@ def validate_graph_spec_schema(schema: Any, label: str) -> None:
             definition_name in defs,
             f"{label} GraphSpec schema misses `{definition_name}`",
         )
+
+
+def validate_campaign_spec_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} CampaignSpec schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} CampaignSpec schema must declare Draft 2020-12",
+    )
+    require(schema.get("$id") == CAMPAIGN_SPEC_SCHEMA_ID, f"{label} CampaignSpec $id mismatch")
+    require(schema.get("type") == "object", f"{label} CampaignSpec root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} CampaignSpec root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} CampaignSpec required list missing")
+    require("id" in required, f"{label} CampaignSpec schema must require `id`")
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} CampaignSpec $defs missing")
+    require(
+        defs.get("split_unit", {}).get("enum") == ["observation", "sample", "target", "group"],
+        f"{label} CampaignSpec split_unit enum is not aligned",
+    )
+    require(
+        defs.get("prediction_level", {}).get("enum")
+        == ["observation", "sample", "target", "group"],
+        f"{label} CampaignSpec prediction_level enum is not aligned",
+    )
+    require(
+        defs.get("aggregation_method", {}).get("enum")
+        == ["none", "mean", "weighted_mean", "median", "vote", "custom_controller"],
+        f"{label} CampaignSpec aggregation_method enum is not aligned",
+    )
+    require(
+        defs.get("aggregation_weights", {}).get("enum")
+        == ["none", "quality", "repetition_count", "controller_emitted"],
+        f"{label} CampaignSpec aggregation_weights enum is not aligned",
+    )
+    require(
+        defs.get("generation_strategy", {}).get("enum") == ["none", "cartesian", "zip"],
+        f"{label} CampaignSpec generation_strategy enum is not aligned",
+    )
+    for definition_name in (
+        "leakage_policy",
+        "aggregation_policy",
+        "fold_set",
+        "split_invocation",
+        "generation_spec",
+        "data_model_shape_plan",
+        "data_view_policy",
+        "data_binding",
+    ):
+        require(definition_name in defs, f"{label} CampaignSpec schema misses `{definition_name}`")
 
 
 def validate_model_input_spec_schema(schema: Any, label: str) -> None:
@@ -927,6 +986,295 @@ def graph_port_kinds(ports: Any, label: str) -> dict[str, str]:
     return seen
 
 
+def validate_leakage_policy(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} leakage policy must be an object")
+    split_unit = value.get("split_unit", "sample")
+    require(
+        split_unit in {"observation", "sample", "target", "group"},
+        f"{label}.split_unit is invalid",
+    )
+    for field in (
+        "forbid_origin_cross_fold",
+        "allow_observation_split_with_shared_target",
+        "require_group_ids",
+    ):
+        if field in value:
+            require(isinstance(value[field], bool), f"{label}.{field} must be boolean")
+    flags = value.get("unsafe_flags", [])
+    require(isinstance(flags, list), f"{label}.unsafe_flags must be an array")
+    require(len(set(flags)) == len(flags), f"{label}.unsafe_flags contain duplicates")
+    for index, flag in enumerate(flags):
+        require_non_empty_string(flag, f"{label}.unsafe_flags[{index}]")
+    if split_unit == "observation" and not value.get("allow_observation_split_with_shared_target", False):
+        raise ContractError(f"{label} observation split requires explicit shared-target allowance")
+    if value.get("require_group_ids", False) and split_unit != "group":
+        raise ContractError(f"{label} require_group_ids=true requires split_unit=group")
+
+
+def validate_aggregation_policy(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} aggregation policy must be an object")
+    level = value.get("aggregation_level", "sample")
+    method = value.get("method", "mean")
+    weights = value.get("weights", "none")
+    for field, field_value in (
+        ("aggregation_level", level),
+        ("selection_metric_level", value.get("selection_metric_level", "sample")),
+    ):
+        require(
+            field_value in {"observation", "sample", "target", "group"},
+            f"{label}.{field} is invalid",
+        )
+    require(
+        method in {"none", "mean", "weighted_mean", "median", "vote", "custom_controller"},
+        f"{label}.method is invalid",
+    )
+    require(
+        weights in {"none", "quality", "repetition_count", "controller_emitted"},
+        f"{label}.weights is invalid",
+    )
+    for field in (
+        "emit_parallel_metrics",
+        "store_raw_predictions",
+        "store_aggregated_predictions",
+    ):
+        if field in value:
+            require(isinstance(value[field], bool), f"{label}.{field} must be boolean")
+    if method == "none" and level != "observation":
+        raise ContractError(f"{label} method=none is only valid at observation level")
+    if method == "weighted_mean" and weights == "none":
+        raise ContractError(f"{label} weighted_mean requires explicit weights")
+    if method != "weighted_mean" and weights != "none":
+        raise ContractError(f"{label} weights require weighted_mean")
+    if value.get("store_raw_predictions", True) is False and value.get(
+        "store_aggregated_predictions", True
+    ) is False:
+        raise ContractError(f"{label} must store raw and/or aggregated predictions")
+
+
+def validate_fold_set(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} fold_set must be an object")
+    require_non_empty_string(value.get("id"), f"{label}.id")
+    sample_ids = value.get("sample_ids")
+    require(isinstance(sample_ids, list) and sample_ids, f"{label}.sample_ids must be non-empty")
+    require(len(set(sample_ids)) == len(sample_ids), f"{label}.sample_ids contain duplicates")
+    for index, sample_id in enumerate(sample_ids):
+        require_identifier(sample_id, f"{label}.sample_ids[{index}]")
+    sample_set = set(sample_ids)
+    folds = value.get("folds")
+    require(isinstance(folds, list) and folds, f"{label}.folds must be non-empty")
+    validation_counts = {sample_id: 0 for sample_id in sample_ids}
+    fold_ids: set[str] = set()
+    for index, fold in enumerate(folds):
+        fold_label = f"{label}.folds[{index}]"
+        require(isinstance(fold, dict), f"{fold_label} must be an object")
+        fold_id = fold.get("fold_id")
+        require_identifier(fold_id, f"{fold_label}.fold_id")
+        require(fold_id not in fold_ids, f"{label} duplicate fold id `{fold_id}`")
+        fold_ids.add(fold_id)
+        train = fold.get("train_sample_ids")
+        validation = fold.get("validation_sample_ids")
+        require(isinstance(train, list), f"{fold_label}.train_sample_ids must be an array")
+        require(
+            isinstance(validation, list) and validation,
+            f"{fold_label}.validation_sample_ids must be non-empty",
+        )
+        require(len(set(train)) == len(train), f"{fold_label}.train_sample_ids duplicate samples")
+        require(
+            len(set(validation)) == len(validation),
+            f"{fold_label}.validation_sample_ids duplicate samples",
+        )
+        train_set = set(train)
+        validation_set = set(validation)
+        require(
+            train_set.isdisjoint(validation_set),
+            f"{fold_label} has train/validation overlap",
+        )
+        for sample_id in train_set | validation_set:
+            require(sample_id in sample_set, f"{fold_label} references unknown sample `{sample_id}`")
+        for sample_id in validation:
+            validation_counts[sample_id] += 1
+        metadata = fold.get("metadata", {})
+        require(isinstance(metadata, dict), f"{fold_label}.metadata must be an object")
+    for sample_id, count in validation_counts.items():
+        require(count == 1, f"{label} sample `{sample_id}` validation count is {count}, expected 1")
+    sample_groups = value.get("sample_groups", {})
+    require(isinstance(sample_groups, dict), f"{label}.sample_groups must be an object")
+    for sample_id, group_id in sample_groups.items():
+        require(sample_id in sample_set, f"{label}.sample_groups references unknown sample `{sample_id}`")
+        require_identifier(group_id, f"{label}.sample_groups[{sample_id}]")
+
+
+def validate_generation_spec(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} generation spec must be an object")
+    strategy = value.get("strategy", "none")
+    require(strategy in {"none", "cartesian", "zip"}, f"{label}.strategy is invalid")
+    dimensions = value.get("dimensions", [])
+    require(isinstance(dimensions, list), f"{label}.dimensions must be an array")
+    max_variants = value.get("max_variants", 1)
+    if max_variants is not None:
+        require(isinstance(max_variants, int) and max_variants >= 1, f"{label}.max_variants invalid")
+    if strategy == "none":
+        require(not dimensions, f"{label} strategy=none must not declare dimensions")
+        return
+    require(dimensions, f"{label} non-none strategy requires dimensions")
+    names: list[str] = []
+    choice_counts: list[int] = []
+    for index, dimension in enumerate(dimensions):
+        dimension_label = f"{label}.dimensions[{index}]"
+        require(isinstance(dimension, dict), f"{dimension_label} must be an object")
+        name = dimension.get("name")
+        require_non_empty_string(name, f"{dimension_label}.name")
+        names.append(name)
+        choices = dimension.get("choices", [])
+        require(isinstance(choices, list) and choices, f"{dimension_label}.choices must be non-empty")
+        choice_counts.append(len(choices))
+        labels: list[str] = []
+        for choice_index, choice in enumerate(choices):
+            choice_label = f"{dimension_label}.choices[{choice_index}]"
+            require(isinstance(choice, dict), f"{choice_label} must be an object")
+            label_value = choice.get("label")
+            require_non_empty_string(label_value, f"{choice_label}.label")
+            labels.append(label_value)
+            require("value" in choice, f"{choice_label}.value is required")
+            overrides = choice.get("param_overrides", [])
+            require(isinstance(overrides, list), f"{choice_label}.param_overrides must be an array")
+            for override_index, override in enumerate(overrides):
+                override_label = f"{choice_label}.param_overrides[{override_index}]"
+                require(isinstance(override, dict), f"{override_label} must be an object")
+                require_identifier(override.get("node_id"), f"{override_label}.node_id")
+                params = override.get("params")
+                require(isinstance(params, dict) and params, f"{override_label}.params non-empty")
+        require(len(set(labels)) == len(labels), f"{dimension_label}.choices duplicate labels")
+    require(len(set(names)) == len(names), f"{label}.dimensions duplicate names")
+    if strategy == "zip":
+        require(len(set(choice_counts)) == 1, f"{label} zip dimensions must have equal lengths")
+
+
+def validate_data_model_shape_plan(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} shape plan must be an object")
+    require_identifier(value.get("node_id"), f"{label}.node_id")
+    for field in ("input_granularity", "target_granularity"):
+        field_value = value.get(field, "sample")
+        require(field_value in {"observation", "sample", "target", "group"}, f"{label}.{field} invalid")
+    for field in ("fit_rows", "predict_rows"):
+        field_value = value.get(field, "fold_train" if field == "fit_rows" else "fold_validation")
+        require(
+            field_value in {"fold_train", "fold_validation", "full_train", "predict"},
+            f"{label}.{field} invalid",
+        )
+    namespace = value.get("feature_namespace")
+    if namespace is not None:
+        require_non_empty_string(namespace, f"{label}.feature_namespace")
+    fingerprint = value.get("feature_schema_fingerprint")
+    if fingerprint is not None:
+        require_sha256(fingerprint, f"{label}.feature_schema_fingerprint")
+    require_non_empty_string(value.get("target_space", "raw"), f"{label}.target_space")
+    validate_aggregation_policy(value.get("aggregation_policy", {}), f"{label}.aggregation_policy")
+    augmentation = value.get("augmentation_policy", {})
+    require(isinstance(augmentation, dict), f"{label}.augmentation_policy must be an object")
+    for field in ("sample_scope", "feature_scope"):
+        field_value = augmentation.get(field, "train_only")
+        require(field_value in {"none", "train_only", "all_partitions"}, f"{label}.augmentation_policy.{field} invalid")
+    for field in ("require_origin_id", "inherit_group", "inherit_target"):
+        if field in augmentation:
+            require(isinstance(augmentation[field], bool), f"{label}.augmentation_policy.{field} boolean")
+    selection = value.get("selection_policy", {})
+    require(isinstance(selection, dict), f"{label}.selection_policy must be an object")
+    scope = selection.get("scope", "none")
+    require(scope in {"none", "unsupervised", "supervised_fold_train"}, f"{label}.selection_policy.scope invalid")
+    for field in ("store_masks", "allow_schema_mismatch_on_join"):
+        if field in selection:
+            require(isinstance(selection[field], bool), f"{label}.selection_policy.{field} boolean")
+    if scope == "supervised_fold_train" and value.get("fit_rows", "fold_train") != "fold_train":
+        raise ContractError(f"{label} supervised feature selection must fit on fold_train")
+
+
+def validate_data_binding(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} data binding must be an object")
+    require_identifier(value.get("node_id"), f"{label}.node_id")
+    require_non_empty_string(value.get("input_name"), f"{label}.input_name")
+    require_non_empty_string(value.get("request_id"), f"{label}.request_id")
+    require_sha256(value.get("schema_fingerprint"), f"{label}.schema_fingerprint")
+    require_sha256(value.get("plan_fingerprint"), f"{label}.plan_fingerprint")
+    relation_fingerprint = value.get("relation_fingerprint")
+    if relation_fingerprint is not None:
+        require_sha256(relation_fingerprint, f"{label}.relation_fingerprint")
+    require_non_empty_string(value.get("output_representation"), f"{label}.output_representation")
+    feature_set_id = value.get("feature_set_id")
+    if feature_set_id is not None:
+        require_non_empty_string(feature_set_id, f"{label}.feature_set_id")
+    source_ids = value.get("source_ids", [])
+    require(isinstance(source_ids, list), f"{label}.source_ids must be an array")
+    require(len(set(source_ids)) == len(source_ids), f"{label}.source_ids contain duplicates")
+    for index, source_id in enumerate(source_ids):
+        require_non_empty_string(source_id, f"{label}.source_ids[{index}]")
+    if "require_relations" in value:
+        require(isinstance(value["require_relations"], bool), f"{label}.require_relations boolean")
+    if value.get("require_relations", False):
+        require(relation_fingerprint is not None, f"{label} requires relation_fingerprint")
+    view_policy = value.get("view_policy", {})
+    require(isinstance(view_policy, dict), f"{label}.view_policy must be an object")
+    fit_partition = view_policy.get("fit_partition", "fold_train")
+    predict_partition = view_policy.get("predict_partition", "fold_validation")
+    require(
+        fit_partition in {"fold_train", "fold_validation", "full_train", "predict"},
+        f"{label}.view_policy.fit_partition invalid",
+    )
+    require(
+        predict_partition in {"fold_train", "fold_validation", "full_train", "predict"},
+        f"{label}.view_policy.predict_partition invalid",
+    )
+    for field in (
+        "include_augmented_train",
+        "include_augmented_validation",
+        "include_excluded",
+        "require_sample_ids",
+    ):
+        if field in view_policy:
+            require(isinstance(view_policy[field], bool), f"{label}.view_policy.{field} boolean")
+
+
+def validate_campaign_spec(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} CampaignSpec must be an object")
+    require_non_empty_string(value.get("id"), f"{label}.id")
+    root_seed = value.get("root_seed")
+    if root_seed is not None:
+        require(isinstance(root_seed, int) and root_seed >= 0, f"{label}.root_seed invalid")
+    validate_leakage_policy(value.get("leakage_policy", {}), f"{label}.leakage_policy")
+    validate_aggregation_policy(value.get("aggregation_policy", {}), f"{label}.aggregation_policy")
+    split_invocation = value.get("split_invocation")
+    if split_invocation is not None:
+        require(isinstance(split_invocation, dict), f"{label}.split_invocation must be object")
+        require_non_empty_string(split_invocation.get("id"), f"{label}.split_invocation.id")
+        controller_id = split_invocation.get("controller_id")
+        if controller_id is not None:
+            require_identifier(controller_id, f"{label}.split_invocation.controller_id")
+        validate_leakage_policy(
+            split_invocation.get("leakage_policy", {}),
+            f"{label}.split_invocation.leakage_policy",
+        )
+        params = split_invocation.get("params", {})
+        require(isinstance(params, dict), f"{label}.split_invocation.params must be object")
+        fold_set = split_invocation.get("fold_set")
+        if fold_set is not None:
+            validate_fold_set(fold_set, f"{label}.split_invocation.fold_set")
+    validate_generation_spec(value.get("generation", {}), f"{label}.generation")
+    shape_plans = value.get("shape_plans", {})
+    require(isinstance(shape_plans, dict), f"{label}.shape_plans must be an object")
+    for key, shape_plan in shape_plans.items():
+        validate_data_model_shape_plan(shape_plan, f"{label}.shape_plans[{key}]")
+        require(shape_plan.get("node_id") == key, f"{label}.shape_plans key `{key}` mismatch")
+    data_bindings = value.get("data_bindings", {})
+    require(isinstance(data_bindings, dict), f"{label}.data_bindings must be an object")
+    for key, bindings in data_bindings.items():
+        require(isinstance(bindings, list), f"{label}.data_bindings[{key}] must be an array")
+        for index, binding in enumerate(bindings):
+            validate_data_binding(binding, f"{label}.data_bindings[{key}][{index}]")
+            require(binding.get("node_id") == key, f"{label}.data_bindings key `{key}` mismatch")
+    metadata = value.get("metadata", {})
+    require(isinstance(metadata, dict), f"{label}.metadata must be an object")
+
+
 def validate_model_input_spec(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} ModelInputSpec must be an object")
     require(value.get("schema_version") == 1, f"{label}.schema_version must be 1")
@@ -1320,6 +1668,15 @@ def validate_dag_ml_graph_header(header: str, label: str) -> None:
         require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
+def validate_dag_ml_campaign_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_CAMPAIGN_SPEC_SCHEMA_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_CAMPAIGN_SPEC_SCHEMA_VERSION=1",
+    )
+    for symbol in ("dagml_campaign_spec_contract_json", "dagml_campaign_validate_json"):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
+
+
 def validate_dag_ml_data_shape_header(header: str, label: str) -> None:
     for macro in (
         "#define DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION 1u",
@@ -1681,6 +2038,7 @@ def main() -> int:
         local_schema = load_json(ROOT / SCHEMA_REL)
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_graph_spec_schema = load_json(ROOT / GRAPH_SPEC_SCHEMA_REL)
+        local_campaign_spec_schema = load_json(ROOT / CAMPAIGN_SPEC_SCHEMA_REL)
         local_model_input_spec_schema = load_json(ROOT / MODEL_INPUT_SPEC_SCHEMA_REL)
         local_data_plan_schema = load_json(ROOT / DATA_PLAN_SCHEMA_REL)
         local_controller_manifest_schema = load_json(ROOT / CONTROLLER_MANIFEST_SCHEMA_REL)
@@ -1699,6 +2057,7 @@ def main() -> int:
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
         local_graph_spec_fixture = load_json(ROOT / LOCAL_GRAPH_SPEC_FIXTURE_REL)
+        local_campaign_spec_fixture = load_json(ROOT / LOCAL_CAMPAIGN_SPEC_FIXTURE_REL)
         local_model_input_spec_fixture = load_json(ROOT / LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL)
         local_data_plan_fixture = load_json(ROOT / LOCAL_DATA_PLAN_FIXTURE_REL)
         local_controller_manifest_fixture = load_json(
@@ -1721,6 +2080,7 @@ def main() -> int:
             "dag-ml",
         )
         validate_graph_spec_schema(local_graph_spec_schema, "dag-ml")
+        validate_campaign_spec_schema(local_campaign_spec_schema, "dag-ml")
         validate_model_input_spec_schema(local_model_input_spec_schema, "dag-ml")
         validate_data_plan_schema(local_data_plan_schema, "dag-ml")
         validate_controller_manifest_schema(local_controller_manifest_schema, "dag-ml")
@@ -1740,6 +2100,7 @@ def main() -> int:
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
         validate_graph_spec(local_graph_spec_fixture, "dag-ml")
+        validate_campaign_spec(local_campaign_spec_fixture, "dag-ml")
         validate_model_input_spec(local_model_input_spec_fixture, "dag-ml")
         validate_data_plan(local_data_plan_fixture, "dag-ml")
         validate_controller_manifest(local_controller_manifest_fixture, "dag-ml")
@@ -1756,6 +2117,7 @@ def main() -> int:
         validate_dag_ml_prediction_cache_tensor_header(local_header, "dag-ml")
         validate_dag_ml_controller_result_header(local_header, "dag-ml")
         validate_dag_ml_graph_header(local_header, "dag-ml")
+        validate_dag_ml_campaign_header(local_header, "dag-ml")
         validate_dag_ml_data_shape_header(local_header, "dag-ml")
         validate_dag_ml_data_output_provenance_header(local_header, "dag-ml")
         validate_conformance_pack(

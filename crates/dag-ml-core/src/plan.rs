@@ -18,6 +18,10 @@ use crate::ids::{ControllerId, FoldId, NodeId, VariantId};
 use crate::phase::Phase;
 use crate::policy::{AggregationPolicy, DataModelShapePlan, LeakageUnitPolicy};
 
+pub const CAMPAIGN_SPEC_SCHEMA_VERSION: u32 = 1;
+pub const CAMPAIGN_SPEC_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/campaign_spec.v1.schema.json";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SplitInvocation {
     pub id: String,
@@ -787,6 +791,33 @@ mod tests {
             .iter()
             .map(|level| level.iter().map(ToString::to_string).collect())
             .collect()
+    }
+
+    #[test]
+    fn published_campaign_spec_schema_declares_current_contract() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/campaign_spec.schema.json"
+        ))
+        .unwrap();
+
+        assert_eq!(schema["$id"], CAMPAIGN_SPEC_SCHEMA_ID);
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("id")));
+        assert!(schema["$defs"]["split_invocation"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("fold_set"));
+        assert!(schema["$defs"]["aggregation_policy"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("selection_metric_level"));
+        assert!(schema["$defs"]["data_binding"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("view_policy"));
     }
 
     #[test]
