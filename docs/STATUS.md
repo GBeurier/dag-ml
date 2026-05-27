@@ -210,7 +210,8 @@ Implemented:
   SHA-256 content fingerprint and declared size, reopens them against the
   bundle manifest, and materializes deterministic opaque artifact handles
   without deserializing model binaries. The CLI exposes
-  `export-artifact-payload-store` and `validate-artifact-payload-store`;
+  `export-artifact-payload-store`, `validate-artifact-payload-store` and
+  `run-mock-replay --artifact-payload-store`;
 - first research provenance export layer: core validates the execution plan,
   bundle, optional lineage records, data envelopes, prediction-cache manifest
   and artifact manifest before emitting a checksum-rich RO-Crate package with

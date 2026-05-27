@@ -26,9 +26,9 @@ use dag_ml_core::{
     InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
     OofCampaign, ParallelScheduler, Phase, PredictionBlock, PredictionLevel, PredictionPartition,
     RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
-    ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId, RuntimeController,
-    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
-    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
+    ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId, RuntimeArtifactStore,
+    RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
+    SampleId, SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -613,6 +613,8 @@ enum Command {
         prediction_cache_payload: Option<PathBuf>,
         #[arg(long)]
         prediction_cache_store: Option<PathBuf>,
+        #[arg(long)]
+        artifact_payload_store: Option<PathBuf>,
         #[arg(long = "envelope")]
         envelopes: Vec<String>,
         #[arg(long, default_value = "plan:cli.bundle")]
@@ -1574,6 +1576,7 @@ fn main() -> Result<()> {
             replay_request,
             prediction_cache_payload,
             prediction_cache_store,
+            artifact_payload_store,
             envelopes,
             plan_id,
             run_id,
@@ -1602,7 +1605,8 @@ fn main() -> Result<()> {
             for envelope in envelope_map.values() {
                 data_provider.register_envelope(envelope.clone())?;
             }
-            let artifact_store = mock_artifact_store(&plan, &bundle)?;
+            let artifact_store =
+                optional_mock_artifact_store(&plan, &bundle, artifact_payload_store.as_ref())?;
             let runtime_controllers = mock_runtime_controllers(&plan)?;
             let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
             let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
@@ -1630,7 +1634,7 @@ fn main() -> Result<()> {
                 ctx.prediction_store.blocks().len(),
                 data_provider.handle_records().len(),
                 data_provider.view_records().len(),
-                artifact_store.len(),
+                artifact_store.artifact_handle_count(),
                 prediction_cache_store
                     .as_ref()
                     .map(CliPredictionCacheStore::materialization_record_count)
@@ -3688,6 +3692,43 @@ fn read_optional_prediction_cache_payload(
 ) -> Result<Option<BundlePredictionCachePayloadSet>> {
     path.map(|path| read_json(path, "prediction cache payload set"))
         .transpose()
+}
+
+enum CliArtifactStore {
+    InMemory(InMemoryArtifactStore),
+    File(FileArtifactPayloadStore),
+}
+
+impl CliArtifactStore {
+    fn artifact_handle_count(&self) -> usize {
+        match self {
+            Self::InMemory(store) => store.len(),
+            Self::File(store) => store.materialization_records().len(),
+        }
+    }
+}
+
+impl RuntimeArtifactStore for CliArtifactStore {
+    fn materialize(
+        &self,
+        request: &dag_ml_core::ArtifactMaterializationRequest,
+    ) -> dag_ml_core::Result<HandleRef> {
+        match self {
+            Self::InMemory(store) => store.materialize(request),
+            Self::File(store) => store.materialize(request),
+        }
+    }
+}
+
+fn optional_mock_artifact_store(
+    plan: &dag_ml_core::ExecutionPlan,
+    bundle: &ExecutionBundle,
+    payload_store_dir: Option<&PathBuf>,
+) -> Result<CliArtifactStore> {
+    if let Some(store_dir) = payload_store_dir {
+        return validate_file_artifact_payload_store(bundle, store_dir).map(CliArtifactStore::File);
+    }
+    mock_artifact_store(plan, bundle).map(CliArtifactStore::InMemory)
 }
 
 enum CliPredictionCacheStore {
