@@ -33,7 +33,11 @@ Definition of done:
 
 Status: implemented as the first core slice. Remaining Phase 1 hardening is
 mostly richer fixtures and replacing smoke adapters with production host
-controllers.
+controllers. A first strict JSON `PipelineDslSpec` compiler now lowers linear
+transform/augmentation/model steps, branch model variants and heterogeneous
+prediction-plus-original-data merge models into canonical `GraphSpec`; the
+remaining DSL work is compatibility with the broader nirs4all surface and
+search-space syntax.
 
 ## Phase 2: Host Controllers
 

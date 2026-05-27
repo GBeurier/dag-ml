@@ -379,12 +379,63 @@ static int verify_prediction_tensor_exports(void) {
     return 1;
 }
 
+static int verify_pipeline_dsl_compile(void) {
+    const char *dsl =
+        "{\"id\":\"dsl:c.conformance\","
+        "\"steps\":["
+        "{\"kind\":\"branch\",\"branches\":["
+        "{\"id\":\"b0\",\"steps\":[{\"kind\":\"model\","
+        "\"id\":\"branch:b0.model:ridge\","
+        "\"operator\":{\"type\":\"Ridge\"}}]},"
+        "{\"id\":\"b1\",\"steps\":[{\"kind\":\"model\","
+        "\"id\":\"branch:b1.model:rf\","
+        "\"operator\":{\"type\":\"RandomForestRegressor\"}}]}]},"
+        "{\"kind\":\"merge_model\","
+        "\"id\":\"merge:stack.pred_plus_original.meta:ridge\","
+        "\"operator\":{\"type\":\"RidgeMetaStacker\"}}]}";
+    DagMlOwnedBytes graph = {0};
+    DagMlString error = {0};
+    DagMlStatusCode status = dagml_pipeline_dsl_compile_json(
+        (const uint8_t *)dsl,
+        strlen(dsl),
+        &graph,
+        &error
+    );
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "pipeline DSL compile failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 0;
+    }
+    if (!graph.ptr ||
+        !contains_bytes(graph.ptr, graph.len, "\"id\":\"dsl:c.conformance\"") ||
+        !contains_bytes(graph.ptr, graph.len, "\"requires_oof\":true") ||
+        !contains_bytes(graph.ptr, graph.len, "\"port_name\":\"b0_oof\"")) {
+        fprintf(stderr, "unexpected compiled DSL graph: %.*s\n",
+            (int)graph.len,
+            graph.ptr ? (char *)graph.ptr : "");
+        if (graph.ptr) {
+            dagml_owned_bytes_free(graph);
+        }
+        return 0;
+    }
+    dagml_owned_bytes_free(graph);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc != 7) {
         fprintf(stderr, "usage: %s GRAPH CAMPAIGN CONTROLLERS BUNDLE REQUEST ENVELOPES\n", argv[0]);
         return 2;
     }
     if (!verify_prediction_tensor_exports()) {
+        return 1;
+    }
+    if (!verify_pipeline_dsl_compile()) {
         return 1;
     }
     Buffer graph = read_file(argv[1]);

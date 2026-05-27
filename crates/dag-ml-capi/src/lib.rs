@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use dag_ml_core::{
     build_execution_plan, build_openlineage_run_event, build_research_provenance_export,
-    regression_report_to_candidate_score, score_regression_aggregated_block,
+    compile_pipeline_dsl, regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
     AggregatedPredictionBlock, ArtifactMaterializationRequest, BundlePredictionCachePayload,
     BundlePredictionCachePayloadSet, BundleReplayExecution, CampaignSpec, CandidateScore,
@@ -14,7 +14,7 @@ use dag_ml_core::{
     DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
     ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest, GraphSpec,
     HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
-    NodeResult, NodeTask, OpenLineageRunEventOptions, Phase, PredictionBlock,
+    NodeResult, NodeTask, OpenLineageRunEventOptions, Phase, PipelineDslSpec, PredictionBlock,
     PredictionCacheMaterializationRequest, PredictionLevel, PredictionPartition, PredictionUnitId,
     RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
     RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
@@ -375,6 +375,35 @@ pub unsafe extern "C" fn dagml_graph_validate_json(
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
     validate_json::<GraphSpec>(json_ptr, json_len, error_out, "graph", GraphSpec::validate)
+}
+
+/// Compiles a strict JSON `PipelineDslSpec` into a canonical `GraphSpec` JSON.
+///
+/// This compiler is pure: it lowers host-declared operator references and
+/// branch/merge structure into DAG-ML graph contracts without instantiating
+/// operators or touching data.
+///
+/// # Safety
+///
+/// Same pointer and output ownership rules as `dagml_graph_validate_json` and
+/// other JSON-output helpers.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_pipeline_dsl_compile_json(
+    dsl_ptr: *const u8,
+    dsl_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let dsl = match parse_json_ptr::<PipelineDslSpec>(dsl_ptr, dsl_len, error_out, "pipeline DSL") {
+        Ok(dsl) => dsl,
+        Err(status) => return status,
+    };
+    match compile_pipeline_dsl(&dsl) {
+        Ok(graph) => write_owned_json(out_json, error_out, &graph),
+        Err(error) => validation_error(error_out, error),
+    }
 }
 
 /// Returns deterministic topological levels for parallel node scheduling.
@@ -4437,6 +4466,30 @@ mod tests {
 
         assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
+    }
+
+    #[test]
+    fn compiles_pipeline_dsl_over_abi() {
+        let dsl = include_bytes!("../../../examples/pipeline_dsl_branch_merge.json");
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_pipeline_dsl_compile_json(dsl.as_ptr(), dsl.len(), &mut out, &mut error)
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let graph: GraphSpec = serde_json::from_slice(json).unwrap();
+        assert_eq!(graph.id, "dsl-branch-merge-oof-smoke");
+        assert_eq!(graph.nodes.len(), 4);
+        assert!(graph.edges.iter().any(|edge| edge.contract.requires_oof
+            && edge.target.node_id.as_str() == "merge:stack.pred_plus_original.meta:ridge"
+            && edge.target.port_name == "b0_oof"));
+        graph.validate().unwrap();
+        unsafe { dagml_owned_bytes_free(out) };
     }
 
     #[test]

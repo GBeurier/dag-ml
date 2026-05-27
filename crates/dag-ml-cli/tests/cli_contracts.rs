@@ -27,6 +27,60 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 #[test]
+fn cli_compiles_pipeline_dsl_to_graph() {
+    let root = repo_root();
+    let output_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_compiled_graph_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+
+    let compile = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "compile-pipeline-dsl",
+            "--dsl",
+            "examples/pipeline_dsl_branch_merge.json",
+            "--output",
+            output_path.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli compile-pipeline-dsl");
+    assert!(
+        compile.status.success(),
+        "compile-pipeline-dsl failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let graph: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&output_path).expect("compiled graph output was written"),
+    )
+    .expect("compiled graph output is JSON");
+    assert_eq!(graph["id"], "dsl-branch-merge-oof-smoke");
+    assert_eq!(graph["nodes"].as_array().expect("nodes array").len(), 4);
+    assert!(graph["edges"]
+        .as_array()
+        .expect("edges array")
+        .iter()
+        .any(|edge| edge["contract"]["requires_oof"] == true
+            && edge["target"]["port_name"] == "b0_oof"));
+
+    let validate = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-graph",
+            output_path.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli validate-graph");
+    assert!(
+        validate.status.success(),
+        "validate-graph failed for compiled DSL graph: {}",
+        String::from_utf8_lossy(&validate.stderr)
+    );
+}
+
+#[test]
 fn cli_scores_regression_prediction_blocks() {
     let root = repo_root();
     let suffix = unique_suffix();
