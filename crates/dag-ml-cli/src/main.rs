@@ -15,7 +15,7 @@ use dag_ml_core::{
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
     build_openlineage_run_event_from_package_files, build_prediction_cache_payload,
     build_prediction_cache_record, build_research_provenance_package, compile_pipeline_dsl,
-    compile_pipeline_dsl_with_generation, oof_campaign_fingerprint,
+    compile_pipeline_dsl_with_generation, oof_campaign_fingerprint, parse_pipeline_dsl_json,
     regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
     validate_oof_campaign, validate_research_provenance_package_files, AggregatedPredictionBlock,
@@ -780,7 +780,7 @@ fn main() -> Result<()> {
             output,
             artifact,
         } => {
-            let spec: PipelineDslSpec = read_json(&dsl, "pipeline DSL")?;
+            let spec = read_pipeline_dsl_json(&dsl)?;
             if artifact {
                 let compiled = compile_pipeline_dsl_with_generation(&spec).with_context(|| {
                     format!("failed to compile pipeline DSL at {}", dsl.display())
@@ -4236,7 +4236,7 @@ fn build_plan_from_dsl_path(
     controllers: &PathBuf,
     plan_id: String,
 ) -> Result<dag_ml_core::ExecutionPlan> {
-    let spec: PipelineDslSpec = read_json(dsl, "pipeline DSL")?;
+    let spec = read_pipeline_dsl_json(dsl)?;
     let compiled = compile_pipeline_dsl_with_generation(&spec)
         .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
     let registry = controller_registry_from_path(controllers)?;
@@ -4490,6 +4490,13 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Res
         .with_context(|| format!("failed to read {label} JSON at {}", path.display()))?;
     serde_json::from_slice(&data)
         .with_context(|| format!("failed to parse {label} JSON at {}", path.display()))
+}
+
+fn read_pipeline_dsl_json(path: &PathBuf) -> Result<PipelineDslSpec> {
+    let data = std::fs::read(path)
+        .with_context(|| format!("failed to read pipeline DSL JSON at {}", path.display()))?;
+    parse_pipeline_dsl_json(&data)
+        .with_context(|| format!("failed to parse pipeline DSL JSON at {}", path.display()))
 }
 
 fn write_research_provenance_package(

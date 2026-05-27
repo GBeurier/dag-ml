@@ -7,9 +7,10 @@ pipeline surface, while keeping dag-ml's architecture: operators stay external,
 controllers live in bindings/hosts, and Rust compiles, validates, schedules and
 audits the DAG, campaign, OOF and leakage contracts.
 
-This document tracks semantic parity, not syntax compatibility. The strict
-`PipelineDslSpec` is the portable canonical form. A future importer may lower
-nirs4all-style Python/YAML shorthand into this form.
+This document tracks semantic parity first. The strict `PipelineDslSpec` is the
+portable canonical form. A JSON compatibility importer now lowers serialized
+nirs4all-style list/dict pipelines into that canonical form; Python object and
+YAML frontends should be thin host-side serializers around the same importer.
 
 ## Non-Negotiable Design Rules
 
@@ -51,6 +52,7 @@ nirs4all-style Python/YAML shorthand into this form.
 | `_range_`, `_log_range_`, `_grid_`, param `_or_`, `pick`, `arrange`, `count` | `variants`, explicit `generation_dimensions`, or compact `generators` on DSL nodes | compiled into deterministic `GenerationSpec` dimensions |
 | structural `_or_` over step chains | `kind: "generator"`, `mode: "or"`, `branches`, `pick`/`arrange`/`count` | expanded into explicit OOF-producing choices with namespaced node ids and generator metadata |
 | structural `_cartesian_` over pipeline stages | `kind: "generator"`, `mode: "cartesian"`, `stages` | expanded into explicit Cartesian OOF-producing choices with namespaced node ids and fold-safe downstream merge inputs |
+| serialized list/dict nirs4all surface | top-level `pipeline` array with `preprocessing`, `model`, `branch`, `merge`, `_or_`, `_cartesian_`, `_chain_`, `_grid_`, `_range_`, `_log_range_`, `_zip_`, `_sample_` | compatibility importer lowers to canonical DSL; data-only generator stages are fused with downstream model generators so OOF choices stay complete |
 | multisource data | `data_bindings.source_ids`, branch/source selectors, source joins | contract surface present; richer materialization belongs to dag-ml-data |
 | repetition/sample/group aggregation | top-level/shape `aggregation_policy`, target/group OOF cache contracts | core runtime implemented for sample/target/group OOF |
 | tag/exclude filters | `kind: "tag"` and `kind: "exclude"` | compiled to graph nodes |
@@ -58,9 +60,10 @@ nirs4all-style Python/YAML shorthand into this form.
 
 ## Current Gaps
 
-- nirs4all shorthand import is not implemented yet. Today the portable DSL has
-  native compact generator semantics, but it does not parse nirs4all's legacy
-  Python/YAML keys directly.
+- Native JSON compatibility import exists for serialized nirs4all-style
+  list/dict syntax. Direct Python object/YAML parsing is still a binding-layer
+  task: hosts must serialize operators and splitters into portable descriptors
+  before handing the DSL to Rust.
 - The new DSL node kinds compile and validate graph contracts; production
   execution still needs host controller support for each operator family.
 - Separation branch materialization by source/metadata/tag/filter must be backed

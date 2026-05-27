@@ -207,6 +207,45 @@ fn cli_compiles_pipeline_dsl_to_graph() {
         coordinated_artifact["data_bindings"]
     );
 
+    let compat_artifact_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_compiled_dsl_compat_artifact_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let compile_compat_artifact = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "compile-pipeline-dsl",
+            "--dsl",
+            "examples/pipeline_dsl_nirs4all_compat.json",
+            "--artifact",
+            "--output",
+            compat_artifact_path
+                .to_str()
+                .expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli compile-pipeline-dsl --artifact for compat DSL");
+    assert!(
+        compile_compat_artifact.status.success(),
+        "compile-pipeline-dsl --artifact compat DSL failed: {}",
+        String::from_utf8_lossy(&compile_compat_artifact.stderr)
+    );
+    let compat_artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&compat_artifact_path).expect("compiled compat DSL artifact was written"),
+    )
+    .expect("compiled compat DSL artifact is JSON");
+    assert_eq!(
+        compat_artifact["campaign_template"]["split_invocation"]["params"]["type"],
+        "GroupKFold"
+    );
+    assert!(compat_artifact["graph"]["edges"]
+        .as_array()
+        .expect("edges array")
+        .iter()
+        .any(|edge| edge["target"]["node_id"] == "model:compat.meta"
+            && edge["contract"]["requires_oof"] == true));
+
     let dsl_plan_path = std::env::temp_dir().join(format!(
         "dag_ml_cli_dsl_execution_plan_{}_{}.json",
         std::process::id(),

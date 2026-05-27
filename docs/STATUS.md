@@ -137,6 +137,13 @@ Implemented:
   child node ids are namespaced per generated choice to avoid graph collisions,
   and generator mode/choice labels are preserved as node metadata for
   controller-side selection/refit policy;
+- the DSL parser now accepts serialized nirs4all-style list/dict JSON through a
+  compatibility importer (`pipeline`, `preprocessing`, `model`, `branch`,
+  `merge`, `_or_`, `_cartesian_`, `_chain_`, `_grid_`, `_range_`,
+  `_log_range_`, `_zip_`, `_sample_`, `split`, `sources`) and lowers it to the
+  canonical `PipelineDslSpec`; data-only preprocessing generators are fused
+  with downstream model/generator stages before compilation so every expanded
+  choice remains an OOF-producing branch;
 - the same DSL profile extracts node-level parameter variants into a canonical
   `GenerationSpec`, accepts compact nirs4all-style parameter generators
   (`or`, `range`, `log_range`, `grid`, `pick`, `arrange` with deterministic
@@ -496,8 +503,8 @@ Implemented:
 
 Not implemented yet:
 
-- full nirs4all-compatible DSL compiler beyond the initial strict JSON
-  `PipelineDslSpec` profile;
+- direct Python object/YAML nirs4all DSL frontends; the Rust importer expects
+  serialized JSON descriptors and keeps host object resolution in bindings;
 - advanced search-space compiler/lowering beyond typed node-parameter variants
   and coordinated override dimensions from `PipelineDslSpec`;
 - production persistent/Arrow replay backends for non-sample aggregated

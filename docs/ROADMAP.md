@@ -61,8 +61,10 @@ operators. Those propagated views also carry reserved shape provenance
 fingerprints, current feature schema and emitted shape deltas; the Rust core
 now parses and validates that metadata through a typed `DataOutputProvenance`
 contract, and the JSON Schema/fixture are part of the local contract
-validation. The remaining DSL work is compatibility import from legacy
-nirs4all-style Python/YAML and production materialization semantics for
+validation. The parser also accepts serialized nirs4all-style list/dict JSON
+and lowers it to the canonical DSL, including fusion of data-only preprocessing
+generators with downstream model generators. The remaining DSL work is direct
+Python/YAML frontend serialization and production materialization semantics for
 transformed data instead of smoke-level adapter handles.
 
 ## Phase 2: Host Controllers
