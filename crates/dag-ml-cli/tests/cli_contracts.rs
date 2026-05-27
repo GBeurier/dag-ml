@@ -295,6 +295,90 @@ fn cli_compiles_pipeline_dsl_to_graph() {
 }
 
 #[test]
+fn cli_builds_dsl_plan_with_registry_inferred_minimal_alias_kind() {
+    let root = repo_root();
+    let output_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_registry_alias_plan_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let artifact_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_registry_alias_artifact_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+
+    let build_plan = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "build-pipeline-dsl-plan",
+            "--dsl",
+            "examples/pipeline_dsl_registry_inferred_alias.json",
+            "--controllers",
+            "examples/controller_manifests_alias_registry.json",
+            "--plan-id",
+            "plan:cli.dsl.registry.alias",
+            "--output",
+            output_path.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli build-pipeline-dsl-plan for registry alias");
+    assert!(
+        build_plan.status.success(),
+        "build-pipeline-dsl-plan registry alias failed: {}",
+        String::from_utf8_lossy(&build_plan.stderr)
+    );
+
+    let plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&output_path).expect("plan was written"))
+            .expect("plan is JSON");
+    let nodes = plan["graph_plan"]["graph"]["nodes"]
+        .as_array()
+        .expect("graph nodes array");
+    let model = nodes
+        .iter()
+        .find(|node| node["operator"].as_str() == Some("ElasticSpectra"))
+        .expect("registry-inferred model node");
+
+    assert_eq!(model["kind"], "model");
+    assert_eq!(model["metadata"]["dsl_registry_inferred_kind"], "model");
+    assert_eq!(
+        model["metadata"]["dsl_compat_original_keyword"],
+        "preprocessing"
+    );
+
+    let compile_artifact = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "compile-pipeline-dsl",
+            "--dsl",
+            "examples/pipeline_dsl_registry_inferred_alias.json",
+            "--controllers",
+            "examples/controller_manifests_alias_registry.json",
+            "--artifact",
+            "--output",
+            artifact_path.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli compile-pipeline-dsl for registry alias");
+    assert!(
+        compile_artifact.status.success(),
+        "compile-pipeline-dsl registry alias failed: {}",
+        String::from_utf8_lossy(&compile_artifact.stderr)
+    );
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&artifact_path).expect("artifact was written"))
+            .expect("artifact is JSON");
+    assert!(artifact["graph"]["nodes"]
+        .as_array()
+        .expect("artifact graph nodes")
+        .iter()
+        .any(|node| {
+            node["operator"].as_str() == Some("ElasticSpectra") && node["kind"] == "model"
+        }));
+}
+
+#[test]
 fn cli_scores_regression_prediction_blocks() {
     let root = repo_root();
     let suffix = unique_suffix();

@@ -35,6 +35,12 @@ YAML frontends should be thin host-side serializers around the same importer.
   remains the representation in the graph; a `TransformerMixin` controller may
   build the concrete object and execute it after Rust has selected that
   controller by alias/class/function/ref/type selectors.
+- When a controller registry is available during DSL compilation
+  (`compile-pipeline-dsl --controllers` or `build-pipeline-dsl-plan`), aliases
+  that are not obvious by Rust heuristics may still be reclassified by matching
+  `operator_selectors` before ports are frozen. For example, `ElasticSpectra`
+  can stay a bare string while a model controller declares that alias; if two
+  operator kinds claim the same alias, compilation requires explicit syntax.
 
 ## Parity Matrix
 
@@ -65,7 +71,7 @@ YAML frontends should be thin host-side serializers around the same importer.
 | structural `_or_` over step chains | `kind: "generator"`, `mode: "or"`, `branches`, `pick`/`arrange`/`count` | expanded into explicit OOF-producing choices with namespaced node ids and generator metadata |
 | structural `_cartesian_` over pipeline stages | `kind: "generator"`, `mode: "cartesian"`, `stages` | expanded into explicit Cartesian OOF-producing choices with namespaced node ids and fold-safe downstream merge inputs |
 | serialized list/dict nirs4all surface | top-level `pipeline` array with `preprocessing`, `model`, `branch`, `merge`, `_or_`, `_cartesian_`, `_chain_`, `_grid_`, `_range_`, `_log_range_`, `_zip_`, `_sample_` | compatibility importer lowers to canonical DSL; data-only branch feature merges and merge dicts are compiled, and data-only generator stages are fused with downstream model generators so OOF choices stay complete |
-| minimal aliases / plain operator refs | short strings plus `{"class": ...}`, `{"function": ...}`, `{"ref": ...}`, `{"type": ...}` and `{"name": ..., "step": ...}` wrappers | Rust infers only safe planning class: splitters become campaign split invocations, obvious estimators become model nodes, obvious tuners such as `OptunaTuner` become tuner nodes, chart aliases become chart nodes, all other aliases remain external transform operators for host registry/controller resolution |
+| minimal aliases / plain operator refs | short strings plus `{"class": ...}`, `{"function": ...}`, `{"ref": ...}`, `{"type": ...}` and `{"name": ..., "step": ...}` wrappers | Rust infers only safe planning class: splitters become campaign split invocations, obvious estimators become model nodes, obvious tuners such as `OptunaTuner` become tuner nodes, chart aliases become chart nodes. With a controller registry, selector-only aliases can reclassify unknown transform defaults to model/tuner/etc. before graph planning; cross-kind matches are rejected as ambiguous |
 | multiple nirs4all splitter declarations | one campaign `split_invocation` with `params.compat_split_chain` | splitters remain outside graph nodes while preserving train/test + CV chains for host split controllers |
 | multisource data | `data_bindings.source_ids`, branch/source selectors, source joins | contract surface present; richer materialization belongs to dag-ml-data |
 | repetition/sample/group aggregation | top-level/shape `aggregation_policy`, target/group OOF cache contracts | core runtime implemented for sample/target/group OOF |

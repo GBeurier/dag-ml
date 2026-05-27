@@ -324,6 +324,36 @@ impl ControllerRegistry {
         }
         Ok(first.manifest.clone())
     }
+
+    pub fn infer_operator_kind(&self, operator: &serde_json::Value) -> Result<Option<NodeKind>> {
+        let matches = self
+            .manifests
+            .values()
+            .filter(|manifest| {
+                !manifest.operator_selectors.is_empty()
+                    && manifest
+                        .operator_selectors
+                        .iter()
+                        .any(|selector| selector_matches_operator(selector, operator))
+            })
+            .collect::<Vec<_>>();
+        let Some(first) = matches.first() else {
+            return Ok(None);
+        };
+        let kind = first.operator_kind.clone();
+        let conflicting = matches
+            .iter()
+            .find(|manifest| manifest.operator_kind != kind);
+        if let Some(conflicting) = conflicting {
+            return Err(DagMlError::Planning(format!(
+                "minimal operator alias `{}` matches controllers with different node kinds ({:?} and {:?}); use explicit DSL syntax",
+                operator_label(operator),
+                kind,
+                conflicting.operator_kind
+            )));
+        }
+        Ok(Some(kind))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -384,6 +414,18 @@ fn selector_matches_operator(selector: &OperatorSelector, operator: &serde_json:
         || descriptor
             .operator_type
             .is_some_and(|operator_type| selector_matches_exact(&selector.types, operator_type))
+}
+
+fn operator_label(operator: &serde_json::Value) -> String {
+    match operator {
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Object(object) => ["type", "ref", "class", "function"]
+            .into_iter()
+            .find_map(|key| object.get(key).and_then(serde_json::Value::as_str))
+            .map(str::to_string)
+            .unwrap_or_else(|| operator.to_string()),
+        _ => operator.to_string(),
+    }
 }
 
 fn selector_matches_any<'a>(
@@ -646,6 +688,45 @@ mod tests {
             resolved.controller_id.as_str(),
             "controller:transform.mixin"
         );
+    }
+
+    #[test]
+    fn registry_infers_operator_kind_from_alias_selector() {
+        let mut registry = ControllerRegistry::new();
+        let mut model = manifest("controller:model.custom", NodeKind::Model, 0);
+        model
+            .operator_selectors
+            .push(alias_selector("ElasticSpectra"));
+        registry.register(model).unwrap();
+
+        let kind = registry
+            .infer_operator_kind(&json!("ElasticSpectra"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(kind, NodeKind::Model);
+    }
+
+    #[test]
+    fn registry_refuses_cross_kind_alias_inference() {
+        let mut registry = ControllerRegistry::new();
+        let mut transform = manifest("controller:transform.custom", NodeKind::Transform, 0);
+        transform
+            .operator_selectors
+            .push(alias_selector("AmbiguousAlias"));
+        let mut model = manifest("controller:model.custom", NodeKind::Model, 0);
+        model
+            .operator_selectors
+            .push(alias_selector("AmbiguousAlias"));
+        registry.register(transform).unwrap();
+        registry.register(model).unwrap();
+
+        let error = registry
+            .infer_operator_kind(&json!("AmbiguousAlias"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("different node kinds"));
     }
 
     #[test]

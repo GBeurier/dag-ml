@@ -1,0 +1,10 @@
+{
+  "id": "pipeline-dsl-registry-inferred-alias",
+  "pipeline": [
+    "SNV",
+    "ElasticSpectra"
+  ],
+  "metadata": {
+    "demo": "minimal aliases stay short; controller registry classifies ElasticSpectra as a model before graph planning"
+  }
+}

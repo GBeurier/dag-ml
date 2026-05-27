@@ -75,6 +75,12 @@ class and route it to a generic transformer controller. Verbose descriptors
 the payload needs parameters or when registry routing would otherwise be
 ambiguous.
 
+If controller manifests are present while compiling a DSL graph or execution
+plan, their `operator_selectors` may also classify a minimal alias before the
+graph ports are frozen. This lets a custom bare alias stay compact even when
+Rust cannot infer its category by name; if multiple operator kinds claim it,
+the compiler rejects the alias and asks for explicit syntax.
+
 ### Controller
 
 Binding-side or native adapter that knows how to call an operator. A Python

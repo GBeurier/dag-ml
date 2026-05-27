@@ -90,6 +90,12 @@ enough to build the safe plan: splitters become campaign `SplitInvocation`
 entries, obvious estimators become model nodes, obvious tuners such as
 `OptunaTuner` become tuner nodes, chart aliases become chart nodes, and
 everything else remains an external transform for host controller resolution.
+When the compiler is given controller manifests (`compile-pipeline-dsl
+--controllers` or `build-pipeline-dsl-plan`), selector-only aliases can refine
+this default before graph ports are frozen: a custom bare alias such as
+`ElasticSpectra` may become a model if exactly one operator kind claims it
+through `operator_selectors`. Cross-kind matches are rejected and must use
+explicit DSL syntax.
 Rust validation remains the semantic authority: it lowers
 compatibility JSON into canonical DSL, compiles the graph/campaign/generation
 artifact, rejects unsafe augmentation/shape contracts and enforces OOF graph
@@ -208,7 +214,8 @@ phase/fit-scope consistency, capability/port consistency and typed
 publish a `TransformerMixin` controller that matches aliases such as `SNV`,
 plain strings such as `StandardScaler`, a tuner controller that matches
 `OptunaTuner`, or class/function/ref/type descriptors; Rust keeps the operator
-payload opaque and only routes the node to the matching controller before
+payload opaque, uses selectors to classify bare aliases when manifests are
+available at compile time, and routes the node to the matching controller before
 execution.
 
 ## NodeTask / NodeResult v1
