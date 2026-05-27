@@ -15,15 +15,16 @@ use dag_ml_core::{
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
     build_openlineage_run_event_from_package_files, build_prediction_cache_payload,
     build_prediction_cache_record, build_research_provenance_package, compile_pipeline_dsl,
-    compile_pipeline_dsl_with_generation, oof_campaign_fingerprint, parse_pipeline_dsl_json,
-    regression_report_to_candidate_score, score_regression_aggregated_block,
-    score_regression_prediction_block, select_candidate, select_candidate_groups,
-    validate_oof_campaign, validate_research_provenance_package_files, AggregatedPredictionBlock,
-    ArtifactId, BundleId, BundlePredictionCachePayload, BundlePredictionCachePayloadSet,
-    BundlePredictionCacheRecord, BundlePredictionRequirement, BundleReplayExecution, CampaignSpec,
-    CandidateScore, ColumnarPredictionCacheStore, ControllerId, ControllerManifest,
-    ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle,
-    ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
+    compile_pipeline_dsl_with_controller_registry, compile_pipeline_dsl_with_generation,
+    compile_pipeline_dsl_with_generation_and_controller_registry, oof_campaign_fingerprint,
+    parse_pipeline_dsl_json, regression_report_to_candidate_score,
+    score_regression_aggregated_block, score_regression_prediction_block, select_candidate,
+    select_candidate_groups, validate_oof_campaign, validate_research_provenance_package_files,
+    AggregatedPredictionBlock, ArtifactId, BundleId, BundlePredictionCachePayload,
+    BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
+    BundleReplayExecution, CampaignSpec, CandidateScore, ColumnarPredictionCacheStore,
+    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataRequestPartition,
+    ExecutionBundle, ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
     FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
     InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
     OofCampaign, ParallelScheduler, Phase, PipelineDslSpec, PredictionBlock, PredictionLevel,
@@ -190,6 +191,8 @@ enum Command {
     CompilePipelineDsl {
         #[arg(long)]
         dsl: PathBuf,
+        #[arg(long)]
+        controllers: Option<PathBuf>,
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long)]
@@ -777,19 +780,28 @@ fn main() -> Result<()> {
         }
         Command::CompilePipelineDsl {
             dsl,
+            controllers,
             output,
             artifact,
         } => {
             let spec = read_pipeline_dsl_json(&dsl)?;
             if artifact {
-                let compiled = compile_pipeline_dsl_with_generation(&spec).with_context(|| {
-                    format!("failed to compile pipeline DSL at {}", dsl.display())
-                })?;
+                let compiled = if let Some(controllers) = controllers.as_ref() {
+                    let registry = controller_registry_from_path(controllers)?;
+                    compile_pipeline_dsl_with_generation_and_controller_registry(&spec, &registry)
+                } else {
+                    compile_pipeline_dsl_with_generation(&spec)
+                }
+                .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
                 emit_json(output.as_ref(), &compiled, "compiled pipeline DSL artifact")?;
             } else {
-                let graph = compile_pipeline_dsl(&spec).with_context(|| {
-                    format!("failed to compile pipeline DSL at {}", dsl.display())
-                })?;
+                let graph = if let Some(controllers) = controllers.as_ref() {
+                    let registry = controller_registry_from_path(controllers)?;
+                    compile_pipeline_dsl_with_controller_registry(&spec, &registry)
+                } else {
+                    compile_pipeline_dsl(&spec)
+                }
+                .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
                 emit_json(output.as_ref(), &graph, "compiled graph")?;
             }
         }
@@ -4237,9 +4249,10 @@ fn build_plan_from_dsl_path(
     plan_id: String,
 ) -> Result<dag_ml_core::ExecutionPlan> {
     let spec = read_pipeline_dsl_json(dsl)?;
-    let compiled = compile_pipeline_dsl_with_generation(&spec)
-        .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
     let registry = controller_registry_from_path(controllers)?;
+    let compiled =
+        compile_pipeline_dsl_with_generation_and_controller_registry(&spec, &registry)
+            .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
     build_execution_plan(
         plan_id,
         compiled.graph,

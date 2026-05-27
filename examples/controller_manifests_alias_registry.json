@@ -91,6 +91,7 @@
     "operator_selectors": [
       {
         "aliases": [
+          "ElasticSpectra",
           "GradientBoostingRegressor",
           "Lasso",
           "PLSRegression",
@@ -104,6 +105,7 @@
           "sklearn.linear_model."
         ],
         "types": [
+          "ElasticSpectra",
           "GradientBoostingRegressor",
           "Lasso",
           "PLSRegression",

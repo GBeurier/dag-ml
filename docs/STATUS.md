@@ -164,8 +164,11 @@ Implemented:
   references (`SNV`, `PLSRegression`, `OptunaTuner`, `chart_2d`,
   `{"class": ...}`, `{"function": ...}`, `{"name": ..., "step": ...}`); Rust
   only infers the safe planning category, keeps operators external for host
-  controller resolution, and folds successive nirs4all splitter declarations
-  into one campaign `SplitInvocation` chain instead of graph split nodes;
+  controller resolution, can use controller `operator_selectors` during
+  DSL/plan compilation to reclassify otherwise-unknown aliases such as
+  `ElasticSpectra` before graph ports are frozen, and folds successive nirs4all
+  splitter declarations into one campaign `SplitInvocation` chain instead of
+  graph split nodes;
 - controller manifests can now declare `operator_selectors` over aliases,
   classes, class prefixes, functions, refs and types. Registry resolution
   prefers matching selectors over generic same-kind controllers, which lets

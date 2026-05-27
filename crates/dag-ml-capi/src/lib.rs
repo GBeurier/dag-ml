@@ -6,7 +6,8 @@ use std::sync::Mutex;
 
 use dag_ml_core::{
     build_execution_plan, build_openlineage_run_event, build_research_provenance_export,
-    compile_pipeline_dsl, compile_pipeline_dsl_with_generation, parse_pipeline_dsl_json,
+    compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
+    compile_pipeline_dsl_with_generation_and_controller_registry, parse_pipeline_dsl_json,
     regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
     AggregatedPredictionBlock, AggregationControllerResult, AggregationControllerTask,
@@ -1192,10 +1193,11 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_execution_plan_build_json(
         Ok(registry) => registry,
         Err(error) => return validation_error(error_out, error),
     };
-    let compiled = match compile_pipeline_dsl_with_generation(&dsl) {
-        Ok(compiled) => compiled,
-        Err(error) => return validation_error(error_out, error),
-    };
+    let compiled =
+        match compile_pipeline_dsl_with_generation_and_controller_registry(&dsl, &registry) {
+            Ok(compiled) => compiled,
+            Err(error) => return validation_error(error_out, error),
+        };
     match build_execution_plan(
         plan_id,
         compiled.graph,
