@@ -133,6 +133,10 @@ typedef struct ArrowSchema {
 #define DAG_ML_DATA_PLAN_SCHEMA_VERSION 1u
 #endif
 
+#ifndef DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION
+#define DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION 1u
+#endif
+
 #ifndef DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION
 #define DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION 1u
 #endif
@@ -206,6 +210,7 @@ DagMlStatusCode dagml_model_input_spec_contract_json(DagMlOwnedBytes *out_json, 
 DagMlStatusCode dagml_model_input_spec_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_data_plan_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_data_plan_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
+DagMlStatusCode dagml_controller_manifest_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_controller_manifest_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_controller_manifest_list_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_data_output_provenance_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);

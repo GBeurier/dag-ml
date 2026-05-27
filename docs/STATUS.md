@@ -412,6 +412,10 @@ Implemented:
 - controller manifests now parse and validate `data_requirements` as a
   versioned `ModelInputSpec` when present, so controller-side data/model
   compatibility is no longer an unchecked opaque JSON blob;
+- published `ControllerManifest` JSON Schema and canonical data-aware fixture,
+  with Rust/C ABI contract discovery and contract-script validation, so
+  bindings have a versioned public shape for controller capabilities, ports,
+  fit/RNG/artifact policies and typed data requirements;
 - C ABI exposes single-manifest and manifest-list validation helpers, including
   `ModelInputSpec` data-requirement checks and duplicate controller-id refusal;
 - C ABI graph validation entry point;

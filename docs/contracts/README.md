@@ -98,6 +98,28 @@ named outputs that feed model ports. DAG-ML validates ordering, output
 references and refusal metadata before such a plan can become part of an
 execution plan or bundle.
 
+## ControllerManifest v1
+
+Schema: `controller_manifest.schema.json`
+
+Canonical fixture:
+`examples/fixtures/runtime/controller_manifest_data_aware_model.json`
+
+Runtime type: `ControllerManifest`
+
+C ABI: `DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION`,
+`dagml_controller_manifest_contract_json`,
+`dagml_controller_manifest_validate_json`,
+`dagml_controller_manifest_list_validate_json`
+
+This is the binding-facing contract each external controller registry must
+publish. It declares the controller id/version, operator kind, phase support,
+ports, deterministic/replay capabilities, fit scope, RNG policy, artifact
+policy and optional `ModelInputSpec` data requirements. The schema is the
+portable shape; Rust validation remains the authority for registry uniqueness,
+phase/fit-scope consistency, capability/port consistency and typed
+`data_requirements` semantics.
+
 ## DAG-ML OpenLineage Facets v1
 
 Schema: `openlineage_dagml_facets.schema.json`
