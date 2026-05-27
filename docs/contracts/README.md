@@ -87,12 +87,19 @@ operator aliases: short strings such as `SNV`/`PLSRegression`, plain
 `{"class": ...}` / `{"function": ...}` / `{"ref": ...}` objects, and
 `{"name": ..., "step": ...}` wrappers. Rust classifies those aliases only far
 enough to build the safe plan: splitters become campaign `SplitInvocation`
-entries, obvious estimators become model nodes, chart aliases become chart
-nodes, and everything else remains an external transform for host controller
-resolution. Rust validation remains the semantic authority: it lowers
+entries, obvious estimators become model nodes, obvious tuners such as
+`OptunaTuner` become tuner nodes, chart aliases become chart nodes, and
+everything else remains an external transform for host controller resolution.
+Rust validation remains the semantic authority: it lowers
 compatibility JSON into canonical DSL, compiles the graph/campaign/generation
 artifact, rejects unsafe augmentation/shape contracts and enforces OOF graph
 edges.
+
+External tuner/finetune controllers are canonical operator steps.
+`kind: "tuner"` and its alias `kind: "finetune"` compile to
+`NodeKind::Tuner`, preserve public tuning metadata and produce fold-aligned OOF
+prediction outputs like model nodes; the actual search implementation remains in
+the host controller.
 
 Runtime data generators are canonical operator steps, separate from
 compile-time search-space generators. `kind: "data_generation"` and its alias
@@ -199,9 +206,10 @@ phase/fit-scope consistency, capability/port consistency and typed
 
 `operator_selectors` are the minimal-alias bridge used by bindings. A host can
 publish a `TransformerMixin` controller that matches aliases such as `SNV`,
-plain strings such as `StandardScaler`, or class/function/ref/type descriptors;
-Rust keeps the operator payload opaque and only routes the node to the matching
-controller before execution.
+plain strings such as `StandardScaler`, a tuner controller that matches
+`OptunaTuner`, or class/function/ref/type descriptors; Rust keeps the operator
+payload opaque and only routes the node to the matching controller before
+execution.
 
 ## NodeTask / NodeResult v1
 

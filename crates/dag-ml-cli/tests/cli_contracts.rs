@@ -2796,6 +2796,148 @@ fn cli_executes_mixed_branch_merge_with_minimal_aliases() {
 }
 
 #[test]
+fn cli_executes_tuner_operator_with_minimal_aliases() {
+    let root = repo_root();
+    let suffix = unique_suffix();
+    let temp_plan = std::env::temp_dir().join(format!(
+        "dag_ml_cli_tuner_plan_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let temp_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_tuner_bundle_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let temp_lineage = std::env::temp_dir().join(format!(
+        "dag_ml_cli_tuner_lineage_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let temp_prediction_cache = std::env::temp_dir().join(format!(
+        "dag_ml_cli_tuner_prediction_cache_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let bundle_id = format!("bundle:cli.tuner.alias.{suffix}");
+    let plan_id = format!("plan:cli.tuner.alias.{suffix}");
+    let run_id = format!("run:cli.tuner.alias.{suffix}");
+
+    let build_plan = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "build-pipeline-dsl-plan",
+            "--dsl",
+            "examples/pipeline_dsl_tuner_executable.json",
+            "--controllers",
+            "examples/controller_manifests_alias_registry.json",
+            "--plan-id",
+            plan_id.as_str(),
+            "--output",
+            temp_plan.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to build tuner DSL plan");
+    assert!(
+        build_plan.status.success(),
+        "tuner DSL plan failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build_plan.stdout),
+        String::from_utf8_lossy(&build_plan.stderr)
+    );
+
+    let plan_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&temp_plan).expect("plan was written"))
+            .expect("plan is JSON");
+    assert_eq!(
+        plan_json["node_plans"]["transform:snv"]["controller_id"],
+        "controller:transformer-mixin.mock"
+    );
+    assert_eq!(
+        plan_json["node_plans"]["tuner:optuna"]["controller_id"],
+        "controller:tuner.mock"
+    );
+    assert_eq!(
+        plan_json["node_plans"]["merge:tuned_features"]["controller_id"],
+        "controller:mixed-join.mock"
+    );
+    assert_eq!(
+        plan_json["node_plans"]["model:final.ridge"]["controller_id"],
+        "controller:sklearn-estimator.mock"
+    );
+    assert_eq!(
+        plan_json["graph_plan"]["graph"]["nodes"]
+            .as_array()
+            .expect("graph nodes array")
+            .iter()
+            .find(|node| node["id"] == "tuner:optuna")
+            .expect("tuner node")["kind"],
+        "tuner"
+    );
+
+    let run = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-dsl-cv-refit-bundle",
+            "--dsl",
+            "examples/pipeline_dsl_tuner_executable.json",
+            "--controllers",
+            "examples/controller_manifests_alias_registry.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--persistent",
+            "--bundle-id",
+            bundle_id.as_str(),
+            "--output",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--lineage-output",
+            temp_lineage.to_str().expect("temp path is valid utf-8"),
+            "--prediction-cache-output",
+            temp_prediction_cache
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            plan_id.as_str(),
+            "--run-id",
+            run_id.as_str(),
+        ])
+        .output()
+        .expect("failed to run tuner DSL bundle");
+    assert!(
+        run.status.success(),
+        "tuner DSL bundle failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        stdout.contains("process DSL cv refit bundle run: 8 fit_cv result(s)")
+            && stdout.contains("4 OOF prediction block(s)")
+            && stdout.contains("4 refit result(s)")
+            && stdout.contains("2 captured artifact handle(s)")
+            && stdout.contains("1 prediction cache(s)"),
+        "unexpected tuner DSL bundle output: {}",
+        stdout
+    );
+
+    let prediction_cache_json = std::fs::read_to_string(&temp_prediction_cache)
+        .expect("tuner prediction cache was written");
+    assert!(
+        prediction_cache_json.contains(&format!("\"bundle_id\": \"{bundle_id}\""))
+            && prediction_cache_json
+                .contains("prediction-cache:tuner:optuna.oof->merge:tuned_features.tuned_oof"),
+        "unexpected tuner prediction cache JSON: {}",
+        prediction_cache_json
+    );
+
+    let _ = std::fs::remove_file(temp_plan);
+    let _ = std::fs::remove_file(temp_bundle);
+    let _ = std::fs::remove_file(temp_lineage);
+    let _ = std::fs::remove_file(temp_prediction_cache);
+}
+
+#[test]
 fn cli_executes_runtime_data_generation_operator() {
     let root = repo_root();
     let suffix = unique_suffix();

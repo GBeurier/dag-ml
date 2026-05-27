@@ -412,6 +412,8 @@ def validate_pipeline_dsl_schema(schema: Any, label: str) -> None:
         "generation",
         "concat_transform",
         "model",
+        "tuner",
+        "finetune",
         "branch",
         "generator",
         "sequential",
@@ -450,7 +452,7 @@ def validate_pipeline_dsl_schema(schema: Any, label: str) -> None:
         require(definition_name in defs, f"{label} Pipeline DSL schema misses `{definition_name}`")
     compat_properties = defs.get("compat_step_object", {}).get("properties")
     require(isinstance(compat_properties, dict), f"{label} Pipeline DSL compat properties missing")
-    for property_name in ("class", "function", "ref", "type", "name", "step"):
+    for property_name in ("class", "function", "ref", "type", "name", "step", "tuner", "finetune"):
         require(
             property_name in compat_properties,
             f"{label} Pipeline DSL compat schema misses `{property_name}` alias property",
