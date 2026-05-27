@@ -55,6 +55,17 @@ already validated research provenance package and uses these custom `dagml_*`
 facets to preserve DAG-ML fingerprints, OOF coverage counters, unsafe flags and
 bundle/plan identifiers that OpenLineage does not model natively.
 
+## Prediction Cache Tensor Metadata v1
+
+Schema: `prediction_cache_tensor_metadata.schema.json`
+
+This C ABI metadata contract accompanies
+`dagml_prediction_cache_payload_f64_tensor_json`. The tensor carries contiguous
+row-major F64 prediction values; the metadata carries the stable requirement
+key, cache id, prediction level, block offsets, fold ids, sample ids, unit ids
+and target names required to interpret rows without hiding traceability inside
+the value buffer.
+
 ## Research Provenance Package Profile v1
 
 Profile: `research_provenance_package_profile.v1.json`

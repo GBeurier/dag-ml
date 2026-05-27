@@ -24,6 +24,9 @@ SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
 OPENLINEAGE_FACETS_SCHEMA_REL = Path("docs/contracts/openlineage_dagml_facets.schema.json")
+PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL = Path(
+    "docs/contracts/prediction_cache_tensor_metadata.schema.json"
+)
 RESEARCH_PROVENANCE_PROFILE_REL = Path(
     "docs/contracts/research_provenance_package_profile.v1.json"
 )
@@ -60,6 +63,10 @@ CONFORMANCE_PACK_ID = "dag-ml.shared.conformance.v1"
 OPENLINEAGE_FACETS_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "openlineage_dagml_facets.v1.schema.json"
+)
+PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "prediction_cache_tensor_metadata.v1.schema.json"
 )
 RESEARCH_PROVENANCE_PROFILE_ID = "dag-ml.research_provenance_package.v1"
 
@@ -203,6 +210,65 @@ def validate_openlineage_facets_schema(schema: Any, label: str) -> None:
             definition.get("additionalProperties") in {False, True},
             f"{label} `{definition_name}` must declare additionalProperties explicitly",
         )
+
+
+def validate_prediction_cache_tensor_metadata_schema(schema: Any, label: str) -> None:
+    require(
+        isinstance(schema, dict),
+        f"{label} prediction-cache tensor metadata schema must be an object",
+    )
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} prediction-cache tensor metadata schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_ID,
+        f"{label} prediction-cache tensor metadata schema has unexpected $id",
+    )
+    require(
+        schema.get("type") == "object",
+        f"{label} prediction-cache tensor metadata root must be an object",
+    )
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} prediction-cache tensor metadata root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(
+        isinstance(required, list),
+        f"{label} prediction-cache tensor metadata required list is missing",
+    )
+    for field in (
+        "schema_version",
+        "requirement_key",
+        "cache_id",
+        "prediction_level",
+        "rows",
+        "cols",
+        "blocks",
+    ):
+        require(
+            field in required,
+            f"{label} prediction-cache tensor metadata must require `{field}`",
+        )
+    properties = schema.get("properties")
+    require(
+        isinstance(properties, dict),
+        f"{label} prediction-cache tensor metadata properties are missing",
+    )
+    require(
+        properties.get("schema_version", {}).get("const") == 1,
+        f"{label} prediction-cache tensor metadata schema_version const must be 1",
+    )
+    require(
+        properties.get("prediction_level", {}).get("enum") == ["sample", "target", "group"],
+        f"{label} prediction-cache tensor metadata prediction_level enum mismatch",
+    )
+    defs = schema.get("$defs")
+    require(
+        isinstance(defs, dict) and "block_metadata" in defs and "prediction_unit_id" in defs,
+        f"{label} prediction-cache tensor metadata schema definitions are incomplete",
+    )
 
 
 def validate_envelope(envelope: Any, label: str) -> None:
@@ -351,6 +417,19 @@ def validate_dag_ml_data_tensor_header(header: str, label: str) -> None:
         "dagmldata_inmemory_provider_feature_collation_tensor_f64_json" in header,
         f"{label} header must expose provider tensor collation",
     )
+
+
+def validate_dag_ml_prediction_cache_tensor_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION=1",
+    )
+    for symbol in (
+        "DagMlF64Tensor",
+        "dagml_f64_tensor_free",
+        "dagml_prediction_cache_payload_f64_tensor_json",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
 def canonical_json_sha256(value: Any) -> str:
@@ -684,6 +763,9 @@ def main() -> int:
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
         local_openlineage_facets_schema = load_json(ROOT / OPENLINEAGE_FACETS_SCHEMA_REL)
+        local_prediction_cache_tensor_metadata_schema = load_json(
+            ROOT / PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL
+        )
         local_research_provenance_profile = load_json(ROOT / RESEARCH_PROVENANCE_PROFILE_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
@@ -695,9 +777,14 @@ def main() -> int:
             "dag-ml",
         )
         validate_openlineage_facets_schema(local_openlineage_facets_schema, "dag-ml")
+        validate_prediction_cache_tensor_metadata_schema(
+            local_prediction_cache_tensor_metadata_schema,
+            "dag-ml",
+        )
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
         validate_data_provider_header(local_header, "dag-ml")
+        validate_dag_ml_prediction_cache_tensor_header(local_header, "dag-ml")
         validate_conformance_pack(
             local_pack,
             local_schema,
