@@ -190,6 +190,12 @@ portable shape; Rust validation remains the authority for registry uniqueness,
 phase/fit-scope consistency, capability/port consistency and typed
 `data_requirements` semantics.
 
+`operator_selectors` are the minimal-alias bridge used by bindings. A host can
+publish a `TransformerMixin` controller that matches aliases such as `SNV`,
+plain strings such as `StandardScaler`, or class/function/ref/type descriptors;
+Rust keeps the operator payload opaque and only routes the node to the matching
+controller before execution.
+
 ## NodeTask / NodeResult v1
 
 Schemas: `node_task.schema.json`, `node_result.schema.json`

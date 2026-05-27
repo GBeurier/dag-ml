@@ -2603,6 +2603,199 @@ fn process_adapters_describe_supported_protocol_modes() {
 }
 
 #[test]
+fn cli_executes_mixed_branch_merge_with_minimal_aliases() {
+    let root = repo_root();
+    if !python_has_sklearn(&root) {
+        return;
+    }
+
+    let suffix = unique_suffix();
+    let temp_plan = std::env::temp_dir().join(format!(
+        "dag_ml_cli_mixed_alias_plan_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let temp_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_mixed_alias_bundle_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let temp_lineage = std::env::temp_dir().join(format!(
+        "dag_ml_cli_mixed_alias_lineage_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let temp_prediction_cache = std::env::temp_dir().join(format!(
+        "dag_ml_cli_mixed_alias_prediction_cache_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    let bundle_id = format!("bundle:cli.mixed.alias.{suffix}");
+    let plan_id = format!("plan:cli.mixed.alias.{suffix}");
+    let run_id = format!("run:cli.mixed.alias.{suffix}");
+
+    let build_plan = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "build-pipeline-dsl-plan",
+            "--dsl",
+            "examples/pipeline_dsl_mixed_branch_merge_executable.json",
+            "--controllers",
+            "examples/controller_manifests_alias_registry.json",
+            "--plan-id",
+            plan_id.as_str(),
+            "--output",
+            temp_plan.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("failed to build mixed branch merge DSL plan");
+    assert!(
+        build_plan.status.success(),
+        "mixed branch merge DSL plan failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build_plan.stdout),
+        String::from_utf8_lossy(&build_plan.stderr)
+    );
+
+    let plan_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&temp_plan).expect("plan was written"))
+            .expect("plan is JSON");
+    let graph_nodes = plan_json["graph_plan"]["graph"]["nodes"]
+        .as_array()
+        .expect("graph nodes array");
+    assert!(
+        graph_nodes.iter().any(|node| {
+            node["id"] == "branch:scaled.transform"
+                && node["operator"].as_str() == Some("StandardScaler")
+        }) && graph_nodes.iter().any(|node| {
+            node["id"] == "branch:raw_copy.transform"
+                && node["operator"].as_str() == Some("FunctionTransformer")
+        }) && graph_nodes.iter().any(|node| {
+            node["id"] == "merge:mixed"
+                && node["kind"] == "mixed_join"
+                && node["metadata"]["include_original_data"] == true
+                && node["metadata"]["branch_data_inputs"]
+                    .as_array()
+                    .is_some_and(|inputs| inputs.len() == 2)
+        }),
+        "unexpected mixed branch merge plan JSON: {}",
+        plan_json
+    );
+    assert_eq!(
+        plan_json["node_plans"]["branch:scaled.transform"]["controller_id"],
+        "controller:transformer-mixin.mock"
+    );
+    assert_eq!(
+        plan_json["node_plans"]["branch:raw_copy.transform"]["controller_id"],
+        "controller:transformer-mixin.mock"
+    );
+    assert_eq!(
+        plan_json["node_plans"]["branch:scaled.model:ridge"]["controller_id"],
+        "controller:sklearn-estimator.mock"
+    );
+    assert_eq!(
+        plan_json["node_plans"]["merge:mixed"]["controller_id"],
+        "controller:mixed-join.mock"
+    );
+    assert_eq!(
+        plan_json["node_plans"]["model:final.ridge"]["controller_id"],
+        "controller:sklearn-estimator.mock"
+    );
+    assert_eq!(
+        plan_json["node_plans"]["merge:mixed"]["input_nodes"]
+            .as_array()
+            .expect("mixed merge input nodes")
+            .len(),
+        3
+    );
+
+    let run = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-process-dsl-cv-refit-bundle",
+            "--dsl",
+            "examples/pipeline_dsl_mixed_branch_merge_executable.json",
+            "--controllers",
+            "examples/controller_manifests_alias_registry.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/sklearn_process_controller.py",
+            "--persistent",
+            "--process-workers",
+            "2",
+            "--bundle-id",
+            bundle_id.as_str(),
+            "--output",
+            temp_bundle.to_str().expect("temp path is valid utf-8"),
+            "--lineage-output",
+            temp_lineage.to_str().expect("temp path is valid utf-8"),
+            "--prediction-cache-output",
+            temp_prediction_cache
+                .to_str()
+                .expect("temp path is valid utf-8"),
+            "--plan-id",
+            plan_id.as_str(),
+            "--run-id",
+            run_id.as_str(),
+        ])
+        .output()
+        .expect("failed to run mixed branch merge DSL bundle");
+    assert!(
+        run.status.success(),
+        "mixed branch merge DSL bundle failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        stdout.contains("process DSL cv refit bundle run: 10 fit_cv result(s)")
+            && stdout.contains("4 OOF prediction block(s)")
+            && stdout.contains("5 refit result(s)")
+            && stdout.contains("2 captured artifact handle(s)")
+            && stdout.contains("1 prediction cache(s)")
+            && stdout.contains("configured process worker(s)=2")
+            && stdout.contains("observed process worker(s)=2"),
+        "unexpected mixed branch merge DSL bundle output: {}",
+        stdout
+    );
+
+    let bundle_json =
+        std::fs::read_to_string(&temp_bundle).expect("mixed branch merge bundle was written");
+    assert!(
+        bundle_json.contains("branch:scaled.transform")
+            && bundle_json.contains("branch:raw_copy.transform")
+            && bundle_json.contains("merge:mixed")
+            && bundle_json.contains("model:final.ridge")
+            && bundle_json.contains("artifact:model:final.ridge:sklearn:refit"),
+        "unexpected mixed branch merge bundle JSON: {}",
+        bundle_json
+    );
+    let lineage_json =
+        std::fs::read_to_string(&temp_lineage).expect("mixed branch merge lineage was written");
+    assert!(
+        lineage_json.contains("merge:mixed")
+            && lineage_json.contains("model:final.ridge")
+            && lineage_json.contains("input_lineage"),
+        "unexpected mixed branch merge lineage JSON: {}",
+        lineage_json
+    );
+    let prediction_cache_json = std::fs::read_to_string(&temp_prediction_cache)
+        .expect("mixed branch merge prediction cache was written");
+    assert!(
+        prediction_cache_json.contains(&format!("\"bundle_id\": \"{bundle_id}\""))
+            && prediction_cache_json
+                .contains("prediction-cache:branch:scaled.model:ridge.oof->merge:mixed.scaled_oof"),
+        "unexpected mixed branch merge prediction cache JSON: {}",
+        prediction_cache_json
+    );
+
+    let _ = std::fs::remove_file(temp_plan);
+    let _ = std::fs::remove_file(temp_bundle);
+    let _ = std::fs::remove_file(temp_lineage);
+    let _ = std::fs::remove_file(temp_prediction_cache);
+}
+
+#[test]
 fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
     let root = repo_root();
     let timeout_marker_dir = std::env::temp_dir().join(format!(
