@@ -2681,6 +2681,11 @@ pub struct DataProviderViewSpec {
 }
 
 pub const DATA_OUTPUT_PROVENANCE_KEY: &str = "dag_ml_output";
+pub const DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = 1;
+
+fn default_data_output_provenance_schema_version() -> u32 {
+    DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION
+}
 
 impl DataProviderViewSpec {
     pub fn validate(&self) -> Result<()> {
@@ -2728,6 +2733,8 @@ impl DataProviderViewSpec {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DataOutputProvenance {
+    #[serde(default = "default_data_output_provenance_schema_version")]
+    pub schema_version: u32,
     pub producer_node: NodeId,
     pub producer_port: String,
     pub producer_phase: Phase,
@@ -2749,6 +2756,12 @@ pub struct DataOutputProvenance {
 
 impl DataOutputProvenance {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version != DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data output provenance for `{}` uses unsupported schema_version {}, expected {}",
+                self.producer_node, self.schema_version, DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION
+            )));
+        }
         if self.producer_port.trim().is_empty() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "data output provenance for `{}` has empty producer_port",
@@ -4654,6 +4667,7 @@ fn output_data_view_for_port(
         .cloned()
         .collect::<Vec<_>>();
     let mut provenance = DataOutputProvenance {
+        schema_version: DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION,
         producer_node: task.node_plan.node_id.clone(),
         producer_port: port_name.to_string(),
         producer_phase: task.phase,
@@ -8628,6 +8642,7 @@ mod tests {
         let before_feature_schema = "a".repeat(64);
         let after_feature_schema = "b".repeat(64);
         let provenance = DataOutputProvenance {
+            schema_version: DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION,
             producer_node: producer.clone(),
             producer_port: "x_out".to_string(),
             producer_phase: Phase::FitCv,
@@ -8686,7 +8701,7 @@ mod tests {
             "unexpected wrong-delta-node provenance error: {error}"
         );
 
-        let mut wrong_feature_fingerprint = provenance;
+        let mut wrong_feature_fingerprint = provenance.clone();
         wrong_feature_fingerprint.feature_schema_fingerprint = Some("e".repeat(64));
         view.extra.insert(
             DATA_OUTPUT_PROVENANCE_KEY.to_string(),
@@ -8697,6 +8712,37 @@ mod tests {
             error.contains("last feature delta"),
             "unexpected feature-fingerprint provenance error: {error}"
         );
+
+        let mut unsupported_schema = provenance;
+        unsupported_schema.schema_version = DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION + 1;
+        view.extra.insert(
+            DATA_OUTPUT_PROVENANCE_KEY.to_string(),
+            serde_json::to_value(unsupported_schema).unwrap(),
+        );
+        let error = view.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("unsupported schema_version"),
+            "unexpected provenance schema-version error: {error}"
+        );
+    }
+
+    #[test]
+    fn published_data_output_provenance_schema_declares_current_version() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/data_output_provenance.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            schema["properties"]["schema_version"]["const"].as_u64(),
+            Some(u64::from(DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION))
+        );
+        let required = schema["required"].as_array().unwrap();
+        assert!(required
+            .iter()
+            .any(|field| field.as_str() == Some("schema_version")));
+        assert!(required
+            .iter()
+            .any(|field| field.as_str() == Some("producer_node")));
     }
 
     #[test]

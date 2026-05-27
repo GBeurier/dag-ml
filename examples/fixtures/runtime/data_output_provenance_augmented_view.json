@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "producer_node": "branch:b1.augment:noise",
+  "producer_port": "x_out",
+  "producer_phase": "FIT_CV",
+  "variant_id": "variant:a964828b1417c6e7",
+  "fold_id": "fold:0",
+  "shape_plan_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "aggregation_policy_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "feature_namespace": "augmented.noise",
+  "feature_schema_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "shape_deltas": [
+    {
+      "node_id": "branch:b1.augment:noise",
+      "kind": "feature",
+      "before_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "after_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "metadata": {
+        "feature_namespace": "augmented.noise"
+      }
+    }
+  ]
+}
