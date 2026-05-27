@@ -14,14 +14,15 @@ use dag_ml_core::{
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
     build_openlineage_run_event_from_package_files, build_prediction_cache_payload,
     build_prediction_cache_record, build_research_provenance_package, compile_pipeline_dsl,
-    oof_campaign_fingerprint, regression_report_to_candidate_score,
-    score_regression_aggregated_block, score_regression_prediction_block, select_candidate,
-    select_candidate_groups, validate_oof_campaign, validate_research_provenance_package_files,
-    AggregatedPredictionBlock, ArtifactId, BundleId, BundlePredictionCachePayload,
-    BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
-    BundleReplayExecution, CampaignSpec, CandidateScore, ColumnarPredictionCacheStore,
-    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataRequestPartition,
-    ExecutionBundle, ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
+    compile_pipeline_dsl_with_generation, oof_campaign_fingerprint,
+    regression_report_to_candidate_score, score_regression_aggregated_block,
+    score_regression_prediction_block, select_candidate, select_candidate_groups,
+    validate_oof_campaign, validate_research_provenance_package_files, AggregatedPredictionBlock,
+    ArtifactId, BundleId, BundlePredictionCachePayload, BundlePredictionCachePayloadSet,
+    BundlePredictionCacheRecord, BundlePredictionRequirement, BundleReplayExecution, CampaignSpec,
+    CandidateScore, ColumnarPredictionCacheStore, ControllerId, ControllerManifest,
+    ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle,
+    ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
     FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
     InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
     OofCampaign, ParallelScheduler, Phase, PipelineDslSpec, PredictionBlock, PredictionLevel,
@@ -190,6 +191,8 @@ enum Command {
         dsl: PathBuf,
         #[arg(long)]
         output: Option<PathBuf>,
+        #[arg(long)]
+        artifact: bool,
     },
     ValidateOofCampaign {
         path: PathBuf,
@@ -689,11 +692,23 @@ fn main() -> Result<()> {
                 .with_context(|| format!("invalid graph at {}", path.display()))?;
             println!("valid graph: {}", graph.id);
         }
-        Command::CompilePipelineDsl { dsl, output } => {
+        Command::CompilePipelineDsl {
+            dsl,
+            output,
+            artifact,
+        } => {
             let spec: PipelineDslSpec = read_json(&dsl, "pipeline DSL")?;
-            let graph = compile_pipeline_dsl(&spec)
-                .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
-            emit_json(output.as_ref(), &graph, "compiled graph")?;
+            if artifact {
+                let compiled = compile_pipeline_dsl_with_generation(&spec).with_context(|| {
+                    format!("failed to compile pipeline DSL at {}", dsl.display())
+                })?;
+                emit_json(output.as_ref(), &compiled, "compiled pipeline DSL artifact")?;
+            } else {
+                let graph = compile_pipeline_dsl(&spec).with_context(|| {
+                    format!("failed to compile pipeline DSL at {}", dsl.display())
+                })?;
+                emit_json(output.as_ref(), &graph, "compiled graph")?;
+            }
         }
         Command::ValidateOofCampaign {
             path,

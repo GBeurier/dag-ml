@@ -3,6 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, Result};
+use crate::generation::{
+    generation_spec_fingerprint, GenerationChoice, GenerationDimension, GenerationParamOverride,
+    GenerationSpec, GenerationStrategy,
+};
 use crate::graph::{
     EdgeContract, EdgeSpec, GraphInterface, GraphSpec, NodeKind, NodeSpec, PortCardinality,
     PortKind, PortRef, PortSchema, PortSpec,
@@ -16,6 +20,10 @@ pub struct PipelineDslSpec {
     pub input: PipelineDslDataPort,
     #[serde(default)]
     pub output: PipelineDslPredictionPort,
+    #[serde(default)]
+    pub generation_strategy: Option<GenerationStrategy>,
+    #[serde(default)]
+    pub max_variants: Option<usize>,
     #[serde(default)]
     pub steps: Vec<PipelineDslStep>,
     #[serde(default)]
@@ -81,6 +89,17 @@ pub struct PipelineDslOperatorStep {
     pub seed_label: Option<String>,
     #[serde(default)]
     pub representation: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<PipelineDslVariantChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslVariantChoice {
+    pub label: String,
+    #[serde(default)]
+    pub params: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub value: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -109,9 +128,23 @@ pub struct PipelineDslMergeModelStep {
     pub include_original_data: bool,
     #[serde(default = "default_merge_mode")]
     pub merge_mode: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<PipelineDslVariantChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CompiledPipelineDsl {
+    pub graph: GraphSpec,
+    pub generation: GenerationSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_fingerprint: Option<String>,
 }
 
 pub fn compile_pipeline_dsl(spec: &PipelineDslSpec) -> Result<GraphSpec> {
+    Ok(compile_pipeline_dsl_with_generation(spec)?.graph)
+}
+
+pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<CompiledPipelineDsl> {
     validate_pipeline_dsl(spec)?;
     let input_representation = Some(spec.input.representation.clone());
     let external_data = DataSource {
@@ -124,6 +157,7 @@ pub fn compile_pipeline_dsl(spec: &PipelineDslSpec) -> Result<GraphSpec> {
         input_representation: input_representation.clone(),
         nodes: Vec::new(),
         edges: Vec::new(),
+        generation_dimensions: Vec::new(),
     };
     let mut current_data = external_data.clone();
     let mut pending_predictions = Vec::new();
@@ -137,6 +171,16 @@ pub fn compile_pipeline_dsl(spec: &PipelineDslSpec) -> Result<GraphSpec> {
         )?;
     }
 
+    let generation = build_generation_spec(
+        spec.generation_strategy,
+        spec.max_variants,
+        compiler.generation_dimensions,
+    )?;
+    let generation_fingerprint = if generation.strategy == GenerationStrategy::None {
+        None
+    } else {
+        Some(generation_spec_fingerprint(&generation)?)
+    };
     let graph = GraphSpec {
         id: spec.id.clone(),
         interface: GraphInterface {
@@ -149,11 +193,15 @@ pub fn compile_pipeline_dsl(spec: &PipelineDslSpec) -> Result<GraphSpec> {
         },
         nodes: compiler.nodes,
         edges: compiler.edges,
-        search_space_fingerprint: None,
+        search_space_fingerprint: generation_fingerprint.clone(),
         metadata: spec.metadata.clone(),
     };
     graph.validate()?;
-    Ok(graph)
+    Ok(CompiledPipelineDsl {
+        graph,
+        generation,
+        generation_fingerprint,
+    })
 }
 
 fn validate_pipeline_dsl(spec: &PipelineDslSpec) -> Result<()> {
@@ -190,6 +238,7 @@ struct PipelineCompiler {
     input_representation: Option<String>,
     nodes: Vec<NodeSpec>,
     edges: Vec<EdgeSpec>,
+    generation_dimensions: Vec<GenerationDimension>,
 }
 
 #[derive(Clone, Debug)]
@@ -330,6 +379,7 @@ impl PipelineCompiler {
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
+        self.collect_operator_generation(&step.id, &step.variants)?;
         self.connect_data(input, &step.id, "x")?;
         Ok(DataSource {
             node_id: Some(step.id.clone()),
@@ -364,6 +414,7 @@ impl PipelineCompiler {
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
+        self.collect_operator_generation(&step.id, &step.variants)?;
         self.connect_data(input, &step.id, "x")?;
         Ok(PredictionSource {
             node_id: step.id.clone(),
@@ -413,6 +464,7 @@ impl PipelineCompiler {
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
+        self.collect_operator_generation(&step.id, &step.variants)?;
         for prediction in predictions {
             self.edges.push(EdgeSpec {
                 source: PortRef {
@@ -453,6 +505,49 @@ impl PipelineCompiler {
         Ok(())
     }
 
+    fn collect_operator_generation(
+        &mut self,
+        node_id: &NodeId,
+        choices: &[PipelineDslVariantChoice],
+    ) -> Result<()> {
+        if choices.is_empty() {
+            return Ok(());
+        }
+        let dimension = GenerationDimension {
+            name: format!("{node_id}.params"),
+            choices: choices
+                .iter()
+                .map(|choice| {
+                    if choice.params.is_empty() {
+                        return Err(DagMlError::GraphValidation(format!(
+                            "pipeline DSL variant `{}` for node `{node_id}` has no params",
+                            choice.label
+                        )));
+                    }
+                    let value = match &choice.value {
+                        Some(value) => value.clone(),
+                        None => serde_json::to_value(&choice.params).map_err(|error| {
+                            DagMlError::GraphValidation(format!(
+                                "failed to serialize pipeline DSL variant `{}` for node `{node_id}`: {error}",
+                                choice.label
+                            ))
+                        })?,
+                    };
+                    Ok(GenerationChoice {
+                        label: choice.label.clone(),
+                        value,
+                        param_overrides: vec![GenerationParamOverride {
+                            node_id: node_id.clone(),
+                            params: choice.params.clone(),
+                        }],
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        };
+        self.generation_dimensions.push(dimension);
+        Ok(())
+    }
+
     fn connect_data(
         &mut self,
         input: &DataSource,
@@ -489,6 +584,29 @@ impl PipelineCompiler {
         }
         Ok(())
     }
+}
+
+fn build_generation_spec(
+    requested_strategy: Option<GenerationStrategy>,
+    max_variants: Option<usize>,
+    dimensions: Vec<GenerationDimension>,
+) -> Result<GenerationSpec> {
+    let strategy = requested_strategy.unwrap_or(if dimensions.is_empty() {
+        GenerationStrategy::None
+    } else {
+        GenerationStrategy::Cartesian
+    });
+    let generation = GenerationSpec {
+        strategy,
+        dimensions,
+        max_variants: if strategy == GenerationStrategy::None {
+            Some(1)
+        } else {
+            max_variants
+        },
+    };
+    generation.validate()?;
+    Ok(generation)
 }
 
 fn data_port(name: &str, representation: Option<String>, description: &str) -> PortSpec {
@@ -692,6 +810,74 @@ mod tests {
             == "branch:b1.augment:noise"
             && edge.target.node_id.as_str() == "branch:b1.model:rf"));
         graph.validate().unwrap();
+    }
+
+    #[test]
+    fn extracts_node_param_variants_into_generation_spec() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-generation-smoke",
+  "max_variants": 4,
+  "steps": [
+    {
+      "kind": "transform",
+      "id": "transform:preprocess",
+      "operator": {"type": "Preprocess"},
+      "variants": [
+        {
+          "label": "snv",
+          "params": {"method": "snv"}
+        },
+        {
+          "label": "msc",
+          "params": {"method": "msc"}
+        }
+      ]
+    },
+    {
+      "kind": "model",
+      "id": "model:base",
+      "operator": {"type": "Ridge"},
+      "variants": [
+        {
+          "label": "low",
+          "params": {"alpha": 0.1}
+        },
+        {
+          "label": "high",
+          "params": {"alpha": 1.0}
+        }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+
+        assert_eq!(compiled.generation.strategy, GenerationStrategy::Cartesian);
+        assert_eq!(compiled.generation.max_variants, Some(4));
+        assert_eq!(compiled.generation.dimensions.len(), 2);
+        assert_eq!(
+            compiled.generation.dimensions[0].name,
+            "transform:preprocess.params"
+        );
+        assert_eq!(compiled.generation.dimensions[0].choices[0].label, "snv");
+        assert_eq!(
+            compiled.generation.dimensions[0].choices[0].param_overrides[0].node_id,
+            NodeId::new("transform:preprocess").unwrap()
+        );
+        assert_eq!(
+            compiled.generation.dimensions[1].choices[1].param_overrides[0].params["alpha"],
+            1.0
+        );
+        assert!(compiled.generation_fingerprint.is_some());
+        assert_eq!(
+            compiled.graph.search_space_fingerprint,
+            compiled.generation_fingerprint
+        );
+        compiled.graph.validate().unwrap();
     }
 
     #[test]
