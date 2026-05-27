@@ -43,7 +43,7 @@ nirs4all-style Python/YAML shorthand into this form.
 | merge predictions/features/original data | `kind: "merge"`, `merge_mode`, `output_as`, `include_original_data`, `selectors` | compiled to join nodes with OOF prediction edges |
 | merge plus immediate meta-model | `kind: "merge_model"` convenience | compiled as model consuming OOF prediction inputs and optional original data |
 | stacking, multi-model top-level stacks | repeated `model` steps then `merge`/`merge_model` | pending predictions are preserved until consumed |
-| per-branch/per-model selection (`best`, `top_k`, `all`) | `merge.selectors` metadata | compiled and preserved; selection runtime is controller policy |
+| per-branch/per-model selection (`best`, `top_k`, `all`) | `merge.selectors` with branch/model/input scopes | selector targets and `top_k`/metric requirements are compile-validated; scoring remains controller policy |
 | finetune / hyperparameter search | `tuning` or `finetune_params`, plus generation dimensions/variants | intent compiled into metadata; concrete tuning engine remains controller-side |
 | final train params | `train_params` | preserved as `dsl_train_params` metadata |
 | `_or_`, `_range_`, `_log_range_`, `_grid_`, `pick`, `arrange`, `count` | `variants`, explicit `generation_dimensions`, or compact `generators` on DSL nodes | compiled into deterministic `GenerationSpec` dimensions |
@@ -61,9 +61,9 @@ nirs4all-style Python/YAML shorthand into this form.
   execution still needs host controller support for each operator family.
 - Separation branch materialization by source/metadata/tag/filter must be backed
   by explicit dag-ml-data view plans before it is considered runtime-complete.
-- Merge selectors are preserved as typed metadata and OOF edges are enforced;
-  scorer/selector execution remains the responsibility of selection and merge
-  controllers.
+- Merge selector scopes and basic selection contracts are compile-validated, and
+  OOF edges are enforced; actual metric scoring and ranking remain the
+  responsibility of selection and merge controllers.
 - Synthetic generation is not settled as a separate library boundary yet. The
   DSL should represent generator nodes/controllers, but actual generators should
   stay external unless they are pure DAG/campaign coordination primitives.
