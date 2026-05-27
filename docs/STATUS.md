@@ -207,6 +207,15 @@ Implemented:
   helpers publish/validate aggregation tasks and validate controller results
   against the exact requested sample/unit order, fold scope, prediction level
   and target names;
+- runtime custom aggregation dispatch: Rust can route observation-to-sample and
+  sample-to-target/group aggregation tasks to a registered runtime controller,
+  requires the controller manifest capability `aggregates_predictions`, and the
+  C ABI controller vtable can carry the same aggregation task/result JSON path;
+- `NodeResult` now has explicit observation-level and aggregated prediction
+  channels. During execution the scheduler can aggregate controller-emitted
+  observation predictions through the declared `DataModelShapePlan`, coordinator
+  relations from data providers/envelopes, and either built-in reducers or a
+  custom aggregation controller before OOF sample blocks are stored;
 - execution-bundle validation now checks selected candidates against the
   rebuilt plan and requires refit artifacts for selected refittable nodes;
 - explicit execution-bundle schema version with unsupported-version refusal;
@@ -470,8 +479,8 @@ Not implemented yet:
   `PipelineDslSpec` profile;
 - advanced search-space compiler/lowering beyond typed node-parameter variants
   and coordinated override dimensions from `PipelineDslSpec`;
-- runtime dispatch to custom aggregation controllers and production
-  persistent/Arrow replay backends for non-sample aggregated prediction blocks;
+- live target/group OOF joins and production persistent/Arrow replay backends
+  for non-sample aggregated prediction blocks;
 - artifact binary deserialization/loading into host-native model objects beyond
   the implemented portable artifact reference contract, file-backed artifact
   manifest and file-backed artifact payload store;

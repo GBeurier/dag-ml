@@ -178,7 +178,8 @@ These are the direct wire contracts between the Rust coordinator and external
 operator controllers. `NodeTask` carries the resolved node plan, phase,
 variant/fold context, handles, data views, OOF prediction inputs, refit artifact
 inputs and deterministic seed. `NodeResult` returns output handles,
-predictions, shape deltas, artifacts and lineage. Rust validates every result
+sample predictions, optional observation-level predictions, optional aggregated
+sample/target/group predictions, shape deltas, artifacts and lineage. Rust validates every result
 against the exact task before committing it, including node/run/phase/fold,
 variant, controller, seed, params fingerprint, shape fingerprints, output
 ownership and artifact handle consistency.

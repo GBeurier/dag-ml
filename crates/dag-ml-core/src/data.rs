@@ -833,6 +833,20 @@ impl RuntimeDataProvider for InMemoryDataProvider {
         self.view_records.borrow_mut().insert(handle.handle, record);
         Ok(handle)
     }
+
+    fn coordinator_relations(&self, binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
+        let envelope = self
+            .envelopes
+            .get(&DataEnvelopeKey::from_binding(binding))
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "no external data-plan envelope registered for binding `{}` on `{}`",
+                    binding.input_name, binding.node_id
+                ))
+            })?;
+        binding.validate_envelope(envelope)?;
+        Ok(envelope.coordinator_relations.clone())
+    }
 }
 
 fn validate_fingerprint(label: &str, value: &str) -> Result<()> {

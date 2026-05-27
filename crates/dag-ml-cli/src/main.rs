@@ -3551,6 +3551,8 @@ impl RuntimeController for CliMockController {
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("out".to_string(), output)]),
             predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: artifacts.clone(),
             artifact_handles,

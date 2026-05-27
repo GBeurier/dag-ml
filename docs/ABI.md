@@ -25,6 +25,10 @@ the host owns the underlying object behind each handle.
   including result-vs-task checks that preserve requested sample/unit order,
   fold scope, prediction level and target names before a host aggregation
   controller result can be trusted by the coordinator;
+- the generic controller vtable `invoke` path is also used for runtime custom
+  aggregation dispatch: bindings receive an `AggregationControllerTask` JSON
+  and return an `AggregationControllerResult` JSON, after which Rust validates
+  the result against the exact task;
 - `dagml_data_output_provenance_contract_json` and
   `dagml_data_output_provenance_validate_json` so bindings can discover the
   reserved `DataProviderViewSpec.extra` key and validate propagated data-view
