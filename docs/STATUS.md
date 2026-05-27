@@ -131,6 +131,11 @@ Implemented:
   so synthetic data/sample generation remains controller-owned while Rust
   validates fold scope, augmentation-origin/group/target inheritance, data
   edges and lineage before downstream training;
+- canonical `tuner` steps, plus alias `finetune`, now compile to external
+  `NodeKind::Tuner` prediction nodes. They preserve `tuning`/`finetune_params`
+  metadata, produce fold-aligned OOF like model nodes, route through
+  `operator_selectors`, and are covered by an executable CV+refit DSL smoke with
+  a prediction-plus-original-data merge into a final model;
 - DSL merge selectors now validate their branch/model/input scopes against the
   pending OOF prediction inputs at compile time, reject unsupported `select`
   modes, reject `top_k` above the matched scope and require a metric for
@@ -156,11 +161,11 @@ Implemented:
   with downstream model/generator stages before compilation so every expanded
   choice remains an OOF-producing branch;
 - that compatibility importer prefers minimal aliases and also accepts plain operator
-  references (`SNV`, `PLSRegression`, `chart_2d`, `{"class": ...}`,
-  `{"function": ...}`, `{"name": ..., "step": ...}`); Rust only infers the
-  safe planning category, keeps operators external for host controller
-  resolution, and folds successive nirs4all splitter declarations into one
-  campaign `SplitInvocation` chain instead of graph split nodes;
+  references (`SNV`, `PLSRegression`, `OptunaTuner`, `chart_2d`,
+  `{"class": ...}`, `{"function": ...}`, `{"name": ..., "step": ...}`); Rust
+  only infers the safe planning category, keeps operators external for host
+  controller resolution, and folds successive nirs4all splitter declarations
+  into one campaign `SplitInvocation` chain instead of graph split nodes;
 - controller manifests can now declare `operator_selectors` over aliases,
   classes, class prefixes, functions, refs and types. Registry resolution
   prefers matching selectors over generic same-kind controllers, which lets
@@ -197,7 +202,7 @@ Implemented:
   fixture, C ABI contract discovery and standalone validation, making the
   compiled scheduler-ready plan a first-class portable contract rather than an
   implicit Rust-only artifact;
-- CLI process commands can run a compiled DSL branch/merge campaign through
+- CLI process commands can run compiled DSL branch/merge/tuner campaigns through
   CV+refit bundle capture and stateful sklearn CV+refit+replay, including
   coordinated generation variants, heterogeneous prediction+original-data merge
   inputs and OOF prediction-cache contracts;
@@ -551,7 +556,7 @@ Not implemented yet:
 
 Next recommended task:
 
-Wire custom aggregation-controller dispatch into runtime execution, then continue
-productionizing host adapters: controller lifecycle ownership, failure
-recovery/timeouts, and larger replay stress fixtures over the shared conformance
-pack.
+Continue productionizing host adapters and data-provider materialization:
+controller lifecycle ownership, larger replay stress fixtures over the shared
+conformance pack, and explicit dag-ml-data view plans for selector-driven
+source/metadata separation branches.

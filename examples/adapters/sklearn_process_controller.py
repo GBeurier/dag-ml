@@ -353,7 +353,7 @@ def output_handles(task: dict[str, Any], handle_value: int) -> dict[str, Any]:
             "owner_controller": controller_id,
         }
     }
-    if node_kind == "model":
+    if node_kind in {"model", "tuner"}:
         outputs["oof"] = {
             "handle": handle_value,
             "kind": "prediction",
@@ -388,7 +388,7 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
     predictions: list[dict[str, Any]] = []
     artifacts: list[dict[str, Any]] = []
     artifact_handles: dict[str, Any] = {}
-    if node_plan.get("kind") == "model":
+    if node_plan.get("kind") in {"model", "tuner"}:
         predictions, artifacts, artifact_handles = model_result(task)
 
     metrics = {"sklearn_adapter": 1.0}

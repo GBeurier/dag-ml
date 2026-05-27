@@ -109,6 +109,8 @@ pub enum PipelineDslStep {
     DataGeneration(PipelineDslOperatorStep),
     ConcatTransform(PipelineDslConcatTransformStep),
     Model(PipelineDslOperatorStep),
+    #[serde(alias = "finetune")]
+    Tuner(PipelineDslOperatorStep),
     Branch(PipelineDslBranchStep),
     Generator(PipelineDslGeneratorStep),
     Sequential(PipelineDslSequenceStep),
@@ -728,6 +730,7 @@ struct CompatDslLowerer {
 enum CompatPlainOperatorKind {
     Transform,
     Model,
+    Tuner,
     Split,
     Chart,
 }
@@ -913,6 +916,9 @@ impl CompatDslLowerer {
                     CompatPlainOperatorKind::Model => PipelineDslStep::Model(
                         self.compat_operator_step(None, "model", value, None, None)?,
                     ),
+                    CompatPlainOperatorKind::Tuner => PipelineDslStep::Tuner(
+                        self.compat_operator_step(None, "tuner", value, None, None)?,
+                    ),
                     CompatPlainOperatorKind::Chart => PipelineDslStep::Chart(
                         self.compat_operator_step(None, "chart", value, None, None)?,
                     ),
@@ -1056,6 +1062,15 @@ impl CompatDslLowerer {
                         None,
                     )?)]);
                 }
+                if let Some(operator) = first_object_value(object, &["tuner", "finetune"]) {
+                    return Ok(vec![PipelineDslStep::Tuner(self.compat_operator_step(
+                        Some(object),
+                        "tuner",
+                        operator,
+                        None,
+                        None,
+                    )?)]);
+                }
                 if let Some(operator) = object.get("chart") {
                     return Ok(vec![PipelineDslStep::Chart(self.compat_operator_step(
                         Some(object),
@@ -1134,6 +1149,15 @@ impl CompatDslLowerer {
                                 None,
                             )?)])
                         }
+                        CompatPlainOperatorKind::Tuner => {
+                            Ok(vec![PipelineDslStep::Tuner(self.compat_operator_step(
+                                Some(object),
+                                "tuner",
+                                &operator,
+                                None,
+                                None,
+                            )?)])
+                        }
                         CompatPlainOperatorKind::Chart => {
                             Ok(vec![PipelineDslStep::Chart(self.compat_operator_step(
                                 Some(object),
@@ -1170,14 +1194,43 @@ impl CompatDslLowerer {
         attachment: CompatGenerationAttachment,
     ) -> Result<Vec<PipelineDslStep>> {
         match value {
-            serde_json::Value::String(_) => Ok(vec![PipelineDslStep::Transform(
-                self.compat_operator_step(None, "preprocessing", value, Some(attachment), None)?,
-            )]),
+            serde_json::Value::String(_) => match compat_plain_operator_kind(value) {
+                CompatPlainOperatorKind::Transform => Ok(vec![PipelineDslStep::Transform(
+                    self.compat_operator_step(
+                        None,
+                        "preprocessing",
+                        value,
+                        Some(attachment),
+                        None,
+                    )?,
+                )]),
+                CompatPlainOperatorKind::Model => Ok(vec![PipelineDslStep::Model(
+                    self.compat_operator_step(None, "model", value, Some(attachment), None)?,
+                )]),
+                CompatPlainOperatorKind::Tuner => Ok(vec![PipelineDslStep::Tuner(
+                    self.compat_operator_step(None, "tuner", value, Some(attachment), None)?,
+                )]),
+                CompatPlainOperatorKind::Chart => Ok(vec![PipelineDslStep::Chart(
+                    self.compat_operator_step(None, "chart", value, Some(attachment), None)?,
+                )]),
+                CompatPlainOperatorKind::Split => Err(DagMlError::GraphValidation(format!(
+                    "{path} splitter alias cannot receive a parameter generator"
+                ))),
+            },
             serde_json::Value::Object(object) => {
                 if let Some(operator) = object.get("model") {
                     return Ok(vec![PipelineDslStep::Model(self.compat_operator_step(
                         Some(object),
                         "model",
+                        operator,
+                        Some(attachment),
+                        None,
+                    )?)]);
+                }
+                if let Some(operator) = first_object_value(object, &["tuner", "finetune"]) {
+                    return Ok(vec![PipelineDslStep::Tuner(self.compat_operator_step(
+                        Some(object),
+                        "tuner",
                         operator,
                         Some(attachment),
                         None,
@@ -1215,6 +1268,15 @@ impl CompatDslLowerer {
                                 None,
                             )?,
                         )]),
+                        CompatPlainOperatorKind::Tuner => Ok(vec![PipelineDslStep::Tuner(
+                            self.compat_operator_step(
+                                Some(object),
+                                "tuner",
+                                &operator,
+                                Some(attachment),
+                                None,
+                            )?,
+                        )]),
                         CompatPlainOperatorKind::Chart => Ok(vec![PipelineDslStep::Chart(
                             self.compat_operator_step(
                                 Some(object),
@@ -1230,11 +1292,11 @@ impl CompatDslLowerer {
                     };
                 }
                 Err(DagMlError::GraphValidation(format!(
-                    "{path} cannot receive a preceding nirs4all parameter generator; expected model or preprocessing"
+                    "{path} cannot receive a preceding nirs4all parameter generator; expected model, tuner or preprocessing"
                 )))
             }
             _ => Err(DagMlError::GraphValidation(format!(
-                "{path} cannot receive a preceding nirs4all parameter generator; expected model or preprocessing"
+                "{path} cannot receive a preceding nirs4all parameter generator; expected model, tuner or preprocessing"
             ))),
         }
     }
@@ -1736,16 +1798,20 @@ impl CompatDslLowerer {
         let rows = compat_sample_rows(sample, path)?;
         let operator = sample
             .get("model")
+            .or_else(|| sample.get("tuner"))
+            .or_else(|| sample.get("finetune"))
             .or_else(|| sample.get("preprocessing"))
             .or_else(|| sample.get("transform"))
             .ok_or_else(|| {
                 DagMlError::GraphValidation(format!(
-                    "{path}._sample_ structural lowering requires `model`, `preprocessing` or `transform`"
+                    "{path}._sample_ structural lowering requires `model`, `tuner`, `preprocessing` or `transform`"
                 ))
             })?
             .clone();
         let keyword = if sample.contains_key("model") {
             "model"
+        } else if sample.contains_key("tuner") || sample.contains_key("finetune") {
+            "tuner"
         } else {
             "preprocessing"
         };
@@ -1755,6 +1821,8 @@ impl CompatDslLowerer {
                 !matches!(
                     key.as_str(),
                     "model"
+                        | "tuner"
+                        | "finetune"
                         | "preprocessing"
                         | "transform"
                         | "distribution"
@@ -1785,6 +1853,8 @@ impl CompatDslLowerer {
                     metadata: BTreeMap::new(),
                     steps: vec![if keyword == "model" {
                         PipelineDslStep::Model(step)
+                    } else if keyword == "tuner" {
+                        PipelineDslStep::Tuner(step)
                     } else {
                         PipelineDslStep::Transform(step)
                     }],
@@ -1830,6 +1900,11 @@ impl CompatDslLowerer {
                 self.compat_operator_step_from_parts("model", operator, row, None, None)?,
             )]);
         }
+        if let Some(operator) = row.remove("tuner").or_else(|| row.remove("finetune")) {
+            return Ok(vec![PipelineDslStep::Tuner(
+                self.compat_operator_step_from_parts("tuner", operator, row, None, None)?,
+            )]);
+        }
         if let Some(operator) = row
             .remove("preprocessing")
             .or_else(|| row.remove("processing"))
@@ -1840,7 +1915,7 @@ impl CompatDslLowerer {
             )]);
         }
         Err(DagMlError::GraphValidation(format!(
-            "{path}._grid_ rows must contain `model`, `preprocessing` or `transform` for structural lowering"
+            "{path}._grid_ rows must contain `model`, `tuner`, `preprocessing` or `transform` for structural lowering"
         )))
     }
 
@@ -1897,6 +1972,8 @@ impl CompatDslLowerer {
         if let Some(sample) = object.get("_sample_") {
             if sample.as_object().is_some_and(|sample| {
                 sample.contains_key("model")
+                    || sample.contains_key("tuner")
+                    || sample.contains_key("finetune")
                     || sample.contains_key("preprocessing")
                     || sample.contains_key("transform")
             }) {
@@ -2300,6 +2377,8 @@ fn value_can_receive_generation_attachment(value: &serde_json::Value) -> bool {
         return false;
     };
     object.contains_key("model")
+        || object.contains_key("tuner")
+        || object.contains_key("finetune")
         || first_object_value(object, &["preprocessing", "processing", "transform"]).is_some()
         || compat_plain_operator_ref(value).is_some()
 }
@@ -2337,6 +2416,7 @@ fn annotate_named_step(step: &mut PipelineDslStep, name: &str) {
         | PipelineDslStep::SampleAugmentation(step)
         | PipelineDslStep::DataGeneration(step)
         | PipelineDslStep::Model(step)
+        | PipelineDslStep::Tuner(step)
         | PipelineDslStep::Chart(step) => {
             step.metadata.insert("dsl_name".to_string(), value);
         }
@@ -2402,6 +2482,8 @@ fn compat_plain_operator_kind(value: &serde_json::Value) -> CompatPlainOperatorK
     let lower = reference.to_ascii_lowercase();
     if compat_is_chart_alias(&lower) {
         CompatPlainOperatorKind::Chart
+    } else if compat_is_tuner_alias(&lower) {
+        CompatPlainOperatorKind::Tuner
     } else if compat_is_splitter_alias(&lower) {
         CompatPlainOperatorKind::Split
     } else if compat_is_model_alias(&lower) {
@@ -2416,6 +2498,27 @@ fn compat_is_chart_alias(lower: &str) -> bool {
         || lower == "chart"
         || lower.contains(".charts.")
         || lower.contains(".visualization.")
+}
+
+fn compat_is_tuner_alias(lower: &str) -> bool {
+    let short = lower.rsplit(['.', ':']).next().unwrap_or(lower);
+    lower.contains(".tuners.")
+        || lower.contains(".tuning.")
+        || lower.contains("operators.tuners")
+        || lower.contains("optuna")
+        || lower.contains("ray.tune")
+        || lower.contains("hyperopt")
+        || short.ends_with("tuner")
+        || short.ends_with("searchcv")
+        || matches!(
+            short,
+            "gridsearchcv"
+                | "randomizedsearchcv"
+                | "halvinggridsearchcv"
+                | "halvingrandomsearchcv"
+                | "bayesiantuner"
+                | "optunatuner"
+        )
 }
 
 fn compat_is_splitter_alias(lower: &str) -> bool {
@@ -2470,6 +2573,7 @@ fn compat_is_model_alias(lower: &str) -> bool {
 fn compat_node_prefix(keyword: &str) -> &'static str {
     match keyword {
         "model" => "model",
+        "tuner" | "finetune" => "tuner",
         "y_processing" | "y_transform" => "target",
         "tag" => "tag",
         "exclude" | "filter" | "sample_filter" => "filter",
@@ -2483,6 +2587,7 @@ fn compat_node_prefix(keyword: &str) -> &'static str {
 fn compat_param_aliases(keyword: &str) -> &'static [&'static str] {
     match keyword {
         "model" => &["model_params"],
+        "tuner" | "finetune" => &["tuner_params", "finetune_params"],
         "preprocessing" | "processing" | "transform" => &[
             "preprocessing_params",
             "processing_params",
@@ -2515,6 +2620,7 @@ fn compat_wrapper_param_keys(keyword: &str) -> &'static [&'static str] {
             "report",
         ],
         "data_generation" | "generation" => &["size", "count", "random_state", "mode", "report"],
+        "tuner" | "finetune" => &["n_trials", "metric", "direction", "timeout", "random_state"],
         _ => &[],
     }
 }
@@ -2767,7 +2873,9 @@ fn sanitize_branch_id(input: &str, index: usize) -> String {
 
 fn step_has_prediction(step: &PipelineDslStep) -> bool {
     match step {
-        PipelineDslStep::Model(_) | PipelineDslStep::MergeModel(_) => true,
+        PipelineDslStep::Model(_) | PipelineDslStep::Tuner(_) | PipelineDslStep::MergeModel(_) => {
+            true
+        }
         PipelineDslStep::Merge(step) => step.output_as == PipelineDslMergeOutput::Predictions,
         PipelineDslStep::Branch(step) => step
             .branches
@@ -3353,6 +3461,17 @@ impl PipelineCompiler {
                     )?);
                 Ok(())
             }
+            PipelineDslStep::Tuner(step) => {
+                state
+                    .pending_predictions
+                    .push(self.compile_tuner_with_extra(
+                        step,
+                        &state.current_data,
+                        branch_id,
+                        extra_metadata,
+                    )?);
+                Ok(())
+            }
             PipelineDslStep::Branch(step) => {
                 let output =
                     self.compile_branch_with_extra(step, &state.current_data, extra_metadata)?;
@@ -3790,11 +3909,44 @@ impl PipelineCompiler {
         branch_id: Option<&str>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<PredictionSource> {
+        self.compile_prediction_operator_with_extra(
+            NodeKind::Model,
+            step,
+            input,
+            branch_id,
+            extra_metadata,
+        )
+    }
+
+    fn compile_tuner_with_extra(
+        &mut self,
+        step: &PipelineDslOperatorStep,
+        input: &DataSource,
+        branch_id: Option<&str>,
+        extra_metadata: BTreeMap<String, serde_json::Value>,
+    ) -> Result<PredictionSource> {
+        self.compile_prediction_operator_with_extra(
+            NodeKind::Tuner,
+            step,
+            input,
+            branch_id,
+            extra_metadata,
+        )
+    }
+
+    fn compile_prediction_operator_with_extra(
+        &mut self,
+        kind: NodeKind,
+        step: &PipelineDslOperatorStep,
+        input: &DataSource,
+        branch_id: Option<&str>,
+        extra_metadata: BTreeMap<String, serde_json::Value>,
+    ) -> Result<PredictionSource> {
         let mut metadata = operator_runtime_metadata(step, branch_id)?;
         metadata.extend(extra_metadata);
         let node = NodeSpec {
             id: step.id.clone(),
-            kind: NodeKind::Model,
+            kind,
             operator: Some(step.operator.clone()),
             params: step.params.clone(),
             ports: PortSchema {
@@ -5528,6 +5680,7 @@ fn namespace_step_ids(
         | PipelineDslStep::SampleAugmentation(step)
         | PipelineDslStep::DataGeneration(step)
         | PipelineDslStep::Model(step)
+        | PipelineDslStep::Tuner(step)
         | PipelineDslStep::Chart(step) => {
             namespace_operator_step_id(generator, choice_index, step, counter, node_map)?;
         }
@@ -5657,6 +5810,7 @@ fn rewrite_step_node_refs(step: &mut PipelineDslStep, node_map: &BTreeMap<NodeId
         | PipelineDslStep::SampleAugmentation(_)
         | PipelineDslStep::DataGeneration(_)
         | PipelineDslStep::Model(_)
+        | PipelineDslStep::Tuner(_)
         | PipelineDslStep::Chart(_) => {}
         PipelineDslStep::ConcatTransform(step) => {
             for branch in &mut step.branches {
@@ -7621,6 +7775,107 @@ mod tests {
     }
 
     #[test]
+    fn compiles_tuner_as_external_prediction_node() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-tuner",
+  "steps": [
+    {
+      "kind": "tuner",
+      "id": "tuner:optuna",
+      "operator": "OptunaTuner",
+      "params": {"sampler": "tpe"},
+      "tuning": {"n_trials": 4, "metric": "rmse"}
+    },
+    {
+      "kind": "merge_model",
+      "id": "model:meta",
+      "operator": "Ridge"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        graph.validate().unwrap();
+        let tuner = graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "tuner:optuna")
+            .unwrap();
+        assert_eq!(tuner.kind, NodeKind::Tuner);
+        assert_eq!(
+            tuner.operator.as_ref().unwrap().as_str(),
+            Some("OptunaTuner")
+        );
+        assert_eq!(tuner.metadata["dsl_tuning"]["n_trials"], 4);
+        assert!(graph.edges.iter().any(|edge| {
+            edge.source.node_id.as_str() == "tuner:optuna"
+                && edge.source.port_name == "oof"
+                && edge.target.node_id.as_str() == "model:meta"
+                && edge.contract.kind == PortKind::Prediction
+                && edge.contract.requires_oof
+                && edge.contract.requires_fold_alignment
+        }));
+    }
+
+    #[test]
+    fn parses_compat_tuner_minimal_alias_and_wrappers() {
+        let spec = parse_pipeline_dsl_json(
+            br#"{
+  "id": "dsl-compat-tuner",
+  "pipeline": [
+    "SNV",
+    {"tuner": "OptunaTuner", "id": "tuner:compat", "n_trials": 3, "metric": "rmse"},
+    {"merge": "all"},
+    {"model": "Ridge"}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        graph.validate().unwrap();
+        let transform = graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Transform)
+            .unwrap();
+        assert_eq!(transform.operator.as_ref().unwrap().as_str(), Some("SNV"));
+        let tuner = graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "tuner:compat")
+            .unwrap();
+        assert_eq!(tuner.kind, NodeKind::Tuner);
+        assert_eq!(tuner.params["n_trials"], 3);
+        assert_eq!(tuner.metadata["dsl_compat_keyword"], "tuner");
+    }
+
+    #[test]
+    fn parses_bare_tuner_alias_as_tuner_node() {
+        let spec = parse_pipeline_dsl_json(
+            br#"{
+  "id": "dsl-bare-tuner-alias",
+  "pipeline": ["SNV", "OptunaTuner"]
+}"#,
+        )
+        .unwrap();
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        graph.validate().unwrap();
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == NodeKind::Transform
+                && node.operator.as_ref().unwrap().as_str() == Some("SNV")
+        }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == NodeKind::Tuner
+                && node.operator.as_ref().unwrap().as_str() == Some("OptunaTuner")
+        }));
+    }
+
+    #[test]
     fn compiles_runtime_data_generation_as_external_generator_node() {
         let spec: PipelineDslSpec = serde_json::from_str(
             r#"{
@@ -7776,6 +8031,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|value| value.as_str() == Some("data_generation")));
+        assert!(schema["$defs"]["canonical_step_kind"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("tuner")));
         assert!(schema["$defs"]["compat_generator_key"]["enum"]
             .as_array()
             .unwrap()

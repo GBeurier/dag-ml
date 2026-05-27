@@ -236,6 +236,10 @@ def first_view_sample_ids(task: dict[str, Any], partition: str) -> list[str] | N
     return None
 
 
+def is_prediction_node(node_plan: dict[str, Any]) -> bool:
+    return node_plan.get("kind") in {"model", "tuner"}
+
+
 def output_handles(task: dict[str, Any], handle_value: int) -> dict[str, Any]:
     node_plan = task["node_plan"]
     controller_id = node_plan["controller_id"]
@@ -246,7 +250,7 @@ def output_handles(task: dict[str, Any], handle_value: int) -> dict[str, Any]:
             "owner_controller": controller_id,
         }
     }
-    if node_plan.get("kind") == "model":
+    if is_prediction_node(node_plan):
         outputs["oof"] = {
             "handle": handle_value,
             "kind": "prediction",
@@ -273,7 +277,7 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
     handle_value = stable_handle(f"{node_id}:{phase}:{variant_label}:{fold_label}")
 
     predictions = []
-    if node_plan.get("kind") == "model":
+    if is_prediction_node(node_plan):
         prediction_sample_ids = ["sample:process"]
         if phase == "FIT_CV":
             prediction_sample_ids = first_view_sample_ids(task, "fold_validation") or prediction_sample_ids
@@ -297,7 +301,7 @@ def build_result(task: dict[str, Any]) -> dict[str, Any]:
 
     artifacts = []
     artifact_handles = {}
-    if phase == "REFIT" and node_plan.get("kind") == "model":
+    if phase == "REFIT" and is_prediction_node(node_plan):
         artifact_id = f"artifact:{node_id}:refit"
         artifact = {
             "id": artifact_id,

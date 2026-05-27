@@ -44,6 +44,8 @@
         "generation",
         "concat_transform",
         "model",
+        "tuner",
+        "finetune",
         "branch",
         "generator",
         "sequential",
@@ -208,6 +210,8 @@
                   "data_generation",
                   "generation",
                   "model",
+                  "tuner",
+                  "finetune",
                   "chart"
                 ]
               }
@@ -358,6 +362,12 @@
         "model": {
           "$ref": "#/$defs/compat_operator_ref"
         },
+        "tuner": {
+          "$ref": "#/$defs/compat_operator_ref"
+        },
+        "finetune": {
+          "$ref": "#/$defs/compat_operator_ref"
+        },
         "branch": {
           "$ref": "#/$defs/json_value"
         },
@@ -401,6 +411,9 @@
           "$ref": "#/$defs/json_object"
         },
         "model_params": {
+          "$ref": "#/$defs/json_object"
+        },
+        "tuner_params": {
           "$ref": "#/$defs/json_object"
         },
         "train_params": {

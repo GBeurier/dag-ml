@@ -42,6 +42,7 @@ YAML frontends should be thin host-side serializers around the same importer.
 |---|---|---|
 | plain preprocessing/transform step | `kind: "transform"` | compiled to `NodeKind::Transform` |
 | model step, named model, explicit params | `kind: "model"`, `operator`, `params`, `metadata` | compiled to `NodeKind::Model` |
+| tuner / finetune controller | `kind: "tuner"` or alias `kind: "finetune"`, `operator`, `params`, `tuning` | compiled to external `NodeKind::Tuner`; Rust treats it as an OOF-producing predictive node while the tuning engine and concrete estimator lifecycle remain controller-owned |
 | target/y processing | `kind: "y_transform"` | compiled to `NodeKind::YTransform` with target ports |
 | splitters (`KFold`, `GroupKFold`, SPXY, fold files) | top-level `split_invocation` in campaign template | deliberately outside graph nodes |
 | sequential grouping (`[...]`) | `kind: "sequential"` | inlined during compilation while preserving child node contracts |
@@ -58,13 +59,13 @@ YAML frontends should be thin host-side serializers around the same importer.
 | merge plus immediate meta-model | `kind: "merge_model"` convenience | compiled as model consuming OOF prediction inputs and optional original data |
 | stacking, multi-model top-level stacks | repeated `model` steps then `merge`/`merge_model` | pending predictions are preserved until consumed |
 | per-branch/per-model selection (`best`, `top_k`, `all`) | `merge.selectors` with branch/model/input scopes | selector targets and `top_k`/metric requirements are compile-validated; scoring remains controller policy |
-| finetune / hyperparameter search | `tuning` or `finetune_params`, plus generation dimensions/variants | intent compiled into metadata; concrete tuning engine remains controller-side |
+| finetune / hyperparameter search metadata | `tuning` or `finetune_params`, plus generation dimensions/variants | tuning intent is graph-visible on model/tuner nodes and generation dimensions; concrete search remains controller-side |
 | final train params | `train_params` | preserved as `dsl_train_params` metadata |
 | `_range_`, `_log_range_`, `_grid_`, param `_or_`, `pick`, `arrange`, `count` | `variants`, explicit `generation_dimensions`, or compact `generators` on DSL nodes | compiled into deterministic `GenerationSpec` dimensions |
 | structural `_or_` over step chains | `kind: "generator"`, `mode: "or"`, `branches`, `pick`/`arrange`/`count` | expanded into explicit OOF-producing choices with namespaced node ids and generator metadata |
 | structural `_cartesian_` over pipeline stages | `kind: "generator"`, `mode: "cartesian"`, `stages` | expanded into explicit Cartesian OOF-producing choices with namespaced node ids and fold-safe downstream merge inputs |
 | serialized list/dict nirs4all surface | top-level `pipeline` array with `preprocessing`, `model`, `branch`, `merge`, `_or_`, `_cartesian_`, `_chain_`, `_grid_`, `_range_`, `_log_range_`, `_zip_`, `_sample_` | compatibility importer lowers to canonical DSL; data-only branch feature merges and merge dicts are compiled, and data-only generator stages are fused with downstream model generators so OOF choices stay complete |
-| minimal aliases / plain operator refs | short strings plus `{"class": ...}`, `{"function": ...}`, `{"ref": ...}`, `{"type": ...}` and `{"name": ..., "step": ...}` wrappers | Rust infers only safe planning class: splitters become campaign split invocations, obvious estimators become model nodes, chart aliases become chart nodes, all other aliases remain external transform operators for host registry/controller resolution |
+| minimal aliases / plain operator refs | short strings plus `{"class": ...}`, `{"function": ...}`, `{"ref": ...}`, `{"type": ...}` and `{"name": ..., "step": ...}` wrappers | Rust infers only safe planning class: splitters become campaign split invocations, obvious estimators become model nodes, obvious tuners such as `OptunaTuner` become tuner nodes, chart aliases become chart nodes, all other aliases remain external transform operators for host registry/controller resolution |
 | multiple nirs4all splitter declarations | one campaign `split_invocation` with `params.compat_split_chain` | splitters remain outside graph nodes while preserving train/test + CV chains for host split controllers |
 | multisource data | `data_bindings.source_ids`, branch/source selectors, source joins | contract surface present; richer materialization belongs to dag-ml-data |
 | repetition/sample/group aggregation | top-level/shape `aggregation_policy`, target/group OOF cache contracts | core runtime implemented for sample/target/group OOF |
@@ -78,7 +79,8 @@ YAML frontends should be thin host-side serializers around the same importer.
   descriptors. Direct Python object/YAML parsing is still a binding-layer task:
   hosts must serialize live objects and splitters into portable descriptors
   before handing the DSL to Rust.
-- The new DSL node kinds compile and validate graph contracts; production
+- The DSL node kinds compile and validate graph contracts. Smoke controllers now
+  execute transform/model/tuner/data-generation/mixed-join paths, but production
   execution still needs host controller support for each operator family.
 - Separation branch materialization by source/metadata/tag/filter must be backed
   by explicit dag-ml-data view plans before it is considered runtime-complete.
@@ -98,7 +100,7 @@ YAML frontends should be thin host-side serializers around the same importer.
 
 - Compile every nirs4all canonical sample category into strict DSL equivalents:
   linear, feature augmentation, sample augmentation, branch, stacking/merge,
-  concat transform, filters/splits, finetune, multisource and all-features.
+  concat transform, filters/splits, finetune/tuner, multisource and all-features.
 - For each shape-changing step, assert that `DataModelShapePlan` exists and
   rejects unsafe augmentation/selection scopes.
 - For every stacking/merge pattern, assert that upstream prediction edges carry
