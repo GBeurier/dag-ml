@@ -1160,6 +1160,9 @@ def validate_node_result_schema(schema: Any, label: str) -> None:
     for definition_name in (
         "handle_ref",
         "prediction_block",
+        "observation_prediction_block",
+        "aggregated_prediction_block",
+        "prediction_unit_id",
         "shape_delta",
         "artifact_ref",
         "lineage_record",

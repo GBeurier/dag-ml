@@ -2384,6 +2384,8 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
             },
         )]),
         predictions: Vec::new(),
+        observation_predictions: Vec::new(),
+        aggregated_predictions: Vec::new(),
         shape_deltas: Vec::new(),
         artifacts: Vec::new(),
         artifact_handles: BTreeMap::new(),

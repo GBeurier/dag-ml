@@ -3382,6 +3382,44 @@ impl CAbiRuntimeController {
             }
         }
     }
+
+    fn invoke_json_task<ResultT>(
+        &self,
+        task_json: Vec<u8>,
+        task_label: &str,
+        result_label: &str,
+    ) -> dag_ml_core::Result<ResultT>
+    where
+        ResultT: for<'de> serde::Deserialize<'de>,
+    {
+        let invoke = self.vtable.invoke.ok_or_else(|| {
+            DagMlError::RuntimeValidation("controller vtable is missing invoke".to_string())
+        })?;
+        let release_bytes = self.vtable.release_bytes.ok_or_else(|| {
+            DagMlError::RuntimeValidation("controller vtable is missing release_bytes".to_string())
+        })?;
+        let mut out_json = DagMlOwnedBytes::default();
+        let status =
+            unsafe { invoke(self.vtable.user_data, bytes_view(&task_json), &mut out_json) };
+        if status != DagMlStatusCode::OK {
+            if !out_json.ptr.is_null() {
+                unsafe { release_bytes(self.vtable.user_data, out_json) };
+            }
+            controller_status(status, "invoke")?;
+        }
+        if out_json.ptr.is_null() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller invoke returned null {result_label} JSON"
+            )));
+        }
+        let data = unsafe { slice::from_raw_parts(out_json.ptr, out_json.len) }.to_vec();
+        unsafe { release_bytes(self.vtable.user_data, out_json) };
+        serde_json::from_slice::<ResultT>(&data).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "controller invoke returned invalid {result_label} JSON for {task_label}: {error}"
+            ))
+        })
+    }
 }
 
 impl Drop for CAbiRuntimeController {
@@ -3410,41 +3448,34 @@ impl RuntimeController for CAbiRuntimeController {
     }
 
     fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
-        let invoke = self.vtable.invoke.ok_or_else(|| {
-            DagMlError::RuntimeValidation("controller vtable is missing invoke".to_string())
-        })?;
-        let release_bytes = self.vtable.release_bytes.ok_or_else(|| {
-            DagMlError::RuntimeValidation("controller vtable is missing release_bytes".to_string())
-        })?;
         let task_json = serde_json::to_vec(task).map_err(|error| {
             DagMlError::RuntimeValidation(format!("failed to serialize node task: {error}"))
         })?;
-        let mut out_json = DagMlOwnedBytes::default();
-        let status =
-            unsafe { invoke(self.vtable.user_data, bytes_view(&task_json), &mut out_json) };
-        if status != DagMlStatusCode::OK {
-            if !out_json.ptr.is_null() {
-                unsafe { release_bytes(self.vtable.user_data, out_json) };
-            }
-            controller_status(status, "invoke")?;
-        }
-        if out_json.ptr.is_null() {
-            return Err(DagMlError::RuntimeValidation(
-                "controller invoke returned null result JSON".to_string(),
-            ));
-        }
-        let data = unsafe { slice::from_raw_parts(out_json.ptr, out_json.len) }.to_vec();
-        unsafe { release_bytes(self.vtable.user_data, out_json) };
-        let result = serde_json::from_slice::<NodeResult>(&data).map_err(|error| {
-            DagMlError::RuntimeValidation(format!(
-                "controller invoke returned invalid node result JSON: {error}"
-            ))
-        })?;
+        let result = self.invoke_json_task::<NodeResult>(task_json, "node task", "node result")?;
         if let Err(error) = result.validate_for_task(task) {
             self.release_result_handles_immediately(&result);
             return Err(error);
         }
         self.track_result_handles(&result)?;
+        Ok(result)
+    }
+
+    fn invoke_aggregation(
+        &self,
+        task: &AggregationControllerTask,
+    ) -> dag_ml_core::Result<AggregationControllerResult> {
+        task.validate()?;
+        let task_json = serde_json::to_vec(task).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to serialize aggregation controller task: {error}"
+            ))
+        })?;
+        let result = self.invoke_json_task::<AggregationControllerResult>(
+            task_json,
+            "aggregation controller task",
+            "aggregation controller result",
+        )?;
+        result.validate_for_task(task)?;
         Ok(result)
     }
 }
@@ -4139,6 +4170,8 @@ impl RuntimeController for CapiMockController {
                 },
             )]),
             predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -4393,6 +4426,8 @@ mod tests {
                 },
             )]),
             predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -4679,6 +4714,8 @@ mod tests {
                 },
             )]),
             predictions: Vec::new(),
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -4702,6 +4739,79 @@ mod tests {
                 metrics: BTreeMap::new(),
             },
         };
+        result.validate_for_task(&task).unwrap();
+        (controller_id, task, result)
+    }
+
+    fn aggregation_controller_task_result_fixture() -> (
+        ControllerId,
+        AggregationControllerTask,
+        AggregationControllerResult,
+    ) {
+        let controller_id = ControllerId::new("controller:agg.trimmed").unwrap();
+        let task: AggregationControllerTask = serde_json::from_value(serde_json::json!({
+            "schema_version": DAG_ML_AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
+            "task_id": "agg-task:cabi",
+            "controller_id": "controller:agg.trimmed",
+            "policy": {
+                "aggregation_level": "sample",
+                "method": "custom_controller",
+                "custom_controller": {
+                    "controller_id": "controller:agg.trimmed",
+                    "params": {"trim": 0.1}
+                }
+            },
+            "input": {
+                "input_kind": "observation_to_sample",
+                "block": {
+                    "prediction_id": "pred:obs",
+                    "producer_node": "model:base",
+                    "partition": "validation",
+                    "fold_id": "fold:0",
+                    "observation_ids": ["obs:1", "obs:2"],
+                    "values": [[2.0], [6.0]],
+                    "target_names": ["y"]
+                },
+                "relations": {
+                    "records": [
+                        {
+                            "observation_id": "obs:1",
+                            "sample_id": "sample:1",
+                            "target_id": "target:1",
+                            "group_id": "group:1",
+                            "is_augmented": false
+                        },
+                        {
+                            "observation_id": "obs:2",
+                            "sample_id": "sample:1",
+                            "target_id": "target:1",
+                            "group_id": "group:1",
+                            "is_augmented": false
+                        }
+                    ]
+                },
+                "requested_sample_order": ["sample:1"]
+            }
+        }))
+        .unwrap();
+        let result: AggregationControllerResult = serde_json::from_value(serde_json::json!({
+            "schema_version": DAG_ML_AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+            "task_id": "agg-task:cabi",
+            "output": {
+                "output_kind": "sample",
+                "block": {
+                    "prediction_id": "pred:obs:sample_agg",
+                    "producer_node": "model:base",
+                    "partition": "validation",
+                    "fold_id": "fold:0",
+                    "sample_ids": ["sample:1"],
+                    "values": [[4.0]],
+                    "target_names": ["y"]
+                }
+            }
+        }))
+        .unwrap();
+        task.validate().unwrap();
         result.validate_for_task(&task).unwrap();
         (controller_id, task, result)
     }
@@ -4873,6 +4983,37 @@ mod tests {
         assert_eq!(task_json["node_plan"]["node_id"], "transform:scale");
         assert_eq!(task_json["phase"], "FIT_CV");
         assert_eq!(task_json["seed"], 42);
+    }
+
+    #[test]
+    fn c_abi_runtime_controller_routes_aggregation_task_and_result_json() {
+        let (controller_id, task, expected) = aggregation_controller_task_result_fixture();
+        let mut state = ControllerStub {
+            result_json: serde_json::to_vec(&expected).unwrap(),
+            ..Default::default()
+        };
+        let table = DagMlControllerVTable {
+            abi_version: 2,
+            user_data: (&mut state as *mut ControllerStub).cast::<c_void>(),
+            clone_with: None,
+            describe: None,
+            fit: None,
+            predict: None,
+            invoke: Some(controller_invoke_stub),
+            release_bytes: Some(controller_release_bytes_stub),
+            release: None,
+            destroy: None,
+        };
+        let controller = CAbiRuntimeController::new(controller_id.clone(), table).unwrap();
+        let actual = controller.invoke_aggregation(&task).unwrap();
+        assert_eq!(controller.controller_id(), &controller_id);
+        assert_eq!(actual, expected);
+        assert_eq!(state.release_count, 1);
+
+        let task_json: serde_json::Value = serde_json::from_slice(&state.task_json).unwrap();
+        assert_eq!(task_json["task_id"], "agg-task:cabi");
+        assert_eq!(task_json["controller_id"], "controller:agg.trimmed");
+        assert_eq!(task_json["input"]["input_kind"], "observation_to_sample");
     }
 
     #[test]

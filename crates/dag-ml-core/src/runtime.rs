@@ -7,7 +7,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::aggregation::{AggregatedPredictionBlock, PredictionUnitId};
+use crate::aggregation::{
+    aggregate_observation_predictions, aggregate_sample_predictions_by_unit,
+    AggregatedPredictionBlock, AggregationControllerInput, AggregationControllerOutput,
+    AggregationControllerResult, AggregationControllerTask, ObservationPredictionBlock,
+    PredictionUnitId,
+};
 use crate::bundle::{
     build_aggregated_prediction_cache_payload, build_prediction_cache_payload,
     bundle_prediction_requirement_key, validate_prediction_cache_payload_matches_record,
@@ -15,6 +20,7 @@ use crate::bundle::{
     BundlePredictionRequirement, ExecutionBundle, RefitArtifactRecord, ReplayPhaseRequest,
 };
 use crate::campaign::stable_json_fingerprint;
+use crate::controller::ControllerCapability;
 use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::fold::{FoldAssignment, FoldSet};
@@ -27,7 +33,8 @@ use crate::ids::{
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::{ExecutionPlan, NodePlan};
-use crate::policy::{PredictionLevel, ShapeDelta, ShapeDeltaKind};
+use crate::policy::{AggregationPolicy, PredictionLevel, ShapeDelta, ShapeDeltaKind};
+use crate::relation::SampleRelationSet;
 use crate::rng::SeedContext;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -2356,6 +2363,10 @@ pub struct NodeResult {
     #[serde(default)]
     pub predictions: Vec<PredictionBlock>,
     #[serde(default)]
+    pub observation_predictions: Vec<ObservationPredictionBlock>,
+    #[serde(default)]
+    pub aggregated_predictions: Vec<AggregatedPredictionBlock>,
+    #[serde(default)]
     pub shape_deltas: Vec<ShapeDelta>,
     #[serde(default)]
     pub artifacts: Vec<ArtifactRef>,
@@ -2541,6 +2552,26 @@ impl NodeResult {
             }
             validate_prediction_scope(prediction, task)?;
         }
+        for prediction in &self.observation_predictions {
+            prediction.validate_shape()?;
+            if prediction.producer_node != task.node_plan.node_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted observation prediction for producer `{}`",
+                    task.node_plan.node_id, prediction.producer_node
+                )));
+            }
+            validate_observation_prediction_scope(prediction, task)?;
+        }
+        for prediction in &self.aggregated_predictions {
+            prediction.validate_shape()?;
+            if prediction.producer_node != task.node_plan.node_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted aggregated prediction for producer `{}`",
+                    task.node_plan.node_id, prediction.producer_node
+                )));
+            }
+            validate_aggregated_prediction_scope(prediction, task)?;
+        }
         for delta in &self.shape_deltas {
             delta.validate()?;
             if delta.node_id != task.node_plan.node_id {
@@ -2634,6 +2665,38 @@ fn validate_prediction_scope(prediction: &PredictionBlock, task: &NodeTask) -> R
                 )));
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_observation_prediction_scope(
+    prediction: &ObservationPredictionBlock,
+    task: &NodeTask,
+) -> Result<()> {
+    if prediction.partition != PredictionPartition::Validation {
+        return Ok(());
+    }
+    if prediction.fold_id != task.fold_id {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "node `{}` emitted observation validation predictions for fold {:?}, expected {:?}",
+            task.node_plan.node_id, prediction.fold_id, task.fold_id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_aggregated_prediction_scope(
+    prediction: &AggregatedPredictionBlock,
+    task: &NodeTask,
+) -> Result<()> {
+    if prediction.partition != PredictionPartition::Validation {
+        return Ok(());
+    }
+    if prediction.fold_id != task.fold_id {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "node `{}` emitted aggregated validation predictions for fold {:?}, expected {:?}",
+            task.node_plan.node_id, prediction.fold_id, task.fold_id
+        )));
     }
     Ok(())
 }
@@ -2910,11 +2973,25 @@ pub struct DataViewRequest {
 pub trait RuntimeDataProvider {
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef>;
     fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef>;
+    fn coordinator_relations(&self, _binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
+        Ok(None)
+    }
 }
 
 pub trait RuntimeController: Send + Sync {
     fn controller_id(&self) -> &ControllerId;
     fn invoke(&self, task: &NodeTask) -> Result<NodeResult>;
+
+    fn invoke_aggregation(
+        &self,
+        task: &AggregationControllerTask,
+    ) -> Result<AggregationControllerResult> {
+        Err(DagMlError::RuntimeValidation(format!(
+            "runtime controller `{}` does not implement aggregation task `{}`",
+            self.controller_id(),
+            task.task_id
+        )))
+    }
 }
 
 pub struct BundleReplayExecution<'a> {
@@ -2951,6 +3028,122 @@ impl RuntimeControllerRegistry {
     pub fn get(&self, controller_id: &ControllerId) -> Option<&dyn RuntimeController> {
         self.controllers.get(controller_id).map(Box::as_ref)
     }
+}
+
+pub fn dispatch_custom_observation_aggregation(
+    plan: &ExecutionPlan,
+    controllers: &RuntimeControllerRegistry,
+    task_id: impl Into<String>,
+    block: ObservationPredictionBlock,
+    relations: SampleRelationSet,
+    policy: AggregationPolicy,
+    requested_sample_order: Vec<SampleId>,
+) -> Result<PredictionBlock> {
+    let controller_id = custom_aggregation_controller_id(&policy)?;
+    ensure_aggregation_controller_capability(plan, controller_id)?;
+    let task = AggregationControllerTask {
+        schema_version: crate::aggregation::AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
+        task_id: task_id.into(),
+        controller_id: controller_id.clone(),
+        policy,
+        input: AggregationControllerInput::ObservationToSample {
+            block,
+            relations,
+            requested_sample_order,
+        },
+    };
+    let result = dispatch_custom_aggregation_task(controllers, &task)?;
+    match result.output {
+        AggregationControllerOutput::Sample { block } => Ok(block),
+        AggregationControllerOutput::Unit { .. } => Err(DagMlError::RuntimeValidation(format!(
+            "aggregation controller task `{}` returned unit output for observation input",
+            task.task_id
+        ))),
+    }
+}
+
+pub fn dispatch_custom_sample_aggregation(
+    plan: &ExecutionPlan,
+    controllers: &RuntimeControllerRegistry,
+    task_id: impl Into<String>,
+    block: PredictionBlock,
+    relations: SampleRelationSet,
+    policy: AggregationPolicy,
+    requested_unit_order: Vec<PredictionUnitId>,
+) -> Result<AggregatedPredictionBlock> {
+    let controller_id = custom_aggregation_controller_id(&policy)?;
+    ensure_aggregation_controller_capability(plan, controller_id)?;
+    let task = AggregationControllerTask {
+        schema_version: crate::aggregation::AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
+        task_id: task_id.into(),
+        controller_id: controller_id.clone(),
+        policy,
+        input: AggregationControllerInput::SampleToUnit {
+            block,
+            relations,
+            requested_unit_order,
+        },
+    };
+    let result = dispatch_custom_aggregation_task(controllers, &task)?;
+    match result.output {
+        AggregationControllerOutput::Unit { block } => Ok(block),
+        AggregationControllerOutput::Sample { .. } => Err(DagMlError::RuntimeValidation(format!(
+            "aggregation controller task `{}` returned sample output for sample input",
+            task.task_id
+        ))),
+    }
+}
+
+pub fn dispatch_custom_aggregation_task(
+    controllers: &RuntimeControllerRegistry,
+    task: &AggregationControllerTask,
+) -> Result<AggregationControllerResult> {
+    task.validate()?;
+    let controller = controllers.get(&task.controller_id).ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "aggregation runtime controller `{}` is not registered",
+            task.controller_id
+        ))
+    })?;
+    let result = controller.invoke_aggregation(task)?;
+    result.validate_for_task(task)?;
+    Ok(result)
+}
+
+fn custom_aggregation_controller_id(policy: &AggregationPolicy) -> Result<&ControllerId> {
+    policy.validate()?;
+    policy
+        .custom_controller
+        .as_ref()
+        .map(|controller| &controller.controller_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "custom aggregation dispatch requires a custom_controller policy".to_string(),
+            )
+        })
+}
+
+fn ensure_aggregation_controller_capability(
+    plan: &ExecutionPlan,
+    controller_id: &ControllerId,
+) -> Result<()> {
+    let manifest = plan
+        .controller_manifests
+        .get(controller_id)
+        .ok_or_else(|| {
+            DagMlError::Planning(format!(
+                "missing aggregation controller manifest `{controller_id}`"
+            ))
+        })?;
+    if !manifest
+        .capabilities
+        .contains(&ControllerCapability::AggregatesPredictions)
+    {
+        return Err(DagMlError::Planning(format!(
+            "aggregation controller `{controller_id}` must declare aggregates_predictions"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -3023,6 +3216,7 @@ struct PhaseScopeResources<'a> {
     replay_artifact_handles: Option<&'a BTreeMap<NodeId, BTreeMap<String, HandleRef>>>,
     replay_artifact_inputs: Option<&'a BTreeMap<NodeId, BTreeMap<String, ArtifactInputSpec>>>,
     replay_bundle_id: Option<&'a BundleId>,
+    data_envelopes: Option<&'a BTreeMap<String, ExternalDataPlanEnvelope>>,
     prediction_cache_store: Option<&'a dyn RuntimePredictionCacheStore>,
     prediction_cache_contracts: Option<&'a BTreeMap<String, ReplayPredictionCacheContract>>,
     artifact_store: Option<&'a mut InMemoryArtifactStore>,
@@ -3320,6 +3514,7 @@ impl SequentialScheduler {
                 replay_artifact_handles: Some(&replay_artifacts.handles),
                 replay_artifact_inputs: Some(&replay_artifacts.inputs),
                 replay_bundle_id: Some(&replay.bundle.bundle_id),
+                data_envelopes: Some(replay.data_envelopes),
                 prediction_cache_store: replay.prediction_cache_store,
                 prediction_cache_contracts: prediction_cache_contracts.as_ref(),
                 ..Default::default()
@@ -3411,6 +3606,13 @@ impl SequentialScheduler {
                 };
                 let mut result = controller.invoke(&task)?;
                 result.validate_for_task(&task)?;
+                apply_result_prediction_aggregation(
+                    plan,
+                    controllers,
+                    &task,
+                    &mut result,
+                    &resources,
+                )?;
                 attach_coordinator_input_lineage(
                     &mut result,
                     plan,
@@ -3730,6 +3932,7 @@ impl ParallelScheduler {
                 replay_artifact_handles: Some(&replay_artifacts.handles),
                 replay_artifact_inputs: Some(&replay_artifacts.inputs),
                 replay_bundle_id: Some(&replay.bundle.bundle_id),
+                data_envelopes: Some(replay.data_envelopes),
                 prediction_cache_store: replay.prediction_cache_store,
                 prediction_cache_contracts: prediction_cache_contracts.as_ref(),
                 ..Default::default()
@@ -3852,6 +4055,13 @@ impl ParallelScheduler {
                     })?;
 
                 for (prepared_task, mut result) in chunk.iter().zip(chunk_results) {
+                    apply_result_prediction_aggregation(
+                        plan,
+                        controllers,
+                        &prepared_task.task,
+                        &mut result,
+                        &resources,
+                    )?;
                     attach_coordinator_input_lineage(
                         &mut result,
                         plan,
@@ -3932,6 +4142,263 @@ fn inferred_input_lineage_for_node(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+fn apply_result_prediction_aggregation(
+    plan: &ExecutionPlan,
+    controllers: &RuntimeControllerRegistry,
+    task: &NodeTask,
+    result: &mut NodeResult,
+    resources: &PhaseScopeResources<'_>,
+) -> Result<()> {
+    let has_observation_predictions = !result.observation_predictions.is_empty();
+    let has_sample_predictions = !result.predictions.is_empty();
+    if !has_observation_predictions && !has_sample_predictions {
+        return Ok(());
+    }
+    let Some(shape_plan) = &task.node_plan.shape_plan else {
+        if !has_observation_predictions {
+            return Ok(());
+        }
+        return Err(DagMlError::RuntimeValidation(format!(
+            "node `{}` emitted observation predictions but has no data/model shape plan for aggregation",
+            task.node_plan.node_id
+        )));
+    };
+    let policy = &shape_plan.aggregation_policy;
+    if !policy.store_aggregated_predictions {
+        return Ok(());
+    }
+    if policy.aggregation_level == PredictionLevel::Observation {
+        return Ok(());
+    }
+    if !has_observation_predictions && policy.aggregation_level == PredictionLevel::Sample {
+        return Ok(());
+    }
+
+    let mut derived_sample_blocks = Vec::new();
+    if !result.observation_predictions.is_empty() {
+        let relations = coordinator_relations_for_task(task, resources)?;
+        let sample_policy = observation_to_sample_policy(policy);
+        for block in result.observation_predictions.clone() {
+            let requested_sample_order =
+                requested_sample_order_for_observation_block(plan, task, &block, &relations)?;
+            let sample_block =
+                if sample_policy.method == crate::policy::AggregationMethod::CustomController {
+                    dispatch_custom_observation_aggregation(
+                        plan,
+                        controllers,
+                        aggregation_task_id(
+                            task,
+                            &block.producer_node,
+                            block.fold_id.as_ref(),
+                            "obs_to_sample",
+                        ),
+                        block,
+                        relations.clone(),
+                        sample_policy.clone(),
+                        requested_sample_order,
+                    )?
+                } else {
+                    aggregate_observation_predictions(
+                        &block,
+                        &relations,
+                        &sample_policy,
+                        &requested_sample_order,
+                    )?
+                };
+            derived_sample_blocks.push(sample_block);
+        }
+    }
+
+    if policy.aggregation_level == PredictionLevel::Sample {
+        result.predictions.extend(derived_sample_blocks);
+        result.validate_for_task(task)?;
+        return Ok(());
+    }
+
+    if !result.aggregated_predictions.is_empty() {
+        result.validate_for_task(task)?;
+        return Ok(());
+    }
+
+    let relations = coordinator_relations_for_task(task, resources)?;
+    let sample_blocks = result
+        .predictions
+        .iter()
+        .cloned()
+        .chain(derived_sample_blocks)
+        .collect::<Vec<_>>();
+    for block in sample_blocks {
+        let requested_unit_order =
+            requested_unit_order_for_sample_block(policy.aggregation_level, &relations, &block)?;
+        let aggregated = if policy.method == crate::policy::AggregationMethod::CustomController {
+            dispatch_custom_sample_aggregation(
+                plan,
+                controllers,
+                aggregation_task_id(
+                    task,
+                    &block.producer_node,
+                    block.fold_id.as_ref(),
+                    "sample_to_unit",
+                ),
+                block,
+                relations.clone(),
+                policy.clone(),
+                requested_unit_order,
+            )?
+        } else {
+            aggregate_sample_predictions_by_unit(&block, &relations, policy, &requested_unit_order)?
+        };
+        result.aggregated_predictions.push(aggregated);
+    }
+    result.validate_for_task(task)
+}
+
+fn observation_to_sample_policy(policy: &AggregationPolicy) -> AggregationPolicy {
+    let mut sample_policy = policy.clone();
+    sample_policy.aggregation_level = PredictionLevel::Sample;
+    sample_policy
+}
+
+fn coordinator_relations_for_task(
+    task: &NodeTask,
+    resources: &PhaseScopeResources<'_>,
+) -> Result<SampleRelationSet> {
+    let mut selected: Option<SampleRelationSet> = None;
+    for binding in &task.node_plan.data_bindings {
+        if !binding.require_relations && binding.relation_fingerprint.is_none() {
+            continue;
+        }
+        let relations = if let Some(envelopes) = resources.data_envelopes {
+            let key = format!("{}.{}", binding.node_id, binding.input_name);
+            let Some(envelope) = envelopes.get(&key) else {
+                continue;
+            };
+            binding.validate_envelope(envelope)?;
+            envelope.coordinator_relations.clone()
+        } else if let Some(data_provider) = resources.data_provider {
+            data_provider.coordinator_relations(binding)?
+        } else {
+            None
+        };
+        let Some(relations) = relations else {
+            continue;
+        };
+        if let Some(previous) = &selected {
+            if previous != &relations {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` has multiple non-identical coordinator relation sets",
+                    task.node_plan.node_id
+                )));
+            }
+        } else {
+            selected = Some(relations);
+        }
+    }
+    selected.ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "node `{}` needs coordinator relations for prediction aggregation but no matching data provider/envelope carries relations",
+            task.node_plan.node_id
+        ))
+    })
+}
+
+fn requested_sample_order_for_observation_block(
+    plan: &ExecutionPlan,
+    task: &NodeTask,
+    block: &ObservationPredictionBlock,
+    relations: &SampleRelationSet,
+) -> Result<Vec<SampleId>> {
+    if block.partition == PredictionPartition::Validation {
+        if let Some(sample_ids) = validation_view_sample_ids(task) {
+            return Ok(sample_ids.into_iter().collect());
+        }
+        if let (Some(fold_set), Some(fold_id)) = (plan.fold_set.as_ref(), block.fold_id.as_ref()) {
+            if let Some(fold) = fold_set.folds.iter().find(|fold| &fold.fold_id == fold_id) {
+                return Ok(fold.validation_sample_ids.clone());
+            }
+        }
+    }
+    first_seen_samples_for_observations(block, relations)
+}
+
+fn first_seen_samples_for_observations(
+    block: &ObservationPredictionBlock,
+    relations: &SampleRelationSet,
+) -> Result<Vec<SampleId>> {
+    let mut seen = BTreeSet::new();
+    let mut sample_order = Vec::new();
+    for observation_id in &block.observation_ids {
+        let sample_id = relations
+            .sample_for_observation(observation_id)
+            .ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "observation prediction `{observation_id}` has no sample relation"
+                ))
+            })?;
+        if seen.insert(sample_id.clone()) {
+            sample_order.push(sample_id.clone());
+        }
+    }
+    Ok(sample_order)
+}
+
+fn requested_unit_order_for_sample_block(
+    level: PredictionLevel,
+    relations: &SampleRelationSet,
+    block: &PredictionBlock,
+) -> Result<Vec<PredictionUnitId>> {
+    let mut seen = BTreeSet::new();
+    let mut unit_order = Vec::new();
+    for sample_id in &block.sample_ids {
+        let unit_id = match level {
+            PredictionLevel::Sample => PredictionUnitId::Sample(sample_id.clone()),
+            PredictionLevel::Target => relations
+                .target_for_sample(sample_id)
+                .cloned()
+                .map(PredictionUnitId::Target)
+                .ok_or_else(|| {
+                    DagMlError::OofValidation(format!(
+                        "sample `{sample_id}` is missing target id for target aggregation"
+                    ))
+                })?,
+            PredictionLevel::Group => relations
+                .group_for_sample(sample_id)
+                .cloned()
+                .map(PredictionUnitId::Group)
+                .ok_or_else(|| {
+                    DagMlError::OofValidation(format!(
+                        "sample `{sample_id}` is missing group id for group aggregation"
+                    ))
+                })?,
+            PredictionLevel::Observation => {
+                return Err(DagMlError::OofValidation(
+                    "sample prediction aggregation cannot output observation-level predictions"
+                        .to_string(),
+                ));
+            }
+        };
+        if seen.insert(unit_id.clone()) {
+            unit_order.push(unit_id);
+        }
+    }
+    Ok(unit_order)
+}
+
+fn aggregation_task_id(
+    task: &NodeTask,
+    producer_node: &NodeId,
+    fold_id: Option<&FoldId>,
+    stage: &str,
+) -> String {
+    let fold = fold_id
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "nofold".to_string());
+    format!(
+        "aggregation:{}:{}:{}:{}:{}",
+        task.run_id, task.node_plan.node_id, producer_node, fold, stage
+    )
 }
 
 fn collect_input_handles(
@@ -5113,8 +5580,8 @@ mod tests {
     use crate::oof::{PredictionBlock, PredictionPartition};
     use crate::plan::{build_execution_plan, CampaignSpec, SplitInvocation};
     use crate::policy::{
-        AggregationPolicy, DataModelShapePlan, FitBoundary, Granularity, LeakageUnitPolicy,
-        ShapeDelta, ShapeDeltaKind, SplitUnit,
+        AggregationControllerSpec, AggregationMethod, AggregationPolicy, DataModelShapePlan,
+        FitBoundary, Granularity, LeakageUnitPolicy, ShapeDelta, ShapeDeltaKind, SplitUnit,
     };
     use crate::relation::{SampleRelation, SampleRelationSet};
     use serde_json::json;
@@ -5156,6 +5623,8 @@ mod tests {
                     },
                 )]),
                 predictions: Vec::new(),
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
@@ -5224,6 +5693,8 @@ mod tests {
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([("x_out".to_string(), output)]),
                 predictions: Vec::new(),
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
                 shape_deltas: vec![shape_delta],
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
@@ -5301,6 +5772,8 @@ mod tests {
                     values: vec![vec![1.0]; prediction_sample_ids.len()],
                     target_names: vec!["y".to_string()],
                 }],
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
@@ -5424,6 +5897,8 @@ mod tests {
                     ("oof".to_string(), prediction_output),
                 ]),
                 predictions,
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
@@ -5587,6 +6062,8 @@ mod tests {
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([("out".to_string(), output)]),
                 predictions,
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
                 shape_deltas: Vec::new(),
                 artifacts: artifacts.clone(),
                 artifact_handles,
@@ -5738,6 +6215,8 @@ mod tests {
                     },
                 )]),
                 predictions,
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
@@ -5840,6 +6319,8 @@ mod tests {
                     },
                 )]),
                 predictions: Vec::new(),
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
@@ -5862,6 +6343,231 @@ mod tests {
                     params_fingerprint: task.node_plan.params_fingerprint.clone(),
                     data_model_shape_fingerprint: None,
                     aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
+    struct CustomAggregationController {
+        id: ControllerId,
+        task_ids: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RuntimeController for CustomAggregationController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            Err(DagMlError::RuntimeValidation(format!(
+                "custom aggregation controller received unexpected node task `{}`",
+                task.node_plan.node_id
+            )))
+        }
+
+        fn invoke_aggregation(
+            &self,
+            task: &AggregationControllerTask,
+        ) -> Result<AggregationControllerResult> {
+            self.task_ids.lock().unwrap().push(task.task_id.clone());
+            match &task.input {
+                AggregationControllerInput::ObservationToSample {
+                    block,
+                    relations,
+                    requested_sample_order,
+                } => {
+                    let mut by_sample = BTreeMap::<SampleId, Vec<Vec<f64>>>::new();
+                    for (observation_id, row) in
+                        block.observation_ids.iter().zip(block.values.iter())
+                    {
+                        let sample_id = relations
+                            .sample_for_observation(observation_id)
+                            .ok_or_else(|| {
+                                DagMlError::OofValidation(format!(
+                                    "missing relation for `{observation_id}`"
+                                ))
+                            })?;
+                        by_sample
+                            .entry(sample_id.clone())
+                            .or_default()
+                            .push(row.clone());
+                    }
+                    let values = requested_sample_order
+                        .iter()
+                        .map(|sample_id| {
+                            let rows = by_sample.get(sample_id).ok_or_else(|| {
+                                DagMlError::OofValidation(format!(
+                                    "missing sample `{sample_id}` for custom aggregation"
+                                ))
+                            })?;
+                            let width = rows.first().map_or(0, Vec::len);
+                            Ok((0..width)
+                                .map(|col| {
+                                    rows.iter().map(|row| row[col]).sum::<f64>() / rows.len() as f64
+                                })
+                                .collect::<Vec<_>>())
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(AggregationControllerResult {
+                        schema_version:
+                            crate::aggregation::AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+                        task_id: task.task_id.clone(),
+                        output: AggregationControllerOutput::Sample {
+                            block: PredictionBlock {
+                                prediction_id: block.prediction_id.clone(),
+                                producer_node: block.producer_node.clone(),
+                                partition: block.partition.clone(),
+                                fold_id: block.fold_id.clone(),
+                                sample_ids: requested_sample_order.clone(),
+                                values,
+                                target_names: block.target_names.clone(),
+                            },
+                        },
+                    })
+                }
+                AggregationControllerInput::SampleToUnit {
+                    block,
+                    relations,
+                    requested_unit_order,
+                } => {
+                    let mut by_unit = BTreeMap::<PredictionUnitId, Vec<Vec<f64>>>::new();
+                    for (sample_id, row) in block.sample_ids.iter().zip(block.values.iter()) {
+                        let unit_id = relations
+                            .group_for_sample(sample_id)
+                            .cloned()
+                            .map(PredictionUnitId::Group)
+                            .ok_or_else(|| {
+                                DagMlError::OofValidation(format!(
+                                    "missing group relation for `{sample_id}`"
+                                ))
+                            })?;
+                        by_unit.entry(unit_id).or_default().push(row.clone());
+                    }
+                    let values = requested_unit_order
+                        .iter()
+                        .map(|unit_id| {
+                            let rows = by_unit.get(unit_id).ok_or_else(|| {
+                                DagMlError::OofValidation(format!(
+                                    "missing unit `{unit_id}` for custom aggregation"
+                                ))
+                            })?;
+                            let width = rows.first().map_or(0, Vec::len);
+                            Ok((0..width)
+                                .map(|col| rows.iter().map(|row| row[col]).fold(f64::MIN, f64::max))
+                                .collect::<Vec<_>>())
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(AggregationControllerResult {
+                        schema_version:
+                            crate::aggregation::AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+                        task_id: task.task_id.clone(),
+                        output: AggregationControllerOutput::Unit {
+                            block: AggregatedPredictionBlock {
+                                prediction_id: block.prediction_id.clone(),
+                                producer_node: block.producer_node.clone(),
+                                partition: block.partition.clone(),
+                                fold_id: block.fold_id.clone(),
+                                level: PredictionLevel::Group,
+                                unit_ids: requested_unit_order.clone(),
+                                values,
+                                target_names: block.target_names.clone(),
+                            },
+                        },
+                    })
+                }
+            }
+        }
+    }
+
+    struct ObservationPredictionRuntimeController {
+        id: ControllerId,
+    }
+
+    impl RuntimeController for ObservationPredictionRuntimeController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            let (observation_ids, values) =
+                match task.fold_id.as_ref().map(ToString::to_string).as_deref() {
+                    Some("fold:0") => (
+                        vec![
+                            ObservationId::new("obs.S001.base").unwrap(),
+                            ObservationId::new("obs.S001.rep1").unwrap(),
+                        ],
+                        vec![vec![2.0], vec![6.0]],
+                    ),
+                    Some("fold:1") => (
+                        vec![ObservationId::new("obs.S002.base").unwrap()],
+                        vec![vec![10.0]],
+                    ),
+                    _ => (
+                        vec![ObservationId::new("obs.S001.base").unwrap()],
+                        vec![vec![2.0]],
+                    ),
+                };
+            Ok(NodeResult {
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([(
+                    "pred".to_string(),
+                    HandleRef {
+                        handle: 515,
+                        kind: HandleKind::Prediction,
+                        owner_controller: self.id.clone(),
+                    },
+                )]),
+                predictions: Vec::new(),
+                observation_predictions: vec![ObservationPredictionBlock {
+                    prediction_id: Some("pred:obs.runtime".to_string()),
+                    producer_node: task.node_plan.node_id.clone(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: task.fold_id.clone(),
+                    observation_ids,
+                    values,
+                    weights: Vec::new(),
+                    target_names: vec!["y".to_string()],
+                }],
+                aggregated_predictions: Vec::new(),
+                shape_deltas: Vec::new(),
+                artifacts: Vec::new(),
+                artifact_handles: BTreeMap::new(),
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:obs-runtime:{}:{}",
+                        task.node_plan.node_id,
+                        task.fold_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "nofold".to_string())
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: task
+                        .node_plan
+                        .shape_plan
+                        .as_ref()
+                        .map(stable_json_fingerprint)
+                        .transpose()?,
+                    aggregation_policy_fingerprint: task
+                        .node_plan
+                        .shape_plan
+                        .as_ref()
+                        .map(|shape_plan| stable_json_fingerprint(&shape_plan.aggregation_policy))
+                        .transpose()?,
                     seed: task.seed,
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
@@ -5941,6 +6647,154 @@ mod tests {
             fit_scope: ControllerFitScope::FoldTrain,
             rng_policy: RngPolicy::UsesCoreSeed,
             artifact_policy: ArtifactPolicy::Serializable,
+        }
+    }
+
+    fn aggregation_dispatch_plan(with_capability: bool) -> ExecutionPlan {
+        let graph = GraphSpec {
+            id: "graph:aggregation.dispatch".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![node(
+                "aggregate:custom",
+                NodeKind::Aggregator,
+                Vec::new(),
+                Vec::new(),
+            )],
+            edges: Vec::new(),
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+        let campaign = CampaignSpec {
+            id: "campaign:aggregation.dispatch".to_string(),
+            root_seed: Some(7),
+            leakage_policy: Default::default(),
+            aggregation_policy: Default::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        };
+        let mut manifest = controller_manifest("controller:agg.custom", NodeKind::Aggregator);
+        if with_capability {
+            manifest
+                .capabilities
+                .insert(ControllerCapability::AggregatesPredictions);
+        }
+        let mut registry = ControllerRegistry::new();
+        registry.register(manifest).unwrap();
+        build_execution_plan("plan:aggregation.dispatch", graph, campaign, &registry).unwrap()
+    }
+
+    fn observation_prediction_runtime_plan() -> ExecutionPlan {
+        let model_id = NodeId::new("model:obs").unwrap();
+        let graph = GraphSpec {
+            id: "graph:observation.prediction.runtime".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    model_id.as_str(),
+                    NodeKind::Model,
+                    vec![port("x", PortKind::Data)],
+                    vec![port("pred", PortKind::Prediction)],
+                ),
+                node(
+                    "aggregate:custom",
+                    NodeKind::Aggregator,
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            ],
+            edges: Vec::new(),
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+        let mut shape_plans = BTreeMap::new();
+        shape_plans.insert(
+            model_id.clone(),
+            DataModelShapePlan {
+                node_id: model_id.clone(),
+                input_granularity: Granularity::Observation,
+                target_granularity: Granularity::Sample,
+                fit_rows: FitBoundary::FoldTrain,
+                predict_rows: FitBoundary::FoldValidation,
+                feature_namespace: Some("nir".to_string()),
+                feature_schema_fingerprint: None,
+                target_space: "regression:y".to_string(),
+                aggregation_policy: custom_aggregation_policy(PredictionLevel::Sample),
+                augmentation_policy: Default::default(),
+                selection_policy: Default::default(),
+            },
+        );
+        let mut data_bindings = BTreeMap::new();
+        data_bindings.insert(model_id.clone(), vec![data_binding(&model_id)]);
+        let campaign = CampaignSpec {
+            id: "campaign:observation.prediction.runtime".to_string(),
+            root_seed: Some(17),
+            leakage_policy: Default::default(),
+            aggregation_policy: Default::default(),
+            split_invocation: Some(SplitInvocation {
+                id: "split:single".to_string(),
+                controller_id: None,
+                leakage_policy: Default::default(),
+                params: BTreeMap::new(),
+                fold_set: Some(FoldSet {
+                    id: "folds:single".to_string(),
+                    sample_ids: vec![
+                        SampleId::new("sample:1").unwrap(),
+                        SampleId::new("sample:2").unwrap(),
+                    ],
+                    folds: vec![
+                        FoldAssignment {
+                            fold_id: FoldId::new("fold:0").unwrap(),
+                            train_sample_ids: vec![SampleId::new("sample:2").unwrap()],
+                            validation_sample_ids: vec![SampleId::new("sample:1").unwrap()],
+                            metadata: BTreeMap::new(),
+                        },
+                        FoldAssignment {
+                            fold_id: FoldId::new("fold:1").unwrap(),
+                            train_sample_ids: vec![SampleId::new("sample:1").unwrap()],
+                            validation_sample_ids: vec![SampleId::new("sample:2").unwrap()],
+                            metadata: BTreeMap::new(),
+                        },
+                    ],
+                    sample_groups: BTreeMap::new(),
+                }),
+            }),
+            generation: Default::default(),
+            shape_plans,
+            data_bindings,
+            metadata: BTreeMap::new(),
+        };
+        let mut model_manifest = controller_manifest("controller:model.obs", NodeKind::Model);
+        model_manifest.supported_phases = BTreeSet::from([Phase::FitCv]);
+        let mut agg_manifest = controller_manifest("controller:agg.custom", NodeKind::Aggregator);
+        agg_manifest.supported_phases = BTreeSet::from([Phase::Plan]);
+        agg_manifest.fit_scope = ControllerFitScope::InferenceOnly;
+        agg_manifest
+            .capabilities
+            .insert(ControllerCapability::AggregatesPredictions);
+        let mut registry = ControllerRegistry::new();
+        registry.register(model_manifest).unwrap();
+        registry.register(agg_manifest).unwrap();
+        build_execution_plan(
+            "plan:observation.prediction.runtime",
+            graph,
+            campaign,
+            &registry,
+        )
+        .unwrap()
+    }
+
+    fn custom_aggregation_policy(level: PredictionLevel) -> AggregationPolicy {
+        AggregationPolicy {
+            aggregation_level: level,
+            method: AggregationMethod::CustomController,
+            custom_controller: Some(AggregationControllerSpec {
+                controller_id: ControllerId::new("controller:agg.custom").unwrap(),
+                params: json!({"trim": 0.1}),
+            }),
+            ..AggregationPolicy::default()
         }
     }
 
@@ -6692,6 +7546,8 @@ mod tests {
                         },
                     )]),
                     predictions: Vec::new(),
+                    observation_predictions: Vec::new(),
+                    aggregated_predictions: Vec::new(),
                     shape_deltas: Vec::new(),
                     artifacts: Vec::new(),
                     artifact_handles: BTreeMap::new(),
@@ -6835,6 +7691,8 @@ mod tests {
                         },
                     )]),
                     predictions,
+                    observation_predictions: Vec::new(),
+                    aggregated_predictions: Vec::new(),
                     shape_deltas: Vec::new(),
                     artifacts: Vec::new(),
                     artifact_handles: BTreeMap::new(),
@@ -7375,6 +8233,225 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn runtime_dispatches_custom_observation_aggregation_controller() {
+        let plan = aggregation_dispatch_plan(true);
+        let task_ids = Arc::new(Mutex::new(Vec::new()));
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(CustomAggregationController {
+                id: ControllerId::new("controller:agg.custom").unwrap(),
+                task_ids: Arc::clone(&task_ids),
+            }))
+            .unwrap();
+        let relations = SampleRelationSet {
+            records: vec![
+                sample_relation("obs:s1:a", "s1", "target:s1", "group:left", None, false),
+                sample_relation("obs:s1:b", "s1", "target:s1", "group:left", None, false),
+                sample_relation("obs:s2:a", "s2", "target:s2", "group:right", None, false),
+            ],
+        };
+
+        let block = dispatch_custom_observation_aggregation(
+            &plan,
+            &controllers,
+            "agg-task:obs-to-sample",
+            ObservationPredictionBlock {
+                prediction_id: Some("pred:obs".to_string()),
+                producer_node: NodeId::new("model:base").unwrap(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                observation_ids: vec![
+                    ObservationId::new("obs:s1:a").unwrap(),
+                    ObservationId::new("obs:s1:b").unwrap(),
+                    ObservationId::new("obs:s2:a").unwrap(),
+                ],
+                values: vec![vec![1.0], vec![5.0], vec![10.0]],
+                weights: Vec::new(),
+                target_names: vec!["y".to_string()],
+            },
+            relations,
+            custom_aggregation_policy(PredictionLevel::Sample),
+            vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            block.sample_ids,
+            vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()]
+        );
+        assert_eq!(block.values, vec![vec![3.0], vec![10.0]]);
+        assert_eq!(
+            task_ids.lock().unwrap().as_slice(),
+            &["agg-task:obs-to-sample".to_string()]
+        );
+    }
+
+    #[test]
+    fn runtime_dispatches_custom_sample_to_group_aggregation_controller() {
+        let plan = aggregation_dispatch_plan(true);
+        let task_ids = Arc::new(Mutex::new(Vec::new()));
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(CustomAggregationController {
+                id: ControllerId::new("controller:agg.custom").unwrap(),
+                task_ids: Arc::clone(&task_ids),
+            }))
+            .unwrap();
+        let relations = SampleRelationSet {
+            records: vec![
+                sample_relation("obs:s1:a", "s1", "target:s1", "group:left", None, false),
+                sample_relation("obs:s2:a", "s2", "target:s2", "group:left", None, false),
+                sample_relation("obs:s3:a", "s3", "target:s3", "group:right", None, false),
+            ],
+        };
+        let left = PredictionUnitId::Group(GroupId::new("group:left").unwrap());
+        let right = PredictionUnitId::Group(GroupId::new("group:right").unwrap());
+
+        let block = dispatch_custom_sample_aggregation(
+            &plan,
+            &controllers,
+            "agg-task:sample-to-group",
+            PredictionBlock {
+                prediction_id: Some("pred:sample".to_string()),
+                producer_node: NodeId::new("model:base").unwrap(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                sample_ids: vec![
+                    SampleId::new("s1").unwrap(),
+                    SampleId::new("s2").unwrap(),
+                    SampleId::new("s3").unwrap(),
+                ],
+                values: vec![vec![1.0], vec![8.0], vec![3.0]],
+                target_names: vec!["y".to_string()],
+            },
+            relations,
+            custom_aggregation_policy(PredictionLevel::Group),
+            vec![left.clone(), right.clone()],
+        )
+        .unwrap();
+
+        assert_eq!(block.level, PredictionLevel::Group);
+        assert_eq!(block.unit_ids, vec![left, right]);
+        assert_eq!(block.values, vec![vec![8.0], vec![3.0]]);
+        assert_eq!(
+            task_ids.lock().unwrap().as_slice(),
+            &["agg-task:sample-to-group".to_string()]
+        );
+    }
+
+    #[test]
+    fn custom_aggregation_dispatch_requires_controller_capability() {
+        let plan = aggregation_dispatch_plan(false);
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(CustomAggregationController {
+                id: ControllerId::new("controller:agg.custom").unwrap(),
+                task_ids: Arc::new(Mutex::new(Vec::new())),
+            }))
+            .unwrap();
+        let error = dispatch_custom_observation_aggregation(
+            &plan,
+            &controllers,
+            "agg-task:no-capability",
+            ObservationPredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new("model:base").unwrap(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                observation_ids: vec![ObservationId::new("obs:s1:a").unwrap()],
+                values: vec![vec![1.0]],
+                weights: Vec::new(),
+                target_names: vec!["y".to_string()],
+            },
+            SampleRelationSet {
+                records: vec![sample_relation(
+                    "obs:s1:a",
+                    "s1",
+                    "target:s1",
+                    "group:left",
+                    None,
+                    false,
+                )],
+            },
+            custom_aggregation_policy(PredictionLevel::Sample),
+            vec![SampleId::new("s1").unwrap()],
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("aggregates_predictions"),
+            "unexpected capability error: {error}"
+        );
+    }
+
+    #[test]
+    fn scheduler_aggregates_observation_predictions_with_custom_controller() {
+        let plan = observation_prediction_runtime_plan();
+        let task_ids = Arc::new(Mutex::new(Vec::new()));
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(ObservationPredictionRuntimeController {
+                id: ControllerId::new("controller:model.obs").unwrap(),
+            }))
+            .unwrap();
+        controllers
+            .register(Box::new(CustomAggregationController {
+                id: ControllerId::new("controller:agg.custom").unwrap(),
+                task_ids: Arc::clone(&task_ids),
+            }))
+            .unwrap();
+        let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        let data_provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data").unwrap(),
+            envelope,
+        )
+        .unwrap();
+        let mut ctx = RunContext::new(
+            RunId::new("run:observation.prediction.runtime").unwrap(),
+            Some(17),
+        );
+
+        let results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &data_provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results
+            .iter()
+            .all(|result| result.observation_predictions.len() == 1));
+        assert!(results.iter().all(|result| result.predictions.len() == 1));
+        let blocks = ctx.prediction_store.blocks();
+        assert_eq!(
+            blocks
+                .iter()
+                .flat_map(|block| block.sample_ids.iter().cloned())
+                .collect::<Vec<_>>(),
+            vec![
+                SampleId::new("sample:1").unwrap(),
+                SampleId::new("sample:2").unwrap()
+            ]
+        );
+        assert_eq!(
+            blocks
+                .iter()
+                .flat_map(|block| block.values.iter().cloned())
+                .collect::<Vec<_>>(),
+            vec![vec![4.0], vec![10.0]]
+        );
+        assert_eq!(task_ids.lock().unwrap().len(), 2);
     }
 
     #[test]
@@ -9498,6 +10575,8 @@ mod tests {
                 values: vec![vec![1.0]],
                 target_names: vec!["y".to_string()],
             }],
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),

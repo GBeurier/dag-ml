@@ -21,6 +21,18 @@
         "$ref": "#/$defs/prediction_block"
       }
     },
+    "observation_predictions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/observation_prediction_block"
+      }
+    },
+    "aggregated_predictions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/aggregated_prediction_block"
+      }
+    },
     "shape_deltas": {
       "type": "array",
       "items": {
@@ -66,6 +78,9 @@
     },
     "prediction_partition": {
       "enum": ["train", "validation", "test", "final"]
+    },
+    "prediction_level": {
+      "enum": ["observation", "sample", "target", "group"]
     },
     "shape_delta_kind": {
       "enum": ["row", "feature", "target", "prediction"]
@@ -136,6 +151,127 @@
           "items": {
             "$ref": "#/$defs/non_empty_string"
           }
+        }
+      }
+    },
+    "observation_prediction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_node",
+        "partition",
+        "fold_id",
+        "observation_ids",
+        "values"
+      ],
+      "properties": {
+        "prediction_id": {
+          "type": ["string", "null"]
+        },
+        "producer_node": {
+          "$ref": "#/$defs/identifier"
+        },
+        "partition": {
+          "$ref": "#/$defs/prediction_partition"
+        },
+        "fold_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "observation_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "weights": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "target_names": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "aggregated_prediction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_node",
+        "partition",
+        "fold_id",
+        "level",
+        "unit_ids",
+        "values"
+      ],
+      "properties": {
+        "prediction_id": {
+          "type": ["string", "null"]
+        },
+        "producer_node": {
+          "$ref": "#/$defs/identifier"
+        },
+        "partition": {
+          "$ref": "#/$defs/prediction_partition"
+        },
+        "fold_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "level": {
+          "$ref": "#/$defs/prediction_level"
+        },
+        "unit_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/prediction_unit_id"
+          }
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "target_names": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "prediction_unit_id": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "id"],
+      "properties": {
+        "level": {
+          "enum": ["sample", "target", "group"]
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
         }
       }
     },
