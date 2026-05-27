@@ -135,6 +135,9 @@ Implemented:
 - CLI and C ABI entry points compile that DSL surface to validated graph JSON
   or graph+generation+shape+campaign artifact JSON, with branch/merge OOF,
   generation, data-binding, shape-plan and campaign-template smoke coverage;
+- CLI and C ABI can build a validated `ExecutionPlan` directly from a
+  `PipelineDslSpec` plus controller manifests, using the compiled campaign
+  template rather than requiring separate graph and campaign JSON files;
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate

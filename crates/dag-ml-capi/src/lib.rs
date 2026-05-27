@@ -436,6 +436,65 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_compile_artifact_json(
     }
 }
 
+/// Compiles a strict JSON `PipelineDslSpec` and controller manifests into
+/// validated `ExecutionPlan` JSON.
+///
+/// This is the direct non-Rust binding path for the DSL artifact: splits,
+/// generation, shape plans and data bindings are taken from the compiled
+/// campaign template, while controller resolution and planner invariants still
+/// run through Rust.
+///
+/// # Safety
+///
+/// Same pointer and output ownership rules as `dagml_execution_plan_build_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_pipeline_dsl_execution_plan_build_json(
+    dsl_ptr: *const u8,
+    dsl_len: usize,
+    controllers_ptr: *const u8,
+    controllers_len: usize,
+    plan_id: DagMlBytesView,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let dsl = match parse_json_ptr::<PipelineDslSpec>(dsl_ptr, dsl_len, error_out, "pipeline DSL") {
+        Ok(dsl) => dsl,
+        Err(status) => return status,
+    };
+    let manifests = match parse_json_ptr::<Vec<ControllerManifest>>(
+        controllers_ptr,
+        controllers_len,
+        error_out,
+        "controller manifests",
+    ) {
+        Ok(manifests) => manifests,
+        Err(status) => return status,
+    };
+    let plan_id = match parse_utf8_view(plan_id, error_out, "execution plan id") {
+        Ok(plan_id) => plan_id,
+        Err(status) => return status,
+    };
+    let registry = match controller_registry_from_manifests(manifests) {
+        Ok(registry) => registry,
+        Err(error) => return validation_error(error_out, error),
+    };
+    let compiled = match compile_pipeline_dsl_with_generation(&dsl) {
+        Ok(compiled) => compiled,
+        Err(error) => return validation_error(error_out, error),
+    };
+    match build_execution_plan(
+        plan_id,
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    ) {
+        Ok(plan) => write_owned_json(out_json, error_out, &plan),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
 /// Returns deterministic topological levels for parallel node scheduling.
 ///
 /// # Safety
@@ -588,16 +647,24 @@ unsafe fn dagml_execution_plan_build_json_impl(
         Ok(plan_id) => plan_id,
         Err(status) => return status,
     };
-    let mut registry = ControllerRegistry::new();
-    for manifest in manifests {
-        if let Err(error) = registry.register(manifest) {
-            return validation_error(error_out, error);
-        }
-    }
+    let registry = match controller_registry_from_manifests(manifests) {
+        Ok(registry) => registry,
+        Err(error) => return validation_error(error_out, error),
+    };
     match build_execution_plan(plan_id, graph, campaign, &registry) {
         Ok(plan) => write_owned_json(out_json, error_out, &plan),
         Err(error) => validation_error(error_out, error),
     }
+}
+
+fn controller_registry_from_manifests(
+    manifests: Vec<ControllerManifest>,
+) -> dag_ml_core::Result<ControllerRegistry> {
+    let mut registry = ControllerRegistry::new();
+    for manifest in manifests {
+        registry.register(manifest)?;
+    }
+    Ok(registry)
 }
 
 /// Validates a canonical JSON `SelectionPolicy`.
@@ -4605,6 +4672,47 @@ mod tests {
             artifact["campaign_template"]["data_bindings"],
             artifact["data_bindings"]
         );
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn builds_pipeline_dsl_execution_plan_over_abi() {
+        let dsl = include_bytes!("../../../examples/pipeline_dsl_coordinated_generation.json");
+        let manifests = include_bytes!("../../../examples/controller_manifests.json");
+        let plan_id = b"plan:cabi.dsl.coordinated";
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_pipeline_dsl_execution_plan_build_json(
+                dsl.as_ptr(),
+                dsl.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                DagMlBytesView {
+                    ptr: plan_id.as_ptr(),
+                    len: plan_id.len(),
+                },
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let plan: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(plan["id"], "plan:cabi.dsl.coordinated");
+        assert_eq!(plan["variants"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            plan["campaign"]["data_bindings"]["merge:stack.pred_plus_original.meta:ridge"][0]
+                ["input_name"],
+            "x_original"
+        );
+        assert!(plan["graph_plan"]["graph"]["search_space_fingerprint"]
+            .as_str()
+            .is_some());
         unsafe { dagml_owned_bytes_free(out) };
     }
 
