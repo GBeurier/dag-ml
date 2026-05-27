@@ -25,6 +25,11 @@ YAML frontends should be thin host-side serializers around the same importer.
   Python call-order side effects.
 - Runtime behavior belongs to controllers. The DSL records enough intent and
   contracts for Rust to reject unsafe execution and for bindings to route tasks.
+- Minimal aliases are the preferred frontend surface when an operator is
+  unambiguous. `SNV` should compile as an opaque transform payload; the Python
+  or native controller registry resolves it to the matching controller. Verbose
+  forms are reserved for parameters, explicit ids, controller hints or ambiguous
+  routing.
 
 ## Parity Matrix
 
@@ -43,7 +48,7 @@ YAML frontends should be thin host-side serializers around the same importer.
 | duplicated branches | `kind: "branch"`, `mode: "duplication"` | multiple branch predictions retained |
 | separation branches by source/metadata/tag/filter | `branch.mode`, `branch.selector`, per-branch selectors | graph intent compiled; controller/data-provider semantics remain host-side |
 | multiple models per branch | multiple `kind: "model"` steps inside a branch | compiled into distinct OOF inputs for downstream merge |
-| merge predictions/features/original data | `kind: "merge"`, `merge_mode`, `output_as`, `include_original_data`, `selectors` | compiled to join nodes with OOF prediction edges |
+| merge predictions/features/original data | `kind: "merge"`, `merge_mode`, `output_as`, `include_original_data`, `selectors` | compiled to join nodes with OOF prediction edges and branch data edges; `features`/`sources` consume transformed branch outputs, `all`/`mixed` can consume branch data plus OOF predictions plus original data |
 | merge plus immediate meta-model | `kind: "merge_model"` convenience | compiled as model consuming OOF prediction inputs and optional original data |
 | stacking, multi-model top-level stacks | repeated `model` steps then `merge`/`merge_model` | pending predictions are preserved until consumed |
 | per-branch/per-model selection (`best`, `top_k`, `all`) | `merge.selectors` with branch/model/input scopes | selector targets and `top_k`/metric requirements are compile-validated; scoring remains controller policy |
@@ -52,8 +57,8 @@ YAML frontends should be thin host-side serializers around the same importer.
 | `_range_`, `_log_range_`, `_grid_`, param `_or_`, `pick`, `arrange`, `count` | `variants`, explicit `generation_dimensions`, or compact `generators` on DSL nodes | compiled into deterministic `GenerationSpec` dimensions |
 | structural `_or_` over step chains | `kind: "generator"`, `mode: "or"`, `branches`, `pick`/`arrange`/`count` | expanded into explicit OOF-producing choices with namespaced node ids and generator metadata |
 | structural `_cartesian_` over pipeline stages | `kind: "generator"`, `mode: "cartesian"`, `stages` | expanded into explicit Cartesian OOF-producing choices with namespaced node ids and fold-safe downstream merge inputs |
-| serialized list/dict nirs4all surface | top-level `pipeline` array with `preprocessing`, `model`, `branch`, `merge`, `_or_`, `_cartesian_`, `_chain_`, `_grid_`, `_range_`, `_log_range_`, `_zip_`, `_sample_` | compatibility importer lowers to canonical DSL; data-only generator stages are fused with downstream model generators so OOF choices stay complete |
-| minimal aliases / plain operator refs | short strings plus `{"class": ...}`, `{"function": ...}`, `{"ref": ...}`, `{"type": ...}` and `{"name": ..., "step": ...}` wrappers | Rust infers only safe planning class: splitters become campaign split invocations, obvious estimators become model nodes, chart aliases become chart nodes, all other aliases remain external transform operators for host registry resolution |
+| serialized list/dict nirs4all surface | top-level `pipeline` array with `preprocessing`, `model`, `branch`, `merge`, `_or_`, `_cartesian_`, `_chain_`, `_grid_`, `_range_`, `_log_range_`, `_zip_`, `_sample_` | compatibility importer lowers to canonical DSL; data-only branch feature merges and merge dicts are compiled, and data-only generator stages are fused with downstream model generators so OOF choices stay complete |
+| minimal aliases / plain operator refs | short strings plus `{"class": ...}`, `{"function": ...}`, `{"ref": ...}`, `{"type": ...}` and `{"name": ..., "step": ...}` wrappers | Rust infers only safe planning class: splitters become campaign split invocations, obvious estimators become model nodes, chart aliases become chart nodes, all other aliases remain external transform operators for host registry/controller resolution |
 | multiple nirs4all splitter declarations | one campaign `split_invocation` with `params.compat_split_chain` | splitters remain outside graph nodes while preserving train/test + CV chains for host split controllers |
 | multisource data | `data_bindings.source_ids`, branch/source selectors, source joins | contract surface present; richer materialization belongs to dag-ml-data |
 | repetition/sample/group aggregation | top-level/shape `aggregation_policy`, target/group OOF cache contracts | core runtime implemented for sample/target/group OOF |
@@ -71,6 +76,9 @@ YAML frontends should be thin host-side serializers around the same importer.
   execution still needs host controller support for each operator family.
 - Separation branch materialization by source/metadata/tag/filter must be backed
   by explicit dag-ml-data view plans before it is considered runtime-complete.
+  The compiler now carries transformed branch data through `merge:
+  features/sources/all`, but selector-driven materialization still belongs to
+  provider/controller plans.
 - Merge selector scopes and basic selection contracts are compile-validated, and
   OOF edges are enforced; actual metric scoring and ranking remain the
   responsibility of selection and merge controllers.

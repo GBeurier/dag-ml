@@ -137,6 +137,12 @@ Implemented:
   child node ids are namespaced per generated choice to avoid graph collisions,
   and generator mode/choice labels are preserved as node metadata for
   controller-side selection/refit policy;
+- DSL branch compilation now carries transformed branch data outputs alongside
+  branch OOF predictions. `merge` modes `features`, `sources`, `all` and
+  `mixed` can build data/source/mixed joins from branch outputs, while
+  prediction-consuming merges still enforce OOF/fold-aligned prediction edges;
+  serialized nirs4all merge dictionaries preserve their raw merge policy in
+  metadata for host-side selection and scoring controllers;
 - the DSL parser now accepts serialized nirs4all-style list/dict JSON through a
   compatibility importer (`pipeline`, `preprocessing`, `model`, `branch`,
   `merge`, `_or_`, `_cartesian_`, `_chain_`, `_grid_`, `_range_`,
@@ -144,7 +150,7 @@ Implemented:
   canonical `PipelineDslSpec`; data-only preprocessing generators are fused
   with downstream model/generator stages before compilation so every expanded
   choice remains an OOF-producing branch;
-- that compatibility importer also accepts minimal aliases and plain operator
+- that compatibility importer prefers minimal aliases and also accepts plain operator
   references (`SNV`, `PLSRegression`, `chart_2d`, `{"class": ...}`,
   `{"function": ...}`, `{"name": ..., "step": ...}`); Rust only infers the
   safe planning category, keeps operators external for host controller

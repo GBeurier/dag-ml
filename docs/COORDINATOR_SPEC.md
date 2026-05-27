@@ -67,6 +67,14 @@ BLAST wrapper, aligner, filter predicate, augmenter, splitter.
 
 An operator is never owned by the Rust core.
 
+Frontend syntax should therefore prefer minimal opaque references when the
+operator is unambiguous. A bare `SNV` is compiled as a transform node whose
+operator payload remains `"SNV"`; a binding-side registry may instantiate the
+class and route it to a generic transformer controller. Verbose descriptors
+(`class`, `function`, explicit params, controller hints) are only required when
+the payload needs parameters or when registry routing would otherwise be
+ambiguous.
+
 ### Controller
 
 Binding-side or native adapter that knows how to call an operator. A Python

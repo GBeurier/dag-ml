@@ -36,8 +36,9 @@ mostly richer fixtures and replacing smoke adapters with production host
 controllers. The strict JSON `PipelineDslSpec` compiler now lowers linear
 transform/target-transform/tag/exclude/augmentation/model steps, explicit
 sample and feature augmentation, concat feature fusion, branch model variants,
-multiple models per branch, standalone merge/join nodes and heterogeneous
-prediction-plus-original-data merge models into canonical `GraphSpec`. It also
+multiple models per branch, data-only branch feature/source joins, standalone
+merge/join nodes and heterogeneous prediction-plus-original-data merge models
+into canonical `GraphSpec`. It also
 supports nirs4all-style sequential containers, sample-filter/filter aliases and
 structural `or`/`cartesian` generator containers by expanding them into
 explicit namespaced OOF-producing choices before downstream merge/selection.
@@ -62,14 +63,16 @@ fingerprints, current feature schema and emitted shape deltas; the Rust core
 now parses and validates that metadata through a typed `DataOutputProvenance`
 contract, and the JSON Schema/fixture are part of the local contract
 validation. The parser also accepts serialized nirs4all-style list/dict JSON
-and lowers it to the canonical DSL, including minimal aliases/plain
-`class`/`function` references, inline parameter generators, ignored comment
-steps, split chains as one campaign invocation, and fusion of data-only
-preprocessing generators with downstream model generators. That input surface
-is now a published Pipeline DSL contract with schema, C ABI discovery and C ABI
-validation helpers. The remaining DSL work is direct Python/YAML frontend
-serialization and production materialization semantics for transformed data
-instead of smoke-level adapter handles.
+and lowers it to the canonical DSL, including preferred minimal aliases,
+plain `class`/`function` references, inline parameter generators, ignored comment
+steps, split chains as one campaign invocation, nirs4all merge dictionaries for
+feature/all/source joins, and fusion of data-only preprocessing generators with
+downstream model generators. That input surface is now a published Pipeline DSL
+contract with schema, C ABI discovery and C ABI validation helpers. The
+remaining DSL work is direct Python/YAML frontend serialization, separation
+branch selector materialization through explicit data-provider view plans and
+production materialization semantics for transformed data instead of
+smoke-level adapter handles.
 
 ## Phase 2: Host Controllers
 
