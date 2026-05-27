@@ -2680,6 +2680,8 @@ pub struct DataProviderViewSpec {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+pub const DATA_OUTPUT_PROVENANCE_KEY: &str = "dag_ml_output";
+
 impl DataProviderViewSpec {
     pub fn validate(&self) -> Result<()> {
         validate_optional_ids("sample id", &self.sample_ids)?;
@@ -2710,8 +2712,116 @@ impl DataProviderViewSpec {
                 ));
             }
         }
+        self.output_provenance()?;
         Ok(())
     }
+
+    pub fn output_provenance(&self) -> Result<Option<DataOutputProvenance>> {
+        let Some(value) = self.extra.get(DATA_OUTPUT_PROVENANCE_KEY) else {
+            return Ok(None);
+        };
+        let provenance: DataOutputProvenance = serde_json::from_value(value.clone())?;
+        provenance.validate()?;
+        Ok(Some(provenance))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DataOutputProvenance {
+    pub producer_node: NodeId,
+    pub producer_port: String,
+    pub producer_phase: Phase,
+    #[serde(default)]
+    pub variant_id: Option<VariantId>,
+    #[serde(default)]
+    pub fold_id: Option<FoldId>,
+    #[serde(default)]
+    pub shape_plan_fingerprint: Option<String>,
+    #[serde(default)]
+    pub aggregation_policy_fingerprint: Option<String>,
+    #[serde(default)]
+    pub feature_namespace: Option<String>,
+    #[serde(default)]
+    pub feature_schema_fingerprint: Option<String>,
+    #[serde(default)]
+    pub shape_deltas: Vec<ShapeDelta>,
+}
+
+impl DataOutputProvenance {
+    pub fn validate(&self) -> Result<()> {
+        if self.producer_port.trim().is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data output provenance for `{}` has empty producer_port",
+                self.producer_node
+            )));
+        }
+        validate_optional_fingerprint(
+            "shape_plan_fingerprint",
+            &self.shape_plan_fingerprint,
+            &self.producer_node,
+        )?;
+        validate_optional_fingerprint(
+            "aggregation_policy_fingerprint",
+            &self.aggregation_policy_fingerprint,
+            &self.producer_node,
+        )?;
+        validate_optional_fingerprint(
+            "feature_schema_fingerprint",
+            &self.feature_schema_fingerprint,
+            &self.producer_node,
+        )?;
+        if self
+            .feature_namespace
+            .as_ref()
+            .is_some_and(|namespace| namespace.trim().is_empty())
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "data output provenance for `{}` has empty feature_namespace",
+                self.producer_node
+            )));
+        }
+        for delta in &self.shape_deltas {
+            delta.validate()?;
+            if delta.node_id != self.producer_node {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "data output provenance for `{}` contains shape delta for `{}`",
+                    self.producer_node, delta.node_id
+                )));
+            }
+        }
+        if let Some(feature_schema_fingerprint) = &self.feature_schema_fingerprint {
+            if let Some(last_feature_delta) = self
+                .shape_deltas
+                .iter()
+                .rev()
+                .find(|delta| delta.kind == ShapeDeltaKind::Feature)
+            {
+                if &last_feature_delta.after_fingerprint != feature_schema_fingerprint {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "data output provenance for `{}` has feature_schema_fingerprint `{feature_schema_fingerprint}` but last feature delta ends at `{}`",
+                        self.producer_node, last_feature_delta.after_fingerprint
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_optional_fingerprint(
+    label: &str,
+    fingerprint: &Option<String>,
+    producer_node: &NodeId,
+) -> Result<()> {
+    let Some(fingerprint) = fingerprint else {
+        return Ok(());
+    };
+    if fingerprint.len() != 64 || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "data output provenance for `{producer_node}` has invalid {label}"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_optional_ids<T>(label: &str, values: &Option<Vec<T>>) -> Result<()>
@@ -4480,8 +4590,6 @@ fn validation_data_view_key(input_name: &str) -> String {
     format!("{input_name}:validation")
 }
 
-const OUTPUT_DATA_VIEW_PROVENANCE_KEY: &str = "dag_ml_output";
-
 fn derive_output_data_views(
     plan: &ExecutionPlan,
     task: &NodeTask,
@@ -4533,70 +4641,43 @@ fn output_data_view_for_port(
     base_view: &DataProviderViewSpec,
 ) -> Result<DataProviderViewSpec> {
     let mut view = base_view.clone();
-    if view.extra.contains_key(OUTPUT_DATA_VIEW_PROVENANCE_KEY) {
+    if view.extra.contains_key(DATA_OUTPUT_PROVENANCE_KEY) {
         return Err(DagMlError::RuntimeValidation(format!(
-            "node `{}` cannot propagate data output `{port_name}` because input view metadata already contains reserved key `{OUTPUT_DATA_VIEW_PROVENANCE_KEY}`",
+            "node `{}` cannot propagate data output `{port_name}` because input view metadata already contains reserved key `{DATA_OUTPUT_PROVENANCE_KEY}`",
             task.node_plan.node_id
         )));
     }
-    let mut provenance = serde_json::Map::new();
-    provenance.insert(
-        "producer_node".to_string(),
-        serde_json::Value::String(task.node_plan.node_id.to_string()),
-    );
-    provenance.insert(
-        "producer_port".to_string(),
-        serde_json::Value::String(port_name.to_string()),
-    );
-    provenance.insert(
-        "producer_phase".to_string(),
-        serde_json::to_value(task.phase)?,
-    );
-    provenance.insert(
-        "variant_id".to_string(),
-        serde_json::to_value(&task.variant_id)?,
-    );
-    provenance.insert("fold_id".to_string(), serde_json::to_value(&task.fold_id)?);
-
-    if let Some(shape_plan) = &task.node_plan.shape_plan {
-        provenance.insert(
-            "shape_plan_fingerprint".to_string(),
-            serde_json::Value::String(stable_json_fingerprint(shape_plan)?),
-        );
-        provenance.insert(
-            "aggregation_policy_fingerprint".to_string(),
-            serde_json::Value::String(stable_json_fingerprint(&shape_plan.aggregation_policy)?),
-        );
-        if let Some(namespace) = &shape_plan.feature_namespace {
-            provenance.insert(
-                "feature_namespace".to_string(),
-                serde_json::Value::String(namespace.clone()),
-            );
-        }
-        if let Some(fingerprint) = output_feature_schema_fingerprint(shape_plan, result) {
-            provenance.insert(
-                "feature_schema_fingerprint".to_string(),
-                serde_json::Value::String(fingerprint),
-            );
-        }
-    }
-
     let shape_deltas = result
         .shape_deltas
         .iter()
         .filter(|delta| delta.node_id == task.node_plan.node_id)
         .cloned()
         .collect::<Vec<_>>();
-    if !shape_deltas.is_empty() {
-        provenance.insert(
-            "shape_deltas".to_string(),
-            serde_json::to_value(&shape_deltas)?,
-        );
+    let mut provenance = DataOutputProvenance {
+        producer_node: task.node_plan.node_id.clone(),
+        producer_port: port_name.to_string(),
+        producer_phase: task.phase,
+        variant_id: task.variant_id.clone(),
+        fold_id: task.fold_id.clone(),
+        shape_plan_fingerprint: None,
+        aggregation_policy_fingerprint: None,
+        feature_namespace: None,
+        feature_schema_fingerprint: None,
+        shape_deltas,
+    };
+    if let Some(shape_plan) = &task.node_plan.shape_plan {
+        provenance.shape_plan_fingerprint = Some(stable_json_fingerprint(shape_plan)?);
+        provenance.aggregation_policy_fingerprint =
+            Some(stable_json_fingerprint(&shape_plan.aggregation_policy)?);
+        provenance.feature_namespace = shape_plan.feature_namespace.clone();
+        provenance.feature_schema_fingerprint =
+            output_feature_schema_fingerprint(shape_plan, result);
     }
+    provenance.validate()?;
 
     view.extra.insert(
-        OUTPUT_DATA_VIEW_PROVENANCE_KEY.to_string(),
-        serde_json::Value::Object(provenance),
+        DATA_OUTPUT_PROVENANCE_KEY.to_string(),
+        serde_json::to_value(provenance)?,
     );
     view.validate()?;
     Ok(view)
@@ -8465,33 +8546,23 @@ mod tests {
                 .expect("validation propagated data view");
             for view in [primary, validation] {
                 let provenance = view
-                    .extra
-                    .get(OUTPUT_DATA_VIEW_PROVENANCE_KEY)
-                    .and_then(serde_json::Value::as_object)
+                    .output_provenance()
+                    .unwrap()
                     .expect("output data provenance metadata");
                 assert_eq!(
-                    provenance.get("producer_node"),
-                    Some(&serde_json::Value::String("augment:noise".to_string()))
+                    provenance.producer_node,
+                    NodeId::new("augment:noise").unwrap()
+                );
+                assert_eq!(provenance.producer_port, "x_out");
+                assert_eq!(
+                    provenance.shape_plan_fingerprint,
+                    Some(shape_plan_fingerprint.clone())
                 );
                 assert_eq!(
-                    provenance.get("producer_port"),
-                    Some(&serde_json::Value::String("x_out".to_string()))
+                    provenance.feature_schema_fingerprint,
+                    Some(after_feature_schema.clone())
                 );
-                assert_eq!(
-                    provenance.get("shape_plan_fingerprint"),
-                    Some(&serde_json::Value::String(shape_plan_fingerprint.clone()))
-                );
-                assert_eq!(
-                    provenance.get("feature_schema_fingerprint"),
-                    Some(&serde_json::Value::String(after_feature_schema.clone()))
-                );
-                assert_eq!(
-                    provenance
-                        .get("shape_deltas")
-                        .and_then(serde_json::Value::as_array)
-                        .map(Vec::len),
-                    Some(1)
-                );
+                assert_eq!(provenance.shape_deltas.len(), 1);
             }
         }
         let samples_by_fold = ctx
@@ -8548,6 +8619,83 @@ mod tests {
         assert!(
             error.contains("outside its validation view"),
             "unexpected propagated-view validation error: {error}"
+        );
+    }
+
+    #[test]
+    fn data_provider_view_validates_typed_output_provenance() {
+        let producer = NodeId::new("augment:noise").unwrap();
+        let before_feature_schema = "a".repeat(64);
+        let after_feature_schema = "b".repeat(64);
+        let provenance = DataOutputProvenance {
+            producer_node: producer.clone(),
+            producer_port: "x_out".to_string(),
+            producer_phase: Phase::FitCv,
+            variant_id: Some(VariantId::new("variant:base").unwrap()),
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            shape_plan_fingerprint: Some("c".repeat(64)),
+            aggregation_policy_fingerprint: Some("d".repeat(64)),
+            feature_namespace: Some("augmented.noise".to_string()),
+            feature_schema_fingerprint: Some(after_feature_schema.clone()),
+            shape_deltas: vec![ShapeDelta {
+                node_id: producer.clone(),
+                kind: ShapeDeltaKind::Feature,
+                before_fingerprint: before_feature_schema,
+                after_fingerprint: after_feature_schema,
+                metadata: BTreeMap::new(),
+            }],
+        };
+        let mut view = DataProviderViewSpec {
+            sample_ids: Some(vec![SampleId::new("s1").unwrap()]),
+            partition: DataRequestPartition::FoldTrain,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            source_ids: None,
+            columns: None,
+            include_augmented: true,
+            include_excluded: false,
+            extra: BTreeMap::from([(
+                DATA_OUTPUT_PROVENANCE_KEY.to_string(),
+                serde_json::to_value(&provenance).unwrap(),
+            )]),
+        };
+
+        assert_eq!(view.output_provenance().unwrap(), Some(provenance.clone()));
+        view.validate().unwrap();
+
+        let mut empty_port = provenance.clone();
+        empty_port.producer_port.clear();
+        view.extra.insert(
+            DATA_OUTPUT_PROVENANCE_KEY.to_string(),
+            serde_json::to_value(empty_port).unwrap(),
+        );
+        let error = view.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("empty producer_port"),
+            "unexpected empty-port provenance error: {error}"
+        );
+
+        let mut wrong_delta_node = provenance.clone();
+        wrong_delta_node.shape_deltas[0].node_id = NodeId::new("augment:other").unwrap();
+        view.extra.insert(
+            DATA_OUTPUT_PROVENANCE_KEY.to_string(),
+            serde_json::to_value(wrong_delta_node).unwrap(),
+        );
+        let error = view.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("contains shape delta"),
+            "unexpected wrong-delta-node provenance error: {error}"
+        );
+
+        let mut wrong_feature_fingerprint = provenance;
+        wrong_feature_fingerprint.feature_schema_fingerprint = Some("e".repeat(64));
+        view.extra.insert(
+            DATA_OUTPUT_PROVENANCE_KEY.to_string(),
+            serde_json::to_value(wrong_feature_fingerprint).unwrap(),
+        );
+        let error = view.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("last feature delta"),
+            "unexpected feature-fingerprint provenance error: {error}"
         );
     }
 
