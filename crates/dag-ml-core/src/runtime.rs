@@ -856,6 +856,45 @@ impl InMemoryPredictionStore {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct InMemoryAggregatedPredictionStore {
+    blocks: Vec<AggregatedPredictionBlock>,
+}
+
+impl InMemoryAggregatedPredictionStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn append(&mut self, block: AggregatedPredictionBlock) -> Result<()> {
+        block.validate_shape()?;
+        self.blocks.push(block);
+        Ok(())
+    }
+
+    pub fn blocks(&self) -> &[AggregatedPredictionBlock] {
+        &self.blocks
+    }
+
+    pub fn find(
+        &self,
+        producer_node: Option<&NodeId>,
+        phase_partition: Option<&PredictionPartition>,
+        fold_id: Option<&FoldId>,
+        prediction_level: Option<PredictionLevel>,
+    ) -> Vec<&AggregatedPredictionBlock> {
+        self.blocks
+            .iter()
+            .filter(|block| {
+                producer_node.is_none_or(|node_id| &block.producer_node == node_id)
+                    && phase_partition.is_none_or(|partition| &block.partition == partition)
+                    && fold_id.is_none_or(|requested| block.fold_id.as_ref() == Some(requested))
+                    && prediction_level.is_none_or(|level| block.level == level)
+            })
+            .collect()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PredictionCacheMaterializationRequest {
     pub run_id: RunId,
@@ -3152,6 +3191,7 @@ pub struct RunContext {
     pub root_seed: Option<u64>,
     pub variant_id: Option<VariantId>,
     pub prediction_store: InMemoryPredictionStore,
+    pub aggregated_prediction_store: InMemoryAggregatedPredictionStore,
     pub lineage: InMemoryLineageRecorder,
 }
 
@@ -3162,6 +3202,7 @@ impl RunContext {
             root_seed,
             variant_id: None,
             prediction_store: InMemoryPredictionStore::new(),
+            aggregated_prediction_store: InMemoryAggregatedPredictionStore::new(),
             lineage: InMemoryLineageRecorder::new(),
         }
     }
@@ -3627,6 +3668,9 @@ impl SequentialScheduler {
                 for prediction in &result.predictions {
                     ctx.prediction_store.append(prediction.clone())?;
                 }
+                for prediction in &result.aggregated_predictions {
+                    ctx.aggregated_prediction_store.append(prediction.clone())?;
+                }
                 ctx.lineage.record(result.lineage.clone())?;
                 let data_views = derive_output_data_views(plan, &task, &result)?;
                 output_handles.insert(node_id.clone(), result.outputs.clone());
@@ -4076,6 +4120,9 @@ impl ParallelScheduler {
                     for prediction in &result.predictions {
                         ctx.prediction_store.append(prediction.clone())?;
                     }
+                    for prediction in &result.aggregated_predictions {
+                        ctx.aggregated_prediction_store.append(prediction.clone())?;
+                    }
                     ctx.lineage.record(result.lineage.clone())?;
                     let data_views = derive_output_data_views(plan, &prepared_task.task, &result)?;
                     output_handles.insert(prepared_task.node_id.clone(), result.outputs.clone());
@@ -4265,8 +4312,54 @@ fn coordinator_relations_for_task(
     task: &NodeTask,
     resources: &PhaseScopeResources<'_>,
 ) -> Result<SampleRelationSet> {
+    coordinator_relations_for_node(&task.node_plan, resources)?.ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "node `{}` needs coordinator relations for prediction aggregation but no matching data provider/envelope carries relations",
+            task.node_plan.node_id
+        ))
+    })
+}
+
+fn coordinator_relations_for_edge(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    resources: &PhaseScopeResources<'_>,
+) -> Result<SampleRelationSet> {
+    let target_plan = plan.node_plans.get(&edge.target.node_id).ok_or_else(|| {
+        DagMlError::Planning(format!(
+            "OOF edge target node `{}` has no node plan",
+            edge.target.node_id
+        ))
+    })?;
+    if let Some(relations) = coordinator_relations_for_node(target_plan, resources)? {
+        return Ok(relations);
+    }
+
+    let source_plan = plan.node_plans.get(&edge.source.node_id).ok_or_else(|| {
+        DagMlError::Planning(format!(
+            "OOF edge source node `{}` has no node plan",
+            edge.source.node_id
+        ))
+    })?;
+    if let Some(relations) = coordinator_relations_for_node(source_plan, resources)? {
+        return Ok(relations);
+    }
+
+    Err(DagMlError::RuntimeValidation(format!(
+        "edge `{}.{}` -> `{}.{}` needs coordinator relations for aggregated OOF validation but neither endpoint has a relation-carrying data binding",
+        edge.source.node_id,
+        edge.source.port_name,
+        edge.target.node_id,
+        edge.target.port_name
+    )))
+}
+
+fn coordinator_relations_for_node(
+    node_plan: &NodePlan,
+    resources: &PhaseScopeResources<'_>,
+) -> Result<Option<SampleRelationSet>> {
     let mut selected: Option<SampleRelationSet> = None;
-    for binding in &task.node_plan.data_bindings {
+    for binding in &node_plan.data_bindings {
         if !binding.require_relations && binding.relation_fingerprint.is_none() {
             continue;
         }
@@ -4289,19 +4382,14 @@ fn coordinator_relations_for_task(
             if previous != &relations {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "node `{}` has multiple non-identical coordinator relation sets",
-                    task.node_plan.node_id
+                    node_plan.node_id
                 )));
             }
         } else {
             selected = Some(relations);
         }
     }
-    selected.ok_or_else(|| {
-        DagMlError::RuntimeValidation(format!(
-            "node `{}` needs coordinator relations for prediction aggregation but no matching data provider/envelope carries relations",
-            task.node_plan.node_id
-        ))
-    })
+    Ok(selected)
 }
 
 fn requested_sample_order_for_observation_block(
@@ -4656,15 +4744,44 @@ fn collect_oof_prediction_input(
             }
         }
     }
+    let source_plan = plan
+        .node_plans
+        .get(&edge.source.node_id)
+        .expect("edge source has a node plan");
+    let prediction_level = oof_prediction_level_for_source(source_plan);
+    if prediction_level != PredictionLevel::Sample {
+        let blocks = match scope.phase {
+            Phase::FitCv => validate_fit_cv_aggregated_oof_edge(
+                plan,
+                edge,
+                ctx,
+                scope,
+                resources,
+                prediction_level,
+            )?,
+            Phase::Refit => {
+                validate_refit_aggregated_oof_edge(plan, edge, ctx, resources, prediction_level)?
+            }
+            _ => Vec::new(),
+        };
+        let handle = materialize_oof_prediction_handle(
+            plan,
+            edge,
+            ctx,
+            scope,
+            resources,
+            &source_plan.controller_id,
+        )?;
+        return Ok(CollectedPredictionInput {
+            handle,
+            spec: aggregated_prediction_input_spec(edge, scope, prediction_level, &blocks)?,
+        });
+    }
     let blocks = match scope.phase {
         Phase::FitCv => validate_fit_cv_oof_edge(plan, edge, ctx, scope)?,
         Phase::Refit => validate_refit_oof_edge(plan, edge, ctx)?,
         _ => Vec::new(),
     };
-    let source_plan = plan
-        .node_plans
-        .get(&edge.source.node_id)
-        .expect("edge source has a node plan");
     let handle = materialize_oof_prediction_handle(
         plan,
         edge,
@@ -4677,6 +4794,14 @@ fn collect_oof_prediction_input(
         handle,
         spec: prediction_input_spec(edge, scope, &blocks)?,
     })
+}
+
+fn oof_prediction_level_for_source(source_plan: &NodePlan) -> PredictionLevel {
+    source_plan
+        .shape_plan
+        .as_ref()
+        .map(|shape_plan| shape_plan.aggregation_policy.aggregation_level)
+        .unwrap_or(PredictionLevel::Sample)
 }
 
 fn replay_prediction_cache_contract_for_edge<'a>(
@@ -4796,6 +4921,107 @@ fn validate_refit_oof_edge<'a>(
     Ok(blocks)
 }
 
+fn validate_fit_cv_aggregated_oof_edge<'a>(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &'a RunContext,
+    scope: &PhaseScope,
+    resources: &PhaseScopeResources<'_>,
+    prediction_level: PredictionLevel,
+) -> Result<Vec<&'a AggregatedPredictionBlock>> {
+    let fold_id = scope.fold_id.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "edge `{}.{}` -> `{}.{}` requires aggregated OOF predictions but FIT_CV has no fold scope",
+            edge.source.node_id, edge.source.port_name, edge.target.node_id, edge.target.port_name
+        ))
+    })?;
+    let blocks = ctx.aggregated_prediction_store.find(
+        Some(&edge.source.node_id),
+        Some(&PredictionPartition::Validation),
+        Some(fold_id),
+        Some(prediction_level),
+    );
+    if blocks.is_empty() {
+        return Err(missing_oof_edge_error(edge, Some(fold_id)));
+    }
+    validate_aggregated_blocks_basic(edge, prediction_level, &blocks)?;
+    if edge.contract.requires_fold_alignment {
+        let fold_set = required_fold_set_for_oof(plan, edge)?;
+        let relations = coordinator_relations_for_edge(plan, edge, resources)?;
+        validate_aggregated_oof_blocks_match_fold(
+            edge,
+            fold_set,
+            &relations,
+            prediction_level,
+            fold_id,
+            &blocks,
+        )?;
+    }
+    Ok(blocks)
+}
+
+fn validate_refit_aggregated_oof_edge<'a>(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &'a RunContext,
+    resources: &PhaseScopeResources<'_>,
+    prediction_level: PredictionLevel,
+) -> Result<Vec<&'a AggregatedPredictionBlock>> {
+    let blocks = ctx.aggregated_prediction_store.find(
+        Some(&edge.source.node_id),
+        Some(&PredictionPartition::Validation),
+        None,
+        Some(prediction_level),
+    );
+    if blocks.is_empty() {
+        return Err(missing_oof_edge_error(edge, None));
+    }
+    validate_aggregated_blocks_basic(edge, prediction_level, &blocks)?;
+    if edge.contract.requires_fold_alignment {
+        let fold_set = required_fold_set_for_oof(plan, edge)?;
+        let relations = coordinator_relations_for_edge(plan, edge, resources)?;
+        validate_aggregated_oof_blocks_cover_fold_set(
+            edge,
+            fold_set,
+            &relations,
+            prediction_level,
+            &blocks,
+        )?;
+    }
+    Ok(blocks)
+}
+
+fn validate_aggregated_blocks_basic(
+    edge: &EdgeSpec,
+    prediction_level: PredictionLevel,
+    blocks: &[&AggregatedPredictionBlock],
+) -> Result<()> {
+    for block in blocks {
+        block.validate_shape()?;
+        if block.partition != PredictionPartition::Validation {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` selected non-validation aggregated predictions",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+        if block.level != prediction_level {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` selected {:?} aggregated predictions, expected {:?}",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name,
+                block.level,
+                prediction_level
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn prediction_input_spec(
     edge: &EdgeSpec,
     scope: &PhaseScope,
@@ -4859,6 +5085,71 @@ fn prediction_input_spec(
             .map(PredictionUnitId::Sample)
             .collect(),
         sample_ids,
+        prediction_width: prediction_width.unwrap_or_default(),
+        target_names: target_names.unwrap_or_default(),
+    })
+}
+
+fn aggregated_prediction_input_spec(
+    edge: &EdgeSpec,
+    scope: &PhaseScope,
+    prediction_level: PredictionLevel,
+    blocks: &[&AggregatedPredictionBlock],
+) -> Result<PredictionInputSpec> {
+    let unit_ids = collect_unique_aggregated_oof_units(edge, prediction_level, blocks)?
+        .into_iter()
+        .collect::<Vec<_>>();
+    let fold_ids = blocks
+        .iter()
+        .filter_map(|block| block.fold_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut prediction_width = None;
+    let mut target_names = None;
+    for block in blocks {
+        let width = block.validate_shape()?;
+        let block_target_names = if block.target_names.is_empty() {
+            (0..width)
+                .map(|index| format!("p{index}"))
+                .collect::<Vec<_>>()
+        } else {
+            block.target_names.clone()
+        };
+        if prediction_width.is_some_and(|expected| expected != width) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` aggregated OOF prediction width is not stable across folds",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+        if target_names
+            .as_ref()
+            .is_some_and(|expected| expected != &block_target_names)
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` aggregated OOF target names are not stable across folds",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+        prediction_width = Some(width);
+        target_names = Some(block_target_names);
+    }
+    Ok(PredictionInputSpec {
+        producer_node: edge.source.node_id.clone(),
+        source_port: edge.source.port_name.clone(),
+        target_port: edge.target.port_name.clone(),
+        partition: PredictionPartition::Validation,
+        prediction_level,
+        fold_id: scope.fold_id.clone(),
+        fold_ids,
+        unit_ids,
+        sample_ids: Vec::new(),
         prediction_width: prediction_width.unwrap_or_default(),
         target_names: target_names.unwrap_or_default(),
     })
@@ -5014,6 +5305,193 @@ fn validate_oof_blocks_cover_fold_set(
     Ok(())
 }
 
+fn validate_aggregated_oof_blocks_match_fold(
+    edge: &EdgeSpec,
+    fold_set: &FoldSet,
+    relations: &SampleRelationSet,
+    prediction_level: PredictionLevel,
+    fold_id: &FoldId,
+    blocks: &[&AggregatedPredictionBlock],
+) -> Result<()> {
+    let fold = fold_set
+        .folds
+        .iter()
+        .find(|fold| &fold.fold_id == fold_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` references unknown fold `{fold_id}`",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            ))
+        })?;
+    validate_aggregated_fold_unit_safety(edge, relations, prediction_level, fold)?;
+    for block in blocks {
+        if block.fold_id.as_ref() != Some(fold_id) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` selected aggregated OOF predictions outside fold `{fold_id}`",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+    }
+    let actual = collect_unique_aggregated_oof_units(edge, prediction_level, blocks)?;
+    let expected = expected_prediction_units_for_samples(
+        edge,
+        relations,
+        prediction_level,
+        &fold.validation_sample_ids,
+    )?;
+    if actual != expected {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "edge `{}.{}` -> `{}.{}` aggregated OOF predictions do not match {:?} validation units for fold `{fold_id}`",
+            edge.source.node_id,
+            edge.source.port_name,
+            edge.target.node_id,
+            edge.target.port_name,
+            prediction_level
+        )));
+    }
+    Ok(())
+}
+
+fn validate_aggregated_oof_blocks_cover_fold_set(
+    edge: &EdgeSpec,
+    fold_set: &FoldSet,
+    relations: &SampleRelationSet,
+    prediction_level: PredictionLevel,
+    blocks: &[&AggregatedPredictionBlock],
+) -> Result<()> {
+    let folds = fold_set
+        .folds
+        .iter()
+        .map(|fold| (fold.fold_id.clone(), fold))
+        .collect::<BTreeMap<_, _>>();
+    let mut blocks_by_fold = BTreeMap::<FoldId, Vec<&AggregatedPredictionBlock>>::new();
+    for block in blocks {
+        let fold_id = block.fold_id.as_ref().ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` has aggregated OOF predictions without a fold id",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            ))
+        })?;
+        if !folds.contains_key(fold_id) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` references unknown fold `{fold_id}`",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+        blocks_by_fold
+            .entry(fold_id.clone())
+            .or_default()
+            .push(*block);
+    }
+    for fold_id in folds.keys() {
+        if !blocks_by_fold.contains_key(fold_id) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` is missing aggregated OOF predictions for fold `{fold_id}`",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+    }
+
+    let mut all_units = BTreeSet::new();
+    for (fold_id, fold_blocks) in blocks_by_fold {
+        let fold = folds.get(&fold_id).expect("fold id was validated above");
+        validate_aggregated_fold_unit_safety(edge, relations, prediction_level, fold)?;
+        let fold_units = collect_unique_aggregated_oof_units(edge, prediction_level, &fold_blocks)?;
+        let expected = expected_prediction_units_for_samples(
+            edge,
+            relations,
+            prediction_level,
+            &fold.validation_sample_ids,
+        )?;
+        if fold_units != expected {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` aggregated OOF predictions do not match {:?} validation units for fold `{fold_id}`",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name,
+                prediction_level
+            )));
+        }
+        for unit_id in fold_units {
+            if !all_units.insert(unit_id.clone()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "edge `{}.{}` -> `{}.{}` has duplicate aggregated OOF prediction for unit `{unit_id}`",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name
+                )));
+            }
+        }
+    }
+
+    let expected_all = expected_prediction_units_for_samples(
+        edge,
+        relations,
+        prediction_level,
+        &fold_set.sample_ids,
+    )?;
+    if all_units != expected_all {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "edge `{}.{}` -> `{}.{}` aggregated OOF predictions do not cover the refit {:?} unit universe",
+            edge.source.node_id,
+            edge.source.port_name,
+            edge.target.node_id,
+            edge.target.port_name,
+            prediction_level
+        )));
+    }
+    Ok(())
+}
+
+fn validate_aggregated_fold_unit_safety(
+    edge: &EdgeSpec,
+    relations: &SampleRelationSet,
+    prediction_level: PredictionLevel,
+    fold: &FoldAssignment,
+) -> Result<()> {
+    let train_units = expected_prediction_units_for_samples(
+        edge,
+        relations,
+        prediction_level,
+        &fold.train_sample_ids,
+    )?;
+    let validation_units = expected_prediction_units_for_samples(
+        edge,
+        relations,
+        prediction_level,
+        &fold.validation_sample_ids,
+    )?;
+    if let Some(unit_id) = train_units.intersection(&validation_units).next() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "edge `{}.{}` -> `{}.{}` fold `{}` has {:?} unit `{unit_id}` in both train and validation partitions",
+            edge.source.node_id,
+            edge.source.port_name,
+            edge.target.node_id,
+            edge.target.port_name,
+            fold.fold_id,
+            prediction_level
+        )));
+    }
+    Ok(())
+}
+
 fn collect_unique_oof_samples(
     edge: &EdgeSpec,
     blocks: &[&PredictionBlock],
@@ -5042,6 +5520,102 @@ fn collect_unique_oof_samples(
         }
     }
     Ok(samples)
+}
+
+fn collect_unique_aggregated_oof_units(
+    edge: &EdgeSpec,
+    prediction_level: PredictionLevel,
+    blocks: &[&AggregatedPredictionBlock],
+) -> Result<BTreeSet<PredictionUnitId>> {
+    let mut unit_ids = BTreeSet::new();
+    for block in blocks {
+        block.validate_shape()?;
+        if block.partition != PredictionPartition::Validation {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` selected non-validation aggregated predictions",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name
+            )));
+        }
+        if block.level != prediction_level {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` selected {:?} aggregated predictions, expected {:?}",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name,
+                block.level,
+                prediction_level
+            )));
+        }
+        for unit_id in &block.unit_ids {
+            if !unit_ids.insert(unit_id.clone()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "edge `{}.{}` -> `{}.{}` has duplicate aggregated OOF prediction for unit `{unit_id}`",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name
+                )));
+            }
+        }
+    }
+    Ok(unit_ids)
+}
+
+fn expected_prediction_units_for_samples(
+    edge: &EdgeSpec,
+    relations: &SampleRelationSet,
+    prediction_level: PredictionLevel,
+    sample_ids: &[SampleId],
+) -> Result<BTreeSet<PredictionUnitId>> {
+    sample_ids
+        .iter()
+        .map(|sample_id| prediction_unit_for_sample(edge, relations, prediction_level, sample_id))
+        .collect()
+}
+
+fn prediction_unit_for_sample(
+    edge: &EdgeSpec,
+    relations: &SampleRelationSet,
+    prediction_level: PredictionLevel,
+    sample_id: &SampleId,
+) -> Result<PredictionUnitId> {
+    match prediction_level {
+        PredictionLevel::Sample => Ok(PredictionUnitId::Sample(sample_id.clone())),
+        PredictionLevel::Target => relations
+            .target_for_sample(sample_id)
+            .cloned()
+            .map(PredictionUnitId::Target)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "edge `{}.{}` -> `{}.{}` needs target-level OOF predictions but sample `{sample_id}` has no target relation",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name
+                ))
+            }),
+        PredictionLevel::Group => relations
+            .group_for_sample(sample_id)
+            .cloned()
+            .map(PredictionUnitId::Group)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "edge `{}.{}` -> `{}.{}` needs group-level OOF predictions but sample `{sample_id}` has no group relation",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name
+                ))
+            }),
+        PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(format!(
+            "edge `{}.{}` -> `{}.{}` cannot consume observation-level OOF predictions from sample folds",
+            edge.source.node_id, edge.source.port_name, edge.target.node_id, edge.target.port_name
+        ))),
+    }
 }
 
 fn deterministic_oof_handle(
@@ -6351,6 +6925,186 @@ mod tests {
         }
     }
 
+    struct GroupAggregatedOofController {
+        id: ControllerId,
+    }
+
+    impl RuntimeController for GroupAggregatedOofController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            if task.node_plan.node_id.as_str() == "model:meta" {
+                validate_group_oof_prediction_input(task)?;
+            }
+
+            let observation_predictions =
+                if task.node_plan.node_id.as_str() == "model:base" && task.phase == Phase::FitCv {
+                    let (observation_ids, values) =
+                        match task.fold_id.as_ref().map(ToString::to_string).as_deref() {
+                            Some("fold:0") => (
+                                vec![
+                                    ObservationId::new("obs.S001.base").unwrap(),
+                                    ObservationId::new("obs.S001.rep1").unwrap(),
+                                ],
+                                vec![vec![2.0], vec![6.0]],
+                            ),
+                            Some("fold:1") => (
+                                vec![ObservationId::new("obs.S002.base").unwrap()],
+                                vec![vec![10.0]],
+                            ),
+                            _ => (Vec::new(), Vec::new()),
+                        };
+                    if observation_ids.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![ObservationPredictionBlock {
+                            prediction_id: Some(format!(
+                                "pred:group-oof:{}",
+                                task.fold_id
+                                    .as_ref()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_else(|| "nofold".to_string())
+                            )),
+                            producer_node: task.node_plan.node_id.clone(),
+                            partition: PredictionPartition::Validation,
+                            fold_id: task.fold_id.clone(),
+                            observation_ids,
+                            values,
+                            weights: Vec::new(),
+                            target_names: vec!["y".to_string()],
+                        }]
+                    }
+                } else {
+                    Vec::new()
+                };
+
+            let handle_id = if task.node_plan.node_id.as_str() == "model:base" {
+                707
+            } else {
+                808
+            };
+            Ok(NodeResult {
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([(
+                    "pred".to_string(),
+                    HandleRef {
+                        handle: handle_id,
+                        kind: HandleKind::Prediction,
+                        owner_controller: self.id.clone(),
+                    },
+                )]),
+                predictions: Vec::new(),
+                observation_predictions,
+                aggregated_predictions: Vec::new(),
+                shape_deltas: Vec::new(),
+                artifacts: Vec::new(),
+                artifact_handles: BTreeMap::new(),
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:group-oof:{}:{}:{:?}",
+                        task.node_plan.node_id,
+                        task.fold_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "nofold".to_string()),
+                        task.phase
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: task
+                        .node_plan
+                        .shape_plan
+                        .as_ref()
+                        .map(stable_json_fingerprint)
+                        .transpose()?,
+                    aggregation_policy_fingerprint: task
+                        .node_plan
+                        .shape_plan
+                        .as_ref()
+                        .map(|shape_plan| stable_json_fingerprint(&shape_plan.aggregation_policy))
+                        .transpose()?,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
+    fn validate_group_oof_prediction_input(task: &NodeTask) -> Result<()> {
+        let handle = task.input_handles.get("model:base.pred").ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "meta node did not receive group OOF prediction input".to_string(),
+            )
+        })?;
+        if handle.kind != HandleKind::Prediction {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "meta node received {:?} instead of group OOF prediction input",
+                handle.kind
+            )));
+        }
+        let prediction_input = task
+            .prediction_inputs
+            .get("model:base.pred")
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "meta node did not receive group OOF prediction input spec".to_string(),
+                )
+            })?;
+        let fold0 = FoldId::new("fold:0").unwrap();
+        let fold1 = FoldId::new("fold:1").unwrap();
+        let plant_a = PredictionUnitId::Group(GroupId::new("plant.A").unwrap());
+        let plant_b = PredictionUnitId::Group(GroupId::new("plant.B").unwrap());
+        let (expected_fold_id, expected_fold_ids, expected_unit_ids) = match task.phase {
+            Phase::FitCv => match task.fold_id.as_ref().map(ToString::to_string).as_deref() {
+                Some("fold:0") => (Some(fold0.clone()), vec![fold0], vec![plant_a]),
+                Some("fold:1") => (Some(fold1.clone()), vec![fold1], vec![plant_b]),
+                other => {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "unexpected group OOF fold scope {other:?}"
+                    )));
+                }
+            },
+            Phase::Refit => (None, vec![fold0, fold1], vec![plant_a, plant_b]),
+            _ => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "unexpected group OOF phase {:?}",
+                    task.phase
+                )));
+            }
+        };
+        if prediction_input.producer_node.as_str() != "model:base"
+            || prediction_input.source_port != "pred"
+            || prediction_input.target_port != "pred"
+            || prediction_input.partition != PredictionPartition::Validation
+            || prediction_input.prediction_level != PredictionLevel::Group
+            || prediction_input.fold_id != expected_fold_id
+            || prediction_input.fold_ids != expected_fold_ids
+            || prediction_input.unit_ids != expected_unit_ids
+            || !prediction_input.sample_ids.is_empty()
+            || prediction_input.prediction_width != 1
+            || prediction_input.target_names != vec!["y".to_string()]
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "meta node received invalid group OOF spec: {:?}",
+                prediction_input
+            )));
+        }
+        Ok(())
+    }
+
     struct CustomAggregationController {
         id: ControllerId,
         task_ids: Arc<Mutex<Vec<String>>>,
@@ -6784,6 +7538,122 @@ mod tests {
             &registry,
         )
         .unwrap()
+    }
+
+    fn live_group_oof_runtime_plan() -> ExecutionPlan {
+        let base_id = NodeId::new("model:base").unwrap();
+        let graph = GraphSpec {
+            id: "graph:live.group.oof".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    "model:base",
+                    NodeKind::Model,
+                    vec![port("x", PortKind::Data)],
+                    vec![port("pred", PortKind::Prediction)],
+                ),
+                node(
+                    "model:meta",
+                    NodeKind::Model,
+                    vec![port("pred", PortKind::Prediction)],
+                    vec![port("pred", PortKind::Prediction)],
+                ),
+            ],
+            edges: vec![EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new("model:base").unwrap(),
+                    port_name: "pred".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new("model:meta").unwrap(),
+                    port_name: "pred".to_string(),
+                },
+                contract: EdgeContract {
+                    kind: PortKind::Prediction,
+                    representation: None,
+                    requires_oof: true,
+                    requires_fold_alignment: true,
+                    propagates_lineage: true,
+                },
+            }],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+        let aggregation_policy = AggregationPolicy {
+            aggregation_level: PredictionLevel::Group,
+            method: AggregationMethod::Mean,
+            ..AggregationPolicy::default()
+        };
+        let shape_plan = DataModelShapePlan {
+            node_id: base_id.clone(),
+            input_granularity: Granularity::Observation,
+            target_granularity: Granularity::Sample,
+            fit_rows: FitBoundary::FoldTrain,
+            predict_rows: FitBoundary::FoldValidation,
+            feature_namespace: Some("nir".to_string()),
+            feature_schema_fingerprint: None,
+            target_space: "regression:y".to_string(),
+            aggregation_policy,
+            augmentation_policy: Default::default(),
+            selection_policy: Default::default(),
+        };
+        let leakage_policy = LeakageUnitPolicy {
+            split_unit: SplitUnit::Group,
+            require_group_ids: true,
+            ..LeakageUnitPolicy::default()
+        };
+        let campaign = CampaignSpec {
+            id: "campaign:live.group.oof".to_string(),
+            root_seed: Some(19),
+            leakage_policy: leakage_policy.clone(),
+            aggregation_policy: Default::default(),
+            split_invocation: Some(SplitInvocation {
+                id: "split:live.group.oof".to_string(),
+                controller_id: None,
+                leakage_policy,
+                params: BTreeMap::new(),
+                fold_set: Some(FoldSet {
+                    id: "folds:live.group.oof".to_string(),
+                    sample_ids: vec![
+                        SampleId::new("sample:1").unwrap(),
+                        SampleId::new("sample:2").unwrap(),
+                    ],
+                    folds: vec![
+                        FoldAssignment {
+                            fold_id: FoldId::new("fold:0").unwrap(),
+                            train_sample_ids: vec![SampleId::new("sample:2").unwrap()],
+                            validation_sample_ids: vec![SampleId::new("sample:1").unwrap()],
+                            metadata: BTreeMap::new(),
+                        },
+                        FoldAssignment {
+                            fold_id: FoldId::new("fold:1").unwrap(),
+                            train_sample_ids: vec![SampleId::new("sample:1").unwrap()],
+                            validation_sample_ids: vec![SampleId::new("sample:2").unwrap()],
+                            metadata: BTreeMap::new(),
+                        },
+                    ],
+                    sample_groups: BTreeMap::from([
+                        (
+                            SampleId::new("sample:1").unwrap(),
+                            GroupId::new("plant.A").unwrap(),
+                        ),
+                        (
+                            SampleId::new("sample:2").unwrap(),
+                            GroupId::new("plant.B").unwrap(),
+                        ),
+                    ]),
+                }),
+            }),
+            generation: Default::default(),
+            shape_plans: BTreeMap::from([(base_id.clone(), shape_plan)]),
+            data_bindings: BTreeMap::from([(base_id.clone(), vec![data_binding(&base_id)])]),
+            metadata: BTreeMap::new(),
+        };
+        let mut manifest = controller_manifest("controller:model", NodeKind::Model);
+        manifest.supported_phases = BTreeSet::from([Phase::FitCv, Phase::Refit]);
+        let mut registry = ControllerRegistry::new();
+        registry.register(manifest).unwrap();
+        build_execution_plan("plan:live.group.oof", graph, campaign, &registry).unwrap()
     }
 
     fn custom_aggregation_policy(level: PredictionLevel) -> AggregationPolicy {
@@ -8232,6 +9102,129 @@ mod tests {
                 .filter(|result| result.node_id.as_str() == "model:meta")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn requires_oof_prediction_edge_feeds_live_group_units_to_fit_cv_and_refit() {
+        let plan = live_group_oof_runtime_plan();
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(GroupAggregatedOofController {
+                id: ControllerId::new("controller:model").unwrap(),
+            }))
+            .unwrap();
+        let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        let data_provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data").unwrap(),
+            envelope,
+        )
+        .unwrap();
+        let mut ctx = RunContext::new(RunId::new("run:live.group.oof").unwrap(), Some(19));
+
+        let fit_results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &data_provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+
+        assert_eq!(fit_results.len(), 4);
+        assert!(ctx.prediction_store.blocks().is_empty());
+        assert_eq!(ctx.aggregated_prediction_store.blocks().len(), 2);
+        assert_eq!(
+            ctx.aggregated_prediction_store
+                .blocks()
+                .iter()
+                .map(|block| (&block.fold_id, block.level, block.unit_ids.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    &Some(FoldId::new("fold:0").unwrap()),
+                    PredictionLevel::Group,
+                    vec![PredictionUnitId::Group(GroupId::new("plant.A").unwrap())],
+                ),
+                (
+                    &Some(FoldId::new("fold:1").unwrap()),
+                    PredictionLevel::Group,
+                    vec![PredictionUnitId::Group(GroupId::new("plant.B").unwrap())],
+                ),
+            ]
+        );
+
+        let refit_results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &data_provider,
+                &mut ctx,
+                Phase::Refit,
+            )
+            .unwrap();
+
+        assert_eq!(refit_results.len(), 2);
+        assert_eq!(
+            refit_results
+                .iter()
+                .filter(|result| result.node_id.as_str() == "model:meta")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn aggregated_oof_edge_rejects_relation_level_train_validation_overlap() {
+        let plan = live_group_oof_runtime_plan();
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(GroupAggregatedOofController {
+                id: ControllerId::new("controller:model").unwrap(),
+            }))
+            .unwrap();
+        let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        for record in &mut envelope
+            .coordinator_relations
+            .as_mut()
+            .expect("fixture carries coordinator relations")
+            .records
+        {
+            if record.sample_id.as_str() == "sample:2" {
+                record.group_id = Some(GroupId::new("plant.A").unwrap());
+            }
+        }
+        let data_provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data").unwrap(),
+            envelope,
+        )
+        .unwrap();
+        let mut ctx = RunContext::new(
+            RunId::new("run:live.group.oof.relation-overlap").unwrap(),
+            Some(19),
+        );
+
+        let error = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &data_provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("both train and validation partitions"),
+            "unexpected overlap error: {error}"
         );
     }
 
