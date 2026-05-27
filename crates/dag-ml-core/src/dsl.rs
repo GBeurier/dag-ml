@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::data::DataBinding;
 use crate::error::{DagMlError, Result};
@@ -503,6 +503,40 @@ pub fn compile_pipeline_dsl(spec: &PipelineDslSpec) -> Result<GraphSpec> {
     Ok(compile_pipeline_dsl_with_generation(spec)?.graph)
 }
 
+pub fn parse_pipeline_dsl_json(data: &[u8]) -> Result<PipelineDslSpec> {
+    match serde_json::from_slice::<PipelineDslSpec>(data) {
+        Ok(spec) if validate_pipeline_dsl(&spec).is_ok() => Ok(spec),
+        Ok(spec) => {
+            let strict_error = validate_pipeline_dsl(&spec)
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "unknown validation error".to_string());
+            let value = serde_json::from_slice::<serde_json::Value>(data).map_err(|error| {
+                DagMlError::GraphValidation(format!("failed to parse pipeline DSL JSON: {error}"))
+            })?;
+            lower_nirs4all_compat_pipeline_dsl(&value).map_err(|compat_error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to parse pipeline DSL as valid canonical PipelineDslSpec ({strict_error}) or nirs4all-compatible JSON ({compat_error})"
+                ))
+            })
+        }
+        Err(strict_error) => {
+            let value = serde_json::from_slice::<serde_json::Value>(data).map_err(|error| {
+                DagMlError::GraphValidation(format!("failed to parse pipeline DSL JSON: {error}"))
+            })?;
+            lower_nirs4all_compat_pipeline_dsl(&value).map_err(|compat_error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to parse pipeline DSL as canonical PipelineDslSpec ({strict_error}) or nirs4all-compatible JSON ({compat_error})"
+                ))
+            })
+        }
+    }
+}
+
+pub fn lower_nirs4all_compat_pipeline_dsl(value: &serde_json::Value) -> Result<PipelineDslSpec> {
+    CompatDslLowerer::default().lower_root(value)
+}
+
 pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<CompiledPipelineDsl> {
     validate_pipeline_dsl(spec)?;
     let input_representation = Some(spec.input.representation.clone());
@@ -639,6 +673,1938 @@ struct GeneratedSequence {
     labels: Vec<String>,
     steps: Vec<PipelineDslStep>,
     metadata: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CompatGenerationAttachment {
+    variants: Vec<PipelineDslVariantChoice>,
+    param_generators: Vec<PipelineDslParamGenerator>,
+}
+
+#[derive(Default)]
+struct CompatDslLowerer {
+    node_counter: usize,
+    generator_counter: usize,
+    split_invocation: Option<SplitInvocation>,
+    metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl CompatDslLowerer {
+    fn lower_root(mut self, value: &serde_json::Value) -> Result<PipelineDslSpec> {
+        let root = value.as_object();
+        let pipeline = match value {
+            serde_json::Value::Array(_) => value,
+            serde_json::Value::Object(object) => object
+                .get("pipeline")
+                .or_else(|| object.get("steps"))
+                .ok_or_else(|| {
+                    DagMlError::GraphValidation(
+                        "nirs4all-compatible pipeline DSL must be a JSON array or an object with `pipeline`/`steps`".to_string(),
+                    )
+                })?,
+            _ => {
+                return Err(DagMlError::GraphValidation(
+                    "nirs4all-compatible pipeline DSL must be a JSON array or object".to_string(),
+                ));
+            }
+        };
+        let pipeline = pipeline.as_array().ok_or_else(|| {
+            DagMlError::GraphValidation(
+                "nirs4all-compatible pipeline field must be an array".to_string(),
+            )
+        })?;
+        let steps = self.lower_steps(pipeline, "pipeline")?;
+        let id = root
+            .and_then(|object| object.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("dsl-nirs4all-compat")
+            .to_string();
+        let mut metadata: BTreeMap<String, serde_json::Value> =
+            optional_root_field(root, "metadata")?.unwrap_or_default();
+        metadata.extend(std::mem::take(&mut self.metadata));
+        metadata.insert(
+            "dsl_compat_profile".to_string(),
+            serde_json::Value::String("nirs4all_json_v1".to_string()),
+        );
+        let root_split = optional_root_field(root, "split_invocation")?;
+        let split_invocation = match (root_split, self.split_invocation) {
+            (Some(_), Some(_)) => {
+                return Err(DagMlError::GraphValidation(
+                    "nirs4all-compatible pipeline declares split_invocation and a pipeline split step".to_string(),
+                ));
+            }
+            (Some(split), None) | (None, Some(split)) => Some(split),
+            (None, None) => None,
+        };
+        Ok(PipelineDslSpec {
+            id,
+            input: optional_root_field(root, "input")?.unwrap_or_default(),
+            output: optional_root_field(root, "output")?.unwrap_or_default(),
+            generation_strategy: optional_root_field(root, "generation_strategy")?,
+            max_variants: optional_root_field(root, "max_variants")?,
+            generation_dimensions: optional_root_field(root, "generation_dimensions")?
+                .unwrap_or_default(),
+            campaign_id: optional_root_field(root, "campaign_id")?,
+            root_seed: optional_root_field(root, "root_seed")?,
+            leakage_policy: optional_root_field(root, "leakage_policy")?,
+            aggregation_policy: optional_root_field(root, "aggregation_policy")?,
+            split_invocation,
+            campaign_metadata: optional_root_field(root, "campaign_metadata")?.unwrap_or_default(),
+            data_bindings: optional_root_field(root, "data_bindings")?.unwrap_or_default(),
+            steps,
+            metadata,
+        })
+    }
+
+    fn lower_steps(
+        &mut self,
+        values: &[serde_json::Value],
+        path: &str,
+    ) -> Result<Vec<PipelineDslStep>> {
+        let mut lowered = Vec::new();
+        let mut index = 0usize;
+        while index < values.len() {
+            let current_path = format!("{path}[{index}]");
+            if self.consume_side_effect_step(&values[index], &current_path)? {
+                index += 1;
+                continue;
+            }
+            if let Some(attachment) =
+                self.parse_attached_generation(&values[index], &current_path)?
+            {
+                let next = values.get(index + 1).ok_or_else(|| {
+                    DagMlError::GraphValidation(format!(
+                        "{current_path} declares a parameter generator but has no following operator/model step"
+                    ))
+                })?;
+                let mut attached = self.lower_value_with_attachment(
+                    next,
+                    &format!("{path}[{}]", index + 1),
+                    attachment,
+                )?;
+                lowered.append(&mut attached);
+                index += 2;
+                continue;
+            }
+            if let Some(merge_model) =
+                self.lower_merge_followed_by_model(values, index, &current_path)?
+            {
+                lowered.push(PipelineDslStep::MergeModel(merge_model));
+                index += 2;
+                continue;
+            }
+
+            let steps = self.lower_value_as_steps(&values[index], &current_path)?;
+            if let [PipelineDslStep::Generator(generator)] = steps.as_slice() {
+                if !generator_step_has_prediction(generator) {
+                    if let Some((combined, consumed)) = self.combine_data_generator_with_following(
+                        generator.clone(),
+                        &values[index + 1..],
+                        path,
+                        index + 1,
+                    )? {
+                        lowered.push(PipelineDslStep::Generator(combined));
+                        index += consumed + 1;
+                        continue;
+                    }
+                }
+            }
+            lowered.extend(steps);
+            index += 1;
+        }
+        Ok(lowered)
+    }
+
+    fn consume_side_effect_step(&mut self, value: &serde_json::Value, path: &str) -> Result<bool> {
+        let Some(object) = value.as_object() else {
+            return Ok(false);
+        };
+        if let Some(split) = object.get("split") {
+            self.set_split_invocation(self.lower_split_invocation(split, object, path)?, path)?;
+            return Ok(true);
+        }
+        if let Some(sources) = object.get("sources") {
+            self.metadata
+                .insert("compat_sources".to_string(), sources.clone());
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn lower_value_as_steps(
+        &mut self,
+        value: &serde_json::Value,
+        path: &str,
+    ) -> Result<Vec<PipelineDslStep>> {
+        match value {
+            serde_json::Value::Null => Ok(Vec::new()),
+            serde_json::Value::Array(children) => {
+                Ok(vec![PipelineDslStep::Sequential(PipelineDslSequenceStep {
+                    id: None,
+                    metadata: BTreeMap::new(),
+                    steps: self.lower_steps(children, path)?,
+                })])
+            }
+            serde_json::Value::String(_) => Ok(vec![PipelineDslStep::Transform(
+                self.compat_operator_step(None, "preprocessing", value, None, None)?,
+            )]),
+            serde_json::Value::Object(object) => {
+                if object.contains_key("kind") {
+                    let step = serde_json::from_value::<PipelineDslStep>(value.clone()).map_err(
+                        |error| {
+                            DagMlError::GraphValidation(format!(
+                                "failed to parse canonical DSL step at {path}: {error}"
+                            ))
+                        },
+                    )?;
+                    return Ok(vec![step]);
+                }
+                if self.consume_side_effect_step(value, path)? {
+                    return Ok(Vec::new());
+                }
+                if let Some(operator) =
+                    first_object_value(object, &["preprocessing", "processing", "transform"])
+                {
+                    return Ok(vec![PipelineDslStep::Transform(
+                        self.compat_operator_step(
+                            Some(object),
+                            "preprocessing",
+                            operator,
+                            None,
+                            None,
+                        )?,
+                    )]);
+                }
+                if let Some(operator) = first_object_value(object, &["y_processing", "y_transform"])
+                {
+                    return Ok(vec![PipelineDslStep::YTransform(
+                        self.compat_operator_step(
+                            Some(object),
+                            "y_processing",
+                            operator,
+                            None,
+                            None,
+                        )?,
+                    )]);
+                }
+                if let Some(operator) = object.get("tag") {
+                    return Ok(vec![PipelineDslStep::Tag(self.compat_operator_step(
+                        Some(object),
+                        "tag",
+                        operator,
+                        None,
+                        None,
+                    )?)]);
+                }
+                if let Some(operator) = object.get("exclude") {
+                    return Ok(vec![PipelineDslStep::Exclude(self.compat_operator_step(
+                        Some(object),
+                        "exclude",
+                        operator,
+                        None,
+                        None,
+                    )?)]);
+                }
+                if let Some(operator) = object.get("filter") {
+                    return Ok(vec![PipelineDslStep::Filter(self.compat_operator_step(
+                        Some(object),
+                        "filter",
+                        operator,
+                        None,
+                        None,
+                    )?)]);
+                }
+                if let Some(operator) = object.get("sample_filter") {
+                    return Ok(vec![PipelineDslStep::SampleFilter(
+                        self.compat_operator_step(
+                            Some(object),
+                            "sample_filter",
+                            operator,
+                            None,
+                            None,
+                        )?,
+                    )]);
+                }
+                if let Some(operator) = object.get("sample_augmentation") {
+                    return Ok(vec![PipelineDslStep::SampleAugmentation(
+                        self.compat_operator_step(
+                            Some(object),
+                            "sample_augmentation",
+                            operator,
+                            None,
+                            Some(compat_augmentation_shape("sample", object)?),
+                        )?,
+                    )]);
+                }
+                if let Some(operator) = object.get("feature_augmentation") {
+                    return Ok(vec![PipelineDslStep::FeatureAugmentation(
+                        self.compat_operator_step(
+                            Some(object),
+                            "feature_augmentation",
+                            operator,
+                            None,
+                            Some(compat_augmentation_shape("feature", object)?),
+                        )?,
+                    )]);
+                }
+                if let Some(operator) = object.get("augmentation") {
+                    return Ok(vec![PipelineDslStep::Augmentation(
+                        self.compat_operator_step(
+                            Some(object),
+                            "augmentation",
+                            operator,
+                            None,
+                            Some(compat_augmentation_shape("both", object)?),
+                        )?,
+                    )]);
+                }
+                if let Some(operator) = object.get("model") {
+                    return Ok(vec![PipelineDslStep::Model(self.compat_operator_step(
+                        Some(object),
+                        "model",
+                        operator,
+                        None,
+                        None,
+                    )?)]);
+                }
+                if let Some(operator) = object.get("chart") {
+                    return Ok(vec![PipelineDslStep::Chart(self.compat_operator_step(
+                        Some(object),
+                        "chart",
+                        operator,
+                        None,
+                        None,
+                    )?)]);
+                }
+                if object.contains_key("branch") {
+                    return Ok(vec![PipelineDslStep::Branch(
+                        self.lower_branch_step(object, path)?,
+                    )]);
+                }
+                if object.contains_key("concat_transform") {
+                    return Ok(vec![PipelineDslStep::ConcatTransform(
+                        self.lower_concat_transform_step(object, path)?,
+                    )]);
+                }
+                if object.contains_key("merge") {
+                    return Ok(vec![PipelineDslStep::Merge(
+                        self.lower_merge_step(object, path)?,
+                    )]);
+                }
+                if object.contains_key("_or_") {
+                    return Ok(vec![PipelineDslStep::Generator(
+                        self.lower_or_generator(object, "_or_", path)?,
+                    )]);
+                }
+                if object.contains_key("_chain_") {
+                    return Ok(vec![PipelineDslStep::Generator(
+                        self.lower_or_generator(object, "_chain_", path)?,
+                    )]);
+                }
+                if object.contains_key("_cartesian_") {
+                    return Ok(vec![PipelineDslStep::Generator(
+                        self.lower_cartesian_generator(object, path)?,
+                    )]);
+                }
+                if object.contains_key("_grid_") {
+                    return Ok(vec![PipelineDslStep::Generator(
+                        self.lower_grid_generator(object, path)?,
+                    )]);
+                }
+                if object.contains_key("_sample_") {
+                    return Ok(vec![PipelineDslStep::Generator(
+                        self.lower_sample_generator(object, path)?,
+                    )]);
+                }
+                if object.contains_key("type") || object.contains_key("ref") {
+                    return Ok(vec![PipelineDslStep::Transform(
+                        self.compat_operator_step(None, "preprocessing", value, None, None)?,
+                    )]);
+                }
+                Err(DagMlError::GraphValidation(format!(
+                    "unsupported nirs4all-compatible DSL object at {path}"
+                )))
+            }
+            _ => Err(DagMlError::GraphValidation(format!(
+                "unsupported nirs4all-compatible DSL value at {path}"
+            ))),
+        }
+    }
+
+    fn lower_value_with_attachment(
+        &mut self,
+        value: &serde_json::Value,
+        path: &str,
+        attachment: CompatGenerationAttachment,
+    ) -> Result<Vec<PipelineDslStep>> {
+        match value {
+            serde_json::Value::String(_) => Ok(vec![PipelineDslStep::Transform(
+                self.compat_operator_step(None, "preprocessing", value, Some(attachment), None)?,
+            )]),
+            serde_json::Value::Object(object) => {
+                if let Some(operator) = object.get("model") {
+                    return Ok(vec![PipelineDslStep::Model(self.compat_operator_step(
+                        Some(object),
+                        "model",
+                        operator,
+                        Some(attachment),
+                        None,
+                    )?)]);
+                }
+                if let Some(operator) =
+                    first_object_value(object, &["preprocessing", "processing", "transform"])
+                {
+                    return Ok(vec![PipelineDslStep::Transform(self.compat_operator_step(
+                        Some(object),
+                        "preprocessing",
+                        operator,
+                        Some(attachment),
+                        None,
+                    )?)]);
+                }
+                Err(DagMlError::GraphValidation(format!(
+                    "{path} cannot receive a preceding nirs4all parameter generator; expected model or preprocessing"
+                )))
+            }
+            _ => Err(DagMlError::GraphValidation(format!(
+                "{path} cannot receive a preceding nirs4all parameter generator; expected model or preprocessing"
+            ))),
+        }
+    }
+
+    fn lower_merge_followed_by_model(
+        &mut self,
+        values: &[serde_json::Value],
+        index: usize,
+        _path: &str,
+    ) -> Result<Option<PipelineDslMergeModelStep>> {
+        let Some(merge_object) = values[index].as_object() else {
+            return Ok(None);
+        };
+        if !merge_object.contains_key("merge") {
+            return Ok(None);
+        }
+        let Some(next) = values.get(index + 1).and_then(serde_json::Value::as_object) else {
+            return Ok(None);
+        };
+        let Some(operator) = next.get("model") else {
+            return Ok(None);
+        };
+        let (merge_mode, include_original_data, _) = compat_merge_modes(merge_object)?;
+        let operator_step = self.compat_operator_step(Some(next), "model", operator, None, None)?;
+        Ok(Some(PipelineDslMergeModelStep {
+            id: operator_step.id,
+            operator: operator_step.operator,
+            params: operator_step.params,
+            metadata: operator_step.metadata,
+            seed_label: operator_step.seed_label,
+            include_original_data,
+            merge_mode,
+            train_params: operator_step.train_params,
+            tuning: operator_step.tuning,
+            variants: operator_step.variants,
+            param_generators: operator_step.param_generators,
+            shape: operator_step.shape,
+        }))
+    }
+
+    fn combine_data_generator_with_following(
+        &mut self,
+        generator: PipelineDslGeneratorStep,
+        remaining: &[serde_json::Value],
+        path: &str,
+        absolute_start: usize,
+    ) -> Result<Option<(PipelineDslGeneratorStep, usize)>> {
+        let fused_id = generator.id.clone();
+        let mut stages = generator_to_cartesian_stages(generator)?;
+        let mut prefix_steps = Vec::new();
+        let mut consumed = 0usize;
+        while consumed < remaining.len() {
+            let current_path = format!("{path}[{}]", absolute_start + consumed);
+            if self.consume_side_effect_step(&remaining[consumed], &current_path)? {
+                consumed += 1;
+                continue;
+            }
+            let steps = if let Some(attachment) =
+                self.parse_attached_generation(&remaining[consumed], &current_path)?
+            {
+                let next = remaining.get(consumed + 1).ok_or_else(|| {
+                    DagMlError::GraphValidation(format!(
+                        "{current_path} declares a parameter generator but has no following operator/model step"
+                    ))
+                })?;
+                consumed += 1;
+                self.lower_value_with_attachment(
+                    next,
+                    &format!("{path}[{}]", absolute_start + consumed),
+                    attachment,
+                )?
+            } else if let Some(merge_model) =
+                self.lower_merge_followed_by_model(remaining, consumed, &current_path)?
+            {
+                consumed += 1;
+                vec![PipelineDslStep::MergeModel(merge_model)]
+            } else {
+                self.lower_value_as_steps(&remaining[consumed], &current_path)?
+            };
+            consumed += 1;
+            if steps.is_empty() {
+                continue;
+            }
+            if let [PipelineDslStep::Generator(next_generator)] = steps.as_slice() {
+                if !prefix_steps.is_empty() {
+                    stages.push(single_stage(
+                        format!("stage{}", stages.len()),
+                        "prefix",
+                        std::mem::take(&mut prefix_steps),
+                    ));
+                }
+                let next_has_prediction = generator_step_has_prediction(next_generator);
+                stages.extend(generator_to_cartesian_stages(next_generator.clone())?);
+                if next_has_prediction {
+                    return Ok(Some((
+                        combined_cartesian_generator(fused_id.clone(), stages),
+                        consumed,
+                    )));
+                }
+                continue;
+            }
+            let has_prediction = steps.iter().any(step_has_prediction);
+            prefix_steps.extend(steps);
+            if has_prediction {
+                stages.push(single_stage(
+                    format!("stage{}", stages.len()),
+                    "then",
+                    std::mem::take(&mut prefix_steps),
+                ));
+                return Ok(Some((
+                    combined_cartesian_generator(fused_id.clone(), stages),
+                    consumed,
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    fn lower_branch_step(
+        &mut self,
+        object: &serde_json::Map<String, serde_json::Value>,
+        path: &str,
+    ) -> Result<PipelineDslBranchStep> {
+        let branch_value = object.get("branch").expect("checked by caller");
+        let mode = optional_object_field(object, "mode")?.unwrap_or_default();
+        let selector = object.get("selector").cloned();
+        let metadata = optional_object_field(object, "metadata")?.unwrap_or_default();
+        let branches = match branch_value {
+            serde_json::Value::Array(values) => values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let id = compat_branch_id(value, index);
+                    Ok(PipelineDslBranch {
+                        id,
+                        selector: None,
+                        metadata: BTreeMap::new(),
+                        steps: self
+                            .lower_pipeline_fragment(value, &format!("{path}.branch[{index}]"))?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            serde_json::Value::Object(branch_object) => {
+                if let Some(values) = branch_object
+                    .get("branches")
+                    .and_then(serde_json::Value::as_array)
+                {
+                    values
+                        .iter()
+                        .enumerate()
+                        .map(|(index, value)| {
+                            self.lower_named_branch(
+                                value,
+                                index,
+                                &format!("{path}.branch.branches[{index}]"),
+                            )
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                } else {
+                    branch_object
+                        .iter()
+                        .filter(|(key, _)| {
+                            !matches!(key.as_str(), "mode" | "selector" | "metadata")
+                        })
+                        .enumerate()
+                        .map(|(index, (key, value))| {
+                            Ok(PipelineDslBranch {
+                                id: sanitize_branch_id(key, index),
+                                selector: None,
+                                metadata: BTreeMap::new(),
+                                steps: self.lower_pipeline_fragment(
+                                    value,
+                                    &format!("{path}.branch.{key}"),
+                                )?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                }
+            }
+            _ => {
+                return Err(DagMlError::GraphValidation(format!(
+                    "{path}.branch must be an array or object"
+                )));
+            }
+        };
+        Ok(PipelineDslBranchStep {
+            mode,
+            selector,
+            metadata,
+            branches,
+        })
+    }
+
+    fn lower_named_branch(
+        &mut self,
+        value: &serde_json::Value,
+        index: usize,
+        path: &str,
+    ) -> Result<PipelineDslBranch> {
+        if let Some(object) = value.as_object() {
+            if object.contains_key("steps") || object.contains_key("pipeline") {
+                let id = object
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| sanitize_branch_id(id, index))
+                    .unwrap_or_else(|| format!("branch{index}"));
+                let selector = object.get("selector").cloned();
+                let metadata = optional_object_field(object, "metadata")?.unwrap_or_default();
+                let steps_value = object
+                    .get("steps")
+                    .or_else(|| object.get("pipeline"))
+                    .ok_or_else(|| {
+                        DagMlError::GraphValidation(format!(
+                            "{path} branch object must contain steps or pipeline"
+                        ))
+                    })?;
+                return Ok(PipelineDslBranch {
+                    id,
+                    selector,
+                    metadata,
+                    steps: self.lower_pipeline_fragment(steps_value, path)?,
+                });
+            }
+        }
+        Ok(PipelineDslBranch {
+            id: compat_branch_id(value, index),
+            selector: None,
+            metadata: BTreeMap::new(),
+            steps: self.lower_pipeline_fragment(value, path)?,
+        })
+    }
+
+    fn lower_concat_transform_step(
+        &mut self,
+        object: &serde_json::Map<String, serde_json::Value>,
+        path: &str,
+    ) -> Result<PipelineDslConcatTransformStep> {
+        let value = object.get("concat_transform").expect("checked by caller");
+        let branches = match value {
+            serde_json::Value::Array(values) => values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    Ok(PipelineDslConcatBranch {
+                        id: compat_branch_id(value, index),
+                        steps: self.lower_concat_operator_steps(
+                            value,
+                            &format!("{path}.concat_transform[{index}]"),
+                        )?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            serde_json::Value::Object(map) => map
+                .iter()
+                .enumerate()
+                .map(|(index, (key, value))| {
+                    Ok(PipelineDslConcatBranch {
+                        id: sanitize_branch_id(key, index),
+                        steps: self.lower_concat_operator_steps(
+                            value,
+                            &format!("{path}.concat_transform.{key}"),
+                        )?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            _ => {
+                return Err(DagMlError::GraphValidation(format!(
+                    "{path}.concat_transform must be an array or object"
+                )));
+            }
+        };
+        Ok(PipelineDslConcatTransformStep {
+            id: explicit_or_generated_node_id(object, "id", || self.next_node_id("join"))?,
+            branches,
+            metadata: optional_object_field(object, "metadata")?.unwrap_or_default(),
+            seed_label: optional_object_field(object, "seed_label")?,
+            representation: optional_object_field(object, "representation")?,
+            variants: Vec::new(),
+            param_generators: Vec::new(),
+            shape: optional_object_field(object, "shape")?,
+        })
+    }
+
+    fn lower_concat_operator_steps(
+        &mut self,
+        value: &serde_json::Value,
+        path: &str,
+    ) -> Result<Vec<PipelineDslOperatorStep>> {
+        let steps = self.lower_pipeline_fragment(value, path)?;
+        steps
+            .into_iter()
+            .map(|step| match step {
+                PipelineDslStep::Transform(step) => Ok(step),
+                _ => Err(DagMlError::GraphValidation(format!(
+                    "{path} concat_transform branches currently accept only preprocessing/transform steps"
+                ))),
+            })
+            .collect()
+    }
+
+    fn lower_merge_step(
+        &mut self,
+        object: &serde_json::Map<String, serde_json::Value>,
+        _path: &str,
+    ) -> Result<PipelineDslMergeStep> {
+        let (merge_mode, include_original_data, output_as) = compat_merge_modes(object)?;
+        Ok(PipelineDslMergeStep {
+            id: explicit_or_generated_node_id(object, "id", || self.next_node_id("merge"))?,
+            merge_mode,
+            output_as,
+            include_original_data,
+            on_missing: optional_object_field(object, "on_missing")?,
+            selectors: optional_object_field(object, "selectors")?.unwrap_or_default(),
+            metadata: optional_object_field(object, "metadata")?.unwrap_or_default(),
+            seed_label: optional_object_field(object, "seed_label")?,
+            representation: optional_object_field(object, "representation")?,
+            variants: Vec::new(),
+            param_generators: Vec::new(),
+            shape: optional_object_field(object, "shape")?,
+        })
+    }
+
+    fn lower_or_generator(
+        &mut self,
+        object: &serde_json::Map<String, serde_json::Value>,
+        key: &str,
+        path: &str,
+    ) -> Result<PipelineDslGeneratorStep> {
+        let values = object
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| DagMlError::GraphValidation(format!("{path}.{key} must be an array")))?;
+        let branches = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                Ok(PipelineDslBranch {
+                    id: compat_branch_id(value, index),
+                    selector: None,
+                    metadata: BTreeMap::new(),
+                    steps: self
+                        .lower_pipeline_fragment(value, &format!("{path}.{key}[{index}]"))?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(PipelineDslGeneratorStep {
+            id: explicit_or_generated_node_id(object, "id", || self.next_generator_id())?,
+            mode: PipelineDslGeneratorMode::Or,
+            branches,
+            stages: Vec::new(),
+            pick: optional_object_field(object, "pick")?,
+            arrange: optional_object_field(object, "arrange")?,
+            then_pick: optional_object_field(object, "then_pick")?,
+            then_arrange: optional_object_field(object, "then_arrange")?,
+            count: optional_object_field(object, "count")?,
+            metadata: compat_generator_metadata(object, key)?,
+        })
+    }
+
+    fn lower_cartesian_generator(
+        &mut self,
+        object: &serde_json::Map<String, serde_json::Value>,
+        path: &str,
+    ) -> Result<PipelineDslGeneratorStep> {
+        let values = object
+            .get("_cartesian_")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                DagMlError::GraphValidation(format!("{path}._cartesian_ must be an array"))
+            })?;
+        let stages = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                self.lower_cartesian_stage(value, index, &format!("{path}._cartesian_[{index}]"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(PipelineDslGeneratorStep {
+            id: explicit_or_generated_node_id(object, "id", || self.next_generator_id())?,
+            mode: PipelineDslGeneratorMode::Cartesian,
+            branches: Vec::new(),
+            stages,
+            pick: None,
+            arrange: None,
+            then_pick: None,
+            then_arrange: None,
+            count: optional_object_field(object, "count")?,
+            metadata: compat_generator_metadata(object, "_cartesian_")?,
+        })
+    }
+
+    fn lower_cartesian_stage(
+        &mut self,
+        value: &serde_json::Value,
+        index: usize,
+        path: &str,
+    ) -> Result<PipelineDslGeneratorStage> {
+        if let Some(object) = value.as_object() {
+            if object.contains_key("_or_") {
+                let generator = self.lower_or_generator(object, "_or_", path)?;
+                return Ok(PipelineDslGeneratorStage {
+                    id: format!("stage{index}"),
+                    selector: None,
+                    metadata: BTreeMap::new(),
+                    branches: generator.branches,
+                });
+            }
+            if object.contains_key("_chain_") {
+                let generator = self.lower_or_generator(object, "_chain_", path)?;
+                return Ok(PipelineDslGeneratorStage {
+                    id: format!("stage{index}"),
+                    selector: None,
+                    metadata: BTreeMap::new(),
+                    branches: generator.branches,
+                });
+            }
+            if object.contains_key("_grid_") {
+                return Ok(PipelineDslGeneratorStage {
+                    id: format!("stage{index}"),
+                    selector: None,
+                    metadata: BTreeMap::new(),
+                    branches: self.lower_grid_branches(object.get("_grid_").unwrap(), path)?,
+                });
+            }
+            if object.contains_key("_sample_") {
+                let generator = self.lower_sample_generator(object, path)?;
+                return Ok(PipelineDslGeneratorStage {
+                    id: format!("stage{index}"),
+                    selector: None,
+                    metadata: BTreeMap::new(),
+                    branches: generator.branches,
+                });
+            }
+        }
+        Ok(PipelineDslGeneratorStage {
+            id: format!("stage{index}"),
+            selector: None,
+            metadata: BTreeMap::new(),
+            branches: vec![PipelineDslBranch {
+                id: "option0".to_string(),
+                selector: None,
+                metadata: BTreeMap::new(),
+                steps: self.lower_pipeline_fragment(value, path)?,
+            }],
+        })
+    }
+
+    fn lower_grid_generator(
+        &mut self,
+        object: &serde_json::Map<String, serde_json::Value>,
+        path: &str,
+    ) -> Result<PipelineDslGeneratorStep> {
+        Ok(PipelineDslGeneratorStep {
+            id: explicit_or_generated_node_id(object, "id", || self.next_generator_id())?,
+            mode: PipelineDslGeneratorMode::Or,
+            branches: self.lower_grid_branches(object.get("_grid_").unwrap(), path)?,
+            stages: Vec::new(),
+            pick: None,
+            arrange: None,
+            then_pick: None,
+            then_arrange: None,
+            count: optional_object_field(object, "count")?,
+            metadata: compat_generator_metadata(object, "_grid_")?,
+        })
+    }
+
+    fn lower_sample_generator(
+        &mut self,
+        object: &serde_json::Map<String, serde_json::Value>,
+        path: &str,
+    ) -> Result<PipelineDslGeneratorStep> {
+        Ok(PipelineDslGeneratorStep {
+            id: explicit_or_generated_node_id(object, "id", || self.next_generator_id())?,
+            mode: PipelineDslGeneratorMode::Or,
+            branches: self.lower_sample_branches(object.get("_sample_").unwrap(), path)?,
+            stages: Vec::new(),
+            pick: None,
+            arrange: None,
+            then_pick: None,
+            then_arrange: None,
+            count: optional_object_field(object, "count")?,
+            metadata: compat_generator_metadata(object, "_sample_")?,
+        })
+    }
+
+    fn lower_sample_branches(
+        &mut self,
+        value: &serde_json::Value,
+        path: &str,
+    ) -> Result<Vec<PipelineDslBranch>> {
+        let sample = value.as_object().ok_or_else(|| {
+            DagMlError::GraphValidation(format!("{path}._sample_ must be an object"))
+        })?;
+        let rows = compat_sample_rows(sample, path)?;
+        let operator = sample
+            .get("model")
+            .or_else(|| sample.get("preprocessing"))
+            .or_else(|| sample.get("transform"))
+            .ok_or_else(|| {
+                DagMlError::GraphValidation(format!(
+                    "{path}._sample_ structural lowering requires `model`, `preprocessing` or `transform`"
+                ))
+            })?
+            .clone();
+        let keyword = if sample.contains_key("model") {
+            "model"
+        } else {
+            "preprocessing"
+        };
+        let fixed_params = sample
+            .iter()
+            .filter(|(key, _)| {
+                !matches!(
+                    key.as_str(),
+                    "model"
+                        | "preprocessing"
+                        | "transform"
+                        | "distribution"
+                        | "from"
+                        | "to"
+                        | "num"
+                        | "count"
+                        | "param"
+                        | "tune"
+                )
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>();
+        rows.into_iter()
+            .enumerate()
+            .map(|(index, mut row)| {
+                row.extend(fixed_params.clone());
+                let step = self.compat_operator_step_from_parts(
+                    keyword,
+                    operator.clone(),
+                    row,
+                    None,
+                    None,
+                )?;
+                Ok(PipelineDslBranch {
+                    id: format!("sample{index}"),
+                    selector: None,
+                    metadata: BTreeMap::new(),
+                    steps: vec![if keyword == "model" {
+                        PipelineDslStep::Model(step)
+                    } else {
+                        PipelineDslStep::Transform(step)
+                    }],
+                })
+            })
+            .collect()
+    }
+
+    fn lower_grid_branches(
+        &mut self,
+        value: &serde_json::Value,
+        path: &str,
+    ) -> Result<Vec<PipelineDslBranch>> {
+        let rows = compat_grid_rows(value, path)?;
+        rows.into_iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let metadata = BTreeMap::from([(
+                    "compat_grid_row".to_string(),
+                    serde_json::to_value(&row).map_err(|error| {
+                        DagMlError::GraphValidation(format!(
+                            "failed to serialize grid row at {path}: {error}"
+                        ))
+                    })?,
+                )]);
+                Ok(PipelineDslBranch {
+                    id: format!("grid{index}"),
+                    selector: None,
+                    metadata,
+                    steps: self.lower_grid_row(row, path)?,
+                })
+            })
+            .collect()
+    }
+
+    fn lower_grid_row(
+        &mut self,
+        mut row: BTreeMap<String, serde_json::Value>,
+        path: &str,
+    ) -> Result<Vec<PipelineDslStep>> {
+        if let Some(operator) = row.remove("model") {
+            return Ok(vec![PipelineDslStep::Model(
+                self.compat_operator_step_from_parts("model", operator, row, None, None)?,
+            )]);
+        }
+        if let Some(operator) = row
+            .remove("preprocessing")
+            .or_else(|| row.remove("processing"))
+            .or_else(|| row.remove("transform"))
+        {
+            return Ok(vec![PipelineDslStep::Transform(
+                self.compat_operator_step_from_parts("preprocessing", operator, row, None, None)?,
+            )]);
+        }
+        Err(DagMlError::GraphValidation(format!(
+            "{path}._grid_ rows must contain `model`, `preprocessing` or `transform` for structural lowering"
+        )))
+    }
+
+    fn lower_pipeline_fragment(
+        &mut self,
+        value: &serde_json::Value,
+        path: &str,
+    ) -> Result<Vec<PipelineDslStep>> {
+        match value {
+            serde_json::Value::Null => Ok(Vec::new()),
+            serde_json::Value::Array(values) => self.lower_steps(values, path),
+            _ => self.lower_value_as_steps(value, path),
+        }
+    }
+
+    fn parse_attached_generation(
+        &mut self,
+        value: &serde_json::Value,
+        path: &str,
+    ) -> Result<Option<CompatGenerationAttachment>> {
+        let Some(object) = value.as_object() else {
+            return Ok(None);
+        };
+        if let Some(range) = object.get("_range_") {
+            return Ok(Some(CompatGenerationAttachment {
+                variants: Vec::new(),
+                param_generators: vec![compat_range_generator(range, object, path)?],
+            }));
+        }
+        if let Some(range) = object.get("_log_range_") {
+            return Ok(Some(CompatGenerationAttachment {
+                variants: Vec::new(),
+                param_generators: vec![compat_log_range_generator(range, object, path)?],
+            }));
+        }
+        if let Some(grid) = object.get("_grid_") {
+            if grid.as_object().is_some_and(|grid| {
+                !grid.contains_key("model")
+                    && !grid.contains_key("preprocessing")
+                    && !grid.contains_key("transform")
+            }) {
+                return Ok(Some(CompatGenerationAttachment {
+                    variants: Vec::new(),
+                    param_generators: vec![compat_grid_param_generator(grid, object, path)?],
+                }));
+            }
+        }
+        if let Some(zip) = object.get("_zip_") {
+            return Ok(Some(CompatGenerationAttachment {
+                variants: compat_zip_variants(zip, path)?,
+                param_generators: Vec::new(),
+            }));
+        }
+        if let Some(sample) = object.get("_sample_") {
+            if sample.as_object().is_some_and(|sample| {
+                sample.contains_key("model")
+                    || sample.contains_key("preprocessing")
+                    || sample.contains_key("transform")
+            }) {
+                return Ok(None);
+            }
+            return Ok(Some(CompatGenerationAttachment {
+                variants: compat_sample_variants(sample, path)?,
+                param_generators: Vec::new(),
+            }));
+        }
+        Ok(None)
+    }
+
+    fn compat_operator_step(
+        &mut self,
+        object: Option<&serde_json::Map<String, serde_json::Value>>,
+        keyword: &str,
+        operator: &serde_json::Value,
+        attachment: Option<CompatGenerationAttachment>,
+        fallback_shape: Option<PipelineDslShapePlan>,
+    ) -> Result<PipelineDslOperatorStep> {
+        let id_prefix = compat_node_prefix(keyword);
+        let mut params = object
+            .and_then(|object| object_value_as_map(object.get("params")))
+            .unwrap_or_default();
+        if let Some(object) = object {
+            for alias in compat_param_aliases(keyword) {
+                if let Some(alias_params) = object_value_as_map(object.get(*alias)) {
+                    params.extend(alias_params);
+                }
+            }
+        }
+        let shape = match object.and_then(|object| object.get("shape")) {
+            Some(shape) => Some(deserialize_value(
+                shape.clone(),
+                "pipeline DSL compat shape",
+            )?),
+            None => fallback_shape,
+        };
+        let mut step = PipelineDslOperatorStep {
+            id: match object {
+                Some(object) => {
+                    explicit_or_generated_node_id(object, "id", || self.next_node_id(id_prefix))?
+                }
+                None => self.next_node_id(id_prefix)?,
+            },
+            operator: operator.clone(),
+            params,
+            metadata: optional_object_field_from_option(object, "metadata")?.unwrap_or_default(),
+            seed_label: optional_object_field_from_option(object, "seed_label")?,
+            representation: optional_object_field_from_option(object, "representation")?,
+            train_params: optional_object_field_from_option(object, "train_params")?
+                .unwrap_or_default(),
+            tuning: optional_object_field_from_option(object, "tuning")?.or(
+                optional_object_field_from_option(object, "finetune_params")?,
+            ),
+            variants: optional_object_field_from_option(object, "variants")?.unwrap_or_default(),
+            param_generators: optional_object_field_from_option(object, "generators")?
+                .unwrap_or_default(),
+            shape,
+        };
+        step.metadata.insert(
+            "dsl_compat_keyword".to_string(),
+            serde_json::Value::String(keyword.to_string()),
+        );
+        if let Some(policy) = object.and_then(|object| object.get("policy")) {
+            step.metadata
+                .insert("dsl_compat_policy".to_string(), policy.clone());
+        }
+        if let Some(attachment) = attachment {
+            step.variants.extend(attachment.variants);
+            step.param_generators.extend(attachment.param_generators);
+        }
+        Ok(step)
+    }
+
+    fn compat_operator_step_from_parts(
+        &mut self,
+        keyword: &str,
+        operator: serde_json::Value,
+        params: BTreeMap<String, serde_json::Value>,
+        attachment: Option<CompatGenerationAttachment>,
+        shape: Option<PipelineDslShapePlan>,
+    ) -> Result<PipelineDslOperatorStep> {
+        let mut step = PipelineDslOperatorStep {
+            id: self.next_node_id(compat_node_prefix(keyword))?,
+            operator,
+            params,
+            metadata: BTreeMap::from([(
+                "dsl_compat_keyword".to_string(),
+                serde_json::Value::String(keyword.to_string()),
+            )]),
+            seed_label: None,
+            representation: None,
+            train_params: BTreeMap::new(),
+            tuning: None,
+            variants: Vec::new(),
+            param_generators: Vec::new(),
+            shape,
+        };
+        if let Some(attachment) = attachment {
+            step.variants.extend(attachment.variants);
+            step.param_generators.extend(attachment.param_generators);
+        }
+        Ok(step)
+    }
+
+    fn lower_split_invocation(
+        &self,
+        split: &serde_json::Value,
+        object: &serde_json::Map<String, serde_json::Value>,
+        path: &str,
+    ) -> Result<SplitInvocation> {
+        let mut params = BTreeMap::new();
+        let mut id = object
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("split:compat")
+            .to_string();
+        let mut controller_id = optional_object_field(object, "controller_id")?;
+        let mut leakage_policy =
+            optional_object_field(object, "leakage_policy")?.unwrap_or_default();
+        let fold_set = optional_object_field(object, "fold_set")?;
+        match split {
+            serde_json::Value::String(kind) => {
+                params.insert("kind".to_string(), serde_json::Value::String(kind.clone()));
+                id = format!("split:{}", sanitize_generation_label(kind));
+            }
+            serde_json::Value::Object(split_object) => {
+                if let Some(split_id) = split_object.get("id").and_then(serde_json::Value::as_str) {
+                    id = split_id.to_string();
+                }
+                if controller_id.is_none() {
+                    controller_id = optional_object_field(split_object, "controller_id")?;
+                }
+                if let Some(policy) = optional_object_field(split_object, "leakage_policy")? {
+                    leakage_policy = policy;
+                }
+                if let Some(explicit_params) = object_value_as_map(split_object.get("params")) {
+                    params.extend(explicit_params);
+                } else {
+                    for (key, value) in split_object {
+                        if !matches!(
+                            key.as_str(),
+                            "id" | "controller_id" | "leakage_policy" | "fold_set"
+                        ) {
+                            params.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+            }
+            _ => {
+                return Err(DagMlError::GraphValidation(format!(
+                    "{path}.split must be a string or object"
+                )));
+            }
+        }
+        Ok(SplitInvocation {
+            id,
+            controller_id,
+            leakage_policy,
+            params,
+            fold_set,
+        })
+    }
+
+    fn set_split_invocation(&mut self, split: SplitInvocation, path: &str) -> Result<()> {
+        if self.split_invocation.replace(split).is_some() {
+            return Err(DagMlError::GraphValidation(format!(
+                "{path} declares a second split; DAG-ML expects one campaign split invocation"
+            )));
+        }
+        Ok(())
+    }
+
+    fn next_node_id(&mut self, prefix: &str) -> Result<NodeId> {
+        let id = NodeId::new(format!("{prefix}:compat.{}", self.node_counter))?;
+        self.node_counter += 1;
+        Ok(id)
+    }
+
+    fn next_generator_id(&mut self) -> Result<NodeId> {
+        let id = NodeId::new(format!("generator:compat.{}", self.generator_counter))?;
+        self.generator_counter += 1;
+        Ok(id)
+    }
+}
+
+fn optional_root_field<T>(
+    root: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> Result<Option<T>>
+where
+    T: DeserializeOwned,
+{
+    match root.and_then(|object| object.get(key)) {
+        Some(value) => Ok(Some(deserialize_value(value.clone(), key)?)),
+        None => Ok(None),
+    }
+}
+
+fn optional_object_field<T>(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<T>>
+where
+    T: DeserializeOwned,
+{
+    match object.get(key) {
+        Some(value) => Ok(Some(deserialize_value(value.clone(), key)?)),
+        None => Ok(None),
+    }
+}
+
+fn optional_object_field_from_option<T>(
+    object: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> Result<Option<T>>
+where
+    T: DeserializeOwned,
+{
+    match object.and_then(|object| object.get(key)) {
+        Some(value) => Ok(Some(deserialize_value(value.clone(), key)?)),
+        None => Ok(None),
+    }
+}
+
+fn deserialize_value<T>(value: serde_json::Value, label: &str) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(value)
+        .map_err(|error| DagMlError::GraphValidation(format!("failed to parse {label}: {error}")))
+}
+
+fn explicit_or_generated_node_id<F>(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    generated: F,
+) -> Result<NodeId>
+where
+    F: FnOnce() -> Result<NodeId>,
+{
+    match object.get(key).and_then(serde_json::Value::as_str) {
+        Some(id) => NodeId::new(id),
+        None => generated(),
+    }
+}
+
+fn first_object_value<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<&'a serde_json::Value> {
+    keys.iter().find_map(|key| object.get(*key))
+}
+
+fn object_value_as_map(
+    value: Option<&serde_json::Value>,
+) -> Option<BTreeMap<String, serde_json::Value>> {
+    value.and_then(|value| {
+        value.as_object().map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        })
+    })
+}
+
+fn compat_node_prefix(keyword: &str) -> &'static str {
+    match keyword {
+        "model" => "model",
+        "y_processing" | "y_transform" => "target",
+        "tag" => "tag",
+        "exclude" | "filter" | "sample_filter" => "filter",
+        "sample_augmentation" | "feature_augmentation" | "augmentation" => "augment",
+        "chart" => "chart",
+        _ => "transform",
+    }
+}
+
+fn compat_param_aliases(keyword: &str) -> &'static [&'static str] {
+    match keyword {
+        "model" => &["model_params"],
+        "preprocessing" | "processing" | "transform" => &[
+            "preprocessing_params",
+            "processing_params",
+            "transform_params",
+        ],
+        "sample_augmentation" | "feature_augmentation" | "augmentation" => &["augmentation_params"],
+        _ => &[],
+    }
+}
+
+fn compat_augmentation_shape(
+    kind: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<PipelineDslShapePlan> {
+    if let Some(shape) = object.get("shape") {
+        return deserialize_value(shape.clone(), "augmentation shape");
+    }
+    let mut sample_scope = crate::policy::AugmentationScope::None;
+    let mut feature_scope = crate::policy::AugmentationScope::None;
+    match kind {
+        "sample" => sample_scope = crate::policy::AugmentationScope::TrainOnly,
+        "feature" => feature_scope = crate::policy::AugmentationScope::TrainOnly,
+        _ => {
+            sample_scope = crate::policy::AugmentationScope::TrainOnly;
+            feature_scope = crate::policy::AugmentationScope::TrainOnly;
+        }
+    }
+    if let Some(apply_to) = object
+        .get("policy")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|policy| policy.get("apply_to"))
+        .and_then(serde_json::Value::as_str)
+    {
+        match apply_to {
+            "train_only" => {}
+            "all" | "all_partitions" => {
+                if sample_scope != crate::policy::AugmentationScope::None {
+                    sample_scope = crate::policy::AugmentationScope::AllPartitions;
+                }
+                if feature_scope != crate::policy::AugmentationScope::None {
+                    feature_scope = crate::policy::AugmentationScope::AllPartitions;
+                }
+            }
+            "none" => {
+                sample_scope = crate::policy::AugmentationScope::None;
+                feature_scope = crate::policy::AugmentationScope::None;
+            }
+            other => {
+                return Err(DagMlError::GraphValidation(format!(
+                    "unsupported nirs4all augmentation policy apply_to `{other}`"
+                )));
+            }
+        }
+    }
+    Ok(PipelineDslShapePlan {
+        input_granularity: None,
+        target_granularity: None,
+        fit_rows: Some(FitBoundary::FoldTrain),
+        predict_rows: Some(FitBoundary::FoldValidation),
+        feature_namespace: None,
+        feature_schema_fingerprint: None,
+        target_space: None,
+        aggregation_policy: None,
+        augmentation_policy: Some(AugmentationPolicy {
+            sample_scope,
+            feature_scope,
+            require_origin_id: true,
+            inherit_group: true,
+            inherit_target: true,
+            unsafe_flags: BTreeSet::new(),
+        }),
+        selection_policy: None,
+    })
+}
+
+fn compat_merge_modes(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(String, bool, PipelineDslMergeOutput)> {
+    let merge = object
+        .get("merge")
+        .ok_or_else(|| DagMlError::GraphValidation("merge step lacks `merge`".to_string()))?;
+    let mode = merge
+        .as_str()
+        .or_else(|| {
+            merge
+                .as_object()
+                .and_then(|object| object.get("mode"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("predictions");
+    let include_original_data = object
+        .get("include_original_data")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(matches!(
+            mode,
+            "all" | "mixed" | "predictions_plus_original"
+        ));
+    let output_as = match mode {
+        "predictions" | "prediction" => PipelineDslMergeOutput::Predictions,
+        "sources" | "source" => PipelineDslMergeOutput::Sources,
+        "features" | "feature" | "concat" | "all" | "mixed" | "predictions_plus_original" => {
+            PipelineDslMergeOutput::Features
+        }
+        other => {
+            return Err(DagMlError::GraphValidation(format!(
+                "unsupported nirs4all merge mode `{other}`"
+            )));
+        }
+    };
+    Ok((mode.to_string(), include_original_data, output_as))
+}
+
+fn compat_generator_metadata(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<BTreeMap<String, serde_json::Value>> {
+    let mut metadata: BTreeMap<String, serde_json::Value> =
+        optional_object_field(object, "metadata")?.unwrap_or_default();
+    metadata.insert(
+        "dsl_compat_generator".to_string(),
+        serde_json::Value::String(key.to_string()),
+    );
+    Ok(metadata)
+}
+
+fn compat_branch_id(value: &serde_json::Value, index: usize) -> String {
+    value
+        .as_object()
+        .and_then(|object| object.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(|id| sanitize_branch_id(id, index))
+        .unwrap_or_else(|| format!("choice{index}"))
+}
+
+fn sanitize_branch_id(input: &str, index: usize) -> String {
+    let sanitized = sanitize_generation_label(input);
+    if sanitized == "value" {
+        format!("branch{index}")
+    } else {
+        sanitized
+    }
+}
+
+fn step_has_prediction(step: &PipelineDslStep) -> bool {
+    match step {
+        PipelineDslStep::Model(_) | PipelineDslStep::MergeModel(_) => true,
+        PipelineDslStep::Merge(step) => step.output_as == PipelineDslMergeOutput::Predictions,
+        PipelineDslStep::Branch(step) => step
+            .branches
+            .iter()
+            .any(|branch| branch.steps.iter().any(step_has_prediction)),
+        PipelineDslStep::Generator(step) => generator_step_has_prediction(step),
+        PipelineDslStep::Sequential(step) => step.steps.iter().any(step_has_prediction),
+        _ => false,
+    }
+}
+
+fn generator_step_has_prediction(generator: &PipelineDslGeneratorStep) -> bool {
+    generator
+        .branches
+        .iter()
+        .any(|branch| branch.steps.iter().any(step_has_prediction))
+        || generator.stages.iter().any(|stage| {
+            stage
+                .branches
+                .iter()
+                .any(|branch| branch.steps.iter().any(step_has_prediction))
+        })
+}
+
+fn generator_to_cartesian_stages(
+    generator: PipelineDslGeneratorStep,
+) -> Result<Vec<PipelineDslGeneratorStage>> {
+    match generator.mode {
+        PipelineDslGeneratorMode::Cartesian => Ok(generator.stages),
+        PipelineDslGeneratorMode::Or => {
+            if generator.pick.is_some()
+                || generator.arrange.is_some()
+                || generator.then_pick.is_some()
+                || generator.then_arrange.is_some()
+            {
+                return Err(DagMlError::GraphValidation(format!(
+                    "nirs4all-compatible data-only generator `{}` cannot be fused across downstream models when pick/arrange selectors are present",
+                    generator.id
+                )));
+            }
+            Ok(vec![PipelineDslGeneratorStage {
+                id: sanitize_generation_label(generator.id.as_str()),
+                selector: None,
+                metadata: generator.metadata,
+                branches: generator.branches,
+            }])
+        }
+    }
+}
+
+fn single_stage(
+    id: String,
+    branch_id: &str,
+    steps: Vec<PipelineDslStep>,
+) -> PipelineDslGeneratorStage {
+    PipelineDslGeneratorStage {
+        id,
+        selector: None,
+        metadata: BTreeMap::new(),
+        branches: vec![PipelineDslBranch {
+            id: branch_id.to_string(),
+            selector: None,
+            metadata: BTreeMap::new(),
+            steps,
+        }],
+    }
+}
+
+fn combined_cartesian_generator(
+    id: NodeId,
+    stages: Vec<PipelineDslGeneratorStage>,
+) -> PipelineDslGeneratorStep {
+    PipelineDslGeneratorStep {
+        id,
+        mode: PipelineDslGeneratorMode::Cartesian,
+        branches: Vec::new(),
+        stages,
+        pick: None,
+        arrange: None,
+        then_pick: None,
+        then_arrange: None,
+        count: None,
+        metadata: BTreeMap::from([(
+            "dsl_compat_generator".to_string(),
+            serde_json::Value::String("fused_data_to_prediction".to_string()),
+        )]),
+    }
+}
+
+fn compat_grid_rows(
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<Vec<BTreeMap<String, serde_json::Value>>> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| DagMlError::GraphValidation(format!("{path}._grid_ must be an object")))?;
+    if object.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "{path}._grid_ must contain at least one parameter"
+        )));
+    }
+    let entries = object
+        .iter()
+        .map(|(key, value)| {
+            let values = match value {
+                serde_json::Value::Array(values) => values.clone(),
+                _ => vec![value.clone()],
+            };
+            if values.is_empty() {
+                return Err(DagMlError::GraphValidation(format!(
+                    "{path}._grid_.{key} has no values"
+                )));
+            }
+            Ok((key.clone(), values))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut rows = Vec::new();
+    build_compat_grid_rows(&entries, 0, &mut BTreeMap::new(), &mut rows);
+    Ok(rows)
+}
+
+fn build_compat_grid_rows(
+    entries: &[(String, Vec<serde_json::Value>)],
+    index: usize,
+    current: &mut BTreeMap<String, serde_json::Value>,
+    rows: &mut Vec<BTreeMap<String, serde_json::Value>>,
+) {
+    if index == entries.len() {
+        rows.push(current.clone());
+        return;
+    }
+    let (key, values) = &entries[index];
+    for value in values {
+        current.insert(key.clone(), value.clone());
+        build_compat_grid_rows(entries, index + 1, current, rows);
+        current.remove(key);
+    }
+}
+
+fn compat_range_generator(
+    value: &serde_json::Value,
+    object: &serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) -> Result<PipelineDslParamGenerator> {
+    let param = object
+        .get("param")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("n_components")
+        .to_string();
+    let (start, stop, step) = if let Some(values) = value.as_array() {
+        if values.len() != 3 {
+            return Err(DagMlError::GraphValidation(format!(
+                "{path}._range_ array must be [start, stop, step]"
+            )));
+        }
+        (
+            json_f64(&values[0], path, "_range_[0]")?,
+            json_f64(&values[1], path, "_range_[1]")?,
+            json_f64(&values[2], path, "_range_[2]")?,
+        )
+    } else if let Some(spec) = value.as_object() {
+        (
+            json_f64(
+                spec.get("start").ok_or_else(|| {
+                    DagMlError::GraphValidation(format!("{path}._range_ lacks start"))
+                })?,
+                path,
+                "start",
+            )?,
+            json_f64(
+                spec.get("stop").ok_or_else(|| {
+                    DagMlError::GraphValidation(format!("{path}._range_ lacks stop"))
+                })?,
+                path,
+                "stop",
+            )?,
+            json_f64(
+                spec.get("step").ok_or_else(|| {
+                    DagMlError::GraphValidation(format!("{path}._range_ lacks step"))
+                })?,
+                path,
+                "step",
+            )?,
+        )
+    } else {
+        return Err(DagMlError::GraphValidation(format!(
+            "{path}._range_ must be an array or object"
+        )));
+    };
+    Ok(PipelineDslParamGenerator::Range {
+        name: optional_object_field(object, "name")?,
+        param,
+        start,
+        stop,
+        step,
+        inclusive: object
+            .get("inclusive")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+        count: optional_object_field(object, "count")?,
+    })
+}
+
+fn compat_log_range_generator(
+    value: &serde_json::Value,
+    object: &serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) -> Result<PipelineDslParamGenerator> {
+    let param = object
+        .get("param")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("alpha")
+        .to_string();
+    let spec = value.as_object().ok_or_else(|| {
+        DagMlError::GraphValidation(format!("{path}._log_range_ must be an object"))
+    })?;
+    let start = json_f64(
+        spec.get("start")
+            .or_else(|| spec.get("from"))
+            .ok_or_else(|| {
+                DagMlError::GraphValidation(format!("{path}._log_range_ lacks start/from"))
+            })?,
+        path,
+        "start",
+    )?;
+    let stop = json_f64(
+        spec.get("stop").or_else(|| spec.get("to")).ok_or_else(|| {
+            DagMlError::GraphValidation(format!("{path}._log_range_ lacks stop/to"))
+        })?,
+        path,
+        "stop",
+    )?;
+    let count = spec
+        .get("count")
+        .or_else(|| spec.get("num"))
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| DagMlError::GraphValidation(format!("{path}._log_range_ lacks count/num")))?
+        as usize;
+    Ok(PipelineDslParamGenerator::LogRange {
+        name: optional_object_field(object, "name")?,
+        param,
+        start,
+        stop,
+        count,
+        base: spec
+            .get("base")
+            .map(|value| json_f64(value, path, "base"))
+            .transpose()?
+            .unwrap_or(10.0),
+    })
+}
+
+fn compat_grid_param_generator(
+    value: &serde_json::Value,
+    object: &serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) -> Result<PipelineDslParamGenerator> {
+    let grid = value
+        .as_object()
+        .ok_or_else(|| DagMlError::GraphValidation(format!("{path}._grid_ must be an object")))?;
+    let params = grid
+        .iter()
+        .map(|(key, value)| {
+            let values = match value {
+                serde_json::Value::Array(values) => values.clone(),
+                _ => vec![value.clone()],
+            };
+            Ok((
+                key.clone(),
+                values
+                    .into_iter()
+                    .map(PipelineDslGeneratorValue::Value)
+                    .collect::<Vec<_>>(),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    Ok(PipelineDslParamGenerator::Grid {
+        name: optional_object_field(object, "name")?,
+        params,
+        count: optional_object_field(object, "count")?,
+    })
+}
+
+fn compat_zip_variants(
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<Vec<PipelineDslVariantChoice>> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| DagMlError::GraphValidation(format!("{path}._zip_ must be an object")))?;
+    let mut length = None;
+    let mut columns = Vec::new();
+    for (key, value) in object {
+        let values = value.as_array().ok_or_else(|| {
+            DagMlError::GraphValidation(format!("{path}._zip_.{key} must be an array"))
+        })?;
+        if let Some(expected) = length {
+            if values.len() != expected {
+                return Err(DagMlError::GraphValidation(format!(
+                    "{path}._zip_ arrays must have equal lengths"
+                )));
+            }
+        } else {
+            length = Some(values.len());
+        }
+        columns.push((key.clone(), values.clone()));
+    }
+    let length = length.unwrap_or(0);
+    if length == 0 {
+        return Err(DagMlError::GraphValidation(format!(
+            "{path}._zip_ must contain non-empty arrays"
+        )));
+    }
+    Ok((0..length)
+        .map(|index| {
+            let params = columns
+                .iter()
+                .map(|(key, values)| (key.clone(), values[index].clone()))
+                .collect::<BTreeMap<_, _>>();
+            PipelineDslVariantChoice {
+                label: format!("zip{index}"),
+                params,
+                value: None,
+            }
+        })
+        .collect())
+}
+
+fn compat_sample_rows(
+    object: &serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) -> Result<Vec<BTreeMap<String, serde_json::Value>>> {
+    let param_names = if let Some(param) = object.get("param").and_then(serde_json::Value::as_str) {
+        vec![param.to_string()]
+    } else if let Some(tune) = object.get("tune").and_then(serde_json::Value::as_array) {
+        let params = tune
+            .iter()
+            .map(|value| {
+                value.as_str().map(str::to_string).ok_or_else(|| {
+                    DagMlError::GraphValidation(format!(
+                        "{path}._sample_.tune entries must be strings"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if params.is_empty() {
+            return Err(DagMlError::GraphValidation(format!(
+                "{path}._sample_.tune cannot be empty"
+            )));
+        }
+        params
+    } else {
+        return Err(DagMlError::GraphValidation(format!(
+            "{path}._sample_ requires `param` or `tune` for deterministic JSON lowering"
+        )));
+    };
+    let from = json_f64(
+        object
+            .get("from")
+            .ok_or_else(|| DagMlError::GraphValidation(format!("{path}._sample_ lacks from")))?,
+        path,
+        "from",
+    )?;
+    let to = json_f64(
+        object
+            .get("to")
+            .ok_or_else(|| DagMlError::GraphValidation(format!("{path}._sample_ lacks to")))?,
+        path,
+        "to",
+    )?;
+    let count = object
+        .get("num")
+        .or_else(|| object.get("count"))
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| DagMlError::GraphValidation(format!("{path}._sample_ lacks num/count")))?
+        as usize;
+    if count == 0 {
+        return Err(DagMlError::GraphValidation(format!(
+            "{path}._sample_ count cannot be zero"
+        )));
+    }
+    let distribution = object
+        .get("distribution")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("uniform");
+    if distribution == "log_uniform" && (from <= 0.0 || to <= 0.0) {
+        return Err(DagMlError::GraphValidation(format!(
+            "{path}._sample_ log_uniform requires positive from/to"
+        )));
+    }
+    (0..count)
+        .map(|index| {
+            let ratio = if count == 1 {
+                0.0
+            } else {
+                index as f64 / (count - 1) as f64
+            };
+            let sampled = match distribution {
+                "uniform" => from + (to - from) * ratio,
+                "log_uniform" => {
+                    let start = from.log10();
+                    let stop = to.log10();
+                    10f64.powf(start + (stop - start) * ratio)
+                }
+                other => {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "{path}._sample_ unsupported deterministic distribution `{other}`"
+                    )));
+                }
+            };
+            let mut row = BTreeMap::new();
+            let value = serde_json::Value::Number(
+                serde_json::Number::from_f64(sampled).ok_or_else(|| {
+                    DagMlError::GraphValidation(format!(
+                        "{path}._sample_ produced non-finite value"
+                    ))
+                })?,
+            );
+            for param in &param_names {
+                row.insert(param.clone(), value.clone());
+            }
+            Ok(row)
+        })
+        .collect()
+}
+
+fn compat_sample_variants(
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<Vec<PipelineDslVariantChoice>> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| DagMlError::GraphValidation(format!("{path}._sample_ must be an object")))?;
+    compat_sample_rows(object, path)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, params)| {
+            Ok(PipelineDslVariantChoice {
+                label: format!("sample{index}"),
+                params,
+                value: None,
+            })
+        })
+        .collect()
+}
+
+fn json_f64(value: &serde_json::Value, path: &str, field: &str) -> Result<f64> {
+    value
+        .as_f64()
+        .ok_or_else(|| DagMlError::GraphValidation(format!("{path}.{field} must be numeric")))
 }
 
 impl PipelineCompiler {
@@ -4651,6 +6617,94 @@ mod tests {
 
         let error = compile_pipeline_dsl(&spec).unwrap_err();
         assert!(format!("{error}").contains("must produce at least one model or merge prediction"));
+    }
+
+    #[test]
+    fn parses_nirs4all_compat_pipeline_and_fuses_data_generators() {
+        let spec = parse_pipeline_dsl_json(
+            br#"{
+  "id": "dsl-nirs4all-compat-fused",
+  "pipeline": [
+    {"sources": ["nir"]},
+    {"_cartesian_": [
+      {"_or_": ["SNV", "MSC", null]},
+      {"_or_": [null, {"preprocessing": "SavitzkyGolay", "params": {"window": 11, "deriv": 1}}]}
+    ]},
+    {"split": {"type": "GroupKFold", "n_splits": 3}},
+    {"_chain_": [
+      {"_grid_": {"model": ["PLSRegression"], "n_components": [5, 10]}},
+      {"_grid_": {"model": ["Ridge"], "alpha": [0.1, 1.0]}},
+      {"_sample_": {"model": "SVR", "distribution": "log_uniform", "from": 0.001, "to": 1.0, "num": 2, "tune": ["C", "gamma"], "kernel": "rbf"}}
+    ]},
+    {"merge": "all"},
+    {"model": "Ridge", "id": "model:meta", "params": {"alpha": 0.5}}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        assert_eq!(spec.steps.len(), 2);
+        assert_eq!(
+            spec.split_invocation
+                .as_ref()
+                .unwrap()
+                .params
+                .get("type")
+                .unwrap(),
+            "GroupKFold"
+        );
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        graph.validate().unwrap();
+        let meta = graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "model:meta")
+            .unwrap();
+        assert_eq!(meta.kind, NodeKind::Model);
+        assert!(meta
+            .ports
+            .inputs
+            .iter()
+            .any(|port| port.name == "x_original"));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.target.node_id.as_str() == "model:meta"
+                && edge.contract.kind == PortKind::Prediction
+                && edge.contract.requires_oof
+        }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.metadata
+                .get("dsl_compat_keyword")
+                .and_then(serde_json::Value::as_str)
+                == Some("preprocessing")
+        }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == NodeKind::Model
+                && node.params.contains_key("C")
+                && node.params.contains_key("gamma")
+        }));
+    }
+
+    #[test]
+    fn parses_nirs4all_range_attached_to_following_model() {
+        let spec = parse_pipeline_dsl_json(
+            br#"{
+  "id": "dsl-nirs4all-compat-range",
+  "pipeline": [
+    {"_range_": [5, 15, 5]},
+    {"model": "PLSRegression", "id": "model:pls"}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+        assert_eq!(compiled.generation.dimensions.len(), 1);
+        assert_eq!(compiled.generation.dimensions[0].choices.len(), 3);
+        assert_eq!(
+            compiled.generation.dimensions[0].choices[0].param_overrides[0].params["n_components"],
+            5.0
+        );
     }
 
     #[test]

@@ -1,0 +1,70 @@
+{
+  "id": "dsl-nirs4all-compat-smoke",
+  "pipeline": [
+    {
+      "sources": ["nir"]
+    },
+    {
+      "_cartesian_": [
+        {
+          "_or_": ["SNV", "MSC", null]
+        },
+        {
+          "_or_": [
+            null,
+            {
+              "preprocessing": "SavitzkyGolay",
+              "params": {
+                "window": 11,
+                "deriv": 1
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "split": {
+        "type": "GroupKFold",
+        "n_splits": 3
+      }
+    },
+    {
+      "_chain_": [
+        {
+          "_grid_": {
+            "model": ["PLSRegression"],
+            "n_components": [5, 10]
+          }
+        },
+        {
+          "_grid_": {
+            "model": ["Ridge"],
+            "alpha": [0.1, 1.0]
+          }
+        },
+        {
+          "_sample_": {
+            "model": "SVR",
+            "distribution": "log_uniform",
+            "from": 0.001,
+            "to": 1.0,
+            "num": 2,
+            "tune": ["C", "gamma"],
+            "kernel": "rbf"
+          }
+        }
+      ]
+    },
+    {
+      "merge": "all"
+    },
+    {
+      "model": "Ridge",
+      "id": "model:compat.meta",
+      "params": {
+        "alpha": 0.5
+      }
+    }
+  ]
+}

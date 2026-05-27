@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use dag_ml_core::{
     build_execution_plan, build_openlineage_run_event, build_research_provenance_export,
-    compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
+    compile_pipeline_dsl, compile_pipeline_dsl_with_generation, parse_pipeline_dsl_json,
     regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
     AggregatedPredictionBlock, AggregationControllerResult, AggregationControllerTask,
@@ -1031,7 +1031,8 @@ pub unsafe extern "C" fn dagml_node_result_validate_for_task_json(
     }
 }
 
-/// Compiles a strict JSON `PipelineDslSpec` into a canonical `GraphSpec` JSON.
+/// Compiles canonical or nirs4all-compatible JSON DSL into a canonical
+/// `GraphSpec` JSON.
 ///
 /// This compiler is pure: it lowers host-declared operator references and
 /// branch/merge structure into DAG-ML graph contracts without instantiating
@@ -1050,7 +1051,7 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_compile_json(
 ) -> DagMlStatusCode {
     clear_error(error_out);
     clear_owned_bytes(out_json);
-    let dsl = match parse_json_ptr::<PipelineDslSpec>(dsl_ptr, dsl_len, error_out, "pipeline DSL") {
+    let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
         Ok(dsl) => dsl,
         Err(status) => return status,
     };
@@ -1060,7 +1061,8 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_compile_json(
     }
 }
 
-/// Compiles a strict JSON `PipelineDslSpec` into `CompiledPipelineDsl` JSON.
+/// Compiles canonical or nirs4all-compatible JSON DSL into
+/// `CompiledPipelineDsl` JSON.
 ///
 /// The artifact contains the canonical graph, extracted `GenerationSpec`,
 /// validated shape/data-binding fragments, a `CampaignSpec` template, and the
@@ -1079,7 +1081,7 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_compile_artifact_json(
 ) -> DagMlStatusCode {
     clear_error(error_out);
     clear_owned_bytes(out_json);
-    let dsl = match parse_json_ptr::<PipelineDslSpec>(dsl_ptr, dsl_len, error_out, "pipeline DSL") {
+    let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
         Ok(dsl) => dsl,
         Err(status) => return status,
     };
@@ -1089,7 +1091,7 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_compile_artifact_json(
     }
 }
 
-/// Compiles a strict JSON `PipelineDslSpec` and controller manifests into
+/// Compiles canonical or nirs4all-compatible JSON DSL and controller manifests into
 /// validated `ExecutionPlan` JSON.
 ///
 /// This is the direct non-Rust binding path for the DSL artifact: splits,
@@ -1112,7 +1114,7 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_execution_plan_build_json(
 ) -> DagMlStatusCode {
     clear_error(error_out);
     clear_owned_bytes(out_json);
-    let dsl = match parse_json_ptr::<PipelineDslSpec>(dsl_ptr, dsl_len, error_out, "pipeline DSL") {
+    let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
         Ok(dsl) => dsl,
         Err(status) => return status,
     };
@@ -2627,6 +2629,25 @@ where
     let json = slice::from_raw_parts(json_ptr, json_len);
     serde_json::from_slice::<T>(json).map_err(|error| {
         set_error(error_out, format!("failed to parse {label} JSON: {error}"));
+        DagMlStatusCode::VALIDATION_ERROR
+    })
+}
+
+unsafe fn parse_pipeline_dsl_ptr(
+    json_ptr: *const u8,
+    json_len: usize,
+    error_out: *mut DagMlString,
+) -> Result<PipelineDslSpec, DagMlStatusCode> {
+    if json_ptr.is_null() {
+        set_error(error_out, "pipeline DSL json pointer is null".to_string());
+        return Err(DagMlStatusCode::INVALID_ARGUMENT);
+    }
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    parse_pipeline_dsl_json(json).map_err(|error| {
+        set_error(
+            error_out,
+            format!("failed to parse pipeline DSL JSON: {error}"),
+        );
         DagMlStatusCode::VALIDATION_ERROR
     })
 }
@@ -6111,6 +6132,35 @@ mod tests {
             && edge.target.node_id.as_str() == "merge:stack.pred_plus_original.meta:ridge"
             && edge.target.port_name == "b0_oof"));
         graph.validate().unwrap();
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn compiles_nirs4all_compat_pipeline_dsl_over_abi() {
+        let dsl = include_bytes!("../../../examples/pipeline_dsl_nirs4all_compat.json");
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_pipeline_dsl_compile_artifact_json(dsl.as_ptr(), dsl.len(), &mut out, &mut error)
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let artifact: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(artifact["graph"]["id"], "dsl-nirs4all-compat-smoke");
+        assert_eq!(
+            artifact["campaign_template"]["split_invocation"]["params"]["type"],
+            "GroupKFold"
+        );
+        assert!(artifact["graph"]["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["target"]["node_id"] == "model:compat.meta"
+                && edge["contract"]["requires_oof"] == true));
         unsafe { dagml_owned_bytes_free(out) };
     }
 
