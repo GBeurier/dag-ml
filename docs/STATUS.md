@@ -156,6 +156,11 @@ Implemented:
   safe planning category, keeps operators external for host controller
   resolution, and folds successive nirs4all splitter declarations into one
   campaign `SplitInvocation` chain instead of graph split nodes;
+- controller manifests can now declare `operator_selectors` over aliases,
+  classes, class prefixes, functions, refs and types. Registry resolution
+  prefers matching selectors over generic same-kind controllers, which lets
+  minimal payloads such as `SNV` route to a binding-specific transformer
+  controller without making the DSL verbose;
 - the public Pipeline DSL input contract is now published as
   `docs/contracts/pipeline_dsl.schema.json`, checked by
   `scripts/validate_contracts.py`, and exposed through C ABI

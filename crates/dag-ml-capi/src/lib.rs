@@ -5844,6 +5844,51 @@ mod tests {
         assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
 
+        let selector_manifest = br#"{
+  "controller_id": "controller:transform.snv",
+  "controller_version": "0.1.0",
+  "operator_kind": "transform",
+  "priority": 0,
+  "supported_phases": ["FIT_CV", "REFIT", "PREDICT"],
+  "operator_selectors": [{
+    "aliases": ["SNV"],
+    "class_prefixes": ["nirs4all.operators.transforms."]
+  }],
+  "fit_scope": "fold_train",
+  "rng_policy": "uses_core_seed",
+  "artifact_policy": "serializable"
+}"#;
+        let status = unsafe {
+            dagml_controller_manifest_validate_json(
+                selector_manifest.as_ptr(),
+                selector_manifest.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+
+        let invalid_selector = br#"{
+  "controller_id": "controller:bad.selector",
+  "controller_version": "0.1.0",
+  "operator_kind": "transform",
+  "supported_phases": ["FIT_CV"],
+  "operator_selectors": [{}],
+  "fit_scope": "fold_train",
+  "rng_policy": "uses_core_seed",
+  "artifact_policy": "serializable"
+}"#;
+        let status = unsafe {
+            dagml_controller_manifest_validate_json(
+                invalid_selector.as_ptr(),
+                invalid_selector.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(error_message(&error).contains("empty operator selector"));
+        unsafe { dagml_string_free(error) };
+
         let invalid = br#"{
   "controller_id": "controller:bad",
   "controller_version": "0.1.0",

@@ -108,6 +108,7 @@ Each controller must expose a manifest equivalent to:
 | `input_ports` / `output_ports` | typed port contracts |
 | `data_requirements` | `ModelInputSpec`, aux inputs, required sources or target |
 | `capabilities` | deterministic, thread_safe, process_safe, needs_python_gil, emits_predictions, consumes_oof_predictions, emits_artifacts, stateful, emits_relation |
+| `operator_selectors` | optional alias/class/function/ref/type selectors used by the registry to route opaque operator payloads before falling back to generic kind routing |
 | `fit_scope` | stateless, fold_train, full_train, inference_only |
 | `rng_policy` | uses core seed, ignores seed, externally deterministic, nondeterministic |
 | `artifact_policy` | serializable, host_only, content_addressed, replay_required |

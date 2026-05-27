@@ -96,10 +96,13 @@ Schema fixtures for explicit `init`, framed `task`, typed `error`, `result`,
 `ack` and `close` messages. One-shot and persistent process executions are
 guarded by coordinator-side timeouts; persistent pools add opt-in
 retry/restart, with a flaky adapter fixture covering timeout refusal,
-adapter-emitted retryable errors and recovery. A stateful sklearn smoke
-now fits a real sklearn pipeline during `REFIT`, stores it behind an opaque model
-handle, and replays `PREDICT` through that handle in the same persistent pool.
-The handshake now also gates persistent-worker, worker-env and
+adapter-emitted retryable errors and recovery. Controller manifests now expose
+optional `operator_selectors` so binding registries can route minimal opaque
+operator payloads such as `SNV` to specific transformer/model controllers before
+falling back to generic same-kind controllers. A stateful sklearn smoke now fits
+a real sklearn pipeline during `REFIT`, stores it behind an opaque model handle,
+and replays `PREDICT` through that handle in the same persistent pool. The
+handshake now also gates persistent-worker, worker-env and
 parallel-invocation capabilities. The C ABI also publishes the process-adapter
 description/frame schema ids for native binding discovery, the `GraphSpec`
 schema contract for non-Rust graph validation, `ModelInputSpec` and `DataPlan`

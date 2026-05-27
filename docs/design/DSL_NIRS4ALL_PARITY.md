@@ -27,9 +27,9 @@ YAML frontends should be thin host-side serializers around the same importer.
   contracts for Rust to reject unsafe execution and for bindings to route tasks.
 - Minimal aliases are the preferred frontend surface when an operator is
   unambiguous. `SNV` should compile as an opaque transform payload; the Python
-  or native controller registry resolves it to the matching controller. Verbose
-  forms are reserved for parameters, explicit ids, controller hints or ambiguous
-  routing.
+  or native controller registry resolves it through manifest
+  `operator_selectors` to the matching controller. Verbose forms are reserved
+  for parameters, explicit ids, controller hints or ambiguous routing.
 
 ## Parity Matrix
 
