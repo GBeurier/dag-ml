@@ -63,6 +63,37 @@ can reject malformed graph JSON before controller resolution or scheduling.
 Rust validation remains the semantic authority for uniqueness, endpoint checks,
 port-kind alignment and cycle refusal.
 
+## Pipeline DSL v1
+
+Schema: `pipeline_dsl.schema.json`
+
+Canonical compatibility fixture: `examples/pipeline_dsl_nirs4all_compat.json`
+
+Runtime parser: `parse_pipeline_dsl_json`
+
+C ABI: `DAG_ML_PIPELINE_DSL_SCHEMA_VERSION`,
+`dagml_pipeline_dsl_contract_json`, `dagml_pipeline_dsl_validate_json`,
+`dagml_pipeline_dsl_compile_json`,
+`dagml_pipeline_dsl_compile_artifact_json`,
+`dagml_pipeline_dsl_execution_plan_build_json`
+
+This is the public input contract for both canonical `PipelineDslSpec` JSON and
+serialized nirs4all-style list/dict JSON. The schema documents the accepted
+portable surface: canonical step kinds plus compatibility keys such as
+`pipeline`, `preprocessing`, `model`, `branch`, `merge`, `split`, `sources`,
+`_or_`, `_cartesian_`, `_chain_`, `_grid_`, `_range_`, `_log_range_`, `_zip_`
+and `_sample_`. The compatibility profile also accepts minimal nirs4all-style
+operator aliases: short strings such as `SNV`/`PLSRegression`, plain
+`{"class": ...}` / `{"function": ...}` / `{"ref": ...}` objects, and
+`{"name": ..., "step": ...}` wrappers. Rust classifies those aliases only far
+enough to build the safe plan: splitters become campaign `SplitInvocation`
+entries, obvious estimators become model nodes, chart aliases become chart
+nodes, and everything else remains an external transform for host controller
+resolution. Rust validation remains the semantic authority: it lowers
+compatibility JSON into canonical DSL, compiles the graph/campaign/generation
+artifact, rejects unsafe augmentation/shape contracts and enforces OOF graph
+edges.
+
 ## CampaignSpec v1
 
 Schema: `campaign_spec.schema.json`

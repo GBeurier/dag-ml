@@ -36,8 +36,11 @@ the host owns the underlying object behind each handle.
 - `dagml_node_result_validate_for_task_json` so host bindings can preflight a
   controller-produced `NodeResult` against the exact `NodeTask` before handing
   the JSON back to the scheduler;
-- `dagml_pipeline_dsl_compile_json` for pure compilation of the strict JSON
-  `PipelineDslSpec` surface into canonical `GraphSpec` JSON, plus
+- `dagml_pipeline_dsl_contract_json` and `dagml_pipeline_dsl_validate_json` so
+  bindings can discover and preflight the canonical `PipelineDslSpec` and
+  serialized nirs4all-compatible list/dict DSL input profiles;
+- `dagml_pipeline_dsl_compile_json` for pure compilation of that DSL input
+  surface into canonical `GraphSpec` JSON, plus
   `dagml_pipeline_dsl_compile_artifact_json` when bindings also need the
   extracted `GenerationSpec` including coordinated override dimensions,
   validated shape-plan fragments, validated data-binding fragments, a campaign

@@ -30,8 +30,9 @@ use dag_ml_core::{
     DATA_PLAN_SCHEMA_VERSION, EXECUTION_PLAN_SCHEMA_ID, EXECUTION_PLAN_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION, MODEL_INPUT_SPEC_SCHEMA_ID,
     MODEL_INPUT_SPEC_SCHEMA_VERSION, NODE_RESULT_SCHEMA_ID, NODE_RESULT_SCHEMA_VERSION,
-    NODE_TASK_SCHEMA_ID, NODE_TASK_SCHEMA_VERSION, SELECTION_DECISION_SCHEMA_ID,
-    SELECTION_DECISION_SCHEMA_VERSION, SELECTION_POLICY_SCHEMA_ID, SELECTION_POLICY_SCHEMA_VERSION,
+    NODE_TASK_SCHEMA_ID, NODE_TASK_SCHEMA_VERSION, PIPELINE_DSL_SCHEMA_ID,
+    PIPELINE_DSL_SCHEMA_VERSION, SELECTION_DECISION_SCHEMA_ID, SELECTION_DECISION_SCHEMA_VERSION,
+    SELECTION_POLICY_SCHEMA_ID, SELECTION_POLICY_SCHEMA_VERSION,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -53,6 +54,7 @@ pub const DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION: u32 = CONTROLLER_MANIFEST_S
 pub const DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION;
 pub const DAG_ML_NODE_TASK_SCHEMA_VERSION: u32 = NODE_TASK_SCHEMA_VERSION;
 pub const DAG_ML_NODE_RESULT_SCHEMA_VERSION: u32 = NODE_RESULT_SCHEMA_VERSION;
+pub const DAG_ML_PIPELINE_DSL_SCHEMA_VERSION: u32 = PIPELINE_DSL_SCHEMA_VERSION;
 pub const DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION: u32 = 1;
 pub const DAG_ML_PROCESS_ADAPTER_FRAME_SCHEMA_VERSION: u32 = 1;
 pub const DAG_ML_SELECTION_POLICY_SCHEMA_VERSION: u32 = SELECTION_POLICY_SCHEMA_VERSION;
@@ -126,6 +128,13 @@ struct NodeTaskContractInfo {
 struct NodeResultContractInfo {
     schema_version: u32,
     schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct PipelineDslContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+    accepted_profiles: &'static [&'static str],
 }
 
 #[derive(Serialize)]
@@ -936,6 +945,29 @@ pub unsafe extern "C" fn dagml_aggregation_controller_result_contract_json(
     write_owned_json(out_json, error_out, &contract)
 }
 
+/// Returns the public C ABI contract for pipeline DSL input JSON.
+///
+/// The input parser accepts both canonical `PipelineDslSpec` JSON and the
+/// serialized nirs4all-compatible list/dict profile described by the schema.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_pipeline_dsl_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = PipelineDslContractInfo {
+        schema_version: DAG_ML_PIPELINE_DSL_SCHEMA_VERSION,
+        schema_id: PIPELINE_DSL_SCHEMA_ID,
+        accepted_profiles: &["canonical_pipeline_dsl", "nirs4all_compat_json"],
+    };
+    write_owned_json(out_json, error_out, &contract)
+}
+
 /// Validates a custom aggregation-controller task JSON payload.
 ///
 /// # Safety
@@ -1027,6 +1059,31 @@ pub unsafe extern "C" fn dagml_node_result_validate_for_task_json(
         };
     match result.validate_for_task(&task) {
         Ok(()) => DagMlStatusCode::OK,
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Validates canonical or nirs4all-compatible pipeline DSL input JSON.
+///
+/// Validation parses the input through the same hybrid parser used by compile
+/// entry points and then runs canonical DSL compilation validation.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_pipeline_dsl_validate_json(
+    dsl_ptr: *const u8,
+    dsl_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
+        Ok(dsl) => dsl,
+        Err(status) => return status,
+    };
+    match compile_pipeline_dsl_with_generation(&dsl) {
+        Ok(_) => DagMlStatusCode::OK,
         Err(error) => validation_error(error_out, error),
     }
 }
@@ -6136,6 +6193,34 @@ mod tests {
     }
 
     #[test]
+    fn exposes_pipeline_dsl_contract_over_abi() {
+        let dsl = include_bytes!("../../../examples/pipeline_dsl_nirs4all_compat.json");
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe { dagml_pipeline_dsl_contract_json(&mut out, &mut error) };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let contract: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(contract["schema_id"], dag_ml_core::PIPELINE_DSL_SCHEMA_ID);
+        assert!(contract["accepted_profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|profile| profile == "nirs4all_compat_json"));
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let status =
+            unsafe { dagml_pipeline_dsl_validate_json(dsl.as_ptr(), dsl.len(), &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+    }
+
+    #[test]
     fn compiles_nirs4all_compat_pipeline_dsl_over_abi() {
         let dsl = include_bytes!("../../../examples/pipeline_dsl_nirs4all_compat.json");
         let mut out = DagMlOwnedBytes::default();
@@ -6152,8 +6237,18 @@ mod tests {
         let artifact: serde_json::Value = serde_json::from_slice(json).unwrap();
         assert_eq!(artifact["graph"]["id"], "dsl-nirs4all-compat-smoke");
         assert_eq!(
-            artifact["campaign_template"]["split_invocation"]["params"]["type"],
+            artifact["campaign_template"]["split_invocation"]["params"]["kind"],
+            "compat_split_chain"
+        );
+        assert_eq!(
+            artifact["campaign_template"]["split_invocation"]["params"]["compat_split_chain"][0]
+                ["params"]["type"],
             "GroupKFold"
+        );
+        assert_eq!(
+            artifact["campaign_template"]["split_invocation"]["params"]["compat_split_chain"][1]
+                ["params"]["class"],
+            "sklearn.model_selection.KFold"
         );
         assert!(artifact["graph"]["edges"]
             .as_array()

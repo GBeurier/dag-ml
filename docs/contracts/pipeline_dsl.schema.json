@@ -1,0 +1,463 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/pipeline_dsl.v1.schema.json",
+  "title": "DAG-ML Pipeline DSL Input v1",
+  "description": "Public input contract for canonical PipelineDslSpec JSON and serialized nirs4all-style list/dict compatibility JSON. Rust remains the semantic validator.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/canonical_pipeline_dsl"
+    },
+    {
+      "$ref": "#/$defs/compat_pipeline_object"
+    },
+    {
+      "$ref": "#/$defs/compat_step_array"
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "json_object": {
+      "type": "object"
+    },
+    "json_value": true,
+    "canonical_step_kind": {
+      "enum": [
+        "transform",
+        "y_transform",
+        "tag",
+        "exclude",
+        "filter",
+        "sample_filter",
+        "augmentation",
+        "feature_augmentation",
+        "sample_augmentation",
+        "concat_transform",
+        "model",
+        "branch",
+        "generator",
+        "sequential",
+        "merge",
+        "merge_model",
+        "chart"
+      ]
+    },
+    "compat_generator_key": {
+      "enum": [
+        "_or_",
+        "_cartesian_",
+        "_chain_",
+        "_grid_",
+        "_range_",
+        "_log_range_",
+        "_zip_",
+        "_sample_"
+      ]
+    },
+    "canonical_operator_step": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind", "id", "operator"],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/canonical_step_kind"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "operator": {
+          "$ref": "#/$defs/json_value"
+        },
+        "params": {
+          "$ref": "#/$defs/json_object"
+        },
+        "metadata": {
+          "$ref": "#/$defs/json_object"
+        },
+        "train_params": {
+          "$ref": "#/$defs/json_object"
+        },
+        "tuning": {
+          "$ref": "#/$defs/json_object"
+        },
+        "variants": {
+          "type": "array"
+        },
+        "generators": {
+          "type": "array"
+        },
+        "shape": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
+    "canonical_branch": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "steps"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "selector": {
+          "$ref": "#/$defs/json_value"
+        },
+        "metadata": {
+          "$ref": "#/$defs/json_object"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/canonical_step"
+          }
+        }
+      }
+    },
+    "canonical_stage": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "branches"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "selector": {
+          "$ref": "#/$defs/json_value"
+        },
+        "metadata": {
+          "$ref": "#/$defs/json_object"
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/canonical_branch"
+          }
+        }
+      }
+    },
+    "canonical_step": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/canonical_step_kind"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "operator": {
+          "$ref": "#/$defs/json_value"
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/canonical_branch"
+          }
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/canonical_stage"
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/canonical_step"
+          }
+        },
+        "mode": {
+          "type": "string"
+        },
+        "merge_mode": {
+          "type": "string"
+        },
+        "output_as": {
+          "enum": ["features", "predictions", "sources"]
+        },
+        "include_original_data": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "transform",
+                  "y_transform",
+                  "tag",
+                  "exclude",
+                  "filter",
+                  "sample_filter",
+                  "augmentation",
+                  "feature_augmentation",
+                  "sample_augmentation",
+                  "model",
+                  "chart"
+                ]
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/canonical_operator_step"
+          }
+        }
+      ]
+    },
+    "canonical_pipeline_dsl": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "steps"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "input": {
+          "$ref": "#/$defs/json_object"
+        },
+        "output": {
+          "$ref": "#/$defs/json_object"
+        },
+        "generation_strategy": {
+          "enum": ["none", "cartesian", "zip", null]
+        },
+        "max_variants": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "generation_dimensions": {
+          "type": "array"
+        },
+        "campaign_id": {
+          "type": ["string", "null"]
+        },
+        "root_seed": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "leakage_policy": {
+          "$ref": "#/$defs/json_object"
+        },
+        "aggregation_policy": {
+          "$ref": "#/$defs/json_object"
+        },
+        "split_invocation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/json_object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "campaign_metadata": {
+          "$ref": "#/$defs/json_object"
+        },
+        "data_bindings": {
+          "type": "array"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/canonical_step"
+          }
+        },
+        "metadata": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
+    "compat_operator_ref": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "$ref": "#/$defs/json_object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "compat_step_array": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/compat_step"
+      }
+    },
+    "compat_step": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "$ref": "#/$defs/compat_step_array"
+        },
+        {
+          "$ref": "#/$defs/compat_step_object"
+        }
+      ]
+    },
+    "compat_step_object": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "function": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "ref": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "type": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "step": {
+          "$ref": "#/$defs/compat_step"
+        },
+        "preprocessing": {
+          "$ref": "#/$defs/compat_operator_ref"
+        },
+        "processing": {
+          "$ref": "#/$defs/compat_operator_ref"
+        },
+        "transform": {
+          "$ref": "#/$defs/compat_operator_ref"
+        },
+        "y_processing": {
+          "$ref": "#/$defs/compat_operator_ref"
+        },
+        "model": {
+          "$ref": "#/$defs/compat_operator_ref"
+        },
+        "branch": {
+          "$ref": "#/$defs/json_value"
+        },
+        "merge": {
+          "$ref": "#/$defs/json_value"
+        },
+        "split": {
+          "$ref": "#/$defs/json_value"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "_or_": {
+          "$ref": "#/$defs/compat_step_array"
+        },
+        "_cartesian_": {
+          "$ref": "#/$defs/compat_step_array"
+        },
+        "_chain_": {
+          "$ref": "#/$defs/compat_step_array"
+        },
+        "_grid_": {
+          "$ref": "#/$defs/json_object"
+        },
+        "_range_": {
+          "$ref": "#/$defs/json_value"
+        },
+        "_log_range_": {
+          "$ref": "#/$defs/json_object"
+        },
+        "_zip_": {
+          "$ref": "#/$defs/json_object"
+        },
+        "_sample_": {
+          "$ref": "#/$defs/json_object"
+        },
+        "params": {
+          "$ref": "#/$defs/json_object"
+        },
+        "model_params": {
+          "$ref": "#/$defs/json_object"
+        },
+        "train_params": {
+          "$ref": "#/$defs/json_object"
+        },
+        "finetune_params": {
+          "$ref": "#/$defs/json_object"
+        },
+        "mode": {
+          "$ref": "#/$defs/json_value"
+        },
+        "action": {
+          "$ref": "#/$defs/json_value"
+        },
+        "count": {
+          "$ref": "#/$defs/json_value"
+        },
+        "selection": {
+          "$ref": "#/$defs/json_value"
+        },
+        "random_state": {
+          "$ref": "#/$defs/json_value"
+        },
+        "group": {
+          "$ref": "#/$defs/json_value"
+        },
+        "metadata": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
+    "compat_pipeline_object": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["pipeline"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "pipeline": {
+          "$ref": "#/$defs/compat_step_array"
+        },
+        "input": {
+          "$ref": "#/$defs/json_object"
+        },
+        "output": {
+          "$ref": "#/$defs/json_object"
+        },
+        "metadata": {
+          "$ref": "#/$defs/json_object"
+        },
+        "campaign_metadata": {
+          "$ref": "#/$defs/json_object"
+        },
+        "split_invocation": {
+          "$ref": "#/$defs/json_object"
+        },
+        "data_bindings": {
+          "type": "array"
+        }
+      }
+    }
+  }
+}

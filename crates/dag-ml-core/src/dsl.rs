@@ -19,6 +19,10 @@ use crate::policy::{
     Granularity, LeakageUnitPolicy,
 };
 
+pub const PIPELINE_DSL_SCHEMA_VERSION: u32 = 1;
+pub const PIPELINE_DSL_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/pipeline_dsl.v1.schema.json";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PipelineDslSpec {
     pub id: String,
@@ -689,6 +693,14 @@ struct CompatDslLowerer {
     metadata: BTreeMap<String, serde_json::Value>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompatPlainOperatorKind {
+    Transform,
+    Model,
+    Split,
+    Chart,
+}
+
 impl CompatDslLowerer {
     fn lower_root(mut self, value: &serde_json::Value) -> Result<PipelineDslSpec> {
         let root = value.as_object();
@@ -772,6 +784,16 @@ impl CompatDslLowerer {
             if let Some(attachment) =
                 self.parse_attached_generation(&values[index], &current_path)?
             {
+                if value_can_receive_generation_attachment(&values[index]) {
+                    let mut attached = self.lower_value_with_attachment(
+                        &values[index],
+                        &current_path,
+                        attachment,
+                    )?;
+                    lowered.append(&mut attached);
+                    index += 1;
+                    continue;
+                }
                 let next = values.get(index + 1).ok_or_else(|| {
                     DagMlError::GraphValidation(format!(
                         "{current_path} declares a parameter generator but has no following operator/model step"
@@ -816,9 +838,16 @@ impl CompatDslLowerer {
     }
 
     fn consume_side_effect_step(&mut self, value: &serde_json::Value, path: &str) -> Result<bool> {
+        if compat_plain_operator_kind(value) == CompatPlainOperatorKind::Split {
+            self.set_split_invocation(self.lower_plain_split_invocation(value, path)?, path)?;
+            return Ok(true);
+        }
         let Some(object) = value.as_object() else {
             return Ok(false);
         };
+        if is_comment_only_object(object) {
+            return Ok(true);
+        }
         if let Some(split) = object.get("split") {
             self.set_split_invocation(self.lower_split_invocation(split, object, path)?, path)?;
             return Ok(true);
@@ -845,9 +874,25 @@ impl CompatDslLowerer {
                     steps: self.lower_steps(children, path)?,
                 })])
             }
-            serde_json::Value::String(_) => Ok(vec![PipelineDslStep::Transform(
-                self.compat_operator_step(None, "preprocessing", value, None, None)?,
-            )]),
+            serde_json::Value::String(_) => {
+                let step = match compat_plain_operator_kind(value) {
+                    CompatPlainOperatorKind::Transform => PipelineDslStep::Transform(
+                        self.compat_operator_step(None, "preprocessing", value, None, None)?,
+                    ),
+                    CompatPlainOperatorKind::Model => PipelineDslStep::Model(
+                        self.compat_operator_step(None, "model", value, None, None)?,
+                    ),
+                    CompatPlainOperatorKind::Chart => PipelineDslStep::Chart(
+                        self.compat_operator_step(None, "chart", value, None, None)?,
+                    ),
+                    CompatPlainOperatorKind::Split => {
+                        return Err(DagMlError::GraphValidation(format!(
+                            "{path} splitter alias was not consumed as a campaign split"
+                        )));
+                    }
+                };
+                Ok(vec![step])
+            }
             serde_json::Value::Object(object) => {
                 if object.contains_key("kind") {
                     let step = serde_json::from_value::<PipelineDslStep>(value.clone()).map_err(
@@ -991,6 +1036,14 @@ impl CompatDslLowerer {
                         self.lower_merge_step(object, path)?,
                     )]);
                 }
+                if let Some(step_value) = object.get("step") {
+                    let mut steps =
+                        self.lower_pipeline_fragment(step_value, &format!("{path}.step"))?;
+                    if let Some(name) = object.get("name").and_then(serde_json::Value::as_str) {
+                        annotate_named_steps(&mut steps, name);
+                    }
+                    return Ok(steps);
+                }
                 if object.contains_key("_or_") {
                     return Ok(vec![PipelineDslStep::Generator(
                         self.lower_or_generator(object, "_or_", path)?,
@@ -1015,6 +1068,41 @@ impl CompatDslLowerer {
                     return Ok(vec![PipelineDslStep::Generator(
                         self.lower_sample_generator(object, path)?,
                     )]);
+                }
+                if compat_plain_operator_ref(value).is_some() {
+                    let operator = compat_plain_operator_value(value)?;
+                    return match compat_plain_operator_kind(value) {
+                        CompatPlainOperatorKind::Transform => Ok(vec![PipelineDslStep::Transform(
+                            self.compat_operator_step(
+                                Some(object),
+                                "preprocessing",
+                                &operator,
+                                None,
+                                None,
+                            )?,
+                        )]),
+                        CompatPlainOperatorKind::Model => {
+                            Ok(vec![PipelineDslStep::Model(self.compat_operator_step(
+                                Some(object),
+                                "model",
+                                &operator,
+                                None,
+                                None,
+                            )?)])
+                        }
+                        CompatPlainOperatorKind::Chart => {
+                            Ok(vec![PipelineDslStep::Chart(self.compat_operator_step(
+                                Some(object),
+                                "chart",
+                                &operator,
+                                None,
+                                None,
+                            )?)])
+                        }
+                        CompatPlainOperatorKind::Split => Err(DagMlError::GraphValidation(
+                            format!("{path} splitter object was not consumed as a campaign split"),
+                        )),
+                    };
                 }
                 if object.contains_key("type") || object.contains_key("ref") {
                     return Ok(vec![PipelineDslStep::Transform(
@@ -1061,6 +1149,41 @@ impl CompatDslLowerer {
                         Some(attachment),
                         None,
                     )?)]);
+                }
+                if compat_plain_operator_ref(value).is_some() {
+                    let operator = compat_plain_operator_value(value)?;
+                    return match compat_plain_operator_kind(value) {
+                        CompatPlainOperatorKind::Transform => Ok(vec![PipelineDslStep::Transform(
+                            self.compat_operator_step(
+                                Some(object),
+                                "preprocessing",
+                                &operator,
+                                Some(attachment),
+                                None,
+                            )?,
+                        )]),
+                        CompatPlainOperatorKind::Model => Ok(vec![PipelineDslStep::Model(
+                            self.compat_operator_step(
+                                Some(object),
+                                "model",
+                                &operator,
+                                Some(attachment),
+                                None,
+                            )?,
+                        )]),
+                        CompatPlainOperatorKind::Chart => Ok(vec![PipelineDslStep::Chart(
+                            self.compat_operator_step(
+                                Some(object),
+                                "chart",
+                                &operator,
+                                Some(attachment),
+                                None,
+                            )?,
+                        )]),
+                        CompatPlainOperatorKind::Split => Err(DagMlError::GraphValidation(
+                            format!("{path} splitter object cannot receive a parameter generator"),
+                        )),
+                    };
                 }
                 Err(DagMlError::GraphValidation(format!(
                     "{path} cannot receive a preceding nirs4all parameter generator; expected model or preprocessing"
@@ -1756,6 +1879,11 @@ impl CompatDslLowerer {
                     params.extend(alias_params);
                 }
             }
+            for wrapper_key in compat_wrapper_param_keys(keyword) {
+                if let Some(value) = object.get(*wrapper_key) {
+                    params.insert((*wrapper_key).to_string(), value.clone());
+                }
+            }
         }
         let shape = match object.and_then(|object| object.get("shape")) {
             Some(shape) => Some(deserialize_value(
@@ -1793,6 +1921,15 @@ impl CompatDslLowerer {
         if let Some(policy) = object.and_then(|object| object.get("policy")) {
             step.metadata
                 .insert("dsl_compat_policy".to_string(), policy.clone());
+        }
+        if let Some(name) = object
+            .and_then(|object| object.get("name"))
+            .and_then(serde_json::Value::as_str)
+        {
+            step.metadata.insert(
+                "dsl_name".to_string(),
+                serde_json::Value::String(name.to_string()),
+            );
         }
         if let Some(attachment) = attachment {
             step.variants.extend(attachment.variants);
@@ -1865,14 +2002,13 @@ impl CompatDslLowerer {
                 }
                 if let Some(explicit_params) = object_value_as_map(split_object.get("params")) {
                     params.extend(explicit_params);
-                } else {
-                    for (key, value) in split_object {
-                        if !matches!(
-                            key.as_str(),
-                            "id" | "controller_id" | "leakage_policy" | "fold_set"
-                        ) {
-                            params.insert(key.clone(), value.clone());
-                        }
+                }
+                for (key, value) in split_object {
+                    if !matches!(
+                        key.as_str(),
+                        "id" | "controller_id" | "leakage_policy" | "fold_set" | "params"
+                    ) {
+                        params.insert(key.clone(), value.clone());
                     }
                 }
             }
@@ -1880,6 +2016,14 @@ impl CompatDslLowerer {
                 return Err(DagMlError::GraphValidation(format!(
                     "{path}.split must be a string or object"
                 )));
+            }
+        }
+        for (key, value) in object {
+            if !matches!(
+                key.as_str(),
+                "split" | "id" | "controller_id" | "leakage_policy" | "fold_set" | "params"
+            ) {
+                params.entry(key.clone()).or_insert_with(|| value.clone());
             }
         }
         Ok(SplitInvocation {
@@ -1891,12 +2035,107 @@ impl CompatDslLowerer {
         })
     }
 
-    fn set_split_invocation(&mut self, split: SplitInvocation, path: &str) -> Result<()> {
-        if self.split_invocation.replace(split).is_some() {
+    fn lower_plain_split_invocation(
+        &self,
+        value: &serde_json::Value,
+        path: &str,
+    ) -> Result<SplitInvocation> {
+        let mut params = BTreeMap::new();
+        let id;
+        let mut controller_id = None;
+        let mut leakage_policy = LeakageUnitPolicy::default();
+        let mut fold_set = None;
+        if let Some(object) = value.as_object() {
+            id = object
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    compat_plain_operator_ref(value)
+                        .map(|reference| format!("split:{}", sanitize_generation_label(reference)))
+                        .unwrap_or_else(|| "split:compat".to_string())
+                });
+            controller_id = optional_object_field(object, "controller_id")?;
+            leakage_policy = optional_object_field(object, "leakage_policy")?.unwrap_or_default();
+            fold_set = optional_object_field(object, "fold_set")?;
+            if let Some(explicit_params) = object_value_as_map(object.get("params")) {
+                params.extend(explicit_params);
+            }
+            for (key, item) in object {
+                if !matches!(
+                    key.as_str(),
+                    "id" | "controller_id" | "leakage_policy" | "fold_set" | "params" | "name"
+                ) {
+                    params.insert(key.clone(), item.clone());
+                }
+            }
+        } else if let Some(reference) = compat_plain_operator_ref(value) {
+            id = format!("split:{}", sanitize_generation_label(reference));
+            params.insert(
+                "class".to_string(),
+                serde_json::Value::String(reference.to_string()),
+            );
+        } else {
             return Err(DagMlError::GraphValidation(format!(
-                "{path} declares a second split; DAG-ML expects one campaign split invocation"
+                "{path} is not a nirs4all-compatible splitter alias"
             )));
         }
+        if let Some(reference) = compat_plain_operator_ref(value) {
+            params
+                .entry("class".to_string())
+                .or_insert_with(|| serde_json::Value::String(reference.to_string()));
+        }
+        Ok(SplitInvocation {
+            id,
+            controller_id,
+            leakage_policy,
+            params,
+            fold_set,
+        })
+    }
+
+    fn set_split_invocation(&mut self, split: SplitInvocation, path: &str) -> Result<()> {
+        let Some(existing) = self.split_invocation.as_mut() else {
+            self.split_invocation = Some(split);
+            return Ok(());
+        };
+        if existing.fold_set.is_some() && split.fold_set.is_some() {
+            return Err(DagMlError::GraphValidation(format!(
+                "{path} declares a second split with a fold_set; only one explicit fold_set can drive campaign OOF validation"
+            )));
+        }
+        if existing.fold_set.is_none() {
+            existing.fold_set = split.fold_set.clone();
+        }
+        let default_policy = LeakageUnitPolicy::default();
+        if existing.leakage_policy == default_policy {
+            existing.leakage_policy = split.leakage_policy.clone();
+        } else if split.leakage_policy != default_policy
+            && existing.leakage_policy != split.leakage_policy
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "{path} declares split leakage_policy incompatible with the existing campaign split policy"
+            )));
+        }
+        let first = split_invocation_chain_entry(existing)?;
+        let second = split_invocation_chain_entry(&split)?;
+        let mut chain = existing
+            .params
+            .remove("compat_split_chain")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_else(|| vec![first]);
+        chain.push(second);
+        existing.id = "split:compat.chain".to_string();
+        existing.controller_id = None;
+        existing.params.clear();
+        existing.params.insert(
+            "kind".to_string(),
+            serde_json::Value::String("compat_split_chain".to_string()),
+        );
+        existing.params.insert(
+            "compat_split_chain".to_string(),
+            serde_json::Value::Array(chain),
+        );
         Ok(())
     }
 
@@ -1981,6 +2220,22 @@ fn first_object_value<'a>(
     keys.iter().find_map(|key| object.get(*key))
 }
 
+fn is_comment_only_object(object: &serde_json::Map<String, serde_json::Value>) -> bool {
+    !object.is_empty()
+        && object
+            .keys()
+            .all(|key| matches!(key.as_str(), "_comment" | "comment" | "description"))
+}
+
+fn value_can_receive_generation_attachment(value: &serde_json::Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.contains_key("model")
+        || first_object_value(object, &["preprocessing", "processing", "transform"]).is_some()
+        || compat_plain_operator_ref(value).is_some()
+}
+
 fn object_value_as_map(
     value: Option<&serde_json::Value>,
 ) -> Option<BTreeMap<String, serde_json::Value>> {
@@ -1992,6 +2247,155 @@ fn object_value_as_map(
                 .collect()
         })
     })
+}
+
+fn annotate_named_steps(steps: &mut [PipelineDslStep], name: &str) {
+    for step in steps {
+        annotate_named_step(step, name);
+    }
+}
+
+fn annotate_named_step(step: &mut PipelineDslStep, name: &str) {
+    let value = serde_json::Value::String(name.to_string());
+    match step {
+        PipelineDslStep::Transform(step)
+        | PipelineDslStep::YTransform(step)
+        | PipelineDslStep::Tag(step)
+        | PipelineDslStep::Exclude(step)
+        | PipelineDslStep::Filter(step)
+        | PipelineDslStep::SampleFilter(step)
+        | PipelineDslStep::Augmentation(step)
+        | PipelineDslStep::FeatureAugmentation(step)
+        | PipelineDslStep::SampleAugmentation(step)
+        | PipelineDslStep::Model(step)
+        | PipelineDslStep::Chart(step) => {
+            step.metadata.insert("dsl_name".to_string(), value);
+        }
+        PipelineDslStep::ConcatTransform(step) => {
+            step.metadata.insert("dsl_name".to_string(), value);
+        }
+        PipelineDslStep::Branch(step) => {
+            step.metadata.insert("dsl_name".to_string(), value);
+        }
+        PipelineDslStep::Generator(step) => {
+            step.metadata.insert("dsl_name".to_string(), value);
+        }
+        PipelineDslStep::Sequential(step) => {
+            step.metadata.insert("dsl_name".to_string(), value);
+        }
+        PipelineDslStep::Merge(step) => {
+            step.metadata.insert("dsl_name".to_string(), value);
+        }
+        PipelineDslStep::MergeModel(step) => {
+            step.metadata.insert("dsl_name".to_string(), value);
+        }
+    }
+}
+
+fn compat_plain_operator_ref(value: &serde_json::Value) -> Option<&str> {
+    match value {
+        serde_json::Value::String(reference) => Some(reference),
+        serde_json::Value::Object(object) => ["class", "function", "ref", "type"]
+            .into_iter()
+            .find_map(|key| object.get(key).and_then(serde_json::Value::as_str)),
+        _ => None,
+    }
+}
+
+fn compat_plain_operator_value(value: &serde_json::Value) -> Result<serde_json::Value> {
+    match value {
+        serde_json::Value::String(_) => Ok(value.clone()),
+        serde_json::Value::Object(object) => {
+            let mut operator = serde_json::Map::new();
+            for key in ["class", "function", "ref", "type"] {
+                if let Some(value) = object.get(key) {
+                    operator.insert(key.to_string(), value.clone());
+                }
+            }
+            if operator.is_empty() {
+                return Err(DagMlError::GraphValidation(
+                    "nirs4all-compatible plain operator object must contain class, function, ref or type"
+                        .to_string(),
+                ));
+            }
+            Ok(serde_json::Value::Object(operator))
+        }
+        _ => Err(DagMlError::GraphValidation(
+            "nirs4all-compatible plain operator must be a string or object".to_string(),
+        )),
+    }
+}
+
+fn compat_plain_operator_kind(value: &serde_json::Value) -> CompatPlainOperatorKind {
+    let Some(reference) = compat_plain_operator_ref(value) else {
+        return CompatPlainOperatorKind::Transform;
+    };
+    let lower = reference.to_ascii_lowercase();
+    if compat_is_chart_alias(&lower) {
+        CompatPlainOperatorKind::Chart
+    } else if compat_is_splitter_alias(&lower) {
+        CompatPlainOperatorKind::Split
+    } else if compat_is_model_alias(&lower) {
+        CompatPlainOperatorKind::Model
+    } else {
+        CompatPlainOperatorKind::Transform
+    }
+}
+
+fn compat_is_chart_alias(lower: &str) -> bool {
+    lower.starts_with("chart_")
+        || lower == "chart"
+        || lower.contains(".charts.")
+        || lower.contains(".visualization.")
+}
+
+fn compat_is_splitter_alias(lower: &str) -> bool {
+    let short = lower.rsplit(['.', ':']).next().unwrap_or(lower);
+    lower.contains("model_selection")
+        || lower.contains(".splitters.")
+        || lower.contains("operators.splitters")
+        || short.contains("splitter")
+        || short.ends_with("kfold")
+        || short.ends_with("gfold")
+        || short.ends_with("fold")
+        || short.ends_with("split")
+        || matches!(
+            short,
+            "leaveoneout" | "leavepout" | "predefinedsplit" | "timeseriessplit"
+        )
+}
+
+fn compat_is_model_alias(lower: &str) -> bool {
+    let short = lower.rsplit(['.', ':']).next().unwrap_or(lower);
+    lower.contains(".models.")
+        || lower.contains("operators.models")
+        || lower.contains("linear_model")
+        || lower.contains("cross_decomposition")
+        || lower.contains(".ensemble.")
+        || lower.contains(".svm.")
+        || lower.contains(".tree.")
+        || lower.contains(".neighbors.")
+        || lower.contains(".neural_network.")
+        || lower.contains("xgboost")
+        || lower.contains("lightgbm")
+        || lower.contains("catboost")
+        || short.ends_with("regressor")
+        || short.ends_with("classifier")
+        || short.ends_with("regression")
+        || matches!(
+            short,
+            "ridge"
+                | "lasso"
+                | "elasticnet"
+                | "svr"
+                | "svc"
+                | "linearsvr"
+                | "linearsvc"
+                | "pls"
+                | "plsr"
+                | "plsregression"
+                | "metamodel"
+        )
 }
 
 fn compat_node_prefix(keyword: &str) -> &'static str {
@@ -2017,6 +2421,79 @@ fn compat_param_aliases(keyword: &str) -> &'static [&'static str] {
         "sample_augmentation" | "feature_augmentation" | "augmentation" => &["augmentation_params"],
         _ => &[],
     }
+}
+
+fn compat_wrapper_param_keys(keyword: &str) -> &'static [&'static str] {
+    match keyword {
+        "tag" | "exclude" | "filter" | "sample_filter" => &["mode", "report", "tag_name"],
+        "sample_augmentation" => &[
+            "count",
+            "selection",
+            "random_state",
+            "mode",
+            "action",
+            "report",
+        ],
+        "feature_augmentation" | "augmentation" => &[
+            "size",
+            "count",
+            "selection",
+            "random_state",
+            "mode",
+            "action",
+            "report",
+        ],
+        _ => &[],
+    }
+}
+
+fn split_invocation_chain_entry(split: &SplitInvocation) -> Result<serde_json::Value> {
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "id".to_string(),
+        serde_json::Value::String(split.id.clone()),
+    );
+    if let Some(controller_id) = &split.controller_id {
+        object.insert(
+            "controller_id".to_string(),
+            serde_json::to_value(controller_id).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to serialize split controller_id for compat split chain: {error}"
+                ))
+            })?,
+        );
+    }
+    if split.leakage_policy != LeakageUnitPolicy::default() {
+        object.insert(
+            "leakage_policy".to_string(),
+            serde_json::to_value(&split.leakage_policy).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to serialize split leakage_policy for compat split chain: {error}"
+                ))
+            })?,
+        );
+    }
+    if !split.params.is_empty() {
+        object.insert(
+            "params".to_string(),
+            serde_json::to_value(&split.params).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to serialize split params for compat split chain: {error}"
+                ))
+            })?,
+        );
+    }
+    if let Some(fold_set) = &split.fold_set {
+        object.insert(
+            "fold_set".to_string(),
+            serde_json::to_value(fold_set).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to serialize split fold_set for compat split chain: {error}"
+                ))
+            })?,
+        );
+    }
+    Ok(serde_json::Value::Object(object))
 }
 
 fn compat_augmentation_shape(
@@ -6705,6 +7182,109 @@ mod tests {
             compiled.generation.dimensions[0].choices[0].param_overrides[0].params["n_components"],
             5.0
         );
+    }
+
+    #[test]
+    fn parses_nirs4all_minimal_aliases_plain_classes_and_split_chain() {
+        let spec = parse_pipeline_dsl_json(
+            br#"{
+  "id": "dsl-nirs4all-compat-minimal-aliases",
+  "pipeline": [
+    "chart_2d",
+    {"class": "sklearn.preprocessing.MinMaxScaler", "params": {"feature_range": [0, 1]}},
+    {"class": "nirs4all.operators.splitters.SPXYGFold", "params": {"n_splits": 1, "test_size": 0.2}, "group": "Sample_ID"},
+    {"class": "sklearn.model_selection.KFold", "params": {"n_splits": 3, "shuffle": true, "random_state": 42}},
+    "SNV",
+    "PLSRegression"
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let split = spec.split_invocation.as_ref().unwrap();
+        assert_eq!(split.id, "split:compat.chain");
+        let chain = split.params["compat_split_chain"].as_array().unwrap();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(
+            chain[0]["params"]["class"],
+            "nirs4all.operators.splitters.SPXYGFold"
+        );
+        assert_eq!(chain[0]["params"]["group"], "Sample_ID");
+        assert_eq!(chain[1]["params"]["class"], "sklearn.model_selection.KFold");
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        graph.validate().unwrap();
+        assert!(graph.nodes.iter().any(|node| node.kind == NodeKind::Chart));
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == NodeKind::Transform
+                && node.operator.as_ref().unwrap()["class"] == "sklearn.preprocessing.MinMaxScaler"
+        }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == NodeKind::Model
+                && node.operator.as_ref().unwrap().as_str() == Some("PLSRegression")
+        }));
+    }
+
+    #[test]
+    fn parses_nirs4all_named_step_wrapper_and_plain_class_model() {
+        let spec = parse_pipeline_dsl_json(
+            br#"{
+  "id": "dsl-nirs4all-compat-named-step",
+  "pipeline": [
+    {"name": "scaled", "step": {"class": "sklearn.preprocessing.StandardScaler"}},
+    {"class": "sklearn.ensemble.RandomForestRegressor", "params": {"n_estimators": 10, "random_state": 42}}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        graph.validate().unwrap();
+        let scaled = graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Transform)
+            .unwrap();
+        assert_eq!(scaled.metadata["dsl_name"], "scaled");
+        let model = graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Model)
+            .unwrap();
+        assert_eq!(
+            model.operator.as_ref().unwrap()["class"],
+            "sklearn.ensemble.RandomForestRegressor"
+        );
+        assert_eq!(model.params["n_estimators"], 10);
+    }
+
+    #[test]
+    fn published_pipeline_dsl_schema_declares_current_contract() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/pipeline_dsl.schema.json"
+        ))
+        .unwrap();
+
+        assert_eq!(schema["$id"], PIPELINE_DSL_SCHEMA_ID);
+        assert!(schema["oneOf"].is_array());
+        assert!(schema["$defs"]["canonical_step_kind"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("generator")));
+        assert!(schema["$defs"]["compat_generator_key"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("_cartesian_")));
+        assert!(schema["$defs"]["compat_step_object"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("class"));
+        assert!(schema["$defs"]["compat_step_object"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("step"));
     }
 
     #[test]

@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 GRAPH_SPEC_SCHEMA_REL = Path("docs/contracts/graph_spec.schema.json")
+PIPELINE_DSL_SCHEMA_REL = Path("docs/contracts/pipeline_dsl.schema.json")
 CAMPAIGN_SPEC_SCHEMA_REL = Path("docs/contracts/campaign_spec.schema.json")
 EXECUTION_PLAN_SCHEMA_REL = Path("docs/contracts/execution_plan.schema.json")
 MODEL_INPUT_SPEC_SCHEMA_REL = Path("docs/contracts/model_input_spec.schema.json")
@@ -61,6 +62,7 @@ LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
 )
 LOCAL_GRAPH_SPEC_FIXTURE_REL = Path("examples/branch_merge_oof_graph.json")
+LOCAL_PIPELINE_DSL_FIXTURE_REL = Path("examples/pipeline_dsl_nirs4all_compat.json")
 LOCAL_CAMPAIGN_SPEC_FIXTURE_REL = Path("examples/campaign_oof_generation.json")
 LOCAL_EXECUTION_PLAN_FIXTURE_REL = Path(
     "examples/fixtures/runtime/execution_plan_branch_merge_executable.json"
@@ -112,6 +114,10 @@ LOCAL_FEATURE_FUSION_SCHEMA_ID = (
 GRAPH_SPEC_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "graph_spec.v1.schema.json"
+)
+PIPELINE_DSL_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "pipeline_dsl.v1.schema.json"
 )
 CAMPAIGN_SPEC_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
@@ -379,6 +385,73 @@ def validate_graph_spec_schema(schema: Any, label: str) -> None:
         require(
             definition_name in defs,
             f"{label} GraphSpec schema misses `{definition_name}`",
+        )
+
+
+def validate_pipeline_dsl_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} Pipeline DSL schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} Pipeline DSL schema must declare Draft 2020-12",
+    )
+    require(schema.get("$id") == PIPELINE_DSL_SCHEMA_ID, f"{label} Pipeline DSL $id mismatch")
+    require(isinstance(schema.get("oneOf"), list), f"{label} Pipeline DSL root must use oneOf")
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} Pipeline DSL $defs missing")
+    expected_step_kinds = [
+        "transform",
+        "y_transform",
+        "tag",
+        "exclude",
+        "filter",
+        "sample_filter",
+        "augmentation",
+        "feature_augmentation",
+        "sample_augmentation",
+        "concat_transform",
+        "model",
+        "branch",
+        "generator",
+        "sequential",
+        "merge",
+        "merge_model",
+        "chart",
+    ]
+    require(
+        defs.get("canonical_step_kind", {}).get("enum") == expected_step_kinds,
+        f"{label} Pipeline DSL canonical step enum is not aligned",
+    )
+    expected_generator_keys = [
+        "_or_",
+        "_cartesian_",
+        "_chain_",
+        "_grid_",
+        "_range_",
+        "_log_range_",
+        "_zip_",
+        "_sample_",
+    ]
+    require(
+        defs.get("compat_generator_key", {}).get("enum") == expected_generator_keys,
+        f"{label} Pipeline DSL compat generator enum is not aligned",
+    )
+    for definition_name in (
+        "canonical_pipeline_dsl",
+        "canonical_step",
+        "canonical_branch",
+        "canonical_stage",
+        "compat_pipeline_object",
+        "compat_step",
+        "compat_step_array",
+        "compat_step_object",
+    ):
+        require(definition_name in defs, f"{label} Pipeline DSL schema misses `{definition_name}`")
+    compat_properties = defs.get("compat_step_object", {}).get("properties")
+    require(isinstance(compat_properties, dict), f"{label} Pipeline DSL compat properties missing")
+    for property_name in ("class", "function", "ref", "type", "name", "step"):
+        require(
+            property_name in compat_properties,
+            f"{label} Pipeline DSL compat schema misses `{property_name}` alias property",
         )
 
 
@@ -1569,6 +1642,51 @@ def graph_port_kinds(ports: Any, label: str) -> dict[str, str]:
     return seen
 
 
+def validate_pipeline_dsl_fixture(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} Pipeline DSL fixture must be an object")
+    require_non_empty_string(value.get("id"), f"{label}.id")
+    pipeline = value.get("pipeline")
+    require(isinstance(pipeline, list) and pipeline, f"{label}.pipeline must be non-empty")
+    keys_seen: set[str] = set()
+    for index, step in enumerate(pipeline):
+        step_label = f"{label}.pipeline[{index}]"
+        if isinstance(step, dict):
+            keys_seen.update(step)
+        elif isinstance(step, str) or step is None or isinstance(step, list):
+            continue
+        else:
+            raise ContractError(f"{step_label} has unsupported JSON type")
+    for required_key in ("_comment", "class", "_cartesian_", "split", "_chain_", "merge", "model"):
+        require(required_key in keys_seen, f"{label} fixture must exercise `{required_key}`")
+    require(
+        any(
+            isinstance(step, dict)
+            and step.get("class") == "sklearn.model_selection.KFold"
+            for step in pipeline
+        ),
+        f"{label} fixture must exercise a plain class splitter alias",
+    )
+
+    generator_keys = {
+        key
+        for step in pipeline
+        if isinstance(step, dict)
+        for key in step
+        if key.startswith("_")
+    }
+    for expected in ("_cartesian_", "_chain_"):
+        require(expected in generator_keys, f"{label} fixture must exercise `{expected}`")
+    chain = next(
+        step["_chain_"]
+        for step in pipeline
+        if isinstance(step, dict) and "_chain_" in step
+    )
+    require(isinstance(chain, list), f"{label}._chain_ must be an array")
+    chain_keys = {key for step in chain if isinstance(step, dict) for key in step}
+    for expected in ("_grid_", "_sample_"):
+        require(expected in chain_keys, f"{label}._chain_ must exercise `{expected}`")
+
+
 def validate_leakage_policy(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} leakage policy must be an object")
     split_unit = value.get("split_unit", "sample")
@@ -2736,6 +2854,21 @@ def validate_dag_ml_graph_header(header: str, label: str) -> None:
         require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
+def validate_dag_ml_pipeline_dsl_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_PIPELINE_DSL_SCHEMA_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_PIPELINE_DSL_SCHEMA_VERSION=1",
+    )
+    for symbol in (
+        "dagml_pipeline_dsl_contract_json",
+        "dagml_pipeline_dsl_validate_json",
+        "dagml_pipeline_dsl_compile_json",
+        "dagml_pipeline_dsl_compile_artifact_json",
+        "dagml_pipeline_dsl_execution_plan_build_json",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
+
+
 def validate_dag_ml_campaign_header(header: str, label: str) -> None:
     require(
         "#define DAG_ML_CAMPAIGN_SPEC_SCHEMA_VERSION 1u" in header,
@@ -3135,6 +3268,7 @@ def main() -> int:
         local_schema = load_json(ROOT / SCHEMA_REL)
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_graph_spec_schema = load_json(ROOT / GRAPH_SPEC_SCHEMA_REL)
+        local_pipeline_dsl_schema = load_json(ROOT / PIPELINE_DSL_SCHEMA_REL)
         local_campaign_spec_schema = load_json(ROOT / CAMPAIGN_SPEC_SCHEMA_REL)
         local_execution_plan_schema = load_json(ROOT / EXECUTION_PLAN_SCHEMA_REL)
         local_model_input_spec_schema = load_json(ROOT / MODEL_INPUT_SPEC_SCHEMA_REL)
@@ -3169,6 +3303,7 @@ def main() -> int:
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
         local_graph_spec_fixture = load_json(ROOT / LOCAL_GRAPH_SPEC_FIXTURE_REL)
+        local_pipeline_dsl_fixture = load_json(ROOT / LOCAL_PIPELINE_DSL_FIXTURE_REL)
         local_campaign_spec_fixture = load_json(ROOT / LOCAL_CAMPAIGN_SPEC_FIXTURE_REL)
         local_execution_plan_fixture = load_json(ROOT / LOCAL_EXECUTION_PLAN_FIXTURE_REL)
         local_model_input_spec_fixture = load_json(ROOT / LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL)
@@ -3201,6 +3336,7 @@ def main() -> int:
             "dag-ml",
         )
         validate_graph_spec_schema(local_graph_spec_schema, "dag-ml")
+        validate_pipeline_dsl_schema(local_pipeline_dsl_schema, "dag-ml")
         validate_campaign_spec_schema(local_campaign_spec_schema, "dag-ml")
         validate_execution_plan_schema(local_execution_plan_schema, "dag-ml")
         validate_model_input_spec_schema(local_model_input_spec_schema, "dag-ml")
@@ -3239,6 +3375,7 @@ def main() -> int:
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
         validate_graph_spec(local_graph_spec_fixture, "dag-ml")
+        validate_pipeline_dsl_fixture(local_pipeline_dsl_fixture, "dag-ml")
         validate_campaign_spec(local_campaign_spec_fixture, "dag-ml")
         validate_execution_plan(local_execution_plan_fixture, "dag-ml")
         validate_model_input_spec(local_model_input_spec_fixture, "dag-ml")
@@ -3272,6 +3409,7 @@ def main() -> int:
         validate_dag_ml_process_adapter_header(local_header, "dag-ml")
         validate_dag_ml_aggregation_controller_header(local_header, "dag-ml")
         validate_dag_ml_graph_header(local_header, "dag-ml")
+        validate_dag_ml_pipeline_dsl_header(local_header, "dag-ml")
         validate_dag_ml_campaign_header(local_header, "dag-ml")
         validate_dag_ml_execution_plan_header(local_header, "dag-ml")
         validate_dag_ml_data_shape_header(local_header, "dag-ml")
