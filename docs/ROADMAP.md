@@ -52,7 +52,8 @@ operators. Those propagated views also carry reserved shape provenance
 (`dag_ml_output`) with producer identity, selected scope, shape-plan
 fingerprints, current feature schema and emitted shape deltas; the Rust core
 now parses and validates that metadata through a typed `DataOutputProvenance`
-contract. The remaining DSL work is compatibility with broader pipeline
+contract, and the JSON Schema/fixture are part of the local contract
+validation. The remaining DSL work is compatibility with broader pipeline
 surfaces, richer search-space syntax, and production materialization semantics
 for transformed data instead of smoke-level adapter handles.
 

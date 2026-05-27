@@ -27,12 +27,18 @@ OPENLINEAGE_FACETS_SCHEMA_REL = Path("docs/contracts/openlineage_dagml_facets.sc
 PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL = Path(
     "docs/contracts/prediction_cache_tensor_metadata.schema.json"
 )
+DATA_OUTPUT_PROVENANCE_SCHEMA_REL = Path(
+    "docs/contracts/data_output_provenance.schema.json"
+)
 RESEARCH_PROVENANCE_PROFILE_REL = Path(
     "docs/contracts/research_provenance_package_profile.v1.json"
 )
 LOCAL_FIXTURE_REL = Path("examples/fixtures/data/coordinator_data_plan_envelope_nir.json")
 LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
+)
+LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL = Path(
+    "examples/fixtures/runtime/data_output_provenance_augmented_view.json"
 )
 LOCAL_C_HEADER_REL = Path("crates/dag-ml-capi/include/dag_ml.h")
 SIBLING_FIXTURE_REL = Path(
@@ -67,6 +73,10 @@ OPENLINEAGE_FACETS_SCHEMA_ID = (
 PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "prediction_cache_tensor_metadata.v1.schema.json"
+)
+DATA_OUTPUT_PROVENANCE_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "data_output_provenance.v1.schema.json"
 )
 RESEARCH_PROVENANCE_PROFILE_ID = "dag-ml.research_provenance_package.v1"
 
@@ -271,6 +281,78 @@ def validate_prediction_cache_tensor_metadata_schema(schema: Any, label: str) ->
     )
 
 
+def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
+    require(
+        isinstance(schema, dict),
+        f"{label} data-output provenance schema must be an object",
+    )
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} data-output provenance schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == DATA_OUTPUT_PROVENANCE_SCHEMA_ID,
+        f"{label} data-output provenance schema has unexpected $id",
+    )
+    require(
+        schema.get("type") == "object",
+        f"{label} data-output provenance root must be an object",
+    )
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} data-output provenance root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(
+        isinstance(required, list),
+        f"{label} data-output provenance required list is missing",
+    )
+    for field in ("schema_version", "producer_node", "producer_port", "producer_phase"):
+        require(
+            field in required,
+            f"{label} data-output provenance schema must require `{field}`",
+        )
+    properties = schema.get("properties")
+    require(
+        isinstance(properties, dict),
+        f"{label} data-output provenance properties are missing",
+    )
+    require(
+        properties.get("schema_version", {}).get("const") == 1,
+        f"{label} data-output provenance schema_version const must be 1",
+    )
+    require(
+        properties.get("producer_phase", {}).get("enum")
+        == ["COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"],
+        f"{label} data-output provenance phase enum mismatch",
+    )
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} data-output provenance $defs are missing")
+    require(
+        defs.get("identifier", {}).get("pattern") == "^[A-Za-z0-9_.:-]+$",
+        f"{label} data-output provenance identifier definition mismatch",
+    )
+    require(
+        defs.get("sha256", {}).get("pattern") == "^[0-9A-Fa-f]{64}$",
+        f"{label} data-output provenance sha256 definition mismatch",
+    )
+    shape_delta = defs.get("shape_delta")
+    require(isinstance(shape_delta, dict), f"{label} data-output shape_delta definition missing")
+    require(
+        shape_delta.get("additionalProperties") is False,
+        f"{label} data-output shape_delta must reject unknown fields",
+    )
+    shape_delta_required = shape_delta.get("required")
+    require(
+        isinstance(shape_delta_required, list)
+        and "node_id" in shape_delta_required
+        and "kind" in shape_delta_required
+        and "before_fingerprint" in shape_delta_required
+        and "after_fingerprint" in shape_delta_required,
+        f"{label} data-output shape_delta required fields mismatch",
+    )
+
+
 def validate_envelope(envelope: Any, label: str) -> None:
     require(isinstance(envelope, dict), f"{label} envelope must be a JSON object")
     require(envelope.get("schema_version") == 1, f"{label} envelope schema_version must be 1")
@@ -380,6 +462,56 @@ def validate_feature_fusion_selector(selector: Any, label: str) -> None:
                 isinstance(namespace_columns, bool),
                 f"{label}.policy.namespace_columns must be bool",
             )
+
+
+def validate_data_output_provenance(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} data-output provenance must be an object")
+    require(value.get("schema_version") == 1, f"{label} schema_version must be 1")
+    require_non_empty_string(value.get("producer_node"), f"{label}.producer_node")
+    require_non_empty_string(value.get("producer_port"), f"{label}.producer_port")
+    require(
+        value.get("producer_phase")
+        in {"COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"},
+        f"{label}.producer_phase is invalid",
+    )
+    for field in ("variant_id", "fold_id", "feature_namespace"):
+        field_value = value.get(field)
+        if field_value is not None:
+            require_non_empty_string(field_value, f"{label}.{field}")
+    for field in (
+        "shape_plan_fingerprint",
+        "aggregation_policy_fingerprint",
+        "feature_schema_fingerprint",
+    ):
+        field_value = value.get(field)
+        if field_value is not None:
+            require_sha256(field_value, f"{label}.{field}")
+    deltas = value.get("shape_deltas", [])
+    require(isinstance(deltas, list), f"{label}.shape_deltas must be an array")
+    last_feature_after = None
+    for index, delta in enumerate(deltas):
+        delta_label = f"{label}.shape_deltas[{index}]"
+        require(isinstance(delta, dict), f"{delta_label} must be an object")
+        require(
+            delta.get("node_id") == value.get("producer_node"),
+            f"{delta_label}.node_id must match producer_node",
+        )
+        require(
+            delta.get("kind") in {"row", "feature", "target", "prediction"},
+            f"{delta_label}.kind is invalid",
+        )
+        require_sha256(delta.get("before_fingerprint"), f"{delta_label}.before_fingerprint")
+        require_sha256(delta.get("after_fingerprint"), f"{delta_label}.after_fingerprint")
+        if delta.get("kind") == "feature":
+            last_feature_after = delta.get("after_fingerprint")
+        metadata = delta.get("metadata")
+        if metadata is not None:
+            require(isinstance(metadata, dict), f"{delta_label}.metadata must be an object")
+    if last_feature_after is not None:
+        require(
+            value.get("feature_schema_fingerprint") == last_feature_after,
+            f"{label}.feature_schema_fingerprint must match the last feature delta",
+        )
 
 
 def validate_data_provider_header(header: str, label: str) -> None:
@@ -766,9 +898,15 @@ def main() -> int:
         local_prediction_cache_tensor_metadata_schema = load_json(
             ROOT / PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL
         )
+        local_data_output_provenance_schema = load_json(
+            ROOT / DATA_OUTPUT_PROVENANCE_SCHEMA_REL
+        )
         local_research_provenance_profile = load_json(ROOT / RESEARCH_PROVENANCE_PROFILE_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
+        local_data_output_provenance_fixture = load_json(
+            ROOT / LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL
+        )
         local_header = load_text(ROOT / LOCAL_C_HEADER_REL)
         validate_schema_artifact(local_schema, LOCAL_SCHEMA_ID, "dag-ml")
         validate_feature_fusion_schema_artifact(
@@ -781,8 +919,13 @@ def main() -> int:
             local_prediction_cache_tensor_metadata_schema,
             "dag-ml",
         )
+        validate_data_output_provenance_schema(
+            local_data_output_provenance_schema,
+            "dag-ml",
+        )
         validate_envelope(local_fixture, "dag-ml")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
+        validate_data_output_provenance(local_data_output_provenance_fixture, "dag-ml")
         validate_data_provider_header(local_header, "dag-ml")
         validate_dag_ml_prediction_cache_tensor_header(local_header, "dag-ml")
         validate_conformance_pack(

@@ -66,6 +66,22 @@ key, cache id, prediction level, block offsets, fold ids, sample ids, unit ids
 and target names required to interpret rows without hiding traceability inside
 the value buffer.
 
+## Data Output Provenance v1
+
+Schema: `data_output_provenance.schema.json`
+
+Canonical fixture:
+`examples/fixtures/runtime/data_output_provenance_augmented_view.json`
+
+Runtime type: `DataOutputProvenance`
+
+This DAG-ML runtime contract is embedded under the reserved
+`DataProviderViewSpec.extra["dag_ml_output"]` key when a data-producing DAG node
+emits a downstream data view. It records the producer node/port/phase,
+variant/fold scope, shape-plan and aggregation fingerprints, current feature
+schema fingerprint and emitted shape deltas. Controllers and host bindings can
+parse this metadata without reverse-engineering free-form JSON.
+
 ## Research Provenance Package Profile v1
 
 Profile: `research_provenance_package_profile.v1.json`

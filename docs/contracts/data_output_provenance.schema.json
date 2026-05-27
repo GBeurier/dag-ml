@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/data_output_provenance.v1.schema.json",
+  "title": "DAG-ML Data Output Provenance v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "producer_node", "producer_port", "producer_phase"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "producer_node": {
+      "$ref": "#/$defs/identifier"
+    },
+    "producer_port": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "producer_phase": {
+      "enum": ["COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"]
+    },
+    "variant_id": {
+      "anyOf": [
+        { "$ref": "#/$defs/identifier" },
+        { "type": "null" }
+      ]
+    },
+    "fold_id": {
+      "anyOf": [
+        { "$ref": "#/$defs/identifier" },
+        { "type": "null" }
+      ]
+    },
+    "shape_plan_fingerprint": {
+      "anyOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "aggregation_policy_fingerprint": {
+      "anyOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "feature_namespace": {
+      "anyOf": [
+        { "$ref": "#/$defs/non_empty_string" },
+        { "type": "null" }
+      ]
+    },
+    "feature_schema_fingerprint": {
+      "anyOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "shape_deltas": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/shape_delta"
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "shape_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "kind", "before_fingerprint", "after_fingerprint"],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "enum": ["row", "feature", "target", "prediction"]
+        },
+        "before_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "after_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}
