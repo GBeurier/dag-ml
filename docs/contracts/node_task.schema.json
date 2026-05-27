@@ -1,0 +1,452 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/node_task.v1.schema.json",
+  "title": "DAG-ML NodeTask v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "node_plan", "phase", "variant_id", "fold_id", "seed"],
+  "properties": {
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "node_plan": {
+      "$ref": "#/$defs/node_plan"
+    },
+    "phase": {
+      "$ref": "#/$defs/phase"
+    },
+    "variant_id": {
+      "anyOf": [
+        { "$ref": "#/$defs/identifier" },
+        { "type": "null" }
+      ]
+    },
+    "variant": {
+      "anyOf": [
+        { "$ref": "#/$defs/variant_execution_spec" },
+        { "type": "null" }
+      ]
+    },
+    "fold_id": {
+      "anyOf": [
+        { "$ref": "#/$defs/identifier" },
+        { "type": "null" }
+      ]
+    },
+    "branch_path": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "input_handles": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/handle_ref"
+      }
+    },
+    "data_views": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/data_provider_view_spec"
+      }
+    },
+    "prediction_inputs": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/prediction_input_spec"
+      }
+    },
+    "artifact_inputs": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/artifact_input_spec"
+      }
+    },
+    "seed": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fingerprint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "node_kind": {
+      "enum": [
+        "transform",
+        "y_transform",
+        "split",
+        "model",
+        "fork",
+        "map",
+        "feature_join",
+        "prediction_join",
+        "mixed_join",
+        "source_join",
+        "tag",
+        "exclude",
+        "augmentation",
+        "adapter",
+        "aggregator",
+        "generator",
+        "restructure",
+        "tuner",
+        "subgraph",
+        "chart"
+      ]
+    },
+    "phase": {
+      "enum": ["COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"]
+    },
+    "handle_kind": {
+      "enum": ["data", "data_view", "model", "artifact", "prediction", "relation"]
+    },
+    "controller_capability": {
+      "enum": [
+        "deterministic",
+        "thread_safe",
+        "process_safe",
+        "needs_python_gil",
+        "emits_predictions",
+        "consumes_oof_predictions",
+        "emits_artifacts",
+        "stateful",
+        "emits_relation",
+        "uses_core_rng",
+        "shape_changing",
+        "generates_data",
+        "generates_model",
+        "expands_variants"
+      ]
+    },
+    "controller_fit_scope": {
+      "enum": ["stateless", "fold_train", "full_train", "inference_only"]
+    },
+    "rng_policy": {
+      "enum": [
+        "uses_core_seed",
+        "ignores_seed",
+        "externally_deterministic",
+        "nondeterministic"
+      ]
+    },
+    "artifact_policy": {
+      "enum": ["serializable", "host_only", "content_addressed", "replay_required"]
+    },
+    "data_partition": {
+      "enum": ["fold_train", "fold_validation", "full_train", "predict"]
+    },
+    "prediction_partition": {
+      "enum": ["train", "validation", "test", "final"]
+    },
+    "prediction_level": {
+      "enum": ["observation", "sample", "target", "group"]
+    },
+    "node_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "kind",
+        "controller_id",
+        "controller_version",
+        "supported_phases",
+        "fit_scope",
+        "rng_policy",
+        "artifact_policy",
+        "input_nodes",
+        "output_nodes",
+        "params_fingerprint"
+      ],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "$ref": "#/$defs/node_kind"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "controller_version": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "supported_phases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/phase"
+          }
+        },
+        "controller_capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/controller_capability"
+          }
+        },
+        "fit_scope": {
+          "$ref": "#/$defs/controller_fit_scope"
+        },
+        "rng_policy": {
+          "$ref": "#/$defs/rng_policy"
+        },
+        "artifact_policy": {
+          "$ref": "#/$defs/artifact_policy"
+        },
+        "input_nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "output_nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "shape_plan": {
+          "anyOf": [
+            { "type": "object" },
+            { "type": "null" }
+          ]
+        },
+        "data_bindings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "params": {
+          "type": "object"
+        },
+        "params_fingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        }
+      }
+    },
+    "handle_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handle", "kind", "owner_controller"],
+      "properties": {
+        "handle": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "$ref": "#/$defs/handle_kind"
+        },
+        "owner_controller": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "variant_execution_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variant_id", "fingerprint", "seed"],
+      "properties": {
+        "variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "choices": {
+          "type": "object"
+        },
+        "fingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "seed": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        }
+      }
+    },
+    "data_provider_view_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["partition", "include_augmented", "include_excluded"],
+      "properties": {
+        "sample_ids": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/identifier"
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "partition": {
+          "$ref": "#/$defs/data_partition"
+        },
+        "fold_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "source_ids": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/non_empty_string"
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "columns": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/non_empty_string"
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "include_augmented": {
+          "type": "boolean"
+        },
+        "include_excluded": {
+          "type": "boolean"
+        },
+        "extra": {
+          "type": "object"
+        }
+      }
+    },
+    "prediction_input_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_node",
+        "source_port",
+        "target_port",
+        "partition",
+        "fold_id",
+        "prediction_width"
+      ],
+      "properties": {
+        "producer_node": {
+          "$ref": "#/$defs/identifier"
+        },
+        "source_port": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "target_port": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "partition": {
+          "$ref": "#/$defs/prediction_partition"
+        },
+        "prediction_level": {
+          "$ref": "#/$defs/prediction_level"
+        },
+        "fold_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "fold_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "unit_ids": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "sample_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "prediction_width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "target_names": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "artifact_input_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "controller_id", "artifact", "params_fingerprint"],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "artifact": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "params_fingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "data_requirement_keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "prediction_requirement_keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "artifact_ref": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "kind", "controller_id", "size_bytes"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "size_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

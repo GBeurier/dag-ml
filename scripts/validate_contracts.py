@@ -38,6 +38,8 @@ PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_REL = Path(
 DATA_OUTPUT_PROVENANCE_SCHEMA_REL = Path(
     "docs/contracts/data_output_provenance.schema.json"
 )
+NODE_TASK_SCHEMA_REL = Path("docs/contracts/node_task.schema.json")
+NODE_RESULT_SCHEMA_REL = Path("docs/contracts/node_result.schema.json")
 PROCESS_ADAPTER_DESCRIPTION_SCHEMA_REL = Path(
     "docs/contracts/process_adapter_description.schema.json"
 )
@@ -68,6 +70,8 @@ LOCAL_SELECTION_DECISION_FIXTURE_REL = Path(
 LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL = Path(
     "examples/fixtures/runtime/data_output_provenance_augmented_view.json"
 )
+LOCAL_NODE_TASK_FIXTURE_REL = Path("examples/fixtures/runtime/node_task_transform_scale.json")
+LOCAL_NODE_RESULT_FIXTURE_REL = Path("examples/fixtures/runtime/node_result_transform_scale.json")
 LOCAL_PROCESS_ADAPTER_DESCRIPTION_FIXTURE_REL = Path(
     "examples/fixtures/runtime/process_adapter_description_python.json"
 )
@@ -141,6 +145,14 @@ PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_ID = (
 DATA_OUTPUT_PROVENANCE_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "data_output_provenance.v1.schema.json"
+)
+NODE_TASK_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "node_task.v1.schema.json"
+)
+NODE_RESULT_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "node_result.v1.schema.json"
 )
 PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
@@ -868,6 +880,83 @@ def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
         and "before_fingerprint" in shape_delta_required
         and "after_fingerprint" in shape_delta_required,
         f"{label} data-output shape_delta required fields mismatch",
+    )
+
+
+def validate_node_task_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} NodeTask schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} NodeTask schema must declare Draft 2020-12",
+    )
+    require(schema.get("$id") == NODE_TASK_SCHEMA_ID, f"{label} NodeTask schema $id mismatch")
+    require(schema.get("type") == "object", f"{label} NodeTask root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} NodeTask root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} NodeTask required list is missing")
+    for field in ("run_id", "node_plan", "phase", "variant_id", "fold_id", "seed"):
+        require(field in required, f"{label} NodeTask schema must require `{field}`")
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} NodeTask $defs missing")
+    for definition_name in (
+        "node_plan",
+        "handle_ref",
+        "variant_execution_spec",
+        "data_provider_view_spec",
+        "prediction_input_spec",
+        "artifact_input_spec",
+    ):
+        require(definition_name in defs, f"{label} NodeTask schema misses `{definition_name}`")
+    require(
+        defs.get("handle_kind", {}).get("enum")
+        == ["data", "data_view", "model", "artifact", "prediction", "relation"],
+        f"{label} NodeTask handle_kind enum mismatch",
+    )
+    require(
+        defs.get("phase", {}).get("enum")
+        == ["COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"],
+        f"{label} NodeTask phase enum mismatch",
+    )
+
+
+def validate_node_result_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} NodeResult schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} NodeResult schema must declare Draft 2020-12",
+    )
+    require(schema.get("$id") == NODE_RESULT_SCHEMA_ID, f"{label} NodeResult schema $id mismatch")
+    require(schema.get("type") == "object", f"{label} NodeResult root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} NodeResult root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} NodeResult required list is missing")
+    for field in ("node_id", "lineage"):
+        require(field in required, f"{label} NodeResult schema must require `{field}`")
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} NodeResult $defs missing")
+    for definition_name in (
+        "handle_ref",
+        "prediction_block",
+        "shape_delta",
+        "artifact_ref",
+        "lineage_record",
+    ):
+        require(definition_name in defs, f"{label} NodeResult schema misses `{definition_name}`")
+    require(
+        defs.get("prediction_partition", {}).get("enum")
+        == ["train", "validation", "test", "final"],
+        f"{label} NodeResult prediction_partition enum mismatch",
+    )
+    require(
+        defs.get("shape_delta_kind", {}).get("enum")
+        == ["row", "feature", "target", "prediction"],
+        f"{label} NodeResult shape_delta_kind enum mismatch",
     )
 
 
@@ -1947,6 +2036,133 @@ def validate_data_output_provenance(value: Any, label: str) -> None:
         )
 
 
+def validate_handle_ref(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} handle ref must be an object")
+    require(isinstance(value.get("handle"), int) and value["handle"] >= 0, f"{label}.handle invalid")
+    require(
+        value.get("kind") in {"data", "data_view", "model", "artifact", "prediction", "relation"},
+        f"{label}.kind invalid",
+    )
+    require_identifier(value.get("owner_controller"), f"{label}.owner_controller")
+
+
+def validate_node_task(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} NodeTask must be an object")
+    require_identifier(value.get("run_id"), f"{label}.run_id")
+    node_plan = value.get("node_plan")
+    require(isinstance(node_plan, dict), f"{label}.node_plan must be an object")
+    require_identifier(node_plan.get("node_id"), f"{label}.node_plan.node_id")
+    require_identifier(node_plan.get("controller_id"), f"{label}.node_plan.controller_id")
+    require_non_empty_string(
+        node_plan.get("controller_version"),
+        f"{label}.node_plan.controller_version",
+    )
+    require_non_empty_string(
+        node_plan.get("params_fingerprint"),
+        f"{label}.node_plan.params_fingerprint",
+    )
+    require(
+        value.get("phase") in {"COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"},
+        f"{label}.phase invalid",
+    )
+    variant_id = value.get("variant_id")
+    if variant_id is not None:
+        require_identifier(variant_id, f"{label}.variant_id")
+    variant = value.get("variant")
+    if variant is not None:
+        require(isinstance(variant, dict), f"{label}.variant must be an object")
+        require(variant.get("variant_id") == variant_id, f"{label}.variant_id mismatch")
+        require_non_empty_string(variant.get("fingerprint"), f"{label}.variant.fingerprint")
+        seed = variant.get("seed")
+        if seed is not None:
+            require(isinstance(seed, int) and seed >= 0, f"{label}.variant.seed invalid")
+    fold_id = value.get("fold_id")
+    if fold_id is not None:
+        require_identifier(fold_id, f"{label}.fold_id")
+    seed = value.get("seed")
+    if seed is not None:
+        require(isinstance(seed, int) and seed >= 0, f"{label}.seed invalid")
+    for map_name in ("input_handles", "data_views", "prediction_inputs", "artifact_inputs"):
+        mapping = value.get(map_name, {})
+        require(isinstance(mapping, dict), f"{label}.{map_name} must be an object")
+    for key, handle in value.get("input_handles", {}).items():
+        require_non_empty_string(key, f"{label}.input_handles key")
+        validate_handle_ref(handle, f"{label}.input_handles[{key}]")
+
+
+def validate_node_result(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} NodeResult must be an object")
+    require_identifier(value.get("node_id"), f"{label}.node_id")
+    outputs = value.get("outputs", {})
+    require(isinstance(outputs, dict), f"{label}.outputs must be an object")
+    for port_name, handle in outputs.items():
+        require_non_empty_string(port_name, f"{label}.outputs key")
+        validate_handle_ref(handle, f"{label}.outputs[{port_name}]")
+    for list_name in ("predictions", "shape_deltas", "artifacts"):
+        require(isinstance(value.get(list_name, []), list), f"{label}.{list_name} must be an array")
+    artifact_handles = value.get("artifact_handles", {})
+    require(isinstance(artifact_handles, dict), f"{label}.artifact_handles must be an object")
+    for artifact_id, handle in artifact_handles.items():
+        require_identifier(artifact_id, f"{label}.artifact_handles key")
+        validate_handle_ref(handle, f"{label}.artifact_handles[{artifact_id}]")
+    lineage = value.get("lineage")
+    require(isinstance(lineage, dict), f"{label}.lineage must be an object")
+    for field in ("record_id", "run_id", "node_id", "controller_id"):
+        require_identifier(lineage.get(field), f"{label}.lineage.{field}")
+    require(
+        lineage.get("phase") in {"COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"},
+        f"{label}.lineage.phase invalid",
+    )
+    require_non_empty_string(
+        lineage.get("controller_version"),
+        f"{label}.lineage.controller_version",
+    )
+    require_non_empty_string(
+        lineage.get("params_fingerprint"),
+        f"{label}.lineage.params_fingerprint",
+    )
+    for field in ("variant_id", "fold_id"):
+        field_value = lineage.get(field)
+        if field_value is not None:
+            require_identifier(field_value, f"{label}.lineage.{field}")
+    for list_name in ("branch_path", "input_lineage", "artifact_refs", "unsafe_flags"):
+        require(
+            isinstance(lineage.get(list_name, []), list),
+            f"{label}.lineage.{list_name} must be an array",
+        )
+    metrics = lineage.get("metrics", {})
+    require(isinstance(metrics, dict), f"{label}.lineage.metrics must be an object")
+    for metric_name, metric_value in metrics.items():
+        require_non_empty_string(metric_name, f"{label}.lineage.metrics key")
+        require(isinstance(metric_value, (int, float)), f"{label}.lineage.metrics value numeric")
+
+
+def validate_node_task_result_pair(task: Any, result: Any, label: str) -> None:
+    validate_node_task(task, f"{label}.task")
+    validate_node_result(result, f"{label}.result")
+    node_plan = task["node_plan"]
+    lineage = result["lineage"]
+    require(result.get("node_id") == node_plan.get("node_id"), f"{label} result node mismatch")
+    require(lineage.get("node_id") == node_plan.get("node_id"), f"{label} lineage node mismatch")
+    require(lineage.get("run_id") == task.get("run_id"), f"{label} lineage run mismatch")
+    require(lineage.get("phase") == task.get("phase"), f"{label} lineage phase mismatch")
+    require(
+        lineage.get("controller_id") == node_plan.get("controller_id"),
+        f"{label} lineage controller mismatch",
+    )
+    require(
+        lineage.get("controller_version") == node_plan.get("controller_version"),
+        f"{label} lineage controller_version mismatch",
+    )
+    require(lineage.get("variant_id") == task.get("variant_id"), f"{label} lineage variant mismatch")
+    require(lineage.get("fold_id") == task.get("fold_id"), f"{label} lineage fold mismatch")
+    require(lineage.get("seed") == task.get("seed"), f"{label} lineage seed mismatch")
+    require(
+        lineage.get("params_fingerprint") == node_plan.get("params_fingerprint"),
+        f"{label} lineage params fingerprint mismatch",
+    )
+
+
 def validate_process_adapter_description(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} process-adapter description must be an object")
     require(value.get("schema_version") == 1, f"{label}.schema_version must be 1")
@@ -2036,11 +2252,18 @@ def validate_dag_ml_controller_result_header(header: str, label: str) -> None:
         "#define DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION 1u" in header,
         f"{label} header must declare DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION=1",
     )
+    for macro in (
+        "#define DAG_ML_NODE_TASK_SCHEMA_VERSION 1u",
+        "#define DAG_ML_NODE_RESULT_SCHEMA_VERSION 1u",
+    ):
+        require(macro in header, f"{label} header must declare `{macro}`")
     for symbol in (
         "dagml_controller_manifest_contract_json",
         "dagml_node_result_validate_for_task_json",
         "dagml_controller_manifest_validate_json",
         "dagml_controller_manifest_list_validate_json",
+        "dagml_node_task_contract_json",
+        "dagml_node_result_contract_json",
     ):
         require(symbol in header, f"{label} header must expose `{symbol}`")
 
@@ -2468,6 +2691,8 @@ def main() -> int:
         local_data_output_provenance_schema = load_json(
             ROOT / DATA_OUTPUT_PROVENANCE_SCHEMA_REL
         )
+        local_node_task_schema = load_json(ROOT / NODE_TASK_SCHEMA_REL)
+        local_node_result_schema = load_json(ROOT / NODE_RESULT_SCHEMA_REL)
         local_process_adapter_description_schema = load_json(
             ROOT / PROCESS_ADAPTER_DESCRIPTION_SCHEMA_REL
         )
@@ -2490,6 +2715,8 @@ def main() -> int:
         local_data_output_provenance_fixture = load_json(
             ROOT / LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL
         )
+        local_node_task_fixture = load_json(ROOT / LOCAL_NODE_TASK_FIXTURE_REL)
+        local_node_result_fixture = load_json(ROOT / LOCAL_NODE_RESULT_FIXTURE_REL)
         local_process_adapter_description_fixture = load_json(
             ROOT / LOCAL_PROCESS_ADAPTER_DESCRIPTION_FIXTURE_REL
         )
@@ -2517,6 +2744,8 @@ def main() -> int:
             local_data_output_provenance_schema,
             "dag-ml",
         )
+        validate_node_task_schema(local_node_task_schema, "dag-ml")
+        validate_node_result_schema(local_node_result_schema, "dag-ml")
         validate_process_adapter_description_schema(
             local_process_adapter_description_schema,
             "dag-ml",
@@ -2536,6 +2765,11 @@ def main() -> int:
         validate_selection_policy(local_selection_policy_fixture, "dag-ml")
         validate_selection_decision(local_selection_decision_fixture, "dag-ml")
         validate_data_output_provenance(local_data_output_provenance_fixture, "dag-ml")
+        validate_node_task_result_pair(
+            local_node_task_fixture,
+            local_node_result_fixture,
+            "dag-ml node task/result",
+        )
         validate_process_adapter_description(
             local_process_adapter_description_fixture,
             "dag-ml",
