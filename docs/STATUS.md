@@ -126,6 +126,11 @@ Implemented:
   operators; augmentation steps must declare a shape plan so sample/feature
   augmentation scope is validated instead of implicit, and tuning/train params
   are visible in public DSL fields instead of hidden controller state;
+- DSL merge selectors now validate their branch/model/input scopes against the
+  pending OOF prediction inputs at compile time, reject unsupported `select`
+  modes, reject `top_k` above the matched scope and require a metric for
+  `best`/`top_k`, while still leaving actual score computation to external
+  selection/merge controllers;
 - the same DSL profile extracts node-level parameter variants into a canonical
   `GenerationSpec`, accepts compact nirs4all-style parameter generators
   (`or`, `range`, `log_range`, `grid`, `pick`, `arrange` with deterministic

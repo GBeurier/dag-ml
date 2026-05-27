@@ -561,6 +561,7 @@ struct PredictionSource {
     node_id: NodeId,
     port_name: String,
     input_name: String,
+    branch_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1030,6 +1031,7 @@ impl PipelineCompiler {
             node_id: step.id.clone(),
             port_name: "oof".to_string(),
             input_name: "oof".to_string(),
+            branch_id: branch_id.map(str::to_string),
         })
     }
 
@@ -1055,6 +1057,7 @@ impl PipelineCompiler {
                 step.id
             )));
         }
+        validate_merge_selectors(&step.id, &step.selectors, predictions)?;
         let outputs_prediction = step.output_as == PipelineDslMergeOutput::Predictions;
         let representation = step
             .representation
@@ -1107,6 +1110,7 @@ impl PipelineCompiler {
                 })?,
             );
         }
+        let branch_id = branch_id_from_metadata(&extra_metadata);
         metadata.extend(extra_metadata);
         let node = NodeSpec {
             id: step.id.clone(),
@@ -1154,6 +1158,7 @@ impl PipelineCompiler {
                 node_id: step.id.clone(),
                 port_name: "prediction".to_string(),
                 input_name: "oof".to_string(),
+                branch_id,
             }))
         } else {
             Ok(MergeOutputSource::Data(DataSource {
@@ -1208,6 +1213,7 @@ impl PipelineCompiler {
             "merge_mode".to_string(),
             serde_json::Value::String(step.merge_mode.clone()),
         );
+        let branch_id = branch_id_from_metadata(&extra_metadata);
         metadata.extend(extra_metadata);
         let node = NodeSpec {
             id: step.id.clone(),
@@ -1250,6 +1256,7 @@ impl PipelineCompiler {
             node_id: step.id.clone(),
             port_name: "oof".to_string(),
             input_name: "oof".to_string(),
+            branch_id,
         })
     }
 
@@ -2298,6 +2305,126 @@ fn branch_context_metadata(
     Ok(metadata)
 }
 
+fn branch_id_from_metadata(metadata: &BTreeMap<String, serde_json::Value>) -> Option<String> {
+    metadata
+        .get("dsl_branch")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+fn validate_merge_selectors(
+    merge_id: &NodeId,
+    selectors: &[PipelineDslMergeSelector],
+    predictions: &[PredictionSource],
+) -> Result<()> {
+    if selectors.is_empty() {
+        return Ok(());
+    }
+    if predictions.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL merge `{merge_id}` declares selectors but has no prediction inputs"
+        )));
+    }
+    for (selector_index, selector) in selectors.iter().enumerate() {
+        let mut matched = predictions.iter().collect::<Vec<_>>();
+        if let Some(input_name) = &selector.input_name {
+            if input_name.trim().is_empty() {
+                return Err(DagMlError::GraphValidation(format!(
+                    "pipeline DSL merge `{merge_id}` selector {selector_index} has an empty input_name"
+                )));
+            }
+            matched.retain(|prediction| prediction.input_name == *input_name);
+        }
+        if let Some(branch) = &selector.branch {
+            if branch.trim().is_empty() {
+                return Err(DagMlError::GraphValidation(format!(
+                    "pipeline DSL merge `{merge_id}` selector {selector_index} has an empty branch"
+                )));
+            }
+            matched.retain(|prediction| prediction.branch_id.as_deref() == Some(branch.as_str()));
+        }
+        if let Some(model) = &selector.model {
+            matched.retain(|prediction| prediction.node_id == *model);
+        }
+        if matched.is_empty() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} does not match any pending prediction input"
+            )));
+        }
+        validate_merge_selector_select(merge_id, selector_index, selector, matched.len())?;
+    }
+    Ok(())
+}
+
+fn validate_merge_selector_select(
+    merge_id: &NodeId,
+    selector_index: usize,
+    selector: &PipelineDslMergeSelector,
+    matched_count: usize,
+) -> Result<()> {
+    let Some(select) = &selector.select else {
+        return Ok(());
+    };
+    if let Some(mode) = select.as_str() {
+        match mode {
+            "all" => return Ok(()),
+            "best" => {
+                require_selector_metric(merge_id, selector_index, selector, mode)?;
+                return Ok(());
+            }
+            _ => {
+                return Err(DagMlError::GraphValidation(format!(
+                    "pipeline DSL merge `{merge_id}` selector {selector_index} has unsupported select mode `{mode}`"
+                )));
+            }
+        }
+    }
+    let Some(object) = select.as_object() else {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL merge `{merge_id}` selector {selector_index} select must be `all`, `best` or an object with `top_k`"
+        )));
+    };
+    if object.len() != 1 || !object.contains_key("top_k") {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL merge `{merge_id}` selector {selector_index} object select currently supports only `top_k`"
+        )));
+    }
+    let Some(top_k) = object.get("top_k").and_then(|value| value.as_u64()) else {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL merge `{merge_id}` selector {selector_index} top_k must be a positive integer"
+        )));
+    };
+    if top_k == 0 {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL merge `{merge_id}` selector {selector_index} top_k must be positive"
+        )));
+    }
+    if top_k as usize > matched_count {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL merge `{merge_id}` selector {selector_index} top_k={top_k} exceeds {matched_count} matched prediction inputs"
+        )));
+    }
+    require_selector_metric(merge_id, selector_index, selector, "top_k")
+}
+
+fn require_selector_metric(
+    merge_id: &NodeId,
+    selector_index: usize,
+    selector: &PipelineDslMergeSelector,
+    select_mode: &str,
+) -> Result<()> {
+    if selector
+        .metric
+        .as_ref()
+        .is_some_and(|metric| !metric.trim().is_empty())
+    {
+        return Ok(());
+    }
+    Err(DagMlError::GraphValidation(format!(
+        "pipeline DSL merge `{merge_id}` selector {selector_index} select `{select_mode}` requires a non-empty metric"
+    )))
+}
+
 fn insert_training_metadata(
     metadata: &mut BTreeMap<String, serde_json::Value>,
     train_params: &BTreeMap<String, serde_json::Value>,
@@ -2736,6 +2863,112 @@ mod tests {
             "model:meta.ridge.params"
         );
         graph.validate().unwrap();
+    }
+
+    #[test]
+    fn merge_selectors_reject_unknown_branch_and_missing_metric() {
+        let unknown_branch: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-bad-merge-selector-branch",
+  "steps": [
+    {
+      "kind": "branch",
+      "branches": [
+        {
+          "id": "known",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "branch:known.model:ridge",
+              "operator": {"type": "Ridge"}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge",
+      "id": "merge:bad.selector",
+      "selectors": [
+        {"branch": "missing", "select": "all"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let error = compile_pipeline_dsl_with_generation(&unknown_branch).unwrap_err();
+        assert!(format!("{error}").contains("does not match any pending prediction input"));
+
+        let missing_metric: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-bad-merge-selector-metric",
+  "steps": [
+    {
+      "kind": "branch",
+      "branches": [
+        {
+          "id": "known",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "branch:known.model:ridge",
+              "operator": {"type": "Ridge"}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge",
+      "id": "merge:bad.metric",
+      "selectors": [
+        {"branch": "known", "select": "best"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let error = compile_pipeline_dsl_with_generation(&missing_metric).unwrap_err();
+        assert!(format!("{error}").contains("requires a non-empty metric"));
+    }
+
+    #[test]
+    fn merge_selectors_reject_top_k_above_scope() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-bad-merge-selector-top-k",
+  "steps": [
+    {
+      "kind": "branch",
+      "branches": [
+        {
+          "id": "known",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "branch:known.model:ridge",
+              "operator": {"type": "Ridge"}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge",
+      "id": "merge:bad.topk",
+      "selectors": [
+        {"branch": "known", "select": {"top_k": 2}, "metric": "rmse"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = compile_pipeline_dsl_with_generation(&spec).unwrap_err();
+        assert!(format!("{error}").contains("top_k=2 exceeds 1 matched prediction inputs"));
     }
 
     #[test]
