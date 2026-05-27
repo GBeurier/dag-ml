@@ -129,6 +129,8 @@ pub struct PipelineDslOperatorStep {
     pub tuning: Option<PipelineDslTuningSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<PipelineDslVariantChoice>,
+    #[serde(default, alias = "generators", skip_serializing_if = "Vec::is_empty")]
+    pub param_generators: Vec<PipelineDslParamGenerator>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<PipelineDslShapePlan>,
 }
@@ -160,6 +162,76 @@ pub struct PipelineDslVariantChoice {
     pub params: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub value: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PipelineDslParamGenerator {
+    Or {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        param: String,
+        values: Vec<PipelineDslGeneratorValue>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<usize>,
+    },
+    Range {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        param: String,
+        start: f64,
+        stop: f64,
+        step: f64,
+        #[serde(default = "default_true")]
+        inclusive: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<usize>,
+    },
+    LogRange {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        param: String,
+        start: f64,
+        stop: f64,
+        count: usize,
+        #[serde(default = "default_log_base")]
+        base: f64,
+    },
+    Grid {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        params: BTreeMap<String, Vec<PipelineDslGeneratorValue>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<usize>,
+    },
+    Pick {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        param: String,
+        values: Vec<PipelineDslGeneratorValue>,
+        sizes: Vec<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<usize>,
+    },
+    Arrange {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        param: String,
+        values: Vec<PipelineDslGeneratorValue>,
+        sizes: Vec<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<usize>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PipelineDslGeneratorValue {
+    Labeled {
+        label: String,
+        value: serde_json::Value,
+    },
+    Value(serde_json::Value),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -232,6 +304,8 @@ pub struct PipelineDslConcatTransformStep {
     pub representation: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<PipelineDslVariantChoice>,
+    #[serde(default, alias = "generators", skip_serializing_if = "Vec::is_empty")]
+    pub param_generators: Vec<PipelineDslParamGenerator>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<PipelineDslShapePlan>,
 }
@@ -264,6 +338,8 @@ pub struct PipelineDslMergeStep {
     pub representation: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<PipelineDslVariantChoice>,
+    #[serde(default, alias = "generators", skip_serializing_if = "Vec::is_empty")]
+    pub param_generators: Vec<PipelineDslParamGenerator>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<PipelineDslShapePlan>,
 }
@@ -317,6 +393,8 @@ pub struct PipelineDslMergeModelStep {
     pub tuning: Option<PipelineDslTuningSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<PipelineDslVariantChoice>,
+    #[serde(default, alias = "generators", skip_serializing_if = "Vec::is_empty")]
+    pub param_generators: Vec<PipelineDslParamGenerator>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<PipelineDslShapePlan>,
 }
@@ -808,7 +886,7 @@ impl PipelineCompiler {
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
-        self.collect_operator_generation(&step.id, &step.variants)?;
+        self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
         self.collect_shape_plan(&step.id, step.shape.as_ref())?;
         self.connect_data(input, &step.id, "x")?;
         Ok(DataSource {
@@ -842,7 +920,7 @@ impl PipelineCompiler {
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
-        self.collect_operator_generation(&step.id, &step.variants)?;
+        self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
         self.collect_shape_plan(&step.id, step.shape.as_ref())
     }
 
@@ -902,7 +980,7 @@ impl PipelineCompiler {
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
-        self.collect_operator_generation(&step.id, &step.variants)?;
+        self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
         self.collect_shape_plan(&step.id, step.shape.as_ref())?;
         for (input_name, source) in &branch_outputs {
             self.connect_data_to_port(source, &step.id, input_name)?;
@@ -945,7 +1023,7 @@ impl PipelineCompiler {
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
-        self.collect_operator_generation(&step.id, &step.variants)?;
+        self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
         self.collect_shape_plan(&step.id, step.shape.as_ref())?;
         self.connect_data(input, &step.id, "x")?;
         Ok(PredictionSource {
@@ -1047,7 +1125,7 @@ impl PipelineCompiler {
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
-        self.collect_operator_generation(&step.id, &step.variants)?;
+        self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
         self.collect_shape_plan(&step.id, step.shape.as_ref())?;
         for prediction in predictions {
             self.edges.push(EdgeSpec {
@@ -1144,7 +1222,7 @@ impl PipelineCompiler {
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
-        self.collect_operator_generation(&step.id, &step.variants)?;
+        self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
         self.collect_shape_plan(&step.id, step.shape.as_ref())?;
         for prediction in predictions {
             self.edges.push(EdgeSpec {
@@ -1190,42 +1268,16 @@ impl PipelineCompiler {
         &mut self,
         node_id: &NodeId,
         choices: &[PipelineDslVariantChoice],
+        generators: &[PipelineDslParamGenerator],
     ) -> Result<()> {
-        if choices.is_empty() {
-            return Ok(());
+        if !choices.is_empty() {
+            self.generation_dimensions
+                .push(compile_variant_choice_dimension(node_id, choices)?);
         }
-        let dimension = GenerationDimension {
-            name: format!("{node_id}.params"),
-            choices: choices
-                .iter()
-                .map(|choice| {
-                    if choice.params.is_empty() {
-                        return Err(DagMlError::GraphValidation(format!(
-                            "pipeline DSL variant `{}` for node `{node_id}` has no params",
-                            choice.label
-                        )));
-                    }
-                    let value = match &choice.value {
-                        Some(value) => value.clone(),
-                        None => serde_json::to_value(&choice.params).map_err(|error| {
-                            DagMlError::GraphValidation(format!(
-                                "failed to serialize pipeline DSL variant `{}` for node `{node_id}`: {error}",
-                                choice.label
-                            ))
-                        })?,
-                    };
-                    Ok(GenerationChoice {
-                        label: choice.label.clone(),
-                        value,
-                        param_overrides: vec![GenerationParamOverride {
-                            node_id: node_id.clone(),
-                            params: choice.params.clone(),
-                        }],
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-        };
-        self.generation_dimensions.push(dimension);
+        for generator in generators {
+            self.generation_dimensions
+                .push(compile_param_generator_dimension(node_id, generator)?);
+        }
         Ok(())
     }
 
@@ -1485,6 +1537,675 @@ fn validate_dsl_data_binding(binding: &DataBinding, graph: &GraphSpec) -> Result
     Ok(())
 }
 
+fn compile_variant_choice_dimension(
+    node_id: &NodeId,
+    choices: &[PipelineDslVariantChoice],
+) -> Result<GenerationDimension> {
+    Ok(GenerationDimension {
+        name: format!("{node_id}.params"),
+        choices: choices
+            .iter()
+            .map(|choice| {
+                if choice.params.is_empty() {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "pipeline DSL variant `{}` for node `{node_id}` has no params",
+                        choice.label
+                    )));
+                }
+                let value = match &choice.value {
+                    Some(value) => value.clone(),
+                    None => serde_json::to_value(&choice.params).map_err(|error| {
+                        DagMlError::GraphValidation(format!(
+                            "failed to serialize pipeline DSL variant `{}` for node `{node_id}`: {error}",
+                            choice.label
+                        ))
+                    })?,
+                };
+                Ok(GenerationChoice {
+                    label: choice.label.clone(),
+                    value,
+                    param_overrides: vec![GenerationParamOverride {
+                        node_id: node_id.clone(),
+                        params: choice.params.clone(),
+                    }],
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    })
+}
+
+fn compile_param_generator_dimension(
+    node_id: &NodeId,
+    generator: &PipelineDslParamGenerator,
+) -> Result<GenerationDimension> {
+    match generator {
+        PipelineDslParamGenerator::Or {
+            name,
+            param,
+            values,
+            count,
+        } => compile_or_generator(node_id, name.as_deref(), param, values, *count),
+        PipelineDslParamGenerator::Range {
+            name,
+            param,
+            start,
+            stop,
+            step,
+            inclusive,
+            count,
+        } => compile_range_generator(RangeGeneratorSpec {
+            node_id,
+            name: name.as_deref(),
+            param,
+            start: *start,
+            stop: *stop,
+            step: *step,
+            inclusive: *inclusive,
+            count: *count,
+        }),
+        PipelineDslParamGenerator::LogRange {
+            name,
+            param,
+            start,
+            stop,
+            count,
+            base,
+        } => compile_log_range_generator(
+            node_id,
+            name.as_deref(),
+            param,
+            *start,
+            *stop,
+            *count,
+            *base,
+        ),
+        PipelineDslParamGenerator::Grid {
+            name,
+            params,
+            count,
+        } => compile_grid_generator(node_id, name.as_deref(), params, *count),
+        PipelineDslParamGenerator::Pick {
+            name,
+            param,
+            values,
+            sizes,
+            count,
+        } => compile_pick_arrange_generator(
+            node_id,
+            name.as_deref(),
+            param,
+            values,
+            sizes,
+            *count,
+            PickArrangeMode::Pick,
+        ),
+        PipelineDslParamGenerator::Arrange {
+            name,
+            param,
+            values,
+            sizes,
+            count,
+        } => compile_pick_arrange_generator(
+            node_id,
+            name.as_deref(),
+            param,
+            values,
+            sizes,
+            *count,
+            PickArrangeMode::Arrange,
+        ),
+    }
+}
+
+fn compile_or_generator(
+    node_id: &NodeId,
+    name: Option<&str>,
+    param: &str,
+    values: &[PipelineDslGeneratorValue],
+    count: Option<usize>,
+) -> Result<GenerationDimension> {
+    validate_param_name(node_id, param)?;
+    validate_count(node_id, name, count)?;
+    if values.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` for node `{node_id}` has no values",
+            generator_dimension_name(node_id, name, Some(param), "or")
+        )));
+    }
+    let mut choices = values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| single_param_generation_choice(node_id, param, index, value))
+        .collect::<Result<Vec<_>>>()?;
+    apply_choice_count(&mut choices, count);
+    Ok(GenerationDimension {
+        name: generator_dimension_name(node_id, name, Some(param), "or"),
+        choices,
+    })
+}
+
+struct RangeGeneratorSpec<'a> {
+    node_id: &'a NodeId,
+    name: Option<&'a str>,
+    param: &'a str,
+    start: f64,
+    stop: f64,
+    step: f64,
+    inclusive: bool,
+    count: Option<usize>,
+}
+
+fn compile_range_generator(spec: RangeGeneratorSpec<'_>) -> Result<GenerationDimension> {
+    validate_param_name(spec.node_id, spec.param)?;
+    validate_count(spec.node_id, spec.name, spec.count)?;
+    validate_finite(spec.node_id, spec.param, "range start", spec.start)?;
+    validate_finite(spec.node_id, spec.param, "range stop", spec.stop)?;
+    validate_finite(spec.node_id, spec.param, "range step", spec.step)?;
+    if spec.step == 0.0 {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL range generator for `{}.{}` has zero step",
+            spec.node_id, spec.param
+        )));
+    }
+    if spec.start < spec.stop && spec.step < 0.0 {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL range generator for `{}.{}` steps away from stop",
+            spec.node_id, spec.param
+        )));
+    }
+    if spec.start > spec.stop && spec.step > 0.0 {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL range generator for `{}.{}` steps away from stop",
+            spec.node_id, spec.param
+        )));
+    }
+    let mut values = Vec::new();
+    let mut current = spec.start;
+    let mut guard = 0usize;
+    while range_contains(current, spec.stop, spec.step, spec.inclusive) {
+        values.push(json_number(current, spec.node_id, spec.param)?);
+        current += spec.step;
+        guard += 1;
+        if guard > 10_000 {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL range generator for `{}.{}` produced more than 10000 values",
+                spec.node_id, spec.param
+            )));
+        }
+    }
+    if values.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL range generator for `{}.{}` produced no values",
+            spec.node_id, spec.param
+        )));
+    }
+    let wrapped = values
+        .into_iter()
+        .map(PipelineDslGeneratorValue::Value)
+        .collect::<Vec<_>>();
+    compile_or_generator(spec.node_id, spec.name, spec.param, &wrapped, spec.count).map(
+        |mut dimension| {
+            dimension.name =
+                generator_dimension_name(spec.node_id, spec.name, Some(spec.param), "range");
+            dimension
+        },
+    )
+}
+
+fn compile_log_range_generator(
+    node_id: &NodeId,
+    name: Option<&str>,
+    param: &str,
+    start: f64,
+    stop: f64,
+    count: usize,
+    base: f64,
+) -> Result<GenerationDimension> {
+    validate_param_name(node_id, param)?;
+    validate_finite(node_id, param, "log_range start", start)?;
+    validate_finite(node_id, param, "log_range stop", stop)?;
+    validate_finite(node_id, param, "log_range base", base)?;
+    if start <= 0.0 || stop <= 0.0 {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL log_range generator for `{node_id}.{param}` requires positive start and stop"
+        )));
+    }
+    if count == 0 {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL log_range generator for `{node_id}.{param}` has count=0"
+        )));
+    }
+    if base <= 0.0 || (base - 1.0).abs() < f64::EPSILON {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL log_range generator for `{node_id}.{param}` requires base > 0 and != 1"
+        )));
+    }
+    let start_log = start.log(base);
+    let stop_log = stop.log(base);
+    let values = if count == 1 {
+        vec![json_number(start, node_id, param)?]
+    } else {
+        (0..count)
+            .map(|index| {
+                let ratio = index as f64 / (count - 1) as f64;
+                json_number(
+                    base.powf(start_log + (stop_log - start_log) * ratio),
+                    node_id,
+                    param,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    let wrapped = values
+        .into_iter()
+        .map(PipelineDslGeneratorValue::Value)
+        .collect::<Vec<_>>();
+    compile_or_generator(node_id, name, param, &wrapped, None).map(|mut dimension| {
+        dimension.name = generator_dimension_name(node_id, name, Some(param), "log_range");
+        dimension
+    })
+}
+
+fn compile_grid_generator(
+    node_id: &NodeId,
+    name: Option<&str>,
+    params: &BTreeMap<String, Vec<PipelineDslGeneratorValue>>,
+    count: Option<usize>,
+) -> Result<GenerationDimension> {
+    validate_count(node_id, name, count)?;
+    if params.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL grid generator for node `{node_id}` has no params"
+        )));
+    }
+    for (param, values) in params {
+        validate_param_name(node_id, param)?;
+        if values.is_empty() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL grid generator for `{node_id}.{param}` has no values"
+            )));
+        }
+    }
+    let entries = params
+        .iter()
+        .map(|(param, values)| (param.as_str(), values.as_slice()))
+        .collect::<Vec<_>>();
+    let mut rows = Vec::<BTreeMap<String, PipelineDslGeneratorValue>>::new();
+    build_grid_rows(&entries, 0, &mut BTreeMap::new(), &mut rows, count);
+    let choices = rows
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| multi_param_generation_choice(node_id, index, row))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(GenerationDimension {
+        name: generator_dimension_name(node_id, name, None, "grid"),
+        choices,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PickArrangeMode {
+    Pick,
+    Arrange,
+}
+
+fn compile_pick_arrange_generator(
+    node_id: &NodeId,
+    name: Option<&str>,
+    param: &str,
+    values: &[PipelineDslGeneratorValue],
+    sizes: &[usize],
+    count: Option<usize>,
+    mode: PickArrangeMode,
+) -> Result<GenerationDimension> {
+    validate_param_name(node_id, param)?;
+    validate_count(node_id, name, count)?;
+    if values.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL {:?} generator for `{node_id}.{param}` has no values",
+            mode
+        )));
+    }
+    if sizes.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL {:?} generator for `{node_id}.{param}` has no sizes",
+            mode
+        )));
+    }
+    let mut selections = Vec::<Vec<usize>>::new();
+    for size in sizes {
+        if *size == 0 || *size > values.len() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL {:?} generator for `{node_id}.{param}` has invalid size `{size}`",
+                mode
+            )));
+        }
+        match mode {
+            PickArrangeMode::Pick => build_combinations(
+                values.len(),
+                *size,
+                0,
+                &mut Vec::new(),
+                &mut selections,
+                count,
+            ),
+            PickArrangeMode::Arrange => build_permutations(
+                values.len(),
+                *size,
+                &mut BTreeSet::new(),
+                &mut Vec::new(),
+                &mut selections,
+                count,
+            ),
+        }
+        if count.is_some_and(|limit| selections.len() >= limit) {
+            break;
+        }
+    }
+    let mut choices = selections
+        .into_iter()
+        .enumerate()
+        .map(|(index, selection)| {
+            let selected_values = selection
+                .iter()
+                .map(|selected| values[*selected].value().clone())
+                .collect::<Vec<_>>();
+            let selected_labels = selection
+                .iter()
+                .map(|selected| values[*selected].label_fragment())
+                .collect::<Vec<_>>();
+            let mut params = BTreeMap::new();
+            params.insert(param.to_string(), serde_json::Value::Array(selected_values));
+            Ok(GenerationChoice {
+                label: format!(
+                    "{index:04}_{}_{}",
+                    match mode {
+                        PickArrangeMode::Pick => "pick",
+                        PickArrangeMode::Arrange => "arrange",
+                    },
+                    sanitize_generation_label(&selected_labels.join("_"))
+                ),
+                value: serde_json::to_value(&params).map_err(|error| {
+                    DagMlError::GraphValidation(format!(
+                        "failed to serialize pipeline DSL {:?} generator choice for `{node_id}.{param}`: {error}",
+                        mode
+                    ))
+                })?,
+                param_overrides: vec![GenerationParamOverride {
+                    node_id: node_id.clone(),
+                    params,
+                }],
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    apply_choice_count(&mut choices, count);
+    Ok(GenerationDimension {
+        name: generator_dimension_name(
+            node_id,
+            name,
+            Some(param),
+            match mode {
+                PickArrangeMode::Pick => "pick",
+                PickArrangeMode::Arrange => "arrange",
+            },
+        ),
+        choices,
+    })
+}
+
+fn single_param_generation_choice(
+    node_id: &NodeId,
+    param: &str,
+    index: usize,
+    value: &PipelineDslGeneratorValue,
+) -> Result<GenerationChoice> {
+    let mut params = BTreeMap::new();
+    params.insert(param.to_string(), value.value().clone());
+    Ok(GenerationChoice {
+        label: format!(
+            "{index:04}_{}_{}",
+            sanitize_generation_label(param),
+            value.label_fragment()
+        ),
+        value: serde_json::to_value(&params).map_err(|error| {
+            DagMlError::GraphValidation(format!(
+                "failed to serialize pipeline DSL generator choice for `{node_id}.{param}`: {error}"
+            ))
+        })?,
+        param_overrides: vec![GenerationParamOverride {
+            node_id: node_id.clone(),
+            params,
+        }],
+    })
+}
+
+fn multi_param_generation_choice(
+    node_id: &NodeId,
+    index: usize,
+    row: BTreeMap<String, PipelineDslGeneratorValue>,
+) -> Result<GenerationChoice> {
+    let mut params = BTreeMap::new();
+    let mut label_parts = Vec::new();
+    for (param, value) in row {
+        label_parts.push(format!(
+            "{}_{}",
+            sanitize_generation_label(&param),
+            value.label_fragment()
+        ));
+        params.insert(param, value.value().clone());
+    }
+    Ok(GenerationChoice {
+        label: format!("{index:04}_{}", label_parts.join("__")),
+        value: serde_json::to_value(&params).map_err(|error| {
+            DagMlError::GraphValidation(format!(
+                "failed to serialize pipeline DSL grid generator choice for node `{node_id}`: {error}"
+            ))
+        })?,
+        param_overrides: vec![GenerationParamOverride {
+            node_id: node_id.clone(),
+            params,
+        }],
+    })
+}
+
+fn build_grid_rows(
+    entries: &[(&str, &[PipelineDslGeneratorValue])],
+    entry_index: usize,
+    current: &mut BTreeMap<String, PipelineDslGeneratorValue>,
+    rows: &mut Vec<BTreeMap<String, PipelineDslGeneratorValue>>,
+    count: Option<usize>,
+) {
+    if count.is_some_and(|limit| rows.len() >= limit) {
+        return;
+    }
+    if entry_index == entries.len() {
+        rows.push(current.clone());
+        return;
+    }
+    let (param, values) = entries[entry_index];
+    for value in values {
+        current.insert(param.to_string(), value.clone());
+        build_grid_rows(entries, entry_index + 1, current, rows, count);
+        current.remove(param);
+        if count.is_some_and(|limit| rows.len() >= limit) {
+            break;
+        }
+    }
+}
+
+fn build_combinations(
+    value_count: usize,
+    size: usize,
+    start: usize,
+    current: &mut Vec<usize>,
+    selections: &mut Vec<Vec<usize>>,
+    count: Option<usize>,
+) {
+    if count.is_some_and(|limit| selections.len() >= limit) {
+        return;
+    }
+    if current.len() == size {
+        selections.push(current.clone());
+        return;
+    }
+    let remaining = size - current.len();
+    if value_count < remaining {
+        return;
+    }
+    for index in start..=value_count - remaining {
+        current.push(index);
+        build_combinations(value_count, size, index + 1, current, selections, count);
+        current.pop();
+        if count.is_some_and(|limit| selections.len() >= limit) {
+            break;
+        }
+    }
+}
+
+fn build_permutations(
+    value_count: usize,
+    size: usize,
+    used: &mut BTreeSet<usize>,
+    current: &mut Vec<usize>,
+    selections: &mut Vec<Vec<usize>>,
+    count: Option<usize>,
+) {
+    if count.is_some_and(|limit| selections.len() >= limit) {
+        return;
+    }
+    if current.len() == size {
+        selections.push(current.clone());
+        return;
+    }
+    for index in 0..value_count {
+        if used.contains(&index) {
+            continue;
+        }
+        used.insert(index);
+        current.push(index);
+        build_permutations(value_count, size, used, current, selections, count);
+        current.pop();
+        used.remove(&index);
+        if count.is_some_and(|limit| selections.len() >= limit) {
+            break;
+        }
+    }
+}
+
+fn apply_choice_count(choices: &mut Vec<GenerationChoice>, count: Option<usize>) {
+    if let Some(limit) = count {
+        choices.truncate(limit);
+    }
+}
+
+fn validate_count(node_id: &NodeId, name: Option<&str>, count: Option<usize>) -> Result<()> {
+    if count == Some(0) {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` for node `{node_id}` has count=0",
+            generator_dimension_name(node_id, name, None, "params")
+        )));
+    }
+    Ok(())
+}
+
+fn validate_param_name(node_id: &NodeId, param: &str) -> Result<()> {
+    if param.trim().is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL param generator for node `{node_id}` has an empty param name"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_finite(node_id: &NodeId, param: &str, field: &str, value: f64) -> Result<()> {
+    if !value.is_finite() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL {field} for `{node_id}.{param}` must be finite"
+        )));
+    }
+    Ok(())
+}
+
+fn range_contains(current: f64, stop: f64, step: f64, inclusive: bool) -> bool {
+    let epsilon = step.abs() * 1e-12 + f64::EPSILON;
+    if step > 0.0 {
+        if inclusive {
+            current <= stop + epsilon
+        } else {
+            current < stop - epsilon
+        }
+    } else if inclusive {
+        current >= stop - epsilon
+    } else {
+        current > stop + epsilon
+    }
+}
+
+fn json_number(value: f64, node_id: &NodeId, param: &str) -> Result<serde_json::Value> {
+    let number = serde_json::Number::from_f64(value).ok_or_else(|| {
+        DagMlError::GraphValidation(format!(
+            "pipeline DSL numeric generator for `{node_id}.{param}` produced a non-finite value"
+        ))
+    })?;
+    Ok(serde_json::Value::Number(number))
+}
+
+fn generator_dimension_name(
+    node_id: &NodeId,
+    name: Option<&str>,
+    param: Option<&str>,
+    suffix: &str,
+) -> String {
+    if let Some(name) = name {
+        return name.to_string();
+    }
+    match param {
+        Some(param) => format!("{node_id}.{param}.{suffix}"),
+        None => format!("{node_id}.{suffix}"),
+    }
+}
+
+impl PipelineDslGeneratorValue {
+    fn value(&self) -> &serde_json::Value {
+        match self {
+            Self::Labeled { value, .. } | Self::Value(value) => value,
+        }
+    }
+
+    fn label_fragment(&self) -> String {
+        match self {
+            Self::Labeled { label, .. } => sanitize_generation_label(label),
+            Self::Value(value) => {
+                let rendered = match value {
+                    serde_json::Value::String(value) => value.clone(),
+                    _ => serde_json::to_string(value).unwrap_or_else(|_| "value".to_string()),
+                };
+                sanitize_generation_label(&rendered)
+            }
+        }
+    }
+}
+
+fn sanitize_generation_label(input: &str) -> String {
+    let sanitized = input
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if sanitized.is_empty() {
+        "value".to_string()
+    } else {
+        sanitized
+    }
+}
+
 fn build_generation_spec(
     requested_strategy: Option<GenerationStrategy>,
     max_variants: Option<usize>,
@@ -1730,6 +2451,10 @@ fn default_data_representation() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_log_base() -> f64 {
+    10.0
 }
 
 fn default_merge_mode() -> String {
@@ -2234,6 +2959,135 @@ mod tests {
             compiled.generation_fingerprint
         );
         compiled.graph.validate().unwrap();
+    }
+
+    #[test]
+    fn expands_compact_param_generators_into_generation_dimensions() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-compact-generation",
+  "steps": [
+    {
+      "kind": "model",
+      "id": "model:tuned",
+      "operator": {"type": "TunedModel"},
+      "generators": [
+        {
+          "kind": "or",
+          "name": "model_family",
+          "param": "family",
+          "values": [
+            {"label": "ridge", "value": "ridge"},
+            {"label": "rf", "value": "random_forest"}
+          ]
+        },
+        {
+          "kind": "range",
+          "param": "alpha",
+          "start": 0.1,
+          "stop": 0.9,
+          "step": 0.4
+        },
+        {
+          "kind": "log_range",
+          "param": "lambda",
+          "start": 0.01,
+          "stop": 1.0,
+          "count": 3
+        },
+        {
+          "kind": "grid",
+          "name": "tree_grid",
+          "params": {
+            "max_depth": [3, 5],
+            "n_estimators": [50, 100]
+          },
+          "count": 3
+        },
+        {
+          "kind": "pick",
+          "param": "views",
+          "values": ["snv", "msc", "derivative"],
+          "sizes": [1, 2],
+          "count": 4
+        },
+        {
+          "kind": "arrange",
+          "param": "chain",
+          "values": ["snv", "pca", "pls"],
+          "sizes": [2],
+          "count": 3
+        }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+
+        assert_eq!(compiled.generation.strategy, GenerationStrategy::Cartesian);
+        assert_eq!(compiled.generation.dimensions.len(), 6);
+        assert_eq!(compiled.generation.dimensions[0].name, "model_family");
+        assert_eq!(compiled.generation.dimensions[0].choices.len(), 2);
+        assert_eq!(
+            compiled.generation.dimensions[1].name,
+            "model:tuned.alpha.range"
+        );
+        assert_eq!(compiled.generation.dimensions[1].choices.len(), 3);
+        assert_eq!(
+            compiled.generation.dimensions[1].choices[1].param_overrides[0].params["alpha"],
+            0.5
+        );
+        assert_eq!(
+            compiled.generation.dimensions[2].name,
+            "model:tuned.lambda.log_range"
+        );
+        assert_eq!(compiled.generation.dimensions[2].choices.len(), 3);
+        assert_eq!(compiled.generation.dimensions[3].name, "tree_grid");
+        assert_eq!(compiled.generation.dimensions[3].choices.len(), 3);
+        assert_eq!(
+            compiled.generation.dimensions[3].choices[2].param_overrides[0].params["n_estimators"],
+            50
+        );
+        assert_eq!(
+            compiled.generation.dimensions[4].choices[3].param_overrides[0].params["views"],
+            serde_json::json!(["snv", "msc"])
+        );
+        assert_eq!(
+            compiled.generation.dimensions[5].choices[2].param_overrides[0].params["chain"],
+            serde_json::json!(["pca", "snv"])
+        );
+        assert!(compiled.generation_fingerprint.is_some());
+    }
+
+    #[test]
+    fn compact_param_generators_reject_invalid_counts() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-bad-compact-generation",
+  "steps": [
+    {
+      "kind": "model",
+      "id": "model:bad",
+      "operator": {"type": "Ridge"},
+      "generators": [
+        {
+          "kind": "or",
+          "param": "alpha",
+          "values": [0.1, 1.0],
+          "count": 0
+        }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = compile_pipeline_dsl_with_generation(&spec).unwrap_err();
+        assert!(format!("{error}").contains("count=0"));
     }
 
     #[test]

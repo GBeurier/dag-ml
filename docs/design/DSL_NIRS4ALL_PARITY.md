@@ -46,7 +46,7 @@ nirs4all-style Python/YAML shorthand into this form.
 | per-branch/per-model selection (`best`, `top_k`, `all`) | `merge.selectors` metadata | compiled and preserved; selection runtime is controller policy |
 | finetune / hyperparameter search | `tuning` or `finetune_params`, plus generation dimensions/variants | intent compiled into metadata; concrete tuning engine remains controller-side |
 | final train params | `train_params` | preserved as `dsl_train_params` metadata |
-| `_or_`, `_range_`, `_grid_`, `pick`, `arrange`, `count` | explicit `variants` and `generation_dimensions` | canonical choices implemented; shorthand lowering still pending |
+| `_or_`, `_range_`, `_log_range_`, `_grid_`, `pick`, `arrange`, `count` | `variants`, explicit `generation_dimensions`, or compact `generators` on DSL nodes | compiled into deterministic `GenerationSpec` dimensions |
 | multisource data | `data_bindings.source_ids`, branch/source selectors, source joins | contract surface present; richer materialization belongs to dag-ml-data |
 | repetition/sample/group aggregation | top-level/shape `aggregation_policy`, target/group OOF cache contracts | core runtime implemented for sample/target/group OOF |
 | tag/exclude filters | `kind: "tag"` and `kind: "exclude"` | compiled to graph nodes |
@@ -54,9 +54,9 @@ nirs4all-style Python/YAML shorthand into this form.
 
 ## Current Gaps
 
-- nirs4all shorthand import is not implemented yet. Today the portable DSL
-  requires explicit strict JSON choices instead of `_or_`, `_range_`, `_grid_`,
-  `pick`, `arrange` and `count` syntax.
+- nirs4all shorthand import is not implemented yet. Today the portable DSL has
+  native compact generator semantics, but it does not parse nirs4all's legacy
+  Python/YAML keys directly.
 - The new DSL node kinds compile and validate graph contracts; production
   execution still needs host controller support for each operator family.
 - Separation branch materialization by source/metadata/tag/filter must be backed
