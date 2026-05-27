@@ -163,6 +163,7 @@ dependencies = [
  "dag-ml-core",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

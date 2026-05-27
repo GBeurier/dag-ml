@@ -144,12 +144,16 @@ validated file-backed store directory and reused by replay. Payload-backed CLI
 replay now converts validated sample and target/group OOF prediction payloads
 into typed columnar f64 buffers behind `RuntimePredictionCacheStore`, keeping
 the external bundle contract stable while removing JSON-shaped rows from the
-runtime cache path.
+runtime cache path. Artifact replay now also has a file-backed payload store
+for portable `ArtifactRef` records: it copies files by relative URI, validates
+SHA-256 and declared sizes, reopens the manifest against the bundle and
+materializes deterministic opaque artifact handles without deserializing host
+model binaries.
 It has both mock and external-process execution smokes for campaign,
 refit-bundle and replay paths, and the C ABI exposes a mock replay execution
 helper returning a JSON summary. The remaining work is production host
-adapters, persistent artifact/data stores and Arrow-backed prediction cache
-exports.
+adapters, host-native artifact deserializers/data stores and Arrow-backed
+prediction cache exports.
 
 ## Phase 6: Research Provenance Exports
 

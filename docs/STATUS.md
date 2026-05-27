@@ -202,6 +202,12 @@ Implemented:
   --artifact-manifest` reports the manifest entry count while refusing
   mismatched or non-portable entries; this path is manifest-only and never
   reads, writes or deserializes artifact payloads;
+- file-backed artifact payload store: `FileArtifactPayloadStore` copies
+  payload files referenced by portable `ArtifactRef.uri`, verifies their
+  SHA-256 content fingerprint and declared size, reopens them against the
+  bundle manifest, and materializes deterministic opaque artifact handles
+  without deserializing model binaries. The CLI exposes
+  `export-artifact-payload-store` and `validate-artifact-payload-store`;
 - first research provenance export layer: core validates the execution plan,
   bundle, optional lineage records, data envelopes, prediction-cache manifest
   and artifact manifest before emitting a checksum-rich RO-Crate package with
@@ -353,10 +359,9 @@ Not implemented yet:
   overrides;
 - custom aggregation controllers and production persistent/Arrow replay
   backends for non-sample aggregated prediction blocks;
-- persistent artifact payload stores and payload materialization (reading,
-  writing or deserializing the artifact binaries) beyond the implemented
-  portable artifact reference contract, file-backed artifact manifest and its
-  CLI export/validation commands;
+- artifact binary deserialization/loading into host-native model objects beyond
+  the implemented portable artifact reference contract, file-backed artifact
+  manifest and file-backed artifact payload store;
 - Arrow prediction storage and ABI-owned prediction tensors;
 - production host controller adapters with native libraries or
   language-specific bindings;
