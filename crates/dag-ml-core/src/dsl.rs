@@ -602,50 +602,85 @@ impl PipelineCompiler {
             }
             let mut branch_data = current_data.clone();
             let mut branch_predictions = Vec::new();
+            let branch_metadata = branch_context_metadata(step, branch)?;
             for branch_step in &branch.steps {
                 match branch_step {
                     PipelineDslStep::Transform(step) => {
-                        branch_data =
-                            self.compile_data_operator(NodeKind::Transform, step, &branch_data)?;
+                        branch_data = self.compile_data_operator_with_extra(
+                            NodeKind::Transform,
+                            step,
+                            &branch_data,
+                            branch_metadata.clone(),
+                        )?;
                     }
                     PipelineDslStep::YTransform(step) => {
-                        self.compile_y_transform(step)?;
+                        self.compile_y_transform_with_extra(step, branch_metadata.clone())?;
                     }
                     PipelineDslStep::Tag(step) => {
-                        branch_data =
-                            self.compile_data_operator(NodeKind::Tag, step, &branch_data)?;
+                        branch_data = self.compile_data_operator_with_extra(
+                            NodeKind::Tag,
+                            step,
+                            &branch_data,
+                            branch_metadata.clone(),
+                        )?;
                     }
                     PipelineDslStep::Exclude(step) => {
-                        branch_data =
-                            self.compile_data_operator(NodeKind::Exclude, step, &branch_data)?;
+                        branch_data = self.compile_data_operator_with_extra(
+                            NodeKind::Exclude,
+                            step,
+                            &branch_data,
+                            branch_metadata.clone(),
+                        )?;
                     }
                     PipelineDslStep::Augmentation(step) => {
-                        branch_data =
-                            self.compile_data_operator(NodeKind::Augmentation, step, &branch_data)?;
+                        branch_data = self.compile_data_operator_with_extra(
+                            NodeKind::Augmentation,
+                            step,
+                            &branch_data,
+                            branch_metadata.clone(),
+                        )?;
                     }
                     PipelineDslStep::FeatureAugmentation(step) => {
-                        branch_data =
-                            self.compile_augmentation_operator("feature", step, &branch_data)?;
+                        branch_data = self.compile_augmentation_operator_with_extra(
+                            "feature",
+                            step,
+                            &branch_data,
+                            branch_metadata.clone(),
+                        )?;
                     }
                     PipelineDslStep::SampleAugmentation(step) => {
-                        branch_data =
-                            self.compile_augmentation_operator("sample", step, &branch_data)?;
+                        branch_data = self.compile_augmentation_operator_with_extra(
+                            "sample",
+                            step,
+                            &branch_data,
+                            branch_metadata.clone(),
+                        )?;
                     }
                     PipelineDslStep::ConcatTransform(step) => {
-                        branch_data = self.compile_concat_transform(step, &branch_data)?;
+                        branch_data = self.compile_concat_transform_with_extra(
+                            step,
+                            &branch_data,
+                            branch_metadata.clone(),
+                        )?;
                     }
                     PipelineDslStep::Model(step) => {
-                        branch_predictions.push(self.compile_model(
+                        branch_predictions.push(self.compile_model_with_extra(
                             step,
                             &branch_data,
                             Some(&branch.id),
+                            branch_metadata.clone(),
                         )?);
                     }
                     PipelineDslStep::Branch(step) => {
                         branch_predictions.extend(self.compile_branch(step, &branch_data)?);
                     }
                     PipelineDslStep::Merge(step) => {
-                        match self.compile_merge(step, &branch_predictions, current_data)? {
+                        match self.compile_merge_with_extra(
+                            step,
+                            &branch_predictions,
+                            current_data,
+                            branch_metadata.clone(),
+                        )? {
                             MergeOutputSource::Data(data) => {
                                 branch_data = data;
                                 branch_predictions.clear();
@@ -657,14 +692,22 @@ impl PipelineCompiler {
                         }
                     }
                     PipelineDslStep::MergeModel(step) => {
-                        let prediction =
-                            self.compile_merge_model(step, &branch_predictions, current_data)?;
+                        let prediction = self.compile_merge_model_with_extra(
+                            step,
+                            &branch_predictions,
+                            current_data,
+                            branch_metadata.clone(),
+                        )?;
                         branch_predictions.clear();
                         branch_predictions.push(prediction);
                     }
                     PipelineDslStep::Chart(step) => {
-                        branch_data =
-                            self.compile_data_operator(NodeKind::Chart, step, &branch_data)?;
+                        branch_data = self.compile_data_operator_with_extra(
+                            NodeKind::Chart,
+                            step,
+                            &branch_data,
+                            branch_metadata.clone(),
+                        )?;
                     }
                 }
             }
@@ -710,7 +753,21 @@ impl PipelineCompiler {
         step: &PipelineDslOperatorStep,
         input: &DataSource,
     ) -> Result<DataSource> {
-        let mut extra = BTreeMap::new();
+        self.compile_augmentation_operator_with_extra(
+            augmentation_kind,
+            step,
+            input,
+            BTreeMap::new(),
+        )
+    }
+
+    fn compile_augmentation_operator_with_extra(
+        &mut self,
+        augmentation_kind: &str,
+        step: &PipelineDslOperatorStep,
+        input: &DataSource,
+        mut extra: BTreeMap<String, serde_json::Value>,
+    ) -> Result<DataSource> {
         extra.insert(
             "dsl_augmentation_kind".to_string(),
             serde_json::Value::String(augmentation_kind.to_string()),
@@ -762,6 +819,16 @@ impl PipelineCompiler {
     }
 
     fn compile_y_transform(&mut self, step: &PipelineDslOperatorStep) -> Result<()> {
+        self.compile_y_transform_with_extra(step, BTreeMap::new())
+    }
+
+    fn compile_y_transform_with_extra(
+        &mut self,
+        step: &PipelineDslOperatorStep,
+        extra_metadata: BTreeMap<String, serde_json::Value>,
+    ) -> Result<()> {
+        let mut metadata = operator_runtime_metadata(step, None)?;
+        metadata.extend(extra_metadata);
         let node = NodeSpec {
             id: step.id.clone(),
             kind: NodeKind::YTransform,
@@ -771,7 +838,7 @@ impl PipelineCompiler {
                 inputs: vec![target_port("y", "")],
                 outputs: vec![target_port("y_out", "")],
             },
-            metadata: operator_runtime_metadata(step, None)?,
+            metadata,
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
@@ -783,6 +850,15 @@ impl PipelineCompiler {
         &mut self,
         step: &PipelineDslConcatTransformStep,
         input: &DataSource,
+    ) -> Result<DataSource> {
+        self.compile_concat_transform_with_extra(step, input, BTreeMap::new())
+    }
+
+    fn compile_concat_transform_with_extra(
+        &mut self,
+        step: &PipelineDslConcatTransformStep,
+        input: &DataSource,
+        extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<DataSource> {
         if step.branches.is_empty() {
             return Err(DagMlError::GraphValidation(format!(
@@ -818,7 +894,11 @@ impl PipelineCompiler {
                     .collect(),
                 outputs: vec![data_port("x_out", representation.clone(), "")],
             },
-            metadata: step.metadata.clone(),
+            metadata: {
+                let mut metadata = step.metadata.clone();
+                metadata.extend(extra_metadata);
+                metadata
+            },
             seed_label: step.seed_label.clone(),
         };
         self.push_node(node)?;
@@ -840,7 +920,18 @@ impl PipelineCompiler {
         input: &DataSource,
         branch_id: Option<&str>,
     ) -> Result<PredictionSource> {
-        let metadata = operator_runtime_metadata(step, branch_id)?;
+        self.compile_model_with_extra(step, input, branch_id, BTreeMap::new())
+    }
+
+    fn compile_model_with_extra(
+        &mut self,
+        step: &PipelineDslOperatorStep,
+        input: &DataSource,
+        branch_id: Option<&str>,
+        extra_metadata: BTreeMap<String, serde_json::Value>,
+    ) -> Result<PredictionSource> {
+        let mut metadata = operator_runtime_metadata(step, branch_id)?;
+        metadata.extend(extra_metadata);
         let node = NodeSpec {
             id: step.id.clone(),
             kind: NodeKind::Model,
@@ -869,6 +960,16 @@ impl PipelineCompiler {
         step: &PipelineDslMergeStep,
         predictions: &[PredictionSource],
         original_data: &DataSource,
+    ) -> Result<MergeOutputSource> {
+        self.compile_merge_with_extra(step, predictions, original_data, BTreeMap::new())
+    }
+
+    fn compile_merge_with_extra(
+        &mut self,
+        step: &PipelineDslMergeStep,
+        predictions: &[PredictionSource],
+        original_data: &DataSource,
+        extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<MergeOutputSource> {
         if predictions.is_empty() && !step.include_original_data {
             return Err(DagMlError::GraphValidation(format!(
@@ -928,6 +1029,7 @@ impl PipelineCompiler {
                 })?,
             );
         }
+        metadata.extend(extra_metadata);
         let node = NodeSpec {
             id: step.id.clone(),
             kind: merge_node_kind(step, !predictions.is_empty()),
@@ -990,6 +1092,16 @@ impl PipelineCompiler {
         predictions: &[PredictionSource],
         external_data: &DataSource,
     ) -> Result<PredictionSource> {
+        self.compile_merge_model_with_extra(step, predictions, external_data, BTreeMap::new())
+    }
+
+    fn compile_merge_model_with_extra(
+        &mut self,
+        step: &PipelineDslMergeModelStep,
+        predictions: &[PredictionSource],
+        external_data: &DataSource,
+        extra_metadata: BTreeMap<String, serde_json::Value>,
+    ) -> Result<PredictionSource> {
         if predictions.is_empty() {
             return Err(DagMlError::GraphValidation(format!(
                 "pipeline DSL merge_model `{}` has no pending branch predictions",
@@ -1018,6 +1130,7 @@ impl PipelineCompiler {
             "merge_mode".to_string(),
             serde_json::Value::String(step.merge_mode.clone()),
         );
+        metadata.extend(extra_metadata);
         let node = NodeSpec {
             id: step.id.clone(),
             kind: NodeKind::Model,
@@ -1415,6 +1528,55 @@ fn operator_runtime_metadata(
     Ok(metadata)
 }
 
+fn branch_context_metadata(
+    branch_step: &PipelineDslBranchStep,
+    branch: &PipelineDslBranch,
+) -> Result<BTreeMap<String, serde_json::Value>> {
+    let mut metadata = BTreeMap::new();
+    metadata.insert(
+        "dsl_branch".to_string(),
+        serde_json::Value::String(branch.id.clone()),
+    );
+    metadata.insert(
+        "dsl_branch_mode".to_string(),
+        serde_json::to_value(branch_step.mode).map_err(|error| {
+            DagMlError::GraphValidation(format!(
+                "failed to serialize pipeline DSL branch mode for `{}`: {error}",
+                branch.id
+            ))
+        })?,
+    );
+    if let Some(selector) = &branch_step.selector {
+        metadata.insert("dsl_branch_step_selector".to_string(), selector.clone());
+    }
+    if !branch_step.metadata.is_empty() {
+        metadata.insert(
+            "dsl_branch_step_metadata".to_string(),
+            serde_json::to_value(&branch_step.metadata).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to serialize pipeline DSL branch step metadata for `{}`: {error}",
+                    branch.id
+                ))
+            })?,
+        );
+    }
+    if let Some(selector) = &branch.selector {
+        metadata.insert("dsl_branch_selector".to_string(), selector.clone());
+    }
+    if !branch.metadata.is_empty() {
+        metadata.insert(
+            "dsl_branch_metadata".to_string(),
+            serde_json::to_value(&branch.metadata).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to serialize pipeline DSL branch metadata for `{}`: {error}",
+                    branch.id
+                ))
+            })?,
+        );
+    }
+    Ok(metadata)
+}
+
 fn insert_training_metadata(
     metadata: &mut BTreeMap<String, serde_json::Value>,
     train_params: &BTreeMap<String, serde_json::Value>,
@@ -1720,6 +1882,7 @@ mod tests {
     {
       "kind": "branch",
       "mode": "duplication",
+      "selector": {"scope": "all_samples"},
       "branches": [
         {
           "id": "pls_path",
@@ -1740,6 +1903,7 @@ mod tests {
         },
         {
           "id": "rf_path",
+          "selector": {"source": "nir"},
           "steps": [
             {
               "kind": "transform",
@@ -1807,6 +1971,18 @@ mod tests {
         assert_eq!(merge.ports.outputs[0].kind, PortKind::Data);
         assert_eq!(merge.metadata["merge_mode"], "predictions_plus_original");
         assert_eq!(merge.metadata["selectors"][0]["branch"], "pls_path");
+        let rf_model = graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "branch:rf.model:rf")
+            .unwrap();
+        assert_eq!(rf_model.metadata["dsl_branch"], "rf_path");
+        assert_eq!(rf_model.metadata["dsl_branch_mode"], "duplication");
+        assert_eq!(
+            rf_model.metadata["dsl_branch_step_selector"]["scope"],
+            "all_samples"
+        );
+        assert_eq!(rf_model.metadata["dsl_branch_selector"]["source"], "nir");
         assert_eq!(
             graph
                 .edges
