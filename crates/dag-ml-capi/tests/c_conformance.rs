@@ -500,6 +500,127 @@ int main(int argc, char **argv) {
 }
 "#;
 
+const C_PREDICTION_CACHE_TENSOR_SOURCE: &str = r#"
+#include "dag_ml.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct Buffer {
+    uint8_t *ptr;
+    size_t len;
+} Buffer;
+
+static Buffer read_file(const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        fprintf(stderr, "failed to open %s\n", path);
+        exit(2);
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fprintf(stderr, "failed to seek %s\n", path);
+        exit(2);
+    }
+    long size = ftell(file);
+    if (size < 0) {
+        fprintf(stderr, "failed to tell %s\n", path);
+        exit(2);
+    }
+    if (fseek(file, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "failed to rewind %s\n", path);
+        exit(2);
+    }
+    uint8_t *data = (uint8_t *)malloc((size_t)size);
+    if (!data) {
+        fprintf(stderr, "allocation failure\n");
+        exit(2);
+    }
+    if (fread(data, 1, (size_t)size, file) != (size_t)size) {
+        fprintf(stderr, "failed to read %s\n", path);
+        exit(2);
+    }
+    fclose(file);
+    Buffer buffer = { data, (size_t)size };
+    return buffer;
+}
+
+static int contains_bytes(const uint8_t *haystack, size_t haystack_len, const char *needle) {
+    size_t needle_len = strlen(needle);
+    if (!haystack || needle_len == 0 || needle_len > haystack_len) {
+        return 0;
+    }
+    for (size_t i = 0; i + needle_len <= haystack_len; i++) {
+        if (memcmp(haystack + i, needle, needle_len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 4) {
+        fprintf(stderr, "usage: %s BUNDLE PAYLOAD REQUIREMENT_KEY\n", argv[0]);
+        return 2;
+    }
+    Buffer bundle = read_file(argv[1]);
+    Buffer payload = read_file(argv[2]);
+    DagMlBytesView requirement_key = { (const uint8_t *)argv[3], strlen(argv[3]) };
+    DagMlF64Tensor tensor = {0};
+    DagMlOwnedBytes metadata = {0};
+    DagMlString error = {0};
+    DagMlStatusCode status = dagml_prediction_cache_payload_f64_tensor_json(
+        bundle.ptr,
+        bundle.len,
+        payload.ptr,
+        payload.len,
+        requirement_key,
+        &tensor,
+        &metadata,
+        &error
+    );
+    free(bundle.ptr);
+    free(payload.ptr);
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "prediction-cache tensor export failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 1;
+    }
+    if (!tensor.ptr || tensor.rows != 4 || tensor.cols != 1 || tensor.len != 4 ||
+        tensor.ptr[0] != 9931.0 || tensor.ptr[1] != 9931.0 ||
+        tensor.ptr[2] != 9932.0 || tensor.ptr[3] != 9932.0) {
+        fprintf(stderr, "unexpected prediction-cache tensor shape or values\n");
+        dagml_f64_tensor_free(tensor);
+        if (metadata.ptr) {
+            dagml_owned_bytes_free(metadata);
+        }
+        return 1;
+    }
+    if (!metadata.ptr ||
+        !contains_bytes(metadata.ptr, metadata.len, "\"prediction_level\":\"sample\"") ||
+        !contains_bytes(metadata.ptr, metadata.len, "\"row_offset\":2") ||
+        !contains_bytes(metadata.ptr, metadata.len, "\"sample:4\"")) {
+        fprintf(stderr, "unexpected prediction-cache tensor metadata: %.*s\n",
+            (int)metadata.len,
+            metadata.ptr ? (char *)metadata.ptr : "");
+        dagml_f64_tensor_free(tensor);
+        if (metadata.ptr) {
+            dagml_owned_bytes_free(metadata);
+        }
+        return 1;
+    }
+    dagml_f64_tensor_free(tensor);
+    dagml_owned_bytes_free(metadata);
+    return 0;
+}
+"#;
+
 const C_DAG_ML_DATA_PROVIDER_SOURCE: &str = r#"
 #include "dag_ml.h"
 #include "dag_ml_data.h"
@@ -1282,6 +1403,72 @@ fn c_program_executes_vtable_replay_against_c_abi() {
     assert!(
         run_output.status.success(),
         "C conformance executable failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+}
+
+#[test]
+fn c_program_exports_prediction_cache_payload_tensor_against_c_abi() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate lives under workspace/crates")
+        .to_path_buf();
+    let target_debug = std::env::current_exe()
+        .expect("current test exe path")
+        .parent()
+        .and_then(Path::parent)
+        .expect("test exe lives under target/debug/deps")
+        .to_path_buf();
+    let dynamic_lib = find_dynamic_library(&target_debug);
+    let dynamic_lib_dir = dynamic_lib
+        .parent()
+        .expect("dynamic library has parent directory")
+        .to_path_buf();
+    let temp = std::env::temp_dir().join(format!(
+        "dag_ml_cache_tensor_conformance_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&temp).expect("create prediction-cache tensor conformance temp dir");
+
+    let c_path = temp.join("prediction_cache_tensor.c");
+    let exe_path = temp.join("prediction_cache_tensor");
+    fs::write(&c_path, C_PREDICTION_CACHE_TENSOR_SOURCE)
+        .expect("write prediction-cache tensor C conformance source");
+
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let mut compile = Command::new(cc);
+    compile
+        .arg("-std=c11")
+        .arg(&c_path)
+        .arg("-I")
+        .arg(manifest_dir.join("include"))
+        .arg(&dynamic_lib)
+        .arg("-o")
+        .arg(&exe_path);
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
+        compile.arg(format!("-Wl,-rpath,{}", dynamic_lib_dir.display()));
+    }
+    let compile_output = compile.output().expect("run C compiler");
+    assert!(
+        compile_output.status.success(),
+        "prediction-cache tensor C conformance compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile_output.stdout),
+        String::from_utf8_lossy(&compile_output.stderr)
+    );
+
+    let run_output = Command::new(&exe_path)
+        .arg(workspace.join("examples/generated/execution_bundle_branch_merge_cv_refit.json"))
+        .arg(workspace.join("examples/generated/prediction_cache_branch_merge_cv_refit.json"))
+        .arg("branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof")
+        .output()
+        .expect("run prediction-cache tensor C conformance executable");
+    assert!(
+        run_output.status.success(),
+        "prediction-cache tensor C conformance executable failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&run_output.stdout),
         String::from_utf8_lossy(&run_output.stderr)
     );
