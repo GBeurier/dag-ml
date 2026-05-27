@@ -510,6 +510,56 @@ pub unsafe extern "C" fn dagml_data_plan_validate_json(
     )
 }
 
+/// Validates a single canonical JSON `ControllerManifest`.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_controller_manifest_validate_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    validate_json::<ControllerManifest>(
+        json_ptr,
+        json_len,
+        error_out,
+        "controller manifest",
+        ControllerManifest::validate,
+    )
+}
+
+/// Validates a canonical JSON array of `ControllerManifest` values as a registry.
+///
+/// This catches per-manifest errors and duplicate controller ids before the
+/// manifests are used to build an execution plan.
+///
+/// # Safety
+///
+/// Same pointer and error ownership rules as `dagml_graph_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_controller_manifest_list_validate_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    let manifests = match parse_json_ptr::<Vec<ControllerManifest>>(
+        json_ptr,
+        json_len,
+        error_out,
+        "controller manifests",
+    ) {
+        Ok(manifests) => manifests,
+        Err(status) => return status,
+    };
+    match controller_registry_from_manifests(manifests) {
+        Ok(_) => DagMlStatusCode::OK,
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
 /// Returns the public C ABI contract for propagated data-output provenance.
 ///
 /// Host bindings should look for `extra_key` inside `DataProviderViewSpec.extra`
@@ -4842,6 +4892,74 @@ mod tests {
             dagml_data_plan_validate_json(data_plan.as_ptr(), data_plan.len(), &mut error)
         };
         assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+    }
+
+    #[test]
+    fn validates_controller_manifests_over_abi() {
+        let manifests = include_bytes!("../../../examples/controller_manifests.json");
+        let manifest = br#"{
+  "controller_id": "controller:data-aware",
+  "controller_version": "0.1.0",
+  "operator_kind": "model",
+  "priority": 0,
+  "supported_phases": ["FIT_CV"],
+  "input_ports": [],
+  "output_ports": [],
+  "data_requirements": {
+    "schema_version": 1,
+    "ports": [{
+      "name": "x",
+      "accepted_representations": ["tabular_numeric"],
+      "accepted_types": ["f64"],
+      "rank": 2
+    }]
+  },
+  "capabilities": ["deterministic"],
+  "fit_scope": "fold_train",
+  "rng_policy": "uses_core_seed",
+  "artifact_policy": "serializable"
+}"#;
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_controller_manifest_validate_json(manifest.as_ptr(), manifest.len(), &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+
+        let status = unsafe {
+            dagml_controller_manifest_list_validate_json(
+                manifests.as_ptr(),
+                manifests.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+
+        let invalid = br#"{
+  "controller_id": "controller:bad",
+  "controller_version": "0.1.0",
+  "operator_kind": "model",
+  "supported_phases": ["FIT_CV"],
+  "data_requirements": {
+    "schema_version": 1,
+    "ports": [{
+      "name": "x",
+      "accepted_representations": [],
+      "accepted_types": ["f64"]
+    }]
+  },
+  "fit_scope": "fold_train",
+  "rng_policy": "uses_core_seed",
+  "artifact_policy": "serializable"
+}"#;
+        let status = unsafe {
+            dagml_controller_manifest_validate_json(invalid.as_ptr(), invalid.len(), &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(error_message(&error).contains("data_requirements"));
+        unsafe { dagml_string_free(error) };
     }
 
     #[test]

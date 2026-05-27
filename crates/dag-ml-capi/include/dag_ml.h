@@ -206,6 +206,8 @@ DagMlStatusCode dagml_model_input_spec_contract_json(DagMlOwnedBytes *out_json, 
 DagMlStatusCode dagml_model_input_spec_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_data_plan_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_data_plan_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
+DagMlStatusCode dagml_controller_manifest_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
+DagMlStatusCode dagml_controller_manifest_list_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_data_output_provenance_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_data_output_provenance_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_node_result_validate_for_task_json(const uint8_t *task_ptr, size_t task_len, const uint8_t *result_ptr, size_t result_len, DagMlString *error_out);

@@ -412,6 +412,8 @@ Implemented:
 - controller manifests now parse and validate `data_requirements` as a
   versioned `ModelInputSpec` when present, so controller-side data/model
   compatibility is no longer an unchecked opaque JSON blob;
+- C ABI exposes single-manifest and manifest-list validation helpers, including
+  `ModelInputSpec` data-requirement checks and duplicate controller-id refusal;
 - C ABI graph validation entry point;
 - `dag-ml-data` fixture integration through schema, plan and relation
   fingerprints;
