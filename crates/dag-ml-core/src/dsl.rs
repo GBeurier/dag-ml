@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::data::DataBinding;
 use crate::error::{DagMlError, Result};
 use crate::generation::{
     generation_spec_fingerprint, GenerationChoice, GenerationDimension, GenerationParamOverride,
@@ -43,6 +44,8 @@ pub struct PipelineDslSpec {
     pub split_invocation: Option<SplitInvocation>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub campaign_metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_bindings: Vec<DataBinding>,
     #[serde(default)]
     pub steps: Vec<PipelineDslStep>,
     #[serde(default)]
@@ -208,6 +211,8 @@ pub struct CompiledPipelineDsl {
     pub generation: GenerationSpec,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub shape_plans: BTreeMap<NodeId, DataModelShapePlan>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub data_bindings: BTreeMap<NodeId, Vec<DataBinding>>,
     pub campaign_template: CampaignSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_fingerprint: Option<String>,
@@ -275,11 +280,14 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
     };
     graph.validate()?;
     validate_shape_plan_targets(&compiler.shape_plans, &graph)?;
-    let campaign_template = build_campaign_template(spec, &generation, &compiler.shape_plans)?;
+    let data_bindings = compile_data_bindings(&spec.data_bindings, &graph)?;
+    let campaign_template =
+        build_campaign_template(spec, &generation, &compiler.shape_plans, &data_bindings)?;
     Ok(CompiledPipelineDsl {
         graph,
         generation,
         shape_plans: compiler.shape_plans,
+        data_bindings,
         campaign_template,
         generation_fingerprint,
     })
@@ -828,6 +836,7 @@ fn build_campaign_template(
     spec: &PipelineDslSpec,
     generation: &GenerationSpec,
     shape_plans: &BTreeMap<NodeId, DataModelShapePlan>,
+    data_bindings: &BTreeMap<NodeId, Vec<DataBinding>>,
 ) -> Result<CampaignSpec> {
     let campaign = CampaignSpec {
         id: spec
@@ -840,11 +849,58 @@ fn build_campaign_template(
         split_invocation: spec.split_invocation.clone(),
         generation: generation.clone(),
         shape_plans: shape_plans.clone(),
-        data_bindings: BTreeMap::new(),
+        data_bindings: data_bindings.clone(),
         metadata: spec.campaign_metadata.clone(),
     };
     campaign.validate()?;
     Ok(campaign)
+}
+
+fn compile_data_bindings(
+    bindings: &[DataBinding],
+    graph: &GraphSpec,
+) -> Result<BTreeMap<NodeId, Vec<DataBinding>>> {
+    let mut by_node = BTreeMap::<NodeId, Vec<DataBinding>>::new();
+    for binding in bindings {
+        validate_dsl_data_binding(binding, graph)?;
+        by_node
+            .entry(binding.node_id.clone())
+            .or_default()
+            .push(binding.clone());
+    }
+    Ok(by_node)
+}
+
+fn validate_dsl_data_binding(binding: &DataBinding, graph: &GraphSpec) -> Result<()> {
+    binding.validate()?;
+    let node = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == binding.node_id)
+        .ok_or_else(|| {
+            DagMlError::GraphValidation(format!(
+                "pipeline DSL data binding references unknown node `{}`",
+                binding.node_id
+            ))
+        })?;
+    let Some(input_port) = node
+        .ports
+        .inputs
+        .iter()
+        .find(|port| port.name == binding.input_name)
+    else {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL data binding `{}` references unknown input port `{}` on node `{}`",
+            binding.request_id, binding.input_name, binding.node_id
+        )));
+    };
+    if input_port.kind != PortKind::Data {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL data binding `{}` targets non-data input `{}.{}`",
+            binding.request_id, binding.node_id, binding.input_name
+        )));
+    }
+    Ok(())
 }
 
 fn build_generation_spec(
@@ -1318,6 +1374,20 @@ mod tests {
       ]
     }
   ],
+  "data_bindings": [
+    {
+      "node_id": "model:base",
+      "input_name": "x",
+      "request_id": "data:model.base.x",
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+      "output_representation": "tabular_numeric",
+      "feature_set_id": "x",
+      "source_ids": ["nir"],
+      "require_relations": true
+    }
+  ],
   "steps": [
     {
       "kind": "model",
@@ -1346,13 +1416,90 @@ mod tests {
             "split:group-kfold"
         );
         assert_eq!(compiled.campaign_template.generation, compiled.generation);
-        assert!(compiled.campaign_template.data_bindings.is_empty());
+        assert_eq!(
+            compiled.data_bindings[&NodeId::new("model:base").unwrap()][0].request_id,
+            "data:model.base.x"
+        );
+        assert_eq!(
+            compiled.campaign_template.data_bindings,
+            compiled.data_bindings
+        );
         assert_eq!(compiled.graph.nodes.len(), 1);
         assert!(compiled
             .graph
             .nodes
             .iter()
             .all(|node| !node.id.as_str().starts_with("split:")));
+    }
+
+    #[test]
+    fn refuses_data_binding_for_unknown_or_non_data_port() {
+        let unknown_input_spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-bad-data-binding",
+  "data_bindings": [
+    {
+      "node_id": "model:base",
+      "input_name": "missing",
+      "request_id": "data:bad",
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "output_representation": "tabular_numeric"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "model",
+      "id": "model:base",
+      "operator": {"type": "Ridge"}
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let error = compile_pipeline_dsl_with_generation(&unknown_input_spec).unwrap_err();
+        assert!(format!("{error}").contains("unknown input port `missing`"));
+
+        let prediction_input_spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-prediction-port-data-binding",
+  "data_bindings": [
+    {
+      "node_id": "merge:stack.pred_plus_original.meta:ridge",
+      "input_name": "b0_oof",
+      "request_id": "data:bad.prediction-port",
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "output_representation": "tabular_numeric"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "branch",
+      "branches": [
+        {
+          "id": "b0",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "branch:b0.model:ridge",
+              "operator": {"type": "Ridge"}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge_model",
+      "id": "merge:stack.pred_plus_original.meta:ridge",
+      "operator": {"type": "RidgeMetaStacker"}
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let error = compile_pipeline_dsl_with_generation(&prediction_input_spec).unwrap_err();
+        assert!(format!("{error}").contains("targets non-data input"));
     }
 
     #[test]

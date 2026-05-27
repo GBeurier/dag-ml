@@ -197,6 +197,15 @@ fn cli_compiles_pipeline_dsl_to_graph() {
         coordinated_artifact["campaign_template"]["generation"],
         coordinated_artifact["generation"]
     );
+    assert_eq!(
+        coordinated_artifact["data_bindings"]["merge:stack.pred_plus_original.meta:ridge"][0]
+            ["input_name"],
+        "x_original"
+    );
+    assert_eq!(
+        coordinated_artifact["campaign_template"]["data_bindings"],
+        coordinated_artifact["data_bindings"]
+    );
 }
 
 #[test]
