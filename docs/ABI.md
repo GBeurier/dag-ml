@@ -22,6 +22,10 @@ the host owns the underlying object behind each handle.
 - sample-level and target/group aggregated prediction block conversion helpers
   that validate canonical JSON blocks and return contiguous row-major `double`
   buffers with explicit `rows`, `cols`, `len` and `capacity`;
+- prediction-cache payload tensor export that validates a cache payload set
+  against its bundle before returning contiguous F64 values plus JSON metadata
+  for requirement key, prediction level, block offsets, folds and sample/unit
+  ids;
 - execution bundle validation, replay-envelope validation, replay-request
   validation and prediction-cache payload validation helpers;
 - `dagml_research_provenance_export_json` for building the standards-facing

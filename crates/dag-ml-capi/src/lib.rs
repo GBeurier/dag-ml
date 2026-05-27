@@ -8,17 +8,18 @@ use dag_ml_core::{
     build_execution_plan, build_openlineage_run_event, build_research_provenance_export,
     regression_report_to_candidate_score, score_regression_aggregated_block,
     score_regression_prediction_block, select_candidate, select_candidate_groups,
-    AggregatedPredictionBlock, ArtifactMaterializationRequest, BundlePredictionCachePayloadSet,
-    BundleReplayExecution, CampaignSpec, CandidateScore, ControllerId, ControllerManifest,
-    ControllerRegistry, DagMlError, DataMaterializationRequest, DataRequestPartition,
-    DataViewRequest, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
-    FileArtifactManifest, FilePredictionCacheManifest, GraphSpec, HandleKind, HandleRef,
-    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, NodeResult, NodeTask,
-    OpenLineageRunEventOptions, Phase, PredictionBlock, PredictionCacheMaterializationRequest,
-    PredictionPartition, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
-    ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
-    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
-    SelectionDecision, SelectionPolicy, SequentialScheduler,
+    AggregatedPredictionBlock, ArtifactMaterializationRequest, BundlePredictionCachePayload,
+    BundlePredictionCachePayloadSet, BundleReplayExecution, CampaignSpec, CandidateScore,
+    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataMaterializationRequest,
+    DataRequestPartition, DataViewRequest, ExecutionBundle, ExecutionPlan,
+    ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest, GraphSpec,
+    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
+    NodeResult, NodeTask, OpenLineageRunEventOptions, Phase, PredictionBlock,
+    PredictionCacheMaterializationRequest, PredictionLevel, PredictionPartition, PredictionUnitId,
+    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
+    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
+    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionPolicy,
+    SequentialScheduler,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -1062,6 +1063,107 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_validate_for_bundle_json
     }
 }
 
+/// Exports one validated prediction-cache payload requirement as an owned
+/// row-major F64 tensor plus JSON metadata.
+///
+/// The payload set is first validated against the bundle, then the requested
+/// requirement's blocks are concatenated in payload order. The tensor contains
+/// only prediction values; `out_metadata_json` carries block offsets, fold ids,
+/// sample/unit ids and target names needed to interpret each row. Returned
+/// values must be released with `dagml_f64_tensor_free` and
+/// `dagml_owned_bytes_free`.
+///
+/// # Safety
+///
+/// Same pointer ownership rules as `dagml_graph_validate_json`.
+/// `requirement_key` must point to UTF-8 bytes. `out_tensor` and
+/// `out_metadata_json` must point to writable output structs.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_prediction_cache_payload_f64_tensor_json(
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+    requirement_key: DagMlBytesView,
+    out_tensor: *mut DagMlF64Tensor,
+    out_metadata_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_f64_tensor(out_tensor);
+    clear_owned_bytes(out_metadata_json);
+    if out_tensor.is_null() {
+        set_error(error_out, "output F64 tensor pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    if out_metadata_json.is_null() {
+        set_error(error_out, "output metadata JSON pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    let bundle =
+        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+    let payload_set = match parse_json_ptr::<BundlePredictionCachePayloadSet>(
+        payload_ptr,
+        payload_len,
+        error_out,
+        "prediction cache payload set",
+    ) {
+        Ok(payload) => payload,
+        Err(status) => return status,
+    };
+    if let Err(error) = payload_set.validate_against_bundle(&bundle) {
+        return validation_error(error_out, error);
+    }
+    let requirement_key = match parse_utf8_view(requirement_key, error_out, "requirement key") {
+        Ok(requirement_key) => requirement_key,
+        Err(status) => return status,
+    };
+    if requirement_key.trim().is_empty() {
+        set_error(error_out, "requirement key is empty");
+        return DagMlStatusCode::VALIDATION_ERROR;
+    }
+    let payload = match payload_set
+        .caches
+        .iter()
+        .find(|payload| payload.requirement_key == requirement_key)
+    {
+        Some(payload) => payload,
+        None => {
+            set_error(
+                error_out,
+                format!(
+                    "prediction cache payload set for bundle `{}` has no requirement `{}`",
+                    payload_set.bundle_id, requirement_key
+                ),
+            );
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+    };
+    let (values, metadata) = match prediction_cache_payload_to_f64_tensor(payload) {
+        Ok(output) => output,
+        Err(error) => return validation_error(error_out, error),
+    };
+    let metadata_json = match serde_json::to_vec(&metadata) {
+        Ok(metadata_json) => metadata_json,
+        Err(error) => {
+            set_error(
+                error_out,
+                format!("failed to serialize output metadata JSON: {error}"),
+            );
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+    };
+    let status = write_f64_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
+    if status != DagMlStatusCode::OK {
+        return status;
+    }
+    write_owned_vec(out_metadata_json, metadata_json);
+    DagMlStatusCode::OK
+}
+
 /// Validates a replay request against an `ExecutionBundle` plus OOF cache payloads.
 ///
 /// This variant is required for OOF-dependent `REFIT` replay; the manifest-only
@@ -1691,6 +1793,16 @@ where
     }
 }
 
+unsafe fn write_owned_vec(out_json: *mut DagMlOwnedBytes, mut data: Vec<u8>) {
+    let owned = DagMlOwnedBytes {
+        ptr: data.as_mut_ptr(),
+        len: data.len(),
+        capacity: data.capacity(),
+    };
+    std::mem::forget(data);
+    *out_json = owned;
+}
+
 unsafe fn write_f64_tensor(
     out_tensor: *mut DagMlF64Tensor,
     error_out: *mut DagMlString,
@@ -1762,6 +1874,190 @@ fn flatten_f64_rows(
         }
     }
     Ok(values)
+}
+
+#[derive(Serialize)]
+struct PredictionCacheTensorMetadata {
+    requirement_key: String,
+    cache_id: String,
+    prediction_level: PredictionLevel,
+    block_count: usize,
+    row_count: usize,
+    rows: usize,
+    cols: usize,
+    target_names: Vec<String>,
+    blocks: Vec<PredictionCacheTensorBlockMetadata>,
+}
+
+#[derive(Serialize)]
+struct PredictionCacheTensorBlockMetadata {
+    block_index: usize,
+    prediction_id: Option<String>,
+    fold_id: Option<String>,
+    row_offset: usize,
+    row_count: usize,
+    sample_ids: Vec<SampleId>,
+    unit_ids: Vec<PredictionUnitId>,
+}
+
+fn prediction_cache_payload_to_f64_tensor(
+    payload: &BundlePredictionCachePayload,
+) -> dag_ml_core::Result<(Vec<f64>, PredictionCacheTensorMetadata)> {
+    payload.validate()?;
+    match payload.prediction_level {
+        PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache payload `{}` cannot export observation-level tensors",
+            payload.cache_id
+        ))),
+        PredictionLevel::Sample => sample_prediction_cache_payload_to_f64_tensor(payload),
+        PredictionLevel::Target | PredictionLevel::Group => {
+            aggregated_prediction_cache_payload_to_f64_tensor(payload)
+        }
+    }
+}
+
+fn sample_prediction_cache_payload_to_f64_tensor(
+    payload: &BundlePredictionCachePayload,
+) -> dag_ml_core::Result<(Vec<f64>, PredictionCacheTensorMetadata)> {
+    let mut values = Vec::new();
+    let mut blocks = Vec::with_capacity(payload.blocks.len());
+    let mut width = None;
+    let mut target_names = None::<Vec<String>>;
+    let mut row_offset = 0usize;
+    for (block_index, block) in payload.blocks.iter().enumerate() {
+        let block_width = block.validate_shape()?;
+        ensure_prediction_tensor_width(
+            payload,
+            &mut width,
+            &mut target_names,
+            block_width,
+            &block.target_names,
+        )?;
+        let flattened = flatten_f64_rows(
+            "prediction cache sample block",
+            block.producer_node.as_str(),
+            &block.values,
+            block_width,
+        )?;
+        values.extend(flattened);
+        let row_count = block.sample_ids.len();
+        blocks.push(PredictionCacheTensorBlockMetadata {
+            block_index,
+            prediction_id: block.prediction_id.clone(),
+            fold_id: block.fold_id.as_ref().map(ToString::to_string),
+            row_offset,
+            row_count,
+            sample_ids: block.sample_ids.clone(),
+            unit_ids: Vec::new(),
+        });
+        row_offset += row_count;
+    }
+    let cols = width.unwrap_or(0);
+    build_prediction_cache_tensor_metadata(payload, row_offset, cols, target_names, blocks)
+        .map(|metadata| (values, metadata))
+}
+
+fn aggregated_prediction_cache_payload_to_f64_tensor(
+    payload: &BundlePredictionCachePayload,
+) -> dag_ml_core::Result<(Vec<f64>, PredictionCacheTensorMetadata)> {
+    let mut values = Vec::new();
+    let mut blocks = Vec::with_capacity(payload.aggregated_blocks.len());
+    let mut width = None;
+    let mut target_names = None::<Vec<String>>;
+    let mut row_offset = 0usize;
+    for (block_index, block) in payload.aggregated_blocks.iter().enumerate() {
+        let block_width = block.validate_shape()?;
+        ensure_prediction_tensor_width(
+            payload,
+            &mut width,
+            &mut target_names,
+            block_width,
+            &block.target_names,
+        )?;
+        let flattened = flatten_f64_rows(
+            "prediction cache aggregated block",
+            block.producer_node.as_str(),
+            &block.values,
+            block_width,
+        )?;
+        values.extend(flattened);
+        let row_count = block.unit_ids.len();
+        blocks.push(PredictionCacheTensorBlockMetadata {
+            block_index,
+            prediction_id: block.prediction_id.clone(),
+            fold_id: block.fold_id.as_ref().map(ToString::to_string),
+            row_offset,
+            row_count,
+            sample_ids: Vec::new(),
+            unit_ids: block.unit_ids.clone(),
+        });
+        row_offset += row_count;
+    }
+    let cols = width.unwrap_or(0);
+    build_prediction_cache_tensor_metadata(payload, row_offset, cols, target_names, blocks)
+        .map(|metadata| (values, metadata))
+}
+
+fn ensure_prediction_tensor_width(
+    payload: &BundlePredictionCachePayload,
+    width: &mut Option<usize>,
+    target_names: &mut Option<Vec<String>>,
+    block_width: usize,
+    block_target_names: &[String],
+) -> dag_ml_core::Result<()> {
+    match width {
+        Some(width) if *width != block_width => {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache payload `{}` has mixed prediction widths",
+                payload.cache_id
+            )));
+        }
+        Some(_) => {}
+        None => {
+            *width = Some(block_width);
+            *target_names = Some(block_target_names.to_vec());
+            return Ok(());
+        }
+    }
+    if target_names.as_deref().unwrap_or(&[]) != block_target_names {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache payload `{}` has mixed target names",
+            payload.cache_id
+        )));
+    }
+    Ok(())
+}
+
+fn build_prediction_cache_tensor_metadata(
+    payload: &BundlePredictionCachePayload,
+    rows: usize,
+    cols: usize,
+    target_names: Option<Vec<String>>,
+    blocks: Vec<PredictionCacheTensorBlockMetadata>,
+) -> dag_ml_core::Result<PredictionCacheTensorMetadata> {
+    if rows != payload.row_count {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache payload `{}` tensor row count {} does not match payload row count {}",
+            payload.cache_id, rows, payload.row_count
+        )));
+    }
+    if cols == 0 {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache payload `{}` tensor has zero width",
+            payload.cache_id
+        )));
+    }
+    Ok(PredictionCacheTensorMetadata {
+        requirement_key: payload.requirement_key.clone(),
+        cache_id: payload.cache_id.clone(),
+        prediction_level: payload.prediction_level,
+        block_count: payload.block_count,
+        row_count: payload.row_count,
+        rows,
+        cols,
+        target_names: target_names.unwrap_or_default(),
+        blocks,
+    })
 }
 
 unsafe fn validation_error(error_out: *mut DagMlString, error: DagMlError) -> DagMlStatusCode {
@@ -4544,6 +4840,100 @@ mod tests {
         };
         assert_eq!(status, DagMlStatusCode::OK);
         assert!(error.ptr.is_null());
+    }
+
+    #[test]
+    fn exports_prediction_cache_payload_f64_tensor_over_abi() {
+        let bundle = include_bytes!(
+            "../../../examples/generated/execution_bundle_branch_merge_cv_refit.json"
+        );
+        let payload = include_bytes!(
+            "../../../examples/generated/prediction_cache_branch_merge_cv_refit.json"
+        );
+        let requirement_key =
+            b"branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof";
+        let mut tensor = DagMlF64Tensor::default();
+        let mut metadata_out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_prediction_cache_payload_f64_tensor_json(
+                bundle.as_ptr(),
+                bundle.len(),
+                payload.as_ptr(),
+                payload.len(),
+                bytes_view(requirement_key),
+                &mut tensor,
+                &mut metadata_out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!tensor.ptr.is_null());
+        assert_eq!(tensor.rows, 4);
+        assert_eq!(tensor.cols, 1);
+        assert_eq!(tensor.len, 4);
+        let values = unsafe { slice::from_raw_parts(tensor.ptr, tensor.len) };
+        assert_eq!(values, &[9931.0, 9931.0, 9932.0, 9932.0]);
+
+        assert!(!metadata_out.ptr.is_null());
+        let metadata_json = unsafe { slice::from_raw_parts(metadata_out.ptr, metadata_out.len) };
+        let metadata: serde_json::Value = serde_json::from_slice(metadata_json).unwrap();
+        assert_eq!(
+            metadata["requirement_key"],
+            "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof"
+        );
+        assert_eq!(metadata["prediction_level"], "sample");
+        assert_eq!(metadata["block_count"], 2);
+        assert_eq!(metadata["row_count"], 4);
+        assert_eq!(metadata["rows"], 4);
+        assert_eq!(metadata["cols"], 1);
+        assert_eq!(metadata["target_names"][0], "y");
+        assert_eq!(metadata["blocks"][0]["fold_id"], "fold:0");
+        assert_eq!(metadata["blocks"][0]["row_offset"], 0);
+        assert_eq!(metadata["blocks"][0]["row_count"], 2);
+        assert_eq!(metadata["blocks"][0]["sample_ids"][0], "sample:1");
+        assert_eq!(metadata["blocks"][1]["fold_id"], "fold:1");
+        assert_eq!(metadata["blocks"][1]["row_offset"], 2);
+        unsafe { dagml_f64_tensor_free(tensor) };
+        unsafe { dagml_owned_bytes_free(metadata_out) };
+    }
+
+    #[test]
+    fn rejects_null_prediction_cache_payload_tensor_metadata_pointer_over_abi() {
+        let bundle = include_bytes!(
+            "../../../examples/generated/execution_bundle_branch_merge_cv_refit.json"
+        );
+        let payload = include_bytes!(
+            "../../../examples/generated/prediction_cache_branch_merge_cv_refit.json"
+        );
+        let requirement_key =
+            b"branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof";
+        let mut tensor = DagMlF64Tensor::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_prediction_cache_payload_f64_tensor_json(
+                bundle.as_ptr(),
+                bundle.len(),
+                payload.as_ptr(),
+                payload.len(),
+                bytes_view(requirement_key),
+                &mut tensor,
+                std::ptr::null_mut(),
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::INVALID_ARGUMENT);
+        assert_eq!(
+            error_message(&error),
+            "output metadata JSON pointer is null"
+        );
+        assert!(tensor.ptr.is_null());
+        unsafe { dagml_string_free(error) };
     }
 
     #[test]
