@@ -189,6 +189,14 @@ fn cli_compiles_pipeline_dsl_to_graph() {
             ["node_id"],
         "merge:stack.pred_plus_original.meta:ridge"
     );
+    assert_eq!(
+        coordinated_artifact["campaign_template"]["split_invocation"]["id"],
+        "split:group-kfold"
+    );
+    assert_eq!(
+        coordinated_artifact["campaign_template"]["generation"],
+        coordinated_artifact["generation"]
+    );
 }
 
 #[test]

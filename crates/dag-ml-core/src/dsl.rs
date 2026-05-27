@@ -12,9 +12,10 @@ use crate::graph::{
     PortKind, PortRef, PortSchema, PortSpec,
 };
 use crate::ids::NodeId;
+use crate::plan::{CampaignSpec, SplitInvocation};
 use crate::policy::{
     AggregationPolicy, AugmentationPolicy, DataModelShapePlan, FeatureSelectionPolicy, FitBoundary,
-    Granularity,
+    Granularity, LeakageUnitPolicy,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -30,6 +31,18 @@ pub struct PipelineDslSpec {
     pub max_variants: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub generation_dimensions: Vec<PipelineDslGenerationDimension>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_id: Option<String>,
+    #[serde(default)]
+    pub root_seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leakage_policy: Option<LeakageUnitPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregation_policy: Option<AggregationPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_invocation: Option<SplitInvocation>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub campaign_metadata: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub steps: Vec<PipelineDslStep>,
     #[serde(default)]
@@ -195,6 +208,7 @@ pub struct CompiledPipelineDsl {
     pub generation: GenerationSpec,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub shape_plans: BTreeMap<NodeId, DataModelShapePlan>,
+    pub campaign_template: CampaignSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_fingerprint: Option<String>,
 }
@@ -261,10 +275,12 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
     };
     graph.validate()?;
     validate_shape_plan_targets(&compiler.shape_plans, &graph)?;
+    let campaign_template = build_campaign_template(spec, &generation, &compiler.shape_plans)?;
     Ok(CompiledPipelineDsl {
         graph,
         generation,
         shape_plans: compiler.shape_plans,
+        campaign_template,
         generation_fingerprint,
     })
 }
@@ -808,6 +824,29 @@ fn explicit_generation_choice_value(
     Ok(serde_json::Value::Object(by_node))
 }
 
+fn build_campaign_template(
+    spec: &PipelineDslSpec,
+    generation: &GenerationSpec,
+    shape_plans: &BTreeMap<NodeId, DataModelShapePlan>,
+) -> Result<CampaignSpec> {
+    let campaign = CampaignSpec {
+        id: spec
+            .campaign_id
+            .clone()
+            .unwrap_or_else(|| format!("campaign:{}", spec.id)),
+        root_seed: spec.root_seed,
+        leakage_policy: spec.leakage_policy.clone().unwrap_or_default(),
+        aggregation_policy: spec.aggregation_policy.clone().unwrap_or_default(),
+        split_invocation: spec.split_invocation.clone(),
+        generation: generation.clone(),
+        shape_plans: shape_plans.clone(),
+        data_bindings: BTreeMap::new(),
+        metadata: spec.campaign_metadata.clone(),
+    };
+    campaign.validate()?;
+    Ok(campaign)
+}
+
 fn build_generation_spec(
     requested_strategy: Option<GenerationStrategy>,
     max_variants: Option<usize>,
@@ -1237,6 +1276,83 @@ mod tests {
 
         let error = compile_pipeline_dsl_with_generation(&spec).unwrap_err();
         assert!(format!("{error}").contains("references unknown node `model:missing`"));
+    }
+
+    #[test]
+    fn artifact_contains_campaign_template_without_split_graph_nodes() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-campaign-template",
+  "campaign_id": "campaign:dsl.template",
+  "root_seed": 123,
+  "leakage_policy": {
+    "split_unit": "group",
+    "require_group_ids": true
+  },
+  "split_invocation": {
+    "id": "split:group-kfold",
+    "leakage_policy": {
+      "split_unit": "group",
+      "require_group_ids": true
+    },
+    "params": {
+      "n_splits": 3
+    }
+  },
+  "generation_dimensions": [
+    {
+      "name": "model_family",
+      "choices": [
+        {
+          "label": "ridge_low",
+          "param_overrides": [
+            {"node_id": "model:base", "params": {"alpha": 0.1}}
+          ]
+        },
+        {
+          "label": "ridge_high",
+          "param_overrides": [
+            {"node_id": "model:base", "params": {"alpha": 1.0}}
+          ]
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "kind": "model",
+      "id": "model:base",
+      "operator": {"type": "Ridge"}
+    }
+  ],
+  "campaign_metadata": {
+    "owner": "dsl-test"
+  }
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+
+        assert_eq!(compiled.campaign_template.id, "campaign:dsl.template");
+        assert_eq!(compiled.campaign_template.root_seed, Some(123));
+        assert_eq!(
+            compiled
+                .campaign_template
+                .split_invocation
+                .as_ref()
+                .unwrap()
+                .id,
+            "split:group-kfold"
+        );
+        assert_eq!(compiled.campaign_template.generation, compiled.generation);
+        assert!(compiled.campaign_template.data_bindings.is_empty());
+        assert_eq!(compiled.graph.nodes.len(), 1);
+        assert!(compiled
+            .graph
+            .nodes
+            .iter()
+            .all(|node| !node.id.as_str().starts_with("split:")));
     }
 
     #[test]

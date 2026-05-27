@@ -128,11 +128,13 @@ Implemented:
   override several branch/merge/model nodes together, validates per-node
   `DataModelShapePlan` declarations for augmentation/selection/aggregation
   safety, writes the generation fingerprint into
-  `GraphSpec.search_space_fingerprint`, and exposes graph-only or
-  graph+generation+shape artifact outputs through CLI and C ABI;
+  `GraphSpec.search_space_fingerprint`, builds a `CampaignSpec` template that
+  carries generation, shape plans and split invocation outside the graph, and
+  exposes graph-only or graph+generation+shape+campaign artifact outputs through
+  CLI and C ABI;
 - CLI and C ABI entry points compile that DSL surface to validated graph JSON
-  or graph+generation+shape artifact JSON, with branch/merge OOF, generation
-  and shape-plan smoke coverage;
+  or graph+generation+shape+campaign artifact JSON, with branch/merge OOF,
+  generation, shape-plan and campaign-template smoke coverage;
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate
