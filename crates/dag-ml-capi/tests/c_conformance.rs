@@ -302,10 +302,90 @@ static void release_bytes(void *user_data, DagMlOwnedBytes bytes) {
     free(bytes.ptr);
 }
 
+static int verify_prediction_tensor_exports(void) {
+    const char *sample_predictions =
+        "{\"prediction_id\":\"pred:c.sample\","
+        "\"producer_node\":\"model:c\","
+        "\"partition\":\"validation\","
+        "\"fold_id\":\"fold:0\","
+        "\"sample_ids\":[\"sample:1\",\"sample:2\"],"
+        "\"values\":[[1.0,2.5],[3.0,4.5]],"
+        "\"target_names\":[\"y1\",\"y2\"]}";
+    DagMlF64Tensor sample_tensor = {0};
+    DagMlString error = {0};
+    DagMlStatusCode status = dagml_prediction_block_f64_tensor_json(
+        (const uint8_t *)sample_predictions,
+        strlen(sample_predictions),
+        &sample_tensor,
+        &error
+    );
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "sample tensor export failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 0;
+    }
+    if (!sample_tensor.ptr || sample_tensor.rows != 2 || sample_tensor.cols != 2 ||
+        sample_tensor.len != 4 || sample_tensor.capacity < sample_tensor.len ||
+        sample_tensor.ptr[0] != 1.0 || sample_tensor.ptr[1] != 2.5 ||
+        sample_tensor.ptr[2] != 3.0 || sample_tensor.ptr[3] != 4.5) {
+        fprintf(stderr, "unexpected sample tensor shape or values\n");
+        dagml_f64_tensor_free(sample_tensor);
+        return 0;
+    }
+    dagml_f64_tensor_free(sample_tensor);
+
+    const char *aggregated_predictions =
+        "{\"prediction_id\":\"pred:c.target\","
+        "\"producer_node\":\"model:c\","
+        "\"partition\":\"validation\","
+        "\"fold_id\":\"fold:0\","
+        "\"level\":\"target\","
+        "\"unit_ids\":["
+        "{\"level\":\"target\",\"id\":\"target:1\"},"
+        "{\"level\":\"target\",\"id\":\"target:2\"}],"
+        "\"values\":[[9.0],[11.0]],"
+        "\"target_names\":[\"y\"]}";
+    DagMlF64Tensor aggregated_tensor = {0};
+    status = dagml_aggregated_prediction_block_f64_tensor_json(
+        (const uint8_t *)aggregated_predictions,
+        strlen(aggregated_predictions),
+        &aggregated_tensor,
+        &error
+    );
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "aggregated tensor export failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        return 0;
+    }
+    if (!aggregated_tensor.ptr || aggregated_tensor.rows != 2 ||
+        aggregated_tensor.cols != 1 || aggregated_tensor.len != 2 ||
+        aggregated_tensor.capacity < aggregated_tensor.len ||
+        aggregated_tensor.ptr[0] != 9.0 || aggregated_tensor.ptr[1] != 11.0) {
+        fprintf(stderr, "unexpected aggregated tensor shape or values\n");
+        dagml_f64_tensor_free(aggregated_tensor);
+        return 0;
+    }
+    dagml_f64_tensor_free(aggregated_tensor);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc != 7) {
         fprintf(stderr, "usage: %s GRAPH CAMPAIGN CONTROLLERS BUNDLE REQUEST ENVELOPES\n", argv[0]);
         return 2;
+    }
+    if (!verify_prediction_tensor_exports()) {
+        return 1;
     }
     Buffer graph = read_file(argv[1]);
     Buffer campaign = read_file(argv[2]);

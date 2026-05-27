@@ -107,3 +107,6 @@ Add a C smoke test that:
    executable against both headers, links both C ABI libraries, creates a real
    in-memory f64 provider, reads feature and target Arrow data during replay,
    and verifies provider handle release order.
+10. exports sample and target/group prediction blocks as owned row-major F64
+    tensors through `dag_ml.h`, verifies shape/value layout from C, and
+    releases them with `dagml_f64_tensor_free`.
