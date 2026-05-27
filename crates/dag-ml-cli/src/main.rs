@@ -482,6 +482,78 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         scheduler_workers: usize,
     },
+    RunProcessDslCvRefitBundle {
+        #[arg(long)]
+        dsl: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long)]
+        persistent: bool,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        lineage_output: Option<PathBuf>,
+        #[arg(long)]
+        prediction_cache_output: Option<PathBuf>,
+        #[arg(long, default_value = "bundle:cli.process.dsl.cv.refit")]
+        bundle_id: String,
+        #[arg(long)]
+        variant_id: Option<String>,
+        #[arg(long)]
+        selections: Option<PathBuf>,
+        #[arg(long, default_value = "plan:cli.process.dsl.cv.refit")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.process.dsl.cv.refit")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
+    },
+    RunProcessDslCvRefitReplay {
+        #[arg(long)]
+        dsl: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
+        #[arg(long, default_value = "bundle:cli.process.dsl.cv.refit.replay")]
+        bundle_id: String,
+        #[arg(long)]
+        variant_id: Option<String>,
+        #[arg(long)]
+        selections: Option<PathBuf>,
+        #[arg(long, default_value = "plan:cli.process.dsl.cv.refit.replay")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.process.dsl.cv.refit.replay")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
+    },
     RunProcessRefitReplay {
         #[arg(long)]
         graph: PathBuf,
@@ -726,22 +798,7 @@ fn main() -> Result<()> {
             plan_id,
             output,
         } => {
-            let spec: PipelineDslSpec = read_json(&dsl, "pipeline DSL")?;
-            let compiled = compile_pipeline_dsl_with_generation(&spec)
-                .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
-            let registry = controller_registry_from_path(&controllers)?;
-            let plan = build_execution_plan(
-                plan_id,
-                compiled.graph,
-                compiled.campaign_template,
-                &registry,
-            )
-            .with_context(|| {
-                format!(
-                    "failed to build execution plan from pipeline DSL at {}",
-                    dsl.display()
-                )
-            })?;
+            let plan = build_plan_from_dsl_path(&dsl, &controllers, plan_id)?;
             emit_json(output.as_ref(), &plan, "pipeline DSL execution plan")?;
         }
         Command::ValidateOofCampaign {
@@ -1280,6 +1337,172 @@ fn main() -> Result<()> {
             .with_context(|| "process replay after CV+refit capture failed")?;
             println!(
                 "process cv refit replay run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s), {} prediction cache(s), scheduler={}, scheduler worker(s)={}, configured process worker(s)={}, observed process worker(s)={}, replay observed process worker(s)={}",
+                captured.fit_cv_result_count,
+                captured.fit_cv_oof_prediction_block_count,
+                captured.refit_result_count,
+                replay_results.len(),
+                replay_ctx.prediction_store.blocks().len(),
+                captured.artifact_store.len(),
+                captured.bundle.prediction_caches.len(),
+                scheduler.scheduler.label(),
+                scheduler.workers,
+                process_workers,
+                captured.observed_process_worker_count,
+                observed_process_worker_count(&replay_ctx)
+            );
+        }
+        Command::RunProcessDslCvRefitBundle {
+            dsl,
+            controllers,
+            envelope,
+            adapter,
+            persistent,
+            process_workers,
+            process_timeout_ms,
+            process_retries,
+            output,
+            lineage_output,
+            prediction_cache_output,
+            bundle_id,
+            variant_id,
+            selections,
+            plan_id,
+            run_id,
+            root_seed,
+            scheduler,
+            scheduler_workers,
+        } => {
+            let plan = build_plan_from_dsl_path(&dsl, &controllers, plan_id)?;
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
+            let process_config = process_adapter_runtime_config(
+                process_workers,
+                process_timeout_ms,
+                process_retries,
+            )?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let runtime_controllers = process_runtime_controllers_for_mode(
+                &plan,
+                adapter,
+                persistent,
+                process_config,
+                scheduler,
+            )?;
+            let selections = read_selection_decisions(selections.as_ref())?;
+            let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
+                plan: &plan,
+                data_provider: &data_provider,
+                runtime_controllers: &runtime_controllers,
+                bundle_id,
+                variant_id,
+                selections,
+                run_id,
+                root_seed,
+                scheduler,
+            })
+            .with_context(|| "process DSL CV+refit bundle capture failed")?;
+            println!(
+                "process DSL cv refit bundle run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} captured artifact handle(s), {} prediction cache(s), scheduler={}, scheduler worker(s)={}, configured process worker(s)={}, observed process worker(s)={}",
+                captured.fit_cv_result_count,
+                captured.fit_cv_oof_prediction_block_count,
+                captured.refit_result_count,
+                captured.artifact_store.len(),
+                captured.bundle.prediction_caches.len(),
+                scheduler.scheduler.label(),
+                scheduler.workers,
+                configured_persistent_process_workers(persistent, process_workers),
+                if persistent {
+                    captured.observed_process_worker_count
+                } else {
+                    0
+                }
+            );
+            emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
+            emit_json(
+                lineage_output.as_ref(),
+                &captured.lineage_records,
+                "lineage records",
+            )?;
+            if let Some(path) = prediction_cache_output.as_ref() {
+                let payload_set = BundlePredictionCachePayloadSet {
+                    bundle_id: captured.bundle.bundle_id.clone(),
+                    schema_version: dag_ml_core::PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+                    caches: captured.prediction_cache_payloads.clone(),
+                };
+                payload_set
+                    .validate_against_bundle(&captured.bundle)
+                    .with_context(|| "prediction cache payloads do not match captured bundle")?;
+                emit_json(Some(path), &payload_set, "prediction cache payload set")?;
+            }
+        }
+        Command::RunProcessDslCvRefitReplay {
+            dsl,
+            controllers,
+            envelope,
+            adapter,
+            process_workers,
+            process_timeout_ms,
+            process_retries,
+            bundle_id,
+            variant_id,
+            selections,
+            plan_id,
+            run_id,
+            root_seed,
+            scheduler,
+            scheduler_workers,
+        } => {
+            let plan = build_plan_from_dsl_path(&dsl, &controllers, plan_id)?;
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let data_provider = data_provider_for_training_envelope(&plan, envelope.clone())?;
+            let process_config = process_adapter_runtime_config(
+                process_workers,
+                process_timeout_ms,
+                process_retries,
+            )?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let runtime_controllers =
+                persistent_process_runtime_controllers(&plan, adapter, process_config, scheduler)?;
+            let selections = read_selection_decisions(selections.as_ref())?;
+            let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
+                plan: &plan,
+                data_provider: &data_provider,
+                runtime_controllers: &runtime_controllers,
+                bundle_id,
+                variant_id,
+                selections,
+                run_id: run_id.clone(),
+                root_seed,
+                scheduler,
+            })
+            .with_context(|| "process DSL CV+refit capture before replay failed")?;
+            let envelope_map = replay_envelope_map_for_bundle(&captured.bundle, &envelope);
+            let replay_request = ReplayPhaseRequest {
+                bundle_id: captured.bundle.bundle_id.clone(),
+                phase: Phase::Predict,
+                data_envelope_keys: envelope_map.keys().cloned().collect(),
+            };
+            let mut replay_ctx =
+                RunContext::new(RunId::new(format!("{run_id}:predict"))?, Some(root_seed));
+            let replay_results = execute_bundle_replay_with_scheduler(
+                scheduler,
+                BundleReplayExecution {
+                    plan: &plan,
+                    bundle: &captured.bundle,
+                    replay_request: &replay_request,
+                    prediction_cache_store: None,
+                    controllers: &runtime_controllers,
+                    data_provider: &data_provider,
+                    artifact_store: &captured.artifact_store,
+                    data_envelopes: &envelope_map,
+                },
+                &mut replay_ctx,
+            )
+            .with_context(|| "process DSL replay after CV+refit capture failed")?;
+            println!(
+                "process DSL cv refit replay run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} replay result(s), {} replay prediction block(s), {} captured artifact handle(s), {} prediction cache(s), scheduler={}, scheduler worker(s)={}, configured process worker(s)={}, observed process worker(s)={}, replay observed process worker(s)={}",
                 captured.fit_cv_result_count,
                 captured.fit_cv_oof_prediction_block_count,
                 captured.refit_result_count,
@@ -3688,6 +3911,29 @@ fn build_plan_from_paths(
     let registry = controller_registry_from_path(controllers)?;
     build_execution_plan(plan_id, graph_spec, campaign_spec, &registry)
         .with_context(|| "failed to build execution plan")
+}
+
+fn build_plan_from_dsl_path(
+    dsl: &PathBuf,
+    controllers: &PathBuf,
+    plan_id: String,
+) -> Result<dag_ml_core::ExecutionPlan> {
+    let spec: PipelineDslSpec = read_json(dsl, "pipeline DSL")?;
+    let compiled = compile_pipeline_dsl_with_generation(&spec)
+        .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
+    let registry = controller_registry_from_path(controllers)?;
+    build_execution_plan(
+        plan_id,
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )
+    .with_context(|| {
+        format!(
+            "failed to build execution plan from pipeline DSL at {}",
+            dsl.display()
+        )
+    })
 }
 
 fn data_provider_for_training_envelope(

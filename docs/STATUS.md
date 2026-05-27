@@ -138,6 +138,10 @@ Implemented:
 - CLI and C ABI can build a validated `ExecutionPlan` directly from a
   `PipelineDslSpec` plus controller manifests, using the compiled campaign
   template rather than requiring separate graph and campaign JSON files;
+- CLI process commands can run a compiled DSL branch/merge campaign through
+  CV+refit bundle capture and stateful sklearn CV+refit+replay, including
+  coordinated generation variants, heterogeneous prediction+original-data merge
+  inputs and OOF prediction-cache contracts;
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate
@@ -155,6 +159,9 @@ Implemented:
   conversion for non-Rust bindings;
 - refit execution bundle contracts that bind selected variants, selected
   candidates, refit artifacts, plan fingerprints and replay data requirements;
+- refit artifact validation compares artifact fingerprints against the selected
+  generation variant's effective node parameters, not only the base plan
+  parameters;
 - replay-facing prediction contracts now carry explicit `prediction_level`
   metadata across `NodeTask.prediction_inputs`, bundle prediction
   requirements, cache records, payloads and file/columnar cache manifests;
