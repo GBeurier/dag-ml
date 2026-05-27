@@ -5,7 +5,7 @@
 | Area | First tests |
 |---|---|
 | Graph | missing endpoints, port-kind mismatch, cycles, valid graph, deterministic parallel levels |
-| Controller registry | explicit controller id, deterministic resolution by priority, equal-priority ambiguity, manifest capability/policy validation |
+| Controller registry | explicit controller id, deterministic resolution by priority, equal-priority ambiguity, manifest capability/policy validation, `data_requirements` parsed and validated as `ModelInputSpec` |
 | OOF | rejects train predictions, aligns by sample id, duplicate detection |
 | OOF campaign fixtures | UC6 joins, UC11 refuses, fold prediction samples match fold partitions, campaign fingerprint is stable |
 | RNG | same path gives same seed, different labels split streams |

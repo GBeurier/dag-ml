@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::data::ModelInputSpec;
 use crate::error::{DagMlError, Result};
 use crate::graph::{NodeKind, NodeSpec, PortKind, PortSpec};
 use crate::ids::ControllerId;
@@ -89,6 +90,14 @@ impl ControllerManifest {
                 self.controller_id
             )));
         }
+        if let Some(model_input) = self.model_input_spec()? {
+            model_input.validate().map_err(|error| {
+                DagMlError::ControllerValidation(format!(
+                    "controller `{}` data_requirements are not a valid ModelInputSpec: {error}",
+                    self.controller_id
+                ))
+            })?;
+        }
         validate_ports(&self.controller_id, "input", &self.input_ports)?;
         validate_ports(&self.controller_id, "output", &self.output_ports)?;
         if self.rng_policy == RngPolicy::Nondeterministic
@@ -160,6 +169,20 @@ impl ControllerManifest {
             || self
                 .capabilities
                 .contains(&ControllerCapability::ProcessSafe)
+    }
+
+    pub fn model_input_spec(&self) -> Result<Option<ModelInputSpec>> {
+        self.data_requirements
+            .as_ref()
+            .map(|value| {
+                serde_json::from_value::<ModelInputSpec>(value.clone()).map_err(|error| {
+                    DagMlError::ControllerValidation(format!(
+                        "controller `{}` data_requirements must be ModelInputSpec JSON: {error}",
+                        self.controller_id
+                    ))
+                })
+            })
+            .transpose()
     }
 }
 
@@ -383,6 +406,42 @@ mod tests {
         let error = manifest.validate().unwrap_err().to_string();
 
         assert!(error.contains("inference_only"));
+    }
+
+    #[test]
+    fn manifest_validates_model_input_spec_data_requirements() {
+        let mut manifest = manifest("controller:data-aware", NodeKind::Model, 0);
+        manifest.data_requirements = Some(json!({
+            "schema_version": 1,
+            "ports": [{
+                "name": "x",
+                "accepted_representations": ["tabular_numeric"],
+                "accepted_types": ["f64"],
+                "rank": 2
+            }]
+        }));
+
+        let input_spec = manifest.model_input_spec().unwrap().unwrap();
+        assert_eq!(input_spec.ports[0].name, "x");
+        manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn manifest_rejects_invalid_model_input_spec_data_requirements() {
+        let mut manifest = manifest("controller:data-aware", NodeKind::Model, 0);
+        manifest.data_requirements = Some(json!({
+            "schema_version": 1,
+            "ports": [{
+                "name": "x",
+                "accepted_representations": [],
+                "accepted_types": ["f64"]
+            }]
+        }));
+
+        let error = manifest.validate().unwrap_err().to_string();
+
+        assert!(error.contains("data_requirements"));
+        assert!(error.contains("accepted_representations"));
     }
 
     #[test]
