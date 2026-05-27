@@ -25,7 +25,8 @@ use dag_ml_core::{
     CONTROLLER_MANIFEST_SCHEMA_VERSION, DATA_OUTPUT_PROVENANCE_KEY,
     DATA_OUTPUT_PROVENANCE_SCHEMA_ID, DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION, DATA_PLAN_SCHEMA_ID,
     DATA_PLAN_SCHEMA_VERSION, GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION,
-    MODEL_INPUT_SPEC_SCHEMA_ID, MODEL_INPUT_SPEC_SCHEMA_VERSION,
+    MODEL_INPUT_SPEC_SCHEMA_ID, MODEL_INPUT_SPEC_SCHEMA_VERSION, SELECTION_DECISION_SCHEMA_ID,
+    SELECTION_DECISION_SCHEMA_VERSION, SELECTION_POLICY_SCHEMA_ID, SELECTION_POLICY_SCHEMA_VERSION,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -43,6 +44,8 @@ pub const DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION: u32 = MODEL_INPUT_SPEC_SCHEMA_
 pub const DAG_ML_DATA_PLAN_SCHEMA_VERSION: u32 = DATA_PLAN_SCHEMA_VERSION;
 pub const DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION: u32 = CONTROLLER_MANIFEST_SCHEMA_VERSION;
 pub const DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION: u32 = DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION;
+pub const DAG_ML_SELECTION_POLICY_SCHEMA_VERSION: u32 = SELECTION_POLICY_SCHEMA_VERSION;
+pub const DAG_ML_SELECTION_DECISION_SCHEMA_VERSION: u32 = SELECTION_DECISION_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
 pub const DAG_ML_HANDLE_KIND_DATA_VIEW: u32 = 2;
@@ -85,6 +88,18 @@ struct ControllerManifestContractInfo {
 struct DataOutputProvenanceContractInfo {
     schema_version: u32,
     extra_key: &'static str,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct SelectionPolicyContractInfo {
+    schema_version: u32,
+    schema_id: &'static str,
+}
+
+#[derive(Serialize)]
+struct SelectionDecisionContractInfo {
+    schema_version: u32,
     schema_id: &'static str,
 }
 
@@ -1008,6 +1023,25 @@ fn controller_registry_from_manifests(
     Ok(registry)
 }
 
+/// Returns the public C ABI contract for canonical `SelectionPolicy` JSON.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_selection_policy_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = SelectionPolicyContractInfo {
+        schema_version: DAG_ML_SELECTION_POLICY_SCHEMA_VERSION,
+        schema_id: SELECTION_POLICY_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
+}
+
 /// Validates a canonical JSON `SelectionPolicy`.
 ///
 /// # Safety
@@ -1026,6 +1060,25 @@ pub unsafe extern "C" fn dagml_selection_policy_validate_json(
         "selection policy",
         SelectionPolicy::validate,
     )
+}
+
+/// Returns the public C ABI contract for canonical `SelectionDecision` JSON.
+///
+/// # Safety
+///
+/// Same output and error ownership rules as `dagml_graph_spec_contract_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_selection_decision_contract_json(
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let contract = SelectionDecisionContractInfo {
+        schema_version: DAG_ML_SELECTION_DECISION_SCHEMA_VERSION,
+        schema_id: SELECTION_DECISION_SCHEMA_ID,
+    };
+    write_owned_json(out_json, error_out, &contract)
 }
 
 /// Validates a canonical JSON `SelectionDecision`.
@@ -5383,12 +5436,47 @@ mod tests {
     #[test]
     fn selects_grouped_candidates_over_abi() {
         let policy = include_bytes!("../../../examples/fixtures/bundle/selection_policy_rmse.json");
+        let decision =
+            include_bytes!("../../../examples/fixtures/bundle/selection_decision_branch_b0.json");
         let candidates =
             include_bytes!("../../../examples/fixtures/bundle/candidate_scores_demo.json");
         let groups = include_bytes!("../../../examples/fixtures/bundle/candidate_groups_demo.json");
         let mut out = DagMlOwnedBytes::default();
         let mut error = DagMlString::default();
 
+        let status = unsafe { dagml_selection_policy_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(
+            contract["schema_id"],
+            dag_ml_core::SELECTION_POLICY_SCHEMA_ID
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe { dagml_selection_decision_contract_json(&mut out, &mut error) };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let contract: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(contract["schema_version"], 1);
+        assert_eq!(
+            contract["schema_id"],
+            dag_ml_core::SELECTION_DECISION_SCHEMA_ID
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let status = unsafe {
+            dagml_selection_policy_validate_json(policy.as_ptr(), policy.len(), &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let status = unsafe {
+            dagml_selection_decision_validate_json(decision.as_ptr(), decision.len(), &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+
+        let mut out = DagMlOwnedBytes::default();
         let status = unsafe {
             dagml_select_candidate_groups_json(
                 policy.as_ptr(),

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/selection_decision.v1.schema.json",
+  "title": "DAG-ML SelectionDecision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policy_id",
+    "selected_candidate_id",
+    "metric_name",
+    "objective",
+    "selected_score",
+    "ranked_candidates"
+  ],
+  "properties": {
+    "policy_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "selected_candidate_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "metric_name": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "objective": {
+      "$ref": "#/$defs/metric_objective"
+    },
+    "metric_level": {
+      "anyOf": [
+        { "$ref": "#/$defs/prediction_level" },
+        { "type": "null" }
+      ]
+    },
+    "selected_score": {
+      "type": "number"
+    },
+    "ranked_candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/ranked_candidate"
+      }
+    }
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "metric_objective": {
+      "enum": ["minimize", "maximize"]
+    },
+    "prediction_level": {
+      "enum": ["observation", "sample", "target", "group"]
+    },
+    "ranked_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "score", "rank"],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "score": {
+          "type": "number"
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

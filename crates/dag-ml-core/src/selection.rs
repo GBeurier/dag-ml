@@ -6,6 +6,13 @@ use serde::{Deserialize, Serialize};
 use crate::error::{DagMlError, Result};
 use crate::policy::PredictionLevel;
 
+pub const SELECTION_POLICY_SCHEMA_VERSION: u32 = 1;
+pub const SELECTION_POLICY_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/selection_policy.v1.schema.json";
+pub const SELECTION_DECISION_SCHEMA_VERSION: u32 = 1;
+pub const SELECTION_DECISION_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/selection_decision.v1.schema.json";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MetricObjective {
@@ -443,6 +450,36 @@ mod tests {
         )
         .is_err());
         assert!(select_candidate(&policy, &[candidate("model:a", 1.0)]).is_err());
+    }
+
+    #[test]
+    fn published_selection_schemas_declare_current_contracts() {
+        let policy_schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/selection_policy.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(policy_schema["$id"], SELECTION_POLICY_SCHEMA_ID);
+        assert!(policy_schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("metric")));
+
+        let decision_schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/selection_decision.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(decision_schema["$id"], SELECTION_DECISION_SCHEMA_ID);
+        assert!(decision_schema["$defs"]["prediction_level"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|level| level.as_str() == Some("group")));
+        assert!(decision_schema["$defs"]["ranked_candidate"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("rank")));
     }
 
     #[test]
