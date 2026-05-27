@@ -2554,7 +2554,7 @@ fn process_adapters_describe_supported_protocol_modes() {
 }
 
 #[test]
-fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() {
+fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
     let root = repo_root();
     let timeout_marker_dir = std::env::temp_dir().join(format!(
         "dag_ml_cli_flaky_timeout_{}_{}",
@@ -2568,6 +2568,11 @@ fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() 
     ));
     let retry_lifecycle_dir = std::env::temp_dir().join(format!(
         "dag_ml_cli_lifecycle_retry_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let one_shot_timeout_marker_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_flaky_one_shot_timeout_{}_{}",
         std::process::id(),
         unique_suffix()
     ));
@@ -2662,6 +2667,44 @@ fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() 
         retry_lifecycle_dir.display()
     );
 
+    let one_shot_timeout_run_id = format!("run:cli.process.one-shot-timeout.{}", unique_suffix());
+    let one_shot_timeout = Command::new(cli())
+        .current_dir(&root)
+        .env("DAG_ML_FLAKY_MARKER_DIR", &one_shot_timeout_marker_dir)
+        .env("DAG_ML_FLAKY_SLEEP_SECONDS", "2.0")
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/flaky_process_controller.py",
+            "--process-timeout-ms",
+            "750",
+            "--plan-id",
+            "plan:cli.process.one-shot-timeout",
+            "--run-id",
+            one_shot_timeout_run_id.as_str(),
+        ])
+        .output()
+        .expect("failed to run flaky one-shot process campaign with timeout");
+    assert!(
+        !one_shot_timeout.status.success(),
+        "flaky one-shot process campaign unexpectedly succeeded after timeout: {}",
+        String::from_utf8_lossy(&one_shot_timeout.stdout)
+    );
+    let one_shot_timeout_stderr = String::from_utf8_lossy(&one_shot_timeout.stderr);
+    assert!(
+        one_shot_timeout_stderr.contains("timed out after 750 ms"),
+        "unexpected flaky one-shot timeout error: {}",
+        one_shot_timeout_stderr
+    );
+
     let invalid_timeout = Command::new(cli())
         .current_dir(&root)
         .args([
@@ -2701,6 +2744,7 @@ fn cli_restarts_persistent_process_worker_after_timeout_when_retry_is_enabled() 
     let _ = std::fs::remove_dir_all(timeout_marker_dir);
     let _ = std::fs::remove_dir_all(retry_marker_dir);
     let _ = std::fs::remove_dir_all(retry_lifecycle_dir);
+    let _ = std::fs::remove_dir_all(one_shot_timeout_marker_dir);
 }
 
 #[test]

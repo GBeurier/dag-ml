@@ -326,6 +326,8 @@ Implemented:
   kills, replaces and replays a task on the targeted worker after timeout, EOF
   or transport failure; the flaky adapter fixture proves both timeout refusal
   and timeout/restart/retry recovery;
+- one-shot process adapters are also guarded by `--process-timeout-ms`, so a
+  non-persistent host adapter cannot block the coordinator indefinitely;
 - process adapters now expose a required `--describe` JSON handshake declaring
   the adapter protocol version, supported modes and JSON task/result
   capabilities; the CLI validates this contract before one-shot or JSONL

@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
 use std::sync::{
     mpsc::{self, Receiver, RecvTimeoutError},
     Mutex,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -2767,6 +2767,7 @@ struct CliMockController {
 struct ProcessRuntimeController {
     id: ControllerId,
     adapter: PathBuf,
+    config: ProcessAdapterRuntimeConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3180,6 +3181,101 @@ fn spawn_persistent_stdout_reader(stdout: ChildStdout) -> Receiver<PersistentRea
     rx
 }
 
+fn spawn_pipe_reader<R>(mut reader: R) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer)?;
+        Ok(buffer)
+    })
+}
+
+fn join_pipe_reader(
+    handle: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    controller_id: &ControllerId,
+    adapter: &Path,
+    stream_name: &str,
+) -> dag_ml_core::Result<Vec<u8>> {
+    handle
+        .join()
+        .map_err(|_| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` adapter `{}` {stream_name} reader panicked",
+                adapter.display()
+            ))
+        })?
+        .map_err(|err| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` failed to read adapter `{}` {stream_name}: {err}",
+                adapter.display()
+            ))
+        })
+}
+
+fn wait_with_output_timeout(
+    mut child: Child,
+    timeout: Duration,
+    controller_id: &ControllerId,
+    adapter: &Path,
+) -> dag_ml_core::Result<std::process::Output> {
+    let stdout = child.stdout.take().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "controller `{controller_id}` adapter `{}` stdout was not available",
+            adapter.display()
+        ))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "controller `{controller_id}` adapter `{}` stderr was not available",
+            adapter.display()
+        ))
+    })?;
+    let stdout_reader = spawn_pipe_reader(stdout);
+    let stderr_reader = spawn_pipe_reader(stderr);
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = join_pipe_reader(stdout_reader, controller_id, adapter, "stdout")?;
+                let stderr = join_pipe_reader(stderr_reader, controller_id, adapter, "stderr")?;
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe_reader(stdout_reader, controller_id, adapter, "stdout");
+                let _ = join_pipe_reader(stderr_reader, controller_id, adapter, "stderr");
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "controller `{controller_id}` failed while waiting for adapter `{}`: {err}",
+                    adapter.display()
+                )));
+            }
+        }
+
+        let elapsed = started_at.elapsed();
+        if elapsed >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = join_pipe_reader(stdout_reader, controller_id, adapter, "stdout");
+            let _ = join_pipe_reader(stderr_reader, controller_id, adapter, "stderr");
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{controller_id}` adapter `{}` timed out after {} ms",
+                adapter.display(),
+                timeout.as_millis()
+            )));
+        }
+        std::thread::sleep((timeout - elapsed).min(Duration::from_millis(10)));
+    }
+}
+
 impl RuntimeController for ProcessRuntimeController {
     fn controller_id(&self) -> &ControllerId {
         &self.id
@@ -3220,13 +3316,7 @@ impl RuntimeController for ProcessRuntimeController {
             })?;
         }
 
-        let output = child.wait_with_output().map_err(|err| {
-            DagMlError::RuntimeValidation(format!(
-                "controller `{}` failed while waiting for adapter `{}`: {err}",
-                self.id,
-                self.adapter.display()
-            ))
-        })?;
+        let output = wait_with_output_timeout(child, self.config.timeout, &self.id, &self.adapter)?;
         if !output.status.success() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "controller `{}` adapter `{}` exited with status {}: {}",
@@ -3528,6 +3618,7 @@ fn mock_runtime_controllers_with_options(
 fn process_runtime_controllers(
     plan: &dag_ml_core::ExecutionPlan,
     adapter: PathBuf,
+    config: ProcessAdapterRuntimeConfig,
     scheduler: SchedulerConfig,
 ) -> Result<RuntimeControllerRegistry> {
     let description = validate_process_adapter_description(&adapter, ProcessAdapterMode::OneShot)?;
@@ -3537,6 +3628,7 @@ fn process_runtime_controllers(
         registry.register(Box::new(ProcessRuntimeController {
             id: controller_id.clone(),
             adapter: adapter.clone(),
+            config,
         }))?;
     }
     Ok(registry)
@@ -3553,7 +3645,7 @@ fn process_runtime_controllers_for_mode(
     if persistent {
         persistent_process_runtime_controllers(plan, adapter, config, scheduler)
     } else {
-        process_runtime_controllers(plan, adapter, scheduler)
+        process_runtime_controllers(plan, adapter, config, scheduler)
     }
 }
 
@@ -3654,9 +3746,6 @@ fn validate_process_runtime_config(
     }
     if !persistent && config.retries != 0 {
         bail!("--process-retries requires --persistent");
-    }
-    if !persistent && config.timeout != Duration::from_millis(DEFAULT_PROCESS_TIMEOUT_MS) {
-        bail!("--process-timeout-ms requires --persistent");
     }
     Ok(())
 }
