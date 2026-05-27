@@ -59,7 +59,7 @@ YAML frontends should be thin host-side serializers around the same importer.
 | sample filters | `kind: "sample_filter"` or `kind: "filter"` | compiled to exclusion/filter nodes with explicit `dsl_filter_kind` metadata |
 | concat transform / multi-view feature fusion | `kind: "concat_transform"` with branch transforms | compiled to `NodeKind::FeatureJoin` |
 | duplicated branches | `kind: "branch"`, `mode: "duplication"` | multiple branch predictions retained |
-| separation branches by source/metadata/tag/filter | `branch.mode`, `branch.selector`, per-branch selectors | graph intent compiled; controller/data-provider semantics remain host-side |
+| separation branches by source/metadata/tag/filter | `branch.mode`, `branch.selector`, per-branch selectors | compiled to graph intent plus campaign `branch_view_plans`; provider materialization remains host-side |
 | multiple models per branch | multiple `kind: "model"` steps inside a branch | compiled into distinct OOF inputs for downstream merge |
 | merge predictions/features/original data | `kind: "merge"`, `merge_mode`, `output_as`, `include_original_data`, `selectors` | compiled to join nodes with OOF prediction edges and branch data edges; `features`/`sources` consume transformed branch outputs, `all`/`mixed` can consume branch data plus OOF predictions plus original data |
 | merge plus immediate meta-model | `kind: "merge_model"` convenience | compiled as model consuming OOF prediction inputs and optional original data |
@@ -88,11 +88,10 @@ YAML frontends should be thin host-side serializers around the same importer.
 - The DSL node kinds compile and validate graph contracts. Smoke controllers now
   execute transform/model/tuner/data-generation/mixed-join paths, but production
   execution still needs host controller support for each operator family.
-- Separation branch materialization by source/metadata/tag/filter must be backed
-  by explicit dag-ml-data view plans before it is considered runtime-complete.
-  The compiler now carries transformed branch data through `merge:
-  features/sources/all`, but selector-driven materialization still belongs to
-  provider/controller plans.
+- Separation branch materialization by source/metadata/tag/filter now has an
+  explicit campaign `branch_view_plans` contract. Production runtime-complete
+  support still requires dag-ml-data providers and host controllers to consume
+  those selectors when creating branch-local views.
 - Merge selector scopes and basic selection contracts are compile-validated, and
   OOF edges are enforced; actual metric scoring and ranking remain the
   responsibility of selection and merge controllers.

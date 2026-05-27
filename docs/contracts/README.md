@@ -128,9 +128,12 @@ C ABI: `DAG_ML_CAMPAIGN_SPEC_SCHEMA_VERSION`,
 This is the portable experimental-plan contract layered beside the graph. It
 keeps split invocation, concrete fold sets, leakage-unit policy, repeated-sample
 aggregation policy, generation/search dimensions, data/model shape plans and
-data bindings outside operator nodes. Rust validation remains the semantic
-authority for fold membership, leakage guards, generation consistency,
-shape-plan/key alignment and data-binding fingerprint requirements.
+data bindings outside operator nodes. Selector-driven separation branches are
+recorded here as `branch_view_plans`, so source/metadata/tag/filter branch views
+can be materialized by data-provider bindings without turning splits or filters
+into graph operators. Rust validation remains the semantic authority for fold
+membership, leakage guards, generation consistency, shape-plan/key alignment,
+branch-view selector sanity and data-binding fingerprint requirements.
 
 ## ExecutionPlan v1
 

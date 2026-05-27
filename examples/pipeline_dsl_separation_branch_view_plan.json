@@ -1,0 +1,53 @@
+{
+  "id": "pipeline-dsl-separation-branch-view-plan",
+  "steps": [
+    {
+      "kind": "branch",
+      "mode": "by_metadata",
+      "selector": {
+        "metadata_key": "site"
+      },
+      "branches": [
+        {
+          "id": "site_a",
+          "selector": "A",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "model:site.a",
+              "operator": {
+                "type": "PLSRegression"
+              }
+            }
+          ]
+        },
+        {
+          "id": "site_b",
+          "selector": {
+            "value": "B"
+          },
+          "steps": [
+            {
+              "kind": "model",
+              "id": "model:site.b",
+              "operator": {
+                "type": "Ridge"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge_model",
+      "id": "model:site.meta",
+      "operator": {
+        "type": "RidgeMetaStacker"
+      },
+      "include_original_data": false
+    }
+  ],
+  "metadata": {
+    "demo": "selector-driven separation branches compile explicit branch_view_plans for provider-native data views"
+  }
+}

@@ -153,6 +153,11 @@ Implemented:
   prediction-consuming merges still enforce OOF/fold-aligned prediction edges;
   serialized nirs4all merge dictionaries preserve their raw merge policy in
   metadata for host-side selection and scoring controllers;
+- DSL separation branches by source, metadata, tag or filter now emit explicit
+  campaign `branch_view_plans` with validated selectors, overlap policy and
+  branch-local metadata. This keeps graph branching separate from data-provider
+  materialization while giving bindings a stable contract for provider-native
+  branch views;
 - the DSL parser now accepts serialized nirs4all-style list/dict JSON through a
   compatibility importer (`pipeline`, `preprocessing`, `model`, `branch`,
   `merge`, `_or_`, `_cartesian_`, `_chain_`, `_grid_`, `_range_`,
@@ -555,11 +560,12 @@ Not implemented yet:
 - production host controller adapters with native libraries or
   language-specific bindings;
 - production `dag-ml-data` provider backends beyond the current in-memory C
-  conformance provider.
+  conformance provider, including consumption of `branch_view_plans` for
+  selector-driven branch-local materialization.
 
 Next recommended task:
 
 Continue productionizing host adapters and data-provider materialization:
 controller lifecycle ownership, larger replay stress fixtures over the shared
-conformance pack, and explicit dag-ml-data view plans for selector-driven
-source/metadata separation branches.
+conformance pack, and provider-side consumption of selector-driven
+`branch_view_plans`.

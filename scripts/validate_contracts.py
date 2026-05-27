@@ -474,6 +474,12 @@ def validate_campaign_spec_schema(schema: Any, label: str) -> None:
     required = schema.get("required")
     require(isinstance(required, list), f"{label} CampaignSpec required list missing")
     require("id" in required, f"{label} CampaignSpec schema must require `id`")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} CampaignSpec properties missing")
+    require(
+        "branch_view_plans" in properties,
+        f"{label} CampaignSpec schema must declare branch_view_plans",
+    )
     defs = schema.get("$defs")
     require(isinstance(defs, dict), f"{label} CampaignSpec $defs missing")
     require(
@@ -499,6 +505,11 @@ def validate_campaign_spec_schema(schema: Any, label: str) -> None:
         defs.get("generation_strategy", {}).get("enum") == ["none", "cartesian", "zip"],
         f"{label} CampaignSpec generation_strategy enum is not aligned",
     )
+    require(
+        defs.get("branch_view_mode", {}).get("enum")
+        == ["separation", "by_source", "by_metadata", "by_tag", "by_filter"],
+        f"{label} CampaignSpec branch_view_mode enum is not aligned",
+    )
     for definition_name in (
         "leakage_policy",
         "aggregation_policy",
@@ -509,8 +520,15 @@ def validate_campaign_spec_schema(schema: Any, label: str) -> None:
         "data_model_shape_plan",
         "data_view_policy",
         "data_binding",
+        "data_view_selector",
+        "branch_view_plan",
     ):
         require(definition_name in defs, f"{label} CampaignSpec schema misses `{definition_name}`")
+    branch_view_properties = defs.get("branch_view_plan", {}).get("properties")
+    require(
+        isinstance(branch_view_properties, dict) and "selector" in branch_view_properties,
+        f"{label} CampaignSpec branch_view_plan must declare selector",
+    )
 
 
 def validate_execution_plan_schema(schema: Any, label: str) -> None:
@@ -1939,6 +1957,55 @@ def validate_data_binding(value: Any, label: str) -> None:
             require(isinstance(view_policy[field], bool), f"{label}.view_policy.{field} boolean")
 
 
+def validate_data_view_selector(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} selector must be an object")
+    source_ids = value.get("source_ids", [])
+    require(isinstance(source_ids, list), f"{label}.source_ids must be an array")
+    for index, source_id in enumerate(source_ids):
+        require_non_empty_string(source_id, f"{label}.source_ids[{index}]")
+    require(len(set(source_ids)) == len(source_ids), f"{label}.source_ids contain duplicates")
+    metadata = value.get("metadata", {})
+    require(isinstance(metadata, dict), f"{label}.metadata must be an object")
+    for key in metadata:
+        require_non_empty_string(key, f"{label}.metadata key")
+    tags = value.get("tags", [])
+    require(isinstance(tags, list), f"{label}.tags must be an array")
+    for index, tag in enumerate(tags):
+        require_non_empty_string(tag, f"{label}.tags[{index}]")
+    require(len(set(tags)) == len(tags), f"{label}.tags contain duplicates")
+    if "filter" in value:
+        require(value["filter"] is not None, f"{label}.filter must not be null")
+    require(
+        bool(source_ids) or bool(metadata) or bool(tags) or "filter" in value,
+        f"{label} selector must constrain source_ids, metadata, tags or filter",
+    )
+
+
+def validate_branch_view_plan(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} branch view plan must be an object")
+    require_non_empty_string(value.get("view_id"), f"{label}.view_id")
+    require_non_empty_string(value.get("branch_id"), f"{label}.branch_id")
+    mode = value.get("mode")
+    require(
+        mode in {"separation", "by_source", "by_metadata", "by_tag", "by_filter"},
+        f"{label}.mode is invalid",
+    )
+    selector = value.get("selector")
+    validate_data_view_selector(selector, f"{label}.selector")
+    if mode == "by_source":
+        require(bool(selector.get("source_ids")), f"{label}.selector.source_ids required")
+    if mode == "by_metadata":
+        require(bool(selector.get("metadata")), f"{label}.selector.metadata required")
+    if mode == "by_tag":
+        require(bool(selector.get("tags")), f"{label}.selector.tags required")
+    if mode == "by_filter":
+        require("filter" in selector, f"{label}.selector.filter required")
+    allow_overlap = value.get("allow_overlap", False)
+    require(isinstance(allow_overlap, bool), f"{label}.allow_overlap must be boolean")
+    metadata = value.get("metadata", {})
+    require(isinstance(metadata, dict), f"{label}.metadata must be an object")
+
+
 def validate_campaign_spec(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} CampaignSpec must be an object")
     require_non_empty_string(value.get("id"), f"{label}.id")
@@ -1976,6 +2043,14 @@ def validate_campaign_spec(value: Any, label: str) -> None:
         for index, binding in enumerate(bindings):
             validate_data_binding(binding, f"{label}.data_bindings[{key}][{index}]")
             require(binding.get("node_id") == key, f"{label}.data_bindings key `{key}` mismatch")
+    branch_view_plans = value.get("branch_view_plans", [])
+    require(isinstance(branch_view_plans, list), f"{label}.branch_view_plans must be an array")
+    seen_branch_views: set[str] = set()
+    for index, view_plan in enumerate(branch_view_plans):
+        validate_branch_view_plan(view_plan, f"{label}.branch_view_plans[{index}]")
+        view_id = view_plan["view_id"]
+        require(view_id not in seen_branch_views, f"{label}.branch_view_plans duplicate `{view_id}`")
+        seen_branch_views.add(view_id)
     metadata = value.get("metadata", {})
     require(isinstance(metadata, dict), f"{label}.metadata must be an object")
 

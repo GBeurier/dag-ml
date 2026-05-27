@@ -51,6 +51,116 @@ pub enum ModelInputFusionMode {
     Custom,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchViewMode {
+    Separation,
+    BySource,
+    ByMetadata,
+    ByTag,
+    ByFilter,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DataViewSelector {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
+}
+
+impl DataViewSelector {
+    pub fn validate(&self, label: &str) -> Result<()> {
+        if self.source_ids.is_empty()
+            && self.metadata.is_empty()
+            && self.tags.is_empty()
+            && self.filter.is_none()
+        {
+            return Err(DagMlError::CampaignValidation(format!(
+                "{label} selector must constrain source_ids, metadata, tags or filter"
+            )));
+        }
+        validate_string_list_entries(&format!("{label} selector source_ids"), &self.source_ids)?;
+        validate_unique_strings(&format!("{label} selector source_ids"), &self.source_ids)?;
+        validate_string_list_entries(&format!("{label} selector tags"), &self.tags)?;
+        validate_unique_strings(&format!("{label} selector tags"), &self.tags)?;
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "{label} selector contains an empty metadata key"
+                )));
+            }
+        }
+        if matches!(self.filter, Some(serde_json::Value::Null)) {
+            return Err(DagMlError::CampaignValidation(format!(
+                "{label} selector filter must not be null"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BranchViewPlan {
+    pub view_id: String,
+    pub branch_id: String,
+    pub mode: BranchViewMode,
+    pub selector: DataViewSelector,
+    #[serde(default)]
+    pub allow_overlap: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl BranchViewPlan {
+    pub fn validate(&self) -> Result<()> {
+        validate_non_empty("branch view plan view_id", &self.view_id)?;
+        validate_non_empty("branch view plan branch_id", &self.branch_id)?;
+        self.selector
+            .validate(&format!("branch view `{}`", self.view_id))?;
+        match self.mode {
+            BranchViewMode::BySource if self.selector.source_ids.is_empty() => {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "branch view `{}` mode=by_source requires source_ids",
+                    self.view_id
+                )));
+            }
+            BranchViewMode::ByMetadata if self.selector.metadata.is_empty() => {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "branch view `{}` mode=by_metadata requires metadata",
+                    self.view_id
+                )));
+            }
+            BranchViewMode::ByTag if self.selector.tags.is_empty() => {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "branch view `{}` mode=by_tag requires tags",
+                    self.view_id
+                )));
+            }
+            BranchViewMode::ByFilter if self.selector.filter.is_none() => {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "branch view `{}` mode=by_filter requires filter",
+                    self.view_id
+                )));
+            }
+            _ => {}
+        }
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "branch view `{}` metadata contains an empty key",
+                    self.view_id
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelInputFusionPolicy {
