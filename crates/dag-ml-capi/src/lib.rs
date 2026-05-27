@@ -4558,6 +4558,33 @@ mod tests {
     }
 
     #[test]
+    fn compiles_pipeline_dsl_shape_plan_artifact_over_abi() {
+        let dsl = include_bytes!("../../../examples/pipeline_dsl_shape_plan.json");
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_pipeline_dsl_compile_artifact_json(dsl.as_ptr(), dsl.len(), &mut out, &mut error)
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let artifact: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(artifact["graph"]["id"], "dsl-shape-plan-smoke");
+        assert_eq!(
+            artifact["shape_plans"]["augment:synthetic"]["augmentation_policy"]["sample_scope"],
+            "train_only"
+        );
+        assert_eq!(
+            artifact["shape_plans"]["transform:select"]["selection_policy"]["scope"],
+            "supervised_fold_train"
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
     fn returns_graph_parallel_levels_over_abi() {
         let graph = include_bytes!("../../../examples/minimal_graph.json");
         let mut out = DagMlOwnedBytes::default();

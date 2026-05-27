@@ -36,7 +36,18 @@
                 "scope": "train_only",
                 "std": 0.01
               },
-              "seed_label": "branch:b1.augment"
+              "seed_label": "branch:b1.augment",
+              "shape": {
+                "fit_rows": "fold_train",
+                "predict_rows": "fold_validation",
+                "augmentation_policy": {
+                  "sample_scope": "train_only",
+                  "feature_scope": "none",
+                  "require_origin_id": true,
+                  "inherit_group": true,
+                  "inherit_target": true
+                }
+              }
             },
             {
               "kind": "model",

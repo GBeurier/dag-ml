@@ -121,14 +121,16 @@ Implemented:
   transform/augmentation/model steps, model branches and heterogeneous
   prediction-plus-original-data merge models into canonical `GraphSpec` while
   keeping split/fold planning in campaign contracts rather than graph
-  operators;
+  operators; augmentation steps must declare a shape plan so sample/feature
+  augmentation scope is validated instead of implicit;
 - the same DSL profile extracts node-level parameter variants into a canonical
-  `GenerationSpec`, writes the generation fingerprint into
-  `GraphSpec.search_space_fingerprint`, and exposes both graph-only and
-  graph+generation artifact outputs through CLI and C ABI;
+  `GenerationSpec`, validates per-node `DataModelShapePlan` declarations for
+  augmentation/selection/aggregation safety, writes the generation fingerprint
+  into `GraphSpec.search_space_fingerprint`, and exposes graph-only or
+  graph+generation+shape artifact outputs through CLI and C ABI;
 - CLI and C ABI entry points compile that DSL surface to validated graph JSON
-  or graph+generation artifact JSON, with branch/merge OOF and generation
-  smoke coverage;
+  or graph+generation+shape artifact JSON, with branch/merge OOF, generation
+  and shape-plan smoke coverage;
 - C ABI exports both compiled execution plans and phase execution schedules as
   owned JSON for non-Rust bindings;
 - deterministic metric selection contracts, including grouped candidate

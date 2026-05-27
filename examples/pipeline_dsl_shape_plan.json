@@ -1,0 +1,57 @@
+{
+  "id": "dsl-shape-plan-smoke",
+  "steps": [
+    {
+      "kind": "augmentation",
+      "id": "augment:synthetic",
+      "operator": {
+        "type": "SampleAugmenter"
+      },
+      "params": {
+        "n_per_sample": 2
+      },
+      "shape": {
+        "input_granularity": "sample",
+        "target_granularity": "sample",
+        "fit_rows": "fold_train",
+        "predict_rows": "fold_validation",
+        "feature_namespace": "aug.synthetic",
+        "augmentation_policy": {
+          "sample_scope": "train_only",
+          "feature_scope": "none",
+          "require_origin_id": true,
+          "inherit_group": true,
+          "inherit_target": true
+        }
+      }
+    },
+    {
+      "kind": "transform",
+      "id": "transform:select",
+      "operator": {
+        "type": "SupervisedFeatureSelector"
+      },
+      "params": {
+        "k": 64
+      },
+      "shape": {
+        "fit_rows": "fold_train",
+        "feature_namespace": "selected",
+        "selection_policy": {
+          "scope": "supervised_fold_train",
+          "store_masks": true
+        }
+      }
+    },
+    {
+      "kind": "model",
+      "id": "model:base",
+      "operator": {
+        "type": "Ridge"
+      },
+      "params": {
+        "alpha": 0.5
+      }
+    }
+  ]
+}

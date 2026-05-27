@@ -12,6 +12,10 @@ use crate::graph::{
     PortKind, PortRef, PortSchema, PortSpec,
 };
 use crate::ids::NodeId;
+use crate::policy::{
+    AggregationPolicy, AugmentationPolicy, DataModelShapePlan, FeatureSelectionPolicy, FitBoundary,
+    Granularity,
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PipelineDslSpec {
@@ -91,6 +95,8 @@ pub struct PipelineDslOperatorStep {
     pub representation: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<PipelineDslVariantChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<PipelineDslShapePlan>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -130,12 +136,40 @@ pub struct PipelineDslMergeModelStep {
     pub merge_mode: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<PipelineDslVariantChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<PipelineDslShapePlan>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslShapePlan {
+    #[serde(default)]
+    pub input_granularity: Option<Granularity>,
+    #[serde(default)]
+    pub target_granularity: Option<Granularity>,
+    #[serde(default)]
+    pub fit_rows: Option<FitBoundary>,
+    #[serde(default)]
+    pub predict_rows: Option<FitBoundary>,
+    #[serde(default)]
+    pub feature_namespace: Option<String>,
+    #[serde(default)]
+    pub feature_schema_fingerprint: Option<String>,
+    #[serde(default)]
+    pub target_space: Option<String>,
+    #[serde(default)]
+    pub aggregation_policy: Option<AggregationPolicy>,
+    #[serde(default)]
+    pub augmentation_policy: Option<AugmentationPolicy>,
+    #[serde(default)]
+    pub selection_policy: Option<FeatureSelectionPolicy>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CompiledPipelineDsl {
     pub graph: GraphSpec,
     pub generation: GenerationSpec,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shape_plans: BTreeMap<NodeId, DataModelShapePlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_fingerprint: Option<String>,
 }
@@ -158,6 +192,7 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
         nodes: Vec::new(),
         edges: Vec::new(),
         generation_dimensions: Vec::new(),
+        shape_plans: BTreeMap::new(),
     };
     let mut current_data = external_data.clone();
     let mut pending_predictions = Vec::new();
@@ -197,9 +232,11 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
         metadata: spec.metadata.clone(),
     };
     graph.validate()?;
+    validate_shape_plan_targets(&compiler.shape_plans, &graph)?;
     Ok(CompiledPipelineDsl {
         graph,
         generation,
+        shape_plans: compiler.shape_plans,
         generation_fingerprint,
     })
 }
@@ -239,6 +276,7 @@ struct PipelineCompiler {
     nodes: Vec<NodeSpec>,
     edges: Vec<EdgeSpec>,
     generation_dimensions: Vec<GenerationDimension>,
+    shape_plans: BTreeMap<NodeId, DataModelShapePlan>,
 }
 
 #[derive(Clone, Debug)]
@@ -361,6 +399,12 @@ impl PipelineCompiler {
         step: &PipelineDslOperatorStep,
         input: &DataSource,
     ) -> Result<DataSource> {
+        if kind == NodeKind::Augmentation && step.shape.is_none() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL augmentation `{}` requires a shape plan for leakage-safe scope validation",
+                step.id
+            )));
+        }
         let representation = step
             .representation
             .clone()
@@ -380,6 +424,7 @@ impl PipelineCompiler {
         };
         self.push_node(node)?;
         self.collect_operator_generation(&step.id, &step.variants)?;
+        self.collect_shape_plan(&step.id, step.shape.as_ref())?;
         self.connect_data(input, &step.id, "x")?;
         Ok(DataSource {
             node_id: Some(step.id.clone()),
@@ -415,6 +460,7 @@ impl PipelineCompiler {
         };
         self.push_node(node)?;
         self.collect_operator_generation(&step.id, &step.variants)?;
+        self.collect_shape_plan(&step.id, step.shape.as_ref())?;
         self.connect_data(input, &step.id, "x")?;
         Ok(PredictionSource {
             node_id: step.id.clone(),
@@ -465,6 +511,7 @@ impl PipelineCompiler {
         };
         self.push_node(node)?;
         self.collect_operator_generation(&step.id, &step.variants)?;
+        self.collect_shape_plan(&step.id, step.shape.as_ref())?;
         for prediction in predictions {
             self.edges.push(EdgeSpec {
                 source: PortRef {
@@ -548,6 +595,24 @@ impl PipelineCompiler {
         Ok(())
     }
 
+    fn collect_shape_plan(
+        &mut self,
+        node_id: &NodeId,
+        shape: Option<&PipelineDslShapePlan>,
+    ) -> Result<()> {
+        let Some(shape) = shape else {
+            return Ok(());
+        };
+        let plan = shape.to_data_model_shape_plan(node_id)?;
+        if self.shape_plans.insert(node_id.clone(), plan).is_some() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL graph `{}` produced duplicate shape plan for `{node_id}`",
+                self.graph_id
+            )));
+        }
+        Ok(())
+    }
+
     fn connect_data(
         &mut self,
         input: &DataSource,
@@ -584,6 +649,49 @@ impl PipelineCompiler {
         }
         Ok(())
     }
+}
+
+impl PipelineDslShapePlan {
+    fn to_data_model_shape_plan(&self, node_id: &NodeId) -> Result<DataModelShapePlan> {
+        let plan = DataModelShapePlan {
+            node_id: node_id.clone(),
+            input_granularity: self.input_granularity.unwrap_or(Granularity::Sample),
+            target_granularity: self.target_granularity.unwrap_or(Granularity::Sample),
+            fit_rows: self.fit_rows.unwrap_or(FitBoundary::FoldTrain),
+            predict_rows: self.predict_rows.unwrap_or(FitBoundary::FoldValidation),
+            feature_namespace: self.feature_namespace.clone(),
+            feature_schema_fingerprint: self.feature_schema_fingerprint.clone(),
+            target_space: self
+                .target_space
+                .clone()
+                .unwrap_or_else(|| "raw".to_string()),
+            aggregation_policy: self.aggregation_policy.clone().unwrap_or_default(),
+            augmentation_policy: self.augmentation_policy.clone().unwrap_or_default(),
+            selection_policy: self.selection_policy.clone().unwrap_or_default(),
+        };
+        plan.validate()?;
+        Ok(plan)
+    }
+}
+
+fn validate_shape_plan_targets(
+    shape_plans: &BTreeMap<NodeId, DataModelShapePlan>,
+    graph: &GraphSpec,
+) -> Result<()> {
+    for (node_id, plan) in shape_plans {
+        if node_id != &plan.node_id {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL shape plan key `{node_id}` does not match node_id `{}`",
+                plan.node_id
+            )));
+        }
+        if !graph.nodes.iter().any(|node| &node.id == node_id) {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL shape plan references unknown node `{node_id}`"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn build_generation_spec(
@@ -756,7 +864,18 @@ mod tests {
               "id": "branch:b1.augment:noise",
               "operator": {"type": "GaussianNoise"},
               "params": {"scope": "train_only"},
-              "seed_label": "branch:b1.augment"
+              "seed_label": "branch:b1.augment",
+              "shape": {
+                "fit_rows": "fold_train",
+                "predict_rows": "fold_validation",
+                "augmentation_policy": {
+                  "sample_scope": "train_only",
+                  "feature_scope": "none",
+                  "require_origin_id": true,
+                  "inherit_group": true,
+                  "inherit_target": true
+                }
+              }
             },
             {
               "kind": "model",
@@ -878,6 +997,126 @@ mod tests {
             compiled.generation_fingerprint
         );
         compiled.graph.validate().unwrap();
+    }
+
+    #[test]
+    fn extracts_shape_plans_into_compiled_artifact() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-shape-plan-smoke",
+  "steps": [
+    {
+      "kind": "augmentation",
+      "id": "augment:synthetic",
+      "operator": {"type": "SampleAugmenter"},
+      "shape": {
+        "input_granularity": "sample",
+        "target_granularity": "sample",
+        "fit_rows": "fold_train",
+        "predict_rows": "fold_validation",
+        "feature_namespace": "aug.synthetic",
+        "augmentation_policy": {
+          "sample_scope": "train_only",
+          "feature_scope": "none",
+          "require_origin_id": true,
+          "inherit_group": true,
+          "inherit_target": true
+        }
+      }
+    },
+    {
+      "kind": "transform",
+      "id": "transform:select",
+      "operator": {"type": "SupervisedFeatureSelector"},
+      "shape": {
+        "fit_rows": "fold_train",
+        "feature_namespace": "selected",
+        "selection_policy": {
+          "scope": "supervised_fold_train",
+          "store_masks": true
+        }
+      }
+    },
+    {
+      "kind": "model",
+      "id": "model:base",
+      "operator": {"type": "Ridge"}
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+
+        assert_eq!(compiled.shape_plans.len(), 2);
+        let augment_plan = compiled
+            .shape_plans
+            .get(&NodeId::new("augment:synthetic").unwrap())
+            .unwrap();
+        assert_eq!(
+            augment_plan.feature_namespace.as_deref(),
+            Some("aug.synthetic")
+        );
+        assert_eq!(
+            augment_plan.augmentation_policy.sample_scope,
+            crate::policy::AugmentationScope::TrainOnly
+        );
+        let select_plan = compiled
+            .shape_plans
+            .get(&NodeId::new("transform:select").unwrap())
+            .unwrap();
+        assert_eq!(
+            select_plan.selection_policy.scope,
+            crate::policy::FeatureSelectionScope::SupervisedFoldTrain
+        );
+        assert_eq!(compiled.generation.strategy, GenerationStrategy::None);
+        compiled.graph.validate().unwrap();
+    }
+
+    #[test]
+    fn refuses_unsafe_shape_plan_from_dsl() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-unsafe-shape-plan",
+  "steps": [
+    {
+      "kind": "augmentation",
+      "id": "augment:bad",
+      "operator": {"type": "LeakyAugmenter"},
+      "shape": {
+        "augmentation_policy": {
+          "sample_scope": "all_partitions"
+        }
+      }
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = compile_pipeline_dsl_with_generation(&spec).unwrap_err();
+        assert!(format!("{error}").contains("sample augmentation over all partitions"));
+    }
+
+    #[test]
+    fn refuses_augmentation_without_shape_plan() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-augmentation-without-shape",
+  "steps": [
+    {
+      "kind": "augmentation",
+      "id": "augment:missing-shape",
+      "operator": {"type": "GaussianNoise"}
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = compile_pipeline_dsl_with_generation(&spec).unwrap_err();
+        assert!(format!("{error}").contains("requires a shape plan"));
     }
 
     #[test]
