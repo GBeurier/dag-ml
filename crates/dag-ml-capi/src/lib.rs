@@ -409,9 +409,10 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_compile_json(
 
 /// Compiles a strict JSON `PipelineDslSpec` into `CompiledPipelineDsl` JSON.
 ///
-/// The artifact contains the canonical graph, extracted `GenerationSpec`, and
-/// the generation fingerprint copied into `graph.search_space_fingerprint`
-/// when variants are present.
+/// The artifact contains the canonical graph, extracted `GenerationSpec`,
+/// validated shape/data-binding fragments, a `CampaignSpec` template, and the
+/// generation fingerprint copied into `graph.search_space_fingerprint` when
+/// variants are present.
 ///
 /// # Safety
 ///
@@ -4595,6 +4596,14 @@ mod tests {
         assert_eq!(
             artifact["campaign_template"]["generation"],
             artifact["generation"]
+        );
+        assert_eq!(
+            artifact["data_bindings"]["merge:stack.pred_plus_original.meta:ridge"][0]["input_name"],
+            "x_original"
+        );
+        assert_eq!(
+            artifact["campaign_template"]["data_bindings"],
+            artifact["data_bindings"]
         );
         unsafe { dagml_owned_bytes_free(out) };
     }
