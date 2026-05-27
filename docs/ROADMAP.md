@@ -76,8 +76,9 @@ JSON handshake so the CLI can reject unsupported protocol versions or modes
 before a campaign starts; that description now has a published JSON Schema and
 canonical fixture. Persistent workers use published `control_frames_v1` JSON
 Schema fixtures for explicit `init`, framed `task`, typed `error`, `result`,
-`ack` and `close` messages. They are guarded by coordinator-side timeouts and
-opt-in retry/restart, with a flaky adapter fixture covering timeout refusal and
+`ack` and `close` messages. One-shot and persistent process executions are
+guarded by coordinator-side timeouts; persistent pools add opt-in
+retry/restart, with a flaky adapter fixture covering timeout refusal and
 recovery. A stateful sklearn smoke
 now fits a real sklearn pipeline during `REFIT`, stores it behind an opaque model
 handle, and replays `PREDICT` through that handle in the same persistent pool.
