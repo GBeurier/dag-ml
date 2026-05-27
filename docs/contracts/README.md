@@ -94,6 +94,13 @@ compatibility JSON into canonical DSL, compiles the graph/campaign/generation
 artifact, rejects unsafe augmentation/shape contracts and enforces OOF graph
 edges.
 
+Runtime data generators are canonical operator steps, separate from
+compile-time search-space generators. `kind: "data_generation"` and its alias
+`kind: "generation"` compile to `NodeKind::Generator` and require a public
+`shape` contract so synthetic samples/features can be scoped to fold-train
+data, audited through origin/group/target inheritance and executed by an
+external controller.
+
 ## CampaignSpec v1
 
 Schema: `campaign_spec.schema.json`

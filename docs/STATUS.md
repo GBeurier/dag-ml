@@ -126,6 +126,11 @@ Implemented:
   operators; augmentation steps must declare a shape plan so sample/feature
   augmentation scope is validated instead of implicit, and tuning/train params
   are visible in public DSL fields instead of hidden controller state;
+- canonical `data_generation` steps, plus alias `generation`, now compile to
+  external `NodeKind::Generator` nodes. They must declare a public shape plan,
+  so synthetic data/sample generation remains controller-owned while Rust
+  validates fold scope, augmentation-origin/group/target inheritance, data
+  edges and lineage before downstream training;
 - DSL merge selectors now validate their branch/model/input scopes against the
   pending OOF prediction inputs at compile time, reject unsupported `select`
   modes, reject `top_k` above the matched scope and require a metric for

@@ -40,6 +40,8 @@
         "augmentation",
         "feature_augmentation",
         "sample_augmentation",
+        "data_generation",
+        "generation",
         "concat_transform",
         "model",
         "branch",
@@ -203,6 +205,8 @@
                   "augmentation",
                   "feature_augmentation",
                   "sample_augmentation",
+                  "data_generation",
+                  "generation",
                   "model",
                   "chart"
                 ]
