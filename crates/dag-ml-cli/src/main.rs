@@ -3368,22 +3368,22 @@ impl RuntimeController for PersistentProcessRuntimeController {
                 Err(failure) => {
                     if failure.restartable {
                         session.terminate();
-                        let replacement = PersistentProcessSession::spawn(
-                            &self.id,
-                            &self.adapter,
-                            worker_index,
-                            self.config.process_workers,
-                            self.config.control_frames,
-                            self.config.timeout,
-                        )
-                        .map_err(|restart_err| {
-                            DagMlError::RuntimeValidation(format!(
-                                "{}; additionally failed to restart persistent worker {}/{}: {restart_err}",
-                                failure.message, worker_index, self.config.process_workers
-                            ))
-                        })?;
-                        *session = replacement;
                         if attempt < self.config.retries {
+                            let replacement = PersistentProcessSession::spawn(
+                                &self.id,
+                                &self.adapter,
+                                worker_index,
+                                self.config.process_workers,
+                                self.config.control_frames,
+                                self.config.timeout,
+                            )
+                            .map_err(|restart_err| {
+                                DagMlError::RuntimeValidation(format!(
+                                    "{}; additionally failed to restart persistent worker {}/{}: {restart_err}",
+                                    failure.message, worker_index, self.config.process_workers
+                                ))
+                            })?;
+                            *session = replacement;
                             continue;
                         }
                     }
