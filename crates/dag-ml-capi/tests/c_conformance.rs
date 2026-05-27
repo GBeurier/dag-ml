@@ -708,6 +708,8 @@ int main(int argc, char **argv) {
     DagMlBytesView requirement_key = { (const uint8_t *)argv[3], strlen(argv[3]) };
     DagMlF64Tensor tensor = {0};
     DagMlOwnedBytes metadata = {0};
+    DagMlF64ColumnarTensor columnar = {0};
+    DagMlOwnedBytes columnar_metadata = {0};
     DagMlString error = {0};
     DagMlStatusCode status = dagml_prediction_cache_payload_f64_tensor_json(
         bundle.ptr,
@@ -719,8 +721,6 @@ int main(int argc, char **argv) {
         &metadata,
         &error
     );
-    free(bundle.ptr);
-    free(payload.ptr);
     if (status != DAG_ML_STATUS_OK) {
         fprintf(stderr, "prediction-cache tensor export failed with status %u: %.*s\n",
             status,
@@ -728,6 +728,34 @@ int main(int argc, char **argv) {
             error.ptr ? error.ptr : "");
         if (error.ptr) {
             dagml_string_free(error);
+        }
+        free(bundle.ptr);
+        free(payload.ptr);
+        return 1;
+    }
+    status = dagml_prediction_cache_payload_f64_columnar_tensor_json(
+        bundle.ptr,
+        bundle.len,
+        payload.ptr,
+        payload.len,
+        requirement_key,
+        &columnar,
+        &columnar_metadata,
+        &error
+    );
+    free(bundle.ptr);
+    free(payload.ptr);
+    if (status != DAG_ML_STATUS_OK) {
+        fprintf(stderr, "prediction-cache columnar tensor export failed with status %u: %.*s\n",
+            status,
+            (int)error.len,
+            error.ptr ? error.ptr : "");
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        dagml_f64_tensor_free(tensor);
+        if (metadata.ptr) {
+            dagml_owned_bytes_free(metadata);
         }
         return 1;
     }
@@ -738,6 +766,10 @@ int main(int argc, char **argv) {
         dagml_f64_tensor_free(tensor);
         if (metadata.ptr) {
             dagml_owned_bytes_free(metadata);
+        }
+        dagml_f64_columnar_tensor_free(columnar);
+        if (columnar_metadata.ptr) {
+            dagml_owned_bytes_free(columnar_metadata);
         }
         return 1;
     }
@@ -753,10 +785,43 @@ int main(int argc, char **argv) {
         if (metadata.ptr) {
             dagml_owned_bytes_free(metadata);
         }
+        dagml_f64_columnar_tensor_free(columnar);
+        if (columnar_metadata.ptr) {
+            dagml_owned_bytes_free(columnar_metadata);
+        }
+        return 1;
+    }
+    if (!columnar.ptr || columnar.rows != 4 || columnar.cols != 1 || columnar.len != 4 ||
+        columnar.ptr[0] != 9931.0 || columnar.ptr[1] != 9931.0 ||
+        columnar.ptr[2] != 9932.0 || columnar.ptr[3] != 9932.0) {
+        fprintf(stderr, "unexpected prediction-cache columnar tensor shape or values\n");
+        dagml_f64_tensor_free(tensor);
+        dagml_owned_bytes_free(metadata);
+        dagml_f64_columnar_tensor_free(columnar);
+        if (columnar_metadata.ptr) {
+            dagml_owned_bytes_free(columnar_metadata);
+        }
+        return 1;
+    }
+    if (!columnar_metadata.ptr ||
+        !contains_bytes(columnar_metadata.ptr, columnar_metadata.len, "\"layout\":\"column_major_f64\"") ||
+        !contains_bytes(columnar_metadata.ptr, columnar_metadata.len, "\"column_offsets\":[0]") ||
+        !contains_bytes(columnar_metadata.ptr, columnar_metadata.len, "\"sample:4\"")) {
+        fprintf(stderr, "unexpected prediction-cache columnar metadata: %.*s\n",
+            (int)columnar_metadata.len,
+            columnar_metadata.ptr ? (char *)columnar_metadata.ptr : "");
+        dagml_f64_tensor_free(tensor);
+        dagml_owned_bytes_free(metadata);
+        dagml_f64_columnar_tensor_free(columnar);
+        if (columnar_metadata.ptr) {
+            dagml_owned_bytes_free(columnar_metadata);
+        }
         return 1;
     }
     dagml_f64_tensor_free(tensor);
     dagml_owned_bytes_free(metadata);
+    dagml_f64_columnar_tensor_free(columnar);
+    dagml_owned_bytes_free(columnar_metadata);
     return 0;
 }
 "#;

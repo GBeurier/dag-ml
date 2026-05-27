@@ -63,6 +63,14 @@ typedef struct DagMlF64Tensor {
     size_t cols;
 } DagMlF64Tensor;
 
+typedef struct DagMlF64ColumnarTensor {
+    double *ptr;
+    size_t len;
+    size_t capacity;
+    size_t rows;
+    size_t cols;
+} DagMlF64ColumnarTensor;
+
 #ifndef ARROW_C_DATA_INTERFACE
 #define ARROW_C_DATA_INTERFACE
 
@@ -119,6 +127,10 @@ typedef struct ArrowSchema {
 
 #ifndef DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION
 #define DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION 1u
+#endif
+
+#ifndef DAG_ML_PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_VERSION
+#define DAG_ML_PREDICTION_CACHE_COLUMNAR_TENSOR_METADATA_SCHEMA_VERSION 1u
 #endif
 
 #ifndef DAG_ML_GRAPH_SPEC_SCHEMA_VERSION
@@ -236,6 +248,7 @@ DagMlVersion dagml_version(void);
 void dagml_string_free(DagMlString value);
 void dagml_owned_bytes_free(DagMlOwnedBytes value);
 void dagml_f64_tensor_free(DagMlF64Tensor value);
+void dagml_f64_columnar_tensor_free(DagMlF64ColumnarTensor value);
 DagMlStatusCode dagml_graph_spec_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_graph_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_campaign_spec_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
@@ -306,6 +319,7 @@ DagMlStatusCode dagml_execution_bundle_validate_replay_envelopes_json(const uint
 DagMlStatusCode dagml_replay_request_validate_for_bundle_json(const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, DagMlString *error_out);
 DagMlStatusCode dagml_prediction_cache_payload_validate_for_bundle_json(const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *payload_ptr, size_t payload_len, DagMlString *error_out);
 DagMlStatusCode dagml_prediction_cache_payload_f64_tensor_json(const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *payload_ptr, size_t payload_len, DagMlBytesView requirement_key, DagMlF64Tensor *out_tensor, DagMlOwnedBytes *out_metadata_json, DagMlString *error_out);
+DagMlStatusCode dagml_prediction_cache_payload_f64_columnar_tensor_json(const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *payload_ptr, size_t payload_len, DagMlBytesView requirement_key, DagMlF64ColumnarTensor *out_tensor, DagMlOwnedBytes *out_metadata_json, DagMlString *error_out);
 DagMlStatusCode dagml_replay_request_validate_for_bundle_with_prediction_cache_payload_json(const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, const uint8_t *payload_ptr, size_t payload_len, DagMlString *error_out);
 DagMlStatusCode dagml_research_provenance_export_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *lineage_ptr, size_t lineage_len, const uint8_t *envelopes_ptr, size_t envelopes_len, const uint8_t *prediction_cache_manifest_ptr, size_t prediction_cache_manifest_len, const uint8_t *artifact_manifest_ptr, size_t artifact_manifest_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_openlineage_run_event_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *lineage_ptr, size_t lineage_len, const uint8_t *envelopes_ptr, size_t envelopes_len, const uint8_t *prediction_cache_manifest_ptr, size_t prediction_cache_manifest_len, const uint8_t *artifact_manifest_ptr, size_t artifact_manifest_len, DagMlBytesView namespace, DagMlBytesView event_time, DagMlOwnedBytes *out_json, DagMlString *error_out);

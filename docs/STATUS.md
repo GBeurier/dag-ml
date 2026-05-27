@@ -396,9 +396,9 @@ Implemented:
 - C ABI row-major F64 tensor export for validated sample-level and
   target/group aggregated prediction blocks, with explicit Rust allocation
   ownership and `dagml_f64_tensor_free` release;
-- C ABI row-major F64 tensor export for bundle-validated prediction-cache
-  payload requirements, returning values as a contiguous tensor and
-  versioned traceability metadata as owned JSON with a published JSON Schema;
+- C ABI row-major and column-major F64 tensor exports for bundle-validated
+  prediction-cache payload requirements, returning values as contiguous tensors
+  and versioned traceability metadata as owned JSON with published JSON Schemas;
 - C ABI non-mock replay execution helper that composes host controller,
   data-provider, artifact-store and optional prediction-cache vtables while
   Rust owns bundle validation, replay envelope validation, DAG scheduling,
@@ -466,8 +466,9 @@ Not implemented yet:
 - artifact binary deserialization/loading into host-native model objects beyond
   the implemented portable artifact reference contract, file-backed artifact
   manifest and file-backed artifact payload store;
-- Arrow prediction storage and broader typed tensor/cache ABI surfaces beyond
-  the initial owned row-major F64 prediction-block and bundle-cache exports;
+- Arrow prediction storage and typed tensor/cache ABI surfaces beyond the
+  current owned row-major/column-major F64 prediction-block and bundle-cache
+  exports;
 - production host controller adapters with native libraries or
   language-specific bindings;
 - production `dag-ml-data` provider backends beyond the current in-memory C
