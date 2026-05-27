@@ -117,6 +117,10 @@ typedef struct ArrowSchema {
 #define DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION 2u
 #endif
 
+#ifndef DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION
+#define DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION 1u
+#endif
+
 typedef struct DagMlControllerVTable {
     uint32_t abi_version;
     void *user_data;

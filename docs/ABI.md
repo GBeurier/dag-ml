@@ -25,7 +25,9 @@ the host owns the underlying object behind each handle.
 - prediction-cache payload tensor export that validates a cache payload set
   against its bundle before returning contiguous F64 values plus JSON metadata
   for requirement key, prediction level, block offsets, folds and sample/unit
-  ids;
+  ids. The metadata JSON is versioned by
+  `DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION` and documented in
+  `docs/contracts/prediction_cache_tensor_metadata.schema.json`;
 - execution bundle validation, replay-envelope validation, replay-request
   validation and prediction-cache payload validation helpers;
 - `dagml_research_provenance_export_json` for building the standards-facing

@@ -30,6 +30,7 @@ pub const DAG_ML_ARTIFACT_STORE_VTABLE_BORROWED_ABI_VERSION: u32 = 1;
 pub const DAG_ML_ARTIFACT_STORE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_PREDICTION_CACHE_VTABLE_BORROWED_ABI_VERSION: u32 = 1;
 pub const DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION: u32 = 2;
+pub const DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION: u32 = 1;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
 pub const DAG_ML_HANDLE_KIND_DATA_VIEW: u32 = 2;
@@ -1878,6 +1879,7 @@ fn flatten_f64_rows(
 
 #[derive(Serialize)]
 struct PredictionCacheTensorMetadata {
+    schema_version: u32,
     requirement_key: String,
     cache_id: String,
     prediction_level: PredictionLevel,
@@ -2048,6 +2050,7 @@ fn build_prediction_cache_tensor_metadata(
         )));
     }
     Ok(PredictionCacheTensorMetadata {
+        schema_version: DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION,
         requirement_key: payload.requirement_key.clone(),
         cache_id: payload.cache_id.clone(),
         prediction_level: payload.prediction_level,
@@ -4885,6 +4888,7 @@ mod tests {
             metadata["requirement_key"],
             "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof"
         );
+        assert_eq!(metadata["schema_version"], 1);
         assert_eq!(metadata["prediction_level"], "sample");
         assert_eq!(metadata["block_count"], 2);
         assert_eq!(metadata["row_count"], 4);

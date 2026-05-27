@@ -603,6 +603,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!metadata.ptr ||
+        !contains_bytes(metadata.ptr, metadata.len, "\"schema_version\":1") ||
         !contains_bytes(metadata.ptr, metadata.len, "\"prediction_level\":\"sample\"") ||
         !contains_bytes(metadata.ptr, metadata.len, "\"row_offset\":2") ||
         !contains_bytes(metadata.ptr, metadata.len, "\"sample:4\"")) {

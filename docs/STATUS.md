@@ -330,7 +330,7 @@ Implemented:
   ownership and `dagml_f64_tensor_free` release;
 - C ABI row-major F64 tensor export for bundle-validated prediction-cache
   payload requirements, returning values as a contiguous tensor and
-  traceability metadata as owned JSON;
+  versioned traceability metadata as owned JSON with a published JSON Schema;
 - C ABI non-mock replay execution helper that composes host controller,
   data-provider, artifact-store and optional prediction-cache vtables while
   Rust owns bundle validation, replay envelope validation, DAG scheduling,
