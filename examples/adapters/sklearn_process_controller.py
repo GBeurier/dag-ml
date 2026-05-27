@@ -211,6 +211,14 @@ def replay_model(task: dict[str, Any]) -> Pipeline:
         fail(f"node `{task['node_plan']['node_id']}` received artifact handle for another node `{key}`")
     if handle.get("kind") not in {"model", "artifact"}:
         fail(f"node `{task['node_plan']['node_id']}` received invalid artifact handle `{key}`")
+    artifact_input = task.get("artifact_inputs", {}).get(key)
+    if artifact_input is None:
+        fail(f"node `{task['node_plan']['node_id']}` did not receive artifact metadata `{key}`")
+    if (
+        artifact_input.get("node_id") != task["node_plan"]["node_id"]
+        or artifact_input.get("controller_id") != task["node_plan"]["controller_id"]
+    ):
+        fail(f"node `{task['node_plan']['node_id']}` received mismatched artifact metadata `{key}`")
     model = MODELS.get(int(handle["handle"]))
     if model is None:
         fail(f"node `{task['node_plan']['node_id']}` has no sklearn model for handle `{key}`")

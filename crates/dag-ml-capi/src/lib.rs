@@ -3111,6 +3111,7 @@ mod tests {
             input_handles: BTreeMap::new(),
             data_views: BTreeMap::new(),
             prediction_inputs: BTreeMap::new(),
+            artifact_inputs: BTreeMap::new(),
             seed: Some(42),
         };
         let result = NodeResult {

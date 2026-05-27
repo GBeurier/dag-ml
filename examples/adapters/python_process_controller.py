@@ -160,11 +160,20 @@ def require_replay_artifact(task: dict[str, Any]) -> None:
     }
     if not artifact_handles:
         fail(f"node `{node_plan['node_id']}` did not receive replay artifact handle")
+    artifact_inputs = task.get("artifact_inputs", {})
     for key, handle in artifact_handles.items():
         if node_plan["node_id"] not in key:
             fail(f"node `{node_plan['node_id']}` received artifact handle for another node `{key}`")
         if handle.get("kind") not in {"model", "artifact"}:
             fail(f"node `{node_plan['node_id']}` received invalid artifact handle `{key}`")
+        spec = artifact_inputs.get(key)
+        if spec is None:
+            fail(f"node `{node_plan['node_id']}` did not receive artifact metadata `{key}`")
+        if (
+            spec.get("node_id") != node_plan["node_id"]
+            or spec.get("controller_id") != node_plan["controller_id"]
+        ):
+            fail(f"node `{node_plan['node_id']}` received mismatched artifact metadata `{key}`")
 
 
 def require_prediction_inputs(task: dict[str, Any]) -> None:

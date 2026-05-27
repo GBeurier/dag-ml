@@ -2190,6 +2190,32 @@ pub struct PredictionInputSpec {
     pub target_names: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ArtifactInputSpec {
+    pub node_id: NodeId,
+    pub controller_id: ControllerId,
+    pub artifact: ArtifactRef,
+    pub params_fingerprint: String,
+    #[serde(default)]
+    pub data_requirement_keys: Vec<String>,
+    #[serde(default)]
+    pub prediction_requirement_keys: Vec<String>,
+}
+
+impl ArtifactInputSpec {
+    fn from_refit_record(record: &RefitArtifactRecord) -> Result<Self> {
+        record.validate()?;
+        Ok(Self {
+            node_id: record.node_id.clone(),
+            controller_id: record.controller_id.clone(),
+            artifact: record.artifact.clone(),
+            params_fingerprint: record.params_fingerprint.clone(),
+            data_requirement_keys: record.data_requirement_keys.clone(),
+            prediction_requirement_keys: record.prediction_requirement_keys.clone(),
+        })
+    }
+}
+
 fn default_runtime_prediction_level() -> PredictionLevel {
     PredictionLevel::Sample
 }
@@ -2211,6 +2237,8 @@ pub struct NodeTask {
     pub data_views: BTreeMap<String, DataProviderViewSpec>,
     #[serde(default)]
     pub prediction_inputs: BTreeMap<String, PredictionInputSpec>,
+    #[serde(default)]
+    pub artifact_inputs: BTreeMap<String, ArtifactInputSpec>,
     pub seed: Option<u64>,
 }
 
@@ -2853,10 +2881,16 @@ struct ReplayPredictionCacheContract {
     cache: BundlePredictionCacheRecord,
 }
 
+struct MaterializedReplayArtifacts {
+    handles: BTreeMap<NodeId, BTreeMap<String, HandleRef>>,
+    inputs: BTreeMap<NodeId, BTreeMap<String, ArtifactInputSpec>>,
+}
+
 #[derive(Default)]
 struct PhaseScopeResources<'a> {
     data_provider: Option<&'a dyn RuntimeDataProvider>,
     replay_artifact_handles: Option<&'a BTreeMap<NodeId, BTreeMap<String, HandleRef>>>,
+    replay_artifact_inputs: Option<&'a BTreeMap<NodeId, BTreeMap<String, ArtifactInputSpec>>>,
     replay_bundle_id: Option<&'a BundleId>,
     prediction_cache_store: Option<&'a dyn RuntimePredictionCacheStore>,
     prediction_cache_contracts: Option<&'a BTreeMap<String, ReplayPredictionCacheContract>>,
@@ -3152,7 +3186,8 @@ impl SequentialScheduler {
             },
             PhaseScopeResources {
                 data_provider: Some(replay.data_provider),
-                replay_artifact_handles: Some(&replay_artifacts),
+                replay_artifact_handles: Some(&replay_artifacts.handles),
+                replay_artifact_inputs: Some(&replay_artifacts.inputs),
                 replay_bundle_id: Some(&replay.bundle.bundle_id),
                 prediction_cache_store: replay.prediction_cache_store,
                 prediction_cache_contracts: prediction_cache_contracts.as_ref(),
@@ -3194,6 +3229,7 @@ impl SequentialScheduler {
                     &scope,
                 )?;
                 let mut input_handles = collected_inputs.handles;
+                let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
                     .replay_artifact_handles
                     .and_then(|handles| handles.get(node_id))
@@ -3202,6 +3238,18 @@ impl SequentialScheduler {
                         if input_handles.insert(key.clone(), handle.clone()).is_some() {
                             return Err(DagMlError::RuntimeValidation(format!(
                                 "node `{node_id}` received duplicate replay artifact input `{key}`"
+                            )));
+                        }
+                    }
+                }
+                if let Some(node_artifact_inputs) = resources
+                    .replay_artifact_inputs
+                    .and_then(|inputs| inputs.get(node_id))
+                {
+                    for (key, spec) in node_artifact_inputs {
+                        if artifact_inputs.insert(key.clone(), spec.clone()).is_some() {
+                            return Err(DagMlError::RuntimeValidation(format!(
+                                "node `{node_id}` received duplicate replay artifact metadata `{key}`"
                             )));
                         }
                     }
@@ -3218,6 +3266,7 @@ impl SequentialScheduler {
                     input_handles,
                     data_views: collected_inputs.data_views,
                     prediction_inputs: collected_inputs.prediction_inputs,
+                    artifact_inputs,
                     seed: derive_task_seed(
                         scope.seed_root,
                         scope.variant_id.as_ref(),
@@ -3542,7 +3591,8 @@ impl ParallelScheduler {
             },
             PhaseScopeResources {
                 data_provider: Some(replay.data_provider),
-                replay_artifact_handles: Some(&replay_artifacts),
+                replay_artifact_handles: Some(&replay_artifacts.handles),
+                replay_artifact_inputs: Some(&replay_artifacts.inputs),
                 replay_bundle_id: Some(&replay.bundle.bundle_id),
                 prediction_cache_store: replay.prediction_cache_store,
                 prediction_cache_contracts: prediction_cache_contracts.as_ref(),
@@ -3580,6 +3630,7 @@ impl ParallelScheduler {
                     &scope,
                 )?;
                 let mut input_handles = collected_inputs.handles;
+                let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
                     .replay_artifact_handles
                     .and_then(|handles| handles.get(node_id))
@@ -3588,6 +3639,18 @@ impl ParallelScheduler {
                         if input_handles.insert(key.clone(), handle.clone()).is_some() {
                             return Err(DagMlError::RuntimeValidation(format!(
                                 "node `{node_id}` received duplicate replay artifact input `{key}`"
+                            )));
+                        }
+                    }
+                }
+                if let Some(node_artifact_inputs) = resources
+                    .replay_artifact_inputs
+                    .and_then(|inputs| inputs.get(node_id))
+                {
+                    for (key, spec) in node_artifact_inputs {
+                        if artifact_inputs.insert(key.clone(), spec.clone()).is_some() {
+                            return Err(DagMlError::RuntimeValidation(format!(
+                                "node `{node_id}` received duplicate replay artifact metadata `{key}`"
                             )));
                         }
                     }
@@ -3606,6 +3669,7 @@ impl ParallelScheduler {
                         input_handles,
                         data_views: collected_inputs.data_views,
                         prediction_inputs: collected_inputs.prediction_inputs,
+                        artifact_inputs,
                         seed: derive_task_seed(
                             scope.seed_root,
                             scope.variant_id.as_ref(),
@@ -4572,8 +4636,9 @@ fn materialize_replay_artifact_handles(
     replay_request: &ReplayPhaseRequest,
     artifact_store: &dyn RuntimeArtifactStore,
     ctx: &RunContext,
-) -> Result<BTreeMap<NodeId, BTreeMap<String, HandleRef>>> {
+) -> Result<MaterializedReplayArtifacts> {
     let mut handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
+    let mut inputs = BTreeMap::<NodeId, BTreeMap<String, ArtifactInputSpec>>::new();
     for artifact in &bundle.refit_artifacts {
         artifact.validate()?;
         let node_plan = plan.node_plans.get(&artifact.node_id).ok_or_else(|| {
@@ -4622,8 +4687,19 @@ fn materialize_replay_artifact_handles(
                 artifact.node_id
             )));
         }
+        if inputs
+            .entry(artifact.node_id.clone())
+            .or_default()
+            .insert(key.clone(), ArtifactInputSpec::from_refit_record(artifact)?)
+            .is_some()
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "duplicate replay artifact metadata `{key}` for node `{}`",
+                artifact.node_id
+            )));
+        }
     }
-    Ok(handles)
+    Ok(MaterializedReplayArtifacts { handles, inputs })
 }
 
 fn derive_task_seed(
@@ -4930,6 +5006,21 @@ mod tests {
                 if handle.kind != HandleKind::Model {
                     return Err(DagMlError::RuntimeValidation(format!(
                         "node `{}` received non-model refit handle for `{key}`",
+                        task.node_plan.node_id
+                    )));
+                }
+                let artifact_input = task.artifact_inputs.get(&key).ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "node `{}` did not receive refit artifact metadata `{key}`",
+                        task.node_plan.node_id
+                    ))
+                })?;
+                if artifact_input.artifact.id != artifact_id
+                    || artifact_input.node_id != task.node_plan.node_id
+                    || artifact_input.controller_id != task.node_plan.controller_id
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` received mismatched refit artifact metadata `{key}`",
                         task.node_plan.node_id
                     )));
                 }
@@ -8111,6 +8202,7 @@ mod tests {
             input_handles: BTreeMap::new(),
             data_views: BTreeMap::new(),
             prediction_inputs: BTreeMap::new(),
+            artifact_inputs: BTreeMap::new(),
             seed: Some(99),
         };
         let controller = MockController {
@@ -8197,6 +8289,7 @@ mod tests {
             input_handles: BTreeMap::new(),
             data_views: BTreeMap::new(),
             prediction_inputs: BTreeMap::new(),
+            artifact_inputs: BTreeMap::new(),
             seed: Some(99),
         };
         let controller = MockController {
@@ -8281,6 +8374,7 @@ mod tests {
             input_handles: BTreeMap::new(),
             data_views: BTreeMap::new(),
             prediction_inputs: BTreeMap::new(),
+            artifact_inputs: BTreeMap::new(),
             seed: Some(99),
         };
         let controller = MockController {
@@ -8497,6 +8591,7 @@ mod tests {
                 },
             )]),
             prediction_inputs: BTreeMap::new(),
+            artifact_inputs: BTreeMap::new(),
             seed: Some(99),
         };
         let result = NodeResult {
