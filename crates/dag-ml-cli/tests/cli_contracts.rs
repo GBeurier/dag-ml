@@ -3064,6 +3064,96 @@ fn sklearn_production_controller_jsonl_emits_error_frame_and_survives() {
 }
 
 #[test]
+fn sklearn_production_controller_manifest_validates_and_matches_registry() {
+    let root = repo_root();
+    let manifest_path = root.join("examples/controllers/sklearn_production.controller.json");
+    let manifest_text =
+        std::fs::read_to_string(&manifest_path).expect("sklearn production manifest is readable");
+    let manifest: dag_ml_core::controller::ControllerManifest =
+        serde_json::from_str(&manifest_text).expect("manifest deserializes as ControllerManifest");
+    manifest
+        .validate()
+        .expect("sklearn production manifest passes ControllerManifest::validate");
+
+    // Static manifest validation passes without sklearn; the
+    // registry-parity probe below imports the controller module and
+    // therefore requires sklearn (and transitively joblib/numpy) to
+    // be available. Skip the parity portion on hosts that lack them,
+    // matching the guard used by the timeout test.
+    if !python_has_sklearn(&root) {
+        return;
+    }
+
+    assert_eq!(
+        manifest.controller_id.as_str(),
+        "controller:sklearn.production"
+    );
+    assert!(manifest
+        .supported_phases
+        .contains(&dag_ml_core::phase::Phase::FitCv));
+    assert!(manifest
+        .supported_phases
+        .contains(&dag_ml_core::phase::Phase::Refit));
+    assert!(manifest
+        .supported_phases
+        .contains(&dag_ml_core::phase::Phase::Predict));
+
+    let manifest_value: serde_json::Value =
+        serde_json::from_str(&manifest_text).expect("manifest parses as JSON value");
+    let manifest_aliases: std::collections::BTreeSet<String> = manifest_value["operator_selectors"]
+        .as_array()
+        .expect("operator_selectors is an array")
+        .iter()
+        .find_map(|selector| selector.get("aliases"))
+        .and_then(|aliases| aliases.as_array())
+        .expect("operator_selectors contains an aliases selector")
+        .iter()
+        .map(|alias| alias.as_str().expect("alias is string").to_string())
+        .collect();
+
+    // Parity check: the manifest aliases must match the controller's
+    // OPERATOR_SELECTORS keys exactly. Drift between the two would
+    // leave the manifest advertising operators the controller refuses
+    // to dispatch, or vice versa.
+    let probe_script = "import importlib.util\n\
+spec = importlib.util.spec_from_file_location(\n\
+    'sklearn_production_controller',\n\
+    'examples/adapters/sklearn_production_controller.py',\n\
+)\n\
+mod = importlib.util.module_from_spec(spec)\n\
+spec.loader.exec_module(mod)\n\
+import json\n\
+print(json.dumps(sorted(mod.OPERATOR_SELECTORS.keys())))\n\
+";
+    let suffix = unique_suffix();
+    let probe_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_sklearn_production_manifest_probe_{}_{}.py",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::write(&probe_path, probe_script).expect("write parity probe script");
+    let probe = Command::new("python3")
+        .current_dir(&root)
+        .arg(&probe_path)
+        .output()
+        .expect("run parity probe");
+    let _ = std::fs::remove_file(&probe_path);
+    assert!(
+        probe.status.success(),
+        "parity probe failed: stderr=`{}`",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    let registry_aliases: std::collections::BTreeSet<String> =
+        serde_json::from_slice(&probe.stdout).expect("registry probe stdout is a JSON list");
+    assert_eq!(
+        manifest_aliases, registry_aliases,
+        "manifest aliases drift from controller's OPERATOR_SELECTORS: manifest_only={:?}, registry_only={:?}",
+        manifest_aliases.difference(&registry_aliases).collect::<Vec<_>>(),
+        registry_aliases.difference(&manifest_aliases).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn sklearn_production_controller_fit_timeout_raises_retryable_error() {
     let root = repo_root();
     if !python_has_sklearn(&root) {
