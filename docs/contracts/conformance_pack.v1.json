@@ -36,6 +36,7 @@
   "c_abi": {
     "data_provider_vtable_abi_version": 2,
     "data_tensor_f64_abi_version": 1,
+    "data_tensor_f32_abi_version": 1,
     "required_provider_callbacks": [
       "materialize",
       "make_view",
@@ -47,10 +48,23 @@
     ],
     "required_dag_ml_data_symbols": [
       "DagMlDataTensorF64",
+      "DagMlDataTensorF32",
       "DagMlDataFeatureMatrixF64View",
+      "DagMlDataFeatureMatrixF64ColumnarView",
+      "DagMlDataFittedAdapterStoreHandle",
       "dagmldata_inmemory_provider_new_with_f64_feature_views",
+      "dagmldata_inmemory_provider_new_with_f64_feature_columns",
       "dagmldata_inmemory_provider_feature_collation_tensor_f64_json",
-      "dagmldata_inmemory_provider_data_feature_buffer_manifest_json"
+      "dagmldata_inmemory_provider_feature_collation_tensor_f32_json",
+      "dagmldata_inmemory_provider_data_feature_buffer_manifest_json",
+      "dagmldata_tensor_f32_free",
+      "dagmldata_fitted_adapter_ref_validate_json",
+      "dagmldata_fitted_adapter_manifest_validate_json",
+      "dagmldata_inmemory_fitted_adapter_store_new",
+      "dagmldata_inmemory_fitted_adapter_store_register_json",
+      "dagmldata_inmemory_fitted_adapter_store_materialize_json",
+      "dagmldata_inmemory_fitted_adapter_store_release",
+      "dagmldata_inmemory_fitted_adapter_store_destroy"
     ]
   },
   "cross_repo_conformance": {
