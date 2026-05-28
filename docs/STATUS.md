@@ -586,26 +586,40 @@ Not implemented yet:
   current owned row-major/column-major F64 prediction-block and bundle-cache
   exports;
 - production host controller adapters with native libraries or
-  language-specific bindings beyond the sklearn production controller —
-  remaining backlog (R prospectr, R mdatools, Python SpectroChemPy,
-  Python Orange-Spectroscopy, declarative YAML registry) is recorded
+  language-specific bindings beyond the sklearn production and
+  prospectr scaffold controllers — remaining backlog (R mdatools,
+  Python SpectroChemPy, Python Orange-Spectroscopy, declarative YAML
+  registry, stateful `msc` reference-spectrum persistence) is recorded
   in `docs/HOST_ADAPTER_BACKLOG.md`. The sklearn production slice
-  (item #1) is shipped through three commits F.1–F.3:
+  (item #1) is shipped through F.1–F.3:
   `examples/adapters/sklearn_production_controller.py` (operator
   selectors over sklearn.preprocessing/linear_model/ensemble/decomposition
   + joblib disk persistence + structured error frames + signal-based
   fit timeout), and `examples/controllers/sklearn_production.controller.json`
-  (validated ControllerManifest with manifest-to-registry parity test);
+  (validated ControllerManifest with manifest-to-registry parity test).
+  The R prospectr slice (item #2) is shipped through G.1–G.2:
+  `examples/adapters/prospectr_process_controller.R` (process-adapter
+  JSONL framing in R from scratch, jsonlite-backed describe fast
+  path, structured `AdapterTaskError` condition for worker survival,
+  fold/REFIT/PREDICT partition leakage checks, dispatch for six
+  stateless prospectr operators — SNV, savitzkyGolay, gapDer,
+  binning, continuumRemoval) and
+  `examples/controllers/prospectr.controller.json` (transform-kind
+  manifest with the same alias-set parity test pattern). `msc` is
+  intentionally excluded from the prospectr controller until
+  reference-spectrum persistence is wired;
 - production `dag-ml-data` provider backends beyond the current in-memory C
   conformance provider, including consumption of `branch_view_plans` for
   selector-driven branch-local materialization.
 
 Next recommended task:
 
-With item #1 (sklearn production controller) shipped in commits F.1–F.3,
-the cheapest remaining slice from `docs/HOST_ADAPTER_BACKLOG.md` is
-item #2 (R `prospectr` controller) — it pays the up-front R-side
-JSONL scaffolding cost that item #3 (R `mdatools`) then reuses.
-Provider-side consumption of selector-driven `branch_view_plans`
-and larger replay stress fixtures remain queued behind the host
-adapter backlog.
+With items #1 (sklearn production) and #2 (R prospectr) shipped in
+commits F.1–F.3 and G.1–G.2, item #3 (R `mdatools`) now reuses the
+R-side JSONL scaffold and the `data.frame ↔ matrix` boundary built
+in G.1, so its cost should drop to the 2–3 slice range — it adds
+the `pls`/`pcr`/`simca`/`mcr.als`/`pca` operator dispatch and a
+`fold_train` artifact persistence path (since mdatools models are
+stateful). Provider-side consumption of selector-driven
+`branch_view_plans` and larger replay stress fixtures remain queued
+behind the host adapter backlog.
