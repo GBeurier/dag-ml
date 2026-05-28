@@ -77,7 +77,8 @@ suppressPackageStartupMessages({
 # dispatches today.
 OPERATOR_SELECTORS <- list(
   pca = list(pkg = "mdatools", fn = "pca", shape = "unsupervised"),
-  pls = list(pkg = "mdatools", fn = "pls", shape = "regression")
+  pls = list(pkg = "mdatools", fn = "pls", shape = "regression"),
+  plsda = list(pkg = "mdatools", fn = "plsda", shape = "classification")
 )
 
 AdapterTaskError <- function(code, message, retryable = FALSE) {
@@ -323,6 +324,17 @@ build_estimator_args <- function(task, shape, X, y) {
   if (identical(shape, "unsupervised")) {
     return(c(list(x = X), kwargs))
   }
+  if (identical(shape, "classification")) {
+    # plsda expects a class vector `c`. Synthesise binary labels
+    # from the regression target by median-thresholding: rows with
+    # `y >= median(y)` are class "high", others class "low".
+    # Production callers will replace this with an upstream
+    # categorical target wiring; the smoke pattern uses synthetic
+    # data so a deterministic synthesis is sufficient.
+    threshold <- stats::median(y)
+    class_vector <- factor(ifelse(y >= threshold, "high", "low"), levels = c("low", "high"))
+    return(c(list(x = X, c = class_vector), kwargs))
+  }
   fail(sprintf("operator shape `%s` is not supported by this slice", shape))
 }
 
@@ -450,6 +462,20 @@ run_model <- function(task) {
 }
 
 extract_prediction_vector <- function(raw) {
+  # plsdares inherits from plsres but exposes `c.pred` (3D:
+  # [sample, component, class]) carrying per-class indicator
+  # values. For a binary smoke we return the highest-component
+  # value for the second class ("high"); production callers should
+  # request a multi-target output once the prediction shape is
+  # widened to per-class probability blocks.
+  if (inherits(raw, "plsdares") && !is.null(raw$c.pred)) {
+    arr <- raw$c.pred
+    dims <- dim(arr)
+    if (is.null(dims) || length(dims) < 3L) {
+      return(as.numeric(arr))
+    }
+    return(as.numeric(arr[, dims[2], dims[3]]))
+  }
   # mdatools' predict.pls returns a `plsres` object whose `$y.pred`
   # is a 3-D array `[sample, component, response]`. Slice H.1
   # always returns predictions at the highest trained component

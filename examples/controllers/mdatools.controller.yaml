@@ -35,9 +35,11 @@ operator_selectors:
   - aliases:
       - "pca"
       - "pls"
+      - "plsda"
   - classes:
       - "mdatools.pca"
       - "mdatools.pls"
+      - "mdatools.plsda"
 fit_scope: "fold_train"
 rng_policy: "externally_deterministic"
 artifact_policy: "serializable"
