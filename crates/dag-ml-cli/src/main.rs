@@ -188,6 +188,13 @@ enum Command {
     ValidateGraph {
         path: PathBuf,
     },
+    /// Walk `<dir>/*.controller.yaml` files, deserialize each into a
+    /// `ControllerManifest`, run `ControllerManifest::validate`, and
+    /// reject duplicate `controller_id`s.
+    ValidateControllersYaml {
+        #[arg(long)]
+        dir: PathBuf,
+    },
     CompilePipelineDsl {
         #[arg(long)]
         dsl: PathBuf,
@@ -777,6 +784,26 @@ fn main() -> Result<()> {
                 .validate()
                 .with_context(|| format!("invalid graph at {}", path.display()))?;
             println!("valid graph: {}", graph.id);
+        }
+        Command::ValidateControllersYaml { dir } => {
+            let manifests = dag_ml_core::controller_registry::load_yaml_manifests_from_dir(&dir)
+                .with_context(|| {
+                    format!("invalid controller YAML registry at {}", dir.display())
+                })?;
+            println!(
+                "valid controller YAML registry: dir={} entries={}",
+                dir.display(),
+                manifests.len()
+            );
+            for manifest in &manifests {
+                println!(
+                    "  controller_id={} version={} kind={:?} fit_scope={:?}",
+                    manifest.controller_id.as_str(),
+                    manifest.controller_version,
+                    manifest.operator_kind,
+                    manifest.fit_scope
+                );
+            }
         }
         Command::CompilePipelineDsl {
             dsl,

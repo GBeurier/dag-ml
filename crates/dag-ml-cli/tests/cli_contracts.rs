@@ -4526,6 +4526,49 @@ fn sklearn_production_controller_rejects_artifact_uri_outside_artifact_dir() {
 }
 
 #[test]
+fn cli_validates_controllers_yaml_registry() {
+    let root = repo_root();
+    let validate = Command::new(cli())
+        .current_dir(&root)
+        .args(["validate-controllers-yaml", "--dir", "examples/controllers"])
+        .output()
+        .expect("run validate-controllers-yaml");
+    assert!(
+        validate.status.success(),
+        "validate-controllers-yaml failed: {}",
+        String::from_utf8_lossy(&validate.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&validate.stdout);
+    assert!(stdout.contains("valid controller YAML registry"));
+    assert!(stdout.contains("controller:sklearn.production"));
+    assert!(stdout.contains("controller:prospectr"));
+    assert!(stdout.contains("controller:mdatools"));
+}
+
+#[test]
+fn yaml_and_json_controller_manifests_match() {
+    let root = repo_root();
+    for stem in ["sklearn_production", "prospectr", "mdatools"] {
+        let json_path = root.join(format!("examples/controllers/{stem}.controller.json"));
+        let yaml_path = root.join(format!("examples/controllers/{stem}.controller.yaml"));
+        let json_text = std::fs::read_to_string(&json_path)
+            .unwrap_or_else(|_| panic!("JSON manifest missing: {}", json_path.display()));
+        let yaml_text = std::fs::read_to_string(&yaml_path)
+            .unwrap_or_else(|_| panic!("YAML manifest missing: {}", yaml_path.display()));
+        let json_manifest: dag_ml_core::controller::ControllerManifest =
+            serde_json::from_str(&json_text)
+                .unwrap_or_else(|error| panic!("JSON parse {stem}: {error}"));
+        let yaml_manifest: dag_ml_core::controller::ControllerManifest =
+            dag_ml_core::controller_registry::parse_yaml_manifest(&yaml_text)
+                .unwrap_or_else(|error| panic!("YAML parse {stem}: {error}"));
+        assert_eq!(
+            json_manifest, yaml_manifest,
+            "JSON and YAML controller manifests diverged for `{stem}`"
+        );
+    }
+}
+
+#[test]
 fn cli_executes_mixed_branch_merge_with_minimal_aliases() {
     let root = repo_root();
     if !python_has_sklearn(&root) {
