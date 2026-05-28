@@ -57,11 +57,21 @@ suppressPackageStartupMessages({
 # NodeTask.node_plan.params; the values describe how to resolve each
 # alias to a prospectr namespace function.
 OPERATOR_SELECTORS <- list(
-  standardNormalVariate = list(pkg = "prospectr", fn = "standardNormalVariate"),
+  binning = list(pkg = "prospectr", fn = "binning"),
+  continuumRemoval = list(pkg = "prospectr", fn = "continuumRemoval"),
+  gapDer = list(pkg = "prospectr", fn = "gapDer"),
+  savitzkyGolay = list(pkg = "prospectr", fn = "savitzkyGolay"),
   SNV = list(pkg = "prospectr", fn = "standardNormalVariate"),
-  msc = list(pkg = "prospectr", fn = "msc"),
-  MSC = list(pkg = "prospectr", fn = "msc")
+  standardNormalVariate = list(pkg = "prospectr", fn = "standardNormalVariate")
 )
+
+# `msc` (Multiplicative Scatter Correction) is intentionally omitted
+# from this slice: prospectr's `msc(X, ref_spectrum = NULL)` defaults
+# the reference spectrum to `colMeans(X)` of the current batch. In a
+# CV/REFIT/PREDICT pipeline that would leak validation/test data into
+# the reference. Wiring MSC requires stateful reference-spectrum
+# persistence (artifact_policy != stateless), which is a separate
+# slice from the stateless dispatch this controller advertises.
 
 AdapterTaskError <- function(code, message, retryable = FALSE) {
   structure(
