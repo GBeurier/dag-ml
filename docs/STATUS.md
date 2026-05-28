@@ -484,6 +484,15 @@ Implemented:
 - C ABI row-major and column-major F64 tensor exports for bundle-validated
   prediction-cache payload requirements, returning values as contiguous tensors
   and versioned traceability metadata as owned JSON with published JSON Schemas;
+- C ABI row-major F32 tensor exports for the same sample-level and
+  target/group aggregated prediction blocks, plus row-major and column-major
+  F32 tensor exports for bundle-validated prediction-cache payloads. The
+  prediction kernels still operate in f64 to preserve canonical numeric
+  semantics; each value is cast to f32 at the ABI boundary and the call
+  returns `VALIDATION_ERROR` if any value does not round-trip into a finite
+  f32 (overflow to infinity or upstream non-finite). Returned tensors carry
+  `DagMlF32Tensor`/`DagMlF32ColumnarTensor` shapes and must be released with
+  `dagml_f32_tensor_free` / `dagml_f32_columnar_tensor_free`;
 - C ABI aggregation-controller task/result contract discovery and validation,
   including result-vs-task checks for external custom reducers before their
   sample/unit predictions can enter a leakage-sensitive pipeline;
