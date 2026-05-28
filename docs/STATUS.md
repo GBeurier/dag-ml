@@ -586,20 +586,26 @@ Not implemented yet:
   current owned row-major/column-major F64 prediction-block and bundle-cache
   exports;
 - production host controller adapters with native libraries or
-  language-specific bindings — backlog, wire-protocol decision and
-  per-adapter cost estimate are recorded in `docs/HOST_ADAPTER_BACKLOG.md`
-  (process-adapter JSONL is the only stable cross-language wire; the
-  existing `examples/adapters/sklearn_process_controller.py` covers ≈70%
-  of the production sklearn slice, and SpectroChemPy/Orange-Spectroscopy
-  are Python adapters despite occasionally being grouped with R libs);
+  language-specific bindings beyond the sklearn production controller —
+  remaining backlog (R prospectr, R mdatools, Python SpectroChemPy,
+  Python Orange-Spectroscopy, declarative YAML registry) is recorded
+  in `docs/HOST_ADAPTER_BACKLOG.md`. The sklearn production slice
+  (item #1) is shipped through three commits F.1–F.3:
+  `examples/adapters/sklearn_production_controller.py` (operator
+  selectors over sklearn.preprocessing/linear_model/ensemble/decomposition
+  + joblib disk persistence + structured error frames + signal-based
+  fit timeout), and `examples/controllers/sklearn_production.controller.json`
+  (validated ControllerManifest with manifest-to-registry parity test);
 - production `dag-ml-data` provider backends beyond the current in-memory C
   conformance provider, including consumption of `branch_view_plans` for
   selector-driven branch-local materialization.
 
 Next recommended task:
 
-Pick up the cheapest production slice from `docs/HOST_ADAPTER_BACKLOG.md`
-(item #1 — promoting the existing sklearn smoke to a production controller
-with expanded `operator_selectors`, joblib artifact persistence and a
-declared `ControllerManifest`), then revisit provider-side consumption of
-selector-driven `branch_view_plans` and larger replay stress fixtures.
+With item #1 (sklearn production controller) shipped in commits F.1–F.3,
+the cheapest remaining slice from `docs/HOST_ADAPTER_BACKLOG.md` is
+item #2 (R `prospectr` controller) — it pays the up-front R-side
+JSONL scaffolding cost that item #3 (R `mdatools`) then reuses.
+Provider-side consumption of selector-driven `branch_view_plans`
+and larger replay stress fixtures remain queued behind the host
+adapter backlog.
