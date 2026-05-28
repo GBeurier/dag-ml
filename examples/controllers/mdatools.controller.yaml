@@ -1,0 +1,43 @@
+controller_id: "controller:mdatools"
+controller_version: "1.0.0"
+operator_kind: "model"
+priority: 20
+supported_phases:
+  - "FIT_CV"
+  - "REFIT"
+  - "PREDICT"
+input_ports:
+  - name: "x"
+    kind: "data"
+    representation: "tabular_numeric"
+    cardinality: "one"
+    description: "feature matrix"
+output_ports:
+  - name: "y_hat"
+    kind: "prediction"
+    representation: null
+    cardinality: "one"
+    description: "model predictions (or first PCA score for unsupervised operators)"
+  - name: "model"
+    kind: "artifact"
+    representation: null
+    cardinality: "one"
+    description: "saveRDS-serialized mdatools fitted model"
+data_requirements: null
+capabilities:
+  - "deterministic"
+  - "thread_safe"
+  - "process_safe"
+  - "emits_predictions"
+  - "emits_artifacts"
+  - "stateful"
+operator_selectors:
+  - aliases:
+      - "pca"
+      - "pls"
+  - classes:
+      - "mdatools.pca"
+      - "mdatools.pls"
+fit_scope: "fold_train"
+rng_policy: "externally_deterministic"
+artifact_policy: "serializable"
