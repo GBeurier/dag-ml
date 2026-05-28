@@ -3574,6 +3574,241 @@ fn mdatools_process_controller_rejects_artifact_uri_outside_artifact_dir() {
     let _ = std::fs::remove_dir_all(artifact_dir);
 }
 
+#[test]
+fn mdatools_process_controller_runs_pca_one_shot() {
+    let root = repo_root();
+    if !r_has_mdatools(&root) {
+        return;
+    }
+
+    let suffix = unique_suffix();
+    let artifact_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_mdatools_pca_{}_{}",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+
+    let node_plan = json!({
+        "node_id": "pca:0",
+        "kind": "model",
+        "controller_id": "controller:mdatools",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV", "REFIT", "PREDICT"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        // pca uses the unsupervised dispatch shape — no `y` argument.
+        // ncomp=1 returns the first principal component score as the
+        // single per-sample prediction.
+        "params": {"operator": "pca", "params": {"ncomp": 1}},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let task = json!({
+        "run_id": "run:cli.mdatools-pca",
+        "node_plan": node_plan,
+        "phase": "REFIT",
+        "variant_id": "variant:base",
+        "variant": {
+            "variant_id": "variant:base",
+            "choices": {},
+            "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "seed": 7
+        },
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {},
+        "data_views": {},
+        "prediction_inputs": {},
+        "artifact_inputs": {},
+        "seed": 7
+    });
+    let output = run_mdatools_adapter_one_shot(&root, &artifact_dir, &task);
+    let value: serde_json::Value =
+        serde_json::from_slice(&output).expect("pca REFIT output is JSON");
+    let predictions = value["predictions"]
+        .as_array()
+        .expect("pca REFIT result has predictions");
+    assert_eq!(predictions.len(), 1);
+    let prediction_values = predictions[0]["values"]
+        .as_array()
+        .expect("pca predictions[0].values is an array");
+    assert_eq!(prediction_values.len(), 4, "REFIT default produces 4 rows");
+    for row in prediction_values {
+        let row = row.as_array().expect("row is an array");
+        assert_eq!(row.len(), 1, "pca produces one score per sample");
+        assert!(
+            row[0].as_f64().is_some_and(f64::is_finite),
+            "pca prediction must be finite: {row:?}"
+        );
+    }
+    // pca emits a refit artifact like pls does.
+    let artifacts = value["artifacts"]
+        .as_array()
+        .expect("REFIT artifacts array");
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(artifacts[0]["backend"].as_str(), Some("rds"));
+
+    // Round-trip PCA model through RDS to exercise the `pcares`
+    // branch in `extract_prediction_vector` end-to-end. The PREDICT
+    // task targets the same sample IDs as REFIT so the first-PC
+    // scores must match exactly.
+    let artifact = &artifacts[0];
+    let artifact_id = artifact["id"].as_str().expect("artifact id").to_string();
+    let artifact_uri = artifact["uri"].as_str().expect("artifact uri").to_string();
+    let artifact_handle = value["artifact_handles"][&artifact_id]["handle"]
+        .as_u64()
+        .expect("artifact handle is u64");
+    let refit_sample_ids = predictions[0]["sample_ids"]
+        .as_array()
+        .expect("REFIT prediction sample_ids")
+        .iter()
+        .map(|v| v.as_str().expect("sample id is str").to_string())
+        .collect::<Vec<_>>();
+    let mut predict_node_plan = node_plan.clone();
+    predict_node_plan["data_bindings"] = json!([{"input_name": "x"}]);
+    let predict_task = json!({
+        "run_id": "run:cli.mdatools-pca",
+        "node_plan": predict_node_plan,
+        "phase": "PREDICT",
+        "variant_id": "variant:base",
+        "variant": {
+            "variant_id": "variant:base",
+            "choices": {},
+            "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "seed": 7
+        },
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {
+            artifact_id.clone(): {
+                "handle": artifact_handle,
+                "kind": "model",
+                "owner_controller": "controller:mdatools"
+            },
+            "data:x": {
+                "handle": 1,
+                "kind": "data",
+                "owner_controller": "controller:mdatools"
+            }
+        },
+        "data_views": {
+            "data:x": {
+                "partition": "predict",
+                "sample_ids": refit_sample_ids
+            }
+        },
+        "prediction_inputs": {},
+        "artifact_inputs": {
+            artifact_id.clone(): {
+                "node_id": "pca:0",
+                "controller_id": "controller:mdatools",
+                "uri": artifact_uri
+            }
+        },
+        "seed": 7
+    });
+    let predict_output = run_mdatools_adapter_one_shot(&root, &artifact_dir, &predict_task);
+    let predict_value: serde_json::Value =
+        serde_json::from_slice(&predict_output).expect("pca PREDICT output is JSON");
+    let predict_values = predict_value["predictions"][0]["values"]
+        .as_array()
+        .expect("pca PREDICT values is an array");
+    assert_eq!(predict_values.len(), prediction_values.len());
+    for (refit_row, predict_row) in prediction_values.iter().zip(predict_values.iter()) {
+        let refit_v = refit_row[0].as_f64().expect("REFIT score is f64");
+        let predict_v = predict_row[0].as_f64().expect("PREDICT score is f64");
+        assert!(
+            (refit_v - predict_v).abs() < 1e-9,
+            "pca REFIT vs PREDICT score drift: refit={refit_v}, predict={predict_v}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(artifact_dir);
+}
+
+#[test]
+fn mdatools_process_controller_manifest_validates_and_matches_registry() {
+    let root = repo_root();
+    let manifest_path = root.join("examples/controllers/mdatools.controller.json");
+    let manifest_text =
+        std::fs::read_to_string(&manifest_path).expect("mdatools controller manifest is readable");
+    let manifest: dag_ml_core::controller::ControllerManifest =
+        serde_json::from_str(&manifest_text).expect("manifest deserializes as ControllerManifest");
+    manifest
+        .validate()
+        .expect("mdatools controller manifest passes ControllerManifest::validate");
+    assert_eq!(manifest.controller_id.as_str(), "controller:mdatools");
+    assert!(manifest
+        .supported_phases
+        .contains(&dag_ml_core::phase::Phase::FitCv));
+    assert!(manifest
+        .supported_phases
+        .contains(&dag_ml_core::phase::Phase::Refit));
+    assert!(manifest
+        .supported_phases
+        .contains(&dag_ml_core::phase::Phase::Predict));
+
+    let manifest_value: serde_json::Value =
+        serde_json::from_str(&manifest_text).expect("manifest parses as JSON value");
+    let manifest_aliases: std::collections::BTreeSet<String> = manifest_value["operator_selectors"]
+        .as_array()
+        .expect("operator_selectors is an array")
+        .iter()
+        .find_map(|selector| selector.get("aliases"))
+        .and_then(|aliases| aliases.as_array())
+        .expect("operator_selectors contains an aliases selector")
+        .iter()
+        .map(|alias| alias.as_str().expect("alias is string").to_string())
+        .collect();
+
+    if !r_has_mdatools(&root) {
+        return;
+    }
+    let probe_script = "e <- new.env()\n\
+suppressPackageStartupMessages(\n\
+  source('examples/adapters/mdatools_process_controller.R', local = e)\n\
+)\n\
+cat(jsonlite::toJSON(sort(names(e$OPERATOR_SELECTORS))), '\\n')\n";
+    let suffix = unique_suffix();
+    let probe_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_mdatools_manifest_probe_{}_{}.R",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::write(&probe_path, probe_script).expect("write parity probe script");
+    let probe = Command::new("Rscript")
+        .current_dir(&root)
+        .arg(&probe_path)
+        .output()
+        .expect("run R parity probe");
+    let _ = std::fs::remove_file(&probe_path);
+    assert!(
+        probe.status.success(),
+        "R parity probe failed: stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&probe.stdout),
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    let stdout_text = String::from_utf8_lossy(&probe.stdout);
+    let first_line = stdout_text
+        .lines()
+        .find(|line| line.trim().starts_with('['))
+        .expect("R probe stdout contains a JSON array line");
+    let registry_aliases: std::collections::BTreeSet<String> =
+        serde_json::from_str(first_line).expect("registry probe line is a JSON list");
+    assert_eq!(
+        manifest_aliases, registry_aliases,
+        "manifest aliases drift from R's OPERATOR_SELECTORS: manifest_only={:?}, registry_only={:?}",
+        manifest_aliases.difference(&registry_aliases).collect::<Vec<_>>(),
+        registry_aliases.difference(&manifest_aliases).collect::<Vec<_>>()
+    );
+}
+
 fn run_mdatools_adapter_one_shot(
     root: &Path,
     artifact_dir: &Path,
