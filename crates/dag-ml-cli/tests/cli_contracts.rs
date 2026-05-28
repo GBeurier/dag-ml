@@ -2857,6 +2857,260 @@ fn sklearn_production_controller_refits_then_predicts_via_joblib() {
     let _ = std::fs::remove_dir_all(artifact_dir);
 }
 
+#[test]
+fn sklearn_production_controller_jsonl_emits_error_frame_and_survives() {
+    let root = repo_root();
+    if !python_has_sklearn(&root) {
+        return;
+    }
+    let joblib_available = Command::new("python3")
+        .current_dir(&root)
+        .args(["-c", "import joblib"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !joblib_available {
+        return;
+    }
+
+    let suffix = unique_suffix();
+    let artifact_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_sklearn_production_jsonl_{}_{}",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+
+    // A bad task (unknown operator) followed by a good task that
+    // should still produce a result frame, proving the worker survived
+    // the first failure.
+    let node_plan_bad = json!({
+        "node_id": "model:bad",
+        "kind": "model",
+        "controller_id": "controller:sklearn.production",
+        "controller_version": "1.0.0",
+        "supported_phases": ["REFIT"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "full_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {"operator": "DefinitelyNotAnSklearnClass"},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let node_plan_good = json!({
+        "node_id": "model:ridge",
+        "kind": "model",
+        "controller_id": "controller:sklearn.production",
+        "controller_version": "1.0.0",
+        "supported_phases": ["REFIT"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "full_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {"operator": "Ridge"},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let variant = json!({
+        "variant_id": "variant:base",
+        "choices": {},
+        "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "seed": 7
+    });
+    let bad_task = json!({
+        "type": "task",
+        "schema_version": 1,
+        "task": {
+            "run_id": "run:cli.sklearn-production-jsonl",
+            "node_plan": node_plan_bad,
+            "phase": "REFIT",
+            "variant_id": "variant:base",
+            "variant": variant,
+            "fold_id": null,
+            "branch_path": [],
+            "input_handles": {},
+            "data_views": {},
+            "prediction_inputs": {},
+            "artifact_inputs": {},
+            "seed": 7
+        }
+    });
+    let good_task = json!({
+        "type": "task",
+        "schema_version": 1,
+        "task": {
+            "run_id": "run:cli.sklearn-production-jsonl",
+            "node_plan": node_plan_good,
+            "phase": "REFIT",
+            "variant_id": "variant:base",
+            "variant": variant,
+            "fold_id": null,
+            "branch_path": [],
+            "input_handles": {},
+            "data_views": {},
+            "prediction_inputs": {},
+            "artifact_inputs": {},
+            "seed": 7
+        }
+    });
+    let close = json!({"type": "close", "schema_version": 1});
+
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("python3")
+        .current_dir(&root)
+        .args([
+            "examples/adapters/sklearn_production_controller.py",
+            "--jsonl",
+        ])
+        .env(
+            "DAG_ML_PROCESS_ARTIFACT_DIR",
+            artifact_dir
+                .to_str()
+                .expect("artifact dir path is valid utf-8"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sklearn production adapter");
+    {
+        let stdin = child.stdin.as_mut().expect("adapter stdin is piped");
+        for frame in [&bad_task, &good_task, &close] {
+            stdin
+                .write_all(
+                    serde_json::to_vec(frame)
+                        .expect("frame JSON serializes")
+                        .as_slice(),
+                )
+                .expect("write frame to adapter stdin");
+            stdin.write_all(b"\n").expect("write trailing newline");
+        }
+    }
+    let output = child
+        .wait_with_output()
+        .expect("wait for sklearn production adapter");
+    assert!(
+        output.status.success(),
+        "JSONL adapter exited with failure after a bad-task error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout_text = String::from_utf8(output.stdout).expect("adapter stdout is utf-8");
+    let mut frames: Vec<serde_json::Value> = Vec::new();
+    for line in stdout_text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        frames.push(serde_json::from_str(line).expect("each adapter frame is JSON"));
+    }
+    let error_frames: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|frame| frame["type"].as_str() == Some("error"))
+        .collect();
+    let result_frames: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|frame| frame["type"].as_str() == Some("result"))
+        .collect();
+    let ack_frames: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|frame| frame["type"].as_str() == Some("ack"))
+        .collect();
+    assert_eq!(
+        frames.len(),
+        3,
+        "expected exactly 3 frames (error + result + close ack), got: {:#?}",
+        frames
+    );
+    assert_eq!(
+        error_frames.len(),
+        1,
+        "expected exactly one error frame, got: {:#?}",
+        frames
+    );
+    assert_eq!(
+        error_frames[0]["error"]["code"].as_str(),
+        Some("unknown_operator")
+    );
+    assert!(error_frames[0]["error"]["message"]
+        .as_str()
+        .is_some_and(|m| m.contains("DefinitelyNotAnSklearnClass")));
+    assert_eq!(
+        result_frames.len(),
+        1,
+        "worker should still produce one result after the error, frames: {:#?}",
+        frames
+    );
+    assert_eq!(
+        result_frames[0]["result"]["node_id"].as_str(),
+        Some("model:ridge")
+    );
+    assert_eq!(
+        ack_frames.len(),
+        1,
+        "expected one close ack frame, got: {:#?}",
+        frames
+    );
+    assert_eq!(ack_frames[0]["status"].as_str(), Some("closed"));
+
+    let _ = std::fs::remove_dir_all(artifact_dir);
+}
+
+#[test]
+fn sklearn_production_controller_fit_timeout_raises_retryable_error() {
+    let root = repo_root();
+    if !python_has_sklearn(&root) {
+        return;
+    }
+    let suffix = unique_suffix();
+    let probe_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_sklearn_production_timeout_probe_{}_{}.py",
+        std::process::id(),
+        suffix
+    ));
+    let probe_script = r#"import importlib.util, os, sys, time
+os.environ['DAG_ML_PROCESS_FIT_TIMEOUT_SECONDS'] = '1'
+sys.argv = ['sklearn_production_controller.py']
+spec = importlib.util.spec_from_file_location(
+    'sklearn_production_controller',
+    'examples/adapters/sklearn_production_controller.py',
+)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+try:
+    mod.with_fit_timeout(lambda: time.sleep(3))
+    print('NO_TIMEOUT')
+except mod.AdapterTaskError as exc:
+    print(f'OK:{exc.code}:{int(exc.retryable)}')
+"#;
+    std::fs::write(&probe_path, probe_script).expect("write timeout probe script");
+    let probe = Command::new("python3")
+        .current_dir(&root)
+        .arg(&probe_path)
+        .output()
+        .expect("spawn python timeout probe");
+    let _ = std::fs::remove_file(&probe_path);
+    assert!(
+        probe.status.success(),
+        "timeout probe failed: stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&probe.stdout),
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    let stdout_text = String::from_utf8_lossy(&probe.stdout);
+    assert!(
+        stdout_text.contains("OK:fit_timeout:1"),
+        "expected `OK:fit_timeout:1` in timeout probe stdout, got: {}",
+        stdout_text
+    );
+}
+
 fn run_production_adapter_one_shot(
     root: &Path,
     artifact_dir: &Path,
