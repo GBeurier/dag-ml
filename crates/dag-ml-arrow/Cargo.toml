@@ -1,0 +1,21 @@
+[package]
+name = "dag-ml-arrow"
+description = "Apache Arrow IPC codec for dag-ml prediction cache payloads."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+arrow-array = "53"
+arrow-ipc = "53"
+arrow-schema = "53"
+dag-ml-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
