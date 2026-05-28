@@ -3220,6 +3220,403 @@ fn run_r_adapter_one_shot(root: &Path, task: &serde_json::Value) -> Vec<u8> {
 }
 
 #[test]
+fn mdatools_process_controller_describes_supported_protocol_modes() {
+    let root = repo_root();
+    if !r_has_mdatools(&root) {
+        return;
+    }
+    let describe = Command::new("Rscript")
+        .current_dir(&root)
+        .args([
+            "examples/adapters/mdatools_process_controller.R",
+            "--describe",
+        ])
+        .output()
+        .expect("run mdatools adapter describe handshake");
+    assert!(
+        describe.status.success(),
+        "mdatools adapter describe failed: {}",
+        String::from_utf8_lossy(&describe.stderr)
+    );
+    let description: serde_json::Value =
+        serde_json::from_slice(&describe.stdout).expect("mdatools adapter description JSON");
+    assert_eq!(
+        description["adapter_id"].as_str(),
+        Some("dag-ml-mdatools-process-controller")
+    );
+    let stdout = String::from_utf8_lossy(&describe.stdout);
+    for required in [
+        "control_frames_v1",
+        "node_task_json_v1",
+        "node_result_json_v1",
+        "parallel_invocation_v1",
+        "persistent_workers",
+        "worker_env",
+        "stateful_refit_artifacts",
+        "mdatools_smoke",
+    ] {
+        assert!(
+            stdout.contains(&format!("\"{required}\"")),
+            "mdatools adapter description missing capability `{required}`: {}",
+            stdout
+        );
+    }
+}
+
+#[test]
+fn mdatools_process_controller_refits_then_predicts_via_rds() {
+    let root = repo_root();
+    if !r_has_mdatools(&root) {
+        return;
+    }
+
+    let suffix = unique_suffix();
+    let artifact_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_mdatools_artifacts_{}_{}",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+
+    let node_plan = json!({
+        "node_id": "pls:0",
+        "kind": "model",
+        "controller_id": "controller:mdatools",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV", "REFIT", "PREDICT"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        // ncomp=1 is the smallest valid PLS model on the 4x4 synthetic
+        // feature matrix.
+        "params": {"operator": "pls", "params": {"ncomp": 1}},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let variant = json!({
+        "variant_id": "variant:base",
+        "choices": {},
+        "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "seed": 7
+    });
+
+    let refit_task = json!({
+        "run_id": "run:cli.mdatools",
+        "node_plan": node_plan,
+        "phase": "REFIT",
+        "variant_id": "variant:base",
+        "variant": variant,
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {},
+        "data_views": {},
+        "prediction_inputs": {},
+        "artifact_inputs": {},
+        "seed": 7
+    });
+    let refit_output = run_mdatools_adapter_one_shot(&root, &artifact_dir, &refit_task);
+    let refit_value: serde_json::Value =
+        serde_json::from_slice(&refit_output).expect("REFIT result is JSON");
+    let artifacts = refit_value["artifacts"]
+        .as_array()
+        .expect("REFIT result has artifacts");
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "REFIT produced unexpected artifact count: {refit_value:#}"
+    );
+    let artifact = &artifacts[0];
+    assert_eq!(artifact["backend"].as_str(), Some("rds"));
+    assert_eq!(artifact["kind"].as_str(), Some("mdatools_model"));
+    let artifact_id = artifact["id"].as_str().expect("artifact id").to_string();
+    let artifact_uri = artifact["uri"].as_str().expect("artifact uri").to_string();
+    assert!(
+        artifact["size_bytes"].as_u64().is_some_and(|n| n > 0),
+        "REFIT artifact size_bytes must be positive"
+    );
+    let artifact_path = if std::path::Path::new(&artifact_uri).is_absolute() {
+        std::path::PathBuf::from(&artifact_uri)
+    } else {
+        artifact_dir.join(
+            std::path::Path::new(&artifact_uri)
+                .file_name()
+                .expect("artifact uri has file name"),
+        )
+    };
+    assert!(
+        artifact_path.exists(),
+        "RDS artifact was not written to disk: {}",
+        artifact_path.display()
+    );
+    let artifact_handle = refit_value["artifact_handles"][&artifact_id]["handle"]
+        .as_u64()
+        .expect("artifact_handles carry numeric handle");
+
+    // Drive PREDICT against the same sample IDs REFIT trained on so
+    // we can prove RDS round-trip determinism. data_views with
+    // partition="predict" carries the IDs; node_plan.data_bindings
+    // names "x" so the controller's `data_view(task)` resolves the
+    // view by key.
+    let refit_sample_ids = refit_value["predictions"][0]["sample_ids"]
+        .as_array()
+        .expect("REFIT predictions carry sample_ids")
+        .iter()
+        .map(|v| v.as_str().expect("sample id is str").to_string())
+        .collect::<Vec<_>>();
+    let mut predict_node_plan = node_plan.clone();
+    predict_node_plan["data_bindings"] = json!([{"input_name": "x"}]);
+    let predict_task = json!({
+        "run_id": "run:cli.mdatools",
+        "node_plan": predict_node_plan,
+        "phase": "PREDICT",
+        "variant_id": "variant:base",
+        "variant": variant,
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {
+            artifact_id.clone(): {
+                "handle": artifact_handle,
+                "kind": "model",
+                "owner_controller": "controller:mdatools"
+            },
+            "data:x": {
+                "handle": 1,
+                "kind": "data",
+                "owner_controller": "controller:mdatools"
+            }
+        },
+        "data_views": {
+            "data:x": {
+                "partition": "predict",
+                "sample_ids": refit_sample_ids
+            }
+        },
+        "prediction_inputs": {},
+        "artifact_inputs": {
+            artifact_id.clone(): {
+                "node_id": "pls:0",
+                "controller_id": "controller:mdatools",
+                "uri": artifact_uri
+            }
+        },
+        "seed": 7
+    });
+
+    let predict_output = run_mdatools_adapter_one_shot(&root, &artifact_dir, &predict_task);
+    let predict_value: serde_json::Value =
+        serde_json::from_slice(&predict_output).expect("PREDICT result is JSON");
+    let predictions = predict_value["predictions"]
+        .as_array()
+        .expect("PREDICT result has predictions");
+    assert_eq!(predictions.len(), 1);
+    let predict_values = predictions[0]["values"]
+        .as_array()
+        .expect("PREDICT values is an array");
+    assert!(
+        !predict_values.is_empty(),
+        "PREDICT returned empty value rows"
+    );
+    for row in predict_values {
+        let row = row.as_array().expect("prediction row is an array");
+        assert_eq!(row.len(), 1, "pls produces 1 target per sample");
+        assert!(
+            row[0].as_f64().is_some_and(f64::is_finite),
+            "PREDICT row must be finite: {row:?}"
+        );
+    }
+
+    // Round-trip determinism: both phases now predict on the SAME
+    // sample IDs through the SAME synthetic feature pipeline. The
+    // RDS artifact must round-trip the fitted PLS model exactly.
+    let refit_values = refit_value["predictions"]
+        .as_array()
+        .and_then(|blocks| blocks.first())
+        .and_then(|block| block["values"].as_array())
+        .expect("REFIT predictions exist");
+    assert_eq!(
+        refit_values.len(),
+        predict_values.len(),
+        "REFIT and PREDICT row counts must match after sample alignment"
+    );
+    for (refit_row, predict_row) in refit_values.iter().zip(predict_values.iter()) {
+        let refit_v = refit_row[0]
+            .as_f64()
+            .expect("REFIT row value is finite f64");
+        let predict_v = predict_row[0]
+            .as_f64()
+            .expect("PREDICT row value is finite f64");
+        assert!(
+            (refit_v - predict_v).abs() < 1e-9,
+            "REFIT vs PREDICT value drift: refit={refit_v}, predict={predict_v}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(artifact_dir);
+}
+
+#[test]
+fn mdatools_process_controller_rejects_artifact_uri_outside_artifact_dir() {
+    let root = repo_root();
+    if !r_has_mdatools(&root) {
+        return;
+    }
+    let suffix = unique_suffix();
+    let artifact_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_mdatools_traversal_{}_{}",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+
+    let node_plan = json!({
+        "node_id": "pls:0",
+        "kind": "model",
+        "controller_id": "controller:mdatools",
+        "controller_version": "1.0.0",
+        "supported_phases": ["PREDICT"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {"operator": "pls", "params": {"ncomp": 1}},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let artifact_id = "artifact:pls:0:mdatools:refit";
+    let predict_task = json!({
+        "run_id": "run:cli.mdatools-traversal",
+        "node_plan": node_plan,
+        "phase": "PREDICT",
+        "variant_id": "variant:base",
+        "variant": {
+            "variant_id": "variant:base",
+            "choices": {},
+            "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "seed": 7
+        },
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {
+            artifact_id: {
+                "handle": 1,
+                "kind": "model",
+                "owner_controller": "controller:mdatools"
+            }
+        },
+        "data_views": {},
+        "prediction_inputs": {},
+        "artifact_inputs": {
+            artifact_id: {
+                "node_id": "pls:0",
+                "controller_id": "controller:mdatools",
+                "uri": "/etc/passwd"
+            }
+        },
+        "seed": 7
+    });
+
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("Rscript")
+        .current_dir(&root)
+        .args(["examples/adapters/mdatools_process_controller.R"])
+        .env(
+            "DAG_ML_PROCESS_ARTIFACT_DIR",
+            artifact_dir
+                .to_str()
+                .expect("artifact dir path is valid utf-8"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mdatools adapter");
+    {
+        let stdin = child.stdin.as_mut().expect("adapter stdin is piped");
+        stdin
+            .write_all(
+                serde_json::to_vec(&predict_task)
+                    .expect("task JSON serializes")
+                    .as_slice(),
+            )
+            .expect("write task JSON to adapter stdin");
+        stdin.write_all(b"\n").expect("write trailing newline");
+    }
+    let output = child.wait_with_output().expect("wait for mdatools adapter");
+    assert!(
+        !output.status.success(),
+        "mdatools adapter accepted a traversal URI instead of rejecting it"
+    );
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    // The basename of `/etc/passwd` resolves to `passwd`, which is
+    // joined under the artifact dir; that path does not exist, so
+    // the error message references resolution under the artifact dir
+    // (proving the basename strip worked and the controller did not
+    // touch /etc/passwd).
+    let artifact_dir_str = artifact_dir
+        .to_str()
+        .expect("artifact dir path is valid utf-8");
+    assert!(
+        stderr_text.contains("resolved under artifact dir")
+            && stderr_text.contains(artifact_dir_str)
+            && !stderr_text.contains("/etc/passwd readRDS"),
+        "mdatools adapter did not confine the traversal URI under artifact dir: {}",
+        stderr_text
+    );
+
+    let _ = std::fs::remove_dir_all(artifact_dir);
+}
+
+fn run_mdatools_adapter_one_shot(
+    root: &Path,
+    artifact_dir: &Path,
+    task: &serde_json::Value,
+) -> Vec<u8> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new("Rscript")
+        .current_dir(root)
+        .args(["examples/adapters/mdatools_process_controller.R"])
+        .env(
+            "DAG_ML_PROCESS_ARTIFACT_DIR",
+            artifact_dir
+                .to_str()
+                .expect("artifact dir path is valid utf-8"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mdatools adapter");
+    {
+        let stdin = child.stdin.as_mut().expect("R adapter stdin is piped");
+        stdin
+            .write_all(
+                serde_json::to_vec(task)
+                    .expect("task JSON serializes")
+                    .as_slice(),
+            )
+            .expect("write task JSON to R adapter stdin");
+        stdin.write_all(b"\n").expect("write trailing newline");
+    }
+    let output = child.wait_with_output().expect("wait for mdatools adapter");
+    assert!(
+        output.status.success(),
+        "mdatools R adapter exited with failure: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+#[test]
 fn sklearn_production_controller_refits_then_predicts_via_joblib() {
     let root = repo_root();
     if !python_has_sklearn(&root) {
@@ -4801,6 +5198,18 @@ fn r_has_prospectr(root: &Path) -> bool {
         .args([
             "-e",
             "suppressPackageStartupMessages({library(jsonlite); library(prospectr)})",
+        ])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn r_has_mdatools(root: &Path) -> bool {
+    Command::new("Rscript")
+        .current_dir(root)
+        .args([
+            "-e",
+            "suppressPackageStartupMessages({library(jsonlite); library(mdatools); library(digest)})",
         ])
         .status()
         .map(|status| status.success())
