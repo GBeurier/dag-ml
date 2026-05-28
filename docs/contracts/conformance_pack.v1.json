@@ -54,6 +54,7 @@
       "DagMlDataFittedAdapterStoreHandle",
       "dagmldata_inmemory_provider_new_with_f64_feature_views",
       "dagmldata_inmemory_provider_new_with_f64_feature_columns",
+      "dagmldata_inmemory_provider_new_from_file",
       "dagmldata_inmemory_provider_feature_collation_tensor_f64_json",
       "dagmldata_inmemory_provider_feature_collation_tensor_f32_json",
       "dagmldata_inmemory_provider_data_feature_buffer_manifest_json",
