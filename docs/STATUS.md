@@ -577,22 +577,20 @@ Not implemented yet:
   serialized JSON descriptors and keeps host object resolution in bindings;
 - advanced search-space compiler/lowering beyond typed node-parameter variants
   and coordinated override dimensions from `PipelineDslSpec`;
-- production persistent/Arrow replay backends for non-sample aggregated
-  prediction blocks;
 - artifact binary deserialization/loading into host-native model objects beyond
   the implemented portable artifact reference contract, file-backed artifact
   manifest and file-backed artifact payload store;
 - Arrow prediction storage and typed tensor/cache ABI surfaces beyond the
-  current owned row-major/column-major F64 prediction-block and bundle-cache
-  exports;
+  current owned row-major/column-major F64 prediction-block, bundle-cache
+  and new `dag-ml-arrow` Arrow IPC codec (the codec covers both sample and
+  non-sample aggregated prediction blocks);
 - production host controller adapters with native libraries or
   language-specific bindings beyond the sklearn production,
-  prospectr, and mdatools (pls/pca) controllers — remaining backlog
-  (Python SpectroChemPy, Python Orange-Spectroscopy, declarative YAML
-  registry, stateful `msc` reference-spectrum persistence,
-  mdatools classification operators `plsda`/`simca` and matrix
-  factorisation `mcrals`) is recorded in
-  `docs/HOST_ADAPTER_BACKLOG.md`. The sklearn production slice
+  prospectr, and mdatools (pls/pca/plsda) controllers — remaining
+  backlog (Python SpectroChemPy, Python Orange-Spectroscopy,
+  stateful `msc` reference-spectrum persistence, mdatools `simca`
+  and `mcrals`) is recorded in `docs/HOST_ADAPTER_BACKLOG.md`. The
+  sklearn production slice
   (item #1) is shipped through F.1–F.3:
   `examples/adapters/sklearn_production_controller.py` (operator
   selectors over sklearn.preprocessing/linear_model/ensemble/decomposition
@@ -621,26 +619,25 @@ Not implemented yet:
   RDS bundle and asserts byte-equal predictions),
   `examples/controllers/mdatools.controller.json` (manifest with
   `rng_policy=externally_deterministic` since mdatools is internally
-  deterministic but does not accept an external seed). The
-  classification operators (`plsda`, `simca`) and matrix
-  factorisation (`mcrals`) are deferred to a future slice because
-  they need a different input shape (synthetic class labels,
-  distinct prediction interpretation);
+  deterministic but does not accept an external seed). Slice K.1
+  adds the classification dispatch shape for `plsda` (synthetic
+  binary labels via median thresholding, `plsdares.c.pred`
+  extraction). `simca` (alternative classifier), `mcrals` (matrix
+  factorisation) and the prospectr stateful `msc` path are still
+  deferred;
 - production `dag-ml-data` provider backends beyond the current in-memory C
-  conformance provider, including consumption of `branch_view_plans` for
-  selector-driven branch-local materialization.
+  conformance provider for `branch_view_plans` modes the arena cannot
+  natively execute (`by_metadata`, `by_tag`, `by_filter` — the by_source
+  contract is now pinned by C ABI conformance tests).
 
 Next recommended task:
 
-With items #1 (sklearn production), #2 (R prospectr), and #3
-(R mdatools — pls + pca) shipped in commits F.1–F.3, G.1–G.2,
-and H.1–H.2, the cheapest remaining slice is the Python
-SpectroChemPy adapter (item #4) which reuses F.1's sklearn
-scaffold pattern. After that, Orange-Spectroscopy (item #5) and
-the declarative YAML registry (item #6) follow. The mdatools
-classification operators (`plsda`/`simca`) and matrix
-factorisation (`mcrals`) plus the prospectr `msc` stateful path
-are smaller add-ons that can be picked up opportunistically.
-Provider-side consumption of selector-driven `branch_view_plans`
-and larger replay stress fixtures remain queued behind the host
-adapter backlog.
+Items #1 (sklearn production), #2 (R prospectr), #3 (R mdatools
+pls/pca/plsda), and #6 (YAML controller registry) are all shipped,
+and the Apache Arrow IPC codec for prediction caches now exists in
+the new `dag-ml-arrow` crate. The remaining backlog items —
+SpectroChemPy and Orange-Spectroscopy Python adapters (items #4–#5),
+the mdatools `simca`/`mcrals` operators, the prospectr stateful
+`msc` path, host-filtered branch_view modes for non-`by_source`
+selectors — are tracked in `docs/HOST_ADAPTER_BACKLOG.md` and can
+be picked up in priority order based on operator demand.
