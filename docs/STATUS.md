@@ -586,11 +586,13 @@ Not implemented yet:
   current owned row-major/column-major F64 prediction-block and bundle-cache
   exports;
 - production host controller adapters with native libraries or
-  language-specific bindings beyond the sklearn production and
-  prospectr scaffold controllers — remaining backlog (R mdatools,
-  Python SpectroChemPy, Python Orange-Spectroscopy, declarative YAML
-  registry, stateful `msc` reference-spectrum persistence) is recorded
-  in `docs/HOST_ADAPTER_BACKLOG.md`. The sklearn production slice
+  language-specific bindings beyond the sklearn production,
+  prospectr, and mdatools (pls/pca) controllers — remaining backlog
+  (Python SpectroChemPy, Python Orange-Spectroscopy, declarative YAML
+  registry, stateful `msc` reference-spectrum persistence,
+  mdatools classification operators `plsda`/`simca` and matrix
+  factorisation `mcrals`) is recorded in
+  `docs/HOST_ADAPTER_BACKLOG.md`. The sklearn production slice
   (item #1) is shipped through F.1–F.3:
   `examples/adapters/sklearn_production_controller.py` (operator
   selectors over sklearn.preprocessing/linear_model/ensemble/decomposition
@@ -607,19 +609,38 @@ Not implemented yet:
   `examples/controllers/prospectr.controller.json` (transform-kind
   manifest with the same alias-set parity test pattern). `msc` is
   intentionally excluded from the prospectr controller until
-  reference-spectrum persistence is wired;
+  reference-spectrum persistence is wired. The R mdatools slice
+  (item #3) is shipped through H.1–H.2:
+  `examples/adapters/mdatools_process_controller.R` (model-kind
+  controller reusing the G.1 JSONL scaffold, adding `saveRDS`/
+  `readRDS`-backed artifact persistence with the same basename
+  confinement primitive as F.1's joblib path, dispatching `pls`
+  via the regression input shape and `pca` via the unsupervised
+  shape with the first principal-component score as the per-sample
+  prediction value; PREDICT round-trips both operators through the
+  RDS bundle and asserts byte-equal predictions),
+  `examples/controllers/mdatools.controller.json` (manifest with
+  `rng_policy=externally_deterministic` since mdatools is internally
+  deterministic but does not accept an external seed). The
+  classification operators (`plsda`, `simca`) and matrix
+  factorisation (`mcrals`) are deferred to a future slice because
+  they need a different input shape (synthetic class labels,
+  distinct prediction interpretation);
 - production `dag-ml-data` provider backends beyond the current in-memory C
   conformance provider, including consumption of `branch_view_plans` for
   selector-driven branch-local materialization.
 
 Next recommended task:
 
-With items #1 (sklearn production) and #2 (R prospectr) shipped in
-commits F.1–F.3 and G.1–G.2, item #3 (R `mdatools`) now reuses the
-R-side JSONL scaffold and the `data.frame ↔ matrix` boundary built
-in G.1, so its cost should drop to the 2–3 slice range — it adds
-the `pls`/`pcr`/`simca`/`mcr.als`/`pca` operator dispatch and a
-`fold_train` artifact persistence path (since mdatools models are
-stateful). Provider-side consumption of selector-driven
-`branch_view_plans` and larger replay stress fixtures remain queued
-behind the host adapter backlog.
+With items #1 (sklearn production), #2 (R prospectr), and #3
+(R mdatools — pls + pca) shipped in commits F.1–F.3, G.1–G.2,
+and H.1–H.2, the cheapest remaining slice is the Python
+SpectroChemPy adapter (item #4) which reuses F.1's sklearn
+scaffold pattern. After that, Orange-Spectroscopy (item #5) and
+the declarative YAML registry (item #6) follow. The mdatools
+classification operators (`plsda`/`simca`) and matrix
+factorisation (`mcrals`) plus the prospectr `msc` stateful path
+are smaller add-ons that can be picked up opportunistically.
+Provider-side consumption of selector-driven `branch_view_plans`
+and larger replay stress fixtures remain queued behind the host
+adapter backlog.
