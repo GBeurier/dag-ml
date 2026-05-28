@@ -586,14 +586,20 @@ Not implemented yet:
   current owned row-major/column-major F64 prediction-block and bundle-cache
   exports;
 - production host controller adapters with native libraries or
-  language-specific bindings;
+  language-specific bindings — backlog, wire-protocol decision and
+  per-adapter cost estimate are recorded in `docs/HOST_ADAPTER_BACKLOG.md`
+  (process-adapter JSONL is the only stable cross-language wire; the
+  existing `examples/adapters/sklearn_process_controller.py` covers ≈70%
+  of the production sklearn slice, and SpectroChemPy/Orange-Spectroscopy
+  are Python adapters despite occasionally being grouped with R libs);
 - production `dag-ml-data` provider backends beyond the current in-memory C
   conformance provider, including consumption of `branch_view_plans` for
   selector-driven branch-local materialization.
 
 Next recommended task:
 
-Continue productionizing host adapters and data-provider materialization:
-controller lifecycle ownership, larger replay stress fixtures over the shared
-conformance pack, and provider-side consumption of selector-driven
-`branch_view_plans`.
+Pick up the cheapest production slice from `docs/HOST_ADAPTER_BACKLOG.md`
+(item #1 — promoting the existing sklearn smoke to a production controller
+with expanded `operator_selectors`, joblib artifact persistence and a
+declared `ControllerManifest`), then revisit provider-side consumption of
+selector-driven `branch_view_plans` and larger replay stress fixtures.
