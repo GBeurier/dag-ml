@@ -2647,6 +2647,7 @@ fn process_adapters_describe_supported_protocol_modes() {
     for adapter in [
         "examples/adapters/python_process_controller.py",
         "examples/adapters/sklearn_process_controller.py",
+        "examples/adapters/sklearn_production_controller.py",
         "examples/adapters/flaky_process_controller.py",
     ] {
         let describe = Command::new("python3")
@@ -2683,7 +2684,345 @@ fn process_adapters_describe_supported_protocol_modes() {
             .unwrap();
             assert_eq!(description, fixture);
         }
+        if adapter == "examples/adapters/sklearn_production_controller.py" {
+            assert!(
+                stdout.contains("\"dag-ml-sklearn-production-controller\"")
+                    && stdout.contains("\"sklearn_production\""),
+                "production adapter description missing production capability: {}",
+                stdout
+            );
+        }
     }
+}
+
+#[test]
+fn sklearn_production_controller_refits_then_predicts_via_joblib() {
+    let root = repo_root();
+    if !python_has_sklearn(&root) {
+        return;
+    }
+    let joblib_available = Command::new("python3")
+        .current_dir(&root)
+        .args(["-c", "import joblib"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !joblib_available {
+        return;
+    }
+
+    let suffix = unique_suffix();
+    let artifact_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_sklearn_production_artifacts_{}_{}",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+
+    let node_plan = json!({
+        "node_id": "model:ridge",
+        "kind": "model",
+        "controller_id": "controller:sklearn.production",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV", "REFIT", "PREDICT"],
+        "controller_capabilities": ["deterministic", "thread_safe"],
+        "fit_scope": "full_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {
+            "operator": "Ridge",
+            "params": {"alpha": 0.5}
+        },
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+
+    let refit_task = json!({
+        "run_id": "run:cli.sklearn-production",
+        "node_plan": node_plan,
+        "phase": "REFIT",
+        "variant_id": "variant:base",
+        "variant": {
+            "variant_id": "variant:base",
+            "choices": {},
+            "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "seed": 7
+        },
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {},
+        "data_views": {},
+        "prediction_inputs": {},
+        "artifact_inputs": {},
+        "seed": 7
+    });
+
+    let refit_output = run_production_adapter_one_shot(&root, &artifact_dir, &refit_task);
+    let refit_value: serde_json::Value =
+        serde_json::from_slice(&refit_output).expect("REFIT result is JSON");
+    let artifacts = refit_value["artifacts"]
+        .as_array()
+        .expect("REFIT result has artifacts");
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "REFIT produced unexpected artifact count: {refit_value:#}"
+    );
+    let artifact = &artifacts[0];
+    assert_eq!(artifact["backend"].as_str(), Some("joblib"));
+    assert_eq!(artifact["kind"].as_str(), Some("sklearn_pipeline"));
+    let artifact_id = artifact["id"].as_str().expect("artifact id").to_string();
+    let artifact_uri = artifact["uri"].as_str().expect("artifact uri").to_string();
+    let artifact_size = artifact["size_bytes"]
+        .as_u64()
+        .expect("artifact size_bytes");
+    assert!(artifact_size > 0, "joblib artifact reported zero bytes");
+    let artifact_path = if std::path::Path::new(&artifact_uri).is_absolute() {
+        std::path::PathBuf::from(&artifact_uri)
+    } else {
+        artifact_dir.join(
+            std::path::Path::new(&artifact_uri)
+                .file_name()
+                .expect("artifact uri has file name"),
+        )
+    };
+    assert!(
+        artifact_path.exists(),
+        "joblib artifact was not written to disk: {}",
+        artifact_path.display()
+    );
+    let artifact_handle = refit_value["artifact_handles"][&artifact_id]["handle"]
+        .as_u64()
+        .expect("artifact_handles carry numeric handle");
+
+    let predict_task = json!({
+        "run_id": "run:cli.sklearn-production",
+        "node_plan": node_plan,
+        "phase": "PREDICT",
+        "variant_id": "variant:base",
+        "variant": {
+            "variant_id": "variant:base",
+            "choices": {},
+            "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "seed": 7
+        },
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {
+            artifact_id.clone(): {
+                "handle": artifact_handle,
+                "kind": "model",
+                "owner_controller": "controller:sklearn.production"
+            }
+        },
+        "data_views": {},
+        "prediction_inputs": {},
+        "artifact_inputs": {
+            artifact_id.clone(): {
+                "node_id": "model:ridge",
+                "controller_id": "controller:sklearn.production",
+                "uri": artifact_uri
+            }
+        },
+        "seed": 7
+    });
+
+    let predict_output = run_production_adapter_one_shot(&root, &artifact_dir, &predict_task);
+    let predict_value: serde_json::Value =
+        serde_json::from_slice(&predict_output).expect("PREDICT result is JSON");
+    let predictions = predict_value["predictions"]
+        .as_array()
+        .expect("PREDICT result has predictions");
+    assert_eq!(
+        predictions.len(),
+        1,
+        "PREDICT produced unexpected block count"
+    );
+    let values = predictions[0]["values"]
+        .as_array()
+        .expect("PREDICT prediction values are an array");
+    assert!(!values.is_empty(), "PREDICT returned empty value rows");
+    for row in values {
+        let row = row.as_array().expect("each prediction row is an array");
+        assert_eq!(row.len(), 1, "Ridge prediction width is 1");
+        assert!(
+            row[0].as_f64().is_some_and(f64::is_finite),
+            "PREDICT row carries non-finite value: {row:?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(artifact_dir);
+}
+
+fn run_production_adapter_one_shot(
+    root: &Path,
+    artifact_dir: &Path,
+    task: &serde_json::Value,
+) -> Vec<u8> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new("python3")
+        .current_dir(root)
+        .args(["examples/adapters/sklearn_production_controller.py"])
+        .env(
+            "DAG_ML_PROCESS_ARTIFACT_DIR",
+            artifact_dir
+                .to_str()
+                .expect("artifact dir path is valid utf-8"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sklearn production adapter");
+    {
+        let stdin = child.stdin.as_mut().expect("adapter stdin is piped");
+        stdin
+            .write_all(
+                serde_json::to_vec(task)
+                    .expect("task JSON serializes")
+                    .as_slice(),
+            )
+            .expect("write task JSON to adapter stdin");
+        stdin.write_all(b"\n").expect("write trailing newline");
+    }
+    let output = child
+        .wait_with_output()
+        .expect("wait for sklearn production adapter");
+    assert!(
+        output.status.success(),
+        "sklearn production adapter exited with failure: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+#[test]
+fn sklearn_production_controller_rejects_artifact_uri_outside_artifact_dir() {
+    let root = repo_root();
+    if !python_has_sklearn(&root) {
+        return;
+    }
+    let joblib_available = Command::new("python3")
+        .current_dir(&root)
+        .args(["-c", "import joblib"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !joblib_available {
+        return;
+    }
+
+    let suffix = unique_suffix();
+    let artifact_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_sklearn_production_traversal_{}_{}",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+
+    let node_plan = json!({
+        "node_id": "model:ridge",
+        "kind": "model",
+        "controller_id": "controller:sklearn.production",
+        "controller_version": "1.0.0",
+        "supported_phases": ["PREDICT"],
+        "controller_capabilities": ["deterministic", "thread_safe"],
+        "fit_scope": "full_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {"operator": "Ridge"},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let artifact_id = "artifact:model:ridge:sklearn:refit";
+    let predict_task = json!({
+        "run_id": "run:cli.sklearn-production-traversal",
+        "node_plan": node_plan,
+        "phase": "PREDICT",
+        "variant_id": "variant:base",
+        "variant": {
+            "variant_id": "variant:base",
+            "choices": {},
+            "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "seed": 7
+        },
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {
+            artifact_id: {
+                "handle": 1,
+                "kind": "model",
+                "owner_controller": "controller:sklearn.production"
+            }
+        },
+        "data_views": {},
+        "prediction_inputs": {},
+        "artifact_inputs": {
+            artifact_id: {
+                "node_id": "model:ridge",
+                "controller_id": "controller:sklearn.production",
+                "uri": "/etc/passwd"
+            }
+        },
+        "seed": 7
+    });
+
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("python3")
+        .current_dir(&root)
+        .args(["examples/adapters/sklearn_production_controller.py"])
+        .env(
+            "DAG_ML_PROCESS_ARTIFACT_DIR",
+            artifact_dir
+                .to_str()
+                .expect("artifact dir path is valid utf-8"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sklearn production adapter");
+    {
+        let stdin = child.stdin.as_mut().expect("adapter stdin is piped");
+        stdin
+            .write_all(
+                serde_json::to_vec(&predict_task)
+                    .expect("task JSON serializes")
+                    .as_slice(),
+            )
+            .expect("write task JSON to adapter stdin");
+        stdin.write_all(b"\n").expect("write trailing newline");
+    }
+    let output = child
+        .wait_with_output()
+        .expect("wait for sklearn production adapter");
+    assert!(
+        !output.status.success(),
+        "production adapter accepted a traversal URI instead of rejecting it"
+    );
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    let artifact_dir_str = artifact_dir
+        .to_str()
+        .expect("artifact dir path is valid utf-8");
+    assert!(
+        stderr_text.contains("resolved under artifact dir")
+            && stderr_text.contains(artifact_dir_str)
+            && !stderr_text.contains("loaded /etc/passwd")
+            && !stderr_text.contains("UnpicklingError"),
+        "production adapter did not confine the traversal URI under artifact dir: {}",
+        stderr_text
+    );
+
+    let _ = std::fs::remove_dir_all(artifact_dir);
 }
 
 #[test]
