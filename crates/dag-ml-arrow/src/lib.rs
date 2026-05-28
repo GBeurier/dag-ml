@@ -403,23 +403,28 @@ mod tests {
 
     #[test]
     fn arrow_ipc_rejects_unknown_codec_version() {
+        // Construct an Arrow IPC stream directly with a non-`v1`
+        // codec version (instead of fragile byte-scanning the
+        // encoded stream) so the test cannot accidentally corrupt
+        // the wrong bytes if the literal `v1` happens to appear
+        // elsewhere in the IPC framing.
         let payload = aggregated_payload();
-        let mut bytes = predictions_to_arrow_ipc(&payload).expect("encode");
-        // Crudely corrupt the codec version by overwriting its
-        // sentinel inside the IPC schema metadata. The bytes string
-        // `v1` appears in the Arrow stream header; replace it with
-        // an unsupported version.
-        let needle = b"v1";
-        let pos = bytes
-            .windows(needle.len())
-            .position(|window| window == needle)
-            .expect("codec version sentinel must appear in stream");
-        bytes[pos..pos + 2].copy_from_slice(b"v9");
-        let err = predictions_from_arrow_ipc(&bytes).unwrap_err();
+        let mut schema = cache_schema(&payload).expect("schema");
+        let mut bad_metadata = schema.metadata.clone();
+        bad_metadata.insert(METADATA_KEY_FORMAT.to_string(), "v9".to_string());
+        schema = Schema::new_with_metadata(schema.fields.clone(), bad_metadata);
+        let batch = build_record_batch(&payload, schema.clone()).expect("batch");
+        let mut buffer: Vec<u8> = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buffer, &schema).expect("writer");
+            writer.write(&batch).expect("write batch");
+            writer.finish().expect("finish stream");
+        }
+        let err = predictions_from_arrow_ipc(&buffer).unwrap_err();
         match err {
             DagMlError::RuntimeValidation(message) => {
                 assert!(
-                    message.contains("codec version") || message.contains("`v9`"),
+                    message.contains("codec version") && message.contains("v9"),
                     "unexpected: {message}"
                 );
             }

@@ -464,15 +464,26 @@ run_model <- function(task) {
 extract_prediction_vector <- function(raw) {
   # plsdares inherits from plsres but exposes `c.pred` (3D:
   # [sample, component, class]) carrying per-class indicator
-  # values. For a binary smoke we return the highest-component
-  # value for the second class ("high"); production callers should
-  # request a multi-target output once the prediction shape is
-  # widened to per-class probability blocks.
+  # values. The slice supports binary classification only — we
+  # return the highest-component value for the second class
+  # ("high"). For >2 classes the natural shape is a per-class
+  # probability block, which this slice's prediction surface
+  # cannot express, so we fail loudly rather than silently
+  # picking the last class.
   if (inherits(raw, "plsdares") && !is.null(raw$c.pred)) {
     arr <- raw$c.pred
     dims <- dim(arr)
     if (is.null(dims) || length(dims) < 3L) {
       return(as.numeric(arr))
+    }
+    if (dims[3] != 2L) {
+      fail(
+        sprintf(
+          "plsda returned `c.pred` with %d classes; this slice only supports binary plsda",
+          dims[3]
+        ),
+        code = "unsupported_class_count"
+      )
     }
     return(as.numeric(arr[, dims[2], dims[3]]))
   }
