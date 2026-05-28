@@ -1,0 +1,56 @@
+{
+  "controller_id": "controller:prospectr",
+  "controller_version": "1.0.0",
+  "operator_kind": "transform",
+  "priority": 20,
+  "supported_phases": ["FIT_CV", "REFIT", "PREDICT"],
+  "input_ports": [
+    {
+      "name": "x",
+      "kind": "data",
+      "representation": "tabular_numeric",
+      "cardinality": "one",
+      "description": "spectroscopy signal matrix (samples x wavelengths)"
+    }
+  ],
+  "output_ports": [
+    {
+      "name": "x_out",
+      "kind": "data",
+      "representation": "tabular_numeric",
+      "cardinality": "one",
+      "description": "transformed signal matrix"
+    }
+  ],
+  "data_requirements": null,
+  "capabilities": [
+    "deterministic",
+    "thread_safe",
+    "process_safe",
+    "shape_changing"
+  ],
+  "operator_selectors": [
+    {
+      "aliases": [
+        "SNV",
+        "binning",
+        "continuumRemoval",
+        "gapDer",
+        "savitzkyGolay",
+        "standardNormalVariate"
+      ]
+    },
+    {
+      "classes": [
+        "prospectr.binning",
+        "prospectr.continuumRemoval",
+        "prospectr.gapDer",
+        "prospectr.savitzkyGolay",
+        "prospectr.standardNormalVariate"
+      ]
+    }
+  ],
+  "fit_scope": "stateless",
+  "rng_policy": "ignores_seed",
+  "artifact_policy": "replay_required"
+}

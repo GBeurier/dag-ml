@@ -3042,6 +3042,151 @@ fn prospectr_process_controller_jsonl_emits_error_frame_and_survives() {
     assert_eq!(ack_frames[0]["status"].as_str(), Some("closed"));
 }
 
+#[test]
+fn prospectr_process_controller_runs_savitzky_golay_one_shot() {
+    let root = repo_root();
+    if !r_has_prospectr(&root) {
+        return;
+    }
+    let node_plan = json!({
+        "node_id": "sg:0",
+        "kind": "transform",
+        "controller_id": "controller:prospectr",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "stateless",
+        "rng_policy": "ignores_seed",
+        "artifact_policy": "replay_required",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {"operator": "savitzkyGolay", "params": {"m": 0, "p": 1, "w": 3}},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let task = json!({
+        "run_id": "run:cli.prospectr-sg",
+        "node_plan": node_plan,
+        "phase": "FIT_CV",
+        "variant_id": "variant:base",
+        "variant": {
+            "variant_id": "variant:base",
+            "choices": {},
+            "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "seed": 7
+        },
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {},
+        "data_views": {},
+        "prediction_inputs": {},
+        "artifact_inputs": {},
+        "seed": 7
+    });
+    let output = run_r_adapter_one_shot(&root, &task);
+    let value: serde_json::Value =
+        serde_json::from_slice(&output).expect("R adapter savitzkyGolay output is JSON");
+    // savitzkyGolay with w=3 drops the column count by (w-1)=2; the
+    // 4-column synthetic feature matrix becomes 4 rows x 2 cols.
+    assert_eq!(
+        value["lineage"]["metrics"]["transform_rows"].as_u64(),
+        Some(4),
+        "savitzkyGolay should preserve the 4-row sample count"
+    );
+    assert_eq!(
+        value["lineage"]["metrics"]["transform_columns"].as_u64(),
+        Some(2),
+        "savitzkyGolay with w=3 should drop the column count from 4 to 2"
+    );
+}
+
+#[test]
+fn prospectr_process_controller_manifest_validates_and_matches_registry() {
+    let root = repo_root();
+    let manifest_path = root.join("examples/controllers/prospectr.controller.json");
+    let manifest_text =
+        std::fs::read_to_string(&manifest_path).expect("prospectr controller manifest is readable");
+    let manifest: dag_ml_core::controller::ControllerManifest =
+        serde_json::from_str(&manifest_text).expect("manifest deserializes as ControllerManifest");
+    manifest
+        .validate()
+        .expect("prospectr controller manifest passes ControllerManifest::validate");
+    assert_eq!(manifest.controller_id.as_str(), "controller:prospectr");
+    assert!(manifest
+        .supported_phases
+        .contains(&dag_ml_core::phase::Phase::FitCv));
+    assert!(manifest
+        .supported_phases
+        .contains(&dag_ml_core::phase::Phase::Refit));
+    assert!(manifest
+        .supported_phases
+        .contains(&dag_ml_core::phase::Phase::Predict));
+
+    let manifest_value: serde_json::Value =
+        serde_json::from_str(&manifest_text).expect("manifest parses as JSON value");
+    let manifest_aliases: std::collections::BTreeSet<String> = manifest_value["operator_selectors"]
+        .as_array()
+        .expect("operator_selectors is an array")
+        .iter()
+        .find_map(|selector| selector.get("aliases"))
+        .and_then(|aliases| aliases.as_array())
+        .expect("operator_selectors contains an aliases selector")
+        .iter()
+        .map(|alias| alias.as_str().expect("alias is string").to_string())
+        .collect();
+
+    // Static manifest validation passes without R. The registry-parity
+    // probe below sources the R controller and therefore requires
+    // R + jsonlite + prospectr.
+    if !r_has_prospectr(&root) {
+        return;
+    }
+    let probe_script = "e <- new.env()\n\
+# Source under a fresh env. The controller's source guard\n\
+# `if (sys.nframe() == 0L) main()` keeps main() from firing because\n\
+# `sys.nframe()` is > 0 inside `source()`. The startup messages from\n\
+# the controller's own `library(jsonlite)` / `library(prospectr)`\n\
+# calls are suppressed so they cannot mix with the JSON output line\n\
+# we parse.\n\
+suppressPackageStartupMessages(\n\
+  source('examples/adapters/prospectr_process_controller.R', local = e)\n\
+)\n\
+cat(jsonlite::toJSON(sort(names(e$OPERATOR_SELECTORS))), '\\n')\n";
+    let suffix = unique_suffix();
+    let probe_path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_prospectr_manifest_probe_{}_{}.R",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::write(&probe_path, probe_script).expect("write parity probe script");
+    let probe = Command::new("Rscript")
+        .current_dir(&root)
+        .arg(&probe_path)
+        .output()
+        .expect("run R parity probe");
+    let _ = std::fs::remove_file(&probe_path);
+    assert!(
+        probe.status.success(),
+        "R parity probe failed: stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&probe.stdout),
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    let stdout_text = String::from_utf8_lossy(&probe.stdout);
+    let first_line = stdout_text
+        .lines()
+        .find(|line| line.trim().starts_with('['))
+        .expect("R probe stdout contains a JSON array line");
+    let registry_aliases: std::collections::BTreeSet<String> =
+        serde_json::from_str(first_line).expect("registry probe line is a JSON list");
+    assert_eq!(
+        manifest_aliases, registry_aliases,
+        "manifest aliases drift from R's OPERATOR_SELECTORS: manifest_only={:?}, registry_only={:?}",
+        manifest_aliases.difference(&registry_aliases).collect::<Vec<_>>(),
+        registry_aliases.difference(&manifest_aliases).collect::<Vec<_>>()
+    );
+}
+
 fn run_r_adapter_one_shot(root: &Path, task: &serde_json::Value) -> Vec<u8> {
     use std::io::Write;
     use std::process::Stdio;
