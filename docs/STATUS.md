@@ -493,9 +493,16 @@ Implemented:
 - `ExecutionPlan::branch_view_for(branch_id)` and
   `branch_view_for_path(branch_path)` helpers walk the campaign's
   `branch_view_plans` and return the matching plan (innermost-wins for
-  paths). The runtime scheduler can call this to populate
-  `DataProviderViewSpec.branch_view` with the closest enclosing branch view
-  when constructing a provider view for an in-branch node;
+  paths);
+- the sequential scheduler now extracts `dsl_branch_view_plan` from each
+  graph node's metadata via `branch_view_from_node_metadata` and forwards
+  it through `data_view_for_scope` / `validation_data_view_for_scope` into
+  `DataProviderViewSpec.branch_view`. Nodes produced inside a separation
+  branch by the DSL compiler carry the matching `BranchViewPlan` in their
+  metadata, so the data provider's `make_view` JSON now receives the
+  branch view at runtime (previously the field was hardcoded `None`,
+  making compiled `branch_view_plans` inert). Malformed metadata is
+  rejected with a clear validation error before any provider call;
 - C ABI row-major F32 tensor exports for the same sample-level and
   target/group aggregated prediction blocks, plus row-major and column-major
   F32 tensor exports for bundle-validated prediction-cache payloads. The

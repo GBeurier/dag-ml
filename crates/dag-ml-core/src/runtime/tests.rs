@@ -4723,6 +4723,102 @@ fn data_provider_view_spec_propagates_branch_view_validation() {
 }
 
 #[test]
+fn scheduler_extracts_branch_view_from_node_metadata() {
+    use crate::data::{BranchViewMode, BranchViewPlan, DataViewSelector};
+    use crate::graph::NodeSpec;
+
+    let plan_with_branch = BranchViewPlan {
+        view_id: "branch_view:nir_only".to_string(),
+        branch_id: "branch:nir".to_string(),
+        mode: BranchViewMode::BySource,
+        selector: DataViewSelector {
+            source_ids: vec!["nir".to_string()],
+            ..Default::default()
+        },
+        allow_overlap: false,
+        metadata: BTreeMap::new(),
+    };
+
+    let node_id = NodeId::new("model:branched").unwrap();
+    let mut node_spec_metadata = BTreeMap::new();
+    node_spec_metadata.insert(
+        "dsl_branch_view_plan".to_string(),
+        serde_json::to_value(&plan_with_branch).unwrap(),
+    );
+    let node_spec = NodeSpec {
+        id: node_id.clone(),
+        kind: crate::graph::NodeKind::Model,
+        operator: None,
+        params: BTreeMap::new(),
+        ports: Default::default(),
+        metadata: node_spec_metadata,
+        seed_label: None,
+    };
+
+    let other_node = NodeSpec {
+        id: NodeId::new("model:plain").unwrap(),
+        kind: crate::graph::NodeKind::Model,
+        operator: None,
+        params: BTreeMap::new(),
+        ports: Default::default(),
+        metadata: BTreeMap::new(),
+        seed_label: None,
+    };
+
+    let graph = crate::graph::GraphSpec {
+        id: "g".to_string(),
+        interface: Default::default(),
+        nodes: vec![node_spec, other_node],
+        edges: Vec::new(),
+        metadata: BTreeMap::new(),
+        search_space_fingerprint: None,
+    };
+    let plan = ExecutionPlan {
+        id: "plan:test".to_string(),
+        graph_plan: crate::plan::GraphPlan {
+            graph,
+            topological_order: vec![
+                node_id.clone(),
+                NodeId::new("model:plain").unwrap(),
+            ],
+            parallel_levels: Vec::new(),
+        },
+        campaign: crate::plan::CampaignSpec {
+            id: "campaign:test".to_string(),
+            root_seed: None,
+            leakage_policy: Default::default(),
+            aggregation_policy: Default::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        },
+        node_plans: BTreeMap::new(),
+        controller_manifests: BTreeMap::new(),
+        variants: Vec::new(),
+        fold_set: None,
+        graph_fingerprint: String::new(),
+        campaign_fingerprint: String::new(),
+        controller_fingerprint: String::new(),
+    };
+
+    let resolved = super::branch_view_from_node_metadata(&plan, &node_id).unwrap();
+    assert_eq!(resolved.as_ref(), Some(&plan_with_branch));
+
+    let plain_resolved =
+        super::branch_view_from_node_metadata(&plan, &NodeId::new("model:plain").unwrap())
+            .unwrap();
+    assert_eq!(plain_resolved, None);
+
+    let missing_resolved =
+        super::branch_view_from_node_metadata(&plan, &NodeId::new("model:unknown").unwrap())
+            .unwrap();
+    assert_eq!(missing_resolved, None);
+}
+
+#[test]
 fn published_data_output_provenance_schema_declares_current_version() {
     let schema: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../docs/contracts/data_output_provenance.schema.json"
