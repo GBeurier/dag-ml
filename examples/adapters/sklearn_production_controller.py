@@ -102,9 +102,82 @@ if len(sys.argv) > 1 and sys.argv[1] == "--describe":
     raise SystemExit(0)
 
 
+import signal
+from typing import Callable, TypeVar
+
 import joblib
 import numpy as np
 from sklearn.pipeline import Pipeline
+
+FIT_TIMEOUT_ENV = "DAG_ML_PROCESS_FIT_TIMEOUT_SECONDS"
+
+T = TypeVar("T")
+
+
+class AdapterTaskError(Exception):
+    """Structured task-level error raised inside `emit_result` paths.
+
+    In JSONL mode the loop catches it and emits an `error` frame,
+    keeping the persistent worker alive for the next task. In one_shot
+    mode `main` catches it and exits non-zero so the existing single
+    invocation contract holds.
+    """
+
+    def __init__(self, code: str, message: str, retryable: bool = False) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+        self.retryable = retryable
+
+
+def fit_timeout_seconds() -> int:
+    raw = os.environ.get(FIT_TIMEOUT_ENV)
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return max(0, value)
+
+
+def with_fit_timeout(callable_: Callable[[], T]) -> T:
+    """Run `callable_` under the controller's fit timeout, if any.
+
+    The timeout is applied via `signal.SIGALRM` (Unix), which is the
+    only portable interrupt for blocking C extensions like sklearn's
+    fit loops. If `FIT_TIMEOUT_ENV` is unset or non-positive the
+    helper is a no-op so smoke campaigns retain their current
+    behavior.
+
+    Timeouts surface as a retryable `fit_timeout` `AdapterTaskError`
+    so the scheduler can retry on a different worker without killing
+    the persistent pool.
+
+    Note: invoking the helper cancels any pre-existing `SIGALRM`
+    pending on the process. Embedding this controller inside a host
+    that schedules its own SIGALRM-based deadlines is not supported.
+    Stand-alone controller processes (the production deployment
+    shape) do not hit this case.
+    """
+    seconds = fit_timeout_seconds()
+    if seconds <= 0 or not hasattr(signal, "SIGALRM"):
+        return callable_()
+
+    def _on_alarm(_signum: int, _frame: Any) -> None:
+        raise AdapterTaskError(
+            "fit_timeout",
+            f"fit/predict exceeded the {seconds}s budget",
+            retryable=True,
+        )
+
+    previous_handler = signal.signal(signal.SIGALRM, _on_alarm)
+    signal.alarm(seconds)
+    try:
+        return callable_()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 # Whitelisted sklearn classes. The selector keys are also used as
@@ -142,9 +215,8 @@ OPERATOR_SELECTORS: dict[str, tuple[str, str]] = {
 }
 
 
-def fail(message: str) -> None:
-    print(message, file=sys.stderr)
-    raise SystemExit(2)
+def fail(message: str, code: str = "adapter_fail", retryable: bool = False) -> None:
+    raise AdapterTaskError(code, message, retryable)
 
 
 def resolve_operator(name: str) -> type:
@@ -160,15 +232,21 @@ def resolve_operator(name: str) -> type:
         module_name, class_name = OPERATOR_SELECTORS[name]
     else:
         if "." not in name:
-            fail(f"unknown operator `{name}`; not in OPERATOR_SELECTORS registry")
+            fail(
+                f"unknown operator `{name}`; not in OPERATOR_SELECTORS registry",
+                code="unknown_operator",
+            )
         module_name, class_name = name.rsplit(".", 1)
         whitelisted = (module_name, class_name) in OPERATOR_SELECTORS.values()
         if not whitelisted:
-            fail(f"operator `{name}` is not whitelisted in OPERATOR_SELECTORS")
+            fail(
+                f"operator `{name}` is not whitelisted in OPERATOR_SELECTORS",
+                code="unknown_operator",
+            )
     module = importlib.import_module(module_name)
     klass = getattr(module, class_name, None)
     if klass is None:
-        fail(f"operator `{name}` not found in module `{module_name}`")
+        fail(f"operator `{name}` not found in module `{module_name}`", code="unknown_operator")
     return klass
 
 
@@ -458,10 +536,12 @@ def model_result(task: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[
         warn_synthetic_fallback(task)
         estimator = make_estimator(task)
         ids = train_sample_ids(task)
-        estimator.fit(features(ids), targets(ids))
+        with_fit_timeout(lambda: estimator.fit(features(ids), targets(ids)))
 
     pred_ids = prediction_sample_ids(task)
-    values = [[float(value)] for value in estimator.predict(features(pred_ids))]
+    values = [
+        [float(value)] for value in with_fit_timeout(lambda: estimator.predict(features(pred_ids)))
+    ]
     predictions = [
         {
             "prediction_id": f"pred:{node_id}:{phase}:{variant_label}:{fold_label}",
@@ -669,18 +749,34 @@ def write_lifecycle_marker(event: str, frame: dict[str, Any]) -> None:
 
 
 def run_jsonl() -> None:
+    """Persistent-worker loop.
+
+    Task-level errors surface as structured `error` frames so the
+    worker survives the bad task and processes the next one. The loop
+    only terminates on `close` (clean shutdown) or on EOF on stdin.
+    """
     for line in sys.stdin:
         if not line.strip():
             continue
         try:
             payload = json.loads(line)
         except json.JSONDecodeError as exc:
-            fail(f"invalid NodeTask JSON line: {exc}")
-        if is_control_frame(payload):
-            if not handle_control_frame(payload):
-                break
+            emit_error("invalid_task_json", f"invalid NodeTask JSON line: {exc}", retryable=False)
             continue
-        emit_result(payload)
+        try:
+            if is_control_frame(payload):
+                if not handle_control_frame(payload):
+                    break
+                continue
+            emit_result(payload)
+        except AdapterTaskError as exc:
+            emit_error(exc.code, exc.message, exc.retryable)
+        except Exception as exc:  # noqa: BLE001 — surface as a structured frame, not a crash
+            emit_error(
+                "adapter_unexpected_error",
+                f"{type(exc).__name__}: {exc}",
+                retryable=False,
+            )
 
 
 def main() -> None:
@@ -693,8 +789,13 @@ def main() -> None:
     try:
         task = json.load(sys.stdin)
     except json.JSONDecodeError as exc:
-        fail(f"invalid NodeTask JSON: {exc}")
-    emit_result(task)
+        print(f"invalid NodeTask JSON: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    try:
+        emit_result(task)
+    except AdapterTaskError as exc:
+        print(f"{exc.code}: {exc.message}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":
