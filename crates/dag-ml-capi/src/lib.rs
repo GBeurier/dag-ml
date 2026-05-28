@@ -292,6 +292,50 @@ impl Default for DagMlF64ColumnarTensor {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlF32Tensor {
+    pub ptr: *mut f32,
+    pub len: usize,
+    pub capacity: usize,
+    pub rows: usize,
+    pub cols: usize,
+}
+
+impl Default for DagMlF32Tensor {
+    fn default() -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            capacity: 0,
+            rows: 0,
+            cols: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlF32ColumnarTensor {
+    pub ptr: *mut f32,
+    pub len: usize,
+    pub capacity: usize,
+    pub rows: usize,
+    pub cols: usize,
+}
+
+impl Default for DagMlF32ColumnarTensor {
+    fn default() -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            capacity: 0,
+            rows: 0,
+            cols: 0,
+        }
+    }
+}
+
+#[repr(C)]
 pub struct ArrowArray {
     pub length: i64,
     pub null_count: i64,
@@ -526,6 +570,34 @@ pub unsafe extern "C" fn dagml_f64_tensor_free(value: DagMlF64Tensor) {
 /// pointer, or freeing the same tensor twice, is undefined behavior.
 #[no_mangle]
 pub unsafe extern "C" fn dagml_f64_columnar_tensor_free(value: DagMlF64ColumnarTensor) {
+    if !value.ptr.is_null() {
+        drop(Vec::from_raw_parts(value.ptr, value.len, value.capacity));
+    }
+}
+
+/// Releases an F32 tensor allocated by DAG-ML.
+///
+/// # Safety
+///
+/// `value.ptr` must either be null or a pointer previously returned by a
+/// DAG-ML C ABI function in a `DagMlF32Tensor`. Passing any other pointer, or
+/// freeing the same tensor twice, is undefined behavior.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_f32_tensor_free(value: DagMlF32Tensor) {
+    if !value.ptr.is_null() {
+        drop(Vec::from_raw_parts(value.ptr, value.len, value.capacity));
+    }
+}
+
+/// Releases a column-major F32 tensor allocated by DAG-ML.
+///
+/// # Safety
+///
+/// `value.ptr` must either be null or a pointer previously returned by a
+/// DAG-ML C ABI function in a `DagMlF32ColumnarTensor`. Passing any other
+/// pointer, or freeing the same tensor twice, is undefined behavior.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_f32_columnar_tensor_free(value: DagMlF32ColumnarTensor) {
     if !value.ptr.is_null() {
         drop(Vec::from_raw_parts(value.ptr, value.len, value.capacity));
     }
@@ -1793,6 +1865,121 @@ pub unsafe extern "C" fn dagml_aggregated_prediction_block_f64_tensor_json(
     )
 }
 
+/// Converts a sample-level prediction block JSON into an owned row-major F32
+/// tensor.
+///
+/// The kernel still validates and flattens in f64 to preserve canonical
+/// numeric semantics; each value is cast to f32 at the ABI boundary and the
+/// call returns `VALIDATION_ERROR` if any value does not round-trip into a
+/// finite f32. The returned data must be released with
+/// `dagml_f32_tensor_free`.
+///
+/// # Safety
+///
+/// `predictions_ptr` must point to `predictions_len` readable bytes.
+/// `out_tensor` must point to writable memory for one `DagMlF32Tensor`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_prediction_block_f32_tensor_json(
+    predictions_ptr: *const u8,
+    predictions_len: usize,
+    out_tensor: *mut DagMlF32Tensor,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_f32_tensor(out_tensor);
+    let predictions = match parse_json_ptr::<PredictionBlock>(
+        predictions_ptr,
+        predictions_len,
+        error_out,
+        "sample prediction block",
+    ) {
+        Ok(predictions) => predictions,
+        Err(status) => return status,
+    };
+    let width = match predictions.validate_shape() {
+        Ok(width) => width,
+        Err(error) => return validation_error(error_out, error),
+    };
+    let values = match flatten_f64_rows(
+        "sample prediction block",
+        predictions.producer_node.as_str(),
+        &predictions.values,
+        width,
+    )
+    .and_then(|values| {
+        cast_f64_to_f32(
+            "sample prediction block",
+            predictions.producer_node.as_str(),
+            values,
+        )
+    }) {
+        Ok(values) => values,
+        Err(error) => return validation_error(error_out, error),
+    };
+    write_f32_tensor(
+        out_tensor,
+        error_out,
+        values,
+        predictions.sample_ids.len(),
+        width,
+    )
+}
+
+/// Converts an aggregated target/group prediction block JSON into an owned
+/// row-major F32 tensor with the same cast-and-reject contract as
+/// `dagml_prediction_block_f32_tensor_json`.
+///
+/// # Safety
+///
+/// `predictions_ptr` must point to `predictions_len` readable bytes.
+/// `out_tensor` must point to writable memory for one `DagMlF32Tensor`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_aggregated_prediction_block_f32_tensor_json(
+    predictions_ptr: *const u8,
+    predictions_len: usize,
+    out_tensor: *mut DagMlF32Tensor,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_f32_tensor(out_tensor);
+    let predictions = match parse_json_ptr::<AggregatedPredictionBlock>(
+        predictions_ptr,
+        predictions_len,
+        error_out,
+        "aggregated prediction block",
+    ) {
+        Ok(predictions) => predictions,
+        Err(status) => return status,
+    };
+    let width = match predictions.validate_shape() {
+        Ok(width) => width,
+        Err(error) => return validation_error(error_out, error),
+    };
+    let values = match flatten_f64_rows(
+        "aggregated prediction block",
+        predictions.producer_node.as_str(),
+        &predictions.values,
+        width,
+    )
+    .and_then(|values| {
+        cast_f64_to_f32(
+            "aggregated prediction block",
+            predictions.producer_node.as_str(),
+            values,
+        )
+    }) {
+        Ok(values) => values,
+        Err(error) => return validation_error(error_out, error),
+    };
+    write_f32_tensor(
+        out_tensor,
+        error_out,
+        values,
+        predictions.unit_ids.len(),
+        width,
+    )
+}
+
 /// Converts a `RegressionMetricReport` to a selection `CandidateScore`.
 ///
 /// # Safety
@@ -2098,6 +2285,151 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_f64_columnar_tensor_json
     };
     let status =
         write_f64_columnar_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
+    if status != DagMlStatusCode::OK {
+        return status;
+    }
+    write_owned_vec(out_metadata_json, metadata_json);
+    DagMlStatusCode::OK
+}
+
+/// Exports one validated prediction-cache payload requirement as an owned
+/// row-major F32 tensor plus JSON metadata. Mirrors the f64 row-major path
+/// with cast-to-f32 at the ABI boundary; the call returns `VALIDATION_ERROR`
+/// if any value does not round-trip into a finite f32. Returned values must
+/// be released with `dagml_f32_tensor_free` and `dagml_owned_bytes_free`.
+///
+/// # Safety
+///
+/// Same pointer ownership rules as `dagml_graph_validate_json`.
+/// `requirement_key` must point to UTF-8 bytes. `out_tensor` and
+/// `out_metadata_json` must point to writable output structs.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_prediction_cache_payload_f32_tensor_json(
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+    requirement_key: DagMlBytesView,
+    out_tensor: *mut DagMlF32Tensor,
+    out_metadata_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_f32_tensor(out_tensor);
+    clear_owned_bytes(out_metadata_json);
+    if out_tensor.is_null() {
+        set_error(error_out, "output F32 tensor pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    if out_metadata_json.is_null() {
+        set_error(error_out, "output metadata JSON pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
+        bundle_ptr,
+        bundle_len,
+        payload_ptr,
+        payload_len,
+        requirement_key,
+        error_out,
+    ) {
+        Ok(selection) => selection,
+        Err(status) => return status,
+    };
+    let payload = &payload_set.caches[payload_index];
+    let (values, metadata) =
+        match prediction_cache_payload_to_f64_tensor(payload).and_then(|(values, metadata)| {
+            let cache_id = metadata.cache_id.clone();
+            cast_f64_to_f32("prediction cache payload", cache_id.as_str(), values)
+                .map(|values| (values, metadata))
+        }) {
+            Ok(output) => output,
+            Err(error) => return validation_error(error_out, error),
+        };
+    let metadata_json = match serde_json::to_vec(&metadata) {
+        Ok(metadata_json) => metadata_json,
+        Err(error) => {
+            set_error(
+                error_out,
+                format!("failed to serialize output metadata JSON: {error}"),
+            );
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+    };
+    let status = write_f32_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
+    if status != DagMlStatusCode::OK {
+        return status;
+    }
+    write_owned_vec(out_metadata_json, metadata_json);
+    DagMlStatusCode::OK
+}
+
+/// Exports one validated prediction-cache payload requirement as an owned
+/// column-major F32 tensor plus JSON metadata. Mirrors the f64 column-major
+/// path with cast-to-f32 at the ABI boundary. Returned values must be
+/// released with `dagml_f32_columnar_tensor_free` and
+/// `dagml_owned_bytes_free`.
+///
+/// # Safety
+///
+/// Same pointer ownership rules as `dagml_graph_validate_json`.
+/// `requirement_key` must point to UTF-8 bytes. `out_tensor` and
+/// `out_metadata_json` must point to writable output structs.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_prediction_cache_payload_f32_columnar_tensor_json(
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+    requirement_key: DagMlBytesView,
+    out_tensor: *mut DagMlF32ColumnarTensor,
+    out_metadata_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_f32_columnar_tensor(out_tensor);
+    clear_owned_bytes(out_metadata_json);
+    if out_tensor.is_null() {
+        set_error(error_out, "output columnar F32 tensor pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    if out_metadata_json.is_null() {
+        set_error(error_out, "output metadata JSON pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
+        bundle_ptr,
+        bundle_len,
+        payload_ptr,
+        payload_len,
+        requirement_key,
+        error_out,
+    ) {
+        Ok(selection) => selection,
+        Err(status) => return status,
+    };
+    let payload = &payload_set.caches[payload_index];
+    let (values, metadata) = match prediction_cache_payload_to_f64_columnar_tensor(payload)
+        .and_then(|(values, metadata)| {
+            let cache_id = metadata.cache_id.clone();
+            cast_f64_to_f32("prediction cache payload", cache_id.as_str(), values)
+                .map(|values| (values, metadata))
+        }) {
+        Ok(output) => output,
+        Err(error) => return validation_error(error_out, error),
+    };
+    let metadata_json = match serde_json::to_vec(&metadata) {
+        Ok(metadata_json) => metadata_json,
+        Err(error) => {
+            set_error(
+                error_out,
+                format!("failed to serialize output metadata JSON: {error}"),
+            );
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+    };
+    let status =
+        write_f32_columnar_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
     if status != DagMlStatusCode::OK {
         return status;
     }
@@ -2635,6 +2967,18 @@ unsafe fn clear_f64_columnar_tensor(out_tensor: *mut DagMlF64ColumnarTensor) {
     }
 }
 
+unsafe fn clear_f32_tensor(out_tensor: *mut DagMlF32Tensor) {
+    if !out_tensor.is_null() {
+        *out_tensor = DagMlF32Tensor::default();
+    }
+}
+
+unsafe fn clear_f32_columnar_tensor(out_tensor: *mut DagMlF32ColumnarTensor) {
+    if !out_tensor.is_null() {
+        *out_tensor = DagMlF32ColumnarTensor::default();
+    }
+}
+
 unsafe fn set_error(error_out: *mut DagMlString, message: impl Into<String>) {
     if error_out.is_null() {
         return;
@@ -2926,6 +3270,116 @@ fn flatten_f64_rows(
         }
     }
     Ok(values)
+}
+
+unsafe fn write_f32_tensor(
+    out_tensor: *mut DagMlF32Tensor,
+    error_out: *mut DagMlString,
+    mut values: Vec<f32>,
+    rows: usize,
+    cols: usize,
+) -> DagMlStatusCode {
+    if out_tensor.is_null() {
+        set_error(error_out, "output F32 tensor pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    let expected_len = match rows.checked_mul(cols) {
+        Some(expected_len) => expected_len,
+        None => {
+            set_error(error_out, "F32 tensor shape overflows usize");
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+    };
+    if values.len() != expected_len {
+        set_error(
+            error_out,
+            format!(
+                "F32 tensor has {} value(s), expected {} for shape {}x{}",
+                values.len(),
+                expected_len,
+                rows,
+                cols
+            ),
+        );
+        return DagMlStatusCode::VALIDATION_ERROR;
+    }
+    let tensor = DagMlF32Tensor {
+        ptr: values.as_mut_ptr(),
+        len: values.len(),
+        capacity: values.capacity(),
+        rows,
+        cols,
+    };
+    std::mem::forget(values);
+    *out_tensor = tensor;
+    DagMlStatusCode::OK
+}
+
+unsafe fn write_f32_columnar_tensor(
+    out_tensor: *mut DagMlF32ColumnarTensor,
+    error_out: *mut DagMlString,
+    mut values: Vec<f32>,
+    rows: usize,
+    cols: usize,
+) -> DagMlStatusCode {
+    if out_tensor.is_null() {
+        set_error(error_out, "output columnar F32 tensor pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    let expected_len = match rows.checked_mul(cols) {
+        Some(expected_len) => expected_len,
+        None => {
+            set_error(error_out, "columnar F32 tensor shape overflows usize");
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+    };
+    if values.len() != expected_len {
+        set_error(
+            error_out,
+            format!(
+                "columnar F32 tensor has {} value(s), expected {} for shape {}x{}",
+                values.len(),
+                expected_len,
+                rows,
+                cols
+            ),
+        );
+        return DagMlStatusCode::VALIDATION_ERROR;
+    }
+    let tensor = DagMlF32ColumnarTensor {
+        ptr: values.as_mut_ptr(),
+        len: values.len(),
+        capacity: values.capacity(),
+        rows,
+        cols,
+    };
+    std::mem::forget(values);
+    *out_tensor = tensor;
+    DagMlStatusCode::OK
+}
+
+/// Cast already-validated f64 prediction values to f32 with finite-cast
+/// rejection. Mirrors the dag-ml-data tensor-to-f32 policy: subnormal results
+/// are passed through (consumers on hardware with flush-to-zero must handle
+/// that themselves), but overflow to infinity is rejected so downstream
+/// consumers cannot silently process garbage.
+fn cast_f64_to_f32(
+    label: &str,
+    producer_node: &str,
+    values: Vec<f64>,
+) -> dag_ml_core::Result<Vec<f32>> {
+    let mut casted = Vec::with_capacity(values.len());
+    for (idx, value) in values.iter().enumerate() {
+        let cast = *value as f32;
+        if cast.is_finite() {
+            casted.push(cast);
+        } else {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "{label} for producer `{producer_node}` value at index {idx} ({value}) does not round-trip into a finite f32"
+            )));
+        }
+    }
+    Ok(casted)
 }
 
 #[derive(Serialize)]
@@ -6728,6 +7182,110 @@ mod tests {
     }
 
     #[test]
+    fn exports_prediction_block_f32_tensor_over_abi() {
+        let predictions = br#"{
+  "prediction_id": "pred:sample",
+  "producer_node": "model:base",
+  "partition": "validation",
+  "fold_id": "fold:0",
+  "sample_ids": ["sample:1", "sample:2"],
+  "values": [[1.0, 2.5], [3.0, 4.5]],
+  "target_names": ["y1", "y2"]
+}"#;
+        let mut out = DagMlF32Tensor::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_prediction_block_f32_tensor_json(
+                predictions.as_ptr(),
+                predictions.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        assert_eq!(out.rows, 2);
+        assert_eq!(out.cols, 2);
+        assert_eq!(out.len, 4);
+        let values = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        assert_eq!(values, &[1.0_f32, 2.5, 3.0, 4.5]);
+        unsafe { dagml_f32_tensor_free(out) };
+    }
+
+    #[test]
+    fn exports_aggregated_prediction_block_f32_tensor_over_abi() {
+        let predictions = br#"{
+  "prediction_id": "pred:target",
+  "producer_node": "model:base",
+  "partition": "validation",
+  "fold_id": "fold:0",
+  "level": "target",
+  "unit_ids": [
+    {"level": "target", "id": "target:1"},
+    {"level": "target", "id": "target:2"}
+  ],
+  "values": [[9.0], [11.0]],
+  "target_names": ["y"]
+}"#;
+        let mut out = DagMlF32Tensor::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_aggregated_prediction_block_f32_tensor_json(
+                predictions.as_ptr(),
+                predictions.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        assert_eq!(out.rows, 2);
+        assert_eq!(out.cols, 1);
+        assert_eq!(out.len, 2);
+        let values = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        assert_eq!(values, &[9.0_f32, 11.0]);
+        unsafe { dagml_f32_tensor_free(out) };
+    }
+
+    #[test]
+    fn rejects_prediction_block_overflowing_f32_over_abi() {
+        let predictions = br#"{
+  "prediction_id": "pred:sample",
+  "producer_node": "model:base",
+  "partition": "validation",
+  "sample_ids": ["sample:1"],
+  "values": [[1.0e40]],
+  "target_names": ["y"]
+}"#;
+        let mut out = DagMlF32Tensor::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_prediction_block_f32_tensor_json(
+                predictions.as_ptr(),
+                predictions.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(out.ptr.is_null());
+        let message = error_message(&error);
+        assert!(
+            message.contains("does not round-trip into a finite f32"),
+            "unexpected error: {message}"
+        );
+        unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
     fn rejects_null_f64_tensor_output_pointer_over_abi() {
         let predictions = br#"{
   "prediction_id": "pred:sample",
@@ -6750,6 +7308,32 @@ mod tests {
 
         assert_eq!(status, DagMlStatusCode::INVALID_ARGUMENT);
         assert_eq!(error_message(&error), "output F64 tensor pointer is null");
+        unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn rejects_null_f32_tensor_output_pointer_over_abi() {
+        let predictions = br#"{
+  "prediction_id": "pred:sample",
+  "producer_node": "model:base",
+  "partition": "validation",
+  "sample_ids": ["sample:1"],
+  "values": [[1.0]],
+  "target_names": ["y"]
+}"#;
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_prediction_block_f32_tensor_json(
+                predictions.as_ptr(),
+                predictions.len(),
+                std::ptr::null_mut(),
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::INVALID_ARGUMENT);
+        assert_eq!(error_message(&error), "output F32 tensor pointer is null");
         unsafe { dagml_string_free(error) };
     }
 
