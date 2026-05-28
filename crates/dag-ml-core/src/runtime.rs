@@ -2778,6 +2778,8 @@ pub struct DataProviderViewSpec {
     pub columns: Option<Vec<String>>,
     pub include_augmented: bool,
     pub include_excluded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_view: Option<crate::data::BranchViewPlan>,
     #[serde(default)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
@@ -2826,6 +2828,9 @@ impl DataProviderViewSpec {
                     "data provider view extra contains an empty key".to_string(),
                 ));
             }
+        }
+        if let Some(branch_view) = &self.branch_view {
+            branch_view.validate()?;
         }
         self.output_provenance()?;
         Ok(())
@@ -5889,6 +5894,7 @@ fn data_view_for_partition(
         columns: None,
         include_augmented,
         include_excluded: binding.view_policy.include_excluded,
+        branch_view: None,
         extra,
     };
     view.validate()?;
