@@ -16,6 +16,11 @@
       "kind": "json_schema",
       "schema_version": 1,
       "normalized_sha256": "2a6780491def139be89428b696051bfd56dab5d4225a3b3092a50624fc27618b"
+    },
+    "fitted_adapter_ref.v1": {
+      "kind": "json_schema",
+      "schema_version": 1,
+      "normalized_sha256": "43001ff6f7a286924ec01ca85b95233c7a50fe9cc8595d67da1eb2a35704dddf"
     }
   },
   "fixtures": {
