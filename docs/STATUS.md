@@ -484,6 +484,14 @@ Implemented:
 - C ABI row-major and column-major F64 tensor exports for bundle-validated
   prediction-cache payload requirements, returning values as contiguous tensors
   and versioned traceability metadata as owned JSON with published JSON Schemas;
+- `DataProviderViewSpec` now carries an optional `branch_view:
+  Option<BranchViewPlan>` field plus validation, so the runtime can forward
+  compiled `branch_view_plans` straight through `make_view` to the data
+  provider without going through `extra` JSON. The in-memory `dag-ml-data`
+  provider's `DataView` already accepts a matching `CoordinatorBranchView`
+  via the same JSON wire shape; a follow-up will populate the field from
+  `ExecutionPlan.branch_view_plans` based on the active branch path. The
+  field defaults to `None` so existing callers stay unchanged;
 - C ABI row-major F32 tensor exports for the same sample-level and
   target/group aggregated prediction blocks, plus row-major and column-major
   F32 tensor exports for bundle-validated prediction-cache payloads. The

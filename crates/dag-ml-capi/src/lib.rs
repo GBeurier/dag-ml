@@ -5470,6 +5470,7 @@ mod tests {
                         columns: Some(vec!["abs_1000".to_string()]),
                         include_augmented: true,
                         include_excluded: false,
+                        branch_view: None,
                         extra: BTreeMap::new(),
                     },
                 })

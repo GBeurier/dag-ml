@@ -4618,6 +4618,7 @@ fn data_provider_view_validates_typed_output_provenance() {
         columns: None,
         include_augmented: true,
         include_excluded: false,
+        branch_view: None,
         extra: BTreeMap::from([(
             DATA_OUTPUT_PROVENANCE_KEY.to_string(),
             serde_json::to_value(&provenance).unwrap(),
@@ -4673,6 +4674,51 @@ fn data_provider_view_validates_typed_output_provenance() {
     assert!(
         error.contains("unsupported schema_version"),
         "unexpected provenance schema-version error: {error}"
+    );
+}
+
+#[test]
+fn data_provider_view_spec_propagates_branch_view_validation() {
+    use crate::data::{BranchViewMode, BranchViewPlan, DataViewSelector};
+
+    let view = DataProviderViewSpec {
+        sample_ids: None,
+        partition: DataRequestPartition::FullTrain,
+        fold_id: None,
+        source_ids: None,
+        columns: None,
+        include_augmented: true,
+        include_excluded: false,
+        branch_view: Some(BranchViewPlan {
+            view_id: "branch_view:nir_only".to_string(),
+            branch_id: "branch:nir".to_string(),
+            mode: BranchViewMode::BySource,
+            selector: DataViewSelector {
+                source_ids: vec!["nir".to_string()],
+                ..Default::default()
+            },
+            allow_overlap: false,
+            metadata: BTreeMap::new(),
+        }),
+        extra: BTreeMap::new(),
+    };
+    view.validate().unwrap();
+
+    let invalid = DataProviderViewSpec {
+        branch_view: Some(BranchViewPlan {
+            view_id: "branch_view:bad".to_string(),
+            branch_id: "branch:bad".to_string(),
+            mode: BranchViewMode::BySource,
+            selector: DataViewSelector::default(),
+            allow_overlap: false,
+            metadata: BTreeMap::new(),
+        }),
+        ..view
+    };
+    let error = invalid.validate().unwrap_err().to_string();
+    assert!(
+        error.contains("selector must constrain source_ids, metadata, tags or filter"),
+        "unexpected: {error}"
     );
 }
 
@@ -5418,6 +5464,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
                 columns: None,
                 include_augmented: false,
                 include_excluded: false,
+                branch_view: None,
                 extra: BTreeMap::new(),
             },
         )]),
