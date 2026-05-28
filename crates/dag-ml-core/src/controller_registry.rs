@@ -19,7 +19,7 @@ const YAML_DOTTED_SUFFIX: &str = ".controller.yaml";
 /// Parse a single YAML manifest from raw text. The same `ControllerManifest`
 /// deserializer is reused so YAML and JSON cannot drift on field shape.
 pub fn parse_yaml_manifest(text: &str) -> Result<ControllerManifest> {
-    let manifest: ControllerManifest = serde_yaml::from_str(text).map_err(|error| {
+    let manifest: ControllerManifest = serde_yml::from_str(text).map_err(|error| {
         DagMlError::ControllerValidation(format!("controller manifest YAML parse failed: {error}"))
     })?;
     manifest.validate()?;
@@ -66,11 +66,22 @@ pub fn load_yaml_manifests_from_dir(dir: impl AsRef<Path>) -> Result<Vec<Control
         .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
+            // Lowercase comparison so case-preserving filesystems (HFS+,
+            // APFS case-insensitive mode, NTFS) still recognise files
+            // like `Sklearn.Controller.YAML` rather than silently
+            // skipping them. The on-disk display is preserved; only the
+            // matcher is normalised.
             path.is_file()
-                && path.extension().and_then(|ext| ext.to_str()) == Some(YAML_EXTENSION)
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                    == Some(YAML_EXTENSION)
                 && path
                     .file_name()
                     .and_then(|name| name.to_str())
+                    .map(str::to_ascii_lowercase)
                     .is_some_and(|name| name.ends_with(YAML_DOTTED_SUFFIX))
         })
         .collect();

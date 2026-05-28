@@ -4563,7 +4563,21 @@ fn yaml_and_json_controller_manifests_match() {
                 .unwrap_or_else(|error| panic!("YAML parse {stem}: {error}"));
         assert_eq!(
             json_manifest, yaml_manifest,
-            "JSON and YAML controller manifests diverged for `{stem}`"
+            "JSON and YAML controller manifests diverged on the Rust struct for `{stem}`"
+        );
+
+        // Stronger contract: re-serializing each path back to canonical
+        // JSON must produce byte-identical output. This catches YAML-
+        // only artefacts (anchors, explicit tags, merge keys) that
+        // would deserialize to the same struct but re-emit different
+        // canonical JSON than the wire-format JSON manifest.
+        let json_from_json = serde_json::to_string_pretty(&json_manifest)
+            .expect("re-serialize JSON manifest to canonical JSON");
+        let json_from_yaml = serde_json::to_string_pretty(&yaml_manifest)
+            .expect("re-serialize YAML manifest to canonical JSON");
+        assert_eq!(
+            json_from_json, json_from_yaml,
+            "YAML manifest does not round-trip to the same canonical JSON as the JSON manifest for `{stem}`"
         );
     }
 }

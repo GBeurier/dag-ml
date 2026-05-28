@@ -796,12 +796,16 @@ fn main() -> Result<()> {
                 manifests.len()
             );
             for manifest in &manifests {
+                let kind = serde_json::to_string(&manifest.operator_kind)
+                    .unwrap_or_else(|_| String::from("\"<unprintable>\""));
+                let fit_scope = serde_json::to_string(&manifest.fit_scope)
+                    .unwrap_or_else(|_| String::from("\"<unprintable>\""));
                 println!(
-                    "  controller_id={} version={} kind={:?} fit_scope={:?}",
+                    "  controller_id={} version={} kind={} fit_scope={}",
                     manifest.controller_id.as_str(),
                     manifest.controller_version,
-                    manifest.operator_kind,
-                    manifest.fit_scope
+                    kind,
+                    fit_scope
                 );
             }
         }
