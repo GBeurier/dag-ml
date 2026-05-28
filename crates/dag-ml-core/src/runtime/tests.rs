@@ -4777,10 +4777,7 @@ fn scheduler_extracts_branch_view_from_node_metadata() {
         id: "plan:test".to_string(),
         graph_plan: crate::plan::GraphPlan {
             graph,
-            topological_order: vec![
-                node_id.clone(),
-                NodeId::new("model:plain").unwrap(),
-            ],
+            topological_order: vec![node_id.clone(), NodeId::new("model:plain").unwrap()],
             parallel_levels: Vec::new(),
         },
         campaign: crate::plan::CampaignSpec {
@@ -4808,8 +4805,7 @@ fn scheduler_extracts_branch_view_from_node_metadata() {
     assert_eq!(resolved.as_ref(), Some(&plan_with_branch));
 
     let plain_resolved =
-        super::branch_view_from_node_metadata(&plan, &NodeId::new("model:plain").unwrap())
-            .unwrap();
+        super::branch_view_from_node_metadata(&plan, &NodeId::new("model:plain").unwrap()).unwrap();
     assert_eq!(plain_resolved, None);
 
     let missing_resolved =
