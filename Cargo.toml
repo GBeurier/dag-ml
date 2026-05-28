@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/dag-ml-core",
     "crates/dag-ml",
+    "crates/dag-ml-arrow",
     "crates/dag-ml-capi",
     "crates/dag-ml-cli",
 ]
