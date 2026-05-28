@@ -32,6 +32,27 @@ out that peer explicitly. When development moves into a monorepo, this file
 should become a single generated or shared contract artifact used by both
 crates.
 
+## Coordinator Branch View v1
+
+Schema: `coordinator_branch_view.schema.json`
+
+Mirrors `dag-ml-data`'s `coordinator_branch_view.v1` byte-for-byte except for
+the `$id` (each repo declares its own domain). The normalized SHA-256 (with
+`$id` stripped) is pinned identically in both repos' `conformance_pack.v1.json`
+so the wire contract cannot drift. `BranchViewPlan` records in
+`dag-ml`/`crates/dag-ml-core/src/data.rs` accept the same shape and the
+in-memory `dag-ml-data` provider executes `by_source` natively.
+
+## Fitted Adapter Ref v1
+
+Schema: `fitted_adapter_ref.schema.json`
+
+Mirrors `dag-ml-data`'s `fitted_adapter_ref.v1` byte-for-byte except for the
+`$id`. Same normalized-SHA-256 enforcement in both `conformance_pack.v1.json`
+files. The producer type is `FittedAdapterRef` in `dag-ml-data`; `dag-ml`
+relies on this schema to validate fitted-adapter records that flow through
+the data layer at refit time.
+
 ## Feature Fusion Selector v1
 
 Schema: `feature_fusion_selector.schema.json`
