@@ -7596,6 +7596,87 @@ mod tests {
     }
 
     #[test]
+    fn exports_prediction_cache_payload_f32_tensor_over_abi() {
+        let bundle = include_bytes!(
+            "../../../examples/generated/execution_bundle_branch_merge_cv_refit.json"
+        );
+        let payload = include_bytes!(
+            "../../../examples/generated/prediction_cache_branch_merge_cv_refit.json"
+        );
+        let requirement_key =
+            b"branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof";
+        let mut tensor = DagMlF32Tensor::default();
+        let mut metadata_out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_prediction_cache_payload_f32_tensor_json(
+                bundle.as_ptr(),
+                bundle.len(),
+                payload.as_ptr(),
+                payload.len(),
+                bytes_view(requirement_key),
+                &mut tensor,
+                &mut metadata_out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!tensor.ptr.is_null());
+        assert_eq!(tensor.rows, 4);
+        assert_eq!(tensor.cols, 1);
+        assert_eq!(tensor.len, 4);
+        let values = unsafe { slice::from_raw_parts(tensor.ptr, tensor.len) };
+        assert_eq!(values, &[9931.0_f32, 9931.0, 9932.0, 9932.0]);
+        assert!(!metadata_out.ptr.is_null());
+
+        unsafe { dagml_f32_tensor_free(tensor) };
+        unsafe { dagml_owned_bytes_free(metadata_out) };
+    }
+
+    #[test]
+    fn exports_prediction_cache_payload_f32_columnar_tensor_over_abi() {
+        let bundle = include_bytes!(
+            "../../../examples/generated/execution_bundle_branch_merge_cv_refit.json"
+        );
+        let payload = include_bytes!(
+            "../../../examples/generated/prediction_cache_branch_merge_cv_refit.json"
+        );
+        let requirement_key =
+            b"branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof";
+        let mut tensor = DagMlF32ColumnarTensor::default();
+        let mut metadata_out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_prediction_cache_payload_f32_columnar_tensor_json(
+                bundle.as_ptr(),
+                bundle.len(),
+                payload.as_ptr(),
+                payload.len(),
+                bytes_view(requirement_key),
+                &mut tensor,
+                &mut metadata_out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!tensor.ptr.is_null());
+        assert_eq!(tensor.rows, 4);
+        assert_eq!(tensor.cols, 1);
+        assert_eq!(tensor.len, 4);
+        let values = unsafe { slice::from_raw_parts(tensor.ptr, tensor.len) };
+        assert_eq!(values, &[9931.0_f32, 9931.0, 9932.0, 9932.0]);
+
+        unsafe { dagml_f32_columnar_tensor_free(tensor) };
+        unsafe { dagml_owned_bytes_free(metadata_out) };
+    }
+
+    #[test]
     fn prediction_cache_columnar_tensor_exports_multi_target_columns() {
         let requirement = BundlePredictionRequirement {
             producer_node: NodeId::new("model:multi").unwrap(),
