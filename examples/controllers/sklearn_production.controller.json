@@ -1,0 +1,104 @@
+{
+  "controller_id": "controller:sklearn.production",
+  "controller_version": "1.0.0",
+  "operator_kind": "model",
+  "priority": 20,
+  "supported_phases": ["FIT_CV", "REFIT", "PREDICT"],
+  "input_ports": [
+    {
+      "name": "x",
+      "kind": "data",
+      "representation": "tabular_numeric",
+      "cardinality": "one",
+      "description": "feature matrix"
+    }
+  ],
+  "output_ports": [
+    {
+      "name": "y_hat",
+      "kind": "prediction",
+      "representation": null,
+      "cardinality": "one",
+      "description": "model predictions"
+    },
+    {
+      "name": "model",
+      "kind": "artifact",
+      "representation": null,
+      "cardinality": "one",
+      "description": "joblib-serialized fitted sklearn.Pipeline"
+    }
+  ],
+  "data_requirements": null,
+  "capabilities": [
+    "deterministic",
+    "thread_safe",
+    "process_safe",
+    "uses_core_rng",
+    "emits_predictions",
+    "consumes_oof_predictions",
+    "emits_artifacts",
+    "stateful"
+  ],
+  "operator_selectors": [
+    {
+      "aliases": [
+        "ElasticNet",
+        "ExtraTreesClassifier",
+        "ExtraTreesRegressor",
+        "FastICA",
+        "GradientBoostingClassifier",
+        "GradientBoostingRegressor",
+        "KernelPCA",
+        "Lasso",
+        "LinearRegression",
+        "LogisticRegression",
+        "MaxAbsScaler",
+        "MinMaxScaler",
+        "Normalizer",
+        "PCA",
+        "PowerTransformer",
+        "QuantileTransformer",
+        "RandomForestClassifier",
+        "RandomForestRegressor",
+        "Ridge",
+        "RobustScaler",
+        "SGDClassifier",
+        "SGDRegressor",
+        "StandardScaler",
+        "TruncatedSVD"
+      ]
+    },
+    {
+      "classes": [
+        "sklearn.decomposition.FastICA",
+        "sklearn.decomposition.KernelPCA",
+        "sklearn.decomposition.PCA",
+        "sklearn.decomposition.TruncatedSVD",
+        "sklearn.ensemble.ExtraTreesClassifier",
+        "sklearn.ensemble.ExtraTreesRegressor",
+        "sklearn.ensemble.GradientBoostingClassifier",
+        "sklearn.ensemble.GradientBoostingRegressor",
+        "sklearn.ensemble.RandomForestClassifier",
+        "sklearn.ensemble.RandomForestRegressor",
+        "sklearn.linear_model.ElasticNet",
+        "sklearn.linear_model.Lasso",
+        "sklearn.linear_model.LinearRegression",
+        "sklearn.linear_model.LogisticRegression",
+        "sklearn.linear_model.Ridge",
+        "sklearn.linear_model.SGDClassifier",
+        "sklearn.linear_model.SGDRegressor",
+        "sklearn.preprocessing.MaxAbsScaler",
+        "sklearn.preprocessing.MinMaxScaler",
+        "sklearn.preprocessing.Normalizer",
+        "sklearn.preprocessing.PowerTransformer",
+        "sklearn.preprocessing.QuantileTransformer",
+        "sklearn.preprocessing.RobustScaler",
+        "sklearn.preprocessing.StandardScaler"
+      ]
+    }
+  ],
+  "fit_scope": "fold_train",
+  "rng_policy": "uses_core_seed",
+  "artifact_policy": "serializable"
+}
