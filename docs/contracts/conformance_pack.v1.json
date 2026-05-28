@@ -11,6 +11,11 @@
       "kind": "json_schema",
       "schema_version": 1,
       "normalized_sha256": "45ae4c55911873893d32630495d8a9546c3d51f63cccad864ff9aafb9e3492b6"
+    },
+    "coordinator_branch_view.v1": {
+      "kind": "json_schema",
+      "schema_version": 1,
+      "normalized_sha256": "2a6780491def139be89428b696051bfd56dab5d4225a3b3092a50624fc27618b"
     }
   },
   "fixtures": {
