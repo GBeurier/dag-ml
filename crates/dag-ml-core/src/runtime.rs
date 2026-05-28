@@ -4608,7 +4608,13 @@ fn collect_input_handles(
                 fold_id: scope.fold_id.clone(),
                 binding: binding.clone(),
             })?;
-            let view = data_view_for_scope(binding, plan.fold_set.as_ref(), scope)?;
+            let branch_view_for_node = branch_view_from_node_metadata(plan, &node_plan.node_id)?;
+            let view = data_view_for_scope(
+                binding,
+                plan.fold_set.as_ref(),
+                scope,
+                branch_view_for_node.as_ref(),
+            )?;
             let key = data_view_key(&binding.input_name);
             let view_handle = make_data_view_handle(
                 data_provider,
@@ -4632,9 +4638,12 @@ fn collect_input_handles(
                 )));
             }
 
-            if let Some(validation_view) =
-                validation_data_view_for_scope(binding, plan.fold_set.as_ref(), scope)?
-            {
+            if let Some(validation_view) = validation_data_view_for_scope(
+                binding,
+                plan.fold_set.as_ref(),
+                scope,
+                branch_view_for_node.as_ref(),
+            )? {
                 let validation_key = format!("{key}:validation");
                 let validation_handle = make_data_view_handle(
                     data_provider,
@@ -5813,15 +5822,17 @@ fn data_view_for_scope(
     binding: &DataBinding,
     fold_set: Option<&FoldSet>,
     scope: &PhaseScope,
+    branch_view: Option<&crate::data::BranchViewPlan>,
 ) -> Result<DataProviderViewSpec> {
     let partition = data_partition_for_scope(binding, scope);
-    data_view_for_partition(binding, fold_set, scope, partition)
+    data_view_for_partition(binding, fold_set, scope, partition, branch_view)
 }
 
 fn validation_data_view_for_scope(
     binding: &DataBinding,
     fold_set: Option<&FoldSet>,
     scope: &PhaseScope,
+    branch_view: Option<&crate::data::BranchViewPlan>,
 ) -> Result<Option<DataProviderViewSpec>> {
     if scope.phase != Phase::FitCv || scope.fold_id.is_none() {
         return Ok(None);
@@ -5830,7 +5841,41 @@ fn validation_data_view_for_scope(
     if partition == data_partition_for_scope(binding, scope) {
         return Ok(None);
     }
-    data_view_for_partition(binding, fold_set, scope, partition).map(Some)
+    data_view_for_partition(binding, fold_set, scope, partition, branch_view).map(Some)
+}
+
+/// Extract the `BranchViewPlan` that the DSL compiler stashed in the graph
+/// node's metadata under `dsl_branch_view_plan`, if any. Returns `None` when
+/// the node was not produced by a separation branch; returns `Err` when the
+/// stored value cannot be deserialized as a `BranchViewPlan`. This is the
+/// scheduler-side bridge that activates the BranchView wiring at runtime;
+/// without it, every `DataProviderViewSpec.branch_view` would stay `None`
+/// even when the DSL compiled `branch_view_plans` into the campaign.
+fn branch_view_from_node_metadata(
+    plan: &ExecutionPlan,
+    node_id: &NodeId,
+) -> Result<Option<crate::data::BranchViewPlan>> {
+    let node = match plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| &node.id == node_id)
+    {
+        Some(node) => node,
+        None => return Ok(None),
+    };
+    let Some(value) = node.metadata.get("dsl_branch_view_plan") else {
+        return Ok(None);
+    };
+    let plan: crate::data::BranchViewPlan =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "node `{node_id}` carries malformed `dsl_branch_view_plan` metadata: {error}"
+            ))
+        })?;
+    plan.validate()?;
+    Ok(Some(plan))
 }
 
 fn data_view_for_partition(
@@ -5838,6 +5883,7 @@ fn data_view_for_partition(
     fold_set: Option<&FoldSet>,
     scope: &PhaseScope,
     partition: DataRequestPartition,
+    branch_view: Option<&crate::data::BranchViewPlan>,
 ) -> Result<DataProviderViewSpec> {
     let fold = fold_for_scope(fold_set, scope.fold_id.as_ref())?;
     let sample_ids = sample_ids_for_partition(partition, fold_set, fold);
@@ -5894,7 +5940,7 @@ fn data_view_for_partition(
         columns: None,
         include_augmented,
         include_excluded: binding.view_policy.include_excluded,
-        branch_view: None,
+        branch_view: branch_view.cloned(),
         extra,
     };
     view.validate()?;
