@@ -3733,6 +3733,88 @@ fn mdatools_process_controller_runs_pca_one_shot() {
 }
 
 #[test]
+fn mdatools_process_controller_runs_plsda_one_shot() {
+    let root = repo_root();
+    if !r_has_mdatools(&root) {
+        return;
+    }
+    let suffix = unique_suffix();
+    let artifact_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_mdatools_plsda_{}_{}",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+
+    let node_plan = json!({
+        "node_id": "plsda:0",
+        "kind": "model",
+        "controller_id": "controller:mdatools",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV", "REFIT", "PREDICT"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "fold_train",
+        "rng_policy": "externally_deterministic",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        // plsda uses the classification dispatch shape — synthetic
+        // labels are derived from the regression target via median
+        // thresholding inside the controller.
+        "params": {"operator": "plsda", "params": {"ncomp": 1}},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let task = json!({
+        "run_id": "run:cli.mdatools-plsda",
+        "node_plan": node_plan,
+        "phase": "REFIT",
+        "variant_id": "variant:base",
+        "variant": {
+            "variant_id": "variant:base",
+            "choices": {},
+            "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "seed": 7
+        },
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {},
+        "data_views": {},
+        "prediction_inputs": {},
+        "artifact_inputs": {},
+        "seed": 7
+    });
+    let output = run_mdatools_adapter_one_shot(&root, &artifact_dir, &task);
+    let value: serde_json::Value =
+        serde_json::from_slice(&output).expect("plsda REFIT output is JSON");
+    let predictions = value["predictions"]
+        .as_array()
+        .expect("plsda result has predictions");
+    assert_eq!(predictions.len(), 1);
+    let values = predictions[0]["values"]
+        .as_array()
+        .expect("plsda predictions[0].values is an array");
+    assert_eq!(values.len(), 4, "REFIT default produces 4 rows");
+    // plsdares c.pred carries binary class indicator values (-1 / +1
+    // in mdatools 0.15). The extractor returns the highest-component
+    // value for the second class, so any finite numeric should pass.
+    for row in values {
+        let row = row.as_array().expect("row is an array");
+        assert_eq!(row.len(), 1);
+        assert!(
+            row[0].as_f64().is_some_and(f64::is_finite),
+            "plsda prediction must be finite: {row:?}"
+        );
+    }
+    let artifacts = value["artifacts"].as_array().expect("REFIT artifacts array");
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(artifacts[0]["backend"].as_str(), Some("rds"));
+
+    let _ = std::fs::remove_dir_all(artifact_dir);
+}
+
+#[test]
 fn mdatools_process_controller_manifest_validates_and_matches_registry() {
     let root = repo_root();
     let manifest_path = root.join("examples/controllers/mdatools.controller.json");
