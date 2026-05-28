@@ -489,9 +489,13 @@ Implemented:
   compiled `branch_view_plans` straight through `make_view` to the data
   provider without going through `extra` JSON. The in-memory `dag-ml-data`
   provider's `DataView` already accepts a matching `CoordinatorBranchView`
-  via the same JSON wire shape; a follow-up will populate the field from
-  `ExecutionPlan.branch_view_plans` based on the active branch path. The
-  field defaults to `None` so existing callers stay unchanged;
+  via the same JSON wire shape;
+- `ExecutionPlan::branch_view_for(branch_id)` and
+  `branch_view_for_path(branch_path)` helpers walk the campaign's
+  `branch_view_plans` and return the matching plan (innermost-wins for
+  paths). The runtime scheduler can call this to populate
+  `DataProviderViewSpec.branch_view` with the closest enclosing branch view
+  when constructing a provider view for an in-branch node;
 - C ABI row-major F32 tensor exports for the same sample-level and
   target/group aggregated prediction blocks, plus row-major and column-major
   F32 tensor exports for bundle-validated prediction-cache payloads. The
