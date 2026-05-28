@@ -2696,6 +2696,385 @@ fn process_adapters_describe_supported_protocol_modes() {
 }
 
 #[test]
+fn prospectr_process_controller_describes_supported_protocol_modes() {
+    let root = repo_root();
+    if !r_has_prospectr(&root) {
+        return;
+    }
+    let describe = Command::new("Rscript")
+        .current_dir(&root)
+        .args([
+            "examples/adapters/prospectr_process_controller.R",
+            "--describe",
+        ])
+        .output()
+        .expect("run prospectr adapter describe handshake");
+    assert!(
+        describe.status.success(),
+        "prospectr adapter describe failed: {}",
+        String::from_utf8_lossy(&describe.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&describe.stdout);
+    let description: serde_json::Value =
+        serde_json::from_slice(&describe.stdout).expect("prospectr adapter description JSON");
+    assert_eq!(
+        description["adapter_id"].as_str(),
+        Some("dag-ml-prospectr-process-controller")
+    );
+    assert_eq!(
+        description["protocol"].as_str(),
+        Some("dag-ml-process-adapter")
+    );
+    assert_eq!(description["schema_version"].as_u64(), Some(1));
+    for required in [
+        "control_frames_v1",
+        "node_task_json_v1",
+        "node_result_json_v1",
+        "parallel_invocation_v1",
+        "persistent_workers",
+        "worker_env",
+        "prospectr_smoke",
+    ] {
+        assert!(
+            stdout.contains(&format!("\"{required}\"")),
+            "prospectr adapter description missing capability `{required}`: {}",
+            stdout
+        );
+    }
+}
+
+#[test]
+fn prospectr_process_controller_runs_snv_transform_one_shot() {
+    let root = repo_root();
+    if !r_has_prospectr(&root) {
+        return;
+    }
+
+    let node_plan = json!({
+        "node_id": "snv:0",
+        "kind": "transform",
+        "controller_id": "controller:prospectr",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "stateless",
+        "rng_policy": "ignores_seed",
+        "artifact_policy": "replay_required",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {"operator": "SNV"},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let task = json!({
+        "run_id": "run:cli.prospectr",
+        "node_plan": node_plan,
+        "phase": "FIT_CV",
+        "variant_id": "variant:base",
+        "variant": {
+            "variant_id": "variant:base",
+            "choices": {},
+            "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "seed": 7
+        },
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {},
+        "data_views": {},
+        "prediction_inputs": {},
+        "artifact_inputs": {},
+        "seed": 7
+    });
+    let output = run_r_adapter_one_shot(&root, &task);
+    let value: serde_json::Value =
+        serde_json::from_slice(&output).expect("R adapter one_shot output is JSON");
+    assert_eq!(value["node_id"].as_str(), Some("snv:0"));
+    assert!(value["outputs"]["x_out"]["handle"].is_u64());
+    assert_eq!(value["outputs"]["x_out"]["kind"].as_str(), Some("data"));
+    assert_eq!(value["predictions"].as_array().map(|v| v.len()), Some(0));
+    assert_eq!(
+        value["lineage"]["metrics"]["transform_columns"].as_u64(),
+        Some(4),
+        "SNV transform should preserve the 4-column synthetic feature matrix"
+    );
+    assert_eq!(
+        value["lineage"]["metrics"]["transform_rows"].as_u64(),
+        Some(4),
+        "SNV transform should preserve the 4-row default sample count"
+    );
+    assert_eq!(
+        value["lineage"]["metrics"]["prospectr_adapter"].as_f64(),
+        Some(1.0)
+    );
+}
+
+#[test]
+fn prospectr_process_controller_one_shot_unknown_operator_exits_nonzero() {
+    let root = repo_root();
+    if !r_has_prospectr(&root) {
+        return;
+    }
+    let node_plan = json!({
+        "node_id": "transform:bad",
+        "kind": "transform",
+        "controller_id": "controller:prospectr",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "stateless",
+        "rng_policy": "ignores_seed",
+        "artifact_policy": "replay_required",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {"operator": "DefinitelyNotAProspectrFunction"},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let task = json!({
+        "run_id": "run:cli.prospectr-bad",
+        "node_plan": node_plan,
+        "phase": "FIT_CV",
+        "variant_id": "variant:base",
+        "variant": {
+            "variant_id": "variant:base",
+            "choices": {},
+            "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "seed": 7
+        },
+        "fold_id": null,
+        "branch_path": [],
+        "input_handles": {},
+        "data_views": {},
+        "prediction_inputs": {},
+        "artifact_inputs": {},
+        "seed": 7
+    });
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("Rscript")
+        .current_dir(&root)
+        .args(["examples/adapters/prospectr_process_controller.R"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn prospectr adapter");
+    {
+        let stdin = child.stdin.as_mut().expect("R adapter stdin is piped");
+        stdin
+            .write_all(
+                serde_json::to_vec(&task)
+                    .expect("task JSON serializes")
+                    .as_slice(),
+            )
+            .expect("write task JSON to R adapter stdin");
+        stdin.write_all(b"\n").expect("write trailing newline");
+    }
+    let output = child.wait_with_output().expect("wait for R adapter");
+    assert!(
+        !output.status.success(),
+        "prospectr one_shot accepted an unknown operator instead of failing"
+    );
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr_text.contains("unknown_operator"),
+        "expected `unknown_operator` code in stderr: {}",
+        stderr_text
+    );
+}
+
+#[test]
+fn prospectr_process_controller_jsonl_emits_error_frame_and_survives() {
+    let root = repo_root();
+    if !r_has_prospectr(&root) {
+        return;
+    }
+
+    let bad_node_plan = json!({
+        "node_id": "snv:bad",
+        "kind": "transform",
+        "controller_id": "controller:prospectr",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "stateless",
+        "rng_policy": "ignores_seed",
+        "artifact_policy": "replay_required",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {"operator": "DefinitelyNotAProspectrFunction"},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let good_node_plan = json!({
+        "node_id": "snv:ok",
+        "kind": "transform",
+        "controller_id": "controller:prospectr",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV"],
+        "controller_capabilities": ["deterministic"],
+        "fit_scope": "stateless",
+        "rng_policy": "ignores_seed",
+        "artifact_policy": "replay_required",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {"operator": "SNV"},
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+    let variant = json!({
+        "variant_id": "variant:base",
+        "choices": {},
+        "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "seed": 7
+    });
+    let bad_task = json!({
+        "type": "task",
+        "schema_version": 1,
+        "task": {
+            "run_id": "run:cli.prospectr-jsonl",
+            "node_plan": bad_node_plan,
+            "phase": "FIT_CV",
+            "variant_id": "variant:base",
+            "variant": variant,
+            "fold_id": null,
+            "branch_path": [],
+            "input_handles": {},
+            "data_views": {},
+            "prediction_inputs": {},
+            "artifact_inputs": {},
+            "seed": 7
+        }
+    });
+    let good_task = json!({
+        "type": "task",
+        "schema_version": 1,
+        "task": {
+            "run_id": "run:cli.prospectr-jsonl",
+            "node_plan": good_node_plan,
+            "phase": "FIT_CV",
+            "variant_id": "variant:base",
+            "variant": variant,
+            "fold_id": null,
+            "branch_path": [],
+            "input_handles": {},
+            "data_views": {},
+            "prediction_inputs": {},
+            "artifact_inputs": {},
+            "seed": 7
+        }
+    });
+    let close = json!({"type": "close", "schema_version": 1});
+
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("Rscript")
+        .current_dir(&root)
+        .args([
+            "examples/adapters/prospectr_process_controller.R",
+            "--jsonl",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn prospectr adapter");
+    {
+        let stdin = child.stdin.as_mut().expect("R adapter stdin is piped");
+        for frame in [&bad_task, &good_task, &close] {
+            stdin
+                .write_all(
+                    serde_json::to_vec(frame)
+                        .expect("frame JSON serializes")
+                        .as_slice(),
+                )
+                .expect("write frame to R adapter stdin");
+            stdin.write_all(b"\n").expect("write trailing newline");
+        }
+    }
+    let output = child.wait_with_output().expect("wait for R adapter");
+    assert!(
+        output.status.success(),
+        "JSONL R adapter exited with failure after a bad-task error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout_text = String::from_utf8(output.stdout).expect("R adapter stdout is utf-8");
+    let mut frames: Vec<serde_json::Value> = Vec::new();
+    for line in stdout_text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        frames.push(serde_json::from_str(line).expect("each R adapter frame is JSON"));
+    }
+    let error_frames: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|frame| frame["type"].as_str() == Some("error"))
+        .collect();
+    let result_frames: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|frame| frame["type"].as_str() == Some("result"))
+        .collect();
+    let ack_frames: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|frame| frame["type"].as_str() == Some("ack"))
+        .collect();
+    assert_eq!(
+        frames.len(),
+        3,
+        "expected exactly 3 frames (error + result + close ack), got: {:#?}",
+        frames
+    );
+    assert_eq!(error_frames.len(), 1, "expected one error frame");
+    assert_eq!(
+        error_frames[0]["error"]["code"].as_str(),
+        Some("unknown_operator")
+    );
+    assert_eq!(result_frames.len(), 1, "expected one result frame");
+    assert_eq!(
+        result_frames[0]["result"]["node_id"].as_str(),
+        Some("snv:ok")
+    );
+    assert_eq!(ack_frames.len(), 1, "expected one close ack");
+    assert_eq!(ack_frames[0]["status"].as_str(), Some("closed"));
+}
+
+fn run_r_adapter_one_shot(root: &Path, task: &serde_json::Value) -> Vec<u8> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new("Rscript")
+        .current_dir(root)
+        .args(["examples/adapters/prospectr_process_controller.R"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn prospectr adapter");
+    {
+        let stdin = child.stdin.as_mut().expect("R adapter stdin is piped");
+        stdin
+            .write_all(
+                serde_json::to_vec(task)
+                    .expect("task JSON serializes")
+                    .as_slice(),
+            )
+            .expect("write task JSON to R adapter stdin");
+        stdin.write_all(b"\n").expect("write trailing newline");
+    }
+    let output = child.wait_with_output().expect("wait for R adapter");
+    assert!(
+        output.status.success(),
+        "prospectr R adapter exited with failure: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+#[test]
 fn sklearn_production_controller_refits_then_predicts_via_joblib() {
     let root = repo_root();
     if !python_has_sklearn(&root) {
@@ -4266,6 +4645,18 @@ fn python_has_sklearn(root: &Path) -> bool {
     Command::new("python3")
         .current_dir(root)
         .args(["-c", "import sklearn"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn r_has_prospectr(root: &Path) -> bool {
+    Command::new("Rscript")
+        .current_dir(root)
+        .args([
+            "-e",
+            "suppressPackageStartupMessages({library(jsonlite); library(prospectr)})",
+        ])
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
