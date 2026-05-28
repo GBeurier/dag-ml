@@ -2,11 +2,17 @@
 # Process adapter for the mdatools R package, speaking the dag-ml
 # coordinator's JSONL protocol.
 #
-# Slice H.1 covers the model-kind scaffold plus dispatch for `pls`
-# (Partial Least Squares regression) with `saveRDS`/`readRDS`-backed
-# artifact persistence (R analog of sklearn's joblib). Remaining
-# mdatools operators (`pca`, `plsda`, `simca`, `mcrals`) and the
-# ControllerManifest are delivered in Slice H.2.
+# Slice H.1 introduces the model-kind scaffold and dispatch for
+# `pls` (Partial Least Squares regression) with `saveRDS`/`readRDS`-
+# backed artifact persistence (R analog of sklearn's joblib).
+# Slice H.2 adds the unsupervised dispatch shape and `pca`, plus the
+# `examples/controllers/mdatools.controller.json` ControllerManifest
+# with the same alias-set parity test pattern as F.3/G.2. The
+# classification operators (`plsda`, `simca`) and matrix
+# factorisation (`mcrals`) need a different input shape (synthetic
+# class labels, distinct prediction interpretation) and ship in a
+# future slice so this controller honestly states what it
+# dispatches today.
 #
 # Reuses the JSONL framing, structured `AdapterTaskError` condition,
 # leakage checks, lifecycle markers and synthetic feature pattern
@@ -59,12 +65,19 @@ suppressPackageStartupMessages({
 
 # Operator registry. mdatools 0.15 ships `pls`, `pca`, `plsda`,
 # `simca`, `mcrals` (renamed from `mcr.als` in older versions). No
-# `pcr` top-level function exists in 0.15; users wanting PCR build it
-# through `pca` + linear regression manually.
+# `pcr` top-level function exists in 0.15; users wanting PCR build
+# it manually as `pca` + linear regression.
 #
-# Slice H.1 only wires `pls`. Remaining operators land in Slice H.2.
+# Slices H.1 and H.2 wire the two foundational shapes — regression
+# (`pls`, needs `(x, y)`) and unsupervised (`pca`, needs only `x`).
+# The classification operators (`plsda`, `simca`) and matrix
+# factorisation (`mcrals`) need a different input shape (synthetic
+# class labels, distinct prediction interpretation) and ship in a
+# separate slice so this controller can honestly state what it
+# dispatches today.
 OPERATOR_SELECTORS <- list(
-  pls = list(pkg = "mdatools", fn = "pls")
+  pca = list(pkg = "mdatools", fn = "pca", shape = "unsupervised"),
+  pls = list(pkg = "mdatools", fn = "pls", shape = "regression")
 )
 
 AdapterTaskError <- function(code, message, retryable = FALSE) {
@@ -122,7 +135,7 @@ resolve_operator <- function(name) {
       code = "unknown_operator"
     )
   }
-  get(selector$fn, envir = ns)
+  list(fn = get(selector$fn, envir = ns), shape = selector$shape)
 }
 
 stable_handle <- function(value) {
@@ -291,7 +304,7 @@ prediction_partition <- function(phase) {
   "test"
 }
 
-build_estimator_args <- function(task, X, y) {
+build_estimator_args <- function(task, shape, X, y) {
   params <- task$node_plan$params
   if (is.null(params) || is.null(params$operator)) {
     fail("node `params` missing `operator`")
@@ -304,7 +317,13 @@ build_estimator_args <- function(task, X, y) {
   # scheduler's CV ownership. Force-disable internal CV to avoid
   # double-counting folds.
   kwargs$cv <- NULL
-  c(list(x = X, y = y), kwargs)
+  if (identical(shape, "regression")) {
+    return(c(list(x = X, y = y), kwargs))
+  }
+  if (identical(shape, "unsupervised")) {
+    return(c(list(x = X), kwargs))
+  }
+  fail(sprintf("operator shape `%s` is not supported by this slice", shape))
 }
 
 write_artifact <- function(estimator, artifact_id, variant_label) {
@@ -366,12 +385,12 @@ run_model <- function(task) {
   if (!is.null(phase) && phase == "PREDICT") {
     estimator <- replay_estimator(task)
   } else {
-    fn <- resolve_operator(task$node_plan$params$operator)
+    resolved <- resolve_operator(task$node_plan$params$operator)
     train_ids <- train_sample_ids(task)
     X <- features(train_ids)
     y <- targets(train_ids)
-    call_args <- build_estimator_args(task, X, y)
-    estimator <- do.call(fn, call_args)
+    call_args <- build_estimator_args(task, resolved$shape, X, y)
+    estimator <- do.call(resolved$fn, call_args)
   }
 
   pred_ids <- prediction_sample_ids(task)
@@ -449,6 +468,21 @@ extract_prediction_vector <- function(raw) {
       return(as.numeric(arr))
     }
     return(as.numeric(arr[, dims[2], 1L]))
+  }
+  # mdatools' predict.pca returns a `pcares` object with `$scores`
+  # as a [sample x component] matrix. PCA is a feature-reduction
+  # operator, not a regressor — exposing it as a model controller
+  # gives the dag-ml protocol a single numeric per sample. Use the
+  # first principal component score as that value (the variance-
+  # maximising direction). Callers who want full-rank scores should
+  # treat PCA as a multi-target output (a future slice can extend
+  # the prediction shape to multi-component score blocks).
+  if (inherits(raw, "pcares") && !is.null(raw$scores)) {
+    scores <- raw$scores
+    if (is.matrix(scores)) {
+      return(as.numeric(scores[, 1L]))
+    }
+    return(as.numeric(scores))
   }
   if (is.list(raw) && !is.null(raw$y.pred)) {
     return(as.numeric(raw$y.pred))
