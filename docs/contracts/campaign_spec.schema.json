@@ -545,10 +545,10 @@
       "required": ["view_id", "branch_id", "mode", "selector"],
       "properties": {
         "view_id": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/identifier"
         },
         "branch_id": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/identifier"
         },
         "mode": {
           "$ref": "#/$defs/branch_view_mode"
@@ -562,7 +562,7 @@
         "metadata": {
           "type": "object",
           "propertyNames": {
-            "$ref": "#/$defs/non_empty_string"
+            "$ref": "#/$defs/identifier"
           }
         }
       }

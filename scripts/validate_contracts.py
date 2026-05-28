@@ -603,6 +603,16 @@ def validate_campaign_spec_schema(schema: Any, label: str) -> None:
         isinstance(branch_view_properties, dict) and "selector" in branch_view_properties,
         f"{label} CampaignSpec branch_view_plan must declare selector",
     )
+    # Lock the view_id/branch_id identifier pattern to the strict pattern that
+    # dag-ml-data's `coordinator_branch_view.schema.json` uses. Without this
+    # check, dag-ml could accept identifiers with spaces or other characters
+    # that dag-ml-data would reject on the same payload.
+    for field in ("view_id", "branch_id"):
+        ref = branch_view_properties.get(field, {}).get("$ref")
+        require(
+            ref == "#/$defs/identifier",
+            f"{label} CampaignSpec branch_view_plan.{field} must $ref identifier pattern, got `{ref}`",
+        )
 
 
 def validate_execution_plan_schema(schema: Any, label: str) -> None:
