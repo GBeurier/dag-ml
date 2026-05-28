@@ -444,6 +444,42 @@ impl ExecutionPlan {
             scopes,
         })
     }
+
+    /// Returns the `BranchViewPlan` whose `branch_id` matches `branch_id`,
+    /// if any. The match is exact; callers that need fuzzy or prefix matching
+    /// must iterate `self.campaign.branch_view_plans` themselves.
+    pub fn branch_view_for(&self, branch_id: &str) -> Option<&BranchViewPlan> {
+        branch_view_for_in(&self.campaign.branch_view_plans, branch_id)
+    }
+
+    /// Returns the `BranchViewPlan` for the deepest branch in `branch_path`
+    /// that has a matching plan, if any. The path is walked tip-first so the
+    /// closest enclosing branch wins; an empty path returns `None`. The
+    /// returned reference borrows the plan from the campaign; the caller can
+    /// `.clone()` it into a `DataProviderViewSpec.branch_view` field when
+    /// constructing a provider view for an in-branch node.
+    pub fn branch_view_for_path(&self, branch_path: &[String]) -> Option<&BranchViewPlan> {
+        branch_view_for_path_in(&self.campaign.branch_view_plans, branch_path)
+    }
+}
+
+fn branch_view_for_in<'a>(
+    plans: &'a [BranchViewPlan],
+    branch_id: &str,
+) -> Option<&'a BranchViewPlan> {
+    plans.iter().find(|plan| plan.branch_id == branch_id)
+}
+
+fn branch_view_for_path_in<'a>(
+    plans: &'a [BranchViewPlan],
+    branch_path: &[String],
+) -> Option<&'a BranchViewPlan> {
+    for branch_id in branch_path.iter().rev() {
+        if let Some(plan) = branch_view_for_in(plans, branch_id) {
+            return Some(plan);
+        }
+    }
+    None
 }
 
 fn execution_scope_id(
@@ -1224,5 +1260,60 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("search_space_fingerprint"));
+    }
+
+    #[test]
+    fn branch_view_lookup_helpers_match_by_branch_id_and_innermost_path() {
+        use crate::data::{BranchViewMode, DataViewSelector};
+
+        let outer = BranchViewPlan {
+            view_id: "branch_view:outer".to_string(),
+            branch_id: "branch:outer".to_string(),
+            mode: BranchViewMode::BySource,
+            selector: DataViewSelector {
+                source_ids: vec!["nir".to_string()],
+                ..Default::default()
+            },
+            allow_overlap: false,
+            metadata: BTreeMap::new(),
+        };
+        let inner = BranchViewPlan {
+            view_id: "branch_view:inner".to_string(),
+            branch_id: "branch:inner".to_string(),
+            mode: BranchViewMode::Separation,
+            selector: DataViewSelector {
+                source_ids: vec!["chem".to_string()],
+                ..Default::default()
+            },
+            allow_overlap: false,
+            metadata: BTreeMap::new(),
+        };
+        let plans = vec![outer.clone(), inner.clone()];
+
+        assert_eq!(
+            super::branch_view_for_in(&plans, "branch:outer"),
+            Some(&outer)
+        );
+        assert_eq!(
+            super::branch_view_for_in(&plans, "branch:inner"),
+            Some(&inner)
+        );
+        assert_eq!(super::branch_view_for_in(&plans, "branch:missing"), None);
+
+        let path = vec!["branch:outer".to_string(), "branch:inner".to_string()];
+        // tip-first: innermost matching branch wins
+        assert_eq!(super::branch_view_for_path_in(&plans, &path), Some(&inner));
+
+        let path_outer_only = vec!["branch:outer".to_string()];
+        assert_eq!(
+            super::branch_view_for_path_in(&plans, &path_outer_only),
+            Some(&outer)
+        );
+
+        let empty_path: Vec<String> = Vec::new();
+        assert_eq!(super::branch_view_for_path_in(&plans, &empty_path), None);
+
+        let path_no_match = vec!["branch:other".to_string()];
+        assert_eq!(super::branch_view_for_path_in(&plans, &path_no_match), None);
     }
 }
