@@ -60,8 +60,8 @@ slice in the style used throughout the recent phases).
 | # | Adapter | Language | Wire | Slices | Existing scaffold | Notes |
 |---|---|---|---|---|---|---|
 | 1 | **sklearn (production)** ✅ shipped | Python | JSONL | 3 (delivered) | promoted from smoke adapter | Shipped through commits F.1–F.3: `examples/adapters/sklearn_production_controller.py` extends `operator_selectors` to cover sklearn.preprocessing/linear_model/ensemble/decomposition (24 classes) with `joblib.dump`/`joblib.load` artifact persistence under `$DAG_ML_PROCESS_ARTIFACT_DIR` (basename-confined; absolute and parent-traversal URIs rejected); structured `AdapterTaskError` frames keep the persistent worker alive across bad tasks; `signal.SIGALRM`-based fit timeout from `$DAG_ML_PROCESS_FIT_TIMEOUT_SECONDS` surfaces as a retryable `fit_timeout`; `examples/controllers/sklearn_production.controller.json` declares the matching `ControllerManifest`, with a Rust test that asserts the manifest's `aliases` selector matches the controller's runtime `OPERATOR_SELECTORS` registry exactly. |
-| 2 | **prospectr (R)** | R | JSONL | 3–5 | none | R package `dagml.controller.prospectr`. JSONL loop in R (no native bindings needed) requires a from-scratch R-side stdin/stdout reader on top of `jsonlite` and a `data.frame ↔ matrix` adapter at the boundary — no R scaffolding exists in the workspace. Dispatch to prospectr's `standardNormalVariate`, `msc`, `savitzkyGolay`, `gapDer`, `binning`, `continuumRemoval`. Translate `NodeTask.data_views` Arrow handles to R `data.frame`/`matrix` on entry. Higher slice ceiling than Python adapters reflects this lack of reusable scaffolding. |
-| 3 | **mdatools (R)** | R | JSONL | 3–5 | partial reuse of #2 | Same package shape as prospectr; the R-side JSONL loop and `data.frame ↔ matrix` adapter built for #2 are reused, but the operator surface is more complex (`pls`, `pcr`, `simca`, `mcr.als`, `pca`) and each operator's R-side fit/predict signature must be wrapped individually. Cross-validation is owned by `dag-ml`, mdatools fits a fold at a time. |
+| 2 | **prospectr (R)** ✅ shipped | R | JSONL | 2 (delivered) | scaffold for #3 | Shipped through commits G.1–G.2: `examples/adapters/prospectr_process_controller.R` builds the R-side JSONL scaffold from scratch (jsonlite-backed describe fast path, structured `AdapterTaskError` condition, fold/REFIT/PREDICT partition leakage checks, lifecycle markers) and dispatches the stateless prospectr operators `SNV`/`standardNormalVariate`, `savitzkyGolay`, `gapDer`, `binning`, `continuumRemoval`; `examples/controllers/prospectr.controller.json` declares the matching transform-kind ControllerManifest with the same alias-set parity test pattern as F.3. `msc` is excluded — its reference spectrum is fitted on the calibration set and applying the batch's own `colMeans` at predict time would leak validation data, so MSC needs the stateful artifact path tracked separately. |
+| 3 | **mdatools (R)** | R | JSONL | 2–3 (revised down) | full reuse of #2 scaffold | The R-side JSONL loop, `AdapterTaskError` handling, lifecycle markers, leakage checks, and synthetic feature smoke from G.1 are reusable. mdatools operators (`pls`, `pcr`, `simca`, `mcr.als`, `pca`) are stateful so the new cost is the RData-based artifact persistence (mirror of sklearn's joblib path) and per-operator fit/predict wrappers. Cross-validation is owned by `dag-ml`, mdatools fits a fold at a time. |
 | 4 | **SpectroChemPy (Python)** | Python | JSONL | 2 | sklearn pattern reuse | **Python, not R** despite occasional grouping with R libs. Pattern reuses sklearn adapter scaffold. Operators from `spectrochempy.analysis.*` and `spectrochempy.processing.*`. NMR/IR-specific operators benefit from `AxisKind::Wavenumber` shipped in Phase D. |
 | 5 | **Orange-Spectroscopy (Python)** | Python | JSONL | 2 | sklearn pattern reuse | **Python, not R**. Add-on for Orange Data Mining (`orangecontrib.spectroscopy`). Operators: preprocess (SNV, MSC, baseline), models (Stagewise, IntegrateSimps). Smaller community than mdatools/prospectr; lower priority. |
 | 6 | **ControllerManifest YAML registry** | Rust (CLI) | n/a | 1 | none | Declarative YAML (`controllers/<adapter>.controller.yaml`) for the 5 adapters above. Each declares `controller_id`, `version`, `operator_kind`, `operator_selectors`, `capabilities`, `fit_scope`, `process_adapter`. Validated at registry load through the existing `ControllerManifest::validate`. |
@@ -102,10 +102,13 @@ production sklearn adapter.
 
 ## Next slice
 
-Item #1 (sklearn production) is shipped. The next slice is
-**#2 (R prospectr)**: it carries the up-front R-side JSONL
-scaffolding cost (stdin/stdout reader on top of `jsonlite`,
-`data.frame ↔ matrix` boundary adapter, lifecycle marker support).
-Item #3 (R mdatools) then reuses that scaffold and is cheaper. Both
-unblock R-based NIRS workflows after item #1 unblocked the Python
-sklearn path.
+Items #1 (sklearn production) and #2 (R prospectr) are shipped.
+The next slice is **#3 (R mdatools)** which now reuses the R-side
+JSONL scaffold built in G.1 and the sklearn-side artifact-persistence
+pattern from F.1, leaving the new work focused on RData-backed
+artifact storage and per-operator fit/predict wrappers. After #3,
+the path follows the SpectroChemPy / Orange-Spectroscopy Python
+adapters (#4 and #5) which reuse the sklearn production scaffold,
+and finally the YAML controller registry (#6). A separate slice
+should add stateful MSC handling on the prospectr controller (excluded
+from G.1–G.2 to keep the prospectr controller honestly stateless).
