@@ -21,6 +21,11 @@
       "kind": "json_schema",
       "schema_version": 1,
       "normalized_sha256": "43001ff6f7a286924ec01ca85b95233c7a50fe9cc8595d67da1eb2a35704dddf"
+    },
+    "parity_oracle.v1": {
+      "kind": "parity_oracle_manifest",
+      "schema_version": 1,
+      "canonical_json_sha256": "eb754d832f8c4c059349bbe810683f0afee606b8cab995d85201dd8bf1e83a67"
     }
   },
   "fixtures": {
@@ -37,6 +42,8 @@
     "data_provider_vtable_abi_version": 2,
     "data_tensor_f64_abi_version": 1,
     "data_tensor_f32_abi_version": 1,
+    "data_borrowed_tensor_view_abi_version": 1,
+    "data_owned_tensor_abi_version": 1,
     "required_provider_callbacks": [
       "materialize",
       "make_view",
@@ -62,20 +69,34 @@
       "dagmldata_inmemory_provider_feature_collation_tensor_f32_json",
       "dagmldata_inmemory_provider_data_feature_buffer_manifest_json",
       "dagmldata_tensor_f32_free",
+      "dagmldata_schema_fingerprint_json",
+      "dagmldata_fold_set_validate_json",
+      "dagmldata_fold_set_fingerprint_json",
+      "dagmldata_fold_set_validate_against_relations_json",
+      "dagmldata_coordinator_multi_target_arrow_json",
       "dagmldata_fitted_adapter_ref_validate_json",
       "dagmldata_fitted_adapter_manifest_validate_json",
       "dagmldata_inmemory_fitted_adapter_store_new",
       "dagmldata_inmemory_fitted_adapter_store_register_json",
       "dagmldata_inmemory_fitted_adapter_store_materialize_json",
       "dagmldata_inmemory_fitted_adapter_store_release",
-      "dagmldata_inmemory_fitted_adapter_store_destroy"
+      "dagmldata_inmemory_fitted_adapter_store_destroy",
+      "DagMlDataTensorDType",
+      "DagMlDataBorrowedTensorView",
+      "DagMlDataOwnedTensor",
+      "dagmldata_inmemory_provider_new_with_tensor_views",
+      "dagmldata_inmemory_provider_nd_tensor_manifest_json",
+      "dagmldata_inmemory_provider_data_nd_tensor_manifest_json",
+      "dagmldata_inmemory_provider_nd_tensor_export_json",
+      "dagmldata_nd_tensor_free"
     ]
   },
   "cross_repo_conformance": {
     "required_when_sibling_checkout_present": [
       "contracts.schema_and_fixture_equivalence",
       "headers.include_order",
-      "provider.f64_predict_replay"
+      "provider.f64_predict_replay",
+      "fold_set.fingerprint_parity"
     ]
   }
 }
