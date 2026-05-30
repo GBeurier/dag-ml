@@ -8,3 +8,5 @@
 __pycache__/
 .pytest_cache/
 external/
+crates/*/pkg-web/
+/docs/_build/

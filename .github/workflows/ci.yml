@@ -6,7 +6,34 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  CARGO_AUDIT_VERSION: "0.22.1"
+  MATURIN_VERSION: "1.13.3"
+  RUST_MSRV: "1.83.0"
+  WASM_PACK_VERSION: "0.15.0"
+
 jobs:
+  msrv:
+    name: MSRV Rust
+    runs-on: ubuntu-latest
+    env:
+      DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout dag-ml-data contract peer
+        uses: actions/checkout@v4
+        with:
+          repository: GBeurier/dag-ml-data
+          path: external/dag-ml-data
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_MSRV }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check MSRV
+        run: cargo check --workspace --all-targets
+
   rust:
     name: Rust
     runs-on: ubuntu-latest
@@ -22,15 +49,140 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Python adapter dependencies
-        run: python3 -m pip install numpy scikit-learn
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy scikit-learn
       - name: Shared contract
-        run: python3 scripts/validate_contracts.py
+        run: python scripts/validate_contracts.py
+      - name: Release metadata
+        run: python scripts/validate_release_metadata.py
+      - name: Error taxonomy
+        run: python scripts/check_error_taxonomy.py
+      - name: Observability field privacy
+        run: python scripts/lint_tracing_fields.py
+      - name: Managed debt
+        run: python scripts/check_deprecations.py
+      - name: Public documentation ratchet
+        run: python scripts/check_public_docs.py
+      - name: ABI snapshot
+        run: python scripts/validate_abi_snapshot.py
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+      - name: Supply-chain audit
+        run: cargo audit --deny warnings
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Docs
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+      - name: Package dry run
+        run: cargo package --workspace --no-verify
+      - name: Publish plan dry run
+        run: python scripts/release/check_publish_plan.py --dry-run
       - name: Example graph
         run: cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
+
+  docs-site:
+    name: Documentation site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install docs dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r docs/requirements.txt
+      - name: Build docs site
+        run: sphinx-build -W --keep-going -b html docs docs/_build/html
+
+  python-bindings:
+    name: Python bindings ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout dag-ml-data contract peer
+        uses: actions/checkout@v4
+        with:
+          repository: GBeurier/dag-ml-data
+          path: external/dag-ml-data
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install maturin
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "maturin==$MATURIN_VERSION"
+      - name: Build Python wheel
+        run: |
+          mkdir -p target/wheels
+          cd external/dag-ml-data/crates/dag-ml-data-py
+          python -m maturin build --release --features extension-module --out ../../../../target/wheels
+          cd ../../../..
+          cd crates/dag-ml-py
+          python -m maturin build --release --features extension-module --out ../../target/wheels
+      - name: Smoke Python wheel metadata
+        run: python scripts/smoke_python_wheel_metadata.py target/wheels/dag_ml-*.whl
+      - name: Smoke installed Python wheel
+        run: |
+          python -m pip install target/wheels/dag_ml_data-*.whl
+          python -m pip install target/wheels/dag_ml-*.whl
+          python scripts/smoke_python_bindings.py
+          python scripts/smoke_python_integration.py external/dag-ml-data
+
+  wasm-bindings:
+    name: WASM bindings Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout dag-ml-data contract peer
+        uses: actions/checkout@v4
+        with:
+          repository: GBeurier/dag-ml-data
+          path: external/dag-ml-data
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
+      - name: Build WASM nodejs package
+        run: |
+          out_dir="$PWD/target/wasm/dag-ml-wasm"
+          wasm-pack build crates/dag-ml-wasm --target nodejs --out-dir "$out_dir" --release
+          node scripts/smoke_wasm_bindings.cjs "$out_dir"
+      - name: Build WASM web package
+        run: |
+          out_dir="$PWD/crates/dag-ml-wasm/pkg-web"
+          rm -rf "$out_dir"
+          wasm-pack build crates/dag-ml-wasm --target web --out-dir "$out_dir" --release
+          node scripts/smoke_wasm_web_bindings.mjs "$out_dir"
+          (cd crates/dag-ml-wasm && wasm-pack pack --pkg-dir pkg-web .)
+          node scripts/smoke_wasm_tarball_metadata.mjs "$out_dir"
+      - name: Cross-repo browser integration smoke
+        run: |
+          dag_ml_out="$PWD/crates/dag-ml-wasm/pkg-web"
+          dag_ml_data_repo="$PWD/external/dag-ml-data"
+          dag_ml_data_out="$dag_ml_data_repo/crates/dag-ml-data-wasm/pkg-web"
+          rm -rf "$dag_ml_data_out"
+          wasm-pack build "$dag_ml_data_repo/crates/dag-ml-data-wasm" --target web --out-dir "$dag_ml_data_out" --release
+          (cd "$dag_ml_data_repo/crates/dag-ml-data-wasm" && wasm-pack pack --pkg-dir pkg-web .)
+          node scripts/smoke_wasm_tarball_metadata.mjs "$dag_ml_data_out"
+          node scripts/smoke_wasm_integration.mjs "$dag_ml_out" "$dag_ml_data_out" "$dag_ml_data_repo"
