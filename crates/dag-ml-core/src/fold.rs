@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::campaign::stable_json_fingerprint;
 use crate::error::{DagMlError, Result};
 use crate::ids::{FoldId, GroupId, SampleId};
 use crate::rng::SeedContext;
@@ -146,6 +147,54 @@ impl FoldSet {
             }
         }
         Ok(())
+    }
+}
+
+pub fn fold_set_fingerprint(fold_set: &FoldSet) -> Result<String> {
+    let mut canonical = fold_set.clone();
+    canonical.validate()?;
+    canonical.sample_ids.sort();
+    canonical
+        .folds
+        .sort_by(|left, right| left.fold_id.cmp(&right.fold_id));
+    for fold in &mut canonical.folds {
+        fold.train_sample_ids.sort();
+        fold.validation_sample_ids.sort();
+    }
+
+    let mut value = serde_json::to_value(&canonical)?;
+    remove_empty_fold_set_maps(&mut value);
+    stable_json_fingerprint(&value)
+}
+
+fn remove_empty_fold_set_maps(value: &mut serde_json::Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    if object
+        .get("sample_groups")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(serde_json::Map::is_empty)
+    {
+        object.remove("sample_groups");
+    }
+    let Some(folds) = object
+        .get_mut("folds")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for fold in folds {
+        let Some(fold_object) = fold.as_object_mut() else {
+            continue;
+        };
+        if fold_object
+            .get("metadata")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(serde_json::Map::is_empty)
+        {
+            fold_object.remove("metadata");
+        }
     }
 }
 
@@ -300,6 +349,122 @@ impl GroupKFoldSpec {
     }
 }
 
+/// Inner (nested) cross-validation policy.
+///
+/// Declared globally on the `CampaignSpec` and/or locally on a `NodePlan`
+/// (e.g. a finetune/tuner or branch node); the local policy overrides the global
+/// default (see [`resolve_inner_cv`]). dag-ml builds the inner `FoldSet` from each
+/// outer fold's **training** samples via [`NestedCvSpec::build_inner_fold_set`],
+/// so the inner folds are a subset of outer-train *by construction* — nested CV
+/// cannot leak outer-validation rows into inner tuning.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum NestedCvSpec {
+    /// Index-based inner K-fold, built in-core from outer-train samples.
+    #[serde(rename = "kfold")]
+    KFold(KFoldSpec),
+    /// Group-aware inner K-fold, built in-core from outer-train sample groups.
+    #[serde(rename = "group_kfold")]
+    GroupKFold(GroupKFoldSpec),
+}
+
+impl NestedCvSpec {
+    /// Validate the nested-CV policy's parameters independently of any outer fold.
+    /// Mirrors the checks the splitters enforce (`n_splits >= 2`) so a malformed
+    /// declaration is rejected at plan time rather than deferred to FIT_CV.
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::KFold(spec) => {
+                if spec.n_splits < 2 {
+                    return Err(DagMlError::OofValidation(
+                        "inner KFold requires at least two splits".to_string(),
+                    ));
+                }
+            }
+            Self::GroupKFold(spec) => {
+                if spec.n_splits < 2 {
+                    return Err(DagMlError::OofValidation(
+                        "inner GroupKFold requires at least two splits".to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Build the inner `FoldSet` for one outer fold from its **training** samples
+    /// only. `outer_groups` is the outer `FoldSet.sample_groups` (used by
+    /// `GroupKFold`; ignored otherwise). The result is validated to lie entirely
+    /// within the outer fold's training set.
+    pub fn build_inner_fold_set(
+        &self,
+        outer: &FoldAssignment,
+        outer_groups: &BTreeMap<SampleId, GroupId>,
+    ) -> Result<FoldSet> {
+        let inner_id = format!("{}.inner", outer.fold_id);
+        let inner = match self {
+            Self::KFold(spec) => spec.split(inner_id, &outer.train_sample_ids)?,
+            Self::GroupKFold(spec) => {
+                let train = outer.train_sample_ids.iter().collect::<BTreeSet<_>>();
+                let inner_groups = outer_groups
+                    .iter()
+                    .filter(|(sample_id, _)| train.contains(sample_id))
+                    .map(|(sample_id, group_id)| (sample_id.clone(), group_id.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                spec.split(inner_id, &inner_groups)?
+            }
+        };
+        validate_inner_fold_set_within_outer(&inner, outer)?;
+        Ok(inner)
+    }
+}
+
+/// Resolve the effective inner-CV policy for a node: a node-local policy
+/// overrides the campaign-global default; `None` means no nested CV.
+pub fn resolve_inner_cv<'a>(
+    node_inner_cv: Option<&'a NestedCvSpec>,
+    campaign_inner_cv: Option<&'a NestedCvSpec>,
+) -> Option<&'a NestedCvSpec> {
+    node_inner_cv.or(campaign_inner_cv)
+}
+
+/// Enforce the nested-CV invariant: every sample in `inner` — both the top-level
+/// universe and every fold's train/validation members — must be an outer-fold
+/// **training** sample (never an outer-validation sample). Holds by construction
+/// for dag-ml-built inner folds, and also validates inner folds supplied from
+/// elsewhere. Refuses with an OOF-validation error on any leaking sample.
+pub fn validate_inner_fold_set_within_outer(inner: &FoldSet, outer: &FoldAssignment) -> Result<()> {
+    // Ensure the inner fold set is structurally sound first; otherwise a malformed
+    // supplied fold set could hide a leaking sample in a fold while omitting it
+    // from `sample_ids`. After this, fold members are guaranteed ⊆ `sample_ids`.
+    inner.validate()?;
+    let train = outer.train_sample_ids.iter().collect::<BTreeSet<_>>();
+    let ensure_train = |sample_id: &SampleId| -> Result<()> {
+        if !train.contains(sample_id) {
+            return Err(DagMlError::OofValidation(format!(
+                "nested CV leakage: inner-CV sample `{sample_id}` for outer fold `{}` is not an outer training sample",
+                outer.fold_id
+            )));
+        }
+        Ok(())
+    };
+    for sample_id in &inner.sample_ids {
+        ensure_train(sample_id)?;
+    }
+    // Defence-in-depth: check every fold member directly, independent of the
+    // sample_ids / structural invariants above.
+    for fold in &inner.folds {
+        for sample_id in fold
+            .train_sample_ids
+            .iter()
+            .chain(&fold.validation_sample_ids)
+        {
+            ensure_train(sample_id)?;
+        }
+    }
+    Ok(())
+}
+
 fn unique_samples<'a>(label: &str, samples: &'a [SampleId]) -> Result<BTreeSet<&'a SampleId>> {
     let mut seen = BTreeSet::new();
     for sample_id in samples {
@@ -330,6 +495,9 @@ fn ordered_samples(samples: &[SampleId], shuffle: bool, seed: u64) -> Vec<Sample
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SHARED_FOLD_SET_FINGERPRINT: &str =
+        "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c";
 
     fn sid(value: &str) -> SampleId {
         SampleId::new(value).unwrap()
@@ -397,6 +565,58 @@ mod tests {
     }
 
     #[test]
+    fn fold_set_fingerprint_is_independent_of_ordering() {
+        let mut left = FoldSet {
+            id: "cv.partition".to_string(),
+            sample_ids: vec![sid("s3"), sid("s2"), sid("s1")],
+            folds: vec![
+                FoldAssignment {
+                    fold_id: FoldId::new("fold1").unwrap(),
+                    train_sample_ids: vec![sid("s2"), sid("s1")],
+                    validation_sample_ids: vec![sid("s3")],
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("fold0").unwrap(),
+                    train_sample_ids: vec![sid("s3")],
+                    validation_sample_ids: vec![sid("s2"), sid("s1")],
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            sample_groups: BTreeMap::new(),
+        };
+        let mut right = left.clone();
+        right.sample_ids.reverse();
+        right.folds.reverse();
+        for fold in &mut right.folds {
+            fold.train_sample_ids.reverse();
+            fold.validation_sample_ids.reverse();
+        }
+
+        assert_eq!(
+            fold_set_fingerprint(&left).unwrap(),
+            fold_set_fingerprint(&right).unwrap()
+        );
+
+        left.id = "cv.partition.changed".to_string();
+        assert_ne!(
+            fold_set_fingerprint(&left).unwrap(),
+            fold_set_fingerprint(&right).unwrap()
+        );
+    }
+
+    #[test]
+    fn shared_fold_set_fixture_fingerprint_is_locked() {
+        let fixture = include_str!("../../../examples/fixtures/shared/fold_set_cv_partition.json");
+        let fold_set = serde_json::from_str::<FoldSet>(fixture).unwrap();
+
+        assert_eq!(
+            fold_set_fingerprint(&fold_set).unwrap(),
+            SHARED_FOLD_SET_FINGERPRINT
+        );
+    }
+
+    #[test]
     fn group_kfold_keeps_groups_out_of_train_validation_overlap() {
         let groups = BTreeMap::from([
             (sid("s1"), gid("g1")),
@@ -421,5 +641,151 @@ mod tests {
                 assert!(!train_groups.contains(groups.get(sample_id).unwrap()));
             }
         }
+    }
+
+    fn outer_kfold(samples: &[SampleId]) -> FoldSet {
+        KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: Some(0),
+        }
+        .split("outer", samples)
+        .unwrap()
+    }
+
+    #[test]
+    fn nested_kfold_inner_folds_are_subset_of_outer_train() {
+        let samples = ["s1", "s2", "s3", "s4", "s5", "s6"]
+            .into_iter()
+            .map(sid)
+            .collect::<Vec<_>>();
+        let outer = outer_kfold(&samples);
+        let spec = NestedCvSpec::KFold(KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: Some(1),
+        });
+        for outer_fold in &outer.folds {
+            let inner = spec
+                .build_inner_fold_set(outer_fold, &outer.sample_groups)
+                .expect("inner fold set");
+            let outer_train = outer_fold.train_sample_ids.iter().collect::<BTreeSet<_>>();
+            // Every inner sample is an outer training sample.
+            for sample_id in &inner.sample_ids {
+                assert!(outer_train.contains(sample_id));
+            }
+            // The inner fold set is itself valid and covers exactly outer-train.
+            inner.validate().unwrap();
+            assert_eq!(
+                inner.sample_ids.iter().collect::<BTreeSet<_>>(),
+                outer_train
+            );
+        }
+    }
+
+    #[test]
+    fn nested_cv_validation_refuses_inner_sample_from_outer_validation() {
+        let samples = ["s1", "s2", "s3", "s4"]
+            .into_iter()
+            .map(sid)
+            .collect::<Vec<_>>();
+        let outer = outer_kfold(&samples);
+        let outer_fold = &outer.folds[0];
+        // A STRUCTURALLY VALID inner fold set that nonetheless includes an outer
+        // VALIDATION sample — the nested-CV boundary check must refuse it.
+        let leaking_sample = outer_fold.validation_sample_ids[0].clone();
+        let train_sample = outer_fold.train_sample_ids[0].clone();
+        let inner = FoldSet {
+            id: "leaky.inner".to_string(),
+            sample_ids: vec![train_sample.clone(), leaking_sample.clone()],
+            folds: vec![
+                FoldAssignment {
+                    fold_id: FoldId::new("if0").unwrap(),
+                    train_sample_ids: vec![leaking_sample.clone()],
+                    validation_sample_ids: vec![train_sample.clone()],
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("if1").unwrap(),
+                    train_sample_ids: vec![train_sample],
+                    validation_sample_ids: vec![leaking_sample],
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            sample_groups: BTreeMap::new(),
+        };
+        inner
+            .validate()
+            .expect("inner fold set is structurally valid");
+        let err = validate_inner_fold_set_within_outer(&inner, outer_fold)
+            .expect_err("inner fold leaking an outer-validation sample must be refused");
+        assert!(err.to_string().contains("nested CV leakage"));
+    }
+
+    #[test]
+    fn nested_cv_validation_refuses_leak_hidden_in_fold_members() {
+        // A malformed supplied inner fold set hides an outer-validation sample in a
+        // fold's members while omitting it from the top-level `sample_ids`. It must
+        // still be refused (structural validation catches the inconsistency).
+        let samples = ["s1", "s2", "s3", "s4"]
+            .into_iter()
+            .map(sid)
+            .collect::<Vec<_>>();
+        let outer = outer_kfold(&samples);
+        let outer_fold = &outer.folds[0];
+        let leaking_sample = outer_fold.validation_sample_ids[0].clone();
+        let train_sample = outer_fold.train_sample_ids[0].clone();
+        let inner = FoldSet {
+            id: "hidden.inner".to_string(),
+            // `sample_ids` omits the leaking sample, but a fold member smuggles it in.
+            sample_ids: vec![train_sample.clone()],
+            folds: vec![FoldAssignment {
+                fold_id: FoldId::new("if0").unwrap(),
+                train_sample_ids: vec![train_sample],
+                validation_sample_ids: vec![leaking_sample],
+                metadata: BTreeMap::new(),
+            }],
+            sample_groups: BTreeMap::new(),
+        };
+        assert!(validate_inner_fold_set_within_outer(&inner, outer_fold).is_err());
+    }
+
+    #[test]
+    fn nested_cv_spec_json_shape_is_stable() {
+        let spec = NestedCvSpec::KFold(KFoldSpec {
+            n_splits: 3,
+            shuffle: false,
+            seed: Some(7),
+        });
+        let value = serde_json::to_value(&spec).unwrap();
+        assert_eq!(value["kind"], "kfold");
+        assert_eq!(value["n_splits"], 3);
+        assert_eq!(value["seed"], 7);
+        let round: NestedCvSpec = serde_json::from_value(value).unwrap();
+        assert_eq!(round, spec);
+
+        let group = NestedCvSpec::GroupKFold(GroupKFoldSpec { n_splits: 2 });
+        let gv = serde_json::to_value(&group).unwrap();
+        assert_eq!(gv["kind"], "group_kfold");
+        assert_eq!(gv["n_splits"], 2);
+        assert_eq!(serde_json::from_value::<NestedCvSpec>(gv).unwrap(), group);
+    }
+
+    #[test]
+    fn resolve_inner_cv_prefers_node_over_campaign() {
+        let node = NestedCvSpec::KFold(KFoldSpec {
+            n_splits: 3,
+            shuffle: false,
+            seed: Some(2),
+        });
+        let campaign = NestedCvSpec::KFold(KFoldSpec {
+            n_splits: 5,
+            shuffle: false,
+            seed: Some(3),
+        });
+        assert_eq!(resolve_inner_cv(Some(&node), Some(&campaign)), Some(&node));
+        assert_eq!(resolve_inner_cv(None, Some(&campaign)), Some(&campaign));
+        assert_eq!(resolve_inner_cv(Some(&node), None), Some(&node));
+        assert_eq!(resolve_inner_cv(None, None), None);
     }
 }

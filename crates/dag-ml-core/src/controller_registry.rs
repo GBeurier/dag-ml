@@ -19,7 +19,7 @@ const YAML_DOTTED_SUFFIX: &str = ".controller.yaml";
 /// Parse a single YAML manifest from raw text. The same `ControllerManifest`
 /// deserializer is reused so YAML and JSON cannot drift on field shape.
 pub fn parse_yaml_manifest(text: &str) -> Result<ControllerManifest> {
-    let manifest: ControllerManifest = serde_yml::from_str(text).map_err(|error| {
+    let manifest: ControllerManifest = yaml_serde::from_str(text).map_err(|error| {
         DagMlError::ControllerValidation(format!("controller manifest YAML parse failed: {error}"))
     })?;
     manifest.validate()?;

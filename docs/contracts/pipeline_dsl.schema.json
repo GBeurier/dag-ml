@@ -66,6 +66,30 @@
         "_sample_"
       ]
     },
+    "nested_cv_spec": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "n_splits"],
+          "properties": {
+            "kind": { "const": "kfold" },
+            "n_splits": { "type": "integer", "minimum": 2 },
+            "shuffle": { "type": "boolean" },
+            "seed": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "n_splits"],
+          "properties": {
+            "kind": { "const": "group_kfold" },
+            "n_splits": { "type": "integer", "minimum": 2 }
+          }
+        }
+      ]
+    },
     "canonical_operator_step": {
       "type": "object",
       "additionalProperties": true,
@@ -100,6 +124,9 @@
         },
         "shape": {
           "$ref": "#/$defs/json_object"
+        },
+        "inner_cv": {
+          "$ref": "#/$defs/nested_cv_spec"
         }
       }
     },
@@ -190,6 +217,9 @@
         },
         "include_original_data": {
           "type": "boolean"
+        },
+        "inner_cv": {
+          "$ref": "#/$defs/nested_cv_spec"
         }
       },
       "allOf": [
@@ -272,6 +302,12 @@
         },
         "campaign_metadata": {
           "$ref": "#/$defs/json_object"
+        },
+        "inner_cv": {
+          "anyOf": [
+            { "$ref": "#/$defs/nested_cv_spec" },
+            { "type": "null" }
+          ]
         },
         "data_bindings": {
           "type": "array"

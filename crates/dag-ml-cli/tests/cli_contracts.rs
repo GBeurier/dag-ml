@@ -3807,7 +3807,9 @@ fn mdatools_process_controller_runs_plsda_one_shot() {
             "plsda prediction must be finite: {row:?}"
         );
     }
-    let artifacts = value["artifacts"].as_array().expect("REFIT artifacts array");
+    let artifacts = value["artifacts"]
+        .as_array()
+        .expect("REFIT artifacts array");
     assert_eq!(artifacts.len(), 1);
     assert_eq!(artifacts[0]["backend"].as_str(), Some("rds"));
 
@@ -5588,4 +5590,109 @@ fn r_has_mdatools(root: &Path) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+#[test]
+fn cli_runs_nested_cv_and_explain_smokes() {
+    let root = repo_root();
+
+    // Nested-CV smoke: a campaign-global `inner_cv` makes the runtime build an
+    // inner FoldSet per outer fold (from outer-train samples only) and deliver it
+    // to every FIT_CV node-task. The mock controller records the inner-fold count.
+    let nested_cv = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-mock-nested-cv",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_nested_cv.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--plan-id",
+            "plan:cli.nested.cv",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli run-mock-nested-cv");
+    assert!(
+        nested_cv.status.success(),
+        "run-mock-nested-cv failed: {}",
+        String::from_utf8_lossy(&nested_cv.stderr)
+    );
+    let nested_cv_stdout = String::from_utf8_lossy(&nested_cv.stdout);
+    assert!(
+        nested_cv_stdout.contains("8 node-task(s) received an inner FoldSet")
+            && nested_cv_stdout.contains("16 total inner fold(s)"),
+        "unexpected run-mock-nested-cv output: {nested_cv_stdout}"
+    );
+
+    // EXPLAIN smoke: build a bundle whose model controller supports EXPLAIN, then
+    // replay the EXPLAIN phase. The mock model controller emits one
+    // ExplanationBlock, exercising the EXPLAIN executor contract end-to-end.
+    let explain_bundle = std::env::temp_dir().join(format!(
+        "dag_ml_cli_execution_bundle_explain_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let explain_bundle_arg = explain_bundle
+        .to_str()
+        .expect("explain bundle path is valid UTF-8");
+    let build = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "build-bundle",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests_explain.json",
+            "--bundle-spec",
+            "examples/fixtures/bundle/bundle_build_spec_minimal.json",
+            "--output",
+            explain_bundle_arg,
+            "--plan-id",
+            "plan:cli.bundle",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli build-bundle (explain)");
+    assert!(
+        build.status.success(),
+        "build-bundle (explain) failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let explain = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "run-mock-replay",
+            "--bundle",
+            explain_bundle_arg,
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests_explain.json",
+            "--envelope",
+            "model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--replay-request",
+            "examples/fixtures/bundle/replay_request_explain.json",
+            "--plan-id",
+            "plan:cli.bundle",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli run-mock-replay (explain)");
+    assert!(
+        explain.status.success(),
+        "run-mock-replay (explain) failed: {}",
+        String::from_utf8_lossy(&explain.stderr)
+    );
+    let explain_stdout = String::from_utf8_lossy(&explain.stdout);
+    assert!(
+        explain_stdout.contains("1 explanation block(s)"),
+        "unexpected run-mock-replay (explain) output: {explain_stdout}"
+    );
 }

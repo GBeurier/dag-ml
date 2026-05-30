@@ -12,6 +12,9 @@ homepage.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-serde_yml.workspace = true
+yaml_serde.workspace = true
+# Keep yaml_serde's transitive indexmap on a Rust 1.83-compatible release.
+indexmap.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
