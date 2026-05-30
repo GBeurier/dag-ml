@@ -7,6 +7,26 @@ Implemented:
 - Rust workspace with core, facade, C ABI and CLI crates;
 - graph model and validation;
 - fold identity models and deterministic identity splitters;
+- canonical fold-set fingerprints exposed through Rust, Python and WASM JSON
+  helpers for replay/lineage identity;
+- shared `FoldSet` fixture parity with `dag-ml-data`, checked by
+  `scripts/validate_contracts.py` and smoke-tested through Python/WASM
+  bindings;
+- Python/WASM contract manifests for production/browser integrations to assert
+  package version, supported contracts, exported helpers and shared fixture
+  digests before compiling or replaying a pipeline;
+- ADR-11 structured error descriptors in Rust core, Python exception
+  attributes, WASM error payloads and C ABI `DagMlError` refusals, guarded by
+  `scripts/check_error_taxonomy.py`;
+- Python facade contract wrappers for host integrations to pass validated
+  `PipelineDslSpec`, `GraphSpec`, `CampaignSpec`, `ControllerManifests`,
+  `ExecutionPlan` and `FoldSet` values instead of raw JSON strings only;
+- installed-wheel Python integration smoke with sibling `dag-ml-data`, covering
+  typed facade composition from nirs4all-lite data planning to
+  nirs4all-compatible DSL execution-plan validation;
+- browser-target WASM integration smoke with sibling `dag-ml-data`, covering
+  manifest/fingerprint parity, nirs4all-lite data-plan envelope construction,
+  nirs4all-compatible DSL compilation and execution-plan validation;
 - OOF campaign fixtures, joins and leakage refusal;
 - campaign and OOF fixture fingerprints;
 - deterministic control seed derivation;
@@ -56,6 +76,39 @@ Implemented:
   contract;
 - stdlib shared-contract validation script plus CI checkout of `dag-ml-data`
   so schema copies and coordinator fixtures cannot drift silently;
+- CI documentation and packaging gates (`cargo doc` with rustdoc warnings
+  denied, plus workspace `cargo package --no-verify`) for release readiness;
+- Sphinx/MyST docs-site scaffold with a warnings-denied CI build and release
+  metadata validation, so ADR-09 has a local build gate before hosted docs;
+- ADR-14 managed-debt CI lint for production-path `TODO`/`FIXME` markers and
+  Rust `#[deprecated]` attributes, with release metadata enforcing the gate;
+- public Rust documentation coverage ratchet in CI, currently enforcing the
+  measured baseline while leaving the 95% invariant-docstring target explicit
+  for the hardening backlog;
+- ADR-10 publish-plan CI check that validates internal Cargo dependency
+  version pinning and dry-runs independently publishable root crates;
+- CI MSRV gate with Rust 1.83.0 and `cargo check --workspace --all-targets`,
+  matching the current PyO3 0.28.x floor;
+- CI supply-chain audit gate with pinned `cargo-audit` and
+  `cargo audit --deny warnings`;
+- CI Python wheel metadata smoke for name/version, `Requires-Python`, MIT
+  license packaging, `abi3`, native extension, stubs and `py.typed`;
+- CI WASM package tarball gate via `wasm-pack pack` for browser-target npm
+  artifacts;
+- CI npm tarball metadata gate via `npm pack --dry-run --json` for WASM
+  package name/version, integrity, bundled-dependency absence and required
+  published files;
+- WASM smoke validation for generated npm package metadata, including package
+  name, version, JS entry, typings, required emitted files and expected
+  TypeScript exports;
+- release metadata validator for Cargo workspace inheritance, internal crate
+  version pins, Python PEP 440 package version, `abi3-py311`, MSRV/toolchain
+  pins, MSRV-sensitive dependency pins, required governance files and the
+  docs-site / managed-debt / publish-plan CI gates;
+- public C ABI snapshot manifest for `dag_ml.h`, validated in CI so header
+  changes cannot drift silently;
+- shared parity-oracle handoff manifest for the first nirs4all-lite parity
+  cases, with fixture/gate references validated against `dag-ml-data`;
 - shared conformance-pack manifest with canonical schema/fixture digests, C ABI
   requirements and required cross-repo checks, kept JSON-identical with
   `dag-ml-data`;

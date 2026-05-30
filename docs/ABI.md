@@ -3,6 +3,12 @@
 The ABI is designed around opaque host handles. Rust owns the control lifetime;
 the host owns the underlying object behind each handle.
 
+When a C entry point fails with a `DagMlError`, `error_out` carries the ADR-11
+descriptor JSON shape: `category`, `code`, `severity`, `message`,
+`remediation_hint` and `context`. Null-pointer and malformed-input preflight
+errors still use the legacy human string because callers often branch on the
+status code before parsing a payload.
+
 ## Current Scaffold
 
 `crates/dag-ml-capi/include/dag_ml.h` exposes:
@@ -93,7 +99,10 @@ the host owns the underlying object behind each handle.
   `invoke` over `NodeTask`/`NodeResult` JSON and explicit returned-byte
   release. Controller vtable ABI v2 keeps borrowed `user_data` semantics; v3 is
   opt-in owned semantics where Rust calls `destroy(user_data)` after releasing
-  controller-owned result handles;
+  controller-owned result handles. The planned multitask extension keeps the
+  same ownership shape: an optional `invoke_batch` carries a validated
+  `TaskBatchRequest` JSON and returns one logical `NodeResult` per member task
+  plus optional parent batch provenance;
 - `DagMlDataVTable` for host data providers, including `materialize`,
   `make_view`, `view_identity`, `target_arrow` and `feature_arrow`.
   `feature_arrow` remains ABI-compatible: hosts may receive either a plain

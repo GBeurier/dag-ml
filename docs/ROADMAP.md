@@ -84,6 +84,8 @@ Definition of done:
 - Python controller adapter for sklearn smoke tests;
 - native C++ controller shim for `nirs4all-methods`;
 - `describe` blob validation;
+- optional `invoke_batch` / multitask manifest contract for controllers that
+  can execute known task groups or static subgraphs;
 - artifact handle release tests.
 
 Status: first process adapter smoke implemented for campaign, refit and replay.
@@ -131,6 +133,14 @@ multi-level DAG scopes across three variants and three CV folds, including
 deterministic prediction, lineage and seed equality. Broader native-controller
 and long-running adapter stress tests remain to do.
 
+Next parallelism hardening: add controller-side multitask batching. This is
+distinct from running many scalar tasks concurrently: a controller that declares
+`accepts_task_batch` or `accepts_static_subgraph` may receive one validated
+`TaskBatchRequest` for compatible logical tasks, such as a known cartesian bank
+of GPU preprocessings over the same fold/view. The acceptance test should prove
+that scalar and batched execution produce identical logical `NodeResult`s,
+prediction stores, cache keys, shape provenance, seeds and lineage ordering.
+
 ## Phase 3: Integration With `dag-ml-data`
 
 Definition of done:
@@ -165,6 +175,7 @@ Definition of done:
 
 - thread scheduler for native/GIL-free controllers;
 - process scheduler design for R and GIL-bound workloads;
+- controller multitask batching for compatible static task groups;
 - deterministic reducer order;
 - stress tests across folds and variants.
 

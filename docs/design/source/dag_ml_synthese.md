@@ -16,7 +16,8 @@ DAG-ML est un **moteur ML local, in-process**, extrait et généralisé de nirs4
 qui formalise : compilation d'un DSL pipeline en DAG, énumération de variants,
 exécution multi-phases (`COMPILE → PLAN → FIT_CV → SELECT → REFIT → PREDICT →
 EXPLAIN`), CV/OOF/stacking **sans leakage**, refit, predict/explain par replay,
-stores artifacts/cache/lineage, parallélisme, et un contrat d'opérateur stable.
+stores artifacts/cache/lineage, parallélisme, batching multitâche côté
+controller, et un contrat d'opérateur stable.
 Aucune logique NIRS dedans : le domaine entre par plugins.
 
 Le **but de l'architecture polyglotte** : porter le **moteur de rigueur ML**
@@ -107,7 +108,7 @@ Deux vtables C `#[repr(C)]` (détail complet : doc de travail §9-10). L'essenti
   `release / free_bytes / destroy`.
 - `capabilities` (bitset) : `GIL_FREE_COMPUTE`, `THREAD_SAFE`, `STATEFUL`,
   `INVERTIBLE`, `DETERMINISTIC`, `RNG_FROM_CORE`, `REQUIRES_DATASET_PLAN`,
-  `EMITS_RELATION`…
+  `EMITS_RELATION`, `ACCEPTS_TASK_BATCH`, `ACCEPTS_STATIC_SUBGRAPH`…
 
 **`DataVTable`** (la couche données par langage) :
 - `materialize`, `make_view` (slice **par sample-ids**, jamais par positions →
@@ -188,6 +189,12 @@ Ordre de construction proposé, chaque phase livrant quelque chose de vérifiabl
 - Scheduler threads (controllers `GIL_FREE_COMPUTE`) ; workers processus (Python
   GIL-bound, R) avec Arrow IPC. *DoD : scaling sur folds/variants, déterminisme
   conservé.*
+- Batching multitâche optionnel : le scheduler peut regrouper des `NodeTask`
+  compatibles en un appel de controller (`ControllerTaskBatch`) quand le
+  manifest déclare `ACCEPTS_TASK_BATCH` ou `ACCEPTS_STATIC_SUBGRAPH`. Cas cible :
+  banque de preprocessings GPU connue au PLAN, y compris bloc cartésien compilé
+  en sous-DAG statique. *DoD : fixture qui prouve que l'exécution batched produit
+  les mêmes sorties/logs/cache/lineage que l'exécution scalaire.*
 
 **Phase 4 — Binding R.**
 - extendr + couche données R + controllers mlr3 (isolés en processus).
@@ -212,6 +219,7 @@ Ordre de construction proposé, chaque phase livrant quelque chose de vérifiabl
 | 3 | **Impédance Arrow par type** (graphes/ragged) | Convention figée, ou garder host-local (handle) sans traverser. |
 | 4 | **Déterminisme FP des méthodes C++** | Les 5 conditions du §7 ; algèbre interne/Eigen, réductions à ordre fixe. |
 | 5 | **EXPLAIN feature-space** | Sorties opaques-au-cœur, stockées/transmises non interprétées. |
+| 6 | **Batching opaque trop puissant** (un controller cache une topologie) | Le graphe reste explicite ; le batch ne couvre que des tâches ou sous-DAGs connus au PLAN, et DAG-ML valide chaque `NodeResult` logique. |
 
 ---
 
