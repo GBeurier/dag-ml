@@ -49,11 +49,38 @@
         "$ref": "#/$defs/branch_view_plan"
       }
     },
+    "inner_cv": {
+      "$ref": "#/$defs/nested_cv_spec"
+    },
     "metadata": {
       "type": "object"
     }
   },
   "$defs": {
+    "nested_cv_spec": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "n_splits"],
+          "properties": {
+            "kind": { "const": "kfold" },
+            "n_splits": { "type": "integer", "minimum": 2 },
+            "shuffle": { "type": "boolean" },
+            "seed": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "n_splits"],
+          "properties": {
+            "kind": { "const": "group_kfold" },
+            "n_splits": { "type": "integer", "minimum": 2 }
+          }
+        }
+      ]
+    },
     "identifier": {
       "type": "string",
       "minLength": 1,

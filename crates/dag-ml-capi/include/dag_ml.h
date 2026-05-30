@@ -274,6 +274,19 @@ typedef struct DagMlControllerBinding {
 
 DagMlVersion dagml_version(void);
 void dagml_string_free(DagMlString value);
+/* ADR-11 thread-local last-error accessors. The buffer holds the structured
+ * descriptor JSON and numeric (category << 16 | code) of the most recent failing
+ * call on the calling thread. Every failing call updates it: taxonomy errors
+ * carry their real category/code; boundary errors (null pointer, bad UTF-8, JSON
+ * parse) use validation/c_abi_argument (0x0000FFFF). Errno-like semantics: it is
+ * NOT cleared on success, so check the function's return code first, then read
+ * the buffer on the same thread. */
+DagMlStatusCode dagml_last_error_json(DagMlString *out);
+uint32_t dagml_last_error_code(void);
+/* ADR-12 minimal telemetry hook: install a process-global tracing subscriber to
+ * stderr (RUST_LOG-filtered, default "info"). json_output != 0 emits JSON-logfmt.
+ * Returns OK, or VALIDATION_ERROR if a subscriber is already installed. */
+DagMlStatusCode dagml_init_tracing(uint8_t json_output);
 void dagml_owned_bytes_free(DagMlOwnedBytes value);
 void dagml_f64_tensor_free(DagMlF64Tensor value);
 void dagml_f64_columnar_tensor_free(DagMlF64ColumnarTensor value);

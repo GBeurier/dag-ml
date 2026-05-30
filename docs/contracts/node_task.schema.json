@@ -63,12 +63,79 @@
         "$ref": "#/$defs/artifact_input_spec"
       }
     },
+    "inner_fold_set": {
+      "anyOf": [
+        { "$ref": "#/$defs/fold_set" },
+        { "type": "null" }
+      ]
+    },
     "seed": {
       "type": ["integer", "null"],
       "minimum": 0
     }
   },
   "$defs": {
+    "nested_cv_spec": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "n_splits"],
+          "properties": {
+            "kind": { "const": "kfold" },
+            "n_splits": { "type": "integer", "minimum": 2 },
+            "shuffle": { "type": "boolean" },
+            "seed": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "n_splits"],
+          "properties": {
+            "kind": { "const": "group_kfold" },
+            "n_splits": { "type": "integer", "minimum": 2 }
+          }
+        }
+      ]
+    },
+    "fold_assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fold_id", "train_sample_ids", "validation_sample_ids"],
+      "properties": {
+        "fold_id": { "$ref": "#/$defs/identifier" },
+        "train_sample_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "validation_sample_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "metadata": { "type": "object" }
+      }
+    },
+    "fold_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sample_ids", "folds"],
+      "properties": {
+        "id": { "$ref": "#/$defs/non_empty_string" },
+        "sample_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "folds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fold_assignment" }
+        },
+        "sample_groups": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/identifier" }
+        }
+      }
+    },
     "identifier": {
       "type": "string",
       "minLength": 1,
@@ -233,6 +300,9 @@
         },
         "params": {
           "type": "object"
+        },
+        "inner_cv": {
+          "$ref": "#/$defs/nested_cv_spec"
         },
         "params_fingerprint": {
           "$ref": "#/$defs/fingerprint"

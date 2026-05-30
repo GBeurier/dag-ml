@@ -13,6 +13,10 @@ Canonical fixture: `examples/fixtures/data/coordinator_data_plan_envelope_nir.js
 
 Conformance pack: `conformance_pack.v1.json`
 
+Parity oracle handoff: `parity_oracle.v1.json`
+
+Public C ABI snapshot: `abi_snapshot.v1.json`
+
 Runtime type consumed here: `ExternalDataPlanEnvelope`
 
 Producer type in `dag-ml-data`: `CoordinatorDataPlanEnvelope`
@@ -31,6 +35,33 @@ sibling checkout, validates the shared conformance-pack digests, and CI checks
 out that peer explicitly. When development moves into a monorepo, this file
 should become a single generated or shared contract artifact used by both
 crates.
+
+## Parity Oracle v1
+
+Manifest: `parity_oracle.v1.json`
+
+This is the producer-side handoff for the future `nirs4all` compatibility
+ledger. It does not wire `nirs4all`; instead it names the parity cases,
+fixtures, Python/WASM gates and invariants that the consumer ledger must bind
+to public API rows before bridge work starts. `scripts/validate_contracts.py`
+checks the manifest shape, verifies referenced `dag-ml`/`dag-ml-data` fixtures
+when the sibling checkout is present, pins its digest in
+`conformance_pack.v1.json`, and requires the manifest to stay byte-identical
+across both repositories.
+
+## Public C ABI Snapshot v1
+
+Snapshot: `abi_snapshot.v1.json`
+
+Header: `crates/dag-ml-capi/include/dag_ml.h`
+
+`scripts/validate_abi_snapshot.py` checks the header SHA-256 against the
+snapshot and runs in CI. Any C ABI header change must update this manifest in
+the same review so downstream hosts can see the ABI movement explicitly.
+The shared `dag-ml-data` conformance pack also requires the producer-side
+multi-target Arrow helper
+`dagmldata_coordinator_multi_target_arrow_json`, which is consumed as a data
+provider capability rather than as a `dag-ml` header symbol.
 
 ## Coordinator Branch View v1
 

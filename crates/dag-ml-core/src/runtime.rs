@@ -32,7 +32,7 @@ use crate::ids::{
 };
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
-use crate::plan::{ExecutionPlan, NodePlan};
+use crate::plan::{CampaignSpec, ExecutionPlan, NodePlan};
 use crate::policy::{AggregationPolicy, PredictionLevel, ShapeDelta, ShapeDeltaKind};
 use crate::relation::SampleRelationSet;
 use crate::rng::SeedContext;
@@ -2285,6 +2285,12 @@ pub struct NodeTask {
     pub prediction_inputs: BTreeMap<String, PredictionInputSpec>,
     #[serde(default)]
     pub artifact_inputs: BTreeMap<String, ArtifactInputSpec>,
+    /// Nested (inner) CV fold set for this node in the current outer fold, built
+    /// by the runtime from the outer fold's training samples when an effective
+    /// `inner_cv` policy applies (FIT_CV only). `None` otherwise. Leakage-safe by
+    /// construction (inner ⊆ outer-train); see [`crate::fold::NestedCvSpec`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_fold_set: Option<FoldSet>,
     pub seed: Option<u64>,
 }
 
@@ -2394,6 +2400,45 @@ impl VariantExecutionSpec {
     }
 }
 
+/// An EXPLAIN-phase output block (ADR-12 explain contract). Explanations are a
+/// node *output* returned in the [`NodeResult`] — like predictions, they cross as
+/// data, not as an opaque host handle. The `payload` shape is controller-defined
+/// (e.g. per-feature importances); the core does not interpret it. Explanations
+/// are only valid in the `EXPLAIN` phase.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExplanationBlock {
+    /// Node whose model the explanation describes (must equal the producing node).
+    pub producer_node: NodeId,
+    /// Stable explanation method identifier, e.g. `shap`, `permutation_importance`.
+    pub method: String,
+    /// Optional target/output name the explanation pertains to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_name: Option<String>,
+    /// Controller-defined explanation payload as canonical JSON.
+    pub payload: serde_json::Value,
+}
+
+impl ExplanationBlock {
+    /// Validate the intrinsic shape of the explanation block (method/target_name
+    /// non-empty). Producer identity is checked against the node in
+    /// [`NodeResult::validate_for_task`].
+    pub fn validate(&self) -> Result<()> {
+        if self.method.trim().is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "explanation method must be a non-empty identifier".to_string(),
+            ));
+        }
+        if let Some(name) = &self.target_name {
+            if name.trim().is_empty() {
+                return Err(DagMlError::RuntimeValidation(
+                    "explanation target_name must be non-empty when present".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeResult {
     pub node_id: NodeId,
@@ -2405,6 +2450,8 @@ pub struct NodeResult {
     pub observation_predictions: Vec<ObservationPredictionBlock>,
     #[serde(default)]
     pub aggregated_predictions: Vec<AggregatedPredictionBlock>,
+    #[serde(default)]
+    pub explanations: Vec<ExplanationBlock>,
     #[serde(default)]
     pub shape_deltas: Vec<ShapeDelta>,
     #[serde(default)]
@@ -2496,6 +2543,21 @@ impl NodeResult {
             )));
         }
         validate_lineage_shape_fingerprints(&self.lineage, task)?;
+        if !self.explanations.is_empty() && task.phase != Phase::Explain {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` returned explanations outside the EXPLAIN phase",
+                task.node_plan.node_id
+            )));
+        }
+        for explanation in &self.explanations {
+            explanation.validate()?;
+            if explanation.producer_node != self.node_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` returned an explanation produced by `{}`",
+                    self.node_id, explanation.producer_node
+                )));
+            }
+        }
         for (port, handle) in &self.outputs {
             if handle.owner_controller != task.node_plan.controller_id {
                 return Err(DagMlError::RuntimeValidation(format!(
@@ -3576,6 +3638,14 @@ impl SequentialScheduler {
         scope: PhaseScope,
         mut resources: PhaseScopeResources<'_>,
     ) -> Result<Vec<NodeResult>> {
+        let _phase_span = crate::observability::phase_span(
+            ctx.run_id.as_str(),
+            plan.id.as_str(),
+            scope.phase.as_str(),
+            scope.variant_id.as_ref().map(VariantId::as_str),
+            scope.fold_id.as_ref().map(FoldId::as_str),
+        )
+        .entered();
         let mut results = Vec::new();
         let mut output_handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
         let mut output_data_views =
@@ -3630,7 +3700,14 @@ impl SequentialScheduler {
                     }
                 }
                 let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
+                let inner_fold_set = inner_fold_set_for_scope(
+                    &plan.campaign,
+                    plan.fold_set.as_ref(),
+                    node_plan,
+                    &scope,
+                )?;
                 let task = NodeTask {
+                    inner_fold_set,
                     run_id: ctx.run_id.clone(),
                     node_plan: task_node_plan.clone(),
                     phase: scope.phase,
@@ -3650,6 +3727,14 @@ impl SequentialScheduler {
                         scope.phase,
                     ),
                 };
+                let _node_span = crate::observability::node_span(
+                    task.run_id.as_str(),
+                    plan.id.as_str(),
+                    task.phase.as_str(),
+                    task.node_plan.node_id.as_str(),
+                    task.node_plan.controller_id.as_str(),
+                )
+                .entered();
                 let mut result = controller.invoke(&task)?;
                 result.validate_for_task(&task)?;
                 apply_result_prediction_aggregation(
@@ -3997,6 +4082,19 @@ impl ParallelScheduler {
         scope: PhaseScope,
         mut resources: PhaseScopeResources<'_>,
     ) -> Result<Vec<NodeResult>> {
+        // Hold the phase span on the scheduler thread, and clone it into each
+        // worker so worker-thread telemetry nests under the phase (tracing spans
+        // are thread-local and do not auto-propagate across `thread::scope`).
+        let phase_span = crate::observability::phase_span(
+            ctx.run_id.as_str(),
+            plan.id.as_str(),
+            scope.phase.as_str(),
+            scope.variant_id.as_ref().map(VariantId::as_str),
+            scope.fold_id.as_ref().map(FoldId::as_str),
+        );
+        let _phase_entered = phase_span.clone().entered();
+        // Borrowed for the `thread::scope` below; workers join before it ends.
+        let plan_id = plan.id.as_str();
         plan.validate_parallel_controller_capabilities(self.max_workers, scope.phase)?;
         let mut results = Vec::new();
         let mut output_handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
@@ -4047,9 +4145,16 @@ impl ParallelScheduler {
                     }
                 }
                 let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
+                let inner_fold_set = inner_fold_set_for_scope(
+                    &plan.campaign,
+                    plan.fold_set.as_ref(),
+                    node_plan,
+                    &scope,
+                )?;
                 prepared.push(PreparedNodeTask {
                     node_id: node_id.clone(),
                     task: NodeTask {
+                        inner_fold_set,
                         run_id: ctx.run_id.clone(),
                         node_plan: task_node_plan.clone(),
                         phase: scope.phase,
@@ -4085,7 +4190,17 @@ impl ParallelScheduler {
                                         prepared_task.task.node_plan.controller_id
                                     ))
                                 })?;
+                            let worker_span = phase_span.clone();
                             handles.push(thread_scope.spawn(move || {
+                                let _worker_span = worker_span.entered();
+                                let _node_span = crate::observability::node_span(
+                                    prepared_task.task.run_id.as_str(),
+                                    plan_id,
+                                    prepared_task.task.phase.as_str(),
+                                    prepared_task.task.node_plan.node_id.as_str(),
+                                    prepared_task.task.node_plan.controller_id.as_str(),
+                                )
+                                .entered();
                                 let result = controller.invoke(&prepared_task.task)?;
                                 result.validate_for_task(&prepared_task.task)?;
                                 Ok(result)
@@ -5982,6 +6097,37 @@ fn fold_for_scope<'a>(
         })
 }
 
+/// Build the inner (nested) `FoldSet` for `node_plan` in `scope`, when an
+/// effective inner-CV policy applies. Gated to FIT_CV with an outer fold in
+/// scope; returns `Ok(None)` otherwise (no inner CV, or no outer fold to nest
+/// within). The inner folds are built from the outer fold's TRAINING samples
+/// only, so they are a subset of outer-train by construction (no leakage).
+fn inner_fold_set_for_scope(
+    campaign: &CampaignSpec,
+    outer_fold_set: Option<&FoldSet>,
+    node_plan: &NodePlan,
+    scope: &PhaseScope,
+) -> Result<Option<FoldSet>> {
+    if scope.phase != Phase::FitCv {
+        return Ok(None);
+    }
+    let Some(spec) =
+        crate::fold::resolve_inner_cv(node_plan.inner_cv.as_ref(), campaign.inner_cv.as_ref())
+    else {
+        return Ok(None);
+    };
+    // Nested CV needs an outer fold to nest within. `fold_for_scope` yields
+    // `None` only when there is no outer fold in scope (skip), and errors if a
+    // fold was requested but is missing from the fold set.
+    let Some(outer) = fold_for_scope(outer_fold_set, scope.fold_id.as_ref())? else {
+        return Ok(None);
+    };
+    let outer_groups = &outer_fold_set
+        .expect("fold_for_scope returned a fold, so the outer fold set is present")
+        .sample_groups;
+    Ok(Some(spec.build_inner_fold_set(outer, outer_groups)?))
+}
+
 fn sample_ids_for_partition(
     partition: DataRequestPartition,
     fold_set: Option<&FoldSet>,
@@ -6173,6 +6319,50 @@ fn derive_task_seed(
             .child(format!("phase:{phase:?}"))
             .derive_u64("task")
     })
+}
+
+#[cfg(test)]
+mod explain_contract_tests {
+    use super::*;
+
+    fn block(method: &str) -> ExplanationBlock {
+        ExplanationBlock {
+            producer_node: NodeId::new("model:base").unwrap(),
+            method: method.to_string(),
+            target_name: Some("y".to_string()),
+            payload: serde_json::json!({"feature_importance": [0.5, 0.3, 0.2]}),
+        }
+    }
+
+    #[test]
+    fn validates_well_formed_explanation() {
+        assert!(block("shap").validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_method() {
+        assert!(block("  ").validate().is_err());
+    }
+
+    #[test]
+    fn rejects_empty_target_name() {
+        let mut b = block("shap");
+        b.target_name = Some(String::new());
+        assert!(b.validate().is_err());
+    }
+
+    #[test]
+    fn round_trips_through_json() {
+        let b = block("permutation_importance");
+        let json = serde_json::to_string(&b).expect("serialize");
+        let parsed: ExplanationBlock = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, b);
+        // `target_name` is omitted when absent.
+        let mut without = block("shap");
+        without.target_name = None;
+        let json = serde_json::to_string(&without).expect("serialize");
+        assert!(!json.contains("target_name"));
+    }
 }
 
 #[cfg(test)]

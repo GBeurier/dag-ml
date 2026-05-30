@@ -9,7 +9,7 @@ use crate::controller::{
 };
 use crate::data::{BranchViewPlan, DataBinding, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
-use crate::fold::FoldSet;
+use crate::fold::{FoldSet, NestedCvSpec};
 use crate::generation::{
     enumerate_variants, generation_spec_fingerprint, GenerationSpec, VariantPlan,
 };
@@ -71,6 +71,10 @@ pub struct CampaignSpec {
     pub data_bindings: BTreeMap<NodeId, Vec<DataBinding>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub branch_view_plans: Vec<BranchViewPlan>,
+    /// Campaign-wide default nested (inner) CV policy. A node-level
+    /// `NodePlan.inner_cv` overrides it; see [`crate::fold::resolve_inner_cv`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_cv: Option<NestedCvSpec>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
@@ -84,6 +88,9 @@ impl CampaignSpec {
         }
         self.leakage_policy.validate()?;
         self.aggregation_policy.validate()?;
+        if let Some(inner_cv) = &self.inner_cv {
+            inner_cv.validate()?;
+        }
         if let Some(split) = &self.split_invocation {
             split.validate()?;
         }
@@ -186,6 +193,10 @@ pub struct NodePlan {
     pub data_bindings: Vec<DataBinding>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, serde_json::Value>,
+    /// Node-local nested (inner) CV policy (e.g. for a finetune/tuner or branch
+    /// node); overrides the campaign-wide default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_cv: Option<NestedCvSpec>,
     pub params_fingerprint: String,
 }
 
@@ -284,6 +295,20 @@ impl ExecutionPlan {
                 return Err(DagMlError::Planning(format!(
                     "node plan `{node_id}` params fingerprint does not match params"
                 )));
+            }
+        }
+        // Validate every node-local inner_cv over ALL node plans (not just the
+        // cached topological order): a hand-loaded ExecutionPlan JSON with a
+        // stale/tampered order could omit a FIT_CV node from that order while
+        // still scheduling it via parallel levels, so a malformed inner_cv must
+        // be refused here rather than deferred to FIT_CV fold building.
+        for (node_id, plan) in &self.node_plans {
+            if let Some(inner_cv) = &plan.inner_cv {
+                inner_cv.validate().map_err(|error| {
+                    DagMlError::Planning(format!(
+                        "node plan `{node_id}` has invalid inner_cv: {error}"
+                    ))
+                })?;
             }
         }
         self.validate_oof_controller_capabilities()?;
@@ -539,6 +564,30 @@ pub fn build_execution_plan(
         let manifest = registry.resolve_for_node(node)?;
         let params = node.params.clone();
         let params_fingerprint = stable_json_fingerprint(&params)?;
+        // Lower a node-local nested-CV policy carried by the DSL compiler in the
+        // graph node metadata into the typed NodePlan field. Malformed metadata
+        // fails the plan rather than silently dropping nested CV.
+        let inner_cv = match node.metadata.get("dsl_inner_cv") {
+            Some(value) => {
+                let spec =
+                    serde_json::from_value::<NestedCvSpec>(value.clone()).map_err(|error| {
+                        DagMlError::Planning(format!(
+                            "node `{}` has invalid dsl_inner_cv metadata: {error}",
+                            node.id
+                        ))
+                    })?;
+                // Reject semantically malformed specs (e.g. n_splits < 2) here, at
+                // the plan boundary, rather than deferring to FIT_CV fold building.
+                spec.validate().map_err(|error| {
+                    DagMlError::Planning(format!(
+                        "node `{}` has invalid dsl_inner_cv metadata: {error}",
+                        node.id
+                    ))
+                })?;
+                Some(spec)
+            }
+            None => None,
+        };
         let shape_plan = campaign.shape_plans.get(&node.id).cloned();
         let data_bindings = campaign
             .data_bindings
@@ -548,6 +597,7 @@ pub fn build_execution_plan(
         node_plans.insert(
             node.id.clone(),
             NodePlan {
+                inner_cv,
                 node_id: node.id.clone(),
                 kind: node.kind.clone(),
                 controller_id: manifest.controller_id.clone(),
@@ -664,6 +714,186 @@ mod tests {
     use crate::controller::{
         ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest, RngPolicy,
     };
+
+    #[test]
+    fn inner_cv_is_declarable_at_campaign_and_node_level() {
+        // Campaign-level (global) declaration round-trips through JSON.
+        let campaign_json = r#"{"id":"c","root_seed":null,"inner_cv":{"kind":"kfold","n_splits":3,"shuffle":false,"seed":5}}"#;
+        let campaign: CampaignSpec = serde_json::from_str(campaign_json).unwrap();
+        campaign.validate().unwrap();
+        assert!(campaign.inner_cv.is_some());
+
+        // A node-local declaration overrides the campaign default.
+        let node_inner = crate::fold::NestedCvSpec::KFold(crate::fold::KFoldSpec {
+            n_splits: 4,
+            shuffle: false,
+            seed: Some(6),
+        });
+        let resolved = crate::fold::resolve_inner_cv(Some(&node_inner), campaign.inner_cv.as_ref());
+        assert_eq!(resolved, Some(&node_inner));
+
+        // Absent on both campaign and node serializes away (skip_serializing_if).
+        let bare = r#"{"id":"c","root_seed":null}"#;
+        let bare_campaign: CampaignSpec = serde_json::from_str(bare).unwrap();
+        assert!(bare_campaign.inner_cv.is_none());
+        let reserialized = serde_json::to_string(&bare_campaign).unwrap();
+        assert!(!reserialized.contains("inner_cv"));
+
+        // A semantically-malformed campaign-global inner_cv (n_splits < 2) is
+        // rejected by CampaignSpec::validate (the plan boundary), not deferred.
+        let bad: CampaignSpec = serde_json::from_str(
+            r#"{"id":"c","root_seed":null,"inner_cv":{"kind":"kfold","n_splits":1,"shuffle":false,"seed":null}}"#,
+        )
+        .unwrap();
+        let error = bad.validate().unwrap_err();
+        assert!(error.to_string().contains("at least two splits"));
+    }
+
+    #[test]
+    fn execution_plan_validate_rejects_invalid_node_local_inner_cv() {
+        // A canonical ExecutionPlan loaded from JSON (bypassing DSL lowering) can
+        // carry a malformed node-local inner_cv; ExecutionPlan::validate must
+        // refuse it rather than deferring to FIT_CV fold building.
+        let campaign = CampaignSpec {
+            inner_cv: None,
+            id: "campaign:plan-validate".to_string(),
+            root_seed: Some(7),
+            leakage_policy: LeakageUnitPolicy::default(),
+            aggregation_policy: AggregationPolicy::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+        let mut plan =
+            build_execution_plan("plan:validate", graph(), campaign, &registry()).unwrap();
+        plan.validate().unwrap();
+        plan.node_plans
+            .get_mut(&NodeId::new("model:pls").unwrap())
+            .unwrap()
+            .inner_cv = Some(crate::fold::NestedCvSpec::KFold(crate::fold::KFoldSpec {
+            n_splits: 1,
+            shuffle: false,
+            seed: None,
+        }));
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error.to_string().contains("invalid inner_cv"));
+        assert!(error.to_string().contains("at least two splits"));
+    }
+
+    #[test]
+    fn build_execution_plan_lowers_dsl_inner_cv_metadata_into_node_plan() {
+        let mut graph = graph();
+        graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.as_str() == "model:pls")
+            .unwrap()
+            .metadata
+            .insert(
+                "dsl_inner_cv".to_string(),
+                serde_json::json!({"kind": "kfold", "n_splits": 3, "shuffle": false, "seed": 9}),
+            );
+
+        let campaign = CampaignSpec {
+            inner_cv: None,
+            id: "campaign:inner-cv".to_string(),
+            root_seed: Some(7),
+            leakage_policy: LeakageUnitPolicy::default(),
+            aggregation_policy: AggregationPolicy::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+
+        let plan = build_execution_plan("plan:inner-cv", graph, campaign, &registry()).unwrap();
+        match &plan.node_plans[&NodeId::new("model:pls").unwrap()].inner_cv {
+            Some(crate::fold::NestedCvSpec::KFold(k)) => {
+                assert_eq!(k.n_splits, 3);
+                assert_eq!(k.seed, Some(9));
+            }
+            other => panic!("expected lowered KFold inner_cv, got {other:?}"),
+        }
+        assert!(plan.node_plans[&NodeId::new("transform:snv").unwrap()]
+            .inner_cv
+            .is_none());
+    }
+
+    #[test]
+    fn build_execution_plan_rejects_malformed_dsl_inner_cv_metadata() {
+        let mut graph = graph();
+        graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.as_str() == "model:pls")
+            .unwrap()
+            .metadata
+            .insert(
+                "dsl_inner_cv".to_string(),
+                serde_json::json!({"kind": "not_a_real_kind"}),
+            );
+
+        let campaign = CampaignSpec {
+            inner_cv: None,
+            id: "campaign:inner-cv.bad".to_string(),
+            root_seed: Some(7),
+            leakage_policy: LeakageUnitPolicy::default(),
+            aggregation_policy: AggregationPolicy::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+
+        let error =
+            build_execution_plan("plan:inner-cv.bad", graph, campaign, &registry()).unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error.to_string().contains("invalid dsl_inner_cv metadata"));
+    }
+
+    #[test]
+    fn build_execution_plan_rejects_semantically_invalid_dsl_inner_cv() {
+        // Right discriminator, invalid value: a single split is rejected at the
+        // plan boundary rather than deferred to FIT_CV fold building.
+        let mut graph = graph();
+        graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.as_str() == "model:pls")
+            .unwrap()
+            .metadata
+            .insert(
+                "dsl_inner_cv".to_string(),
+                serde_json::json!({"kind": "kfold", "n_splits": 1, "shuffle": false, "seed": null}),
+            );
+
+        let campaign = CampaignSpec {
+            inner_cv: None,
+            id: "campaign:inner-cv.nsplits".to_string(),
+            root_seed: Some(7),
+            leakage_policy: LeakageUnitPolicy::default(),
+            aggregation_policy: AggregationPolicy::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+
+        let error = build_execution_plan("plan:inner-cv.nsplits", graph, campaign, &registry())
+            .unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error.to_string().contains("at least two splits"));
+    }
     use crate::data::DataBinding;
     use crate::generation::{
         GenerationChoice, GenerationDimension, GenerationParamOverride, GenerationStrategy,
@@ -928,6 +1158,7 @@ mod tests {
     fn builds_execution_plan_with_shape_and_fold_contracts() {
         let model_id = NodeId::new("model:pls").unwrap();
         let campaign = CampaignSpec {
+            inner_cv: None,
             id: "campaign:oof".to_string(),
             root_seed: Some(7),
             leakage_policy: LeakageUnitPolicy::default(),
@@ -1069,6 +1300,7 @@ mod tests {
     #[test]
     fn planning_refuses_shape_plan_for_unknown_node() {
         let campaign = CampaignSpec {
+            inner_cv: None,
             id: "campaign:oof".to_string(),
             root_seed: Some(7),
             leakage_policy: LeakageUnitPolicy::default(),
@@ -1112,6 +1344,7 @@ mod tests {
             "plan:oof.capability",
             oof_graph(),
             CampaignSpec {
+                inner_cv: None,
                 id: "campaign:oof.capability".to_string(),
                 root_seed: Some(11),
                 leakage_policy: Default::default(),
@@ -1148,6 +1381,7 @@ mod tests {
             "plan:parallel.capability",
             graph(),
             CampaignSpec {
+                inner_cv: None,
                 id: "campaign:parallel.capability".to_string(),
                 root_seed: Some(11),
                 leakage_policy: Default::default(),
@@ -1175,6 +1409,7 @@ mod tests {
     #[test]
     fn planning_refuses_generation_override_for_unknown_node() {
         let campaign = CampaignSpec {
+            inner_cv: None,
             id: "campaign:oof".to_string(),
             root_seed: Some(7),
             leakage_policy: LeakageUnitPolicy::default(),
@@ -1214,6 +1449,7 @@ mod tests {
     #[test]
     fn planning_validates_declared_search_space_fingerprint() {
         let campaign = CampaignSpec {
+            inner_cv: None,
             id: "campaign:search.fingerprint".to_string(),
             root_seed: Some(7),
             leakage_policy: LeakageUnitPolicy::default(),

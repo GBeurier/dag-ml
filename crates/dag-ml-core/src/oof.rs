@@ -381,6 +381,7 @@ pub fn validate_prediction_blocks_are_oof(
     if violators.is_empty() {
         Ok(())
     } else {
+        crate::observability::emit_oof_refusal(policy.node_id.as_str(), violators.len());
         Err(DagMlError::OofLeakage(Box::new(OofLeakageReport {
             node_id: policy.node_id.to_string(),
             violators,

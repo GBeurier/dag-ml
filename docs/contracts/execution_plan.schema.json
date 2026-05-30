@@ -261,10 +261,37 @@
         "params": {
           "type": "object"
         },
+        "inner_cv": {
+          "$ref": "#/$defs/nested_cv_spec"
+        },
         "params_fingerprint": {
           "$ref": "#/$defs/sha256"
         }
       }
+    },
+    "nested_cv_spec": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "n_splits"],
+          "properties": {
+            "kind": { "const": "kfold" },
+            "n_splits": { "type": "integer", "minimum": 2 },
+            "shuffle": { "type": "boolean" },
+            "seed": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "n_splits"],
+          "properties": {
+            "kind": { "const": "group_kfold" },
+            "n_splits": { "type": "integer", "minimum": 2 }
+          }
+        }
+      ]
     },
     "variant_plan": {
       "type": "object",
