@@ -256,6 +256,84 @@ impl KFoldSpec {
     }
 }
 
+/// Stratified K-fold: each sample is validated exactly once (OOF-safe like
+/// plain K-fold), but folds are balanced by a per-sample class label so every
+/// fold mirrors the overall class distribution. `strata` maps each sample id to
+/// its class label (identity-keyed metadata — never feature values).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StratifiedKFoldSpec {
+    pub n_splits: usize,
+    #[serde(default)]
+    pub shuffle: bool,
+    pub seed: Option<u64>,
+}
+
+impl StratifiedKFoldSpec {
+    pub fn split(
+        &self,
+        id: impl Into<String>,
+        samples: &[SampleId],
+        strata: &BTreeMap<SampleId, String>,
+    ) -> Result<FoldSet> {
+        if self.n_splits < 2 {
+            return Err(DagMlError::OofValidation(
+                "StratifiedKFold requires at least two splits".to_string(),
+            ));
+        }
+        let unique = unique_samples("StratifiedKFold samples", samples)?;
+        if self.n_splits > unique.len() {
+            return Err(DagMlError::OofValidation(format!(
+                "StratifiedKFold n_splits={} exceeds sample count {}",
+                self.n_splits,
+                unique.len()
+            )));
+        }
+        // Assign each sample to a validation fold, round-robin WITHIN each class,
+        // so every sample lands in exactly one fold (OOF) and classes spread evenly.
+        let ordered = ordered_samples(samples, self.shuffle, self.seed.unwrap_or(0));
+        let mut per_class_counter: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut fold_of: BTreeMap<SampleId, usize> = BTreeMap::new();
+        for sample_id in &ordered {
+            let label = strata.get(sample_id).ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "StratifiedKFold: sample `{sample_id}` has no stratum label"
+                ))
+            })?;
+            let counter = per_class_counter.entry(label.as_str()).or_insert(0);
+            fold_of.insert(sample_id.clone(), *counter % self.n_splits);
+            *counter += 1;
+        }
+        let folds = (0..self.n_splits)
+            .map(|fold_idx| {
+                let validation = ordered
+                    .iter()
+                    .filter(|s| fold_of.get(*s) == Some(&fold_idx))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let train = ordered
+                    .iter()
+                    .filter(|s| fold_of.get(*s) != Some(&fold_idx))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                Ok(FoldAssignment {
+                    fold_id: FoldId::new(format!("fold{fold_idx}"))?,
+                    train_sample_ids: train,
+                    validation_sample_ids: validation,
+                    metadata: BTreeMap::new(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let fold_set = FoldSet {
+            id: id.into(),
+            sample_ids: ordered_samples(samples, false, 0),
+            folds,
+            sample_groups: BTreeMap::new(),
+        };
+        fold_set.validate()?;
+        Ok(fold_set)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GroupKFoldSpec {
     pub n_splits: usize,
@@ -641,6 +719,52 @@ mod tests {
                 assert!(!train_groups.contains(groups.get(sample_id).unwrap()));
             }
         }
+    }
+
+    #[test]
+    fn stratified_kfold_is_oof_safe_and_balances_classes() {
+        // 8 samples, 2 classes (4 each); 2-fold stratified → each fold gets 2 of each class.
+        let samples = (0..8).map(|i| sid(&format!("s{i}"))).collect::<Vec<_>>();
+        let strata = BTreeMap::from_iter(samples.iter().enumerate().map(|(i, s)| {
+            (
+                s.clone(),
+                if i % 2 == 0 {
+                    "A".to_string()
+                } else {
+                    "B".to_string()
+                },
+            )
+        }));
+        let fold_set = StratifiedKFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: Some(0),
+        }
+        .split("strat", &samples, &strata)
+        .unwrap();
+        fold_set.validate().unwrap(); // OOF: each sample validated exactly once
+        assert_eq!(fold_set.folds.len(), 2);
+        for fold in &fold_set.folds {
+            let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+            for s in &fold.validation_sample_ids {
+                *counts.entry(strata.get(s).unwrap().as_str()).or_insert(0) += 1;
+            }
+            assert_eq!(counts.get("A"), Some(&2));
+            assert_eq!(counts.get("B"), Some(&2));
+        }
+    }
+
+    #[test]
+    fn stratified_kfold_rejects_missing_label() {
+        let samples = (0..4).map(|i| sid(&format!("s{i}"))).collect::<Vec<_>>();
+        let strata = BTreeMap::from_iter([(sid("s0"), "A".to_string())]); // incomplete
+        let err = StratifiedKFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: Some(0),
+        }
+        .split("strat", &samples, &strata);
+        assert!(err.is_err());
     }
 
     fn outer_kfold(samples: &[SampleId]) -> FoldSet {
