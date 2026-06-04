@@ -433,6 +433,7 @@ name = "dag-ml-wasm"
 version = "0.1.0-alpha.0"
 dependencies = [
  "dag-ml-core",
+ "js-sys",
  "serde",
  "serde_json",
  "wasm-bindgen",
