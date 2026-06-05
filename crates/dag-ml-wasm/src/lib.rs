@@ -90,7 +90,11 @@ pub fn fold_set_fingerprint_json(json: &str) -> Result<String, JsValue> {
 /// Build a K-fold `FoldSet` from a `KFoldSpec` JSON + a JSON array of sample ids.
 /// dag-ml owns the split — the host stops building folds itself.
 #[wasm_bindgen]
-pub fn kfold_split_json(spec_json: &str, sample_ids_json: &str, id: &str) -> Result<String, JsValue> {
+pub fn kfold_split_json(
+    spec_json: &str,
+    sample_ids_json: &str,
+    id: &str,
+) -> Result<String, JsValue> {
     let spec: KFoldSpec = serde_json::from_str(spec_json).map_err(js_serde_error)?;
     let samples: Vec<SampleId> = serde_json::from_str(sample_ids_json).map_err(js_serde_error)?;
     let fold_set = spec.split(id, &samples).map_err(js_core_error)?;
@@ -248,7 +252,10 @@ fn contract_manifest() -> serde_json::Value {
             "compile_pipeline_dsl_graph_json",
             "compile_pipeline_dsl_artifact_json",
             "compile_pipeline_dsl_artifact_with_controllers_json",
-            "build_execution_plan_json"
+            "build_execution_plan_json",
+            "kfold_split_json",
+            "stratified_kfold_split_json",
+            "execute_campaign_phase_json"
         ]
     })
 }
