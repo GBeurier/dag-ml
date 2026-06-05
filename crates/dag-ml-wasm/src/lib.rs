@@ -16,9 +16,10 @@ use std::collections::BTreeMap;
 use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fold_set_fingerprint,
-    parse_pipeline_dsl_json, CampaignSpec, ControllerManifest, ControllerRegistry,
-    DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec, KFoldSpec,
-    SampleId, StratifiedKFoldSpec,
+    parse_pipeline_dsl_json, select_candidate, select_candidate_groups, CampaignSpec,
+    CandidateScore, ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError,
+    ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec, KFoldSpec, SampleId, SelectionPolicy,
+    StratifiedKFoldSpec,
 };
 use dag_ml_core::{
     ControllerId, NodeResult, NodeTask, Phase, Result as CoreResult, RunContext, RunId,
@@ -117,6 +118,35 @@ pub fn stratified_kfold_split_json(
         serde_json::from_str(strata_json).map_err(js_serde_error)?;
     let fold_set = spec.split(id, &samples, &strata).map_err(js_core_error)?;
     serde_json::to_string(&fold_set).map_err(js_serde_error)
+}
+
+/// Rank candidate variants and return the winner — the SELECT phase for in-browser
+/// generators/finetune. Selection stays in dag-ml (deterministic argmin/argmax +
+/// id tie-break), not the host. `policy_json` = SelectionPolicy, `candidates_json`
+/// = CandidateScore[]. With `groups_json` (group_id → [candidate_id]) returns a
+/// {group → SelectionDecision} map; otherwise a single SelectionDecision.
+#[wasm_bindgen]
+pub fn select_candidates_json(
+    policy_json: &str,
+    candidates_json: &str,
+    groups_json: Option<String>,
+) -> Result<String, JsValue> {
+    let policy: SelectionPolicy = serde_json::from_str(policy_json).map_err(js_serde_error)?;
+    let candidates: Vec<CandidateScore> =
+        serde_json::from_str(candidates_json).map_err(js_serde_error)?;
+    match groups_json {
+        Some(groups_json) => {
+            let groups: BTreeMap<String, Vec<String>> =
+                serde_json::from_str(&groups_json).map_err(js_serde_error)?;
+            let decisions =
+                select_candidate_groups(&policy, &candidates, &groups).map_err(js_core_error)?;
+            serde_json::to_string(&decisions).map_err(js_serde_error)
+        }
+        None => {
+            let decision = select_candidate(&policy, &candidates).map_err(js_core_error)?;
+            serde_json::to_string(&decision).map_err(js_serde_error)
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -255,6 +285,7 @@ fn contract_manifest() -> serde_json::Value {
             "build_execution_plan_json",
             "kfold_split_json",
             "stratified_kfold_split_json",
+            "select_candidates_json",
             "execute_campaign_phase_json"
         ]
     })
