@@ -1,0 +1,6 @@
+- Review dette technique (ie fichier 10k lignes)
+- review objectifs
+- Matrice capactiés > nirs4all - dag-ml
+
+- WHAT ABOUT multi inputs models (DL or other) and multivariate ? (ie. multisource > model, branch > source > model, branches > model, etc.)
+- what about features to sources or branch to sources ?

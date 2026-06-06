@@ -10,3 +10,6 @@ __pycache__/
 external/
 crates/*/pkg-web/
 /docs/_build/
+
+# local code-intelligence index
+.codegraph/
