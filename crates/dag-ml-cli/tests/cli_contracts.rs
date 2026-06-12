@@ -3807,7 +3807,9 @@ fn mdatools_process_controller_runs_plsda_one_shot() {
             "plsda prediction must be finite: {row:?}"
         );
     }
-    let artifacts = value["artifacts"].as_array().expect("REFIT artifacts array");
+    let artifacts = value["artifacts"]
+        .as_array()
+        .expect("REFIT artifacts array");
     assert_eq!(artifacts.len(), 1);
     assert_eq!(artifacts[0]["backend"].as_str(), Some("rds"));
 
