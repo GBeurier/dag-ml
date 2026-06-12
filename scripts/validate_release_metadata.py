@@ -14,6 +14,7 @@ EXPECTED_CARGO_AUDIT_VERSION = "0.22.1"
 EXPECTED_INDEXMAP_VERSION = "=2.13.1"
 EXPECTED_RUST_VERSION = "1.83"
 EXPECTED_RUST_TOOLCHAIN = f"{EXPECTED_RUST_VERSION}.0"
+EXPECTED_PYO3_VERSION = "0.28.3"
 
 
 def load_toml(path: Path) -> dict[str, Any]:
@@ -75,8 +76,8 @@ def validate_workspace(repo: Path) -> tuple[str, str, list[str]]:
         f"workspace clap must stay pinned to {EXPECTED_CLAP_VERSION}",
     )
     require(
-        workspace_deps.get("pyo3") == "0.28.3",
-        "workspace pyo3 must stay pinned to 0.28.3",
+        workspace_deps.get("pyo3") == EXPECTED_PYO3_VERSION,
+        f"workspace pyo3 must stay pinned to {EXPECTED_PYO3_VERSION}",
     )
     require(
         "serde_yml" not in workspace_deps,
@@ -105,13 +106,6 @@ def validate_workspace(repo: Path) -> tuple[str, str, list[str]]:
                 table_has_workspace_true(crate_package, key),
                 f"{manifest_path}: package.{key} must inherit from workspace",
             )
-        if member.endswith("-py"):
-            pyo3 = manifest["dependencies"].get("pyo3")
-            require(isinstance(pyo3, dict), f"{manifest_path}: pyo3 dependency must be a table")
-            require(
-                "abi3-py311" in pyo3.get("features", []),
-                f"{manifest_path}: Python extension must use abi3-py311",
-            )
         if member.endswith("-wasm"):
             require(
                 table_has_workspace_true(manifest["dependencies"], "wasm-bindgen"),
@@ -134,6 +128,53 @@ def validate_workspace(repo: Path) -> tuple[str, str, list[str]]:
 
 def validate_python(repo: Path, repo_name: str, version: str) -> None:
     py_crate = repo / "crates" / f"{repo_name}-py"
+
+    # The PyO3 crate is excluded from the workspace (its abi3-py311 floor would
+    # force a Python>=3.11 host for `cargo test --workspace`/`cargo llvm-cov`),
+    # so it carries literal metadata + pinned deps instead of inheriting from
+    # the workspace. Validate them here so they cannot drift out of sync — the
+    # native module embeds CARGO_PKG_VERSION, so the Cargo version must track
+    # the workspace version.
+    cargo_path = py_crate / "Cargo.toml"
+    require(cargo_path.is_file(), f"missing Python crate manifest: {cargo_path}")
+    cargo = load_toml(cargo_path)
+    cargo_package = cargo["package"]
+    require(
+        cargo_package.get("version") == version,
+        f"{cargo_path}: package.version must match workspace version {version}",
+    )
+    require(
+        cargo_package.get("rust-version") == EXPECTED_RUST_VERSION,
+        f"{cargo_path}: package.rust-version must be {EXPECTED_RUST_VERSION}",
+    )
+    require(cargo_package.get("edition") == "2021", f"{cargo_path}: package.edition must be 2021")
+    require(cargo_package.get("license") == "MIT", f"{cargo_path}: package.license must be MIT")
+    require(
+        cargo_package.get("publish") is False,
+        f"{cargo_path}: excluded wheel crate must set publish = false",
+    )
+    cargo_deps = cargo["dependencies"]
+    pyo3 = cargo_deps.get("pyo3")
+    require(isinstance(pyo3, dict), f"{cargo_path}: pyo3 dependency must be a table")
+    require(
+        pyo3.get("version") == EXPECTED_PYO3_VERSION,
+        f"{cargo_path}: pyo3 must stay pinned to {EXPECTED_PYO3_VERSION}",
+    )
+    require(
+        "abi3-py311" in pyo3.get("features", []),
+        f"{cargo_path}: Python extension must use abi3-py311",
+    )
+    core_dep = cargo_deps.get(f"{repo_name}-core")
+    require(isinstance(core_dep, dict), f"{cargo_path}: {repo_name}-core dependency must be a table")
+    require(
+        core_dep.get("version") == version,
+        f"{cargo_path}: {repo_name}-core dependency must pin version {version}",
+    )
+    require(
+        core_dep.get("path") == f"../{repo_name}-core",
+        f"{cargo_path}: {repo_name}-core dependency must use path ../{repo_name}-core",
+    )
+
     pyproject_path = py_crate / "pyproject.toml"
     require(pyproject_path.is_file(), f"missing Python pyproject: {pyproject_path}")
     pyproject = load_toml(pyproject_path)

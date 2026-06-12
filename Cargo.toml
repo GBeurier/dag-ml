@@ -6,9 +6,18 @@ members = [
     "crates/dag-ml-arrow",
     "crates/dag-ml-capi",
     "crates/dag-ml-cli",
-    "crates/dag-ml-py",
     "crates/dag-ml-wasm",
 ]
+# The PyO3 binding pins a minimum Python (`abi3-py311`), so pyo3-build-config
+# refuses to build it against an older default interpreter. It is a leaf cdylib
+# shipped as a PyPI wheel built with maturin against its own manifest
+# (`cd crates/dag-ml-py && maturin build`) — never published to crates.io — so it
+# is kept out of the default workspace + publish gate. `cargo test --workspace`
+# and `cargo llvm-cov` then no longer require Python >= 3.11 on the host. This
+# mirrors `dag-ml-data`'s excluded `dag-ml-data-r` and the sibling repos'
+# excluded `bindings/python`. Build/test it standalone with
+# `cargo test --manifest-path crates/dag-ml-py/Cargo.toml`.
+exclude = ["crates/dag-ml-py"]
 
 [workspace.package]
 version = "0.1.0-alpha.0"
