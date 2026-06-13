@@ -22,6 +22,12 @@ Phase 0 of the nirs4all integration roadmap (`/home/delete/.claude/plans/use-4-a
 | 16 | [Artifact serialization security](ADR-16-artifact-security.md) | accepted | A, E |
 | 17 | [Feature flag / cutover / rollback](ADR-17-cutover-rollback.md) | accepted | E, F |
 | 18 | [Licensing](ADR-18-licensing.md) | proposed | C, D, all releases |
+| 19 | [Multi-source unit vocabulary & derived-combo decision](ADR-19-multisource-unit-vocabulary.md) | accepted | multi-source roadmap |
+
+ADR-19 onward extends the registry for feature roadmaps that build on this
+Phase-0 baseline; ADR-19 freezes the unit vocabulary and migration posture for
+the heterogeneous multi-source repetitions roadmap
+(`docs/HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md`).
 
 Format: each ADR is one page max, structured **Status / Context / Decision / Consequences / Blocks**. Changing a decision requires a new ADR that supersedes the old one (and explicitly says so).
 

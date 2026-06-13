@@ -5,6 +5,21 @@ DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
 validator: it checks fingerprints, campaign fold membership, OOF boundaries and
 leakage policies before any controller receives a handle.
 
+## Heterogeneous Multi-Source Vocabulary and Evolution
+
+The heterogeneous multi-source repetitions roadmap
+(`docs/HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md`) extends several of the
+schemas below with optional unit-level fields.
+`docs/adr/ADR-19-multisource-unit-vocabulary.md` freezes the vocabulary
+(`physical_sample`, `source_sample`, `observation`, `combo`, `EntityUnitLevel`,
+`PredictionUnitId`, `ReductionPlan`, `RepresentationPlan`, `FitInfluencePolicy`)
+and records the mainline decision that combos are relation-backed derived
+observations rather than a public `PredictionLevel`. Each phase that touches a
+contract here follows the ADR-19 / ADR-02 checklist: optional fields first,
+defaults/dual-read, fixture and conformance-pack update, CHANGELOG entry, and an
+explicit C ABI decision. A first-class public `combo` / `source_sample`
+prediction level remains deferred and gated.
+
 ## Coordinator Data Plan Envelope v1
 
 Schema: `coordinator_data_plan_envelope.schema.json`

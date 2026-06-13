@@ -367,6 +367,25 @@ The core refuses a split when:
   under `split_unit="sample"`;
 - a feature-dependent splitter returns folds not expressible in stable ids.
 
+### Heterogeneous Multi-Source Units
+
+For pipelines where one physical sample carries several observations per source
+with asymmetric cardinalities, unit domains are named by an `EntityUnitLevel`:
+`physical_sample` (the `SampleId`-level leakage/target/output unit),
+`source_sample` (one source's observations of a physical sample), `observation`
+(one acquisition, `ObservationId`) and `combo` (a derived observation built from
+one observation per source for the same physical sample). In the mainline a
+`combo` is a relation-backed derived observation/unit carrying
+`component_observation_ids` and `origin_sample_id`; it is not a public
+`PredictionLevel`. The public prediction levels stay
+`observation`/`sample`/`target`/`group`, and cartesian/combo work reduces to
+sample-level output by identity, never by row position. Promoting `combo` or
+`source_sample` to a first-class public prediction level is a deferred,
+explicitly-gated decision. The frozen vocabulary (`EntityUnitLevel`,
+`PredictionUnitId`, `ReductionPlan`, `RepresentationPlan`, `FitInfluencePolicy`),
+the mainline decision and the ADR-02 migration checklist are in
+`docs/adr/ADR-19-multisource-unit-vocabulary.md`.
+
 ## Repetitions, Aggregation And Refit
 
 Repeated observations are first-class. The core must support models trained on

@@ -60,3 +60,15 @@ The control core must not inspect:
 - feature matrices;
 - images, spectra, time series or graph buffers;
 - fitted operator internals.
+
+## Heterogeneous Multi-Source Units
+
+When one physical sample carries several observations per source with asymmetric
+cardinalities, unit domains are named by an `EntityUnitLevel` (`physical_sample`,
+`source_sample`, `observation`, `combo`). Combos are relation-backed derived
+observations (`component_observation_ids`, `origin_sample_id`), not a public
+`PredictionLevel`; the core plans `RepresentationPlan` / `ReductionPlan` /
+`FitInfluencePolicy` contracts and host handles only, and never materializes
+combo feature buffers. The frozen vocabulary and migration ledger live in
+`docs/adr/ADR-19-multisource-unit-vocabulary.md`; see `docs/COORDINATOR_SPEC.md`
+for the unit and prediction-level rules.

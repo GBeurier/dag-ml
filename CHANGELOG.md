@@ -17,6 +17,16 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   docs stack, release train, error taxonomy, observability, process-adapter
   security, deprecation policy, GIL/async, artifact security, cutover/rollback,
   licensing). See `docs/adr/README.md`.
+- `docs/adr/ADR-19-multisource-unit-vocabulary.md` (heterogeneous multi-source
+  repetitions roadmap, phase D0) freezes the unit vocabulary
+  (`physical_sample`, `source_sample`, `observation`, `combo`,
+  `EntityUnitLevel`, `PredictionUnitId`, `ReductionPlan`, `RepresentationPlan`,
+  `FitInfluencePolicy`), records that combos are relation-backed derived
+  observations rather than a public `PredictionLevel`, gates the first-class
+  public combo/source level behind a separate explicit public-contract
+  decision, and adds the per-feature ADR-02 migration checklist. Vocabulary and
+  ledger surfaced in `docs/COORDINATOR_SPEC.md`, `docs/ARCHITECTURE.md` and
+  `docs/contracts/README.md`.
 - Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
   `examples/README.md` audience matrix.
