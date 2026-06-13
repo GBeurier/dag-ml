@@ -39,7 +39,7 @@ docs/
 ## Consequences
 
 - Workstream C task 5 adds Sphinx config + GitHub Pages workflow per repo.
-- nirs4all's existing Sphinx pipeline serves as the template (`/home/delete/nirs4all/nirs4all/docs/source/conf.py`).
+- nirs4all's existing Sphinx pipeline serves as the template (the sibling `nirs4all` repo's `docs/source/conf.py`).
 - The site replaces `docs/TOC.md` as the canonical navigation entry point (TOC.md remains in-repo as the source).
 
 ## Risk

@@ -32,17 +32,76 @@ wire nirs4all directly.
 - Python binding source: `crates/dag-ml-py`
 - WASM binding source: `crates/dag-ml-wasm`
 
+## The nirs4all ecosystem
+
+<!-- RTD slugs are assumed equal to the repo name; edit a :link: URL if a slug differs at import. -->
+
+::::{grid} 1 2 2 2
+:gutter: 2
+
+:::{grid-item-card} dag-ml-data
+:link: https://dag-ml-data.readthedocs.io/en/latest/
+Typed sample-aligned multi-source data contracts — the data layer dag-ml consumes (shared, JSON-identical contracts).
+:::
+:::{grid-item-card} nirs4all
+:link: https://nirs4all.readthedocs.io/en/latest/
+Main Python modelling library — pipelines, SpectroDataset, predictions.
+:::
+:::{grid-item-card} nirs4all-methods
+:link: https://nirs4all-methods.readthedocs.io/en/latest/
+Portable C-ABI PLS/NIRS engine (libn4m) + bindings.
+:::
+:::{grid-item-card} nirs4all-formats
+:link: https://nirs4all-formats.readthedocs.io/en/latest/
+Rust readers for ~58 NIRS/spectroscopy file formats.
+:::
+:::{grid-item-card} nirs4all-io
+:link: https://nirs4all-io.readthedocs.io/en/latest/
+Dataset-assembly bridge → SpectroDataset.
+:::
+:::{grid-item-card} nirs4all-datasets
+:link: https://nirs4all-datasets.readthedocs.io/en/latest/
+Curated DOI-pinned NIRS dataset catalog (n4a-datasets).
+:::
+:::{grid-item-card} nirs4all-lite
+:link: https://nirs4all-lite.readthedocs.io/en/latest/
+Portable aggregate distribution (Rust + bindings).
+:::
+::::
+
 ```{toctree}
 :maxdepth: 2
+:caption: Overview
 :hidden:
 
 installation
+RATIONALE
 ARCHITECTURE
+COORDINATOR_SPEC
 ABI
-STATUS
-TEST_PLAN
-ROADMAP
 CAPABILITY_MATRIX
+ROADMAP
+TOC
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Contracts & decisions
+:hidden:
+
 contracts/README
 adr/README
+MVP_ACCEPTANCE
+OOF_FIXTURES
+OBSERVABILITY
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Development
+:hidden:
+
+STATUS
+TEST_PLAN
+design/README
 ```

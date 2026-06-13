@@ -1,6 +1,6 @@
 # Architecture Decision Records (ADRs)
 
-Phase 0 of the nirs4all integration roadmap (`/home/delete/.claude/plans/use-4-agents-et-immutable-axolotl.md`) closes 18 load-bearing decisions before any broad workstream can start. Each decision lives here as a numbered, frozen ADR.
+Phase 0 of the nirs4all integration roadmap closes the load-bearing decisions before any broad workstream can start. Each decision lives here as a numbered, frozen ADR; ADR-01 through ADR-18 form the frozen Phase-0 baseline, and ADR-19 onward extends it for later feature roadmaps.
 
 | # | Title | Status | Blocks |
 |---|---|---|---|
@@ -32,3 +32,28 @@ the heterogeneous multi-source repetitions roadmap
 Format: each ADR is one page max, structured **Status / Context / Decision / Consequences / Blocks**. Changing a decision requires a new ADR that supersedes the old one (and explicitly says so).
 
 The `dag-ml-data` sibling repo carries copies of ADRs 01, 02, 05, 06, 07 — the ones where the data layer is the primary enforcement site — under `dag-ml-data/docs/adr/`. The two ADR sets must stay byte-identical for the shared ADRs; CI validates this drift via `scripts/validate_contracts.py`.
+
+```{toctree}
+:maxdepth: 1
+:hidden:
+
+ADR-01-compatibility-ledger
+ADR-02-schema-evolution-sla
+ADR-03-separation-branch-semantics
+ADR-04-tag-exclude-masks
+ADR-05-repetition-cv-invariant
+ADR-06-signal-type-ownership
+ADR-07-aggregation-reducers
+ADR-08-session-persistence
+ADR-09-docs-stack
+ADR-10-release-train
+ADR-11-error-taxonomy
+ADR-12-observability-hooks
+ADR-13-process-adapter-security
+ADR-14-deprecation-policy
+ADR-15-gil-async
+ADR-16-artifact-security
+ADR-17-cutover-rollback
+ADR-18-licensing
+ADR-19-multisource-unit-vocabulary
+```
