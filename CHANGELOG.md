@@ -43,6 +43,10 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   controller task/result plan echoes and supports relation-backed combo
   observation reductions to physical samples without adding public combo
   prediction levels.
+- Heterogeneous multi-source repetitions roadmap D4 switches the default
+  leakage split vocabulary to explicit `physical_sample`, adds optional OOF
+  evaluation/refit/stacking selection contracts, and extends prediction-cache
+  metadata with relation/reduction/evaluation lineage markers.
 - Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
   `examples/README.md` audience matrix.

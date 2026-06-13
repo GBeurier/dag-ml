@@ -346,7 +346,7 @@ impl SampleRelationSet {
             }
 
             match policy.split_unit {
-                SplitUnit::Observation | SplitUnit::Sample => {}
+                SplitUnit::PhysicalSample | SplitUnit::Observation | SplitUnit::Sample => {}
                 SplitUnit::Target => validate_unit_partitions(
                     &fold.fold_id.to_string(),
                     "target",
@@ -625,6 +625,27 @@ mod tests {
 
         relations
             .validate_against_fold_set(&fold_set(), &LeakageUnitPolicy::default())
+            .unwrap();
+    }
+
+    #[test]
+    fn repeated_observations_validate_at_physical_sample_split_unit() {
+        let relations = SampleRelationSet {
+            records: vec![
+                relation("obs:1a", "s1", "t1", "g1"),
+                relation("obs:1b", "s1", "t1", "g1"),
+                relation("obs:2a", "s2", "t2", "g2"),
+                relation("obs:3a", "s3", "t3", "g3"),
+                relation("obs:4a", "s4", "t4", "g4"),
+            ],
+        };
+        let policy = LeakageUnitPolicy {
+            split_unit: SplitUnit::PhysicalSample,
+            ..LeakageUnitPolicy::default()
+        };
+
+        relations
+            .validate_against_fold_set(&fold_set(), &policy)
             .unwrap();
     }
 

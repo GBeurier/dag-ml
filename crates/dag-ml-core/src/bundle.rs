@@ -2225,6 +2225,10 @@ mod tests {
                 },
                 required_metric_level: Some(crate::policy::PredictionLevel::Sample),
                 require_finite: true,
+                evaluation_scope: None,
+                refit_slot_plan: None,
+                stacking_fit_contract: None,
+                reduction_id: None,
             },
             &[
                 CandidateScore {

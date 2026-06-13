@@ -9,6 +9,7 @@ use crate::relation::EntityUnitLevel;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SplitUnit {
+    PhysicalSample,
     Observation,
     Sample,
     Target,
@@ -32,7 +33,7 @@ pub struct LeakageUnitPolicy {
 impl Default for LeakageUnitPolicy {
     fn default() -> Self {
         Self {
-            split_unit: SplitUnit::Sample,
+            split_unit: SplitUnit::PhysicalSample,
             forbid_origin_cross_fold: true,
             allow_observation_split_with_shared_target: false,
             require_group_ids: false,
@@ -60,7 +61,7 @@ impl LeakageUnitPolicy {
 }
 
 fn default_split_unit() -> SplitUnit {
-    SplitUnit::Sample
+    SplitUnit::PhysicalSample
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -719,7 +720,7 @@ mod tests {
         let leakage = LeakageUnitPolicy::default();
         let aggregation = AggregationPolicy::default();
 
-        assert_eq!(leakage.split_unit, SplitUnit::Sample);
+        assert_eq!(leakage.split_unit, SplitUnit::PhysicalSample);
         assert_eq!(aggregation.aggregation_level, PredictionLevel::Sample);
         assert!(aggregation.emit_parallel_metrics);
     }

@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, Result};
+use crate::oof::PredictionPartition;
 use crate::policy::PredictionLevel;
+use crate::relation::EntityUnitLevel;
 
 pub const SELECTION_POLICY_SCHEMA_VERSION: u32 = 1;
 pub const SELECTION_POLICY_SCHEMA_ID: &str =
@@ -71,6 +73,134 @@ impl CandidateScore {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationScope {
+    Oof,
+    Holdout,
+    Final,
+    Train,
+    Refit,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EvaluationResult {
+    pub metric: SelectionMetric,
+    pub partition: PredictionPartition,
+    pub scope: EvaluationScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduction_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_level: Option<EntityUnitLevel>,
+}
+
+impl EvaluationResult {
+    pub fn validate(&self) -> Result<()> {
+        self.metric.validate()?;
+        validate_optional_id("evaluation reduction_id", self.reduction_id.as_deref())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefitStrategy {
+    RefitOne,
+    RefitEnsemble,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RefitSlotPlan {
+    pub strategy: RefitStrategy,
+    pub selection_level: PredictionLevel,
+    pub member_count: usize,
+    pub selection_metric: SelectionMetric,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduction_id: Option<String>,
+}
+
+impl RefitSlotPlan {
+    pub fn validate(&self) -> Result<()> {
+        self.selection_metric.validate()?;
+        if self.member_count == 0 {
+            return Err(DagMlError::CampaignValidation(
+                "refit slot member_count must be positive".to_string(),
+            ));
+        }
+        match self.strategy {
+            RefitStrategy::RefitOne if self.member_count != 1 => {
+                return Err(DagMlError::CampaignValidation(
+                    "refit_one slot requires member_count=1".to_string(),
+                ));
+            }
+            RefitStrategy::RefitEnsemble if self.member_count < 2 => {
+                return Err(DagMlError::CampaignValidation(
+                    "refit_ensemble slot requires member_count>=2".to_string(),
+                ));
+            }
+            _ => {}
+        }
+        validate_optional_id("refit slot reduction_id", self.reduction_id.as_deref())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetaRowDomain {
+    Sample,
+    Combo,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetaTrainingFeatures {
+    Oof,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceFeatures {
+    RefitBasePredictions,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionProtocol {
+    Nested,
+    Holdout,
+    ReuseOof,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StackingFitContract {
+    pub meta_training_features: MetaTrainingFeatures,
+    pub inference_features: InferenceFeatures,
+    pub selection_protocol: SelectionProtocol,
+    pub meta_row_domain: MetaRowDomain,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_reduction_id: Option<String>,
+    #[serde(default)]
+    pub unsafe_allow_reuse_oof: bool,
+}
+
+impl StackingFitContract {
+    pub fn validate(&self) -> Result<()> {
+        if self.selection_protocol == SelectionProtocol::ReuseOof && !self.unsafe_allow_reuse_oof {
+            return Err(DagMlError::CampaignValidation(
+                "reuse_oof stacking selection requires unsafe_allow_reuse_oof=true".to_string(),
+            ));
+        }
+        if self.meta_row_domain == MetaRowDomain::Combo && self.final_reduction_id.is_none() {
+            return Err(DagMlError::CampaignValidation(
+                "combo meta_row_domain requires final_reduction_id".to_string(),
+            ));
+        }
+        validate_optional_id(
+            "stacking final_reduction_id",
+            self.final_reduction_id.as_deref(),
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SelectionPolicy {
     pub id: String,
@@ -79,6 +209,14 @@ pub struct SelectionPolicy {
     pub required_metric_level: Option<PredictionLevel>,
     #[serde(default = "default_true")]
     pub require_finite: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation_scope: Option<EvaluationScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refit_slot_plan: Option<RefitSlotPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stacking_fit_contract: Option<StackingFitContract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduction_id: Option<String>,
 }
 
 impl SelectionPolicy {
@@ -88,7 +226,17 @@ impl SelectionPolicy {
                 "selection policy id is empty".to_string(),
             ));
         }
-        self.metric.validate()
+        self.metric.validate()?;
+        if let Some(refit_slot_plan) = &self.refit_slot_plan {
+            refit_slot_plan.validate()?;
+        }
+        if let Some(stacking_fit_contract) = &self.stacking_fit_contract {
+            stacking_fit_contract.validate()?;
+        }
+        validate_optional_id(
+            "selection policy reduction_id",
+            self.reduction_id.as_deref(),
+        )
     }
 }
 
@@ -111,6 +259,12 @@ pub struct SelectionDecision {
     pub objective: MetricObjective,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metric_level: Option<PredictionLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation_scope: Option<EvaluationScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refit_slot_plan: Option<RefitSlotPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduction_id: Option<String>,
     pub selected_score: f64,
     #[serde(default)]
     pub ranked_candidates: Vec<RankedCandidate>,
@@ -151,6 +305,13 @@ impl SelectionDecision {
                 self.policy_id
             )));
         }
+        if let Some(refit_slot_plan) = &self.refit_slot_plan {
+            refit_slot_plan.validate()?;
+        }
+        validate_optional_id(
+            "selection decision reduction_id",
+            self.reduction_id.as_deref(),
+        )?;
         let mut seen = BTreeSet::new();
         for (idx, candidate) in self.ranked_candidates.iter().enumerate() {
             if candidate.rank != idx + 1 {
@@ -234,6 +395,9 @@ pub fn select_candidate(
         metric_name: policy.metric.name.clone(),
         objective: policy.metric.objective,
         metric_level: policy.required_metric_level,
+        evaluation_scope: policy.evaluation_scope,
+        refit_slot_plan: policy.refit_slot_plan.clone(),
+        reduction_id: policy.reduction_id.clone(),
         selected_score: selected.score,
         ranked_candidates,
     };
@@ -364,6 +528,15 @@ fn prediction_level_name(level: PredictionLevel) -> &'static str {
     }
 }
 
+fn validate_optional_id(label: &str, value: Option<&str>) -> Result<()> {
+    if value.is_some_and(|value| value.trim().is_empty()) {
+        return Err(DagMlError::CampaignValidation(format!(
+            "{label} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,6 +550,10 @@ mod tests {
             },
             required_metric_level: None,
             require_finite: true,
+            evaluation_scope: None,
+            refit_slot_plan: None,
+            stacking_fit_contract: None,
+            reduction_id: None,
         }
     }
 
@@ -453,6 +630,74 @@ mod tests {
     }
 
     #[test]
+    fn selection_policy_echoes_evaluation_and_refit_contracts() {
+        let mut policy = rmse_policy();
+        policy.evaluation_scope = Some(EvaluationScope::Oof);
+        policy.reduction_id = Some("reduction:obs_to_sample".to_string());
+        policy.refit_slot_plan = Some(RefitSlotPlan {
+            strategy: RefitStrategy::RefitOne,
+            selection_level: PredictionLevel::Sample,
+            member_count: 1,
+            selection_metric: policy.metric.clone(),
+            reduction_id: Some("reduction:obs_to_sample".to_string()),
+        });
+
+        let decision = select_candidate(
+            &policy,
+            &[candidate("model:a", 1.0), candidate("model:b", 2.0)],
+        )
+        .unwrap();
+
+        assert_eq!(decision.evaluation_scope, Some(EvaluationScope::Oof));
+        assert_eq!(
+            decision.refit_slot_plan.as_ref().unwrap().strategy,
+            RefitStrategy::RefitOne
+        );
+        assert_eq!(
+            decision.reduction_id.as_deref(),
+            Some("reduction:obs_to_sample")
+        );
+
+        let mut invalid_policy = policy;
+        invalid_policy.refit_slot_plan = Some(RefitSlotPlan {
+            strategy: RefitStrategy::RefitEnsemble,
+            selection_level: PredictionLevel::Sample,
+            member_count: 1,
+            selection_metric: invalid_policy.metric.clone(),
+            reduction_id: None,
+        });
+        assert!(select_candidate(&invalid_policy, &[candidate("model:a", 1.0)]).is_err());
+    }
+
+    #[test]
+    fn stacking_fit_contract_guards_oof_reuse_and_combo_reduction() {
+        let valid = StackingFitContract {
+            meta_training_features: MetaTrainingFeatures::Oof,
+            inference_features: InferenceFeatures::RefitBasePredictions,
+            selection_protocol: SelectionProtocol::Nested,
+            meta_row_domain: MetaRowDomain::Combo,
+            final_reduction_id: Some("reduction:combo_to_sample".to_string()),
+            unsafe_allow_reuse_oof: false,
+        };
+        valid.validate().unwrap();
+
+        let missing_reduction = StackingFitContract {
+            final_reduction_id: None,
+            ..valid.clone()
+        };
+        assert!(missing_reduction.validate().is_err());
+
+        let unsafe_reuse_required = StackingFitContract {
+            selection_protocol: SelectionProtocol::ReuseOof,
+            meta_row_domain: MetaRowDomain::Sample,
+            final_reduction_id: None,
+            unsafe_allow_reuse_oof: false,
+            ..valid
+        };
+        assert!(unsafe_reuse_required.validate().is_err());
+    }
+
+    #[test]
     fn published_selection_schemas_declare_current_contracts() {
         let policy_schema: serde_json::Value = serde_json::from_str(include_str!(
             "../../../docs/contracts/selection_policy.schema.json"
@@ -464,6 +709,13 @@ mod tests {
             .unwrap()
             .iter()
             .any(|field| field.as_str() == Some("metric")));
+        assert!(policy_schema["properties"]
+            .get("evaluation_scope")
+            .is_some());
+        assert!(policy_schema["properties"].get("refit_slot_plan").is_some());
+        assert!(policy_schema["properties"]
+            .get("stacking_fit_contract")
+            .is_some());
 
         let decision_schema: serde_json::Value = serde_json::from_str(include_str!(
             "../../../docs/contracts/selection_decision.schema.json"
@@ -480,6 +732,12 @@ mod tests {
             .unwrap()
             .iter()
             .any(|field| field.as_str() == Some("rank")));
+        assert!(decision_schema["properties"]
+            .get("evaluation_scope")
+            .is_some());
+        assert!(decision_schema["properties"]
+            .get("refit_slot_plan")
+            .is_some());
     }
 
     #[test]

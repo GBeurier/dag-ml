@@ -174,6 +174,9 @@ SIBLING_FEATURE_FUSION_SCHEMA_ID = (
 SHA256_RE = re.compile(r"^[0-9A-Fa-f]{64}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 ENTITY_UNIT_LEVELS = {"physical_sample", "source_sample", "observation", "combo"}
+EVALUATION_SCOPES = {"oof", "holdout", "final", "train", "refit"}
+PREDICTION_LEVELS = {"observation", "sample", "target", "group"}
+SPLIT_UNITS = {"physical_sample", "observation", "sample", "target", "group"}
 MISSINGNESS_POLICIES = {
     "strict",
     "warn",
@@ -678,7 +681,8 @@ def validate_campaign_spec_schema(schema: Any, label: str) -> None:
     defs = schema.get("$defs")
     require(isinstance(defs, dict), f"{label} CampaignSpec $defs missing")
     require(
-        defs.get("split_unit", {}).get("enum") == ["observation", "sample", "target", "group"],
+        defs.get("split_unit", {}).get("enum")
+        == ["physical_sample", "observation", "sample", "target", "group"],
         f"{label} CampaignSpec split_unit enum is not aligned",
     )
     require(
@@ -1007,6 +1011,15 @@ def validate_selection_policy_schema(schema: Any, label: str) -> None:
         require(field in required, f"{label} SelectionPolicy schema must require `{field}`")
     defs = schema.get("$defs")
     require(isinstance(defs, dict), f"{label} SelectionPolicy $defs missing")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} SelectionPolicy properties missing")
+    for field in (
+        "evaluation_scope",
+        "refit_slot_plan",
+        "stacking_fit_contract",
+        "reduction_id",
+    ):
+        require(field in properties, f"{label} SelectionPolicy schema must declare `{field}`")
     require(
         defs.get("metric_objective", {}).get("enum") == ["minimize", "maximize"],
         f"{label} SelectionPolicy objective enum is not aligned",
@@ -1016,7 +1029,30 @@ def validate_selection_policy_schema(schema: Any, label: str) -> None:
         == ["observation", "sample", "target", "group"],
         f"{label} SelectionPolicy prediction level enum is not aligned",
     )
+    require(
+        defs.get("entity_unit_level", {}).get("enum")
+        == ["physical_sample", "source_sample", "observation", "combo"],
+        f"{label} SelectionPolicy entity unit enum is not aligned",
+    )
+    require(
+        defs.get("evaluation_scope", {}).get("enum")
+        == ["oof", "holdout", "final", "train", "refit"],
+        f"{label} SelectionPolicy evaluation scope enum is not aligned",
+    )
+    require(
+        defs.get("refit_strategy", {}).get("enum") == ["refit_one", "refit_ensemble"],
+        f"{label} SelectionPolicy refit strategy enum is not aligned",
+    )
+    require(
+        defs.get("meta_row_domain", {}).get("enum") == ["sample", "combo"],
+        f"{label} SelectionPolicy meta row domain enum is not aligned",
+    )
     require("selection_metric" in defs, f"{label} SelectionPolicy misses selection_metric")
+    for definition_name in ("evaluation_result", "refit_slot_plan", "stacking_fit_contract"):
+        require(
+            definition_name in defs,
+            f"{label} SelectionPolicy misses {definition_name}",
+        )
 
 
 def validate_selection_decision_schema(schema: Any, label: str) -> None:
@@ -1047,6 +1083,10 @@ def validate_selection_decision_schema(schema: Any, label: str) -> None:
         require(field in required, f"{label} SelectionDecision schema must require `{field}`")
     defs = schema.get("$defs")
     require(isinstance(defs, dict), f"{label} SelectionDecision $defs missing")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} SelectionDecision properties missing")
+    for field in ("evaluation_scope", "refit_slot_plan", "reduction_id"):
+        require(field in properties, f"{label} SelectionDecision schema must declare `{field}`")
     require(
         defs.get("metric_objective", {}).get("enum") == ["minimize", "maximize"],
         f"{label} SelectionDecision objective enum is not aligned",
@@ -1056,7 +1096,17 @@ def validate_selection_decision_schema(schema: Any, label: str) -> None:
         == ["observation", "sample", "target", "group"],
         f"{label} SelectionDecision prediction level enum is not aligned",
     )
+    require(
+        defs.get("evaluation_scope", {}).get("enum")
+        == ["oof", "holdout", "final", "train", "refit"],
+        f"{label} SelectionDecision evaluation scope enum is not aligned",
+    )
+    require(
+        defs.get("refit_strategy", {}).get("enum") == ["refit_one", "refit_ensemble"],
+        f"{label} SelectionDecision refit strategy enum is not aligned",
+    )
     require("ranked_candidate" in defs, f"{label} SelectionDecision misses ranked_candidate")
+    require("refit_slot_plan" in defs, f"{label} SelectionDecision misses refit_slot_plan")
 
 
 def validate_openlineage_facets_schema(schema: Any, label: str) -> None:
@@ -1145,11 +1195,39 @@ def validate_prediction_cache_tensor_metadata_schema(schema: Any, label: str) ->
         properties.get("prediction_level", {}).get("enum") == ["sample", "target", "group"],
         f"{label} prediction-cache tensor metadata prediction_level enum mismatch",
     )
+    for field in ("relation_fingerprint", "evaluation_scope", "reduction_id"):
+        require(
+            field in properties,
+            f"{label} prediction-cache tensor metadata must declare optional `{field}`",
+        )
     defs = schema.get("$defs")
     require(
-        isinstance(defs, dict) and "block_metadata" in defs and "prediction_unit_id" in defs,
+        isinstance(defs, dict)
+        and "block_metadata" in defs
+        and "prediction_unit_id" in defs
+        and "sha256" in defs
+        and "evaluation_scope" in defs,
         f"{label} prediction-cache tensor metadata schema definitions are incomplete",
     )
+    require(
+        defs.get("sha256", {}).get("pattern") == "^[0-9A-Fa-f]{64}$",
+        f"{label} prediction-cache tensor metadata sha256 definition mismatch",
+    )
+    require(
+        defs.get("evaluation_scope", {}).get("enum")
+        == ["oof", "holdout", "final", "train", "refit"],
+        f"{label} prediction-cache tensor metadata evaluation scope enum mismatch",
+    )
+    block_properties = defs.get("block_metadata", {}).get("properties")
+    require(
+        isinstance(block_properties, dict),
+        f"{label} prediction-cache tensor metadata block properties missing",
+    )
+    for field in ("relation_fingerprint", "evaluation_scope", "reduction_id"):
+        require(
+            field in block_properties,
+            f"{label} prediction-cache tensor block metadata must declare optional `{field}`",
+        )
 
 
 def validate_prediction_cache_columnar_tensor_metadata_schema(
@@ -1212,11 +1290,39 @@ def validate_prediction_cache_columnar_tensor_metadata_schema(
         properties.get("prediction_level", {}).get("enum") == ["sample", "target", "group"],
         f"{label} prediction-cache columnar tensor metadata prediction_level enum mismatch",
     )
+    for field in ("relation_fingerprint", "evaluation_scope", "reduction_id"):
+        require(
+            field in properties,
+            f"{label} prediction-cache columnar tensor metadata must declare optional `{field}`",
+        )
     defs = schema.get("$defs")
     require(
-        isinstance(defs, dict) and "block_metadata" in defs and "prediction_unit_id" in defs,
+        isinstance(defs, dict)
+        and "block_metadata" in defs
+        and "prediction_unit_id" in defs
+        and "sha256" in defs
+        and "evaluation_scope" in defs,
         f"{label} prediction-cache columnar tensor metadata schema definitions are incomplete",
     )
+    require(
+        defs.get("sha256", {}).get("pattern") == "^[0-9A-Fa-f]{64}$",
+        f"{label} prediction-cache columnar tensor metadata sha256 definition mismatch",
+    )
+    require(
+        defs.get("evaluation_scope", {}).get("enum")
+        == ["oof", "holdout", "final", "train", "refit"],
+        f"{label} prediction-cache columnar tensor metadata evaluation scope enum mismatch",
+    )
+    block_properties = defs.get("block_metadata", {}).get("properties")
+    require(
+        isinstance(block_properties, dict),
+        f"{label} prediction-cache columnar tensor metadata block properties missing",
+    )
+    for field in ("relation_fingerprint", "evaluation_scope", "reduction_id"):
+        require(
+            field in block_properties,
+            f"{label} prediction-cache columnar tensor block metadata must declare optional `{field}`",
+        )
 
 
 def validate_aggregation_controller_task_schema(schema: Any, label: str) -> None:
@@ -2368,7 +2474,7 @@ def validate_leakage_policy(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} leakage policy must be an object")
     split_unit = value.get("split_unit", "sample")
     require(
-        split_unit in {"observation", "sample", "target", "group"},
+        split_unit in SPLIT_UNITS,
         f"{label}.split_unit is invalid",
     )
     for field in (
@@ -3124,14 +3230,22 @@ def validate_selection_policy(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} SelectionPolicy must be an object")
     require_non_empty_string(value.get("id"), f"{label}.id")
     metric = value.get("metric")
-    require(isinstance(metric, dict), f"{label}.metric must be an object")
-    require_non_empty_string(metric.get("name"), f"{label}.metric.name")
-    require(metric.get("objective") in {"minimize", "maximize"}, f"{label}.metric.objective invalid")
+    validate_selection_metric(metric, f"{label}.metric")
     level = value.get("required_metric_level")
     if level is not None:
-        require(level in {"observation", "sample", "target", "group"}, f"{label}.required_metric_level invalid")
+        require(level in PREDICTION_LEVELS, f"{label}.required_metric_level invalid")
     if "require_finite" in value:
         require(isinstance(value["require_finite"], bool), f"{label}.require_finite must be boolean")
+    evaluation_scope = value.get("evaluation_scope")
+    if evaluation_scope is not None:
+        require(evaluation_scope in EVALUATION_SCOPES, f"{label}.evaluation_scope invalid")
+    validate_refit_slot_plan(value.get("refit_slot_plan"), f"{label}.refit_slot_plan", optional=True)
+    validate_stacking_fit_contract(
+        value.get("stacking_fit_contract"),
+        f"{label}.stacking_fit_contract",
+        optional=True,
+    )
+    require_optional_non_empty_string(value.get("reduction_id"), f"{label}.reduction_id")
 
 
 def validate_selection_decision(value: Any, label: str) -> None:
@@ -3143,7 +3257,12 @@ def validate_selection_decision(value: Any, label: str) -> None:
     require(value.get("objective") in {"minimize", "maximize"}, f"{label}.objective invalid")
     metric_level = value.get("metric_level")
     if metric_level is not None:
-        require(metric_level in {"observation", "sample", "target", "group"}, f"{label}.metric_level invalid")
+        require(metric_level in PREDICTION_LEVELS, f"{label}.metric_level invalid")
+    evaluation_scope = value.get("evaluation_scope")
+    if evaluation_scope is not None:
+        require(evaluation_scope in EVALUATION_SCOPES, f"{label}.evaluation_scope invalid")
+    validate_refit_slot_plan(value.get("refit_slot_plan"), f"{label}.refit_slot_plan", optional=True)
+    require_optional_non_empty_string(value.get("reduction_id"), f"{label}.reduction_id")
     selected_score = value.get("selected_score")
     require(isinstance(selected_score, (int, float)), f"{label}.selected_score must be numeric")
     ranked = value.get("ranked_candidates")
@@ -3162,6 +3281,55 @@ def validate_selection_decision(value: Any, label: str) -> None:
         seen.add(candidate_id)
         require(isinstance(candidate.get("score"), (int, float)), f"{candidate_label}.score numeric")
         require(candidate.get("rank") == index + 1, f"{candidate_label}.rank must be {index + 1}")
+
+
+def validate_selection_metric(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} must be an object")
+    require_non_empty_string(value.get("name"), f"{label}.name")
+    require(value.get("objective") in {"minimize", "maximize"}, f"{label}.objective invalid")
+
+
+def validate_refit_slot_plan(value: Any, label: str, *, optional: bool = False) -> None:
+    if value is None:
+        require(optional, f"{label} must be an object")
+        return
+    require(isinstance(value, dict), f"{label} must be an object")
+    strategy = value.get("strategy")
+    require(strategy in {"refit_one", "refit_ensemble"}, f"{label}.strategy invalid")
+    selection_level = value.get("selection_level")
+    require(selection_level in PREDICTION_LEVELS, f"{label}.selection_level invalid")
+    member_count = value.get("member_count")
+    require(isinstance(member_count, int) and member_count >= 1, f"{label}.member_count invalid")
+    if strategy == "refit_one":
+        require(member_count == 1, f"{label}.refit_one requires member_count=1")
+    if strategy == "refit_ensemble":
+        require(member_count >= 2, f"{label}.refit_ensemble requires member_count>=2")
+    validate_selection_metric(value.get("selection_metric"), f"{label}.selection_metric")
+    require_optional_non_empty_string(value.get("reduction_id"), f"{label}.reduction_id")
+
+
+def validate_stacking_fit_contract(value: Any, label: str, *, optional: bool = False) -> None:
+    if value is None:
+        require(optional, f"{label} must be an object")
+        return
+    require(isinstance(value, dict), f"{label} must be an object")
+    require(value.get("meta_training_features") == "oof", f"{label}.meta_training_features invalid")
+    require(
+        value.get("inference_features") == "refit_base_predictions",
+        f"{label}.inference_features invalid",
+    )
+    protocol = value.get("selection_protocol")
+    require(protocol in {"nested", "holdout", "reuse_oof"}, f"{label}.selection_protocol invalid")
+    domain = value.get("meta_row_domain")
+    require(domain in {"sample", "combo"}, f"{label}.meta_row_domain invalid")
+    final_reduction_id = value.get("final_reduction_id")
+    require_optional_non_empty_string(final_reduction_id, f"{label}.final_reduction_id")
+    unsafe_allow_reuse_oof = value.get("unsafe_allow_reuse_oof", False)
+    require(isinstance(unsafe_allow_reuse_oof, bool), f"{label}.unsafe_allow_reuse_oof boolean")
+    if protocol == "reuse_oof" and not unsafe_allow_reuse_oof:
+        raise ContractError(f"{label} reuse_oof requires unsafe_allow_reuse_oof=true")
+    if domain == "combo" and final_reduction_id is None:
+        raise ContractError(f"{label} combo meta_row_domain requires final_reduction_id")
 
 
 def validate_data_output_provenance(value: Any, label: str) -> None:

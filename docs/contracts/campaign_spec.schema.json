@@ -96,7 +96,7 @@
       "pattern": "^[0-9A-Fa-f]{64}$"
     },
     "split_unit": {
-      "enum": ["observation", "sample", "target", "group"]
+      "enum": ["physical_sample", "observation", "sample", "target", "group"]
     },
     "prediction_level": {
       "enum": ["observation", "sample", "target", "group"]

@@ -20,6 +20,30 @@
     },
     "require_finite": {
       "type": "boolean"
+    },
+    "evaluation_scope": {
+      "anyOf": [
+        { "$ref": "#/$defs/evaluation_scope" },
+        { "type": "null" }
+      ]
+    },
+    "refit_slot_plan": {
+      "anyOf": [
+        { "$ref": "#/$defs/refit_slot_plan" },
+        { "type": "null" }
+      ]
+    },
+    "stacking_fit_contract": {
+      "anyOf": [
+        { "$ref": "#/$defs/stacking_fit_contract" },
+        { "type": "null" }
+      ]
+    },
+    "reduction_id": {
+      "anyOf": [
+        { "$ref": "#/$defs/non_empty_string" },
+        { "type": "null" }
+      ]
     }
   },
   "$defs": {
@@ -33,6 +57,27 @@
     "prediction_level": {
       "enum": ["observation", "sample", "target", "group"]
     },
+    "entity_unit_level": {
+      "enum": ["physical_sample", "source_sample", "observation", "combo"]
+    },
+    "evaluation_scope": {
+      "enum": ["oof", "holdout", "final", "train", "refit"]
+    },
+    "refit_strategy": {
+      "enum": ["refit_one", "refit_ensemble"]
+    },
+    "meta_row_domain": {
+      "enum": ["sample", "combo"]
+    },
+    "meta_training_features": {
+      "enum": ["oof"]
+    },
+    "inference_features": {
+      "enum": ["refit_base_predictions"]
+    },
+    "selection_protocol": {
+      "enum": ["nested", "holdout", "reuse_oof"]
+    },
     "selection_metric": {
       "type": "object",
       "additionalProperties": false,
@@ -43,6 +88,93 @@
         },
         "objective": {
           "$ref": "#/$defs/metric_objective"
+        }
+      }
+    },
+    "evaluation_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "partition", "scope"],
+      "properties": {
+        "metric": {
+          "$ref": "#/$defs/selection_metric"
+        },
+        "partition": {
+          "enum": ["train", "validation", "test", "final"]
+        },
+        "scope": {
+          "$ref": "#/$defs/evaluation_scope"
+        },
+        "reduction_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/non_empty_string" },
+            { "type": "null" }
+          ]
+        },
+        "unit_level": {
+          "anyOf": [
+            { "$ref": "#/$defs/entity_unit_level" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "refit_slot_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "selection_level", "member_count", "selection_metric"],
+      "properties": {
+        "strategy": {
+          "$ref": "#/$defs/refit_strategy"
+        },
+        "selection_level": {
+          "$ref": "#/$defs/prediction_level"
+        },
+        "member_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "selection_metric": {
+          "$ref": "#/$defs/selection_metric"
+        },
+        "reduction_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/non_empty_string" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "stacking_fit_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "meta_training_features",
+        "inference_features",
+        "selection_protocol",
+        "meta_row_domain"
+      ],
+      "properties": {
+        "meta_training_features": {
+          "$ref": "#/$defs/meta_training_features"
+        },
+        "inference_features": {
+          "$ref": "#/$defs/inference_features"
+        },
+        "selection_protocol": {
+          "$ref": "#/$defs/selection_protocol"
+        },
+        "meta_row_domain": {
+          "$ref": "#/$defs/meta_row_domain"
+        },
+        "final_reduction_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/non_empty_string" },
+            { "type": "null" }
+          ]
+        },
+        "unsafe_allow_reuse_oof": {
+          "type": "boolean"
         }
       }
     }

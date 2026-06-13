@@ -31,6 +31,24 @@
     "prediction_level": {
       "enum": ["sample", "target", "group"]
     },
+    "relation_fingerprint": {
+      "anyOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "evaluation_scope": {
+      "anyOf": [
+        { "$ref": "#/$defs/evaluation_scope" },
+        { "type": "null" }
+      ]
+    },
+    "reduction_id": {
+      "anyOf": [
+        { "$ref": "#/$defs/non_empty_string" },
+        { "type": "null" }
+      ]
+    },
     "block_count": {
       "type": "integer",
       "minimum": 1
@@ -62,6 +80,17 @@
     }
   },
   "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "evaluation_scope": {
+      "enum": ["oof", "holdout", "final", "train", "refit"]
+    },
     "block_metadata": {
       "type": "object",
       "additionalProperties": false,
@@ -84,6 +113,24 @@
         },
         "fold_id": {
           "type": ["string", "null"]
+        },
+        "relation_fingerprint": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "evaluation_scope": {
+          "anyOf": [
+            { "$ref": "#/$defs/evaluation_scope" },
+            { "type": "null" }
+          ]
+        },
+        "reduction_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/non_empty_string" },
+            { "type": "null" }
+          ]
         },
         "row_offset": {
           "type": "integer",
