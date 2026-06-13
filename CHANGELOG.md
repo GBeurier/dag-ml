@@ -61,6 +61,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   compatibility reports for train/predict replay, explicit fallback severity
   and affected-count metadata, and bundle/data-output validation that rejects
   silent fixed-width, cartesian-count or late-fusion missingness mismatches.
+- Heterogeneous multi-source repetitions roadmap D8 adds the final public
+  surface audit and conformance-pack scenarios for A=2/B=3/C=2 multisource
+  relations, sample-level late fusion, cartesian combo reduction, missing-source
+  fallback, stacking OOF, invalid unit joins and row-vs-sample selection
+  mismatch. The audit records that D1-D7 were additive JSON/Rust contract
+  changes and did not add new C ABI, Python or WASM entry points.
 - Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
   `examples/README.md` audience matrix.

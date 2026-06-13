@@ -78,3 +78,12 @@ Assertions:
 
 `dag-ml` owns folds, prediction blocks, OOF joins, leakage refusal and campaign
 fingerprints. `dag-ml-data` owns schema/model-input/adapter-plan fixtures only.
+
+## D8 Conformance Pack
+
+`docs/contracts/conformance_pack.v1.json` pins canonical digests for
+`uc6_oof_success_predictions.json` and
+`uc11_train_prediction_refusal.json`. D8 uses them for the
+`stacking_oof_contract.v1` and `row_vs_sample_selection_mismatch.v1` scenarios,
+so changes to these fixtures must update the pack and rerun
+`python3 scripts/validate_contracts.py`.

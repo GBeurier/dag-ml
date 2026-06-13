@@ -22,6 +22,11 @@
       "schema_version": 1,
       "normalized_sha256": "43001ff6f7a286924ec01ca85b95233c7a50fe9cc8595d67da1eb2a35704dddf"
     },
+    "data_output_provenance.v1": {
+      "kind": "json_schema",
+      "schema_version": 1,
+      "normalized_sha256": "d90533a9ae7d5a9415a1f8239ea24fbb1e1c37203eba255023e1caadc43494d7"
+    },
     "parity_oracle.v1": {
       "kind": "parity_oracle_manifest",
       "schema_version": 1,
@@ -33,9 +38,168 @@
       "contract": "coordinator_data_plan_envelope.v1",
       "canonical_json_sha256": "420a01e4897b3539a4c122ac03d629139261a2bf3a385b93c4b45bb6be082c94"
     },
+    "coordinator_data_plan_envelope_multisource_repetitions.v1": {
+      "contract": "coordinator_data_plan_envelope.v1",
+      "canonical_json_sha256": "6d483135903efe19bf529f527e77c6103315f33b318e1d797f8fe80f994b5d91"
+    },
     "feature_fusion_selector_nir_chem.v1": {
       "contract": "feature_fusion_selector.v1",
       "canonical_json_sha256": "aee68b20abc4cd9462171c43e034a67d3033768727995b8592bbf61226961f3f"
+    },
+    "data_output_provenance_augmented_view.v1": {
+      "contract": "data_output_provenance.v1",
+      "canonical_json_sha256": "68b48e3dc1b871dbb579c9e370ee777675c3a3ca23be8a9c003201ec6e4d7e25"
+    },
+    "oof_uc6_success_predictions.v1": {
+      "contract": "oof_campaign_fixture.v1",
+      "canonical_json_sha256": "6a88ac35eea0336d2bdcbb69ab462188473f7d3601bd3cab47f3481e9db9078d"
+    },
+    "oof_uc11_train_prediction_refusal.v1": {
+      "contract": "oof_campaign_fixture.v1",
+      "canonical_json_sha256": "751b19dd1f1d228bb4a591f5b407730221cf257174bb2e2a7b084415c8bfe4ba"
+    }
+  },
+  "scenarios": {
+    "multisource_a2_b3_c2.v1": {
+      "polarity": "positive",
+      "surfaces": [
+        "coordinator_data_plan_envelope",
+        "relation.unit_identity",
+        "feature_fusion_selector"
+      ],
+      "fixtures": [
+        "coordinator_data_plan_envelope_multisource_repetitions.v1",
+        "feature_fusion_selector_nir_chem.v1"
+      ],
+      "test_refs": [
+        "scripts/validate_contracts.py::validate_envelope",
+        "scripts/validate_contracts.py::validate_feature_fusion_selector"
+      ],
+      "assertions": [
+        "asymmetric A=2/B=3/C=2 repetitions are relation-backed observations",
+        "relation and plan fingerprints are stable",
+        "feature fusion remains host-owned behind selector metadata"
+      ]
+    },
+    "sample_level_late_fusion.v1": {
+      "polarity": "positive",
+      "surfaces": [
+        "graph.unit_typed_ports",
+        "pipeline_dsl.merge",
+        "runtime.oof_prediction_inputs"
+      ],
+      "fixtures": [
+        "oof_uc6_success_predictions.v1"
+      ],
+      "test_refs": [
+        "crates/dag-ml-core/src/dsl.rs::parses_nirs4all_compat_feature_branch_merge_dict",
+        "crates/dag-ml-core/src/runtime/tests.rs::requires_oof_prediction_edge_supplies_validated_prediction_handle"
+      ],
+      "assertions": [
+        "late-fusion branch joins stay sample-aligned",
+        "prediction inputs are OOF validation partitions",
+        "merge selectors are explicit instead of positional"
+      ]
+    },
+    "cartesian_combo_to_sample_reducer.v1": {
+      "polarity": "positive",
+      "surfaces": [
+        "representation_plan",
+        "reduction_plan",
+        "aggregation_controller_task"
+      ],
+      "fixtures": [
+        "coordinator_data_plan_envelope_multisource_repetitions.v1",
+        "data_output_provenance_augmented_view.v1"
+      ],
+      "test_refs": [
+        "crates/dag-ml-core/src/data.rs::representation_plan_validates_cartesian_and_monte_carlo_contracts",
+        "crates/dag-ml-core/src/selection.rs::stacking_fit_contract_guards_oof_reuse_and_combo_reduction"
+      ],
+      "assertions": [
+        "combo remains a relation-backed derived observation",
+        "combo output requires an explicit sample-level reducer",
+        "custom aggregation tasks carry input and output unit levels"
+      ]
+    },
+    "missing_source_with_fallback.v1": {
+      "polarity": "positive",
+      "surfaces": [
+        "representation_replay_manifest",
+        "representation_compatibility_report",
+        "data_output_provenance"
+      ],
+      "fixtures": [
+        "data_output_provenance_augmented_view.v1"
+      ],
+      "test_refs": [
+        "crates/dag-ml-core/src/data.rs::representation_compatibility_report_enforces_missingness_policy",
+        "crates/dag-ml-core/src/bundle.rs::bundle_data_requirements_accept_d7_replay_contracts"
+      ],
+      "assertions": [
+        "serve-time missing source or repetition is never silent",
+        "fallback, severity and affected counts are persisted",
+        "fixed-width mismatches require mask or pad policy"
+      ]
+    },
+    "stacking_oof_contract.v1": {
+      "polarity": "positive",
+      "surfaces": [
+        "oof_join",
+        "selection_decision",
+        "prediction_cache_metadata"
+      ],
+      "fixtures": [
+        "oof_uc6_success_predictions.v1"
+      ],
+      "test_refs": [
+        "crates/dag-ml-core/src/oof.rs::uc6_fixture_joins_successfully",
+        "crates/dag-ml-core/src/runtime/tests.rs::requires_oof_prediction_edge_refit_uses_cv_oof_coverage"
+      ],
+      "assertions": [
+        "stacking consumes validation-only OOF predictions",
+        "sample ids drive joins and cache identity",
+        "refit requires complete CV OOF coverage"
+      ]
+    },
+    "invalid_unit_join.v1": {
+      "polarity": "negative",
+      "surfaces": [
+        "graph_spec",
+        "edge_contract",
+        "pipeline_dsl.unit_contracts"
+      ],
+      "fixtures": [],
+      "test_refs": [
+        "crates/dag-ml-core/src/graph.rs::rejects_unit_mismatch_without_explicit_broadcast",
+        "crates/dag-ml-core/src/dsl.rs::compiles_pipeline_dsl_unit_contracts_to_graph_interface"
+      ],
+      "assertions": [
+        "observation/sample feature joins are rejected without an adapter",
+        "alignment-key mismatches are actionable graph errors",
+        "sample-to-non-sample broadcast must be explicit"
+      ]
+    },
+    "row_vs_sample_selection_mismatch.v1": {
+      "polarity": "negative",
+      "surfaces": [
+        "selection_policy",
+        "selection_decision",
+        "metrics"
+      ],
+      "fixtures": [
+        "oof_uc11_train_prediction_refusal.v1"
+      ],
+      "test_refs": [
+        "crates/dag-ml-core/src/selection.rs::selection_policy_can_require_metric_level",
+        "crates/dag-ml-core/src/metrics.rs::refuses_metric_alignment_and_contract_mismatches",
+        "crates/dag-ml-core/src/oof.rs::uc11_fixture_refuses_train_predictions"
+      ],
+      "assertions": [
+        "row-level metrics cannot select a sample-level refit slot",
+        "train predictions cannot become training features by default",
+        "selection decisions persist the metric level used"
+      ]
     }
   },
   "c_abi": {

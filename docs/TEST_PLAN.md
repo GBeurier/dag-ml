@@ -36,6 +36,30 @@ Add after the executor exists:
 - process adapter replay refuses malformed `NodeResult` lineage or output
   ownership.
 
+D8 heterogeneous multi-source scenario audit is encoded in
+`docs/contracts/conformance_pack.v1.json` and validated by
+`scripts/validate_contracts.py`. The required scenarios are:
+
+- `multisource_a2_b3_c2.v1`: positive asymmetric A=2/B=3/C=2 relations and
+  feature-fusion selector metadata;
+- `sample_level_late_fusion.v1`: positive sample-aligned branch/late-fusion OOF
+  contract;
+- `cartesian_combo_to_sample_reducer.v1`: positive relation-backed combo rows
+  with explicit sample reducer;
+- `missing_source_with_fallback.v1`: positive serve-time fallback with
+  representation compatibility metadata;
+- `stacking_oof_contract.v1`: positive validation-only OOF stacking and refit
+  coverage;
+- `invalid_unit_join.v1`: negative observation/sample unit-join refusal without
+  adapter or broadcast;
+- `row_vs_sample_selection_mismatch.v1`: negative metric-level mismatch and
+  train-prediction leakage refusal.
+
+D1-D7 did not introduce new C ABI functions, Python facade methods or WASM
+exports. Their public movement is covered by additive JSON/Rust contract fields,
+schema fixtures, C header validation for existing schema helpers and the
+Python/WASM manifest smokes already listed above.
+
 Current CLI smoke commands:
 
 ```bash

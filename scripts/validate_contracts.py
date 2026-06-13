@@ -90,6 +90,12 @@ LOCAL_SELECTION_DECISION_FIXTURE_REL = Path(
 LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL = Path(
     "examples/fixtures/runtime/data_output_provenance_augmented_view.json"
 )
+LOCAL_OOF_SUCCESS_FIXTURE_REL = Path(
+    "examples/fixtures/oof_campaign/uc6_oof_success_predictions.json"
+)
+LOCAL_OOF_TRAIN_REFUSAL_FIXTURE_REL = Path(
+    "examples/fixtures/oof_campaign/uc11_train_prediction_refusal.json"
+)
 LOCAL_NODE_TASK_FIXTURE_REL = Path("examples/fixtures/runtime/node_task_transform_scale.json")
 LOCAL_NODE_RESULT_FIXTURE_REL = Path("examples/fixtures/runtime/node_result_transform_scale.json")
 LOCAL_PROCESS_ADAPTER_DESCRIPTION_FIXTURE_REL = Path(
@@ -260,6 +266,15 @@ MISSINGNESS_POLICIES = {
 }
 CONFORMANCE_PACK_ID = "dag-ml.shared.conformance.v1"
 PARITY_ORACLE_ID = "dag-ml.nirs4all.parity_oracle.v1"
+D8_CONFORMANCE_SCENARIOS = (
+    "multisource_a2_b3_c2.v1",
+    "sample_level_late_fusion.v1",
+    "cartesian_combo_to_sample_reducer.v1",
+    "missing_source_with_fallback.v1",
+    "stacking_oof_contract.v1",
+    "invalid_unit_join.v1",
+    "row_vs_sample_selection_mismatch.v1",
+)
 REQUIRED_PARITY_CASE_IDS = {
     "nirs4all_lite_browser_compile_plan",
     "repetition_group_leakage_refusal",
@@ -4558,15 +4573,59 @@ def validate_digest_record(
     require(digest == expected_sha256, f"{label} digest does not match local artifact")
 
 
+def validate_d8_conformance_scenarios(
+    scenarios: Any,
+    fixtures: dict[str, Any],
+    label: str,
+) -> None:
+    require(isinstance(scenarios, dict), f"{label} conformance scenarios must be an object")
+    fixture_ids = set(fixtures.keys())
+    for scenario_id in D8_CONFORMANCE_SCENARIOS:
+        scenario = scenarios.get(scenario_id)
+        require(isinstance(scenario, dict), f"{label} scenario `{scenario_id}` missing")
+        polarity = scenario.get("polarity")
+        require(
+            polarity in {"positive", "negative"},
+            f"{label} scenario `{scenario_id}` polarity invalid",
+        )
+        for field in ("surfaces", "assertions", "test_refs"):
+            values = scenario.get(field)
+            require(
+                isinstance(values, list) and values,
+                f"{label} scenario `{scenario_id}` {field} must be a non-empty list",
+            )
+            for index, value in enumerate(values):
+                require_non_empty_string(value, f"{label} scenario `{scenario_id}` {field}[{index}]")
+        fixture_refs = scenario.get("fixtures", [])
+        require(
+            isinstance(fixture_refs, list),
+            f"{label} scenario `{scenario_id}` fixtures must be a list",
+        )
+        for index, fixture_ref in enumerate(fixture_refs):
+            require_non_empty_string(
+                fixture_ref,
+                f"{label} scenario `{scenario_id}` fixtures[{index}]",
+            )
+            require(
+                fixture_ref in fixture_ids,
+                f"{label} scenario `{scenario_id}` references unknown fixture `{fixture_ref}`",
+            )
+
+
 def validate_conformance_pack(
     pack: Any,
     schema: Any,
     feature_fusion_schema: Any,
     branch_view_schema: Any,
     fitted_adapter_schema: Any,
+    data_output_provenance_schema: Any,
     parity_oracle: Any,
     fixture: Any,
+    multisource_fixture: Any,
     feature_fusion_fixture: Any,
+    data_output_provenance_fixture: Any,
+    oof_success_fixture: Any,
+    oof_train_refusal_fixture: Any,
     header: str,
     label: str,
 ) -> None:
@@ -4605,6 +4664,13 @@ def validate_conformance_pack(
         f"{label} fitted adapter ref contract",
     )
     validate_digest_record(
+        contracts.get("data_output_provenance.v1"),
+        canonical_json_sha256(normalize_schema(data_output_provenance_schema)),
+        "json_schema",
+        1,
+        f"{label} data output provenance contract",
+    )
+    validate_digest_record(
         contracts.get("parity_oracle.v1"),
         canonical_json_sha256(parity_oracle),
         "parity_oracle_manifest",
@@ -4626,6 +4692,18 @@ def validate_conformance_pack(
         coordinator_fixture.get("contract") == "coordinator_data_plan_envelope.v1",
         f"{label} coordinator fixture must reference coordinator contract",
     )
+    multisource_record = fixtures.get("coordinator_data_plan_envelope_multisource_repetitions.v1")
+    validate_digest_record(
+        multisource_record,
+        canonical_json_sha256(multisource_fixture),
+        None,
+        None,
+        f"{label} multisource coordinator envelope fixture",
+    )
+    require(
+        multisource_record.get("contract") == "coordinator_data_plan_envelope.v1",
+        f"{label} multisource fixture must reference coordinator contract",
+    )
     fusion_fixture = fixtures.get("feature_fusion_selector_nir_chem.v1")
     validate_digest_record(
         fusion_fixture,
@@ -4637,6 +4715,48 @@ def validate_conformance_pack(
     require(
         fusion_fixture.get("contract") == "feature_fusion_selector.v1",
         f"{label} feature fusion fixture must reference feature fusion contract",
+    )
+    provenance_fixture = fixtures.get("data_output_provenance_augmented_view.v1")
+    validate_digest_record(
+        provenance_fixture,
+        canonical_json_sha256(data_output_provenance_fixture),
+        None,
+        None,
+        f"{label} data output provenance fixture",
+    )
+    require(
+        provenance_fixture.get("contract") == "data_output_provenance.v1",
+        f"{label} data output provenance fixture must reference provenance contract",
+    )
+    oof_success_record = fixtures.get("oof_uc6_success_predictions.v1")
+    validate_digest_record(
+        oof_success_record,
+        canonical_json_sha256(oof_success_fixture),
+        None,
+        None,
+        f"{label} OOF success fixture",
+    )
+    require(
+        oof_success_record.get("contract") == "oof_campaign_fixture.v1",
+        f"{label} OOF success fixture must reference OOF campaign fixture contract",
+    )
+    oof_refusal_record = fixtures.get("oof_uc11_train_prediction_refusal.v1")
+    validate_digest_record(
+        oof_refusal_record,
+        canonical_json_sha256(oof_train_refusal_fixture),
+        None,
+        None,
+        f"{label} OOF train-refusal fixture",
+    )
+    require(
+        oof_refusal_record.get("contract") == "oof_campaign_fixture.v1",
+        f"{label} OOF train-refusal fixture must reference OOF campaign fixture contract",
+    )
+
+    validate_d8_conformance_scenarios(
+        pack.get("scenarios"),
+        fixtures,
+        label,
     )
 
     c_abi = pack.get("c_abi")
@@ -5052,6 +5172,10 @@ def main() -> int:
         local_data_output_provenance_fixture = load_json(
             ROOT / LOCAL_DATA_OUTPUT_PROVENANCE_FIXTURE_REL
         )
+        local_oof_success_fixture = load_json(ROOT / LOCAL_OOF_SUCCESS_FIXTURE_REL)
+        local_oof_train_refusal_fixture = load_json(
+            ROOT / LOCAL_OOF_TRAIN_REFUSAL_FIXTURE_REL
+        )
         local_node_task_fixture = load_json(ROOT / LOCAL_NODE_TASK_FIXTURE_REL)
         local_node_result_fixture = load_json(ROOT / LOCAL_NODE_RESULT_FIXTURE_REL)
         local_process_adapter_description_fixture = load_json(
@@ -5176,9 +5300,14 @@ def main() -> int:
             local_feature_fusion_schema,
             local_branch_view_schema,
             local_fitted_adapter_schema,
+            local_data_output_provenance_schema,
             local_parity_oracle,
             local_fixture,
+            local_multisource_fixture,
             local_feature_fusion_fixture,
+            local_data_output_provenance_fixture,
+            local_oof_success_fixture,
+            local_oof_train_refusal_fixture,
             local_header,
             "dag-ml",
         )
@@ -5230,9 +5359,14 @@ def main() -> int:
             sibling_feature_fusion_schema,
             local_branch_view_schema,
             local_fitted_adapter_schema,
+            local_data_output_provenance_schema,
             sibling_parity_oracle,
             sibling_fixture,
+            local_multisource_fixture,
             sibling_feature_fusion_fixture,
+            local_data_output_provenance_fixture,
+            local_oof_success_fixture,
+            local_oof_train_refusal_fixture,
             sibling_header,
             "dag-ml-data",
         )

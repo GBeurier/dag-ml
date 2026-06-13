@@ -51,6 +51,16 @@ out that peer explicitly. When development moves into a monorepo, this file
 should become a single generated or shared contract artifact used by both
 crates.
 
+The D8 multisource audit extends the shared conformance pack with seven named
+scenarios: `multisource_a2_b3_c2.v1`, `sample_level_late_fusion.v1`,
+`cartesian_combo_to_sample_reducer.v1`, `missing_source_with_fallback.v1`,
+`stacking_oof_contract.v1`, `invalid_unit_join.v1` and
+`row_vs_sample_selection_mismatch.v1`. These scenarios bind the D1-D7 public
+surface changes to schema digests, canonical fixtures and concrete Rust/contract
+test references. They intentionally remain metadata: the core still validates
+relations, fingerprints, OOF safety and representation replay without owning
+feature buffers or host model objects.
+
 ## Parity Oracle v1
 
 Manifest: `parity_oracle.v1.json`

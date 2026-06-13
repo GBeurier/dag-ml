@@ -165,9 +165,11 @@ and compile together in both include orders. A core in-memory provider records
 both materialized handles and scoped data-view handles for smoke tests, and
 the C conformance suite now links both libraries so `dag-ml` replay can consume
 a real `dag-ml-data` f64 provider, read feature/target Arrow exports and verify
-data/view handle release. Next missing piece is to turn that sibling-checkout
-smoke into a shared conformance pack and broaden provider backends beyond the
-in-memory fixture.
+data/view handle release. The shared conformance pack now also carries the D8
+heterogeneous multi-source scenario audit for relation-backed repetitions,
+late fusion, combo reduction, serve-time fallback, OOF stacking and the negative
+unit/selection mismatch cases. The remaining integration hardening is broader
+provider backends beyond the in-memory fixture.
 
 ## Phase 4: Parallelism
 

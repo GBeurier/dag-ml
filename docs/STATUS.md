@@ -112,6 +112,12 @@ Implemented:
 - shared conformance-pack manifest with canonical schema/fixture digests, C ABI
   requirements and required cross-repo checks, kept JSON-identical with
   `dag-ml-data`;
+- heterogeneous multi-source repetitions D8 audit: the shared conformance pack
+  now pins D1-D7 scenarios for A=2/B=3/C=2 relations, sample-level late fusion,
+  cartesian combo-to-sample reduction, missing-source fallback, stacking OOF,
+  invalid unit joins and row-vs-sample selection mismatch. The audited D1-D7
+  changes are additive Rust/JSON contract fields; no new C ABI function,
+  Python facade method or WASM export was introduced for this roadmap slice;
 - research provenance package profile describing the publishable package shape,
   RO-Crate checksum rules, PROV sections, OpenLineage facets and required CLI
   conformance tests, validated by the stdlib contract script;
