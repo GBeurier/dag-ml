@@ -3152,6 +3152,7 @@ pub fn dispatch_custom_observation_aggregation(
         task_id: task_id.into(),
         controller_id: controller_id.clone(),
         policy,
+        reduction_plan: None,
         input: AggregationControllerInput::ObservationToSample {
             block,
             relations,
@@ -3184,6 +3185,7 @@ pub fn dispatch_custom_sample_aggregation(
         task_id: task_id.into(),
         controller_id: controller_id.clone(),
         policy,
+        reduction_plan: None,
         input: AggregationControllerInput::SampleToUnit {
             block,
             relations,

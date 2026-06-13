@@ -12,6 +12,12 @@
     "task_id": {
       "$ref": "#/$defs/non_empty_string"
     },
+    "reduction_plan": {
+      "anyOf": [
+        { "$ref": "#/$defs/reduction_plan" },
+        { "type": "null" }
+      ]
+    },
     "output": {
       "oneOf": [
         { "$ref": "#/$defs/sample_output" },
@@ -31,8 +37,83 @@
     "prediction_level": {
       "enum": ["observation", "sample", "target", "group"]
     },
+    "entity_unit_level": {
+      "enum": ["physical_sample", "source_sample", "observation", "combo"]
+    },
     "prediction_partition": {
       "enum": ["train", "validation", "test", "final"]
+    },
+    "aggregation_weights": {
+      "enum": ["none", "quality", "repetition_count", "controller_emitted"]
+    },
+    "reduction_role": {
+      "enum": ["score", "persist", "fold_ensemble", "meta_feature", "final_output"]
+    },
+    "reduction_axis": {
+      "enum": ["unit", "fold", "model", "metric"]
+    },
+    "reduction_method": {
+      "enum": [
+        "mean",
+        "weighted_mean",
+        "median",
+        "vote",
+        "robust_mean",
+        "exclude_outliers",
+        "custom"
+      ]
+    },
+    "reduction_task_compatibility": {
+      "enum": ["any", "regression", "classification"]
+    },
+    "aggregation_controller_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controller_id"],
+      "properties": {
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "params": {
+          "not": { "type": "null" }
+        }
+      }
+    },
+    "reduction_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/reduction_role"
+        },
+        "axis": {
+          "$ref": "#/$defs/reduction_axis"
+        },
+        "input_unit_level": {
+          "$ref": "#/$defs/entity_unit_level"
+        },
+        "output_unit_level": {
+          "$ref": "#/$defs/entity_unit_level"
+        },
+        "method": {
+          "$ref": "#/$defs/reduction_method"
+        },
+        "weight_source": {
+          "$ref": "#/$defs/aggregation_weights"
+        },
+        "task_compatibility": {
+          "$ref": "#/$defs/reduction_task_compatibility"
+        },
+        "custom_controller": {
+          "anyOf": [
+            { "$ref": "#/$defs/aggregation_controller_spec" },
+            { "type": "null" }
+          ]
+        },
+        "params": {
+          "type": "object"
+        }
+      }
     },
     "sample_output": {
       "type": "object",

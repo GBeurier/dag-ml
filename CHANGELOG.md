@@ -37,6 +37,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   graph/DSL port metadata, relation edge contracts, broadcast/missingness edge
   policy fields and graph validation that rejects incompatible unit/alignment
   joins unless an explicit relation-backed adapter contract is declared.
+- Heterogeneous multi-source repetitions roadmap D3 adds the optional
+  `ReductionPlan` contract for reducer role/axis/unit/method metadata, exposes
+  `robust_mean` and `exclude_outliers` reducer vocabulary, validates
+  controller task/result plan echoes and supports relation-backed combo
+  observation reductions to physical samples without adding public combo
+  prediction levels.
 - Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
   `examples/README.md` audience matrix.

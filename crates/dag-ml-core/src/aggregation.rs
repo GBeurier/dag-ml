@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 use crate::error::{DagMlError, Result};
 use crate::ids::{ControllerId, FoldId, GroupId, NodeId, ObservationId, SampleId, TargetId};
 use crate::oof::{PredictionBlock, PredictionPartition};
-use crate::policy::{AggregationMethod, AggregationPolicy, AggregationWeights, PredictionLevel};
-use crate::relation::SampleRelationSet;
+use crate::policy::{
+    AggregationMethod, AggregationPolicy, AggregationWeights, PredictionLevel, ReductionAxis,
+    ReductionMethod, ReductionPlan,
+};
+use crate::relation::{EntityUnitLevel, SampleRelationSet};
 
 pub const AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION: u32 = 1;
 pub const AGGREGATION_CONTROLLER_TASK_SCHEMA_ID: &str =
@@ -15,6 +18,7 @@ pub const AGGREGATION_CONTROLLER_TASK_SCHEMA_ID: &str =
 pub const AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION: u32 = 1;
 pub const AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_result.v1.schema.json";
+const DEFAULT_ROBUST_TRIM_FRACTION: f64 = 0.1;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ObservationPredictionBlock {
@@ -206,6 +210,8 @@ pub struct AggregationControllerTask {
     pub task_id: String,
     pub controller_id: ControllerId,
     pub policy: AggregationPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduction_plan: Option<ReductionPlan>,
     pub input: AggregationControllerInput,
 }
 
@@ -229,6 +235,8 @@ pub struct AggregationControllerResult {
     #[serde(default = "default_aggregation_controller_result_schema_version")]
     pub schema_version: u32,
     pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduction_plan: Option<ReductionPlan>,
     pub output: AggregationControllerOutput,
 }
 
@@ -270,6 +278,13 @@ impl AggregationControllerTask {
                 self.task_id, self.controller_id, controller.controller_id
             )));
         }
+        if let Some(reduction_plan) = &self.reduction_plan {
+            validate_aggregation_controller_reduction_plan(
+                reduction_plan,
+                &self.policy,
+                &self.input,
+            )?;
+        }
         match &self.input {
             AggregationControllerInput::ObservationToSample {
                 block,
@@ -310,6 +325,7 @@ impl AggregationControllerResult {
                 self.task_id, task.task_id
             )));
         }
+        validate_aggregation_controller_result_reduction_plan(task, self)?;
         match (&task.input, &self.output) {
             (
                 AggregationControllerInput::ObservationToSample {
@@ -349,6 +365,112 @@ impl AggregationControllerResult {
                 )))
             }
         }
+    }
+}
+
+fn validate_aggregation_controller_reduction_plan(
+    plan: &ReductionPlan,
+    policy: &AggregationPolicy,
+    input: &AggregationControllerInput,
+) -> Result<()> {
+    plan.validate()
+        .map_err(|error| DagMlError::OofValidation(error.to_string()))?;
+    if plan.method != ReductionMethod::from(policy.method) {
+        return Err(DagMlError::OofValidation(format!(
+            "reduction plan method {:?} does not match aggregation policy method {:?}",
+            plan.method, policy.method
+        )));
+    }
+    if plan.weight_source != policy.weights {
+        return Err(DagMlError::OofValidation(format!(
+            "reduction plan weight_source {:?} does not match aggregation policy weights {:?}",
+            plan.weight_source, policy.weights
+        )));
+    }
+    if plan.method == ReductionMethod::Custom {
+        let plan_controller = plan
+            .custom_controller
+            .as_ref()
+            .expect("reduction plan validation requires custom controller");
+        let policy_controller = policy
+            .custom_controller
+            .as_ref()
+            .expect("aggregation policy validation requires custom controller");
+        if plan_controller.controller_id != policy_controller.controller_id {
+            return Err(DagMlError::OofValidation(format!(
+                "reduction plan controller `{}` does not match aggregation policy controller `{}`",
+                plan_controller.controller_id, policy_controller.controller_id
+            )));
+        }
+    }
+    if plan.axis != ReductionAxis::Unit {
+        return Err(DagMlError::OofValidation(format!(
+            "aggregation controller reduction plan axis {:?} is not supported for unit aggregation tasks",
+            plan.axis
+        )));
+    }
+    match input {
+        AggregationControllerInput::ObservationToSample { .. } => {
+            if !matches!(
+                plan.input_unit_level,
+                EntityUnitLevel::Observation | EntityUnitLevel::Combo
+            ) {
+                return Err(DagMlError::OofValidation(format!(
+                    "observation aggregation reduction plan input_unit_level {:?} is invalid",
+                    plan.input_unit_level
+                )));
+            }
+            if plan.output_unit_level != EntityUnitLevel::PhysicalSample {
+                return Err(DagMlError::OofValidation(format!(
+                    "observation aggregation reduction plan output_unit_level {:?} must be physical_sample",
+                    plan.output_unit_level
+                )));
+            }
+            if policy.aggregation_level != PredictionLevel::Sample {
+                return Err(DagMlError::OofValidation(format!(
+                    "observation aggregation reduction plan must output sample predictions, got {:?}",
+                    policy.aggregation_level
+                )));
+            }
+        }
+        AggregationControllerInput::SampleToUnit { .. } => {
+            if plan.input_unit_level != EntityUnitLevel::PhysicalSample {
+                return Err(DagMlError::OofValidation(format!(
+                    "sample aggregation reduction plan input_unit_level {:?} must be physical_sample",
+                    plan.input_unit_level
+                )));
+            }
+            if plan.output_unit_level != EntityUnitLevel::PhysicalSample
+                || policy.aggregation_level != PredictionLevel::Sample
+            {
+                return Err(DagMlError::OofValidation(
+                    "sample aggregation reduction plans currently support only physical_sample output; target/group aggregation remains available without a ReductionPlan".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_aggregation_controller_result_reduction_plan(
+    task: &AggregationControllerTask,
+    result: &AggregationControllerResult,
+) -> Result<()> {
+    match (&task.reduction_plan, &result.reduction_plan) {
+        (Some(task_plan), Some(result_plan)) if task_plan == result_plan => Ok(()),
+        (Some(_), Some(_)) => Err(DagMlError::OofValidation(format!(
+            "aggregation controller result `{}` reduction_plan does not match task reduction_plan",
+            result.task_id
+        ))),
+        (Some(_), None) => Err(DagMlError::OofValidation(format!(
+            "aggregation controller result `{}` must echo task reduction_plan",
+            result.task_id
+        ))),
+        (None, Some(_)) => Err(DagMlError::OofValidation(format!(
+            "aggregation controller result `{}` declares reduction_plan but task does not",
+            result.task_id
+        ))),
+        (None, None) => Ok(()),
     }
 }
 
@@ -593,7 +715,7 @@ pub fn aggregate_observation_predictions(
 
     let store_rows = matches!(
         policy.method,
-        AggregationMethod::Median | AggregationMethod::Vote
+        AggregationMethod::Median | AggregationMethod::Vote | AggregationMethod::RobustMean
     );
     let mut accumulators = requested_sample_order
         .iter()
@@ -642,6 +764,13 @@ pub fn aggregate_observation_predictions(
                 AggregationMethod::WeightedMean => accumulator.weighted_mean(&sample_id.to_string()),
                 AggregationMethod::Median => Ok(accumulator.median()),
                 AggregationMethod::Vote => Ok(accumulator.vote()),
+                AggregationMethod::RobustMean => {
+                    Ok(accumulator.robust_mean(DEFAULT_ROBUST_TRIM_FRACTION))
+                }
+                AggregationMethod::ExcludeOutliers => Err(DagMlError::OofValidation(
+                    "exclude_outliers aggregation requires a custom aggregation controller"
+                        .to_string(),
+                )),
                 AggregationMethod::None => {
                     if accumulator.count == 1 {
                         Ok(accumulator
@@ -768,7 +897,7 @@ pub fn aggregate_sample_predictions_by_unit(
 
     let store_rows = matches!(
         policy.method,
-        AggregationMethod::Median | AggregationMethod::Vote
+        AggregationMethod::Median | AggregationMethod::Vote | AggregationMethod::RobustMean
     );
     let mut accumulators = requested_unit_order
         .iter()
@@ -806,6 +935,13 @@ pub fn aggregate_sample_predictions_by_unit(
                 AggregationMethod::WeightedMean => accumulator.weighted_mean(&unit_id.to_string()),
                 AggregationMethod::Median => Ok(accumulator.median()),
                 AggregationMethod::Vote => Ok(accumulator.vote()),
+                AggregationMethod::RobustMean => {
+                    Ok(accumulator.robust_mean(DEFAULT_ROBUST_TRIM_FRACTION))
+                }
+                AggregationMethod::ExcludeOutliers => Err(DagMlError::OofValidation(
+                    "exclude_outliers aggregation requires a custom aggregation controller"
+                        .to_string(),
+                )),
                 AggregationMethod::None => {
                     if accumulator.count == 1 {
                         Ok(accumulator
@@ -1027,6 +1163,25 @@ impl SampleAccumulator {
             })
             .collect()
     }
+
+    fn robust_mean(&self, trim_fraction: f64) -> Vec<f64> {
+        let width = self.sum.len();
+        (0..width)
+            .map(|column_idx| {
+                let mut column = self
+                    .rows
+                    .iter()
+                    .map(|row| row[column_idx])
+                    .collect::<Vec<_>>();
+                column.sort_by(f64::total_cmp);
+                let trim_count = ((column.len() as f64) * trim_fraction).floor() as usize;
+                let max_trim = column.len().saturating_sub(1) / 2;
+                let trim_count = trim_count.min(max_trim);
+                let kept = &column[trim_count..column.len() - trim_count];
+                kept.iter().sum::<f64>() / kept.len() as f64
+            })
+            .collect()
+    }
 }
 
 fn observation_weight(
@@ -1119,6 +1274,15 @@ mod tests {
         relation
     }
 
+    fn combo_relation(observation: &str, sample: &str, components: &[&str]) -> SampleRelation {
+        let mut relation = SampleRelation::new(oid(observation), sid(sample));
+        relation.unit_level = EntityUnitLevel::Combo;
+        relation.derived_unit_id = Some(format!("combo:{observation}"));
+        relation.component_observation_ids =
+            components.iter().map(|component| oid(component)).collect();
+        relation
+    }
+
     fn custom_policy(level: PredictionLevel) -> AggregationPolicy {
         AggregationPolicy {
             aggregation_level: level,
@@ -1133,11 +1297,24 @@ mod tests {
 
     #[test]
     fn validates_custom_observation_aggregation_controller_result() {
+        let reduction_plan = ReductionPlan {
+            role: crate::policy::ReductionRole::FinalOutput,
+            axis: ReductionAxis::Unit,
+            input_unit_level: EntityUnitLevel::Observation,
+            output_unit_level: EntityUnitLevel::PhysicalSample,
+            method: ReductionMethod::Custom,
+            custom_controller: Some(crate::policy::AggregationControllerSpec {
+                controller_id: ControllerId::new("controller:agg.trimmed").unwrap(),
+                params: serde_json::json!({ "trim_fraction": 0.1 }),
+            }),
+            ..ReductionPlan::default()
+        };
         let task = AggregationControllerTask {
             schema_version: AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
             task_id: "agg-task:obs.sample.fold0".to_string(),
             controller_id: ControllerId::new("controller:agg.trimmed").unwrap(),
             policy: custom_policy(PredictionLevel::Sample),
+            reduction_plan: Some(reduction_plan.clone()),
             input: AggregationControllerInput::ObservationToSample {
                 block: ObservationPredictionBlock {
                     prediction_id: Some("prediction:model.fold0".to_string()),
@@ -1164,6 +1341,7 @@ mod tests {
         let result = AggregationControllerResult {
             schema_version: AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
             task_id: task.task_id.clone(),
+            reduction_plan: Some(reduction_plan),
             output: AggregationControllerOutput::Sample {
                 block: PredictionBlock {
                     prediction_id: Some("prediction:model.fold0:custom_sample_agg".to_string()),
@@ -1181,12 +1359,68 @@ mod tests {
     }
 
     #[test]
+    fn custom_aggregation_controller_result_must_echo_reduction_plan() {
+        let reduction_plan = ReductionPlan {
+            method: ReductionMethod::Custom,
+            custom_controller: Some(crate::policy::AggregationControllerSpec {
+                controller_id: ControllerId::new("controller:agg.trimmed").unwrap(),
+                params: serde_json::json!({}),
+            }),
+            ..ReductionPlan::default()
+        };
+        let task = AggregationControllerTask {
+            schema_version: AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
+            task_id: "agg-task:obs.sample.fold0".to_string(),
+            controller_id: ControllerId::new("controller:agg.trimmed").unwrap(),
+            policy: custom_policy(PredictionLevel::Sample),
+            reduction_plan: Some(reduction_plan),
+            input: AggregationControllerInput::ObservationToSample {
+                block: ObservationPredictionBlock {
+                    prediction_id: None,
+                    producer_node: NodeId::new("model:pls").unwrap(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: None,
+                    observation_ids: vec![oid("obs:1")],
+                    values: vec![vec![1.0]],
+                    weights: Vec::new(),
+                    target_names: vec!["y".to_string()],
+                },
+                relations: SampleRelationSet {
+                    records: vec![relation("obs:1", "sample:1")],
+                },
+                requested_sample_order: vec![sid("sample:1")],
+            },
+        };
+        let result = AggregationControllerResult {
+            schema_version: AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+            task_id: task.task_id.clone(),
+            reduction_plan: None,
+            output: AggregationControllerOutput::Sample {
+                block: PredictionBlock {
+                    prediction_id: None,
+                    producer_node: NodeId::new("model:pls").unwrap(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: None,
+                    sample_ids: vec![sid("sample:1")],
+                    values: vec![vec![1.0]],
+                    target_names: vec!["y".to_string()],
+                },
+            },
+        };
+
+        let error = result.validate_for_task(&task).unwrap_err().to_string();
+
+        assert!(error.contains("echo task reduction_plan"));
+    }
+
+    #[test]
     fn custom_aggregation_controller_result_refuses_order_mismatch() {
         let task = AggregationControllerTask {
             schema_version: AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
             task_id: "agg-task:obs.sample.fold0".to_string(),
             controller_id: ControllerId::new("controller:agg.trimmed").unwrap(),
             policy: custom_policy(PredictionLevel::Sample),
+            reduction_plan: None,
             input: AggregationControllerInput::ObservationToSample {
                 block: ObservationPredictionBlock {
                     prediction_id: None,
@@ -1207,6 +1441,7 @@ mod tests {
         let result = AggregationControllerResult {
             schema_version: AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
             task_id: task.task_id.clone(),
+            reduction_plan: None,
             output: AggregationControllerOutput::Sample {
                 block: PredictionBlock {
                     prediction_id: None,
@@ -1231,6 +1466,7 @@ mod tests {
             task_id: "agg-task:sample.group.fold0".to_string(),
             controller_id: ControllerId::new("controller:agg.trimmed").unwrap(),
             policy: custom_policy(PredictionLevel::Group),
+            reduction_plan: None,
             input: AggregationControllerInput::SampleToUnit {
                 block: PredictionBlock {
                     prediction_id: Some("prediction:model.fold0".to_string()),
@@ -1259,6 +1495,7 @@ mod tests {
         let result = AggregationControllerResult {
             schema_version: AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
             task_id: task.task_id.clone(),
+            reduction_plan: None,
             output: AggregationControllerOutput::Unit {
                 block: AggregatedPredictionBlock {
                     prediction_id: Some("prediction:model.fold0:custom_group_agg".to_string()),
@@ -1312,6 +1549,121 @@ mod tests {
             vec![sid("sample:1"), sid("sample:2")]
         );
         assert_eq!(aggregated.values, vec![vec![2.0], vec![10.0]]);
+    }
+
+    #[test]
+    fn aggregates_relation_backed_combo_predictions_by_sample() {
+        let relations = SampleRelationSet {
+            records: vec![
+                relation("obs:s1.a", "sample:1"),
+                relation("obs:s1.b", "sample:1"),
+                relation("obs:s2.a", "sample:2"),
+                relation("obs:s2.b", "sample:2"),
+                combo_relation("obs:s1.combo", "sample:1", &["obs:s1.a", "obs:s1.b"]),
+                combo_relation("obs:s2.combo", "sample:2", &["obs:s2.a", "obs:s2.b"]),
+            ],
+        };
+        let block = ObservationPredictionBlock {
+            prediction_id: Some("pred:combo".to_string()),
+            producer_node: NodeId::new("model:combo").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            observation_ids: vec![oid("obs:s1.combo"), oid("obs:s2.combo")],
+            values: vec![vec![5.0], vec![9.0]],
+            weights: Vec::new(),
+            target_names: vec!["y".to_string()],
+        };
+
+        let aggregated = aggregate_observation_predictions(
+            &block,
+            &relations,
+            &AggregationPolicy::default(),
+            &[sid("sample:1"), sid("sample:2")],
+        )
+        .unwrap();
+
+        assert_eq!(aggregated.values, vec![vec![5.0], vec![9.0]]);
+    }
+
+    #[test]
+    fn robust_mean_trims_extreme_repeated_predictions() {
+        let observations = (0..10)
+            .map(|idx| format!("obs:s1.{idx}"))
+            .collect::<Vec<_>>();
+        let relations = SampleRelationSet {
+            records: observations
+                .iter()
+                .map(|observation| relation(observation, "sample:1"))
+                .collect(),
+        };
+        let block = ObservationPredictionBlock {
+            prediction_id: Some("pred:robust".to_string()),
+            producer_node: NodeId::new("model:pls").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            observation_ids: observations
+                .iter()
+                .map(|observation| oid(observation))
+                .collect(),
+            values: vec![
+                vec![0.0],
+                vec![1.0],
+                vec![2.0],
+                vec![3.0],
+                vec![4.0],
+                vec![5.0],
+                vec![6.0],
+                vec![7.0],
+                vec![8.0],
+                vec![100.0],
+            ],
+            weights: Vec::new(),
+            target_names: vec!["y".to_string()],
+        };
+
+        let aggregated = aggregate_observation_predictions(
+            &block,
+            &relations,
+            &AggregationPolicy {
+                method: AggregationMethod::RobustMean,
+                ..AggregationPolicy::default()
+            },
+            &[sid("sample:1")],
+        )
+        .unwrap();
+
+        assert_eq!(aggregated.values, vec![vec![4.5]]);
+    }
+
+    #[test]
+    fn exclude_outliers_requires_custom_controller_path() {
+        let relations = SampleRelationSet {
+            records: vec![relation("obs:1", "sample:1")],
+        };
+        let block = ObservationPredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new("model:pls").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: None,
+            observation_ids: vec![oid("obs:1")],
+            values: vec![vec![1.0]],
+            weights: Vec::new(),
+            target_names: vec!["y".to_string()],
+        };
+
+        let error = aggregate_observation_predictions(
+            &block,
+            &relations,
+            &AggregationPolicy {
+                method: AggregationMethod::ExcludeOutliers,
+                ..AggregationPolicy::default()
+            },
+            &[sid("sample:1")],
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("custom aggregation controller"));
     }
 
     #[test]

@@ -1260,6 +1260,12 @@ def validate_aggregation_controller_task_schema(schema: Any, label: str) -> None
     for definition_name in (
         "aggregation_policy",
         "aggregation_controller_spec",
+        "reduction_plan",
+        "reduction_role",
+        "reduction_axis",
+        "reduction_method",
+        "reduction_task_compatibility",
+        "entity_unit_level",
         "observation_to_sample_input",
         "sample_to_unit_input",
         "observation_prediction_block",
@@ -1274,6 +1280,47 @@ def validate_aggregation_controller_task_schema(schema: Any, label: str) -> None
     require(
         defs["aggregation_policy"]["properties"]["method"].get("const") == "custom_controller",
         f"{label} aggregation-controller task policy must pin custom_controller method",
+    )
+    require(
+        defs.get("aggregation_method", {}).get("enum")
+        == [
+            "none",
+            "mean",
+            "weighted_mean",
+            "median",
+            "vote",
+            "robust_mean",
+            "exclude_outliers",
+            "custom_controller",
+        ],
+        f"{label} aggregation-controller task aggregation methods are not aligned",
+    )
+    require(
+        defs.get("reduction_method", {}).get("enum")
+        == [
+            "mean",
+            "weighted_mean",
+            "median",
+            "vote",
+            "robust_mean",
+            "exclude_outliers",
+            "custom",
+        ],
+        f"{label} aggregation-controller task reduction methods are not aligned",
+    )
+    require(
+        defs.get("reduction_role", {}).get("enum")
+        == ["score", "persist", "fold_ensemble", "meta_feature", "final_output"],
+        f"{label} aggregation-controller task reduction roles are not aligned",
+    )
+    require(
+        defs.get("reduction_axis", {}).get("enum") == ["unit", "fold", "model", "metric"],
+        f"{label} aggregation-controller task reduction axes are not aligned",
+    )
+    require(
+        defs.get("entity_unit_level", {}).get("enum")
+        == ["physical_sample", "source_sample", "observation", "combo"],
+        f"{label} aggregation-controller task entity unit levels are not aligned",
     )
 
 
@@ -1318,6 +1365,12 @@ def validate_aggregation_controller_result_schema(schema: Any, label: str) -> No
     for definition_name in (
         "sample_output",
         "unit_output",
+        "reduction_plan",
+        "reduction_role",
+        "reduction_axis",
+        "reduction_method",
+        "reduction_task_compatibility",
+        "entity_unit_level",
         "prediction_block",
         "aggregated_prediction_block",
         "prediction_unit_id",
@@ -1326,6 +1379,33 @@ def validate_aggregation_controller_result_schema(schema: Any, label: str) -> No
             definition_name in defs,
             f"{label} aggregation-controller result schema misses `{definition_name}`",
         )
+    require(
+        defs.get("reduction_method", {}).get("enum")
+        == [
+            "mean",
+            "weighted_mean",
+            "median",
+            "vote",
+            "robust_mean",
+            "exclude_outliers",
+            "custom",
+        ],
+        f"{label} aggregation-controller result reduction methods are not aligned",
+    )
+    require(
+        defs.get("reduction_role", {}).get("enum")
+        == ["score", "persist", "fold_ensemble", "meta_feature", "final_output"],
+        f"{label} aggregation-controller result reduction roles are not aligned",
+    )
+    require(
+        defs.get("reduction_axis", {}).get("enum") == ["unit", "fold", "model", "metric"],
+        f"{label} aggregation-controller result reduction axes are not aligned",
+    )
+    require(
+        defs.get("entity_unit_level", {}).get("enum")
+        == ["physical_sample", "source_sample", "observation", "combo"],
+        f"{label} aggregation-controller result entity unit levels are not aligned",
+    )
 
 
 def validate_data_output_provenance_schema(schema: Any, label: str) -> None:

@@ -1056,6 +1056,7 @@ impl RuntimeController for CustomAggregationController {
                     schema_version:
                         crate::aggregation::AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
                     task_id: task.task_id.clone(),
+                    reduction_plan: None,
                     output: AggregationControllerOutput::Sample {
                         block: PredictionBlock {
                             prediction_id: block.prediction_id.clone(),
@@ -1105,6 +1106,7 @@ impl RuntimeController for CustomAggregationController {
                     schema_version:
                         crate::aggregation::AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
                     task_id: task.task_id.clone(),
+                    reduction_plan: None,
                     output: AggregationControllerOutput::Unit {
                         block: AggregatedPredictionBlock {
                             prediction_id: block.prediction_id.clone(),

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, Result};
 use crate::ids::{ControllerId, NodeId};
+use crate::relation::EntityUnitLevel;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +80,8 @@ pub enum AggregationMethod {
     WeightedMean,
     Median,
     Vote,
+    RobustMean,
+    ExcludeOutliers,
     CustomController,
 }
 
@@ -106,6 +109,143 @@ impl AggregationControllerSpec {
                 self.controller_id
             )));
         }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReductionRole {
+    Score,
+    Persist,
+    FoldEnsemble,
+    MetaFeature,
+    FinalOutput,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReductionAxis {
+    Unit,
+    Fold,
+    Model,
+    Metric,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReductionMethod {
+    Mean,
+    WeightedMean,
+    Median,
+    Vote,
+    RobustMean,
+    ExcludeOutliers,
+    Custom,
+}
+
+impl From<AggregationMethod> for ReductionMethod {
+    fn from(method: AggregationMethod) -> Self {
+        match method {
+            AggregationMethod::None | AggregationMethod::Mean => Self::Mean,
+            AggregationMethod::WeightedMean => Self::WeightedMean,
+            AggregationMethod::Median => Self::Median,
+            AggregationMethod::Vote => Self::Vote,
+            AggregationMethod::RobustMean => Self::RobustMean,
+            AggregationMethod::ExcludeOutliers => Self::ExcludeOutliers,
+            AggregationMethod::CustomController => Self::Custom,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReductionTaskCompatibility {
+    Any,
+    Regression,
+    Classification,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReductionPlan {
+    #[serde(default = "default_reduction_role")]
+    pub role: ReductionRole,
+    #[serde(default = "default_reduction_axis")]
+    pub axis: ReductionAxis,
+    #[serde(default = "default_reduction_input_unit_level")]
+    pub input_unit_level: EntityUnitLevel,
+    #[serde(default = "default_reduction_output_unit_level")]
+    pub output_unit_level: EntityUnitLevel,
+    #[serde(default = "default_reduction_method")]
+    pub method: ReductionMethod,
+    #[serde(default = "default_aggregation_weights")]
+    pub weight_source: AggregationWeights,
+    #[serde(default = "default_reduction_task_compatibility")]
+    pub task_compatibility: ReductionTaskCompatibility,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_controller: Option<AggregationControllerSpec>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, serde_json::Value>,
+}
+
+impl Default for ReductionPlan {
+    fn default() -> Self {
+        Self {
+            role: default_reduction_role(),
+            axis: default_reduction_axis(),
+            input_unit_level: default_reduction_input_unit_level(),
+            output_unit_level: default_reduction_output_unit_level(),
+            method: default_reduction_method(),
+            weight_source: default_aggregation_weights(),
+            task_compatibility: default_reduction_task_compatibility(),
+            custom_controller: None,
+            params: BTreeMap::new(),
+        }
+    }
+}
+
+impl ReductionPlan {
+    pub fn validate(&self) -> Result<()> {
+        if self.method == ReductionMethod::WeightedMean
+            && self.weight_source == AggregationWeights::None
+        {
+            return Err(DagMlError::CampaignValidation(
+                "weighted_mean reduction requires an explicit weight_source".to_string(),
+            ));
+        }
+        if self.method != ReductionMethod::WeightedMean
+            && self.method != ReductionMethod::Custom
+            && self.weight_source != AggregationWeights::None
+        {
+            return Err(DagMlError::CampaignValidation(format!(
+                "reduction weight_source {:?} is only valid with weighted_mean or custom",
+                self.weight_source
+            )));
+        }
+        match (&self.method, &self.custom_controller) {
+            (ReductionMethod::Custom, Some(controller)) => controller.validate()?,
+            (ReductionMethod::Custom, None) => {
+                return Err(DagMlError::CampaignValidation(
+                    "custom reduction requires a custom_controller spec".to_string(),
+                ));
+            }
+            (_, Some(controller)) => {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "reduction controller `{}` is only valid with custom method",
+                    controller.controller_id
+                )));
+            }
+            (_, None) => {}
+        }
+        if self.method == ReductionMethod::Vote
+            && self.task_compatibility == ReductionTaskCompatibility::Regression
+        {
+            return Err(DagMlError::CampaignValidation(
+                "vote reduction is not compatible with regression tasks".to_string(),
+            ));
+        }
+        validate_trim_fraction(self.params.get("trim_fraction"))?;
+        validate_outlier_threshold(self.params.get("threshold"))?;
         Ok(())
     }
 }
@@ -204,6 +344,66 @@ fn default_aggregation_method() -> AggregationMethod {
 
 fn default_aggregation_weights() -> AggregationWeights {
     AggregationWeights::None
+}
+
+fn default_reduction_role() -> ReductionRole {
+    ReductionRole::FinalOutput
+}
+
+fn default_reduction_axis() -> ReductionAxis {
+    ReductionAxis::Unit
+}
+
+fn default_reduction_input_unit_level() -> EntityUnitLevel {
+    EntityUnitLevel::Observation
+}
+
+fn default_reduction_output_unit_level() -> EntityUnitLevel {
+    EntityUnitLevel::PhysicalSample
+}
+
+fn default_reduction_method() -> ReductionMethod {
+    ReductionMethod::Mean
+}
+
+fn default_reduction_task_compatibility() -> ReductionTaskCompatibility {
+    ReductionTaskCompatibility::Any
+}
+
+fn validate_trim_fraction(value: Option<&serde_json::Value>) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let Some(trim_fraction) = value.as_f64() else {
+        return Err(DagMlError::CampaignValidation(
+            "reduction trim_fraction must be numeric".to_string(),
+        ));
+    };
+    if trim_fraction.is_finite() && (0.0..0.5).contains(&trim_fraction) {
+        Ok(())
+    } else {
+        Err(DagMlError::CampaignValidation(
+            "reduction trim_fraction must be finite and in [0.0, 0.5)".to_string(),
+        ))
+    }
+}
+
+fn validate_outlier_threshold(value: Option<&serde_json::Value>) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let Some(threshold) = value.as_f64() else {
+        return Err(DagMlError::CampaignValidation(
+            "reduction threshold must be numeric".to_string(),
+        ));
+    };
+    if threshold.is_finite() && threshold > 0.0 && threshold < 1.0 {
+        Ok(())
+    } else {
+        Err(DagMlError::CampaignValidation(
+            "reduction threshold must be finite and in (0.0, 1.0)".to_string(),
+        ))
+    }
 }
 
 fn default_json_object() -> serde_json::Value {
@@ -585,6 +785,65 @@ mod tests {
             ..AggregationPolicy::default()
         };
         valid.validate().unwrap();
+    }
+
+    #[test]
+    fn reduction_plan_validates_weight_controller_and_task_contracts() {
+        let weighted = ReductionPlan {
+            method: ReductionMethod::WeightedMean,
+            weight_source: AggregationWeights::Quality,
+            ..ReductionPlan::default()
+        };
+        weighted.validate().unwrap();
+
+        let fold_ensemble = ReductionPlan {
+            role: ReductionRole::FoldEnsemble,
+            axis: ReductionAxis::Fold,
+            input_unit_level: EntityUnitLevel::PhysicalSample,
+            output_unit_level: EntityUnitLevel::PhysicalSample,
+            ..ReductionPlan::default()
+        };
+        fold_ensemble.validate().unwrap();
+
+        let model_meta_feature = ReductionPlan {
+            role: ReductionRole::MetaFeature,
+            axis: ReductionAxis::Model,
+            input_unit_level: EntityUnitLevel::PhysicalSample,
+            output_unit_level: EntityUnitLevel::PhysicalSample,
+            ..ReductionPlan::default()
+        };
+        model_meta_feature.validate().unwrap();
+
+        let missing_weight_source = ReductionPlan {
+            method: ReductionMethod::WeightedMean,
+            ..ReductionPlan::default()
+        };
+        assert!(missing_weight_source.validate().is_err());
+
+        let invalid_vote = ReductionPlan {
+            method: ReductionMethod::Vote,
+            task_compatibility: ReductionTaskCompatibility::Regression,
+            ..ReductionPlan::default()
+        };
+        assert!(invalid_vote.validate().is_err());
+
+        let custom = ReductionPlan {
+            method: ReductionMethod::Custom,
+            custom_controller: Some(AggregationControllerSpec {
+                controller_id: ControllerId::new("controller:agg.robust").unwrap(),
+                params: serde_json::json!({ "trim_fraction": 0.2 }),
+            }),
+            params: BTreeMap::from([("trim_fraction".to_string(), serde_json::json!(0.2))]),
+            ..ReductionPlan::default()
+        };
+        custom.validate().unwrap();
+
+        let invalid_trim = ReductionPlan {
+            method: ReductionMethod::RobustMean,
+            params: BTreeMap::from([("trim_fraction".to_string(), serde_json::json!(0.75))]),
+            ..ReductionPlan::default()
+        };
+        assert!(invalid_trim.validate().is_err());
     }
 
     #[test]
