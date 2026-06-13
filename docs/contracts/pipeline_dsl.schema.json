@@ -29,6 +29,33 @@
       "type": "object"
     },
     "json_value": true,
+    "entity_unit_level": {
+      "enum": ["physical_sample", "source_sample", "observation", "combo"]
+    },
+    "pipeline_unit_contract": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "representation": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "unit_level": {
+          "$ref": "#/$defs/entity_unit_level"
+        },
+        "alignment_key": {
+          "$ref": "#/$defs/identifier"
+        },
+        "target_level": {
+          "$ref": "#/$defs/entity_unit_level"
+        }
+      }
+    },
     "canonical_step_kind": {
       "enum": [
         "transform",
@@ -262,10 +289,10 @@
           "$ref": "#/$defs/non_empty_string"
         },
         "input": {
-          "$ref": "#/$defs/json_object"
+          "$ref": "#/$defs/pipeline_unit_contract"
         },
         "output": {
-          "$ref": "#/$defs/json_object"
+          "$ref": "#/$defs/pipeline_unit_contract"
         },
         "generation_strategy": {
           "enum": ["none", "cartesian", "zip", null]
@@ -493,10 +520,10 @@
           "$ref": "#/$defs/compat_step_array"
         },
         "input": {
-          "$ref": "#/$defs/json_object"
+          "$ref": "#/$defs/pipeline_unit_contract"
         },
         "output": {
-          "$ref": "#/$defs/json_object"
+          "$ref": "#/$defs/pipeline_unit_contract"
         },
         "metadata": {
           "$ref": "#/$defs/json_object"

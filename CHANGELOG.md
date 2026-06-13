@@ -33,6 +33,10 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   flags, deterministic relation fingerprinting, schema/conformance updates and
   an A=2/B=3/C=2 multisource fixture while keeping public prediction levels
   unchanged.
+- Heterogeneous multi-source repetitions roadmap D2 adds optional unit-typed
+  graph/DSL port metadata, relation edge contracts, broadcast/missingness edge
+  policy fields and graph validation that rejects incompatible unit/alignment
+  joins unless an explicit relation-backed adapter contract is declared.
 - Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
   `examples/README.md` audience matrix.

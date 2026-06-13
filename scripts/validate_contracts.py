@@ -173,6 +173,15 @@ SIBLING_FEATURE_FUSION_SCHEMA_ID = (
 )
 SHA256_RE = re.compile(r"^[0-9A-Fa-f]{64}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+ENTITY_UNIT_LEVELS = {"physical_sample", "source_sample", "observation", "combo"}
+MISSINGNESS_POLICIES = {
+    "strict",
+    "warn",
+    "impute_declared",
+    "mask",
+    "partial_model",
+    "pad_representation",
+}
 CONFORMANCE_PACK_ID = "dag-ml.shared.conformance.v1"
 PARITY_ORACLE_ID = "dag-ml.nirs4all.parity_oracle.v1"
 REQUIRED_PARITY_CASE_IDS = {
@@ -270,6 +279,21 @@ def require_identifier(value: Any, label: str) -> None:
         isinstance(value, str) and IDENTIFIER_RE.fullmatch(value) is not None,
         f"{label} must be a DAG-ML identifier",
     )
+
+
+def require_optional_non_empty_string(value: Any, label: str) -> None:
+    if value is not None:
+        require_non_empty_string(value, label)
+
+
+def require_optional_identifier(value: Any, label: str) -> None:
+    if value is not None:
+        require_identifier(value, label)
+
+
+def require_optional_unit_level(value: Any, label: str) -> None:
+    if value is not None:
+        require(value in ENTITY_UNIT_LEVELS, f"{label} has invalid entity unit level")
 
 
 def require_no_unknown_keys(value: dict[str, Any], allowed: set[str], label: str) -> None:
@@ -464,6 +488,23 @@ def validate_graph_spec_schema(schema: Any, label: str) -> None:
         defs.get("port_cardinality", {}).get("enum") == ["one", "many", "optional"],
         f"{label} GraphSpec port_cardinality enum is not aligned with Rust",
     )
+    require(
+        defs.get("entity_unit_level", {}).get("enum")
+        == ["physical_sample", "source_sample", "observation", "combo"],
+        f"{label} GraphSpec entity_unit_level enum is not aligned with Rust",
+    )
+    require(
+        defs.get("missingness_policy", {}).get("enum")
+        == [
+            "strict",
+            "warn",
+            "impute_declared",
+            "mask",
+            "partial_model",
+            "pad_representation",
+        ],
+        f"{label} GraphSpec missingness_policy enum is not aligned with Rust",
+    )
     for definition_name in (
         "port_spec",
         "port_schema",
@@ -472,10 +513,45 @@ def validate_graph_spec_schema(schema: Any, label: str) -> None:
         "edge_spec",
         "graph_interface",
         "node_spec",
+        "relation_contract",
     ):
         require(
             definition_name in defs,
             f"{label} GraphSpec schema misses `{definition_name}`",
+        )
+    relation_contract = defs.get("relation_contract")
+    require(
+        isinstance(relation_contract, dict)
+        and relation_contract.get("additionalProperties") is False,
+        f"{label} GraphSpec relation_contract must reject unknown fields",
+    )
+    relation_props = relation_contract.get("properties", {})
+    require(
+        isinstance(relation_props, dict)
+        and "relation_fingerprint" in relation_props
+        and "required" in relation_props,
+        f"{label} GraphSpec relation_contract properties are incomplete",
+    )
+    port_props = defs.get("port_spec", {}).get("properties")
+    require(isinstance(port_props, dict), f"{label} GraphSpec port_spec properties missing")
+    for property_name in ("unit_level", "alignment_key", "target_level"):
+        require(
+            property_name in port_props,
+            f"{label} GraphSpec port_spec misses `{property_name}`",
+        )
+    edge_props = defs.get("edge_contract", {}).get("properties")
+    require(isinstance(edge_props, dict), f"{label} GraphSpec edge_contract properties missing")
+    for property_name in (
+        "unit_level",
+        "alignment_key",
+        "target_level",
+        "relation_contract",
+        "allows_broadcast",
+        "missingness_policy",
+    ):
+        require(
+            property_name in edge_props,
+            f"{label} GraphSpec edge_contract misses `{property_name}`",
         )
 
 
@@ -539,8 +615,36 @@ def validate_pipeline_dsl_schema(schema: Any, label: str) -> None:
         "compat_step",
         "compat_step_array",
         "compat_step_object",
+        "pipeline_unit_contract",
     ):
         require(definition_name in defs, f"{label} Pipeline DSL schema misses `{definition_name}`")
+    require(
+        defs.get("entity_unit_level", {}).get("enum")
+        == ["physical_sample", "source_sample", "observation", "combo"],
+        f"{label} Pipeline DSL entity_unit_level enum is not aligned",
+    )
+    unit_contract_props = defs.get("pipeline_unit_contract", {}).get("properties")
+    require(
+        isinstance(unit_contract_props, dict),
+        f"{label} Pipeline DSL unit contract properties missing",
+    )
+    for property_name in ("name", "representation", "unit_level", "alignment_key", "target_level"):
+        require(
+            property_name in unit_contract_props,
+            f"{label} Pipeline DSL unit contract misses `{property_name}`",
+        )
+    for pipeline_def in ("canonical_pipeline_dsl", "compat_pipeline_object"):
+        pipeline_props = defs.get(pipeline_def, {}).get("properties")
+        require(
+            isinstance(pipeline_props, dict),
+            f"{label} Pipeline DSL {pipeline_def} properties missing",
+        )
+        for property_name in ("input", "output"):
+            require(
+                pipeline_props.get(property_name, {}).get("$ref")
+                == "#/$defs/pipeline_unit_contract",
+                f"{label} Pipeline DSL {pipeline_def}.{property_name} must use pipeline_unit_contract",
+            )
     compat_properties = defs.get("compat_step_object", {}).get("properties")
     require(isinstance(compat_properties, dict), f"{label} Pipeline DSL compat properties missing")
     for property_name in ("class", "function", "ref", "type", "name", "step", "tuner", "finetune"):
@@ -1836,7 +1940,12 @@ def validate_graph_spec(graph: Any, label: str) -> None:
     nodes = graph.get("nodes")
     require(isinstance(nodes, list) and nodes, f"{label}.nodes must be non-empty")
 
-    node_ports: dict[str, dict[str, dict[str, str]]] = {}
+    interface = graph.get("interface", {})
+    require(isinstance(interface, dict), f"{label}.interface must be an object when present")
+    graph_port_specs(interface.get("inputs", []), f"{label}.interface.inputs")
+    graph_port_specs(interface.get("outputs", []), f"{label}.interface.outputs")
+
+    node_ports: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
     for index, node in enumerate(nodes):
         node_label = f"{label}.nodes[{index}]"
         require(isinstance(node, dict), f"{node_label} must be an object")
@@ -1872,8 +1981,11 @@ def validate_graph_spec(graph: Any, label: str) -> None:
         ports = node.get("ports", {})
         require(isinstance(ports, dict), f"{node_label}.ports must be an object when present")
         node_ports[node_id] = {
-            "inputs": graph_port_kinds(ports.get("inputs", []), f"{node_label}.ports.inputs"),
-            "outputs": graph_port_kinds(ports.get("outputs", []), f"{node_label}.ports.outputs"),
+            "inputs": graph_port_specs(ports.get("inputs", []), f"{node_label}.ports.inputs"),
+            "outputs": graph_port_specs(
+                ports.get("outputs", []),
+                f"{node_label}.ports.outputs",
+            ),
         }
 
     edges = graph.get("edges", [])
@@ -1898,22 +2010,25 @@ def validate_graph_spec(graph: Any, label: str) -> None:
         target_port = target.get("port_name")
         require_non_empty_string(source_port, f"{edge_label}.source.port_name")
         require_non_empty_string(target_port, f"{edge_label}.target.port_name")
-        source_kind = node_ports[source_node]["outputs"].get(source_port)
-        target_kind = node_ports[target_node]["inputs"].get(target_port)
-        require(source_kind is not None, f"{edge_label} source port `{source_port}` is missing")
-        require(target_kind is not None, f"{edge_label} target port `{target_port}` is missing")
+        source_spec = node_ports[source_node]["outputs"].get(source_port)
+        target_spec = node_ports[target_node]["inputs"].get(target_port)
+        require(source_spec is not None, f"{edge_label} source port `{source_port}` is missing")
+        require(target_spec is not None, f"{edge_label} target port `{target_port}` is missing")
+        source_kind = source_spec["kind"]
+        target_kind = target_spec["kind"]
         edge_kind = contract.get("kind")
         require(
             edge_kind == source_kind == target_kind,
             f"{edge_label} kind `{edge_kind}` does not match endpoint ports",
         )
+        validate_graph_edge_contract(edge_label, contract, source_spec, target_spec)
         if contract.get("requires_oof") is True:
             require(edge_kind == "prediction", f"{edge_label} requires OOF on non-prediction edge")
 
 
-def graph_port_kinds(ports: Any, label: str) -> dict[str, str]:
+def graph_port_specs(ports: Any, label: str) -> dict[str, dict[str, Any]]:
     require(isinstance(ports, list), f"{label} must be an array")
-    seen: dict[str, str] = {}
+    seen: dict[str, dict[str, Any]] = {}
     for index, port in enumerate(ports):
         port_label = f"{label}[{index}]"
         require(isinstance(port, dict), f"{port_label} must be an object")
@@ -1925,8 +2040,203 @@ def graph_port_kinds(ports: Any, label: str) -> dict[str, str]:
             kind in {"data", "target", "prediction", "artifact", "metric", "control"},
             f"{port_label}.kind is invalid",
         )
-        seen[name] = kind
+        require_optional_non_empty_string(
+            port.get("representation"),
+            f"{port_label}.representation",
+        )
+        require_optional_unit_level(port.get("unit_level"), f"{port_label}.unit_level")
+        require_optional_identifier(port.get("alignment_key"), f"{port_label}.alignment_key")
+        require_optional_unit_level(port.get("target_level"), f"{port_label}.target_level")
+        seen[name] = {
+            "kind": kind,
+            "unit_level": port.get("unit_level"),
+            "alignment_key": port.get("alignment_key"),
+            "target_level": port.get("target_level"),
+        }
     return seen
+
+
+def validate_graph_edge_contract(
+    label: str,
+    contract: dict[str, Any],
+    source_port: dict[str, Any],
+    target_port: dict[str, Any],
+) -> None:
+    require_optional_non_empty_string(
+        contract.get("representation"),
+        f"{label}.contract.representation",
+    )
+    require_optional_unit_level(contract.get("unit_level"), f"{label}.contract.unit_level")
+    require_optional_identifier(contract.get("alignment_key"), f"{label}.contract.alignment_key")
+    require_optional_unit_level(contract.get("target_level"), f"{label}.contract.target_level")
+    if "allows_broadcast" in contract:
+        require(
+            isinstance(contract.get("allows_broadcast"), bool),
+            f"{label}.contract.allows_broadcast must be a boolean",
+        )
+    missingness_policy = contract.get("missingness_policy")
+    if missingness_policy is not None:
+        require(
+            missingness_policy in MISSINGNESS_POLICIES,
+            f"{label}.contract.missingness_policy is invalid",
+        )
+
+    relation_contract = contract.get("relation_contract")
+    if relation_contract is not None:
+        require(
+            isinstance(relation_contract, dict),
+            f"{label}.contract.relation_contract must be an object when present",
+        )
+        require_no_unknown_keys(
+            relation_contract,
+            {"relation_fingerprint", "required"},
+            f"{label}.contract.relation_contract",
+        )
+        relation_fingerprint = relation_contract.get("relation_fingerprint")
+        if relation_fingerprint is not None:
+            require_sha256(
+                relation_fingerprint,
+                f"{label}.contract.relation_contract.relation_fingerprint",
+            )
+        elif relation_contract.get("required") is True:
+            raise ContractError(
+                f"{label}.contract.relation_contract is required but has no relation_fingerprint"
+            )
+        if "required" in relation_contract:
+            require(
+                isinstance(relation_contract.get("required"), bool),
+                f"{label}.contract.relation_contract.required must be a boolean",
+            )
+
+    allows_broadcast = contract.get("allows_broadcast") is True
+    contract_unit = contract.get("unit_level")
+    for endpoint, port in (("source", source_port), ("target", target_port)):
+        port_unit = port.get("unit_level")
+        if contract_unit is not None and port_unit is not None:
+            require(
+                port_unit == contract_unit or allows_broadcast,
+                f"{label} {endpoint} unit `{port_unit}` does not match edge unit `{contract_unit}`",
+            )
+
+    source_unit = source_port.get("unit_level")
+    target_unit = target_port.get("unit_level")
+    require(
+        source_unit is None
+        or target_unit is None
+        or source_unit == target_unit
+        or allows_broadcast,
+        f"{label} joins incompatible unit levels `{source_unit}` and `{target_unit}`",
+    )
+
+    contract_target = contract.get("target_level")
+    for endpoint, port in (("source", source_port), ("target", target_port)):
+        port_target = port.get("target_level")
+        if contract_target is not None and port_target is not None:
+            require(
+                port_target == contract_target,
+                (
+                    f"{label} {endpoint} target level `{port_target}` "
+                    f"does not match edge target level `{contract_target}`"
+                ),
+            )
+    source_target = source_port.get("target_level")
+    target_target = target_port.get("target_level")
+    require(
+        source_target is None or target_target is None or source_target == target_target,
+        f"{label} joins incompatible target levels `{source_target}` and `{target_target}`",
+    )
+
+    contract_alignment = contract.get("alignment_key")
+    for endpoint, port in (("source", source_port), ("target", target_port)):
+        port_alignment = port.get("alignment_key")
+        if contract_alignment is not None and port_alignment is not None:
+            require(
+                port_alignment == contract_alignment or allows_broadcast,
+                (
+                    f"{label} {endpoint} alignment `{port_alignment}` "
+                    f"does not match edge alignment `{contract_alignment}`"
+                ),
+            )
+    source_alignment = source_port.get("alignment_key")
+    target_alignment = target_port.get("alignment_key")
+    require(
+        source_alignment is None
+        or target_alignment is None
+        or source_alignment == target_alignment
+        or allows_broadcast,
+        f"{label} joins incompatible alignment keys `{source_alignment}` and `{target_alignment}`",
+    )
+    if allows_broadcast:
+        require(
+            contract_alignment is not None
+            or source_alignment is not None
+            or target_alignment is not None,
+            f"{label} allows broadcast but declares no alignment key",
+        )
+
+    if graph_edge_is_relation_aware(contract, source_port, target_port):
+        relation_fingerprint = None
+        if isinstance(relation_contract, dict):
+            relation_fingerprint = relation_contract.get("relation_fingerprint")
+        require(
+            relation_fingerprint is not None,
+            f"{label} is relation-aware but has no relation_fingerprint",
+        )
+        require(
+            has_graph_edge_unit_metadata(contract, source_port, target_port),
+            f"{label} is relation-aware but has no unit_level metadata",
+        )
+        require(
+            has_graph_edge_alignment_key(contract, source_port, target_port),
+            f"{label} is relation-aware but has no alignment_key",
+        )
+
+
+def graph_edge_is_relation_aware(
+    contract: dict[str, Any],
+    source_port: dict[str, Any],
+    target_port: dict[str, Any],
+) -> bool:
+    if contract.get("relation_contract") is not None or contract.get("allows_broadcast") is True:
+        return True
+    if contract.get("alignment_key") is not None:
+        return True
+    if contract.get("unit_level") is not None and contract.get("unit_level") != "physical_sample":
+        return True
+    if contract.get("target_level") is not None and contract.get("target_level") != "physical_sample":
+        return True
+    for port in (source_port, target_port):
+        if port.get("alignment_key") is not None:
+            return True
+        if port.get("unit_level") is not None and port.get("unit_level") != "physical_sample":
+            return True
+        if port.get("target_level") is not None and port.get("target_level") != "physical_sample":
+            return True
+    return False
+
+
+def has_graph_edge_unit_metadata(
+    contract: dict[str, Any],
+    source_port: dict[str, Any],
+    target_port: dict[str, Any],
+) -> bool:
+    return (
+        contract.get("unit_level") is not None
+        or source_port.get("unit_level") is not None
+        or target_port.get("unit_level") is not None
+    )
+
+
+def has_graph_edge_alignment_key(
+    contract: dict[str, Any],
+    source_port: dict[str, Any],
+    target_port: dict[str, Any],
+) -> bool:
+    return (
+        contract.get("alignment_key") is not None
+        or source_port.get("alignment_key") is not None
+        or target_port.get("alignment_key") is not None
+    )
 
 
 def validate_pipeline_dsl_fixture(value: Any, label: str) -> None:

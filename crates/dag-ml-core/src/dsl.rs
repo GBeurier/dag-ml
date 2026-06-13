@@ -20,6 +20,7 @@ use crate::policy::{
     AggregationPolicy, AugmentationPolicy, DataModelShapePlan, FeatureSelectionPolicy, FitBoundary,
     Granularity, LeakageUnitPolicy,
 };
+use crate::relation::EntityUnitLevel;
 
 pub const PIPELINE_DSL_SCHEMA_VERSION: u32 = 1;
 pub const PIPELINE_DSL_SCHEMA_ID: &str =
@@ -71,6 +72,12 @@ pub struct PipelineDslDataPort {
     pub name: String,
     #[serde(default = "default_data_representation")]
     pub representation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_level: Option<EntityUnitLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alignment_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_level: Option<EntityUnitLevel>,
     #[serde(default)]
     pub description: String,
 }
@@ -80,6 +87,9 @@ impl Default for PipelineDslDataPort {
         Self {
             name: default_input_name(),
             representation: default_data_representation(),
+            unit_level: None,
+            alignment_key: None,
+            target_level: None,
             description: String::new(),
         }
     }
@@ -89,6 +99,14 @@ impl Default for PipelineDslDataPort {
 pub struct PipelineDslPredictionPort {
     #[serde(default = "default_output_name")]
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_level: Option<EntityUnitLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alignment_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_level: Option<EntityUnitLevel>,
     #[serde(default)]
     pub description: String,
 }
@@ -97,6 +115,10 @@ impl Default for PipelineDslPredictionPort {
     fn default() -> Self {
         Self {
             name: default_output_name(),
+            representation: None,
+            unit_level: None,
+            alignment_key: None,
+            target_level: None,
             description: String::new(),
         }
     }
@@ -628,15 +650,20 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
     } else {
         Some(generation_spec_fingerprint(&generation)?)
     };
+    let mut interface_input = data_port(
+        &spec.input.name,
+        input_representation.clone(),
+        &spec.input.description,
+    );
+    apply_data_unit_contract(&mut interface_input, &spec.input);
+    let mut interface_output = prediction_port(&spec.output.name, &spec.output.description);
+    apply_prediction_unit_contract(&mut interface_output, &spec.output);
+
     let graph = GraphSpec {
         id: spec.id.clone(),
         interface: GraphInterface {
-            inputs: vec![data_port(
-                &spec.input.name,
-                input_representation.clone(),
-                &spec.input.description,
-            )],
-            outputs: vec![prediction_port(&spec.output.name, &spec.output.description)],
+            inputs: vec![interface_input],
+            outputs: vec![interface_output],
         },
         nodes: compiler.nodes,
         edges: compiler.edges,
@@ -4374,11 +4401,9 @@ impl PipelineCompiler {
                     port_name: prediction.input_name.clone(),
                 },
                 contract: EdgeContract {
-                    kind: PortKind::Prediction,
-                    representation: None,
                     requires_oof: true,
                     requires_fold_alignment: true,
-                    propagates_lineage: true,
+                    ..EdgeContract::new(PortKind::Prediction, None)
                 },
             });
         }
@@ -4468,11 +4493,9 @@ impl PipelineCompiler {
                     port_name: prediction.input_name.clone(),
                 },
                 contract: EdgeContract {
-                    kind: PortKind::Prediction,
-                    representation: None,
                     requires_oof: true,
                     requires_fold_alignment: true,
-                    propagates_lineage: true,
+                    ..EdgeContract::new(PortKind::Prediction, None)
                 },
             });
         }
@@ -4576,11 +4599,9 @@ impl PipelineCompiler {
                     port_name: target_port.to_string(),
                 },
                 contract: EdgeContract {
-                    kind: PortKind::Data,
-                    representation: input.representation.clone(),
                     requires_oof: false,
                     requires_fold_alignment: true,
-                    propagates_lineage: true,
+                    ..EdgeContract::new(PortKind::Data, input.representation.clone())
                 },
             });
         }
@@ -6644,8 +6665,17 @@ fn data_port(name: &str, representation: Option<String>, description: &str) -> P
         kind: PortKind::Data,
         representation,
         cardinality: PortCardinality::One,
+        unit_level: None,
+        alignment_key: None,
+        target_level: None,
         description: description.to_string(),
     }
+}
+
+fn apply_data_unit_contract(port: &mut PortSpec, contract: &PipelineDslDataPort) {
+    port.unit_level = contract.unit_level;
+    port.alignment_key = contract.alignment_key.clone();
+    port.target_level = contract.target_level;
 }
 
 fn target_port(name: &str, description: &str) -> PortSpec {
@@ -6654,6 +6684,9 @@ fn target_port(name: &str, description: &str) -> PortSpec {
         kind: PortKind::Target,
         representation: None,
         cardinality: PortCardinality::One,
+        unit_level: None,
+        alignment_key: None,
+        target_level: None,
         description: description.to_string(),
     }
 }
@@ -6664,8 +6697,18 @@ fn prediction_port(name: &str, description: &str) -> PortSpec {
         kind: PortKind::Prediction,
         representation: None,
         cardinality: PortCardinality::One,
+        unit_level: None,
+        alignment_key: None,
+        target_level: None,
         description: description.to_string(),
     }
+}
+
+fn apply_prediction_unit_contract(port: &mut PortSpec, contract: &PipelineDslPredictionPort) {
+    port.representation = contract.representation.clone();
+    port.unit_level = contract.unit_level;
+    port.alignment_key = contract.alignment_key.clone();
+    port.target_level = contract.target_level;
 }
 
 fn validate_branch_id(branch_id: &str) -> Result<()> {
@@ -6821,6 +6864,56 @@ mod tests {
         assert_eq!(graph.edges[0].target.node_id.as_str(), "model:base");
         assert_eq!(graph.edges[0].contract.kind, PortKind::Data);
         graph.validate().unwrap();
+    }
+
+    #[test]
+    fn compiles_pipeline_dsl_unit_contracts_to_graph_interface() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-unit-contract-smoke",
+  "input": {
+    "name": "spectra",
+    "representation": "tabular",
+    "unit_level": "observation",
+    "alignment_key": "sample_id",
+    "target_level": "physical_sample"
+  },
+  "output": {
+    "name": "prediction",
+    "representation": "regression",
+    "unit_level": "physical_sample",
+    "alignment_key": "sample_id",
+    "target_level": "physical_sample"
+  },
+  "steps": [
+    {
+      "kind": "model",
+      "id": "model:base",
+      "operator": {"type": "RandomForestRegressor"}
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+
+        assert_eq!(
+            graph.interface.inputs[0].unit_level,
+            Some(EntityUnitLevel::Observation)
+        );
+        assert_eq!(
+            graph.interface.inputs[0].alignment_key.as_deref(),
+            Some("sample_id")
+        );
+        assert_eq!(
+            graph.interface.outputs[0].unit_level,
+            Some(EntityUnitLevel::PhysicalSample)
+        );
+        assert_eq!(
+            graph.interface.outputs[0].representation.as_deref(),
+            Some("regression")
+        );
     }
 
     #[test]
@@ -8791,6 +8884,15 @@ mod tests {
             .as_object()
             .unwrap()
             .contains_key("step"));
+        assert!(schema["$defs"]["pipeline_unit_contract"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("unit_level"));
+        assert!(schema["$defs"]["entity_unit_level"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("observation")));
     }
 
     #[test]

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, Result};
 use crate::ids::NodeId;
+use crate::relation::EntityUnitLevel;
 
 pub const GRAPH_SPEC_SCHEMA_VERSION: u32 = 1;
 pub const GRAPH_SPEC_SCHEMA_ID: &str =
@@ -60,6 +61,12 @@ pub struct PortSpec {
     pub representation: Option<String>,
     pub cardinality: PortCardinality,
     #[serde(default)]
+    pub unit_level: Option<EntityUnitLevel>,
+    #[serde(default)]
+    pub alignment_key: Option<String>,
+    #[serde(default)]
+    pub target_level: Option<EntityUnitLevel>,
+    #[serde(default)]
     pub description: String,
 }
 
@@ -82,6 +89,18 @@ pub struct EdgeContract {
     pub kind: PortKind,
     pub representation: Option<String>,
     #[serde(default)]
+    pub unit_level: Option<EntityUnitLevel>,
+    #[serde(default)]
+    pub alignment_key: Option<String>,
+    #[serde(default)]
+    pub target_level: Option<EntityUnitLevel>,
+    #[serde(default)]
+    pub relation_contract: Option<RelationContract>,
+    #[serde(default)]
+    pub allows_broadcast: bool,
+    #[serde(default)]
+    pub missingness_policy: Option<MissingnessPolicy>,
+    #[serde(default)]
     pub requires_oof: bool,
     #[serde(default)]
     pub requires_fold_alignment: bool,
@@ -89,8 +108,45 @@ pub struct EdgeContract {
     pub propagates_lineage: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RelationContract {
+    #[serde(default)]
+    pub relation_fingerprint: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingnessPolicy {
+    Strict,
+    Warn,
+    ImputeDeclared,
+    Mask,
+    PartialModel,
+    PadRepresentation,
+}
+
 fn default_true() -> bool {
     true
+}
+
+impl EdgeContract {
+    pub fn new(kind: PortKind, representation: Option<String>) -> Self {
+        Self {
+            kind,
+            representation,
+            unit_level: None,
+            alignment_key: None,
+            target_level: None,
+            relation_contract: None,
+            allows_broadcast: false,
+            missingness_policy: None,
+            requires_oof: false,
+            requires_fold_alignment: false,
+            propagates_lineage: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -160,6 +216,16 @@ impl GraphSpec {
         }
 
         let mut nodes = BTreeMap::new();
+        validate_unique_ports(
+            &NodeId::new("graph:interface").expect("static identifier is valid"),
+            "interface input",
+            &self.interface.inputs,
+        )?;
+        validate_unique_ports(
+            &NodeId::new("graph:interface").expect("static identifier is valid"),
+            "interface output",
+            &self.interface.outputs,
+        )?;
         for node in &self.nodes {
             if nodes.insert(node.id.clone(), node).is_some() {
                 return Err(DagMlError::GraphValidation(format!(
@@ -220,6 +286,7 @@ impl GraphSpec {
                     target_port.kind
                 )));
             }
+            validate_edge_contract(edge, source_port, target_port)?;
             if edge.contract.requires_oof && edge.contract.kind != PortKind::Prediction {
                 return Err(DagMlError::GraphValidation(format!(
                     "edge `{}.{}` -> `{}.{}` requires OOF but is not a prediction edge",
@@ -336,12 +403,266 @@ fn validate_unique_ports(node_id: &NodeId, direction: &str, ports: &[PortSpec]) 
                 direction, port.name, node_id
             )));
         }
+        validate_port_contract(node_id, direction, port)?;
     }
     Ok(())
 }
 
 fn find_port<'a>(ports: &'a [PortSpec], name: &str) -> Option<&'a PortSpec> {
     ports.iter().find(|port| port.name == name)
+}
+
+fn validate_port_contract(node_id: &NodeId, direction: &str, port: &PortSpec) -> Result<()> {
+    validate_optional_non_empty(
+        &format!("{direction} port `{}` representation", port.name),
+        port.representation.as_deref(),
+    )?;
+    validate_optional_non_empty(
+        &format!("{direction} port `{}` alignment_key", port.name),
+        port.alignment_key.as_deref(),
+    )?;
+    if port
+        .alignment_key
+        .as_deref()
+        .is_some_and(|key| !is_identifier(key))
+    {
+        return Err(DagMlError::GraphValidation(format!(
+            "{direction} port `{}` on node `{node_id}` has invalid alignment_key",
+            port.name
+        )));
+    }
+    Ok(())
+}
+
+fn validate_edge_contract(
+    edge: &EdgeSpec,
+    source_port: &PortSpec,
+    target_port: &PortSpec,
+) -> Result<()> {
+    let label = format!(
+        "edge `{}.{}` -> `{}.{}`",
+        edge.source.node_id, edge.source.port_name, edge.target.node_id, edge.target.port_name
+    );
+    validate_optional_non_empty(
+        &format!("{label} representation"),
+        edge.contract.representation.as_deref(),
+    )?;
+    validate_optional_non_empty(
+        &format!("{label} alignment_key"),
+        edge.contract.alignment_key.as_deref(),
+    )?;
+    if edge
+        .contract
+        .alignment_key
+        .as_deref()
+        .is_some_and(|key| !is_identifier(key))
+    {
+        return Err(DagMlError::GraphValidation(format!(
+            "{label} has invalid alignment_key"
+        )));
+    }
+    if let Some(relation_contract) = &edge.contract.relation_contract {
+        validate_relation_contract(&label, relation_contract)?;
+    }
+
+    validate_edge_unit_alignment(&label, edge, source_port, target_port)?;
+
+    if relation_aware_edge(edge, source_port, target_port) {
+        let relation_fingerprint = edge
+            .contract
+            .relation_contract
+            .as_ref()
+            .and_then(|contract| contract.relation_fingerprint.as_deref());
+        if relation_fingerprint.is_none() {
+            return Err(DagMlError::GraphValidation(format!(
+                "{label} is relation-aware but has no relation_fingerprint"
+            )));
+        }
+        if !has_effective_unit_level(edge, source_port, target_port) {
+            return Err(DagMlError::GraphValidation(format!(
+                "{label} is relation-aware but has no unit_level metadata"
+            )));
+        }
+        if !has_effective_alignment_key(edge, source_port, target_port) {
+            return Err(DagMlError::GraphValidation(format!(
+                "{label} is relation-aware but has no alignment_key"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_relation_contract(label: &str, contract: &RelationContract) -> Result<()> {
+    if let Some(fingerprint) = &contract.relation_fingerprint {
+        validate_sha256(label, "relation_fingerprint", fingerprint)?;
+    } else if contract.required {
+        return Err(DagMlError::GraphValidation(format!(
+            "{label} relation_contract is required but has no relation_fingerprint"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_edge_unit_alignment(
+    label: &str,
+    edge: &EdgeSpec,
+    source_port: &PortSpec,
+    target_port: &PortSpec,
+) -> Result<()> {
+    if let Some(contract_unit) = edge.contract.unit_level {
+        for (endpoint, unit) in [
+            ("source", source_port.unit_level),
+            ("target", target_port.unit_level),
+        ] {
+            if let Some(unit) = unit {
+                if unit != contract_unit && !edge.contract.allows_broadcast {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "{label} {endpoint} unit {:?} does not match edge unit {:?}",
+                        unit, contract_unit
+                    )));
+                }
+            }
+        }
+    }
+
+    if let (Some(source_unit), Some(target_unit)) = (source_port.unit_level, target_port.unit_level)
+    {
+        if source_unit != target_unit && !edge.contract.allows_broadcast {
+            return Err(DagMlError::GraphValidation(format!(
+                "{label} joins incompatible unit levels {:?} and {:?}",
+                source_unit, target_unit
+            )));
+        }
+    }
+
+    if let (Some(source_target), Some(target_target)) =
+        (source_port.target_level, target_port.target_level)
+    {
+        if source_target != target_target {
+            return Err(DagMlError::GraphValidation(format!(
+                "{label} joins incompatible target levels {:?} and {:?}",
+                source_target, target_target
+            )));
+        }
+    }
+    if let Some(contract_target) = edge.contract.target_level {
+        for (endpoint, target_level) in [
+            ("source", source_port.target_level),
+            ("target", target_port.target_level),
+        ] {
+            if let Some(target_level) = target_level {
+                if target_level != contract_target {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "{label} {endpoint} target level {:?} does not match edge target_level {:?}",
+                        target_level, contract_target
+                    )));
+                }
+            }
+        }
+    }
+
+    if let (Some(source_alignment), Some(target_alignment)) = (
+        source_port.alignment_key.as_deref(),
+        target_port.alignment_key.as_deref(),
+    ) {
+        if source_alignment != target_alignment && !edge.contract.allows_broadcast {
+            return Err(DagMlError::GraphValidation(format!(
+                "{label} joins incompatible alignment keys `{source_alignment}` and `{target_alignment}`"
+            )));
+        }
+    }
+
+    if let Some(edge_alignment) = edge.contract.alignment_key.as_deref() {
+        for (endpoint, alignment) in [
+            ("source", source_port.alignment_key.as_deref()),
+            ("target", target_port.alignment_key.as_deref()),
+        ] {
+            if let Some(alignment) = alignment {
+                if alignment != edge_alignment && !edge.contract.allows_broadcast {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "{label} {endpoint} alignment `{alignment}` does not match edge alignment `{edge_alignment}`"
+                    )));
+                }
+            }
+        }
+    }
+
+    if edge.contract.allows_broadcast {
+        if edge.contract.alignment_key.is_none()
+            && source_port.alignment_key.is_none()
+            && target_port.alignment_key.is_none()
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "{label} allows broadcast but declares no alignment_key"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn relation_aware_edge(edge: &EdgeSpec, source_port: &PortSpec, target_port: &PortSpec) -> bool {
+    edge.contract.relation_contract.is_some()
+        || edge.contract.allows_broadcast
+        || edge.contract.alignment_key.is_some()
+        || non_physical(edge.contract.unit_level)
+        || non_physical(edge.contract.target_level)
+        || non_physical(source_port.unit_level)
+        || non_physical(source_port.target_level)
+        || non_physical(target_port.unit_level)
+        || non_physical(target_port.target_level)
+        || source_port.alignment_key.is_some()
+        || target_port.alignment_key.is_some()
+}
+
+fn has_effective_unit_level(
+    edge: &EdgeSpec,
+    source_port: &PortSpec,
+    target_port: &PortSpec,
+) -> bool {
+    edge.contract.unit_level.is_some()
+        || source_port.unit_level.is_some()
+        || target_port.unit_level.is_some()
+}
+
+fn has_effective_alignment_key(
+    edge: &EdgeSpec,
+    source_port: &PortSpec,
+    target_port: &PortSpec,
+) -> bool {
+    edge.contract.alignment_key.is_some()
+        || source_port.alignment_key.is_some()
+        || target_port.alignment_key.is_some()
+}
+
+fn non_physical(unit_level: Option<EntityUnitLevel>) -> bool {
+    unit_level.is_some_and(|level| level != EntityUnitLevel::PhysicalSample)
+}
+
+fn validate_optional_non_empty(label: &str, value: Option<&str>) -> Result<()> {
+    if value.is_some_and(|value| value.trim().is_empty()) {
+        return Err(DagMlError::GraphValidation(format!(
+            "{label} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_sha256(owner: &str, field: &str, value: &str) -> Result<()> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(DagMlError::GraphValidation(format!(
+            "{owner} has invalid {field}"
+        )))
+    }
+}
+
+fn is_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':'))
 }
 
 fn ensure_acyclic(
@@ -431,6 +752,9 @@ mod tests {
             kind,
             representation: None,
             cardinality: PortCardinality::One,
+            unit_level: None,
+            alignment_key: None,
+            target_level: None,
             description: String::new(),
         }
     }
@@ -458,11 +782,9 @@ mod tests {
                 port_name: target_port.to_string(),
             },
             contract: EdgeContract {
-                kind: PortKind::Prediction,
-                representation: None,
                 requires_oof: true,
                 requires_fold_alignment: true,
-                propagates_lineage: true,
+                ..EdgeContract::new(PortKind::Prediction, None)
             },
         }
     }
@@ -565,11 +887,9 @@ mod tests {
                     port_name: "x".to_string(),
                 },
                 contract: EdgeContract {
-                    kind: PortKind::Data,
-                    representation: None,
                     requires_oof: true,
                     requires_fold_alignment: true,
-                    propagates_lineage: true,
+                    ..EdgeContract::new(PortKind::Data, None)
                 },
             }],
             search_space_fingerprint: None,
@@ -579,6 +899,186 @@ mod tests {
         let error = graph.validate().unwrap_err().to_string();
 
         assert!(error.contains("requires OOF"));
+    }
+
+    fn unit_port(name: &str, kind: PortKind, unit_level: EntityUnitLevel) -> PortSpec {
+        let mut port = port(name, kind);
+        port.unit_level = Some(unit_level);
+        port.alignment_key = Some("sample_id".to_string());
+        port
+    }
+
+    fn data_edge_contract() -> EdgeContract {
+        EdgeContract::new(PortKind::Data, Some("tabular".to_string()))
+    }
+
+    fn relation_contract() -> RelationContract {
+        RelationContract {
+            relation_fingerprint: Some("a".repeat(64)),
+            required: true,
+        }
+    }
+
+    #[test]
+    fn rejects_unit_mismatch_without_explicit_broadcast() {
+        let graph = GraphSpec {
+            id: "g".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    "transform:obs",
+                    vec![],
+                    vec![unit_port("x", PortKind::Data, EntityUnitLevel::Observation)],
+                ),
+                node(
+                    "join:sample",
+                    vec![unit_port(
+                        "x",
+                        PortKind::Data,
+                        EntityUnitLevel::PhysicalSample,
+                    )],
+                    vec![],
+                ),
+            ],
+            edges: vec![EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new("transform:obs").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new("join:sample").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                contract: EdgeContract {
+                    relation_contract: Some(relation_contract()),
+                    ..data_edge_contract()
+                },
+            }],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+
+        let error = graph.validate().unwrap_err().to_string();
+
+        assert!(error.contains("incompatible unit levels"));
+    }
+
+    #[test]
+    fn relation_aware_edge_requires_relation_fingerprint() {
+        let graph = GraphSpec {
+            id: "g".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    "source:a",
+                    vec![],
+                    vec![unit_port("x", PortKind::Data, EntityUnitLevel::Observation)],
+                ),
+                node(
+                    "model:a",
+                    vec![unit_port("x", PortKind::Data, EntityUnitLevel::Observation)],
+                    vec![],
+                ),
+            ],
+            edges: vec![EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new("source:a").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new("model:a").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                contract: data_edge_contract(),
+            }],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+
+        let error = graph.validate().unwrap_err().to_string();
+
+        assert!(error.contains("relation-aware"));
+    }
+
+    #[test]
+    fn relation_aware_edge_requires_alignment_key() {
+        let mut source_port = port("x", PortKind::Data);
+        source_port.unit_level = Some(EntityUnitLevel::Observation);
+        let mut target_port = port("x", PortKind::Data);
+        target_port.unit_level = Some(EntityUnitLevel::Observation);
+
+        let graph = GraphSpec {
+            id: "g".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node("source:a", vec![], vec![source_port]),
+                node("model:a", vec![target_port], vec![]),
+            ],
+            edges: vec![EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new("source:a").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new("model:a").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                contract: EdgeContract {
+                    relation_contract: Some(relation_contract()),
+                    ..data_edge_contract()
+                },
+            }],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+
+        let error = graph.validate().unwrap_err().to_string();
+
+        assert!(error.contains("alignment_key"));
+    }
+
+    #[test]
+    fn explicit_broadcast_allows_sample_to_observation_edge() {
+        let mut contract = data_edge_contract();
+        contract.allows_broadcast = true;
+        contract.alignment_key = Some("sample_id".to_string());
+        contract.relation_contract = Some(relation_contract());
+
+        let graph = GraphSpec {
+            id: "g".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    "source:sample",
+                    vec![],
+                    vec![unit_port(
+                        "x",
+                        PortKind::Data,
+                        EntityUnitLevel::PhysicalSample,
+                    )],
+                ),
+                node(
+                    "adapter:broadcast",
+                    vec![unit_port("x", PortKind::Data, EntityUnitLevel::Observation)],
+                    vec![],
+                ),
+            ],
+            edges: vec![EdgeSpec {
+                source: PortRef {
+                    node_id: NodeId::new("source:sample").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                target: PortRef {
+                    node_id: NodeId::new("adapter:broadcast").unwrap(),
+                    port_name: "x".to_string(),
+                },
+                contract,
+            }],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+
+        graph.validate().unwrap();
     }
 
     #[test]
@@ -634,5 +1134,14 @@ mod tests {
             .unwrap()
             .iter()
             .any(|kind| kind.as_str() == Some("prediction")));
+        assert!(schema["$defs"]["entity_unit_level"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|level| level.as_str() == Some("combo")));
+        assert!(schema["$defs"]["edge_contract"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("relation_contract"));
     }
 }

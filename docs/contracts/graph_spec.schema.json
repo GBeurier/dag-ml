@@ -80,6 +80,35 @@
     "port_cardinality": {
       "enum": ["one", "many", "optional"]
     },
+    "entity_unit_level": {
+      "enum": ["physical_sample", "source_sample", "observation", "combo"]
+    },
+    "missingness_policy": {
+      "enum": [
+        "strict",
+        "warn",
+        "impute_declared",
+        "mask",
+        "partial_model",
+        "pad_representation"
+      ]
+    },
+    "relation_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "relation_fingerprint": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
     "port_spec": {
       "type": "object",
       "additionalProperties": false,
@@ -99,6 +128,24 @@
         },
         "cardinality": {
           "$ref": "#/$defs/port_cardinality"
+        },
+        "unit_level": {
+          "anyOf": [
+            { "$ref": "#/$defs/entity_unit_level" },
+            { "type": "null" }
+          ]
+        },
+        "alignment_key": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "target_level": {
+          "anyOf": [
+            { "$ref": "#/$defs/entity_unit_level" },
+            { "type": "null" }
+          ]
         },
         "description": {
           "type": "string"
@@ -147,6 +194,40 @@
         "representation": {
           "anyOf": [
             { "$ref": "#/$defs/non_empty_string" },
+            { "type": "null" }
+          ]
+        },
+        "unit_level": {
+          "anyOf": [
+            { "$ref": "#/$defs/entity_unit_level" },
+            { "type": "null" }
+          ]
+        },
+        "alignment_key": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "target_level": {
+          "anyOf": [
+            { "$ref": "#/$defs/entity_unit_level" },
+            { "type": "null" }
+          ]
+        },
+        "relation_contract": {
+          "anyOf": [
+            { "$ref": "#/$defs/relation_contract" },
+            { "type": "null" }
+          ]
+        },
+        "allows_broadcast": {
+          "type": "boolean",
+          "default": false
+        },
+        "missingness_policy": {
+          "anyOf": [
+            { "$ref": "#/$defs/missingness_policy" },
             { "type": "null" }
           ]
         },

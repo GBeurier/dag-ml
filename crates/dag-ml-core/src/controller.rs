@@ -788,6 +788,9 @@ mod tests {
             kind: PortKind::Prediction,
             representation: None,
             cardinality: PortCardinality::One,
+            unit_level: None,
+            alignment_key: None,
+            target_level: None,
             description: String::new(),
         });
 

@@ -1248,6 +1248,9 @@ fn port(name: &str, kind: PortKind) -> PortSpec {
         kind,
         representation: None,
         cardinality: PortCardinality::One,
+        unit_level: None,
+        alignment_key: None,
+        target_level: None,
         description: String::new(),
     }
 }
@@ -1462,11 +1465,9 @@ fn live_group_oof_runtime_plan() -> ExecutionPlan {
                 port_name: "pred".to_string(),
             },
             contract: EdgeContract {
-                kind: PortKind::Prediction,
-                representation: None,
                 requires_oof: true,
                 requires_fold_alignment: true,
-                propagates_lineage: true,
+                ..EdgeContract::new(PortKind::Prediction, None)
             },
         }],
         search_space_fingerprint: None,
@@ -1591,11 +1592,9 @@ fn simple_graph() -> GraphSpec {
                 port_name: "x".to_string(),
             },
             contract: EdgeContract {
-                kind: PortKind::Data,
-                representation: None,
                 requires_oof: false,
                 requires_fold_alignment: false,
-                propagates_lineage: true,
+                ..EdgeContract::new(PortKind::Data, None)
             },
         }],
         search_space_fingerprint: None,
@@ -1660,11 +1659,9 @@ fn parallel_stress_graph() -> GraphSpec {
                 port_name: "x".to_string(),
             },
             contract: EdgeContract {
-                kind: PortKind::Data,
-                representation: None,
                 requires_oof: false,
                 requires_fold_alignment: false,
-                propagates_lineage: true,
+                ..EdgeContract::new(PortKind::Data, None)
             },
         });
         edges.push(EdgeSpec {
@@ -1677,11 +1674,9 @@ fn parallel_stress_graph() -> GraphSpec {
                 port_name: merge_port,
             },
             contract: EdgeContract {
-                kind: PortKind::Prediction,
-                representation: None,
                 requires_oof: false,
                 requires_fold_alignment: true,
-                propagates_lineage: true,
+                ..EdgeContract::new(PortKind::Prediction, None)
             },
         });
     }
@@ -1730,11 +1725,9 @@ fn oof_edge_graph() -> GraphSpec {
                 port_name: "pred".to_string(),
             },
             contract: EdgeContract {
-                kind: PortKind::Prediction,
-                representation: None,
                 requires_oof: true,
                 requires_fold_alignment: true,
-                propagates_lineage: true,
+                ..EdgeContract::new(PortKind::Prediction, None)
             },
         }],
         search_space_fingerprint: None,
@@ -4438,11 +4431,9 @@ fn data_edges_propagate_fold_views_from_data_producing_nodes() {
                 port_name: "x".to_string(),
             },
             contract: EdgeContract {
-                kind: PortKind::Data,
-                representation: None,
                 requires_oof: false,
                 requires_fold_alignment: false,
-                propagates_lineage: true,
+                ..EdgeContract::new(PortKind::Data, None)
             },
         }],
         search_space_fingerprint: None,

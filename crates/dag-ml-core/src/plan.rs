@@ -913,6 +913,9 @@ mod tests {
             kind,
             representation: None,
             cardinality: PortCardinality::One,
+            unit_level: None,
+            alignment_key: None,
+            target_level: None,
             description: String::new(),
         }
     }
@@ -957,11 +960,9 @@ mod tests {
                     port_name: "x".to_string(),
                 },
                 contract: EdgeContract {
-                    kind: PortKind::Data,
-                    representation: None,
                     requires_oof: false,
                     requires_fold_alignment: false,
-                    propagates_lineage: true,
+                    ..EdgeContract::new(PortKind::Data, None)
                 },
             }],
             search_space_fingerprint: None,
@@ -1035,11 +1036,9 @@ mod tests {
                     port_name: "pred".to_string(),
                 },
                 contract: EdgeContract {
-                    kind: PortKind::Prediction,
-                    representation: None,
                     requires_oof: true,
                     requires_fold_alignment: true,
-                    propagates_lineage: true,
+                    ..EdgeContract::new(PortKind::Prediction, None)
                 },
             }],
             search_space_fingerprint: None,
