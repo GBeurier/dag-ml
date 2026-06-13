@@ -1976,6 +1976,37 @@ mod tests {
         envelope.validate().unwrap();
         let relations = envelope.coordinator_relations.as_ref().unwrap();
         assert_eq!(relations.records.len(), 8);
+        let source_counts = relations.records.iter().fold(
+            BTreeMap::<String, usize>::new(),
+            |mut counts, record| {
+                if record.unit_level == EntityUnitLevel::Observation {
+                    *counts
+                        .entry(record.source_id.clone().expect("source_id"))
+                        .or_default() += 1;
+                }
+                counts
+            },
+        );
+        assert_eq!(source_counts["A"], 2);
+        assert_eq!(source_counts["B"], 3);
+        assert_eq!(source_counts["C"], 2);
+        let combo = relations
+            .records
+            .iter()
+            .find(|record| record.unit_level == EntityUnitLevel::Combo)
+            .expect("relation-backed combo row");
+        assert_eq!(combo.sample_id.as_str(), "sample:1");
+        assert_eq!(
+            combo.origin_sample_id.as_ref().unwrap().as_str(),
+            combo.sample_id.as_str()
+        );
+        assert_eq!(combo.component_observation_ids.len(), 3);
+        for source_id in ["A", "B", "C"] {
+            assert!(combo
+                .component_observation_ids
+                .iter()
+                .any(|observation_id| observation_id.as_str().contains(source_id)));
+        }
         assert_eq!(
             relations
                 .sample_for_observation(

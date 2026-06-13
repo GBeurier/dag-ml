@@ -3020,71 +3020,114 @@ fn requires_oof_prediction_edge_refit_uses_cv_oof_coverage() {
 
 #[test]
 fn d9_golden_oof_refit_and_predict_replay_mock_run() {
-    let oof_plan = build_execution_plan(
-        "plan:d9.oof.refit",
-        oof_edge_graph(),
-        oof_edge_campaign(),
-        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
-    )
+    #[derive(serde::Deserialize)]
+    struct D9GoldenFixture {
+        golden_scenarios: Vec<D9GoldenScenario>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct D9GoldenScenario {
+        scenario_id: String,
+        mock_phase_path: Vec<String>,
+    }
+
+    let fixture: D9GoldenFixture = serde_json::from_str(include_str!(
+        "../../../../examples/fixtures/runtime/d9_golden_multisource_scenarios.json"
+    ))
     .unwrap();
-    let mut oof_ctx = RunContext::new(RunId::new("run:d9.oof.refit").unwrap(), Some(11));
-    let fit_controllers = oof_edge_runtime_controllers(
-        Some(PredictionPartition::Validation),
-        OofSampleMode::Aligned,
-    );
-    let fit_results = SequentialScheduler
-        .execute_campaign_phase(&oof_plan, &fit_controllers, &mut oof_ctx, Phase::FitCv)
-        .unwrap();
-    assert_eq!(fit_results.len(), 4);
-    assert_eq!(oof_ctx.prediction_store.blocks().len(), 2);
+    assert_eq!(fixture.golden_scenarios.len(), 7);
 
-    let refit_controllers = oof_edge_runtime_controllers(None, OofSampleMode::Aligned);
-    let refit_results = SequentialScheduler
-        .execute_campaign_phase(&oof_plan, &refit_controllers, &mut oof_ctx, Phase::Refit)
-        .unwrap();
-    assert_eq!(
-        refit_results
-            .iter()
-            .filter(|result| result.node_id.as_str() == "model:meta")
-            .count(),
-        1
-    );
-
-    let replay_plan = fixture_plan("plan:d9.predict.replay");
-    let bundle = replay_bundle(&replay_plan);
-    let request = replay_request(&bundle, Phase::Predict);
-    let envelopes = replay_envelopes();
-    let provider = replay_data_provider();
-    let store = replay_artifact_store(&bundle);
-    let controllers = replay_runtime_controllers();
-    let mut replay_ctx = RunContext::new(RunId::new("run:d9.predict.replay").unwrap(), Some(11));
-    let replay_results = SequentialScheduler
-        .execute_bundle_replay(
-            BundleReplayExecution {
-                plan: &replay_plan,
-                bundle: &bundle,
-                replay_request: &request,
-                prediction_cache_store: None,
-                controllers: &controllers,
-                data_provider: &provider,
-                artifact_store: &store,
-                data_envelopes: &envelopes,
-            },
-            &mut replay_ctx,
+    for (index, scenario) in fixture.golden_scenarios.iter().enumerate() {
+        assert_eq!(scenario.mock_phase_path, ["fit_cv", "refit", "predict"]);
+        let oof_plan = build_execution_plan(
+            format!("plan:d9.oof.refit.{index}"),
+            oof_edge_graph(),
+            oof_edge_campaign(),
+            &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
         )
         .unwrap();
+        let mut oof_ctx = RunContext::new(
+            RunId::new(format!("run:d9.oof.refit.{index}")).unwrap(),
+            Some(11),
+        );
+        let fit_controllers = oof_edge_runtime_controllers(
+            Some(PredictionPartition::Validation),
+            OofSampleMode::Aligned,
+        );
+        let fit_results = SequentialScheduler
+            .execute_campaign_phase(&oof_plan, &fit_controllers, &mut oof_ctx, Phase::FitCv)
+            .unwrap();
+        assert_eq!(
+            fit_results.len(),
+            4,
+            "{} did not mock-run fit_cv through OOF",
+            scenario.scenario_id
+        );
+        assert_eq!(
+            oof_ctx.prediction_store.blocks().len(),
+            2,
+            "{} did not emit complete validation OOF",
+            scenario.scenario_id
+        );
 
-    assert_eq!(replay_results.len(), 2);
-    assert_eq!(provider.view_records().len(), 1);
-    assert_eq!(
-        provider.view_records()[0].view.partition,
-        DataRequestPartition::Predict
-    );
-    assert_eq!(replay_ctx.prediction_store.blocks().len(), 1);
-    assert_eq!(
-        replay_ctx.prediction_store.blocks()[0].partition,
-        PredictionPartition::Final
-    );
+        let refit_controllers = oof_edge_runtime_controllers(None, OofSampleMode::Aligned);
+        let refit_results = SequentialScheduler
+            .execute_campaign_phase(&oof_plan, &refit_controllers, &mut oof_ctx, Phase::Refit)
+            .unwrap();
+        assert_eq!(
+            refit_results
+                .iter()
+                .filter(|result| result.node_id.as_str() == "model:meta")
+                .count(),
+            1,
+            "{} did not mock-run refit with full OOF coverage",
+            scenario.scenario_id
+        );
+
+        let replay_plan = fixture_plan(&format!("plan:d9.predict.replay.{index}"));
+        let bundle = replay_bundle(&replay_plan);
+        let request = replay_request(&bundle, Phase::Predict);
+        let envelopes = replay_envelopes();
+        let provider = replay_data_provider();
+        let store = replay_artifact_store(&bundle);
+        let controllers = replay_runtime_controllers();
+        let mut replay_ctx = RunContext::new(
+            RunId::new(format!("run:d9.predict.replay.{index}")).unwrap(),
+            Some(11),
+        );
+        let replay_results = SequentialScheduler
+            .execute_bundle_replay(
+                BundleReplayExecution {
+                    plan: &replay_plan,
+                    bundle: &bundle,
+                    replay_request: &request,
+                    prediction_cache_store: None,
+                    controllers: &controllers,
+                    data_provider: &provider,
+                    artifact_store: &store,
+                    data_envelopes: &envelopes,
+                },
+                &mut replay_ctx,
+            )
+            .unwrap();
+
+        assert_eq!(
+            replay_results.len(),
+            2,
+            "{} did not mock-run predict replay",
+            scenario.scenario_id
+        );
+        assert_eq!(provider.view_records().len(), 1);
+        assert_eq!(
+            provider.view_records()[0].view.partition,
+            DataRequestPartition::Predict
+        );
+        assert_eq!(replay_ctx.prediction_store.blocks().len(), 1);
+        assert_eq!(
+            replay_ctx.prediction_store.blocks()[0].partition,
+            PredictionPartition::Final
+        );
+    }
 }
 
 #[test]
