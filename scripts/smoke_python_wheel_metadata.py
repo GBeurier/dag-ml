@@ -63,9 +63,13 @@ def validate_wheel(wheel_path: Path, pyproject: dict[str, Any]) -> None:
         metadata["Requires-Python"] == project["requires-python"],
         f"{wheel_path}: Requires-Python mismatch",
     )
+    expected_license = project["license"]
+    wheel_license = metadata["License-Expression"] or metadata["License"]
+    # PEP 639 tooling may normalize SPDX identifier casing, so compare the
+    # license expression case-insensitively against the pyproject declaration.
     require(
-        (metadata["License-Expression"] or metadata["License"]) == "MIT",
-        f"{wheel_path}: wheel must declare MIT license",
+        wheel_license is not None and wheel_license.casefold() == expected_license.casefold(),
+        f"{wheel_path}: wheel license {wheel_license!r} must match pyproject {expected_license!r}",
     )
     classifiers = set(metadata.get_all("Classifier") or [])
     for classifier in project["classifiers"]:

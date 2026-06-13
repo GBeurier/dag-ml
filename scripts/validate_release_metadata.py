@@ -15,6 +15,11 @@ EXPECTED_INDEXMAP_VERSION = "=2.13.1"
 EXPECTED_RUST_VERSION = "1.83"
 EXPECTED_RUST_TOOLCHAIN = f"{EXPECTED_RUST_VERSION}.0"
 EXPECTED_PYO3_VERSION = "0.28.3"
+# ADR-18: dag-ml is dual-licensed under the canonical SPDX expression
+# `CECILL-2.1 OR AGPL-3.0-or-later`. The same expression must be used verbatim
+# across the Cargo workspace, the excluded PyO3 crate, and its pyproject so the
+# crates.io/PyPI metadata stays self-consistent and SPDX-valid.
+EXPECTED_LICENSE = "CECILL-2.1 OR AGPL-3.0-or-later"
 
 
 def load_toml(path: Path) -> dict[str, Any]:
@@ -65,7 +70,7 @@ def validate_workspace(repo: Path) -> tuple[str, str, list[str]]:
         package["rust-version"] == EXPECTED_RUST_VERSION,
         f"workspace MSRV must remain {EXPECTED_RUST_VERSION}",
     )
-    require(package["license"] == "MIT", "workspace license must remain MIT")
+    require(package["license"] == EXPECTED_LICENSE, f"workspace license must be {EXPECTED_LICENSE}")
     require(package["readme"] == "README.md", "workspace readme must be README.md")
     members = workspace["members"]
     require(members, "workspace must declare members")
@@ -148,7 +153,10 @@ def validate_python(repo: Path, repo_name: str, version: str) -> None:
         f"{cargo_path}: package.rust-version must be {EXPECTED_RUST_VERSION}",
     )
     require(cargo_package.get("edition") == "2021", f"{cargo_path}: package.edition must be 2021")
-    require(cargo_package.get("license") == "MIT", f"{cargo_path}: package.license must be MIT")
+    require(
+        cargo_package.get("license") == EXPECTED_LICENSE,
+        f"{cargo_path}: package.license must be {EXPECTED_LICENSE}",
+    )
     require(
         cargo_package.get("publish") is False,
         f"{cargo_path}: excluded wheel crate must set publish = false",
@@ -190,7 +198,10 @@ def validate_python(repo: Path, repo_name: str, version: str) -> None:
         "maturin>=1.13,<2" in pyproject["build-system"]["requires"],
         "pyproject build-system must pin maturin>=1.13,<2",
     )
-    require(project["license"] == "MIT", "Python package license must remain MIT")
+    require(
+        project["license"] == EXPECTED_LICENSE,
+        f"Python package license must be {EXPECTED_LICENSE}",
+    )
     require(project["license-files"] == ["LICENSE"], "Python package must include LICENSE")
     maturin = pyproject["tool"]["maturin"]
     module_prefix = repo_name.replace("-", "_")

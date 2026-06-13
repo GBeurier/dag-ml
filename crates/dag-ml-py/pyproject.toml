@@ -7,7 +7,7 @@ name = "dag-ml"
 version = "0.1.0a0"
 description = "Python bindings for DAG-ML JSON contracts."
 requires-python = ">=3.11"
-license = "CeCILL-2.1 OR AGPL-3.0-or-later"
+license = "CECILL-2.1 OR AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "G. Beurier", email = "beurier@cirad.fr" }]
 classifiers = [
