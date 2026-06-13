@@ -1,6 +1,6 @@
-# DAG-ML depuis le runtime nirs4all
+# DAG-ML from the nirs4all runtime
 
-Note basee sur le code, pas sur les audits existants. Les chemins les plus structurants lus pour cette analyse sont:
+Rating based on code, not existing audits. The most structuring paths read for this analysis are:
 
 - `nirs4all/pipeline/runner.py`
 - `nirs4all/pipeline/execution/orchestrator.py`
@@ -18,54 +18,35 @@ Note basee sur le code, pas sur les audits existants. Les chemins les plus struc
 - `nirs4all/controllers/models/stacking/reconstructor.py`
 - `nirs4all/pipeline/execution/refit/`
 
-## 1. Architecture concrete des pipelines nirs4all
+## 1. Concrete architecture of nirs4all pipelines
 
-### 1.1 Vue d'ensemble
+### 1.1 Overview
 
-Le moteur actuel execute deja un DAG, mais ce DAG n'est pas un objet explicite. Il est reconstruit dynamiquement a partir d'une liste de steps, d'un contexte mutable, de snapshots de branches, de folds de cross-validation et d'un store de predictions.
+The current engine already executes a DAG, but this DAG is not an explicit object. It is dynamically reconstructed from a list of steps, a mutable context, branch snapshots, cross-validation folds and a prediction store.
 
-Le cycle reel est:
+The actual flow is:
 
-1. `PipelineRunner.run()` recoit `pipeline`, `dataset`, `refit`, store/cache et delegue a `PipelineOrchestrator`.
-2. `PipelineOrchestrator.execute()` normalise la config, normalise les datasets, ouvre le run dans le store, cree `ArtifactRegistry`, `PipelineExecutor`, `Predictions` et execute chaque variante.
-3. `PipelineConfigs` compile la syntaxe utilisateur: preprocessing des steps, expansion des generateurs (`_or_`, `_grid_`, `_cartesian_`, `_zip_`, etc.), generation des noms de variantes et conservation des `generator_choices`.
-4. `PipelineExecutor.execute()` initialise `ExecutionContext`, ouvre un pipeline dans le store, cree une trace, boucle sur les steps et flush les predictions vers le store.
-5. `StepRunner` parse chaque step, route vers un controller, execute le controller, puis normalise le retour en `StepResult`.
-6. Les controllers font le vrai travail: split, transform, y-transform, tag/exclude, branch, merge, model, charts.
-7. En fin de CV, `PipelineOrchestrator` lance le refit si demande: extraction de la meilleure config, reexecution sur train complet, ecriture de predictions `fold_id="final"`.
+1.`PipelineRunner.run()`receives`pipeline`,`dataset`,`refit`, store/cache and delegates to`PipelineOrchestrator`. 2.`PipelineOrchestrator.execute()`normalizes the config, normalizes the datasets, opens the run in the store, creates`ArtifactRegistry`,`PipelineExecutor`,`Predictions`and executes each variant. 3.`PipelineConfigs`compiles user syntax: preprocessing of steps, expansion of generators (`_or_`,`_grid_`,`_cartesian_`,`_zip_`, etc.), generation of variant names and conservation of`generator_choices`. 4.`PipelineExecutor.execute()`initializes`ExecutionContext`, opens a pipeline in the store, creates a trace, loops through the steps and flushes the predictions to the store. 5.`StepRunner`parses each step, routes to a controller, executes the controller, then normalizes the return to`StepResult`. 6. Controllers do the real work: split, transform, y-transform, tag/exclude, branch, merge, model, charts. 7. At the end of the CV,`PipelineOrchestrator`launches the refit if requested: extraction of the best config, reexecution on full train, writing of`fold_id="final"`predictions.
 
-Ce n'est donc pas un simple `sklearn.Pipeline`: le pipeline nirs4all melange compilation de variantes, data routing, branches, CV, OOF, persistence, artifact lineage, selection et refit.
+It is therefore not a simple`sklearn.Pipeline`: the nirs4all pipeline mixes compilation of variants, data routing, branches, CV, OOF, persistence, artifact lineage, selection and refit.
 
-### 1.2 Generation: compile-time, pas runtime
+### 1.2 Generation: compile time, not runtime
 
-`PipelineConfigs` est le compilateur actuel. Il accepte liste, dict, chemin ou string, puis:
+`PipelineConfigs`is the current compiler. It accepts list, dict, path or string, then:
 
-- convertit une liste en `{"pipeline": [...]}`;
-- fusionne les couples `xxx` / `xxx_params`;
-- serialise les composants Python;
-- detecte les generateurs;
-- produit une liste materialisee de variantes (`self.steps`);
-- attache a chaque variante ses `generator_choices`.
+- converts a list to`{"pipeline": [...]}`; - merges the`xxx`/`xxx_params`couples; - serializes Python components; - detects generators; - produces a materialized list of variants (`self.steps`); - attaches its`generator_choices`to each variant.
 
-Point important: les generateurs dans une branche de duplication ne sont pas entierement traites par `PipelineConfigs`. Ils peuvent etre etendus plus tard par `BranchController`. Cela montre que la generation est aujourd'hui partagee entre le compilateur de config et certains controllers. Pour DAG-ML, il faut separer clairement:
+Important point: generators in a duplication branch are not fully processed by`PipelineConfigs`. They can be extended later by`BranchController`. This shows that generation is today shared between the config compiler and certain controllers. For DAG-ML, it is necessary to clearly separate:
 
-- `SearchSpace`: decrit les choix;
-- `Compiler`: transforme le DSL en IR;
-- `Planner`: choisit une strategie d'enumeration lazy/materialisee;
-- `Executor`: execute un plan deja resolu.
+-`SearchSpace`: describes the choices; -`Compiler`: transforms DSL into IR; -`Planner`: chooses a lazy/materialized enumeration strategy; -`Executor`: executes an already resolved plan.
 
-### 1.3 Execution: une ligne principale avec des graphes caches
+### 1.3 Execution: a main line with hidden graphs
 
-`PipelineExecutor._execute_steps()` boucle lineairement sur `steps`, mais plusieurs steps creent des sous-graphes:
+`PipelineExecutor._execute_steps()`loops linearly over`steps`, but several steps create subgraphs:
 
-- `branch`: fan-out. Il cree plusieurs `branch_contexts`, chacun avec son `features_snapshot`, son `chain_snapshot`, son `branch_id`, son `branch_path`.
-- `merge`: join. Il sort du mode branche et reconstitue des features ou predictions.
-- `split`: cree les folds comme etat du dataset, pas comme noeuds DAG visibles.
-- `model`: fork/join interne sur folds, puis predictions `fold`, `avg`, `w_avg`.
-- `feature_augmentation`: execute un sous-pipeline sur plusieurs processings.
-- sous-pipelines: `StepRunner` peut executer une liste de sous-steps comme une mini-pipeline.
+-`branch`: fan-out. It creates several`branch_contexts`, each with its`features_snapshot`, its`chain_snapshot`, its`branch_id`, its`branch_path`. -`merge`: join. It exits branch mode and reconstructs features or predictions. -`split`: creates the folds as the state of the dataset, not as visible DAG nodes. -`model`: internal fork/join on folds, then predictions`fold`,`avg`,`w_avg`. -`feature_augmentation`: executes a sub-pipeline on several processings. - sub-pipelines:`StepRunner`can execute a list of sub-steps as a mini-pipeline.
 
-Le DAG implicite ressemble a ceci:
+The implicit DAG looks like this:
 
 ```text
 DSL pipeline
@@ -83,18 +64,15 @@ DSL pipeline
   -> predict/explain replay via artifacts
 ```
 
-### 1.4 Controllers et operators
+### 1.4 Controllers and operators
 
-Le pattern actuel est sain:
+The current pattern is healthy:
 
-- l'operator est le payload metier: objet sklearn, config de merge, splitter, filtre, transformer, modele;
-- le controller est l'adapter d'execution: il sait comment fitter, transformer, predire, selectionner les samples, gerer train/predict/explain, sauver les artifacts;
-- `StepParser` transforme la syntaxe utilisateur en `ParsedStep`;
-- `ControllerRouter` parcourt `CONTROLLER_REGISTRY`, applique `matches()`, trie par priorite et instancie le controller.
+- the operator is the business payload: sklearn object, merge config, splitter, filter, transform, model; - the controller is the execution adapter: it knows how to fit, transform, predict, select samples, manage train/predict/explain, save artifacts; -`StepParser`transforms user syntax into`ParsedStep`; -`ControllerRouter`iterates through`CONTROLLER_REGISTRY`, applies`matches()`, sorts by priority and instantiates the controller.
 
-Ce pattern doit etre le coeur de DAG-ML. Le nom pourrait changer (`OperatorAdapter`, `NodeHandler`, `ExecutorPlugin`), mais la separation operator/controller est la bonne abstraction.
+This pattern should be the heart of DAG-ML. The name might change (`OperatorAdapter`,`NodeHandler`,`ExecutorPlugin`), but the separation operator/controller is the correct abstraction.
 
-Interface cible:
+Target interface:
 
 ```python
 class OperatorAdapter(Protocol):
@@ -109,128 +87,86 @@ class OperatorAdapter(Protocol):
     def cache_key(self, task: NodeTask, view: DataView) -> str | None: ...
 ```
 
-### 1.5 OOF et stacking
+### 1.5 OOF and stacking
 
-La semantique OOF est un des vrais actifs de nirs4all.
+The OOF semantics is one of the real assets of nirs4all.
 
-Le flux actuel:
+The current feed:
 
-1. `CrossValidatorController` convertit un splitter sklearn-like en folds stockes en sample IDs absolus.
-2. `BaseModelController` entraine un modele par fold.
-3. Chaque fold ecrit des predictions `train`, `val`, `test`, avec `fold_id`, `sample_indices`, scores et metadata.
-4. Pour plusieurs folds, le controller produit aussi `avg` et `w_avg`.
-5. `TrainingSetReconstructor` reconstruit les meta-features d'entrainement a partir des predictions `partition="val"`, alignees par `sample_indices`. C'est le vrai OOF.
-6. `MergeController` utilise ce reconstructeur pour transformer des predictions de branches en features de meta-modele. Par defaut, `unsafe=False`; `unsafe=True` prend des predictions train directes et le code marque explicitement cela comme fuite de donnees.
+1.`CrossValidatorController`converts a sklearn-like splitter into folds stored in absolute sample IDs. 2.`BaseModelController`trains one model by fold. 3. Each fold writes`train`,`val`,`test`predictions, with`fold_id`,`sample_indices`, scores and metadata. 4. For multiple folds, the controller also produces`avg`and`w_avg`. 5.`TrainingSetReconstructor`reconstructs the training meta-features from`partition="val"`predictions, aligned by`sample_indices`. This is the real OOF. 6.`MergeController`uses this reconstructor to transform branch predictions into meta-model features. Default,`unsafe=False`;`unsafe=True`takes direct train predictions and the code explicitly marks this as a data leak.
 
-Contrat a extraire dans DAG-ML:
+Contract to extract in DAG-ML:
 
-- Toute prediction utilisee comme feature d'un modele downstream en phase train doit etre OOF.
-- L'alignement doit se faire par `sample_id`, jamais par position implicite seule.
-- Le `PredictionBlock` doit contenir au minimum: `sample_ids`, `partition`, `fold_id`, `producer_node`, `target_space`, `y_pred`, `y_proba`, scores, branch lineage.
-- Un `PredictionJoin` doit refuser par defaut un train block non OOF.
+- Any prediction used as a feature of a downstream model in the train phase must be OOF. - Alignment must be done by`sample_id`, never by implicit position alone. - The`PredictionBlock`must contain at least:`sample_ids`,`partition`,`fold_id`,`producer_node`,`target_space`,`y_pred`,`y_proba`, scores, branch lineage. - A`PredictionJoin`must refuse by default a non-OOF train block.
 
-### 1.6 Merge et branches
+### 1.6 Merge and branches
 
-`BranchController` gere deux familles:
+`BranchController` handles two families:
 
-- duplication: chaque branche voit les memes samples avec un traitement different;
-- separation: les samples ou sources sont partitionnes par tag, metadata, filtre ou source.
+- duplication: each branch sees the same samples with different processing; - separation: samples or sources are partitioned by tag, metadata, filter or source.
 
-`MergeController` gere ensuite:
+`MergeController` then handles:
 
-- feature merge horizontal pour branches de duplication;
-- merge vertical/reconstruction par sample ID pour branches disjointes;
-- source merge (`concat`, `stack`, `dict`);
-- prediction merge avec selection de modeles, agregation (`separate`, `mean`, `weighted_mean`, `proba_mean`) et OOF;
-- mixed merge: features de certaines branches + predictions d'autres branches.
+- horizontal feature merge for duplication branches; - vertical merge/reconstruction by sample ID for disjoint branches; - source merge (`concat`,`stack`,`dict`); - merge prediction with model selection, aggregation (`separate`,`mean`,`weighted_mean`,`proba_mean`) and OOF; - mixed merge: features of certain branches + predictions of other branches.
 
-Dans DAG-ML, `branch` et `merge` ne doivent plus etre des effets de bord dans `context.custom`. Ils doivent devenir des noeuds formels:
+In DAG-ML,`branch`and`merge`should no longer be side effects in`context.custom`. They must become formal nodes:
 
-- `ForkNode`: produit N `DataView` nommees;
-- `MapNode`: applique un sous-graphe sur chaque branche;
-- `FeatureJoinNode`: combine des `FeatureBlock`;
-- `PredictionJoinNode`: combine des `PredictionBlock` avec validation OOF;
-- `SourceJoinNode`: preserve ou concatene les sources.
+-`ForkNode`: product N`DataView`named; -`MapNode`: applies a subgraph to each branch; -`FeatureJoinNode`: combines`FeatureBlock`; -`PredictionJoinNode`: combines`PredictionBlock`with OOF validation; -`SourceJoinNode`: preserves or concatenates sources.
 
-### 1.7 Multi-source et layouts dans le code actuel
+### 1.7 Multi-source and layouts in current code
 
-Le multi-source est aujourd'hui porte par `SpectroDataset`, mais c'est en realite une capacite DAG-ML generique.
+Multi-source is today supported by`SpectroDataset`, but it is in reality a generic DAG-ML capability.
 
-Dans `nirs4all/data/features.py`, `Features` gere une liste de `FeatureSource`. Les sources sont alignees sur le meme axe samples, mais elles peuvent avoir des dimensions de features et des chaines de processings differentes. Chaque `FeatureSource` stocke ses donnees comme un tenseur 3D:
+In`nirs4all/data/features.py`,`Features`manages a list of`FeatureSource`. The sources are aligned on the same sample axis, but they can have different feature dimensions and processing chains. Each`FeatureSource`stores its data as a 3D tensor:
 
 ```text
 (samples, processings, features)
 ```
 
-Puis `LayoutTransformer` expose plusieurs vues:
+Then`LayoutTransformer`exposes several views:
 
 - `2d`: `(samples, processings * features)`;
 - `2d_interleaved`: `(samples, features * processings)`;
 - `3d`: `(samples, processings, features)`;
 - `3d_transpose`: `(samples, features, processings)`.
 
-Quand `concat_source=True`, `Features.x()` concatene plusieurs sources sur le dernier axe. Pour des spectres numeriques, c'est acceptable: meme axe samples, tenseurs denses, processings compatibles ou flatten possible. Mais cette regle est trop pauvre pour DAG-ML general:
+When`concat_source=True`,`Features.x()`concatenates several sources on the last axis. For digital spectra, it is acceptable: same axis samples, dense tensors, compatible or flattened processing possible. But this rule is too poor for general DAG-ML:
 
-- images: concatener des pixels de cameras differentes n'a pas le meme sens qu'un concat de longueurs d'onde;
-- graphes/arbres: il n'y a pas toujours d'axe features dense;
-- sources heterogenes: une source peut etre un spectre, une image, un tableau clinique, un graphe molecular;
-- multi-input models: certains modeles attendent un dict/list de tensors, pas un tableau concatene;
-- sources manquantes: il faut choisir entre `inner`, `left`, `outer`, masque de presence, imputation ou erreur.
+- images: concatenating pixels from different cameras does not have the same meaning as concatenating wavelengths; - graphs/trees: there is not always a dense features axis; - heterogeneous sources: a source can be a spectrum, an image, a clinical picture, a molecular graph; - multi-input models: some models expect a dict/list of tensors, not a concatenated array; - missing sources: you must choose between`inner`,`left`,`outer`, presence mask, imputation or error.
 
-Les controllers actuels montrent deja le besoin:
+Current controllers already show the need:
 
-- `TransformerMixinController` demande `layout="3d", concat_source=False`, boucle par source et par processing, puis persiste les artifacts avec `source_index`.
-- Les controllers modeles declarent un layout prefere: sklearn -> `2d`, PyTorch -> `3d`, TensorFlow/JAX -> `3d_transpose`, avec `force_layout` pour forcer.
-- `BaseModelController.get_xy()` demande `dataset.x(..., layout=layout)` avec le comportement par defaut `concat_source=True`, puis assert que le resultat est un `np.ndarray`. Donc le moteur suppose implicitement qu'un modele recoit un tenseur unique concatene, pas une entree multi-source generale.
-- `MergeController` contient deja des modes `sources`, `dict`, `features`, `merge_sources`, `by_source`, mais ces semantics sont encodees dans le controller et dans `SpectroDataset`, pas dans un contrat DAG formel.
-- `SampleLinker` dans `nirs4all/data/selection/sample_linker.py` gere deja l'alignement multi-source par cle (`inner`, `left`, `outer`). Cette logique appartient plutot au contrat ML_DATA qu'au moteur d'execution ML.
+-`TransformerMixinController`requests`layout="3d", concat_source=False`, loop by source and by processing, then persist the artifacts with`source_index`. - Model controllers declare a preferred layout: sklearn ->`2d`, PyTorch ->`3d`, TensorFlow/JAX ->`3d_transpose`, with`force_layout`to force. -`BaseModelController.get_xy()`requests`dataset.x(..., layout=layout)`with the default`concat_source=True`behavior, then asserts that the result is a`np.ndarray`. So the engine implicitly assumes that a model receives a single concatenate tensor, not a general multi-source input. -`MergeController`already contains`sources`,`dict`,`features`,`merge_sources`,`by_source`modes, but these semantics are encoded in the controller and in`SpectroDataset`, not in a formal DAG contract. -`SampleLinker`in`nirs4all/data/selection/sample_linker.py`already manages multi-source alignment by key (`inner`,`left`,`outer`). This logic belongs rather to the ML_DATA contract than to the ML execution engine.
 
-Donc: le multi-source ne doit pas etre "un detail dataset". Il doit devenir un type de port et d'edge DAG-ML.
+Therefore, multi-source must not remain "a dataset detail." It must become a DAG-ML port and edge type.
 
 ### 1.8 Refit
 
-Le refit actuel est une deuxieme phase apres selection:
+The current refit is a second phase after selection:
 
-- `extract_winning_config()` ou `extract_top_configs()` choisit les variantes;
-- `execute_simple_refit()` deep-copy le dataset, remplace le splitter par un fold unique "train complet", injecte `best_params` et `refit_params`, puis reexecute le pipeline;
-- les predictions refit sont relabelisees `fold_id="final"` et `refit_context="standalone"`;
-- pour stacking/mixed merge/separation, le dispatcher part vers des strategies dediees;
-- pour certaines branches, `BranchController` alimente `best_refit_chains`, ce qui permet de refitter chaque modele sur sa meilleure chaine sans requeter le store.
+-`extract_winning_config()`or`extract_top_configs()`chooses the variants; -`execute_simple_refit()`deep-copy the dataset, replaces the splitter with a single “full train” fold, injects`best_params`and`refit_params`, then re-executes the pipeline; - the refit predictions are relabeled`fold_id="final"`and`refit_context="standalone"`; - for stacking/mixed merge/separation, the dispatcher goes towards dedicated strategies; - for certain branches,`BranchController`powers`best_refit_chains`, which allows each model to be refitted on its best channel without requiring the blind.
 
-Dans DAG-ML, le refit doit etre un graphe de phase, pas un patch de steps:
+In DAG-ML, the refit must be a phase graph, not a patch of steps:
 
 ```text
 FitCVPlan -> SelectionPlan -> RefitPlan -> ExportPlan
 ```
 
-Le refit doit recevoir une `SelectedGraph` contenant:
+The refit must receive a`SelectedGraph`containing:
 
-- graph variant ID;
-- choix generateurs;
-- best params;
-- chemin de preprocessings;
-- modele cible;
-- strategie de refit;
-- lien vers les predictions CV qui justifient la selection.
+- graph variant ID; - generator choices; - best params; - preprocessing path; - target model; - refit strategy; - link to the CV predictions which justify the selection.
 
 ## 2. Proposition DAG-ML
 
 ### 2.1 Mission
 
-DAG-ML devrait etre un moteur ML local/in-process, pas un orchestrateur de machines. Il formalise le coeur universel:
+DAG-ML should be a local/in-process ML engine, not a machine orchestrator. It formalizes the universal heart:
 
-- compilation d'un DSL pipeline en DAG;
-- generation de variantes;
-- execution multi-phase fit/predict/explain/refit;
-- data connectors;
-- compatibilite explicite model/data et source/source;
-- adapters operators/controllers;
-- CV, OOF, stacking et refit;
-- artifacts, cache, lineage, traces.
+- compilation of a DSL pipeline in DAG; - generation of variants; - multi-phase execution fit/predict/explain/refit; - data connectors; - explicit model/data and source/source compatibility; - adapter operators/controllers; - CV, OOF, stacking and refit; - artifacts, cache, lineage, traces.
 
-Il ne doit pas contenir de logique NIRS. `SpectroDataset`, wavelengths, sources spectrales et indexer actuel doivent etre branches via adapters depuis `nirs4all-data` / `nirs4all`.
+It must not contain NIRS logic.`SpectroDataset`, wavelengths, spectral sources and current index must be connected via adapters from`nirs4all-data`/`nirs4all`.
 
-### 2.2 Objets de base
+### 2.2 Base objects
 
 ```python
 @dataclass(frozen=True)
@@ -265,34 +201,17 @@ class RunContext:
     resources: ResourceHints
 ```
 
-Types importants:
+Important types:
 
-- `MLDataset`: abstraction generique des samples, sources, targets, metadata et vues.
-- `DataView`: selection immutable de samples/features/targets.
-- `SourceDescriptor`: description stable d'une source, de sa modalite, de ses axes et de ses units.
-- `DataBlock`: payload concret d'une source ou d'un merge, avec `sample_ids`, representation, axes et lineage.
-- `FeatureBlock`: cas particulier dense de `DataBlock` pour features numeriques.
-- `TargetBlock`: y + target transform lineage.
-- `FoldSet`: folds en sample IDs stables.
-- `PredictionBlock`: predictions OOF/test/final avec sample IDs.
-- `ModelInputSpec`: contrat d'entree declare par un model adapter.
-- `DataPlan`: conversion explicite entre blocs data et entree modele.
-- `ArtifactRef`: pointeur versionne vers un modele/transformer fitted.
-- `LineageRecord`: lien entre node, inputs, params, artifacts, outputs.
+-`MLDataset`: generic abstraction of samples, sources, targets, metadata and views. -`DataView`: immutable selection of samples/features/targets. -`SourceDescriptor`: stable description of a source, its modality, its axes and its units. -`DataBlock`: concrete payload of a source or a merge, with`sample_ids`, representation, axes and lineage. -`FeatureBlock`: dense special case of`DataBlock`for digital features. -`TargetBlock`: y + target transform lineage. -`FoldSet`: folds to stable sample IDs. -`PredictionBlock`: OOF/test/final predictions with sample IDs. -`ModelInputSpec`: entry contract declared by an adapted model. -`DataPlan`: explicit conversion between data blocks and model input. -`ArtifactRef`: versioned pointer to a fitted model/transformer. -`LineageRecord`: link between node, inputs, params, artifacts, outputs.
 
 ### 2.3 Phases
 
-Les phases doivent etre explicites:
+The phases must be explicit:
 
-- `COMPILE`: DSL -> `GraphSpec`.
-- `PLAN`: `GraphSpec` + choix generateurs -> `ExecutionPlan`.
-- `FIT_CV`: fit des transformers/modeles par folds, emission de predictions OOF.
-- `SELECT`: ranking par metrique, top-k, per-model selection, multi-criteria.
-- `REFIT`: entrainement final sur train complet, emission `fold_id="final"`.
-- `PREDICT`: replay minimal via artifacts.
-- `EXPLAIN`: replay + hooks explainability.
+-`COMPILE`: DSL ->`GraphSpec`. -`PLAN`:`GraphSpec`+ generator choices ->`ExecutionPlan`. -`FIT_CV`: fit transformers/models by folds, emission of OOF predictions. -`SELECT`: ranking by metric, top-k, per-model selection, multi-criteria. -`REFIT`: final training on full train,`fold_id="final"`emission. -`PREDICT`: minimal replay via artifacts. -`EXPLAIN`: replay + hooks explainability.
 
-Le moteur peut exposer:
+The engine may exhibit:
 
 ```python
 compiled = dagml.compile(pipeline_spec, registry=registry)
@@ -305,9 +224,9 @@ final = dagml.refit(selected, dataset)
 pred = dagml.predict(final.bundle, new_dataset)
 ```
 
-### 2.4 DSL compatible nirs4all
+### 2.4 nirs4all-compatible DSL
 
-La premiere version ne doit pas inventer une syntaxe neuve. Elle doit accepter la syntaxe nirs4all actuelle et la compiler en IR:
+The first version should not invent new syntax. It should accept the current nirs4all syntax and compile it to IR:
 
 - `{"preprocessing": StandardScaler()} -> TransformNode`
 - `{"split": KFold(...)} -> SplitNode`
@@ -316,35 +235,31 @@ La premiere version ne doit pas inventer une syntaxe neuve. Elle doit accepter l
 - `{"merge": "predictions"}` -> PredictionJoinNode
 - generateurs `_or_`, `_grid_`, `_cartesian_` -> `SearchSpace`
 
-Ensuite seulement, on peut offrir une API builder plus typee.
+Only then can we offer a more typical API builder.
 
 ### 2.5 Data connectors
 
-Le point de decouplage principal est la donnee, mais il faut aller plus loin qu'un simple `dataset.x(layout="2d")`.
+The main decoupling point is data, but we need to go further than a simple`dataset.x(layout="2d")`.
 
-DAG-ML doit demander des donnees par contrat. ML_DATA doit repondre avec des schemas, des blocs types et un plan de conversion explicite. `nirs4all` fournirait alors seulement un `SpectroDatasetConnector`; une autre lib pourrait fournir tabular, images, timeseries, graphes ou gnom sans toucher au moteur DAG-ML.
+DAG-ML must request data by contract. ML_DATA must respond with schemas, standard blocks and an explicit conversion plan.`nirs4all`would then only provide one`SpectroDatasetConnector`; another lib could provide tabular, images, timeseries, graphs or gnom without touching the DAG-ML engine.
 
-Pour les spectres, `SpectroDatasetConnector` peut declarer:
+For spectra,`SpectroDatasetConnector`can declare:
 
-- modalite `dense_signal`;
-- representation native `(samples, processings, features)`;
-- conversions lossless vers `flat_features`, `channels_first`, `channels_last`;
-- concat source autorise si samples alignes et tenseurs denses;
-- padding/truncation autorise seulement quand une policy explicite le demande.
+-`dense_signal`mode; - native`(samples, processings, features)`representation; - lossless conversions to`flat_features`,`channels_first`,`channels_last`; - concat source allows if aligned samples and dense tensors; - padding/truncation only allows when an explicit policy requests it.
 
-Pour images/graphes/arbres/multimodal, il ne faut pas appliquer les regles spectrales par defaut. Le connecteur doit dire si une operation est possible, lossless, lossy ou interdite.
+For images/graphs/trees/multimodal, the default spectral rules should not be applied. The connector must say whether an operation is possible, lossless, lossy or prohibited.
 
-### 2.6 Contrat ML_DATA generique et extensible
+### 2.6 Generic and extensible ML_DATA contract
 
-Si la couche data devient une librairie separee et generique, DAG-ML ne doit plus importer `SpectroDataset`, `pandas`, `torch_geometric`, `PIL`, etc. DAG-ML doit seulement parler a un contrat stable. Les nouveaux types arrivent par plugins ML_DATA.
+If the data layer becomes a separate and generic library, DAG-ML should no longer import`SpectroDataset`,`pandas`,`torch_geometric`,`PIL`, etc. DAG-ML only needs to talk to a stable contract. New types arrive via ML_DATA plugins.
 
-Architecture cible:
+Target architecture:
 
 ```text
 DAG-ML
   - compile le graph
-  - choisit les phases CV/refit/predict
-  - demande un input compatible avec un modele
+  - chooses the CV/refit/predict phases
+  - requests an input compatible with a model
   - garantit no-leakage/OOF/folds
 
 ML_DATA
@@ -423,9 +338,9 @@ class DatasetSchema:
     metadata: dict[str, RepresentationSpec]
 ```
 
-`SourceDescriptor` est le pivot. Ajouter un nouveau type custom veut dire: declarer un `type_id`, ses representations natives, ses axes, puis les adapters possibles.
+`SourceDescriptor`is the pivot. Adding a new custom type means: declaring a`type_id`, its native representations, its axes, then possible adaptations.
 
-#### 2.6.2 Blocks et vues
+#### 2.6.2 Blocks and views
 
 ```python
 @dataclass(frozen=True)
@@ -466,7 +381,7 @@ class FeatureTable:
     lineage: Any | None = None
 ```
 
-`DataBlock` est general: image batch, graphe, serie, spectre, table. `FeatureTable` est seulement la representation tabulaire finale ou intermediaire.
+`DataBlock`is general: batch image, graph, series, spectrum, table.`FeatureTable`is only the final or intermediate tabular representation.
 
 #### 2.6.3 Interface dataset
 
@@ -509,9 +424,9 @@ class MLDataset(Protocol):
         ...
 ```
 
-Cette interface ne fait pas de ML. Elle sait lire, filtrer et materialiser.
+This interface does not do ML. She knows how to read, filter and materialize.
 
-#### 2.6.4 Registre de types custom
+#### 2.6.4 Custom type register
 
 ```python
 @dataclass(frozen=True)
@@ -568,16 +483,11 @@ class BatchCollator(Protocol):
 
 Exemples de plugins:
 
-- `DenseSignalType`: spectres, signaux 1D, arrays denses;
-- `ImageRGBType`: images RGB;
-- `GenotypeMatrixType`: variants genetiques;
-- `TimeSeriesType`: sequences multivariables;
-- `GraphType`: graphes/arbres;
-- `TableType`: tabulaire/metadata.
+-`DenseSignalType`: spectra, 1D signals, dense arrays; -`ImageRGBType`: RGB images; -`GenotypeMatrixType`: genetic variants; -`TimeSeriesType`: multivariable sequences; -`GraphType`: graphs/trees; -`TableType`: tabular/metadata.
 
 #### 2.6.5 Adapters de representation
 
-Les adapters sont le mecanisme qui rend les types composables.
+Adapters are the mechanism that makes types composable.
 
 ```python
 @dataclass(frozen=True)
@@ -686,9 +596,9 @@ Examples:
 - `WeatherSequenceAdapter`: sequence -> `sequence_tensor`;
 - `TabularEncoderAdapter`: categories/numerics -> `tabular_numeric`.
 
-DAG-ML decide quand `fit()` est appele. ML_DATA decide comment l'adapter transforme. C'est essentiel pour eviter les fuites: un encoder, une PCA ou un imputer se fit sur le fold train, pas sur tout le dataset.
+DAG-ML decides when`fit()`is called. ML_DATA decides how to adapt the transform. This is essential to avoid leaks: an encoder, a PCA or an imputer is done on the fold train, not on the entire dataset.
 
-#### 2.6.6 Fusion et alignement
+#### 2.6.6 Fusion and alignment
 
 ```python
 @dataclass(frozen=True)
@@ -731,9 +641,9 @@ class FeatureJoiner(Protocol):
         ...
 ```
 
-`FeatureJoiner` est un adapter comme les autres: il produit un schema stable au train, puis reapplique exactement ce schema au predict.
+`FeatureJoiner`is an adapter like any other: it produces a stable pattern to the train, then exactly reapplies this pattern to the predict.
 
-#### 2.6.7 Resolution pour un modele
+#### 2.6.7 Resolution for a model
 
 ```python
 @dataclass(frozen=True)
@@ -796,11 +706,11 @@ class DataPlanner(Protocol):
         ...
 ```
 
-Le `DataPlanner` peut etre fourni par ML_DATA, mais DAG-ML garde le controle de la phase et des folds. Si `requires_user_choice` est non vide, DAG-ML doit refuser l'execution automatique ou demander une policy plus precise.
+The`DataPlanner`can be provided by ML_DATA, but DAG-ML retains control of the phase and folds. If`requires_user_choice`is non-empty, DAG-ML must refuse automatic execution or request a more precise policy.
 
 #### 2.6.8 Signature minimale cote DAG-ML
 
-Un model adapter DAG-ML expose seulement son besoin:
+A DAG-ML model adapter only exposes its need:
 
 ```python
 class ModelAdapter(Protocol):
@@ -825,7 +735,7 @@ class ModelAdapter(Protocol):
         ...
 ```
 
-Pour `RandomForest`, l'input spec est:
+For`RandomForest`, the input spec is:
 
 ```python
 ModelInputSpec(
@@ -848,24 +758,21 @@ ModelInputSpec(
 )
 ```
 
-Donc un nouveau type custom n'a besoin d'etre connu par DAG-ML que s'il existe un chemin dans ML_DATA:
+So a new custom type only needs to be known by DAG-ML if there is a path in ML_DATA:
 
 ```text
 custom_type/native_representation -> ... -> tabular_numeric
 ```
 
-Sans ce chemin, `RandomForest` est incompatible. Avec ce chemin, DAG-ML peut planifier l'adaptation sans connaitre le type lui-meme.
+Without this path,`RandomForest`is incompatible. With this path, DAG-ML can plan the adaptation without knowing the type itself.
 
-### 2.7 Compatibilite model/data et source/source
+### 2.7 Model/data and source/source compatibility
 
-Le probleme central de DAG-ML est la compatibilite entre:
+The central problem of DAG-ML is the compatibility between:
 
-- ce que le modele accepte;
-- ce que les sources peuvent fournir;
-- ce que les edges de merge/split/concat declarent;
-- ce que la phase courante autorise en termes de leakage, sample alignment et artifacts.
+- what the model accepts; - what the sources can provide; - what the merge/split/concat edges declare; - what the current phase allows in terms of leakage, sample alignment and artifacts.
 
-DAG-ML doit donc demander un plan de compatibilite avant execution. Dans le contrat propose, c'est la methode `DataPlanner.resolve()` cote ML_DATA, appelee par DAG-ML avec le `ModelInputSpec` du modele:
+DAG-ML must therefore request a compatibility plan before execution. In the proposed contract, it is the method`DataPlanner.resolve()`side ML_DATA, called by DAG-ML with the`ModelInputSpec`of the model:
 
 ```python
 plan = data_planner.resolve(
@@ -876,69 +783,37 @@ plan = data_planner.resolve(
 )
 ```
 
-Un `DataPlan` peut contenir:
+A`DataPlan`may contain:
 
-- `direct`: le bloc est deja compatible;
-- `flatten`: spectral/tabular dense vers `(samples, features)`;
-- `transpose`: `channels_first` <-> `channels_last`;
-- `concat_features`: concat horizontal de sources denses alignees;
-- `stack_channels`: stack de sources compatibles comme canaux;
-- `pad_or_truncate`: uniquement avec policy explicite;
-- `dict_input` ou `list_input`: pour modeles multi-input;
-- `featurize_required`: il faut un noeud amont qui convertit image/graphe/texte en features;
-- `error`: aucune adaptation sure.
+-`direct`: the block is already compatible; -`flatten`: dense spectral/tabular to`(samples, features)`; -`transpose`:`channels_first`<->`channels_last`; -`concat_features`: horizontal concate of aligned dense sources; -`stack_channels`: stack of compatible sources as channels; -`pad_or_truncate`: only with explicit policy; -`dict_input`or`list_input`: for multi-input models; -`featurize_required`: you need an upstream node which converts image/graph/text into features; -`error`: no sure adaptation.
 
-Regle importante: DAG-ML ne doit jamais silently flatten/concat une source complexe. Les conversions implicites doivent etre limitees aux cas denses simples, typiquement spectres/tableaux numeriques.
+Important rule: DAG-ML must never silently flatten/concat a complex source. Implicit conversions should be limited to simple dense cases, typically digital spectra/arrays.
 
 Exemples:
 
-- sklearn classique: demande `flat_features`, rank 2, modalites denses. Pour des spectres multi-source, DAG-ML peut planifier `concat_features` si samples alignes.
-- NN Conv1D spectral: demande rank 3. DAG-ML peut fournir `(samples, channels/processings, features)` ou `(samples, features, channels)` selon framework.
-- modele multi-modal: demande `dict_input=True`; DAG-ML fournit `{nir: tensor, image: tensor, metadata: dataframe}` sans concatener.
-- modele image: refuse un spectre brut sauf si un adapter explicite transforme le spectre en image/embedding.
-- graph neural network: refuse les concat dense, demande un `GraphBatch` avec adjacency/edge features.
+- classic sklearn:`flat_features`request, rank 2, dense modalities. For multi-source spectra, DAG-ML can plan`concat_features`if samples are aligned. - NN Conv1D spectral: request rank 3. DAG-ML can provide`(samples, channels/processings, features)`or`(samples, features, channels)`depending on framework. - multi-modal model:`dict_input=True`request; DAG-ML provides`{nir: tensor, image: tensor, metadata: dataframe}`without concatenation. - image model: refuses a raw spectrum unless an explicit adapter transforms the spectrum into an image/embedding. - graph neural network: refuses dense concat, requests a`GraphBatch`with adjacency/edge features.
 
 ### 2.8 Ce qui appartient a DAG-ML vs ML_DATA
 
 DAG-ML doit posseder:
 
-- le graphe, les nodes, les ports et les edge contracts;
-- l'orchestration du `DataPlanner` et le refus des plans qui violent les invariants ML;
-- les phases `FIT_CV`, `SELECT`, `REFIT`, `PREDICT`, `EXPLAIN`;
-- les invariants ML: OOF, no-leakage, fold alignment, refit provenance;
-- la decision de planifier un `AdapterNode`, `JoinNode`, `SplitNode` ou de refuser;
-- le cache, les traces, la lineage et les artifacts generiques;
-- l'interface `OperatorAdapter` qui declare les inputs attendus.
+- the graph, nodes, ports and edge contracts; - the orchestration of`DataPlanner`and the refusal of plans that violate ML invariants; - phases`FIT_CV`,`SELECT`,`REFIT`,`PREDICT`,`EXPLAIN`; - ML invariants: OOF, no-leakage, fold alignment, refit provenance; - the decision to plan a`AdapterNode`,`JoinNode`,`SplitNode`or to refuse; - cache, traces, lineage and generic artifacts; - the`OperatorAdapter`interface which declares the expected inputs.
 
 ML_DATA doit posseder:
 
-- le stockage concret des sources;
-- l'alignement des samples entre sources (`inner`, `left`, `outer`, masques de presence);
-- les descriptors de sources, axes, modalites, dtypes, units;
-- les conversions de representation que la data sait faire sans perdre de sens;
-- les policies de padding/collation/ragged batch;
-- les vues samples/features/targets/metadata;
-- les domain primitives: wavelengths NIRS, source names, signal types, image size, graph schema, time axis.
+- concrete storage of sources; - the alignment of samples between sources (`inner`,`left`,`outer`, presence masks); - descriptors of sources, axes, modalities, dtypes, units; - the representation conversions that the data can do without losing meaning; - padding/snack/ragged batch policies; - the samples/features/targets/metadata views; - domain primitives: NIRS wavelengths, source names, signal types, image size, graph schema, time axis.
 
-Le contrat partage est:
+The sharing contract is:
 
-- `SourceDescriptor`;
-- `DataBlock`;
-- `DataView`;
-- `ModelInputSpec`;
-- `FusionPolicy`;
-- `DataPlan`;
-- `PresenceMask` pour sources manquantes;
-- `AxisSpec` pour dire ce que signifie chaque dimension.
+-`SourceDescriptor`; -`DataBlock`; -`DataView`; -`ModelInputSpec`; -`FusionPolicy`; -`DataPlan`; -`PresenceMask`for missing sources; -`AxisSpec`to tell what each dimension means.
 
 Cette separation evite deux erreurs:
 
-1. mettre les semantics de merge multi-source dans chaque modele;
-2. cacher des decisions de reshape/concat dans `Dataset.x()`.
+1. put multi-source merge semantics in each model; 2. hide reshape/concat decisions in`Dataset.x()`.
 
-### 2.9 Cas concret: early fusion heterogene vers RandomForest
+### 2.9 Concrete case: heterogeneous early fusion towards RandomForest
 
-Exemple cible:
+Target example:
 
 ```text
 sample_id
@@ -950,13 +825,13 @@ sample_id
   -> RandomForest
 ```
 
-Un `RandomForest` sklearn ne consomme pas "du multi-source". Il consomme un tableau numerique dense ou sparse de forme:
+A`RandomForest`sklearn does not consume “multi-source”. It consumes a dense or sparse numerical array of the form:
 
 ```text
 (n_samples, n_features)
 ```
 
-Donc l'early fusion n'est possible que si chaque source est transformee en `FeatureTable` alignee par `sample_id`, puis join horizontal:
+So early fusion is only possible if each source is transformed into`FeatureTable`aligned by`sample_id`, then join horizontally:
 
 ```text
 NIRS             -> SpectralVectorizer      -> FeatureTable[nir_*]
@@ -975,11 +850,7 @@ Metadata         -> TabularEncoder          -> FeatureTable[meta_*]
 
 Qui declare quoi:
 
-- le model adapter `RandomForestAdapter` declare `ModelInputSpec`: accepte `tabular_numeric`, rank 2, samples alignes, pas d'images/graphes/sequences brutes;
-- `ML_DATA` declare chaque source: modalite, axes, units, cle sample, granularite, presence mask, representations natives;
-- `ML_DATA` declare aussi les conversions disponibles vers `tabular_numeric`, mais ne choisit pas toujours seul;
-- DAG-ML planifie `FeaturizerNode` / `EncoderNode` / `JoinNode` / `ImputerNode` pour satisfaire le contrat du modele;
-- l'utilisateur ou une policy explicite choisit les conversions quand elles ne sont pas evidentes.
+- the model adapter`RandomForestAdapter`declares`ModelInputSpec`: accepts`tabular_numeric`, rank 2, aligned samples, no raw images/graphs/sequences; -`ML_DATA`declares each source: modality, axes, units, sample key, granularity, presence mask, native representations; -`ML_DATA`also declares available conversions to`tabular_numeric`, but does not always choose alone; - DAG-ML plans`FeaturizerNode`/`EncoderNode`/`JoinNode`/`ImputerNode`to satisfy the model contract; - the user or an explicit policy chooses conversions when they are not obvious.
 
 Manifest minimal cote `ML_DATA`:
 
@@ -1039,7 +910,7 @@ MLDataManifest(
 )
 ```
 
-La fusion automatique n'est raisonnable que si tous les adapters vers `tabular_numeric` sont declares et si la policy l'autorise:
+Automatic merging is only reasonable if all adapters to`tabular_numeric`are declared and if the policy allows it:
 
 ```python
 EarlyFusionPolicy(
@@ -1052,16 +923,13 @@ EarlyFusionPolicy(
 )
 ```
 
-Si `allow_lossy_adapters=False`, DAG-ML doit s'arreter et demander un choix explicite pour:
+If`allow_lossy_adapters=False`, DAG-ML must stop and ask for an explicit choice for:
 
-- image brute -> embedding, pixels flatten, CNN fine-tune, features couleur/texture;
-- genotype -> dosage brut, selection de variants, PCA, PRS, embedding;
-- meteo sequence -> fenetres temporelles, lags, stats, modele sequence amont;
-- metadata categorielle -> one-hot, target encoding, hashing, embeddings.
+- raw image -> embedding, flattened pixels, CNN fine-tune, color/texture features; - genotype -> raw dosage, selection of variants, PCA, PRS, embedding; - weather sequence -> time windows, lags, stats, upstream sequence model; - categorical metadata -> one-hot, target encoding, hashing, embeddings.
 
-Ce n'est pas de la plomberie: ce sont des hypotheses de modelisation. DAG-ML peut automatiser l'assemblage, pas inventer silencieusement ces hypotheses.
+This is not plumbing: these are modeling hypotheses. DAG-ML can automate assembly, not silently invent these hypotheses.
 
-Contrat de sortie d'un adapter vers RandomForest:
+Release contract from an adapter to RandomForest:
 
 ```python
 @dataclass(frozen=True)
@@ -1077,35 +945,21 @@ class FeatureTable:
 
 Puis `FeatureJoin` valide:
 
-- meme `sample_id` ou alignement explicite;
-- pas de fuite: adapters fit sur train uniquement;
-- schema stable train/predict;
-- colonnes namespacees par source;
-- NaN/missing geres selon policy;
-- taille raisonnable ou warning avant explosion dimensionnelle.
+- same`sample_id`or explicit alignment; - no leaks: adapters fit on train only; - stable train/predict scheme; - columns namespaced by source; - NaN/missing managed according to policy; - reasonable size or warning before dimensional explosion.
 
-Pour ce cas, `ML_DATA` doit donc fournir au minimum:
+For this case,`ML_DATA`must therefore provide at least:
 
-1. un catalogue de sources avec modalite, axes, units, granularite et sample key;
-2. un moteur d'alignement sample/source avec `PresenceMask`;
-3. des adapters declaratifs vers des representations cibles (`tabular_numeric`, `tensor_image`, `sequence`, `graph_batch`, `dict_input`);
-4. des policies de missing/padding/collation par modalite;
-5. une schema registry pour garantir que le predict reprend exactement les memes colonnes/adapters que le train;
-6. des metadata de cout/dimension/lossiness pour que DAG-ML sache si une conversion peut etre automatique.
+1. a catalog of sources with modality, axes, units, granularity and sample key; 2. a sample/source alignment engine with`PresenceMask`; 3. declarative adapters towards target representations (`tabular_numeric`,`tensor_image`,`sequence`,`graph_batch`,`dict_input`); 4. missing/padding/snack policies by modality; 5. a schema registry to guarantee that the predict uses exactly the same columns/adaptors as the train; 6. cost/dimension/lossiness metadata so that DAG-ML knows if a conversion can be automatic.
 
-### 2.10 Points structurants a ne pas oublier
+### 2.10 Structural points not to forget
 
-#### 2.10.1 Repetitions, plusieurs X pour un Y, et unite de split
+#### 2.10.1 Repetitions, several X for one Y, and split unit
 
-Le modele de donnees ne doit pas confondre observation, sample logique et cible. En NIRS, on a souvent plusieurs spectres pour un meme echantillon et une seule valeur Y. En multimodal, on peut avoir deux images, plusieurs mesures meteo, plusieurs spectres, et un seul Y.
+The data model must not confuse observation, logical sample and target. In NIRS, we often have several spectra for the same sample and a single Y value. In multimodal, we can have two images, several weather measurements, several spectra, and a single Y.
 
-Il faut donc separer:
+It is therefore necessary to separate:
 
-- `observation_id`: ligne physique dans une source;
-- `sample_id`: unite logique utilisee pour aligner les sources;
-- `target_id`: unite portant le Y;
-- `group_id` ou `entity_id`: unite de leakage/split, par exemple plante, patient, lot, parcelle;
-- `origin_id`: sample original quand une observation est augmentee.
+-`observation_id`: physical line in a source; -`sample_id`: logical unit used to align the sources; -`target_id`: unit bearing the Y; -`group_id`or`entity_id`: leakage/split unit, for example plant, patient, batch, plot; -`origin_id`: original sample when an observation is increased.
 
 Signatures:
 
@@ -1133,7 +987,7 @@ class SplitPolicy:
     forbid_origin_cross_fold: bool = True
 ```
 
-Regle DAG-ML: le split doit se faire au niveau qui evite la fuite. Si plusieurs X partagent un Y ou un `group_id`, ils doivent tomber dans le meme fold quand `split_unit="target"` ou `split_unit="group"`.
+DAG-ML rule: the split must be done at the level which avoids leaking. If multiple Xs share a Y or`group_id`, they must fall into the same fold when`split_unit="target"`or`split_unit="group"`.
 
 `PredictionBlock` doit pouvoir porter deux niveaux:
 
@@ -1151,11 +1005,11 @@ class PredictionBlock:
     aggregation_level: str = "observation"
 ```
 
-Ensuite une prediction peut etre agregee en twin `sample` ou `group`, mais l'OOF brut reste tracable.
+Then a prediction can be aggregated into twin`sample`or`group`, but the raw OOF remains traceable.
 
-#### 2.10.2 Augmentation et OOF
+#### 2.10.2 Augmentation and OOF
 
-L'augmentation est un adapter data, pas une mutation libre du dataset.
+The augmentation is a data adapter, not a free mutation of the dataset.
 
 ```python
 @dataclass(frozen=True)
@@ -1187,15 +1041,11 @@ class AugmentationAdapter(Protocol):
 
 Regles OOF:
 
-- les augmentations d'un sample train restent dans le fold train;
-- aucune augmentation derivee d'un sample de validation ne peut entrer dans le train fold;
-- les predictions OOF doivent etre produites pour les samples/origins de validation, pas pour des copies augmentees vues au train;
-- si un meta-modele consomme des predictions, `PredictionJoin` doit utiliser les predictions OOF des origins, puis seulement eventuellement propager aux augmentations train;
-- en refit final, l'augmentation peut etre reappliquee sur tout le train, mais les artifacts doivent etre marques `phase=REFIT`.
+- increases in a sample train remain in the fold train; - no increase derived from a validation sample can enter the fold train; - OOF predictions must be produced for validation samples/origins, not for augmented copies seen in the stream; - if a meta-model consumes predictions,`PredictionJoin`must use the OOF predictions of the origins, then only optionally propagate to the train augmentations; - in final refit, the increase can be reapplied to the entire train, but the artifacts must be marked`phase=REFIT`.
 
-#### 2.10.3 Seeding et reproductibilite
+#### 2.10.3 Seeding and reproducibility
 
-Le seed doit etre hierarchique et serialise. Un simple `random_state=42` global ne suffit pas quand on a generateurs, folds, augmentation, tuning et parallelisme.
+The seed must be hierarchical and serialized. A simple global`random_state=42`is not enough when we have generators, folds, augmentation, tuning and parallelism.
 
 ```python
 @dataclass(frozen=True)
@@ -1217,11 +1067,11 @@ class SeedContext:
         ...
 ```
 
-Regle: chaque node stateful recoit un seed derive de `(root_seed, run_id, variant_id, node_id, fold_id, trial_id)`. Le seed effectif est persiste dans le `LineageRecord`, pas seulement le root seed.
+Rule: each stateful node receives a seed derived from `(root_seed, run_id, variant_id, node_id, fold_id, trial_id)`. The effective seed is persisted in the `LineageRecord`, not just the root seed.
 
 #### 2.10.4 Operateurs custom lies a la data
 
-Les operators peuvent demander des informations auxiliaires aux sources: wavelengths, time coordinates, graph schema, image metadata, variant annotations. Dans nirs4all, certains transformers ont besoin de `wavelengths=`. Ce n'est pas special NIRS: c'est une dependance auxiliaire typee.
+Operators can request auxiliary information from sources: wavelengths, time coordinates, graph schema, image metadata, variant annotations. In nirs4all, some transformers need`wavelengths=`. This is not NIRS special: it is a typical auxiliary dependency.
 
 ```python
 @dataclass(frozen=True)
@@ -1263,9 +1113,9 @@ class DataAwareOperatorAdapter(Protocol):
 
 Exemple: un `SpectralTransformer` declare `AuxInputSpec(name="wavelengths", kind="axis_coordinates", axis="wavelength")`. ML_DATA fournit ces coordinates depuis `AxisSpec.coordinates`.
 
-#### 2.10.5 Serialization et replay
+#### 2.10.5 Serialization and replay
 
-Tout ce qui est necessaire au replay predict/refit doit etre serialisable. Il faut distinguer specs JSON et payloads binaires.
+Everything needed for replay predict/refit must be serializable. It is necessary to distinguish between JSON specs and binary payloads.
 
 ```python
 @dataclass(frozen=True)
@@ -1294,15 +1144,11 @@ class ExecutionBundle:
 
 Regles:
 
-- `GraphSpec`, `DataPlan`, `DatasetSchema`, `ModelInputSpec` doivent etre JSON/YAML serialisables;
-- les objets fitted, modeles, encoders, PCA, imputers, CNN embeddings vont en artifact store;
-- chaque plugin custom doit fournir `type_id`, `version`, et serializer/deserializer;
-- le predict refuse si le schema courant ne matche pas le `schema_fingerprint`, sauf migration explicite;
-- les colonnes tabulaires et leur ordre sont un artifact de schema, pas une convention implicite.
+-`GraphSpec`,`DataPlan`,`DatasetSchema`,`ModelInputSpec`must be JSON/YAML serializable; - fitted objects, models, encoders, PCA, imputers, CNN embeddings go to the artifact store; - each custom plugin must provide`type_id`,`version`, and serializer/deserializer; - the predict refuses if the current schema does not match the`schema_fingerprint`, unless explicit migration; - tabular columns and their order are a schema artifact, not an implicit convention.
 
-#### 2.10.6 Finetuning et recherche d'hyperparametres
+#### 2.10.6 Finetuning and hyperparameter search
 
-Le finetuning doit etre un noeud DAG, pas un mode special cache dans le controller modele. Il peut tuner les parametres du modele, mais aussi ceux des adapters data.
+Finetuning should be a DAG node, not a special mode hidden in the controller model. It can tune the model parameters, but also those of the data adapters.
 
 ```python
 @dataclass(frozen=True)
@@ -1335,14 +1181,11 @@ class TuningNodeSpec:
 
 Regles:
 
-- les trials s'executent avec les memes contraintes OOF que le training normal;
-- un adapter stateful tune, par exemple PCA genotype ou image embedding, est fit uniquement sur le fold train;
-- le meilleur `DataPlan` + `ModelParams` devient l'entree de refit;
-- les trial seeds, params, scores et schemas de sortie sont persistes.
+- the trials are executed with the same OOF constraints as normal training; - a stateful tune adapter, for example PCA genotype or image embedding, is only fit on the fold train; - the best`DataPlan`+`ModelParams`becomes the refit entry; - trial seeds, params, scores and output patterns are persisted.
 
-#### 2.10.7 DAG reifiable: un noeud peut etre un DAG
+#### 2.10.7 Reifiable DAG: a node can be a DAG
 
-DAG-ML doit etre reifiable: un DAG est une valeur, serialisable, inspectable, versionnable et reutilisable comme un noeud dans un autre DAG.
+DAG-ML must be reifiable: a DAG is a value, serializable, inspectable, versionable and reusable as a node in another DAG.
 
 ```python
 @dataclass(frozen=True)
@@ -1375,73 +1218,36 @@ class SubgraphNodeSpec:
 
 Semantique:
 
-- `inline`: le sous-DAG est developpe dans le DAG parent pour scheduling/cache fin;
-- `opaque`: le sous-DAG est execute comme une boite noire avec ses propres artifacts;
-- `auto`: le planner choisit.
+-`inline`: the sub-DAG is expanded in the parent DAG for fine scheduling/cache; -`opaque`: the sub-DAG is executed as a black box with its own artifacts; -`auto`: the planner chooses.
 
 Cela permet:
 
-- un pipeline preprocessing complet comme noeud;
-- un modele ensemble comme sous-DAG;
-- un featurizer image pre-entraine + pooling comme noeud;
-- un stacker OOF comme noeud;
-- une recette `nirs4all-methods` versionnee comme composant reifiable.
+- a complete preprocessing pipeline as a node; - an ensemble model as a sub-DAG; - a pre-trained image featurizer + pooling as a node; - an OOF stacker as node; - a`nirs4all-methods`recipe versioned as a reifiable component.
 
-Un sous-DAG doit declarer son `GraphInterface`; sinon il n'est pas composable.
+A sub-DAG must declare its`GraphInterface`; otherwise it is not composable.
 
 ### 2.11 Performance
 
 Les optimisations a formaliser:
 
-- enumeration lazy des variantes pour eviter de materialiser de gros `_cartesian_`;
-- `DataView` immutable + blocs copy-on-write plutot que deep copy de gros arrays;
-- cache de node par hash `(operator, params, input lineage, phase)`;
-- scheduler topologique avec barrieres pour `Join`, `Split`, `Refit`;
-- `PredictionStore` colonne/array separe pour ne pas recopier les gros arrays dans la metadata;
-- plans de compatibilite caches par `(source descriptors, model input spec, policy)`;
-- collation/padding au plus tard possible, juste avant le modele;
-- resource hints par node (`cpu`, `gpu`, `thread_safe`, `nested_parallelism`);
-- execution parallele au niveau variant, branche ou fold, mais avec une regle unique de prevention du parallelisme imbrique.
+- lazy enumeration of variants to avoid materializing large`_cartesian_`; -`DataView`immutable + copy-on-write blocks rather than deep copy of large arrays; - node cache by`(operator, params, input lineage, phase)`hash; - topological scheduler with barriers for`Join`,`Split`,`Refit`; -`PredictionStore`separate column/array so as not to copy large arrays into the metadata; - compatibility plans hidden by`(source descriptors, model input spec, policy)`; - snack/padding as late as possible, just before the model; - resource hints by node (`cpu`,`gpu`,`thread_safe`,`nested_parallelism`); - parallel execution at the variant, branch or fold level, but with a unique rule for preventing nested parallelism.
 
 ### 2.12 Migration pragmatique
 
 Ordre recommande:
 
-1. Extraire les protocoles (`MLDataset`, `DataPlanner`, `PredictionStore`, `ArtifactStore`, `OperatorAdapter`) sans changer le runtime.
-2. Ajouter un compilateur nirs4all DSL -> `GraphSpec` en lecture seule.
-3. Extraire de `SpectroDataset` un `SpectroDatasetConnector` qui expose `SourceDescriptor`, `DataBlock` et les conversions `2d/3d/3d_transpose`.
-4. Remplacer les appels implicites `dataset.x(layout=..., concat_source=...)` dans les controllers par `DataPlanner.resolve()` + `DataPlan`.
-5. Remplacer progressivement `PipelineConfigs` par `SearchSpace` DAG-ML, en gardant la syntaxe.
-6. Porter `StepParser`/`ControllerRouter` en registry DAG-ML.
-7. Formaliser `FoldSet`, `PredictionBlock`, `OOFJoin` et branch/merge.
-8. Deplacer selection/refit dans DAG-ML.
-9. Garder les controllers NIRS-specifiques dans `nirs4all`, pas dans DAG-ML.
+1. Extract the protocols (`MLDataset`,`DataPlanner`,`PredictionStore`,`ArtifactStore`,`OperatorAdapter`) without changing the runtime. 2. Add a read-only nirs4all DSL ->`GraphSpec`compiler. 3. Extract from`SpectroDataset`a`SpectroDatasetConnector`which exposes`SourceDescriptor`,`DataBlock`and`2d/3d/3d_transpose`conversions. 4. Replace implicit`dataset.x(layout=..., concat_source=...)`calls in controllers with`DataPlanner.resolve()`+`DataPlan`. 5. Gradually replace`PipelineConfigs`with`SearchSpace`DAG-ML, keeping the syntax. 6. Bring`StepParser`/`ControllerRouter`to DAG-ML registry. 7. Formalize`FoldSet`,`PredictionBlock`,`OOFJoin`and branch/merge. 8. Move selection/refit in DAG-ML. 9. Keep NIRS-specific controllers in`nirs4all`, not in DAG-ML.
 
 ## 3. Alternative existante?
 
-Il n'y a pas, a ma connaissance, d'alternative qui corresponde exactement.
+To my knowledge, there is no alternative that matches exactly.
 
-- scikit-learn couvre bien `Pipeline`, `ColumnTransformer`, cache de transformers et stacking OOF via `StackingRegressor`/`StackingClassifier`, mais pas un DAG multi-branches avec data connectors, merge OOF arbitraire, artifact lineage, refit par topologie et compatibilite explicite multi-source/multi-modal.
-- Kedro formalise des nodes, des inputs/outputs et une resolution topologique, mais c'est plutot un framework data pipeline. Il ne porte pas nativement les contrats ML fins: folds, OOF, leakage checks, refit final, replay predict/explain par artifacts.
-- Dagster/Prefect sont forts pour orchestration, observabilite et assets/runs. Ils sont trop lourds et trop externes pour etre le coeur in-process d'un pipeline ML interactif.
-- Hamilton est elegant pour generer un dataflow depuis des fonctions Python typees, mais son modele est moins adapte aux operators stateful sklearn-like, aux phases CV/refit et aux predictions OOF comme first-class edge.
-- Dask/Ray peuvent servir de backend d'execution parallele, pas de modele semantique ML.
+- scikit-learn covers`Pipeline`,`ColumnTransformer`, transformer cache and OOF stacking via`StackingRegressor`/`StackingClassifier`, but not a multi-branch DAG with data connectors, arbitrary OOF merge, artifact lineage, refit by topology and explicit multi-source/multi-modal compatibility. - Kedro formalizes nodes, inputs/outputs and topological resolution, but it is more of a data pipeline framework. It does not natively support fine ML contracts: folds, OOF, leakage checks, final refit, replay predict/explain by artifacts. - Dagster/Prefect are strong for orchestration, observability and assets/runs. They are too heavy and too external to be the in-process heart of an interactive ML pipeline. - Hamilton is elegant for generating a dataflow from typed Python functions, but its model is less suited to stateful sklearn-like operators, CV/refit phases and OOF predictions like first-class edge. - Dask/Ray can serve as a parallel execution backend, not a semantic ML model.
 
 Conclusion: DAG-ML doit etre un moteur custom, mais il peut reprendre des idees:
 
-- topological planning facon Kedro/Hamilton;
-- assets/artifacts et lineage facon Dagster;
-- scheduler local optionnel facon Dask;
-- conventions sklearn pour fit/transform/predict, params et stacking;
-- contrats OOF/refit propres a nirs4all.
+- topological planning Kedro/Hamilton style; - assets/artifacts and lineage Dagster style; - optional local scheduler like Dask; - sklearn conventions for fit/transform/predict, params and stacking; - OOF/refit contracts specific to nirs4all.
 
 References externes consultees:
 
-- scikit-learn Pipeline/composite estimators: https://scikit-learn.org/stable/modules/compose.html
-- scikit-learn stacking: https://scikit-learn.org/stable/modules/ensemble.html#stacking
-- Kedro Pipeline object: https://docs.kedro.org/en/stable/build/pipeline_introduction/
-- Dagster assets: https://docs.dagster.io/guides/build/assets
-- Apache Hamilton functions/nodes/dataflow: https://hamilton.dagworks.io/en/latest/concepts/node/
-- Dask delayed: https://docs.dask.org/en/stable/delayed.html
-- Ray DAG API: https://docs.ray.io/en/latest/ray-core/ray-dag.html
-- Prefect flows: https://docs.prefect.io/v3/concepts/flows
+- scikit-learn Pipeline/composite estimators:https://scikit-learn.org/stable/modules/compose.html- scikit-learn stacking:https://scikit-learn.org/stable/modules/ensemble.html#stacking- Kedro Pipeline object:https://docs.kedro.org/en/stable/build/pipeline_introduction/- Dagster assets:https://docs.dagster.io/guides/build/assets- Apache Hamilton functions/nodes/dataflow:https://hamilton.dagworks.io/en/latest/concepts/node/- Dask delayed:https://docs.dask.org/en/stable/delayed.html- Ray DAG API:https://docs.ray.io/en/latest/ray-core/ray-dag.html- Prefect flows:https://docs.prefect.io/v3/concepts/flows

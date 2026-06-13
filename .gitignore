@@ -13,3 +13,9 @@ crates/*/pkg-web/
 
 # local code-intelligence index
 .codegraph/
+
+# coverage artifacts
+coverage.xml
+
+# personal backlog (local only)
+GB_backlog.txt

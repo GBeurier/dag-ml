@@ -1,360 +1,353 @@
-# DAG-ML — Cœur polyglotte : document de travail
+# DAG-ML — Polyglot Core: working document
 
-Statut : design en cours (discussion). Compagnon de `dag_ml_specification_v1.md`
-(le moteur ML : graphe, phases, invariants OOF) et `ml_data_specification_v1.md`
-(la couche données). Ce document explore une **variante d'implémentation** : un
-cœur natif (Rust/C++) orchestrant des controllers et des données qui restent
-dans le langage hôte (Python, R, ou natif), via une ABI stable.
+Status: design in progress (discussion). Companion to `dag_ml_specification_v1.md`
+(the ML engine: graph, phases, OOF invariants) and `ml_data_specification_v1.md`
+(the data layer). This document explores an **implementation variant**: a native
+core (Rust/C++) orchestrating controllers and data that remain in the host language
+(Python, R, or native), via a stable ABI.
 
-Objectif du document : (1) restituer **l'intégralité** de la délibération
-Python vs Rust/C++ (les deux options, leurs pros/cons/verrous, la voie médiane,
-les frontières de marshalling, le portage cross-langage) ; (2) figer l'ABI de
-controller ; (3) détailler trois mécanismes critiques — liveness des handles,
-format du blob `describe`, trace d'exécution d'un stacking ; (4) discuter de la
-possession du RNG par le cœur.
+Purpose of this document: (1) present **the full deliberation** on Python vs
+Rust/C++ (both options, their pros/cons/blockers, the middle path, marshalling
+boundaries, cross-language portability); (2) freeze the controller ABI; (3) detail
+three critical mechanisms — handle liveness, the `describe` blob format, execution
+trace of a stacking run; (4) discuss RNG ownership by the core.
 
-Note de lecture : la Partie I n'est pas une recommandation tranchée — c'est le
-**compte rendu du débat**. Elle expose la voie « Python pur + kernels Rust
-ciblés » *et* la voie « cœur natif polyglotte » à parité. Le choix dépend d'un
-seul critère, énoncé en §I.13. Les Parties II→VII détaillent la voie polyglotte
-parce que c'est celle qui demande une conception nouvelle ; ce n'est pas un
-verdict contre la voie médiane.
+Reading note: Part I is not a settled recommendation — it is the **account of the
+debate**. It presents the "pure Python + targeted Rust kernels" path *and* the
+"polyglot native core" path on equal footing. The choice depends on a single
+criterion, stated in §I.13. Parts II→VII detail the polyglot path because it is the
+one that requires new design; this is not a verdict against the middle path.
 
 ---
 
-## Partie I — Le débat Python vs Rust/C++ et la direction retenue
+## Part I — The Python vs Rust/C++ debate and the direction taken
 
-### I.1 Le constat fondateur
+### I.1 The founding observation
 
-DAG-ML, tel que spécifié, **n'est pas un noyau de calcul — c'est un plan de
-contrôle**. Il compile un DSL en DAG, énumère des variants, planifie, ordonnance
-les phases (`COMPILE → PLAN → FIT_CV → SELECT → REFIT → PREDICT → EXPLAIN`), fait
-les jointures OOF, gère lineage/cache/artifacts. Le calcul lourd (`fit`/`predict`/
-`transform`) est **délégué** aux opérateurs qui enveloppent sklearn, PyTorch, TF,
-Keras, LightGBM, XGBoost (§6.5 de la spec). Ces opérateurs *sont* des objets du
-langage hôte ; leurs hot loops sont déjà en natif (BLAS, CUDA, C++).
+DAG-ML, as specified, **is not a compute kernel — it is a control plane**. It
+compiles a DSL into a DAG, enumerates variants, plans and schedules phases
+(`COMPILE → PLAN → FIT_CV → SELECT → REFIT → PREDICT → EXPLAIN`), performs OOF
+joins, manages lineage/cache/artifacts. Heavy computation (`fit`/`predict`/
+`transform`) is **delegated** to operators wrapping sklearn, PyTorch, TF, Keras,
+LightGBM, XGBoost (§6.5 of the spec). Those operators *are* host-language objects;
+their hot loops are already native (BLAS, CUDA, C++).
 
-Conséquence centrale : **DAG-ML ne fait quasiment aucun FLOP lui-même.** Les
-seuls calculs qu'il possède en propre sont la jointure OOF (§8.2), l'agrégation
-(§9.7), l'énumération de variants (§4.5), le hashing/fingerprint, le RNG de
-contrôle, et le store de prédictions. Tout le reste est de l'I/O et de
-l'orchestration. **On n'optimise pas la couche qui ne calcule pas** — mais on
-peut vouloir la **porter** ailleurs que Python. C'est ce double constat (peu de
-compute propre / désir de portage) qui structure tout le débat.
+Central consequence: **DAG-ML performs almost no FLOPs itself.** The only
+computations it owns are the OOF join (§8.2), aggregation (§9.7), variant
+enumeration (§4.5), hashing/fingerprint, the control RNG, and the prediction store.
+Everything else is I/O and orchestration. **You do not optimize the layer that does
+no computing** — but you may want to **port** it beyond Python. It is this dual
+observation (little own compute / desire for portability) that structures the entire
+debate.
 
-### I.2 Option A — Python pur
-
-| | |
-|---|---|
-| **Pros** | • La spec **est déjà du Python** : dataclasses, `Protocol`, `Any`, duck typing (`matches()`). Implémenter = transcrire. Time-to-MVP minimal.<br>• Intégration zéro-friction avec tout l'écosystème opérateurs + Optuna/Ray (§10.6). Le contrat d'adapter *est* l'API Python de ces libs.<br>• Migration depuis nirs4all = refactor incrémental (§19), pas une réécriture.<br>• numpy/pyarrow/joblib/SQLite donnent gratuitement les stores colonne, la sérialisation d'artifacts, le Parquet.<br>• Équipe Python, webapp FastAPI → nirs4all : cohérence org + bassin de contributeurs.<br>• Débogabilité, introspection, pdb, payloads d'erreur riches : naturels.<br>• GIL pas un verrou réel : unités parallèles grossières (variant/fold), en process séparés (loky §14.3) ou natif qui relâche le GIL. |
-| **Cons** | • L'overhead d'orchestration pur-Python (boucle topo, dicts dans l'OOF join, dataclasses `frozen` par millions) devient visible **à l'extrême échelle** : 10k+ variants × folds × millions de prédictions.<br>• Le scheduler loky impose le **pickle** des tasks/résultats → coût de sérialisation + duplication mémoire des gros `DataBlock` (atténué par CoW + Parquet §18).<br>• Aucune garantie compile-time sur les invariants : la correction repose sur checks runtime (§14.7) + tests.<br>• Empreinte mémoire des objets Python (PredictionBlock/LineageRecord). |
-| **Verrous** | • **OOF join (§8.2) et agrégation (§9.7)** écrits en boucles Python par échantillon → à grand volume, **vectoriser** (numpy/pandas/pyarrow groupby). Verrou réel mais résolu *dans* Python.<br>• **Déterminisme** sous loky (§12.3) : fixer threads BLAS, trier le reducer par `fold_id`. Indépendant du langage.<br>• **Picklabilité** de `ExecutionPlan`/`NodePlan` (d'où `SerializableRef`). Gérable. |
-
-### I.3 Option B — Cœur Rust/C++ + bindings Python
+### I.2 Option A — Pure Python
 
 | | |
 |---|---|
-| **Pros** | • Les structures du plan de contrôle (GraphSpec, tri topo, énumération `_cartesian_`, fingerprint, graphe de lineage) : rapides, compactes, **vrais threads** (pas de GIL) pour l'orchestration.<br>• Enums exhaustifs Rust → certains invariants encodés **au compile-time** (NodeKind, contrats de port).<br>• Kernel OOF-join / agrégation sur **Arrow** (arrow-rs/polars) : zero-copy avec pyarrow, plus rapide que numpy vectorisé.<br>• Empreinte mémoire des millions de records lineage/prediction divisée.<br>• ABI propre pour plusieurs front-ends. |
-| **Cons** | • **Les opérateurs sont en Python.** Tout cœur Rust doit rappeler Python (pyo3) pour exécuter **chaque** nœud MODEL/TRANSFORM → **réacquisition du GIL + traversée FFI à chaque nœud**. Le bénéfice "no-GIL" s'évapore là où le travail se fait.<br>• Architecture hybride : Rust tient le graphe, Python tient opérateurs + arrays. Chaque `NodeTask` fait transiter ndarrays + objets opérateurs (`Py<PyAny>`). Complexité énorme pour **zéro gain de compute**.<br>• Explosion build/CI : maturin/cibuildwheel, wheels par plateforme (linux/mac/win × CPython), manylinux, compat ABI numpy/pyarrow. Taxe lourde sur une CI ruff/mypy/pytest.<br>• La spec est *Python-shaped* (`operator: Any`, résolution dynamique par `matches()`) → la réexprimer en types Rust **combat le design**.<br>• Skillset équipe réduit. Time-to-value MVP ≈ **5–10×** pour une couche dont le runtime est dominé par du code qu'on ne possède pas. |
-| **Verrous** | • **FFI sur opérateurs opaques** : tenir/invoquer des estimateurs Python arbitraires depuis Rust (`Py<PyAny>`, GIL token dans l'exécuteur) → exécuteur GIL-bound à chaque nœud.<br>• **Échange zero-copy** : exigerait Arrow de bout en bout, mais les opérateurs attendent numpy/torch → **reconversion/copie** à chaque frontière modèle.<br>• **Sérialisation d'artifacts** : joblib/torch/tf Python-only → `ArtifactStore` reste Python.<br>• **RNG/SeedContext** : seeds consommés par numpy/torch → côté Python.<br>• **Optuna/Ray** : Python-only. |
+| **Pros** | • The spec **is already Python**: dataclasses, `Protocol`, `Any`, duck typing (`matches()`). Implementing = transcribing. Minimal time-to-MVP.<br>• Zero-friction integration with the entire operator ecosystem + Optuna/Ray (§10.6). The adapter contract *is* the Python API of those libs.<br>• Migration from nirs4all = incremental refactor (§19), not a rewrite.<br>• numpy/pyarrow/joblib/SQLite provide columnar stores, artifact serialization, and Parquet for free.<br>• Python team, FastAPI webapp → nirs4all: organizational coherence + contributor pool.<br>• Debuggability, introspection, pdb, rich error payloads: natural.<br>• GIL not a real blocker: coarse parallel units (variant/fold), in separate processes (loky §14.3) or native code that releases the GIL. |
+| **Cons** | • Pure-Python orchestration overhead (topo loop, dicts in the OOF join, `frozen` dataclasses by the millions) becomes visible **at extreme scale**: 10k+ variants × folds × millions of predictions.<br>• The loky scheduler imposes **pickling** of tasks/results → serialization cost + memory duplication of large `DataBlock`s (mitigated by CoW + Parquet §18).<br>• No compile-time guarantees on invariants: correctness relies on runtime checks (§14.7) + tests.<br>• Memory footprint of Python objects (PredictionBlock/LineageRecord). |
+| **Blockers** | • **OOF join (§8.2) and aggregation (§9.7)** written as per-sample Python loops → at high volume, **vectorize** (numpy/pandas/pyarrow groupby). A real blocker but solvable *within* Python.<br>• **Determinism** under loky (§12.3): fix BLAS threads, sort the reducer by `fold_id`. Language-independent.<br>• **Picklability** of `ExecutionPlan`/`NodePlan` (hence `SerializableRef`). Manageable. |
 
-### I.4 Le verrou commun, fatal pour B en *mono-langage Python*
+### I.3 Option B — Rust/C++ Core + Python bindings
 
-Un cœur Rust/C++ ne peut pas exécuter le pipeline sans embarquer un interpréteur
-Python, parce que **toute la valeur exécutable (opérateurs, sérialisation,
-tuners, RNG) vit dans l'orbite Python**. En déploiement Python-seul, on obtient
-un orchestrateur Rust qui passe son temps à reprendre le GIL — le pire des deux
-mondes : complexité Rust *plus* contention GIL.
+| | |
+|---|---|
+| **Pros** | • Control plane structures (GraphSpec, topo sort, `_cartesian_` enumeration, fingerprint, lineage graph): fast, compact, **true threads** (no GIL) for orchestration.<br>• Exhaustive Rust enums → certain invariants encoded **at compile time** (NodeKind, port contracts).<br>• OOF-join / aggregation kernels on **Arrow** (arrow-rs/polars): zero-copy with pyarrow, faster than vectorized numpy.<br>• Memory footprint of millions of lineage/prediction records divided.<br>• Clean ABI for multiple front-ends. |
+| **Cons** | • **Operators are in Python.** Any Rust core must call back into Python (pyo3) to execute **every** MODEL/TRANSFORM node → **GIL reacquisition + FFI traversal at every node**. The "no-GIL" benefit evaporates exactly where the work happens.<br>• Hybrid architecture: Rust holds the graph, Python holds operators + arrays. Each `NodeTask` transits ndarrays + operator objects (`Py<PyAny>`). Enormous complexity for **zero compute gain**.<br>• Build/CI explosion: maturin/cibuildwheel, per-platform wheels (linux/mac/win × CPython), manylinux, numpy/pyarrow ABI compat. Heavy tax on a ruff/mypy/pytest CI.<br>• The spec is *Python-shaped* (`operator: Any`, dynamic resolution via `matches()`) → reexpressing it in Rust types **fights the design**.<br>• Reduced team skillset. Time-to-value MVP ≈ **5–10×** for a layer whose runtime is dominated by code we do not own. |
+| **Blockers** | • **FFI on opaque operators**: holding/invoking arbitrary Python estimators from Rust (`Py<PyAny>`, GIL token in the executor) → GIL-bound executor at every node.<br>• **Zero-copy exchange**: would require Arrow end-to-end, but operators expect numpy/torch → **reconversion/copy** at every model boundary.<br>• **Artifact serialization**: joblib/torch/tf Python-only → `ArtifactStore` stays Python.<br>• **RNG/SeedContext**: seeds consumed by numpy/torch → Python side.<br>• **Optuna/Ray**: Python-only. |
 
-Corollaire : **la spec a déjà choisi Python implicitement.** Chaque type est une
-dataclass/Protocol ; joblib/SQLite/Parquet/loky/optuna/ray y sont nommés. « Faire
-du Rust » signifie *réécrire la spec*, pas l'implémenter. Ce point n'invalide pas
-B — il invalide B **si l'unique cible est Python**. Le retournement vient en §I.8.
+### I.4 The common blocker, fatal for B in *Python-only deployment*
 
-### I.5 La voie médiane : Python + kernels Rust ciblés
+A Rust/C++ core cannot execute the pipeline without embedding a Python interpreter,
+because **all executable value (operators, serialization, tuners, RNG) lives in the
+Python orbit**. In Python-only deployment, the result is a Rust orchestrator that
+spends its time reacquiring the GIL — the worst of both worlds: Rust complexity
+*plus* GIL contention.
 
-Entre A et B, une troisième voie — celle des projets `polars` / `pydantic-core` /
-`tokenizers` : surface et orchestration en Python, **noyau chaud en Rust pour 3-4
-kernels mesurés comme chauds**, jamais un cœur monolithique.
+Corollary: **the spec has already chosen Python implicitly.** Every type is a
+dataclass/Protocol; joblib/SQLite/Parquet/loky/optuna/ray are named throughout.
+"Doing Rust" means *rewriting the spec*, not implementing it. This point does not
+invalidate B — it invalidates B **if the only target is Python**. The reversal comes
+in §I.8.
 
-1. **Implémenter DAG-ML en Python** maintenant (orchestration au-dessus de ML
-   Python, spec Python, migration incrémentale §19).
-2. **Garder l'archi FFI-friendly.** Les seuls vrais kernels que DAG-ML possède
-   sont isolables derrière un `Protocol` :
-   - `oof_join` + agrégation (§8.2 / §9.7) — candidat n°1, sur Arrow
-   - énumération de très grands espaces `_cartesian_` (§4.5)
-   - fingerprint/hashing canonique (SHA256 récurrent)
-   - éventuellement le `PredictionStore` colonne (§8.1, déjà Parquet)
-3. **Si — et seulement si — le profilage** montre que ces kernels dominent à
-   grande échelle, les remplacer par une extension Rust (pyo3 + Arrow zero-copy),
-   *derrière le même Protocol Python*.
+### I.5 The middle path: Python + targeted Rust kernels
 
-Cette voie capte l'essentiel du gain stockage **sans aucun Rust** : il suffit de
-backer `PredictionStore`/`FeatureTable` sur Arrow/Polars au lieu de
-dataclasses+numpy. Rust n'ajoute de valeur que (a) pour les kernels de calcul sur
-ces données Arrow et (b) **pour les bindings hors Python** — ce qui mène à §I.8.
+Between A and B, a third path — that of `polars` / `pydantic-core` / `tokenizers`:
+surface and orchestration in Python, **hot core in Rust for 3–4 kernels measured as
+hot**, never a monolithic core.
 
-### I.6 Les deux frontières à ne jamais confondre
+1. **Implement DAG-ML in Python** now (orchestration on top of Python ML,
+   Python spec, incremental migration §19).
+2. **Keep the architecture FFI-friendly.** The only real kernels that DAG-ML owns
+   are isolatable behind a `Protocol`:
+   - `oof_join` + aggregation (§8.2 / §9.7) — candidate #1, on Arrow
+   - enumeration of very large `_cartesian_` spaces (§4.5)
+   - canonical fingerprint/hashing (recurring SHA256)
+   - optionally the columnar `PredictionStore` (§8.1, already Parquet)
+3. **If — and only if — profiling** shows these kernels dominate at scale, replace
+   them with a Rust extension (pyo3 + Arrow zero-copy), *behind the same Python
+   Protocol*.
 
-Le coût de marshalling Rust/Python qui inquiète n'est pas uniforme. Il faut
-séparer :
+This path captures most of the storage gain **without any Rust**: it suffices to
+back `PredictionStore`/`FeatureTable` on Arrow/Polars instead of
+dataclasses+numpy. Rust only adds value (a) for compute kernels on this Arrow data
+and (b) **for non-Python bindings** — which leads to §I.8.
 
-- **Frontière données** (arrays, tables de prédictions, feature tables) : le
-  marshalling coûteux **n'est pas une fatalité**. Structures à partage direct
-  (zero-copy) — §I.7.
-- **Frontière comportement** (opérateurs : estimateurs sklearn, modules torch) :
-  le coût d'appel reste, et aucune structure zero-copy ne le supprime, car
-  exécuter du code hôte exige le runtime hôte.
+### I.6 The two boundaries never to conflate
 
-**Les données sont partageables sans copie ; le comportement non.** DAG-ML fait
-traverser les deux : les arrays peuvent rouler sur Arrow/DLPack quasi gratis ;
-l'appel d'opérateur reste un call GIL + dispatch Python par nœud.
+The Rust/Python marshalling cost that raises concern is not uniform. We must
+separate:
 
-### I.7 Structures zero-copy disponibles, et où la copie revient
+- **Data boundary** (arrays, prediction tables, feature tables): costly marshalling
+  **is not inevitable**. Structures with direct sharing (zero-copy) — §I.7.
+- **Behavior boundary** (operators: sklearn estimators, torch modules): the call
+  cost remains, and no zero-copy structure removes it, because executing host code
+  requires the host runtime.
 
-| Mécanisme | Usage | Zero-copy ? |
+**Data is shareable without copying; behavior is not.** DAG-ML crosses both: arrays
+can flow over Arrow/DLPack near-gratis; operator calls remain a GIL call + Python
+dispatch per node.
+
+### I.7 Available zero-copy structures, and where copying returns
+
+| Mechanism | Usage | Zero-copy? |
 |---|---|---|
-| **Apache Arrow C Data Interface** | tables colonnes entre langages | Oui — deux structs (`ArrowSchema`, `ArrowArray`), passage de pointeurs + release callback ; ABI C stable, sans dépendance de build. `pyarrow` ↔ `arrow-rs` ↔ R `arrow` ↔ JS. |
-| **rust-numpy / buffer protocol (PEP 3118)** | ndarray numpy ↔ `ndarray::ArrayView` | Oui si **C-contigu** ; copie sinon |
-| **DLPack** | tenseurs torch/tf/jax/cupy, **GPU compris** | Oui (`__dlpack__`) |
+| **Apache Arrow C Data Interface** | columnar tables between languages | Yes — two structs (`ArrowSchema`, `ArrowArray`), pointer passing + release callback; stable C ABI, no build dependency. `pyarrow` ↔ `arrow-rs` ↔ R `arrow` ↔ JS. |
+| **rust-numpy / buffer protocol (PEP 3118)** | numpy ndarray ↔ `ndarray::ArrayView` | Yes if **C-contiguous**; copy otherwise |
+| **DLPack** | torch/tf/jax/cupy tensors, **GPU included** | Yes (`__dlpack__`) |
 
-Donc pour un `PredictionStore` colonne, une `FeatureTable`, les arrays OOF : le
-transfert est O(1), par pointeur. Le marshalling cher (pickle, JSON) ne concerne
-que les frontières où l'on n'a *pas* standardisé sur Arrow.
+So for a columnar `PredictionStore`, a `FeatureTable`, OOF arrays: transfer is O(1),
+by pointer. Expensive marshalling (pickle, JSON) only concerns boundaries where we
+have *not* standardized on Arrow.
 
-**Trois fuites où la copie revient quand même :**
+**Three leaks where copying returns anyway:**
 
-1. **Colonne (Arrow) vs row-major dense (sklearn).** Une matrice
-   `(n_samples, n_features)` stockée en N colonnes Arrow → gather/transpose pour
-   sklearn. Solvable (stocker en `FixedSizeList`/tensor extension = un buffer),
-   mais choix délibéré.
-2. **GPU pour sklearn** (CPU only ; DLPack ne règle que torch/tf).
-3. **Les objets fittés ne traversent jamais en zero-copy** — état hôte opaque, le
-   cœur n'en tient qu'un *handle*. Au predict, le cœur rappelle Python sous le
-   GIL.
+1. **Columnar (Arrow) vs row-major dense (sklearn).** A matrix
+   `(n_samples, n_features)` stored as N Arrow columns → gather/transpose for
+   sklearn. Solvable (store as `FixedSizeList`/tensor extension = one buffer),
+   but a deliberate choice.
+2. **GPU for sklearn** (CPU only; DLPack only covers torch/tf).
+3. **Fitted objects never cross in zero-copy** — opaque host state; the core only
+   holds a *handle*. At predict time, the core calls back into Python under the GIL.
 
-### I.8 L'argument qui change tout : le portage R / JS
+### I.8 The argument that changes everything: R / JS portability
 
-C'est ici que l'Option B cesse d'être perdante. Le vrai moteur de B n'est pas la
-perf — c'est **la portée multi-langage**, et le mécanisme est exactement Arrow :
+This is where Option B ceases to be a losing choice. The real driver of B is not
+performance — it is **multi-language reach**, and the mechanism is exactly Arrow:
 
-- **Arrow C Data Interface est la lingua franca polyglotte** : cœur Rust ↔ R
+- **Arrow C Data Interface is the polyglot lingua franca**: Rust core ↔ R
   (package `arrow` / `extendr`), ↔ JS (`apache-arrow` / WASM), ↔ Python
-  (`pyarrow`). C'est ainsi qu'on bâtit un cœur multi-langage (modèle Polars,
-  DataFusion).
+  (`pyarrow`). This is how you build a multi-language core (Polars, DataFusion
+  model).
 
-Mais il faut nommer le piège : **un plan de contrôle portable ne donne pas un
-écosystème d'opérateurs portable.**
+But the trap must be named: **a portable control plane does not give a portable
+operator ecosystem.**
 
-- **Portable** (et c'est le *cœur de rigueur* de la spec) : compilation DSL →
-  GraphSpec, FoldSet, invariants OOF/leakage, jointure OOF, lineage,
-  déterminisme, scheduler. Un cœur Rust porte tout cela vers R et JS.
-- **Non portable** : sklearn, torch, lightgbm. En R → tidymodels/mlr3 ; en JS →
-  tfjs/onnx ; ou réembarquer Python. DAG-ML orchestre des opérateurs ; le
-  squelette est portable, **les choses orchestrées ne le sont pas**.
+- **Portable** (and this is the *rigorous core* of the spec): DSL compilation →
+  GraphSpec, FoldSet, OOF/leakage invariants, OOF join, lineage, determinism,
+  scheduler. A Rust core ports all of this to R and JS.
+- **Not portable**: sklearn, torch, lightgbm. In R → tidymodels/mlr3; in JS →
+  tfjs/onnx; or re-embed Python. DAG-ML orchestrates operators; the skeleton is
+  portable, **the things being orchestrated are not**.
 
-Bénéfice sous-estimé : le problème GIL **disparaît hors Python** — en R/JS les
-opérateurs sont natifs, donc le call structurel n'a pas de GIL à reprendre. Le
-surcoût FFI-par-nœud que dénonce le §I.4 est *spécifique à Python*.
+Underestimated benefit: the GIL problem **disappears outside Python** — in R/JS the
+operators are native, so the structural call has no GIL to reacquire. The per-node
+FFI overhead denounced in §I.4 is *specific to Python*.
 
-### I.9 La vision polyglotte
+### I.9 The polyglot vision
 
-Le cœur natif **ne possède ni les données ni les opérateurs**. Il possède : le
-graphe, les phases, les folds, la jointure OOF, le lineage, le scheduler, le
-search space, le RNG de contrôle — **les invariants**. Il manipule des **handles
-opaques** (u64) résolus côté hôte, et ne voit en clair que l'**identité** et les
-**prédictions** (en Arrow).
+The native core **owns neither data nor operators**. It owns: the graph, the phases,
+the folds, the OOF join, lineage, the scheduler, the search space, the control RNG
+— **the invariants**. It manipulates **opaque handles** (u64) resolved on the host
+side, and sees clearly only the **identity** and **predictions** (in Arrow).
 
 ```
-        dagml-core (Rust)                      bindings minces
+        dagml-core (Rust)                      thin bindings
   ┌────────────────────────────┐        ┌──────────────────────────┐
   │ Compiler / GraphSpec        │  pyo3  │ Python: controllers       │
   │ FoldSet, SearchSpace        │◄──────►│   sklearn / torch (handles)│
   │ OOFJoin / PredictionStore   │ extendr│ R: controllers mlr3       │
   │ Lineage / Cache / RNG       │◄──────►│                           │
   │ Scheduler                   │ napi/  │ JS/WASM: tfjs / onnx      │
-  │  ── identité+preds = Arrow ─│  wasm  │ natif: nirs4all-methods   │
+  │  ── identity+preds = Arrow ─│  wasm  │ native: nirs4all-methods  │
   └────────────────────────────┘        └──────────────────────────┘
-   données   : Arrow C Data Interface (zero-copy)
-   modèles   : ONNX / safetensors (inférence cross-langage)
-   contrôle  : déterminisme cœur (folds, OOF, RNG)
+   data     : Arrow C Data Interface (zero-copy)
+   models   : ONNX / safetensors (cross-language inference)
+   control  : core determinism (folds, OOF, RNG)
 ```
 
-Différence clé avec Polars : Polars *possède* les données ; ici le cœur en est
-**aveugle** (sauf identité+prédictions). C'est ce qui le rend portable sans
-réimplémenter un écosystème ML par langage. Les `DataBlock`/`FeatureTable`/
-`PredictionBlock` traversent en zero-copy ; seuls les handles d'opérateurs restent
-opaques côté langage hôte.
+Key difference from Polars: Polars *owns* the data; here the core is **blind** to
+it (except identity+predictions). This is what makes it portable without
+reimplementing an ML ecosystem per language. `DataBlock`/`FeatureTable`/
+`PredictionBlock` cross in zero-copy; only operator handles remain opaque on the
+host language side.
 
-### I.10 Le GIL : persiste, mais pas goulot ; l'asymétrie R
+### I.10 The GIL: persists, but not a bottleneck; the R asymmetry
 
-- **Structurellement** : tout appel à un controller Python exige le GIL (PyO3
-  impose un token `Python<'py>`). Pas d'échappatoire en CPython standard.
-- **En débit** : le cœur est en Rust et ne touche jamais le GIL (traversée
-  graphe, OOF, lineage, scheduling = threads Rust libres). Les controllers
-  lourds **relâchent** le GIL pendant BLAS/CUDA. GIL tenu par `fit` ≈ µs de
-  dispatch ; compute ≈ ms–s GIL-free. Ratio < 0,1 % → scaling threads
-  quasi-linéaire. Le régime où le GIL sérialise (nœuds ~100 µs) est précisément
-  celui où l'on n'a pas besoin de paralléliser. **C'est strictement supérieur**
-  au loky/multiprocess de la spec (pas de pickle, pas de duplication mémoire).
+- **Structurally**: every call to a Python controller requires the GIL (PyO3
+  imposes a `Python<'py>` token). No escape in standard CPython.
+- **In throughput**: the core is in Rust and never touches the GIL (graph
+  traversal, OOF, lineage, scheduling = free Rust threads). Heavy controllers
+  **release** the GIL during BLAS/CUDA. GIL held by `fit` ≈ µs of dispatch;
+  compute ≈ ms–s GIL-free. Ratio < 0.1% → near-linear thread scaling. The regime
+  where the GIL serializes (nodes ~100 µs) is precisely the one where
+  parallelization is not needed. **This is strictly superior** to the spec's
+  loky/multiprocess (no pickle, no memory duplication).
 
-**Asymétrie R** : R n'a pas de GIL mais **n'est pas thread-safe** et ne relâche
-rien pendant le calcul. Parallélisme R → **processus obligatoires** (fork/PSOCK,
-cf. `parallel`/`future`).
+**R asymmetry**: R has no GIL but **is not thread-safe** and releases nothing during
+computation. R parallelism → **mandatory processes** (fork/PSOCK, cf.
+`parallel`/`future`).
 
-| Controllers | Parallélisme intra-process | Mécanisme |
+| Controllers | Intra-process parallelism | Mechanism |
 |---|---|---|
-| Python (torch/sklearn) | OK si relâche le GIL | threads + GIL bref |
-| R (mlr3) | **non** | processus |
-| Natif Rust (nirs4all-methods) | **libre, total** | threads, aucun verrou |
+| Python (torch/sklearn) | OK if GIL released | threads + brief GIL |
+| R (mlr3) | **no** | processes |
+| Native Rust (nirs4all-methods) | **free, total** | threads, no lock |
 
-Le build full-natif est le **seul** sans contrainte de concurrence du langage
-hôte — c'est le plafond de perf et le différenciateur. Les bindings Python/R sont
-des modes "reach/compat" avec les contraintes de leur hôte.
+The fully native build is the **only** one without host-language concurrency
+constraints — it is the performance ceiling and the differentiator. Python/R bindings
+are "reach/compat" modes with their host's constraints.
 
-### I.11 Trois canaux de transport, trois rôles
+### I.11 Three transport channels, three roles
 
-- **Arrow** = transport des *données* (cross-langage, zero-copy).
-- **ONNX / safetensors** = transport des *modèles fittés* (inférence
-  cross-langage). Déjà prévu : `ArtifactRef.backend` liste `"onnx"` (§13.1). Ne
-  pas demander à Arrow de porter la repro des modèles.
-- **Cœur natif + RNG de contrôle** = transport de la *rigueur* (folds, OOF,
-  lineage — déterministe, et cross-langage pour le plan de contrôle ; Partie VI).
+- **Arrow** = transport for *data* (cross-language, zero-copy).
+- **ONNX / safetensors** = transport for *fitted models* (cross-language inference).
+  Already planned: `ArtifactRef.backend` lists `"onnx"` (§13.1). Do not ask Arrow
+  to carry model reproducibility.
+- **Native core + control RNG** = transport for *rigor* (folds, OOF,
+  lineage — deterministic, and cross-language for the control plane; Part VI).
 
-### I.12 Les deux principes que l'ABI grave
+### I.12 The two principles the ABI encodes
 
-1. **Visibilité.** Le cœur voit en Arrow exactement trois choses : l'**identité**
-   (sample/observation/target/group/origin ids), les **prédictions**
-   (y_pred/y_proba), et **y_true** pour le scoring. Jamais X ni les features.
-   Tout le reste = handles.
-2. **Ownership.** Le cœur possède le **cycle de vie des handles** ; l'hôte
-   possède l'**objet sous-jacent** et le libère sur `release`. Arrow porte son
-   propre release callback (ownership auto-décrit).
+1. **Visibility.** The core sees in Arrow exactly three things: **identity**
+   (sample/observation/target/group/origin ids), **predictions** (y_pred/y_proba),
+   and **y_true** for scoring. Never X or features. Everything else = handles.
+2. **Ownership.** The core owns the **handle lifecycle**; the host owns the
+   **underlying object** and frees it on `release`. Arrow carries its own release
+   callback (self-describing ownership).
 
-Violer (1) réintroduit le marshalling du gros. Violer (2) = use-after-free
-cross-langage ou fuite pilotée par le GC hôte.
+Violating (1) reintroduces marshalling of the heavy stuff. Violating (2) = cross-
+language use-after-free or leak driven by the host GC.
 
-### I.13 La décision, reformulée
+### I.13 The decision, restated
 
-Ce n'est **pas** "Python vs Rust pour la vitesse". C'est : **veux-tu un plan de
-contrôle polyglotte ?**
+This is **not** "Python vs Rust for speed". It is: **do you want a polyglot control
+plane?**
 
-- **Opérateurs essentiellement Python** → **voie médiane (§I.5)** : Python pur,
-  Arrow comme format interne pour le gain stockage, kernels Rust chirurgicaux si
-  le profilage le justifie. Un cœur Rust ici coûterait le GIL à chaque nœud
-  modèle pour un gain de compute nul.
-- **Portée R/JS visée** → **cœur natif polyglotte (§I.9)** : le marshalling
-  données n'est pas l'obstacle (Arrow zero-copy) ; le GIL disparaît hors Python ;
-  on obtient le **même moteur de rigueur ML en Python, R et JS**. Coût : CI
-  multi-plateforme, ABI de plugin à figer, et on réécrit la spec au lieu de
-  l'implémenter.
+- **Essentially Python operators** → **middle path (§I.5)**: pure Python, Arrow as
+  internal format for storage gain, surgical Rust kernels if profiling justifies it.
+  A Rust core here would cost a GIL hit at every model node for zero compute gain.
+- **R/JS reach targeted** → **polyglot native core (§I.9)**: data marshalling is
+  not the obstacle (Arrow zero-copy); the GIL disappears outside Python; you get
+  the **same rigorous ML engine in Python, R, and JS**. Cost: multi-platform CI,
+  plugin ABI to freeze, and rewriting the spec rather than implementing it.
 
-Le reste du document (Parties II→VII) détaille la voie polyglotte.
+The rest of this document (Parts II→VII) details the polyglot path.
 
 ---
 
-## Partie II — L'ABI
+## Part II — The ABI
 
-### 8. Substrat
+### 8. Substrate
 
-- **Vtable C** (`#[repr(C)]`, pointeurs de fonction) — PGCD que PyO3, extendr et
-  Rust-natif remplissent à l'identique.
-- **Arrow C Data Interface** pour tout ce que le cœur lit.
-- **Blobs canoniques versionnés** (`Bytes`) pour le riche-mais-évolutif (params,
-  `ModelInputSpec`, descripteurs, erreurs). Jamais de struct C pour ça → l'ABI
-  ne bouge pas quand la spec évolue.
+- **C vtable** (`#[repr(C)]`, function pointers) — the GCD that PyO3, extendr, and
+  native Rust fill identically.
+- **Arrow C Data Interface** for everything the core reads.
+- **Versioned canonical blobs** (`Bytes`) for the rich-but-evolving (params,
+  `ModelInputSpec`, descriptors, errors). Never a C struct for this → the ABI
+  does not change when the spec evolves.
 
 ### 9. `ControllerVTable`
 
 ```rust
-// ───────────────────────── types de frontière ─────────────────────────
-#[repr(C)] pub struct Bytes { ptr: *const u8, len: usize }      // annotation d'owner ci-dessous
+// ───────────────────────── boundary types ─────────────────────────
+#[repr(C)] pub struct Bytes { ptr: *const u8, len: usize }      // ownership annotation below
 #[repr(u8)] pub enum Phase { Compile, Plan, FitCv, Select, Refit, Predict, Explain }
 #[repr(u8)] pub enum Status { Ok, Skip, Error }
 #[repr(u8)] pub enum Backend { Joblib, Torch, Onnx, Safetensors, Json, Raw } // = ArtifactRef.backend §13.1
 pub type HandleId = u64;                                         // 0 = null
 
 #[repr(C)] pub struct ArrowSchema { /* Arrow CDI */ }
-#[repr(C)] pub struct ArrowArray  { /* Arrow CDI ; porte son propre release */ }
+#[repr(C)] pub struct ArrowArray  { /* Arrow CDI ; carries its own release */ }
 #[repr(C)] pub struct ArrowOut { schema: *mut ArrowSchema, array: *mut ArrowArray } // [owned→core]
-#[repr(C)] pub struct NamedHandle { port: Bytes, handle: HandleId }                  // entrée multi-source
+#[repr(C)] pub struct NamedHandle { port: Bytes, handle: HandleId }                  // multi-source input
 
-// capabilities (bitset) — fusionne AdapterSpec.capabilities §6.1 + ResourceHints §2.4
+// capabilities (bitset) — merges AdapterSpec.capabilities §6.1 + ResourceHints §2.4
 pub const SUPPORTS_PREDICT:      u64 = 1<<0;
 pub const SUPPORTS_PROBA:        u64 = 1<<1;
 pub const SUPPORTS_EXPLAIN:      u64 = 1<<2;
-pub const STATEFUL:              u64 = 1<<3;   // fit -> fitted handle ; sinon stateless
+pub const STATEFUL:              u64 = 1<<3;   // fit -> fitted handle ; otherwise stateless
 pub const INVERTIBLE:            u64 = 1<<4;   // y_transform
-pub const GIL_FREE_COMPUTE:      u64 = 1<<5;   // relâche le GIL pendant le compute -> thread-schedulable
-pub const THREAD_SAFE:           u64 = 1<<6;   // instances concurrentes OK
-pub const DETERMINISTIC:         u64 = 1<<7;   // (seed/stream) reproductible -> cache valide
-pub const REQUIRES_DATASET_PLAN: u64 = 1<<8;   // planification différée à FIT_CV §5.3
-pub const EMITS_RELATION:        u64 = 1<<9;   // change l'ensemble des samples (augmentation)
-pub const RNG_FROM_CORE:         u64 = 1<<10;  // tire tout son aléa du RNG du cœur (Tier 1, Partie VI)
+pub const GIL_FREE_COMPUTE:      u64 = 1<<5;   // releases GIL during compute -> thread-schedulable
+pub const THREAD_SAFE:           u64 = 1<<6;   // concurrent instances OK
+pub const DETERMINISTIC:         u64 = 1<<7;   // (seed/stream) reproducible -> cache valid
+pub const REQUIRES_DATASET_PLAN: u64 = 1<<8;   // deferred planning to FIT_CV §5.3
+pub const EMITS_RELATION:        u64 = 1<<9;   // changes the sample set (augmentation)
+pub const RNG_FROM_CORE:         u64 = 1<<10;  // draws all randomness from the core RNG (Tier 1, Part VI)
 
-// ───────────────────────── contexte d'appel (cœur → hôte) ─────────────────────────
+// ───────────────────────── call context (core → host) ─────────────────────────
 #[repr(C)] pub struct CallContext {
     phase: Phase,
     run_id: Bytes, variant_id: Bytes, node_id: Bytes,           // [borrowed]
     fold_id: Bytes,                                             // "0".."K-1"|"final"|""
-    branch_path: Bytes,                                         // tuple canonique
-    rng_stream: u64,                                            // stream RNG dérivé par le cœur (Partie VI)
-    rng_seed_legacy: u64,                                       // graine entière dérivée (Tier 2, frameworks)
+    branch_path: Bytes,                                         // canonical tuple
+    rng_stream: u64,                                            // RNG stream derived by the core (Part VI)
+    rng_seed_legacy: u64,                                       // derived integer seed (Tier 2, frameworks)
     callbacks: *const CoreCallbacks,
 }
-#[repr(C)] pub struct CoreCallbacks {                           // upcalls hôte → cœur (minimisés)
+#[repr(C)] pub struct CoreCallbacks {                           // upcalls host → core (minimized)
     ctx: *mut c_void,
     log_metric:      extern "C" fn(*mut c_void, name: Bytes, value: f64),
     report_progress: extern "C" fn(*mut c_void, done: u64, total: u64),
     check_cancel:    extern "C" fn(*mut c_void) -> bool,
-    rng_fill_f64:    extern "C" fn(*mut c_void, stream: u64, n: u64) -> ArrowOut,   // tirage cœur (Tier 1)
-    rng_permutation: extern "C" fn(*mut c_void, stream: u64, n: u64) -> ArrowOut,   // permutation cœur
+    rng_fill_f64:    extern "C" fn(*mut c_void, stream: u64, n: u64) -> ArrowOut,   // core draw (Tier 1)
+    rng_permutation: extern "C" fn(*mut c_void, stream: u64, n: u64) -> ArrowOut,   // core permutation
 }
 
-// ───────────────────────── enveloppes de résultat ─────────────────────────
+// ───────────────────────── result envelopes ─────────────────────────
 #[repr(C)] pub struct FitResult {
     status: Status,
-    fitted: HandleId,        // [handle, owned→host] 0 si erreur/skip
+    fitted: HandleId,        // [handle, owned→host] 0 on error/skip
     metrics: ArrowOut,       // [owned→core] nullable
-    error: Bytes,            // [owned→host] ErrorPayload §14.6 si Error
+    error: Bytes,            // [owned→host] ErrorPayload §14.6 if Error
 }
 #[repr(C)] pub struct PredictResult {
     status: Status,
-    predictions: ArrowOut,   // [owned→core] y_pred (+ proba en colonnes), schéma auto-décrit
+    predictions: ArrowOut,   // [owned→core] y_pred (+ proba as columns), self-describing schema
     target_space: Bytes,     // [owned→host] "raw"|"scaled"|...
     metrics: ArrowOut,       // [owned→core] nullable
     error: Bytes,
 }
 #[repr(C)] pub struct TransformResult {
     status: Status,
-    fitted: HandleId,        // [handle] 0 si stateless
-    output: HandleId,        // [handle, owned→host] X transformé — JAMAIS lu par le cœur
-    relation: ArrowOut,      // [owned→core] nullable ; non-null si EMITS_RELATION (origin_id…)
+    fitted: HandleId,        // [handle] 0 if stateless
+    output: HandleId,        // [handle, owned→host] transformed X — NEVER read by the core
+    relation: ArrowOut,      // [owned→core] nullable ; non-null if EMITS_RELATION (origin_id…)
     error: Bytes,
 }
 
-// ───────────────────────── la vtable ─────────────────────────
+// ───────────────────────── the vtable ─────────────────────────
 #[repr(C)] pub struct ControllerVTable {
     abi_version: u32,
-    state: *mut c_void,            // instance controller / env de closure hôte
-    kind: u8,                      // NodeKind servi (§2.1)
+    state: *mut c_void,            // controller instance / host closure env
+    kind: u8,                      // NodeKind served (§2.1)
     capabilities: u64,
 
-    // — construction lazy : le cœur pilote QUELS params (search space), l'hôte COMMENT —
+    // — lazy construction: the core drives WHICH params (search space), the host HOW —
     clone_with: extern "C" fn(state: *mut c_void, operator: HandleId, params: Bytes) -> HandleId,
 
-    // — introspection PLAN (sans données) —
+    // — PLAN introspection (without data) —
     describe: extern "C" fn(state: *mut c_void, operator: HandleId) -> Bytes,   // [owned→host] cf. §13
     matches:  Option<extern "C" fn(state: *mut c_void, kind: u8, operator: HandleId) -> bool>,
 
-    // — SPLIT (identité ; data handle optionnel pour splitters feature-based, ex. KS/SPXY) —
+    // — SPLIT (identity; optional data handle for feature-based splitters, e.g. KS/SPXY) —
     split: Option<extern "C" fn(state: *mut c_void, operator: HandleId,
                                 identity: *mut ArrowArray, identity_schema: *mut ArrowSchema, // [borrowed]
                                 y: *mut ArrowArray, y_schema: *mut ArrowSchema,                // nullable
-                                data: HandleId,                                                // 0 sauf feature-based
+                                data: HandleId,                                                // 0 except feature-based
                                 ctx: *const CallContext) -> ArrowOut>,  // (sample_id, fold_id, partition)
 
-    // — FIT-like — (target = handle : résolu hôte-side, jamais marshalé dans le controller) —
+    // — FIT-like — (target = handle: resolved host-side, never marshalled into the controller) —
     fit: Option<extern "C" fn(state: *mut c_void, operator: HandleId,
                               inputs: *const NamedHandle, n_inputs: usize, target: HandleId,
                               ctx: *const CallContext) -> FitResult>,
@@ -370,161 +363,160 @@ pub const RNG_FROM_CORE:         u64 = 1<<10;  // tire tout son aléa du RNG du 
     invert: Option<extern "C" fn(state: *mut c_void, fitted: HandleId,
                                  y_in: *mut ArrowArray, y_schema: *mut ArrowSchema) -> ArrowOut>,
 
-    // — EXPLAIN (feuille ; sortie opaque-au-cœur) —
+    // — EXPLAIN (leaf; output opaque to the core) —
     explain: Option<extern "C" fn(state: *mut c_void, fitted: HandleId,
                                   inputs: *const NamedHandle, n_inputs: usize,
                                   cfg: Bytes, ctx: *const CallContext) -> ArrowOut>,
 
-    // — persistance / inférence cross-langage —
+    // — persistence / cross-language inference —
     serialize:   extern "C" fn(state: *mut c_void, fitted: HandleId, backend: Backend) -> Bytes,
     deserialize: extern "C" fn(state: *mut c_void, blob: Bytes, backend: Backend) -> HandleId,
 
-    // — cache (override optionnel ; sinon le cœur calcule la clé §13.3) —
+    // — cache (optional override; otherwise the core computes the key §13.3) —
     cache_key: Option<extern "C" fn(state: *mut c_void, operator: HandleId,
                                     inputs: *const NamedHandle, n_inputs: usize,
                                     ctx: *const CallContext) -> Bytes>,
 
-    // — cycle de vie —
+    // — lifecycle —
     release:    extern "C" fn(state: *mut c_void, handle: HandleId),
     free_bytes: extern "C" fn(state: *mut c_void, b: Bytes),
     destroy:    extern "C" fn(state: *mut c_void),
 }
 ```
 
-Mapping vers la spec §6 : `describe` ⊃ `input_spec`+`aux_inputs`+`declare_ports`+
-`supported_phases` ; `fit`/`predict`/`predict_proba` → `fit`/`predict(want_proba)` ;
-`transform_*` → `TransformerMixin` ; `invert` → `inverse_transform` ;
-`cache_key` → idem. `clone_with` et `split` sont des raffinements ABI nécessaires
-révélés par la trace (Partie V).
+Mapping to spec §6: `describe` ⊃ `input_spec`+`aux_inputs`+`declare_ports`+
+`supported_phases`; `fit`/`predict`/`predict_proba` → `fit`/`predict(want_proba)`;
+`transform_*` → `TransformerMixin`; `invert` → `inverse_transform`;
+`cache_key` → same. `clone_with` and `split` are necessary ABI refinements
+revealed by the trace (Part V).
 
-### 10. `DataVTable` (contre-pas obligatoire)
+### 10. `DataVTable` (mandatory counterpart)
 
-La signature controller est vide de sens sans définir qui fabrique/résout les
-handles et qui expose l'identité au cœur.
+The controller signature is meaningless without defining who creates/resolves
+handles and who exposes identity to the core.
 
 ```rust
 #[repr(C)] pub struct DataVTable {
     abi_version: u32, state: *mut c_void,
     materialize:   extern "C" fn(state, source_id: Bytes, ctx: *const CallContext) -> HandleId,
     view_identity: extern "C" fn(state, h: HandleId) -> ArrowOut,  // sample/obs/target/group/origin ids
-    make_view:     extern "C" fn(state, h: HandleId,               // slice par sample-ids (folds §7.3)
+    make_view:     extern "C" fn(state, h: HandleId,               // slice by sample-ids (folds §7.3)
                                  ids: *mut ArrowArray, sch: *mut ArrowSchema, partition: u8) -> HandleId,
-    target_arrow:  extern "C" fn(state, h: HandleId) -> ArrowOut,  // y_true pour scoring (cœur)
-    feature_arrow: extern "C" fn(state, h: HandleId) -> ArrowOut,  // X/features par observation
+    target_arrow:  extern "C" fn(state, h: HandleId) -> ArrowOut,  // y_true for scoring (core)
+    feature_arrow: extern "C" fn(state, h: HandleId) -> ArrowOut,  // X/features per observation
     ingest_arrow:  extern "C" fn(state, *mut ArrowArray, *mut ArrowSchema) -> HandleId, // OOF -> handle
-    handle_nbytes: extern "C" fn(state, h: HandleId) -> u64,       // budget step-cache §13.4
+    handle_nbytes: extern "C" fn(state, h: HandleId) -> u64,       // step-cache budget §13.4
     schema_fingerprint: extern "C" fn(state, h: HandleId) -> Bytes,
     release: extern "C" fn(state, h: HandleId), destroy: extern "C" fn(state),
 }
 ```
 
-Point décisif : `make_view` slice **par sample-ids**, jamais par positions —
-l'invariant anti-leakage (§7.3) est porté *par l'ABI elle-même*. Le controller
-reçoit un handle déjà tranché ; il ne peut pas regarder hors du fold.
+Key point: `make_view` slices **by sample-ids**, never by positions —
+the anti-leakage invariant (§7.3) is enforced *by the ABI itself*. The controller
+receives an already-sliced handle; it cannot look outside the fold.
 
-### 11. Les trois implémentations remplissent la **même** struct
+### 11. All three implementations fill the **same** struct
 
-- **Python (PyO3)** : chaque fn acquiert le GIL, résout `handle→objet` dans une
-  registry hôte, appelle `estimator.fit(X, y)`, ré-enregistre le fitted, rend un
+- **Python (PyO3)**: each fn acquires the GIL, resolves `handle→object` in a host
+  registry, calls `estimator.fit(X, y)`, re-registers the fitted object, returns a
   handle. `clone_with` = `sklearn.clone` + `set_params`. `serialize(Onnx)` =
   `skl2onnx`/`torch.onnx`.
-- **R (extendr)** : idem ; évaluateur R non thread-safe → `THREAD_SAFE=0`,
-  `GIL_FREE_COMPUTE=0` pour tous → scheduler route en **processus**.
-- **Rust natif (nirs4all-methods)** : les fns *sont* du Rust ; handle = index
-  dans une slab ; `GIL_FREE_COMPUTE=1`, `THREAD_SAFE=1` ; zéro marshalling, zéro
-  indirection au-delà du pointeur de vtable.
+- **R (extendr)**: same; R evaluator is not thread-safe → `THREAD_SAFE=0`,
+  `GIL_FREE_COMPUTE=0` for all → scheduler routes via **processes**.
+- **Native Rust (nirs4all-methods)**: the fns *are* Rust; handle = index into a
+  slab; `GIL_FREE_COMPUTE=1`, `THREAD_SAFE=1`; zero marshalling, zero indirection
+  beyond the vtable pointer.
 
 ---
 
-## Partie III — (a) Protocole de liveness des handles
+## Part III — (a) Handle liveness protocol
 
-Le verrou n°1. L'ABI rend l'ownership explicite (`release` + release Arrow), mais
-la **correction du suivi de liveness** à travers branches/folds/sous-DAG est à la
-charge du cœur. Bug = use-after-free (release trop tôt) ou fuite (jamais de
-release, pilotée par le GC hôte).
+Blocker #1. The ABI makes ownership explicit (`release` + Arrow release), but
+**correctness of liveness tracking** across branches/folds/sub-DAGs is the core's
+responsibility. Bug = use-after-free (release too early) or leak (never released,
+driven by the host GC).
 
-### a.1 Les deux approches naïves
+### a.1 The two naive approaches
 
-| Approche | Principe | + | − |
+| Approach | Principle | + | − |
 |---|---|---|---|
-| **Refcount par arête** | refcount = nb de consommateurs ; décrément à chaque consommateur fini ; release à 0 | release prompt, mémoire minimale | branches/folds/map multiplient les consommateurs ; cache complique ; skips à gérer |
-| **Sweep par phase/scope** | tout handle d'une génération vit jusqu'à la fin du scope, puis release en bloc | simple, robuste | mémoire = pic du scope entier |
+| **Per-edge refcount** | refcount = number of consumers; decrement at each completed consumer; release at 0 | prompt release, minimal memory | branches/folds/map multiply consumers; cache complicates; skips to handle |
+| **Phase/scope sweep** | every handle from a generation lives until the end of the scope, then bulk release | simple, robust | memory = full scope peak |
 
-### a.2 La synthèse retenue : arènes scopées + refcount sur les échappés
+### a.2 The chosen synthesis: scoped arenas + refcount on escaped handles
 
-Chaque exécution de fold/branche/variant est une **arène**. Règle :
+Each fold/branch/variant execution is an **arena**. Rule:
 
-- Un handle créé dans une arène et **non échappé** est libéré en bloc à la
-  fermeture de l'arène (sweep, simple et infaillible).
-- Un handle qui **échappe** l'arène (ex. un modèle de base qui survit jusqu'au
-  REFIT ; une prédiction OOF qui alimente le join ; un handle mis en cache) est
-  **refcounté** et promu au scope parent.
+- A handle created in an arena and **not escaped** is bulk-released at arena close
+  (sweep, simple and infallible).
+- A handle that **escapes** the arena (e.g. a base model surviving to REFIT; an OOF
+  prediction feeding the join; a cached handle) is **refcounted** and promoted to
+  the parent scope.
 
-**Invariant de refcount d'un handle échappé :**
+**Refcount invariant of an escaped handle:**
 
 ```
-refcount(h) = (# nœuds consommateurs non encore exécutés dans le plan, h en entrée)
-            + (1 si h est référencé par le CacheStore)
-            + (1 si h est promu vers le bundle / REFIT)
+refcount(h) = (# consumer nodes not yet executed in the plan, h as input)
+            + (1 if h is referenced by the CacheStore)
+            + (1 if h is promoted to the bundle / REFIT)
 ```
 
-Quand `refcount(h)` atteint 0 → `vtable.release(state, h)`.
+When `refcount(h)` reaches 0 → `vtable.release(state, h)`.
 
-### a.3 Points de déclenchement
+### a.3 Trigger points
 
-| Évènement | Action |
+| Event | Action |
 |---|---|
-| Nœud terminé | pour chaque handle en entrée : si échappé, décrément ; sinon ne touche pas (l'arène s'en charge) |
-| Nœud *skipped* (phase non supportée) ou en erreur | décrémente quand même les refs de ses entrées (sinon fuite) |
-| Fermeture d'arène (fin de fold/branche) | sweep : release de tous les handles locaux non échappés |
-| Mise en cache d'un handle | +1 ref (cache) → survit à l'arène |
-| Éviction LRU (budget `step_cache_max_mb` via `handle_nbytes`) | −1 ref (cache) ; release si 0 |
-| Promotion au bundle (REFIT) | +1 ref ; libérée à l'export du bundle |
+| Node completed | for each input handle: if escaped, decrement; otherwise leave alone (the arena handles it) |
+| Node *skipped* (phase not supported) or in error | decrement its input refs anyway (otherwise leak) |
+| Arena close (end of fold/branch) | sweep: release all local non-escaped handles |
+| Handle put in cache | +1 ref (cache) → survives the arena |
+| LRU eviction (budget `step_cache_max_mb` via `handle_nbytes`) | −1 ref (cache); release if 0 |
+| Promotion to bundle (REFIT) | +1 ref; freed after bundle export |
 
-### a.4 Connaître le nombre de consommateurs
+### a.4 Knowing the consumer count
 
-Depuis `ExecutionPlan.topological_order` + les arêtes sortantes par port. Pour le
-fan-out dynamique (`MapNode` sur branches), le compte est connu **après expansion
-du fork**. Pour les folds, chaque fold est une instance de consommateur distincte.
+From `ExecutionPlan.topological_order` + outgoing edges per port. For dynamic
+fan-out (`MapNode` over branches), the count is known **after fork expansion**.
+For folds, each fold is a distinct consumer instance.
 
 ### a.5 Cross-process
 
-Les refcounts sont **par process**. Un worker (variant) ouvre une arène,
-l'exécute, et au retour : `destroy` de ses vtables → bulk-free de tout. Les
-résultats remontés à l'orchestrateur sont de l'**Arrow** (déjà owned→core), donc
-la liveness cross-process est triviale (bornée à la vie du worker). Le step-cache
-est alors **local au worker** — utile seulement pour des batches de variants
-assignés au même worker (dégradation acceptable).
+Refcounts are **per-process**. A worker (variant) opens an arena, executes it, and
+on return: `destroy` its vtables → bulk-free everything. Results returned to the
+orchestrator are **Arrow** (already owned→core), so cross-process liveness is trivial
+(bounded to the worker's lifetime). The step-cache is then **local to the worker**
+— only useful for batches of variants assigned to the same worker (acceptable
+degradation).
 
-### a.6 Micro-exemple (un fold de UC6, branche b0)
+### a.6 Micro-example (one fold of UC6, branch b0)
 
 ```
-arène fold0 ouverte
-  Hd:train0  = make_view(Hd:nir, ids_train0, train)      # local arène
-  Hd:val0    = make_view(Hd:nir, ids_val0,   val)         # local arène
+arena fold0 opened
+  Hd:train0  = make_view(Hd:nir, ids_train0, train)      # arena local
+  Hd:val0    = make_view(Hd:nir, ids_val0,   val)         # arena local
   Hd:Xt_tr   = transform_fit(SNV, Hd:train0).output       # local (SNV stateless)
   Hd:Xt_val  = transform_apply(SNV, Hd:val0).output        # local
-  Hf:pls0    = fit(PLS, [X:Hd:Xt_tr], y_tr).fitted         # ÉCHAPPE -> refcount=2 (REFIT? non; predict0 + ?)
-  A:pred_val = predict(Hf:pls0, [X:Hd:Xt_val])             # Arrow -> PredictionStore (owned core)
-  # Hf:pls0 : consommé par predict0 -> décrément ; pas d'autre consommateur en CV -> release
-  #   (au REFIT, un NOUVEAU Hf:pls_final sera fitté sur full train ; le pls0 du fold ne survit pas)
-fermeture arène fold0 -> sweep: release Hd:train0, Hd:val0, Hd:Xt_tr, Hd:Xt_val
+  Hf:pls0    = fit(PLS, [X:Hd:Xt_tr], y_tr).fitted         # ESCAPES -> refcount=2 (REFIT? no; predict0 + ?)
+  A:pred_val = predict(Hf:pls0, [X:Hd:Xt_val])             # Arrow -> PredictionStore (core owned)
+  # Hf:pls0 : consumed by predict0 -> decrement ; no other consumer in CV -> release
+  #   (at REFIT, a NEW Hf:pls_final will be fit on full train; the fold's pls0 does not survive)
+arena fold0 close -> sweep: release Hd:train0, Hd:val0, Hd:Xt_tr, Hd:Xt_val
 ```
 
-Seul l'`A:pred_val` (Arrow, petit) survit, dans le `PredictionStore`. Tous les
-handles X du fold sont balayés. Pic mémoire = un fold à la fois.
+Only `A:pred_val` (Arrow, small) survives, in the `PredictionStore`. All X handles
+from the fold are swept. Memory peak = one fold at a time.
 
 ---
 
-## Partie IV — (b) Format du blob `describe`
+## Part IV — (b) `describe` blob format
 
-`describe(operator) -> Bytes` est le **contrat de PLAN**. Encodage : JSON
-canonique (clés triées, UTF-8) préfixé d'un tag de version
-`"dagml.describe/1"`. Choix JSON pour v1 : débogable, stable, présent dans tout
-langage. (Msgpack possible si compacité requise ; le schéma logique est
-identique.)
+`describe(operator) -> Bytes` is the **PLAN contract**. Encoding: canonical JSON
+(sorted keys, UTF-8) prefixed with a version tag `"dagml.describe/1"`. JSON chosen
+for v1: debuggable, stable, available in every language. (Msgpack possible if
+compactness required; the logical schema is identical.)
 
-### b.1 Schéma logique
+### b.1 Logical schema
 
 ```jsonc
 {
@@ -542,17 +534,17 @@ identique.)
   "input_spec": {                       // = ModelInputSpec (ml_data.contract)
     "representation": "tabular_numeric",
     "rank": 2, "dtype": "float32", "layout": "row_major",
-    "required_sources": ["*"],          // "*" = toute source fusionnée ; sinon noms
+    "required_sources": ["*"],          // "*" = any merged source; otherwise names
     "accepts_missing": false,
     "max_features": null
   },
-  "aux_inputs": [],                     // ex. [{"name":"wavelengths","representation":"axis_coords","required":false}]
+  "aux_inputs": [],                     // e.g. [{"name":"wavelengths","representation":"axis_coords","required":false}]
   "planning": {
-    "requires_dataset_at_plan": false,  // true -> data_plan différé à FIT_CV (§5.3)
+    "requires_dataset_at_plan": false,  // true -> data_plan deferred to FIT_CV (§5.3)
     "allow_lossy": false,
     "fit_scope": "fold_train"           // fold_train | train_once | stateless
   },
-  "identity_params": ["n_components"],  // params qui entrent dans le fingerprint/cache
+  "identity_params": ["n_components"],  // params that enter the fingerprint/cache
   "resources": {                         // = ResourceHints (§2.4)
     "cpu": 1, "gpu": 0, "memory_mb": null,
     "thread_safe": true, "nested_parallelism": "forbid", "timeout_seconds": null
@@ -560,14 +552,14 @@ identique.)
 }
 ```
 
-### b.2 Exemple — CNN PyTorch (contraste)
+### b.2 Example — PyTorch CNN (contrast)
 
 ```jsonc
 {
   "v": "dagml.describe/1",
   "adapter": { "id": "pytorch.module", "version": "1.0.0", "kind": "model" },
   "phases": ["fit_cv", "refit", "predict", "explain"],
-  "capabilities": ["supports_predict", "supports_explain", "stateful"],   // PAS gil_free pendant le fit Python pur
+  "capabilities": ["supports_predict", "supports_explain", "stateful"],   // NOT gil_free during pure Python fit
   "ports": { "inputs":  [{ "name": "X", "kind": "data",
                            "representation": "signal_with_processings", "cardinality": "one" }],
              "outputs": [{ "name": "y_pred", "kind": "prediction",
@@ -576,7 +568,7 @@ identique.)
                   "rank": 3, "dtype": "float32", "layout": "row_major",
                   "required_sources": ["*"], "accepts_missing": false, "max_features": null },
   "aux_inputs": [],
-  "planning": { "requires_dataset_at_plan": true,    // l'archi dépend de la dim d'entrée -> différé
+  "planning": { "requires_dataset_at_plan": true,    // architecture depends on input dim -> deferred
                 "allow_lossy": false, "fit_scope": "fold_train" },
   "identity_params": ["arch", "lr", "epochs", "batch_size"],
   "resources": { "cpu": 4, "gpu": 1, "gpu_memory_mb": 4096,
@@ -584,452 +576,448 @@ identique.)
 }
 ```
 
-### b.3 Champs qui pilotent une décision du cœur
+### b.3 Fields that drive a core decision
 
-| Champ | Décision cœur |
+| Field | Core decision |
 |---|---|
-| `requires_dataset_at_plan` | si `true` → `data_plan=None` au PLAN, re-résolution dans le scope du fold avant fit (§5.3) |
-| `fit_scope` | `fold_train` = refit par fold (OOF correct, cher) ; `train_once` = fit unique sur train complet figé pour la CV (leakage léger, cas UC1 friction #4) ; `stateless` = pas de fitted |
-| `capabilities: gil_free_compute / thread_safe` | choix threads vs processus (§I.10) |
-| `identity_params` | entrée du fingerprint + clé de cache (§13.3) |
-| `resources` | scheduler : overcommit, parallélisme imbriqué, timeout |
-| `allow_lossy` | refus / escalation `requires_user_choice` au PLAN (UC1) |
+| `requires_dataset_at_plan` | if `true` → `data_plan=None` at PLAN, re-resolved in fold scope before fit (§5.3) |
+| `fit_scope` | `fold_train` = refit per fold (correct OOF, expensive); `train_once` = single fit on frozen full train for CV (slight leakage, UC1 friction #4 case); `stateless` = no fitted object |
+| `capabilities: gil_free_compute / thread_safe` | choice of threads vs processes (§I.10) |
+| `identity_params` | fingerprint input + cache key (§13.3) |
+| `resources` | scheduler: overcommit, nested parallelism, timeout |
+| `allow_lossy` | refusal / `requires_user_choice` escalation at PLAN (UC1) |
 
 ---
 
-## Partie V — (c) Trace d'exécution : UC6 (stacking 3 voies + méta Ridge)
+## Part V — (c) Execution trace: UC6 (3-way stacking + Ridge meta-learner)
 
-Pipeline (rappel) : `nir(500) → y standardize → KFold(5,rs42) outer → branch[
+Pipeline (recap): `nir(500) → y standardize → KFold(5,rs42) outer → branch[
 SNV+PLS(12) | MSC+RF(300) | Detrend+SVR(rbf,C10) ] → merge predictions(validate
 OOF) → KFold(5,rs42) inner → Ridge(1.0)`.
 
-Notation : `[Ho:x]` handle opérateur · `[Hd:x]` handle data · `[Hf:x]` handle
-fitted · `[A:x→core]` Arrow possédé par le cœur · `vt.X` = appel vtable.
+Notation: `[Ho:x]` operator handle · `[Hd:x]` data handle · `[Hf:x]` fitted handle ·
+`[A:x→core]` Arrow owned by core · `vt.X` = vtable call.
 
-### COMPILE (front hôte → cœur)
+### COMPILE (host front-end → core)
 
 ```
-HÔTE: parse DSL, enregistre les opérateurs dans la registry hôte, émet une ProtoGraph neutre:
+HOST: parse DSL, register operators in the host registry, emit a neutral ProtoGraph:
       SNV→[Ho:1] PLS12→[Ho:2] MSC→[Ho:3] RF300→[Ho:4] Detrend→[Ho:5] SVR→[Ho:6]
       Ridge→[Ho:7] yStd→[Ho:8] KFouter→[Ho:9] KFinner→[Ho:10]
-CŒUR: GraphSpec, contrôle acyclicité + arités de ports. Pas de search space ici -> 1 variant.
+CORE: GraphSpec, check acyclicity + port arities. No search space here -> 1 variant.
 ```
 
 ### PLAN
 
 ```
-CŒUR: pour chaque opérateur data-aware:
+CORE: for each data-aware operator:
       vt.describe([Ho:2]) -> {model, tabular_numeric, rank2, fit_scope=fold_train, identity_params=[n_components]}
-      vt.describe([Ho:4]) -> {model, ..., capabilities sans rng_from_core (RF bootstrap = Tier 2)}
-      vt.describe([Ho:6]) -> {model, ..., deterministic (SVR sans RNG)}
-      KFold (identité only) -> splitter NATIF du cœur, pas de vt.split (Tier 1, voir Partie VI)
-      résout DataPlans (tabular_numeric), schema_fingerprint.
+      vt.describe([Ho:4]) -> {model, ..., capabilities without rng_from_core (RF bootstrap = Tier 2)}
+      vt.describe([Ho:6]) -> {model, ..., deterministic (SVR without RNG)}
+      KFold (identity only) -> NATIVE core splitter, no vt.split call (Tier 1, see Part VI)
+      resolve DataPlans (tabular_numeric), schema_fingerprint.
 ```
 
-### FIT_CV — niveau 0 (bases)
+### FIT_CV — level 0 (base learners)
 
 ```
-CŒUR: data.materialize("nir") -> [Hd:nir]   ; data.view_identity([Hd:nir]) -> [A:ids 500]
-CŒUR: split outer NATIF avec RNG cœur(stream dérivé de path "split:outer") -> [A:folds_outer]   # Tier 1
+CORE: data.materialize("nir") -> [Hd:nir]   ; data.view_identity([Hd:nir]) -> [A:ids 500]
+CORE: NATIVE outer split with core RNG(stream derived from path "split:outer") -> [A:folds_outer]   # Tier 1
 ```
 
-Pour **fold0** (folds 1–4 identiques, chacun avec son sous-stream de path) :
+For **fold0** (folds 1–4 identical, each with its own sub-stream from its path):
 
 ```
-arène fold0:
+arena fold0:
   data.make_view([Hd:nir], ids_train0, train) -> [Hd:tr0]
   data.make_view([Hd:nir], ids_val0,   val)   -> [Hd:val0]
 
-  # y standardize, fit sur train (per-fold, anti-leakage), invert gardé pour le scoring
+  # y standardize, fit on train (per-fold, anti-leakage), invert kept for scoring
   vt.transform_fit([Ho:8], target_handle(tr0)) -> [Hf:ystd0], y_scaled_train (host-side)
 
-  # ── branche b0 : SNV + PLS ──
+  # ── branch b0: SNV + PLS ──
   vt.transform_fit([Ho:1], [Hd:tr0])  -> ([Hf:0 stateless], [Hd:Xt_tr_b0])      # SNV stateless
   vt.transform_apply([Ho:1], [Hd:val0]) -> [Hd:Xt_val_b0]
   vt.fit([Ho:2], inputs=[(X,[Hd:Xt_tr_b0])], target=y_scaled_train, ctx{fold0}) -> [Hf:pls0]
   vt.predict([Hf:pls0], inputs=[(X,[Hd:Xt_val_b0])], want_proba=false) -> [A:pred_b0_scaled→core]
   vt.invert([Hf:ystd0], [A:pred_b0_scaled]) -> [A:pred_b0_raw→core]
-  CŒUR: PredictionStore.append(producer=b0, fold=0, partition=val, ids=ids_val0, y_pred=pred_b0_raw)
+  CORE: PredictionStore.append(producer=b0, fold=0, partition=val, ids=ids_val0, y_pred=pred_b0_raw)
 
-  # ── branche b1 : MSC (stateful) + RF (bootstrap = Tier 2) ──
-  vt.transform_fit([Ho:3], [Hd:tr0]) -> ([Hf:msc0], [Hd:Xt_tr_b1])              # MSC apprend le spectre moyen
+  # ── branch b1: MSC (stateful) + RF (bootstrap = Tier 2) ──
+  vt.transform_fit([Ho:3], [Hd:tr0]) -> ([Hf:msc0], [Hd:Xt_tr_b1])              # MSC learns mean spectrum
   vt.transform_apply([Hf:msc0], [Hd:val0]) -> [Hd:Xt_val_b1]
-  vt.fit([Ho:4], [(X,[Hd:Xt_tr_b1])], y_scaled_train, ctx{rng_seed_legacy})     # RF: random_state = seed Tier 2
+  vt.fit([Ho:4], [(X,[Hd:Xt_tr_b1])], y_scaled_train, ctx{rng_seed_legacy})     # RF: random_state = Tier 2 seed
        -> [Hf:rf0]
   vt.predict([Hf:rf0], [(X,[Hd:Xt_val_b1])]) -> [A:pred_b1_scaled→core]
   vt.invert([Hf:ystd0], [A:pred_b1_scaled]) -> [A:pred_b1_raw→core] ; append(b1,fold0,val)
 
-  # ── branche b2 : Detrend + SVR (déterministe) ──
+  # ── branch b2: Detrend + SVR (deterministic) ──
   vt.transform_fit([Ho:5], [Hd:tr0]) -> ([Hf:0], [Hd:Xt_tr_b2])
   vt.transform_apply([Ho:5], [Hd:val0]) -> [Hd:Xt_val_b2]
   vt.fit([Ho:6], [(X,[Hd:Xt_tr_b2])], y_scaled_train) -> [Hf:svr0]
   vt.predict([Hf:svr0], [(X,[Hd:Xt_val_b2])]) -> [A:pred_b2_scaled→core]
   vt.invert([Hf:ystd0], [A:pred_b2_scaled]) -> [A:pred_b2_raw→core] ; append(b2,fold0,val)
 
-fermeture arène fold0 -> sweep: release [Hd:tr0],[Hd:val0],[Hd:Xt_*],[Hf:pls0],[Hf:rf0],[Hf:svr0],
-                                        [Hf:msc0],[Hf:ystd0]   # rien n'échappe en CV niveau 0
+arena fold0 close -> sweep: release [Hd:tr0],[Hd:val0],[Hd:Xt_*],[Hf:pls0],[Hf:rf0],[Hf:svr0],
+                                    [Hf:msc0],[Hf:ystd0]   # nothing escapes in CV level 0
 ```
 
-Après les 5 folds : `PredictionStore` contient 3 producteurs × 500 OOF (chaque
-sample prédit une fois, dans son fold de validation).
+After 5 folds: `PredictionStore` contains 3 producers × 500 OOF (each sample
+predicted once, in its validation fold).
 
-### join:pred — `oof_join` (100 % cœur, Rust, sur Arrow)
-
-```
-CŒUR (aucun appel vtable):
-  pour b0,b1,b2: vérifie couverture des 500 ids en partition=val
-                 vérifie ABSENCE de partition=train  -> sinon OOFLeakageError (allow_train_predictions=false)
-  construit [A:meta_features→core] : colonnes (b0_pls,b1_rf,b2_svr), 500 lignes, indexées sample_id
-  data.ingest_arrow([A:meta_features]) -> [Hd:meta]      # l'OOF ré-entre comme donnée native
-```
-
-### FIT_CV — niveau 1 (méta)
+### join:pred — `oof_join` (100% core, Rust, on Arrow)
 
 ```
-CŒUR: split inner NATIF, RNG cœur(path "split:inner") -> [A:folds_inner]     # Tier 1, mêmes 500 samples
-pour chaque inner fold j:
-  arène inner_j:
+CORE (no vtable calls):
+  for b0,b1,b2: verify coverage of all 500 ids in partition=val
+                verify ABSENCE of partition=train  -> otherwise OOFLeakageError (allow_train_predictions=false)
+  build [A:meta_features→core]: columns (b0_pls,b1_rf,b2_svr), 500 rows, indexed by sample_id
+  data.ingest_arrow([A:meta_features]) -> [Hd:meta]      # OOF re-enters as native data
+```
+
+### FIT_CV — level 1 (meta-learner)
+
+```
+CORE: NATIVE inner split, core RNG(path "split:inner") -> [A:folds_inner]     # Tier 1, same 500 samples
+for each inner fold j:
+  arena inner_j:
     data.make_view([Hd:meta], ids_tr_j, train) -> [Hd:meta_tr_j]
     data.make_view([Hd:meta], ids_val_j, val)  -> [Hd:meta_val_j]
     vt.fit([Ho:7], [(X,[Hd:meta_tr_j])], target=y_train_j) -> [Hf:ridge_j]
     vt.predict([Hf:ridge_j], [(X,[Hd:meta_val_j])]) -> [A:meta_pred_j→core]
     PredictionStore.append(producer=ridge, fold=j, val)
-  fermeture -> sweep
+  close -> sweep
 ```
 
 ### SELECT
 
 ```
-CŒUR: rmsecv_meta depuis meta OOF (500) + y_true (data.target_arrow). 1 variant -> sélectionné. SelectionRecord.
+CORE: rmsecv_meta from meta OOF (500) + y_true (data.target_arrow). 1 variant -> selected. SelectionRecord.
 ```
 
 ### REFIT (fold_id="final")
 
 ```
-CŒUR: ouvre arène "final"
-  # bases refit sur FULL train (500)
-  pour b in {b0,b1,b2}:
+CORE: open arena "final"
+  # base learners refit on FULL train (500)
+  for b in {b0,b1,b2}:
      vt.transform_fit(preproc_b, [Hd:nir_fulltrain]) -> Xt_full_b
-     vt.fit(model_b_op, [(X,Xt_full_b)], y_full) -> [Hf:base_b_final]   # ÉCHAPPE -> promu bundle (ref+1)
-  # méta refit sur les OOF (PAS sur les preds des bases refit -> sinon train leak)
-  vt.fit([Ho:7], [(X,[Hd:meta])], y_full) -> [Hf:ridge_final]            # ÉCHAPPE -> promu bundle
-  # sérialisation portable
-  pour h in {base0,base1,base2,ridge}_final: vt.serialize(h, Onnx|Joblib) -> bytes -> ArtifactStore
-  export bundle: graph + plan + 4 artifacts + 3 caches OOF + schema_fingerprint
-  release des handles promus après export
+     vt.fit(model_b_op, [(X,Xt_full_b)], y_full) -> [Hf:base_b_final]   # ESCAPES -> promoted to bundle (ref+1)
+  # meta refit on OOF (NOT on refit base preds -> otherwise train leak)
+  vt.fit([Ho:7], [(X,[Hd:meta])], y_full) -> [Hf:ridge_final]            # ESCAPES -> promoted to bundle
+  # portable serialization
+  for h in {base0,base1,base2,ridge}_final: vt.serialize(h, Onnx|Joblib) -> bytes -> ArtifactStore
+  export bundle: graph + plan + 4 artifacts + 3 OOF caches + schema_fingerprint
+  release promoted handles after export
 ```
 
-### Lecture de la trace
+### Reading the trace
 
-- **Handles côté hôte** : tout X transformé, tout fitted. Ne traversent jamais.
-- **Arrow → cœur** : folds, prédictions, y_true, table OOF, identité. Tout petit.
-- **L'unique matérialisation lourde** : `ingest_arrow(meta_features)` — mais
-  c'est 500×3, négligeable.
-- **Validation de leakage** : 100 % cœur, sans toucher l'hôte (Rust sur Arrow).
-- **Deux tiers de RNG visibles** : KFold via RNG cœur (Tier 1) ; bootstrap RF via
-  `rng_seed_legacy` (Tier 2). Voir Partie VI.
-- **Refit méta sur OOF, pas sur preds refit** : invariant anti-leak porté par le
-  cœur, pas par le controller.
+- **Host-side handles**: all transformed X, all fitted objects. Never cross over.
+- **Arrow → core**: folds, predictions, y_true, OOF table, identity. All small.
+- **The only heavy materialization**: `ingest_arrow(meta_features)` — but that is
+  500×3, negligible.
+- **Leakage validation**: 100% core, without touching the host (Rust on Arrow).
+- **Two RNG tiers visible**: KFold via core RNG (Tier 1); RF bootstrap via
+  `rng_seed_legacy` (Tier 2). See Part VI.
+- **Meta refit on OOF, not on refit predictions**: anti-leakage invariant enforced
+  by the core, not the controller.
 
 ---
 
-## Partie VI — Discussion : le RNG dans la lib (le cœur)
+## Part VI — Discussion: RNG in the library (the core)
 
-Question : peut-on faire **posséder le RNG par le cœur** plutôt que de déléguer à
-la RNG du langage hôte (numpy/R/torch) ? Enjeu : la reproductibilité
-cross-langage, qui échouait jusqu'ici parce que `numpy.random ≠ RNG de R ≠ torch`.
+Question: can we have the **core own the RNG** rather than delegating to the host
+language's RNG (numpy/R/torch)? The stakes: cross-language reproducibility, which
+has failed until now because `numpy.random ≠ R RNG ≠ torch`.
 
-### VI.1 Qu'est-ce qui est aléatoire dans un pipeline ML ?
+### VI.1 What is random in an ML pipeline?
 
-| Source d'aléa | Espace | Possédable par le cœur ? |
+| Source of randomness | Space | Ownable by the core? |
 |---|---|---|
-| Splits / shuffles de folds | indices / identité | **Oui** — c'est déjà côté cœur |
-| Échantillonnage du tuner (random/Bayes) | params | **Oui** — déjà côté cœur (search space) |
-| Bootstrap (RF) : tirage d'indices | indices | **Oui en principe** (indices), **non en pratique** (sklearn ne laisse pas injecter un flux externe) |
-| Augmentation : *sélection* (quels samples, paires mixup, coefficients) | indices / scalaires | **Oui** — petit, pré-tirable |
-| Augmentation : *tenseur de bruit* (shape features) | feature-space | **Non** sans voir les dims (gros) |
-| Init de poids NN / masques dropout | paramètres framework | **Non** — internes torch/tf, irredirigeables |
+| Fold splits / shuffles | indices / identity | **Yes** — already on the core side |
+| Tuner sampling (random/Bayes) | params | **Yes** — already core side (search space) |
+| Bootstrap (RF): index draws | indices | **Yes in principle** (indices), **no in practice** (sklearn does not allow injecting an external stream) |
+| Augmentation: *selection* (which samples, mixup pairs, coefficients) | indices / scalars | **Yes** — small, pre-drawable |
+| Augmentation: *noise tensor* (feature-shape) | feature-space | **No** without seeing the dims (large) |
+| NN weight init / dropout masks | framework parameters | **No** — internal to torch/tf, non-redirectable |
 
-**Clé** : le cœur peut posséder le RNG de tout le **plan de contrôle**
-(indices/identité/params) — précisément là où la rigueur ML l'exige. Il ne peut
-pas posséder le RNG **interne aux frameworks** (init de poids).
+**Key**: the core can own the RNG for the entire **control plane**
+(indices/identity/params) — precisely where ML rigor demands it. It cannot own the
+RNG **internal to frameworks** (weight init).
 
-### VI.2 La techno habilitante : PRNG compteur, splittable
+### VI.2 The enabling technology: counter-based, splittable PRNG
 
-Un RNG **counter-based** (Philox, Threefry) ou **splittable** (SplitMix, le PRNG
-à la JAX) est :
+A **counter-based** PRNG (Philox, Threefry) or **splittable** PRNG (SplitMix, the
+JAX-style PRNG) is:
 
-- **portable et reproductible cross-langage par construction** — arithmétique
-  entière pure, rounds/constantes définis : même clé+compteur → mêmes bits
-  partout (contrairement aux Mersenne Twister dont le *seeding* diffère). C'est
-  exactement pourquoi JAX utilise Threefry et pourquoi numpy a ajouté Philox/PCG.
-- **splittable** : chaque chemin (run, variant, node, fold, branch, aug_index)
-  dérive une sous-clé indépendante, déterministe, **sans coordination**.
-- **O(1) en accès** (counter-based) → trivialement parallèle.
+- **Portable and reproducible across languages by construction** — pure integer
+  arithmetic, defined rounds/constants: same key+counter → same bits everywhere
+  (unlike Mersenne Twisters whose *seeding* differs). This is exactly why JAX uses
+  Threefry and why numpy added Philox/PCG.
+- **Splittable**: each path (run, variant, node, fold, branch, aug_index) derives
+  an independent, deterministic sub-key **without coordination**.
+- **O(1) access** (counter-based) → trivially parallel.
 
-### VI.3 Réécriture de `SeedContext` en arbre de PRNG splittable
+### VI.3 Rewriting `SeedContext` as a splittable PRNG tree
 
-Aujourd'hui `SeedContext.derived() = SHA256(root || path) mod 2³²` (§12) — perd
-de l'entropie, n'est pas un flux. Proposition :
+Currently `SeedContext.derived() = SHA256(root || path) mod 2³²` (§12) — loses
+entropy, is not a stream. Proposal:
 
 ```
 key(path)  = SHA256(canonical_utf8(path_labels))[:16]      # 128-bit, portable
-stream     = Philox(key=key(path), counter=0)              # flux indépendant par chemin
+stream     = Philox(key=key(path), counter=0)              # independent stream per path
 ```
 
-`SeedContext.child(...)` devient un *split* du PRNG. Le `CallContext` transporte
-un `rng_stream: u64` (id de flux résolu par le cœur) et, pour les frameworks
-irredirigeables, un `rng_seed_legacy: u64` (entier dérivé du même flux).
+`SeedContext.child(...)` becomes a PRNG *split*. The `CallContext` carries a
+`rng_stream: u64` (stream id resolved by the core) and, for non-redirectable
+frameworks, a `rng_seed_legacy: u64` (integer derived from the same stream).
 
-### VI.4 Deux tiers de reproductibilité (à assumer explicitement)
+### VI.4 Two tiers of reproducibility (to be stated explicitly)
 
-- **Tier 1 — RNG de contrôle, possédé par le cœur, cross-langage bit-identique.**
-  Splits, échantillonnage tuner, *sélection* d'augmentation, bootstrap *quand*
-  l'opérateur accepte un flux externe. Le controller déclare `RNG_FROM_CORE` et
-  tire son aléa via les upcalls `rng_fill_f64` / `rng_permutation`, **ou** le
-  cœur **pré-tire** les valeurs et les passe en Arrow (cas des splits : le cœur
-  fait le split nativement et passe `[A:folds]`).
+- **Tier 1 — control RNG, owned by the core, cross-language bit-identical.**
+  Splits, tuner sampling, augmentation *selection*, bootstrap *when* the operator
+  accepts an external stream. The controller declares `RNG_FROM_CORE` and draws its
+  randomness via the `rng_fill_f64` / `rng_permutation` upcalls, **or** the core
+  **pre-draws** the values and passes them in Arrow (the split case: the core does
+  the split natively and passes `[A:folds]`).
 
-- **Tier 2 — RNG interne au framework, possédé par l'hôte, reproductible
-  intra-lib seulement.** Init de poids, dropout, bootstrap sklearn. Le cœur passe
-  `rng_seed_legacy` ; reproductible uniquement à lib/version/plateforme égales.
+- **Tier 2 — RNG internal to the framework, owned by the host, reproducible
+  intra-lib only.** Weight init, dropout, sklearn bootstrap. The core passes
+  `rng_seed_legacy`; reproducible only with equal lib/version/platform.
 
-Le couple `RNG_FROM_CORE + DETERMINISTIC` ⇒ bit-identité cross-langage. Son
+The combination `RNG_FROM_CORE + DETERMINISTIC` ⇒ cross-language bit identity. Its
 absence ⇒ Tier 2.
 
-### VI.5 Mécanisme de passage (efficacité)
+### VI.5 Passing mechanism (efficiency)
 
-- **Petits tirages** (permutations, sélections, coefficients) : le cœur
-  **pré-tire en Arrow**. Toujours bit-identique, l'hôte n'a besoin d'aucune RNG.
-  Couvre splits, tuner, sélection d'augmentation, indices de bootstrap.
-- **Tirages feature-shaped** (gros tenseur de bruit) : soit upcall `rng_fill`
-  par chunks (Tier 1, coût d'appel), soit accepté en Tier 2. v1 : **contrôle =
-  Arrow pré-tiré (Tier 1)** ; **interne framework = seed (Tier 2)**.
+- **Small draws** (permutations, selections, coefficients): the core **pre-draws
+  into Arrow**. Always bit-identical; the host needs no RNG. Covers splits, tuner,
+  augmentation selection, bootstrap indices.
+- **Feature-shaped draws** (large noise tensor): either `rng_fill` upcall in chunks
+  (Tier 1, call overhead), or accepted as Tier 2. v1: **control = Arrow pre-draw
+  (Tier 1)**; **internal framework = seed (Tier 2)**.
 
-### VI.6 Le gain inattendu : déterminisme indépendant du scheduling
+### VI.6 The unexpected gain: determinism independent of scheduling
 
-Comme un PRNG splittable détermine le flux **par le chemin, pas par l'ordre
-d'exécution**, le résultat est identique que les folds tournent en séquentiel, en
-threads, en loky ou en Ray. Le point §12.3.3 de la spec (« le scheduler ne change
-pas l'ordre des résultats ») devient **gratuit** pour tout l'aléa de contrôle.
-C'est un argument fort en plus de la portabilité.
+Since a splittable PRNG determines the stream **by the path, not by execution
+order**, the result is identical whether folds run sequentially, in threads, in loky,
+or in Ray. The point §12.3.3 of the spec ("the scheduler does not change the order
+of results") becomes **free** for all control randomness. This is a strong argument
+on top of portability.
 
-### VI.7 Cas des splitters
+### VI.7 Splitter cases
 
-- **Splitters identité-only** (KFold, ShuffleSplit, GroupKFold, Stratified : ne
-  lisent que ids/y/groups) → **natifs au cœur**, RNG cœur, Tier 1, cross-langage.
-  Pas d'appel `vt.split`.
-- **Splitters feature-based** (KennardStone, SPXY : distances spectrales → ont
-  besoin de X) → controllers hôtes via `vt.split(..., data=handle)`. Ils sont
-  **déterministes** (greedy, sans RNG) ; leur reproductibilité est un problème de
-  déterminisme numérique (ties de distances), pas de RNG.
+- **Identity-only splitters** (KFold, ShuffleSplit, GroupKFold, Stratified: read
+  only ids/y/groups) → **native to the core**, core RNG, Tier 1, cross-language.
+  No `vt.split` call.
+- **Feature-based splitters** (KennardStone, SPXY: spectral distances → need X) →
+  host controllers via `vt.split(..., data=handle)`. They are **deterministic**
+  (greedy, no RNG); their reproducibility is a problem of numerical determinism
+  (distance ties), not RNG.
 
-### VI.8 Limites honnêtes
+### VI.8 Honest limits
 
-- Les internes des frameworks (init torch, bootstrap sklearn) restent Tier 2 :
-  **frontière fondamentale, pas un échec de design**.
-- Chaque controller Tier 1 doit accepter son aléa en entrée (Arrow) plutôt que
-  d'appeler sa RNG native — **adaptation requise**, surtout pour l'augmentation.
-  Les splitters identité sont gratuits (le cœur les fait).
-- Deux tiers à documenter, et un drapeau (`RNG_FROM_CORE`) à tenir honnête sous
-  peine de fausse promesse de reproductibilité.
+- Framework internals (torch init, sklearn bootstrap) remain Tier 2:
+  **a fundamental boundary, not a design failure**.
+- Each Tier 1 controller must accept its randomness as input (Arrow) rather than
+  calling its native RNG — **adaptation required**, especially for augmentation.
+  Identity splitters are free (the core handles them).
+- Two tiers to document, and a flag (`RNG_FROM_CORE`) to keep honest, or risk a
+  false reproducibility promise.
 
-### VI.9 Décision proposée
+### VI.9 Proposed decision
 
-Mettre le **PRNG splittable counter-based dans le cœur** (Philox/Threefry) et
-réécrire `SeedContext` en arbre de flux. Couvrir le plan de contrôle en Tier 1
-(Arrow pré-tiré). Conserver `rng_seed_legacy` pour le Tier 2. Documenter les deux
-tiers comme contrat de reproductibilité.
+Put a **counter-based splittable PRNG in the core** (Philox/Threefry) and rewrite
+`SeedContext` as a stream tree. Cover the control plane in Tier 1 (Arrow pre-draw).
+Retain `rng_seed_legacy` for Tier 2. Document both tiers as the reproducibility
+contract.
 
-### VI.10 Conséquence : reproductibilité cross-langage avec nirs4all-methods
+### VI.10 Consequence: cross-language reproducibility with nirs4all-methods
 
-Question concrète : avec les méthodes C++ portables validées (**nirs4all-methods**),
-peut-on avoir un pipeline Python — auquel on pourrait *en plus* greffer un modèle
-pur Python (torch, sklearn) — et un pipeline R, qui donneraient **exactement les
-mêmes résultats**, à l'exception des modèles propres à chaque langage ?
+Concrete question: with the validated portable C++ methods (**nirs4all-methods**),
+can we have a Python pipeline — to which a pure Python model (torch, sklearn) can
+optionally be attached — and an R pipeline, that give **exactly the same results**,
+except for the language-specific models?
 
-**Oui** — et l'atout décisif est précisément de **posséder nirs4all-methods en
-C++**. Décomposition par type de nœud :
+**Yes** — and the decisive asset is precisely **owning nirs4all-methods in C++**.
+Breakdown by node type:
 
-| Type de nœud | Python | R | Identique entre les deux ? |
+| Node type | Python | R | Identical between the two? |
 |---|---|---|---|
-| Preprocessing / modèle **nirs4all-methods (C++)** | même binaire C++ | même binaire C++ | **Oui, bit-identique** |
-| Plan de contrôle (folds, OOF, sélection, aléa) | cœur + RNG Tier 1 | cœur + RNG Tier 1 | **Oui, bit-identique** |
-| Modèle **pur langage** (torch/sklearn / mlr3) | présent | absent ou différent | **Non — c'est l'exception** |
+| Preprocessing / model **nirs4all-methods (C++)** | same C++ binary | same C++ binary | **Yes, bit-identical** |
+| Control plane (folds, OOF, selection, randomness) | core + RNG Tier 1 | core + RNG Tier 1 | **Yes, bit-identical** |
+| **Pure-language** model (torch/sklearn / mlr3) | present | absent or different | **No — this is the exception** |
 
-Pourquoi c'est solide : c'est *ton* code. Le même binaire C++, appelé depuis le
-binding Python ou R, sur les **mêmes données** (nirs4all-io C++) et le **même aléa
-de contrôle** (RNG du cœur, Tier 1), produit des résultats **bit-identiques** —
-une garantie que numpy/torch/R-natif ne donnent jamais, faute de contrôler leur
-compilation.
+Why this is solid: it is *your* code. The same C++ binary, called from the Python
+or R binding, on the **same data** (nirs4all-io C++) and the **same control
+randomness** (core RNG, Tier 1), produces **bit-identical** results — a guarantee
+that numpy/torch/native-R never provide, since their compilation is not under our
+control.
 
-**Localisation de la divergence.** Elle est confinée aux modèles spécifiques au
-langage. Un modèle torch en Python n'a pas de jumeau R → à ce nœud, les deux
-pipelines calculent des choses différentes. Ce n'est pas de la
-non-reproductibilité : ce sont **littéralement deux pipelines différents à ce
-nœud** (Tier 2). Concrètement :
+**Localizing the divergence.** It is confined to language-specific model nodes. A
+torch model in Python has no R twin → at that node, the two pipelines compute
+different things. This is not non-reproducibility: these are **literally two
+different pipelines at that node** (Tier 2). Concretely:
 
-- Python `[C++ methods only]` ≡ R `[mêmes C++ methods only]` → **identiques bout
-  en bout**.
-- Python `[C++ methods + torch]` vs R `[mêmes C++ methods + mlr3]` →
-  **bit-identiques jusqu'au nœud modèle**, puis divergence (par design).
-- Pour rendre le nœud modèle *aussi* identique cross-langage : (a) un modèle natif
-  **nirs4all-methods** (C++, partagé), ou (b) exporter le fitté en **ONNX** et
-  rejouer l'**inférence** (déterministe) dans l'autre langage — mais ce sont alors
-  les *mêmes poids entraînés*, pas un modèle réentraîné indépendamment.
+- Python `[C++ methods only]` ≡ R `[same C++ methods only]` → **identical end to
+  end**.
+- Python `[C++ methods + torch]` vs R `[same C++ methods + mlr3]` →
+  **bit-identical up to the model node**, then divergence (by design).
+- To make the model node *also* identical cross-language: (a) a native
+  **nirs4all-methods** model (C++, shared), or (b) export the fitted model as
+  **ONNX** and replay **inference** (deterministic) in the other language — but
+  those are the *same trained weights*, not an independently retrained model.
 
-**Les 5 conditions du mot « exactement ».** Le bit-identique des nœuds C++ tient à
-un déterminisme flottant que tu es, justement, le seul à pouvoir garantir :
+**The 5 conditions for the word "exactly".** Bit-identity of C++ nodes rests on
+floating-point determinism that you, specifically, are the only one who can
+guarantee:
 
-1. **Compilation cohérente des deux bindings** — idéalement la *même* lib
-   partagée, sinon même toolchain/flags. Pas de `-ffast-math` divergent entre la
-   wheel Python et le package R.
-2. **Réductions à ordre déterministe** — le piège classique : une somme parallèle
-   réordonne les flottants → différences sur les derniers ULPs, amplifiées dans
-   les algos itératifs (NIPALS/SVD d'un PLS). Réductions mono-thread ou à ordre
-   fixe.
-3. **Algèbre linéaire maîtrisée** — si les méthodes appellent un BLAS/LAPACK
-   *système*, Python et R peuvent en lier deux différents (OpenBLAS vs MKL,
-   threads différents) → divergence. Algèbre interne ou Eigen (header-only,
-   déterministe à compilation égale) supprime le risque.
-4. **Aléa de contrôle exclusivement du cœur** (`RNG_FROM_CORE` + pré-tirage
-   Arrow) — aucun controller ne tire avec sa propre RNG pour une décision Tier 1.
-5. **Même ingestion** (nirs4all-io C++) et **même dtype** des prédictions dans le
-   schéma Arrow.
+1. **Coherent compilation of both bindings** — ideally the *same* shared lib,
+   otherwise same toolchain/flags. No divergent `-ffast-math` between the Python
+   wheel and the R package.
+2. **Deterministically ordered reductions** — the classic trap: a parallel sum
+   reorders floats → differences in the last ULPs, amplified in iterative
+   algorithms (NIPALS/SVD in PLS). Single-thread or fixed-order reductions.
+3. **Controlled linear algebra** — if the methods call a *system* BLAS/LAPACK,
+   Python and R may link two different ones (OpenBLAS vs MKL, different threads)
+   → divergence. Internal algebra or Eigen (header-only, deterministic at equal
+   compilation) eliminates the risk.
+4. **Control randomness exclusively from the core** (`RNG_FROM_CORE` + Arrow
+   pre-draw) — no controller draws with its own RNG for a Tier 1 decision.
+5. **Same ingestion** (nirs4all-io C++) and **same dtype** for predictions in the
+   Arrow schema.
 
-Ces conditions sont **sous ton contrôle**, contrairement à l'écosystème Python.
-Remplies, elles donnent : un pipeline Python et un pipeline R **bit-identiques sur
-tout nœud partagé (C++ + contrôle)**, la seule divergence étant — exactement — les
-modèles propres à chaque langage. C'est le contrat que la séparation Tier 1 /
-Tier 2 et le cœur natif rendent atteignable.
+These conditions are **under your control**, unlike the Python ecosystem. Met, they
+give: a Python pipeline and an R pipeline **bit-identical on every shared node
+(C++ + control)**, with the only divergence being — exactly — the models specific to
+each language. This is the contract that the Tier 1 / Tier 2 separation and the
+native core make achievable.
 
 ---
 
-## Partie VII — Confrontation aux objectifs & verrous résiduels
+## Part VII — Confrontation with objectives & remaining blockers
 
-| Objectif | Verdict | Note |
+| Objective | Verdict | Note |
 |---|---|---|
-| Cœur aveugle aux données sauf identité+prédictions | ✅ | handles pour X/features/fitted ; Arrow pour identité, prédictions, y_true, relation |
-| Même signature Python/R/natif | ✅ | vtable C ; seules les implémentations diffèrent |
-| GIL non-bloquant en débit | ✅ conditionnel | knob `GIL_FREE_COMPUTE` route thread vs process ; build natif court-circuite |
-| « fit handle → handle + preds Arrow » | ✅ | `fit→FitResult{fitted}` puis `predict→PredictResult{predictions}` |
-| Reproductibilité | ⚠️ cadrée → ✅ Tier 1 | RNG cœur rend le **plan de contrôle** cross-langage bit-identique ; internes framework = Tier 2 ; inférence = ONNX |
-| Batteries natives nirs4all | ✅ | vtable en Rust : zéro GIL, zéro marshalling, parallélisme libre = plafond perf |
-| Stabilité ABI vs évolution spec | ✅ | riche/évolutif en `Bytes` versionnés ; vtable extensible par bits + fns optionnelles |
+| Core blind to data except identity+predictions | ✅ | handles for X/features/fitted; Arrow for identity, predictions, y_true, relation |
+| Same Python/R/native signature | ✅ | C vtable; only the implementations differ |
+| GIL non-blocking in throughput | ✅ conditional | `GIL_FREE_COMPUTE` knob routes thread vs process; native build short-circuits |
+| "fit handle → handle + preds Arrow" | ✅ | `fit→FitResult{fitted}` then `predict→PredictResult{predictions}` |
+| Reproducibility | ⚠️ scoped → ✅ Tier 1 | core RNG makes the **control plane** cross-language bit-identical; framework internals = Tier 2; inference = ONNX |
+| Native nirs4all batteries | ✅ | vtable in Rust: zero GIL, zero marshalling, free parallelism = performance ceiling |
+| ABI stability vs spec evolution | ✅ | rich/evolving content in versioned `Bytes`; vtable extensible via bits + optional fns |
 
-### Verrous résiduels (ordre de risque)
+### Remaining blockers (in risk order)
 
-1. **GC des handles à travers le DAG** (Partie III) — la ligne de faille réelle.
-   Le protocole arènes+refcount le rend tractable, mais sa correction
-   (branches/folds/cache/skip/erreur) est l'ingénierie dure.
-2. **Marshalling Arrow forcé** pour controllers non-threadables (Python
-   GIL-bound, **tout** R) → Arrow IPC/mémoire partagée. Irréductible mais borné à
-   ces controllers ; le step-cache devient local au worker.
-3. **EXPLAIN feature-space** — sorties de la dimension des features, opaques au
-   cœur (stockées/transmises, non interprétées). Léger accroc au principe de
-   visibilité, borné car non interprété.
-4. **Adaptation Tier 1 des controllers d'augmentation** (accepter l'aléa en
-   entrée) — coût de portage, pas un blocage.
+1. **Handle GC across the DAG** (Part III) — the real fault line. The
+   arenas+refcount protocol makes it tractable, but its correctness
+   (branches/folds/cache/skip/error) is the hard engineering.
+2. **Forced Arrow marshalling** for non-threadable controllers (Python GIL-bound,
+   **all** R) → Arrow IPC/shared memory. Irreducible but bounded to those
+   controllers; the step-cache becomes local to the worker.
+3. **Feature-space EXPLAIN** — outputs of feature dimension, opaque to the core
+   (stored/transmitted, not interpreted). Minor breach of the visibility principle,
+   bounded since non-interpreted.
+4. **Tier 1 adaptation of augmentation controllers** (accepting randomness as
+   input) — porting cost, not a blocker.
 
-### Questions ouvertes
+### Open questions
 
-- Format du blob `describe` : JSON canonique (v1, débogable) vs msgpack
-  (compact) — trancher à l'implémentation.
-- `rng_fill` par upcall pour les tirages feature-shaped : Tier 1 chunké ou Tier 2
-  assumé ? (v1 : Tier 2.)
-- Granularité d'arène : par fold, par branche, ou par variant ? (Impacte le pic
-  mémoire vs la fréquence de sweep.)
-- Streaming / out-of-core (cf. spec §21 Q1) : incompatible avec la
-  matérialisation eager supposée ici ; hors v1.
+- `describe` blob format: canonical JSON (v1, debuggable) vs msgpack (compact) —
+  decide at implementation time.
+- `rng_fill` via upcall for feature-shaped draws: chunked Tier 1 or Tier 2
+  accepted? (v1: Tier 2.)
+- Arena granularity: per fold, per branch, or per variant? (Impacts memory peak
+  vs sweep frequency.)
+- Streaming / out-of-core (cf. spec §21 Q1): incompatible with the eager
+  materialization assumed here; out of scope for v1.
 
 ---
 
-## Partie VIII — Langage du cœur : Rust vs C++ (décision ouverte)
+## Part VIII — Core language: Rust vs C++ (open decision)
 
-**Statut : non tranché — à revisiter.** Cette partie consigne les deux voies à
-parité et les critères qui les départageront. Elle n'est pas un verdict.
+**Status: not settled — to be revisited.** This part records both paths on equal
+footing and the criteria that will decide between them. It is not a verdict.
 
-Contexte de fait :
-- **nirs4all-io est déjà en Rust** (les loaders).
-- **nirs4all-methods est en C++** (validé, portable).
-- Dans les **deux** options, les méthodes C++ **restent C++**, derrière l'ABI C
-  (controllers natifs). Aucune réécriture des méthodes n'est en jeu ici ; la
-  question porte uniquement sur le **langage du cœur** (graphe, phases, folds,
-  OOF, lineage, scheduler, RNG, ABI).
+Factual context:
+- **nirs4all-io is already in Rust** (the loaders).
+- **nirs4all-methods is in C++** (validated, portable).
+- In **both** options, the C++ methods **remain C++**, behind the C ABI
+  (native controllers). No rewrite of methods is at stake here; the question
+  concerns only the **language of the core** (graph, phases, folds, OOF, lineage,
+  scheduler, RNG, ABI).
 
-### VIII.1 Le recadrage spécifique à cette architecture
+### VIII.1 The reframing specific to this architecture
 
-Le débat classique Rust vs C++ est ici biaisé par un fait de conception :
-**l'architecture impose déjà un ABI C entre le cœur et *tous* les controllers,
-méthodes natives comprises** (Partie II). nirs4all-methods entre comme un
-controller qui remplit la `ControllerVTable` avec des fns `extern "C"`. Le cœur
-appelle les méthodes C++ via la même vtable que les controllers Python : appel
-C ABI, **coût nul**.
+The classic Rust vs C++ debate is biased here by a design fact: **the architecture
+already imposes a C ABI between the core and *all* controllers, native methods
+included** (Part II). nirs4all-methods enters as a controller that fills the
+`ControllerVTable` with `extern "C"` fns. The core calls C++ methods through the
+same vtable as Python controllers: a C ABI call, **zero cost**.
 
-Conséquence : le pro historique de C++ (« même langage que les méthodes, donc
-intégration native ») est **largement neutralisé** — et coupler le cœur aux
-méthodes par des types C++ partagés serait un **anti-pattern** (ça casserait la
-symétrie polyglotte et la frontière ABI propre). Le débat se réduit donc aux
-qualités *intrinsèques* du langage pour un **plan de contrôle concurrent à
-liveness cross-FFI**, plus l'outillage de binding.
+Consequence: the historical pro of C++ ("same language as the methods, so native
+integration") is **largely neutralized** — and coupling the core to the methods via
+shared C++ types would be an **anti-pattern** (it would break the polyglot symmetry
+and the clean ABI boundary). The debate thus reduces to the *intrinsic* qualities
+of the language for a **concurrent control plane with cross-FFI liveness**, plus
+binding tooling.
 
-### VIII.2 Rust (pour le cœur)
-
-| | |
-|---|---|
-| **Pros** | • **Sécurité mémoire sans GC, exactement sur le verrou n°1** : la bookkeeping de liveness des handles (refcounts, arènes, promotion — Partie III) est logique *interne* au cœur → en Rust safe, le compilateur empêche l'UAF. Un UAF de handle = crash dans le process Python/R de l'utilisateur, le pire à débugger.<br>• **Concurrence sans data race** : `Send`/`Sync` protègent le scheduler au compile-time.<br>• **Stack de binding/Arrow = template prouvé** : pyo3+maturin, extendr, wasm-bindgen/napi, arrow-rs. C'est l'architecture textuelle de Polars, DataFusion, pydantic-core, tokenizers, ruff.<br>• **Cargo** : build reproductible, deps, cross-compilation des wheels sans CMake/vcpkg.<br>• **nirs4all-io déjà en Rust** → ramp-up fait, pont Rust↔C++ déjà pratiqué, io ↔ cœur sans shim. |
-| **Cons** | • **Pont Rust↔C++** pour nirs4all-methods : linker la lib C++ (build.rs + `cc`, ou `cxx`). Standard, mais étape de build (déjà résolue côté io).<br>• Le FFI lui-même reste `unsafe` des deux côtés — Rust sécurise la bookkeeping complexe, pas le passage de pointeur brut.<br>• Écosystème numérique plus jeune (peu pertinent : le cœur ne calcule pas). |
-
-### VIII.3 C++ (pour le cœur)
+### VIII.2 Rust (for the core)
 
 | | |
 |---|---|
-| **Pros** | • **Intégration native avec nirs4all-methods** (mais §VIII.1 : gain largement illusoire vu l'ABI C, et coupler serait un anti-pattern).<br>• **Arrow a son implé de référence en C++** ; Eigen/BLAS/LAPACK directs.<br>• pybind11 (Python), Rcpp (R) matures ; contrôle direct ABI/layout. |
-| **Cons** | • **Sécurité mémoire manuelle, pile sur le verrou n°1** : UAF/double-free/fuites de handles à travers le FFI = attrapés au runtime (ASan/UBSan + discipline), pas prévenus à la compilation.<br>• **Concurrence manuelle** : data races du scheduler à la charge du dev.<br>• **Binding/build bas niveau** : wheels à la main (scikit-build/cibuildwheel), WASM via emscripten, pas de gestionnaire de paquets, dependency hell CMake.<br>• **Incohérence avec nirs4all-io (Rust)** : deux langages systèmes dans la même base, deux toolchains.<br>• Aucun template récent « cœur C++ + bindings multi-langage + Arrow » comme nouveau projet. |
+| **Pros** | • **Memory safety without GC, exactly on blocker #1**: the handle liveness bookkeeping (refcounts, arenas, promotion — Part III) is logic *internal* to the core → in safe Rust, the compiler prevents UAF. A handle UAF = crash in the user's Python/R process, the worst to debug.<br>• **Concurrency without data races**: `Send`/`Sync` protect the scheduler at compile time.<br>• **Binding/Arrow stack = proven template**: pyo3+maturin, extendr, wasm-bindgen/napi, arrow-rs. This is the textbook architecture of Polars, DataFusion, pydantic-core, tokenizers, ruff.<br>• **Cargo**: reproducible build, deps, cross-compilation of wheels without CMake/vcpkg.<br>• **nirs4all-io already in Rust** → ramp-up done, Rust↔C++ bridge already practiced, io ↔ core without a shim. |
+| **Cons** | • **Rust↔C++ bridge** for nirs4all-methods: linking the C++ lib (build.rs + `cc`, or `cxx`). Standard, but a build step (already solved on the io side).<br>• The FFI itself remains `unsafe` on both sides — Rust secures the complex bookkeeping, not raw pointer passing.<br>• Younger numeric ecosystem (barely relevant: the core does not compute). |
 
-### VIII.4 Topologie résultante (identique dans les deux cas)
+### VIII.3 C++ (for the core)
+
+| | |
+|---|---|
+| **Pros** | • **Native integration with nirs4all-methods** (but §VIII.1: gain largely illusory given the C ABI, and coupling would be an anti-pattern).<br>• **Arrow has its reference implementation in C++**; direct Eigen/BLAS/LAPACK.<br>• pybind11 (Python), Rcpp (R) mature; direct ABI/layout control. |
+| **Cons** | • **Manual memory safety, directly on blocker #1**: UAF/double-free/handle leaks across FFI = caught at runtime (ASan/UBSan + discipline), not prevented at compilation.<br>• **Manual concurrency**: scheduler data races at the developer's expense.<br>• **Low-level binding/build**: wheels by hand (scikit-build/cibuildwheel), WASM via emscripten, no package manager, CMake dependency hell.<br>• **Inconsistency with nirs4all-io (Rust)**: two systems languages in the same codebase, two toolchains.<br>• No recent template of "C++ core + multi-language bindings + Arrow" as a new project. |
+
+### VIII.4 Resulting topology (identical in both cases)
 
 ```
-<langage du cœur>                      C++                         par langage
+<core language>                        C++                         per language
 ┌──────────────────────────┐          ┌─────────────────┐        ┌────────────────┐
-│ dagml-core (contrôle)     │  ABI C   │ nirs4all-methods│  pyo3  │ sklearn/torch  │
-│  graph, folds, OOF,       │◄────────►│  (controllers   │◄──────►│ (par langage)  │
-│  lineage, scheduler, RNG  │ extern"C"│   validés C++)  │ extendr│ mlr3 (R)       │
+│ dagml-core (control)      │  C ABI   │ nirs4all-methods│  pyo3  │ sklearn/torch  │
+│  graph, folds, OOF,       │◄────────►│  (validated     │◄──────►│ (per language) │
+│  lineage, scheduler, RNG  │ extern"C"│   C++ controllers)│extendr│ mlr3 (R)      │
 │ nirs4all-io (Rust)        │          └─────────────────┘        └────────────────┘
 └──────────────────────────┘
 ```
 
-Le choix Rust vs C++ ne change que le bloc de gauche. nirs4all-io est en Rust ;
-si le cœur est en Rust, io ↔ cœur est sans shim ; si le cœur est en C++, io
-(Rust) devient lui aussi un controller/lib derrière une frontière C.
+The Rust vs C++ choice only changes the left block. nirs4all-io is in Rust; if the
+core is in Rust, io ↔ core is shim-free; if the core is in C++, io (Rust) also
+becomes a controller/lib behind a C boundary.
 
-### VIII.5 Les faits qui tranchent, et les critères pour plus tard
+### VIII.5 Facts that point a direction, and criteria for later
 
-Trois faits orientent (sans trancher) :
+Three facts orient (without deciding):
 
-1. **nirs4all-io déjà en Rust** → cohérence + ramp-up fait → penche Rust.
-2. **Le verrou le plus dur est la liveness des handles + le scheduler
-   concurrent** → le point faible du projet est la force de Rust → penche Rust.
-3. **nirs4all-methods en C++ validé** → mais neutralisé par l'ABI C (§VIII.1) →
-   n'oriente quasiment plus.
+1. **nirs4all-io already in Rust** → coherence + ramp-up done → leans Rust.
+2. **The hardest blocker is handle liveness + the concurrent scheduler** → the
+   project's weak point is Rust's strength → leans Rust.
+3. **nirs4all-methods in validated C++** → but neutralized by the C ABI (§VIII.1)
+   → barely points either way.
 
-Critères à évaluer au moment de trancher :
+Criteria to evaluate when deciding:
 
-- L'équipe s'engage-t-elle sur Rust **au-delà de io** (cœur compris) ? (io en
-  Rust suggère oui.)
-- Le plan de contrôle devient-il un goulot à grande échelle (millions de
-  records lineage/prediction) → favorise un cœur compilé compact (Rust ou C++).
-- Coût réel ressenti du pont Rust↔C++ pour les méthodes (cf. shim `extern "C"`,
-  à prototyper).
-- Besoin WASM/JS sérieux → favorise nettement Rust (wasm-bindgen).
+- Does the team commit to Rust **beyond io** (including the core)? (io in Rust
+  suggests yes.)
+- Does the control plane become a bottleneck at scale (millions of
+  lineage/prediction records) → favors a compact compiled core (Rust or C++).
+- Actual experienced cost of the Rust↔C++ bridge for the methods (cf. `extern "C"`
+  shim, to be prototyped).
+- Serious WASM/JS need → clearly favors Rust (wasm-bindgen).
 
-### VIII.6 Sous-question : langage des nouvelles méthodes
+### VIII.6 Sub-question: language for new methods
 
-Indépendant du langage du cœur, mais lié :
+Independent of the core language, but related:
 
-- Méthodes **existantes** (validées) → restent **C++**, derrière l'ABI. Pas de
-  re-validation.
-- Méthodes **nouvelles** → si le cœur est Rust, les écrire en Rust les fait vivre
-  dans le cœur natif **sans même le shim** ; sinon C++. La frontière ABI rend les
-  deux interchangeables, donc pas d'urgence à uniformiser.
-```
+- **Existing** methods (validated) → stay **C++**, behind the ABI. No re-validation.
+- **New** methods → if the core is Rust, writing them in Rust lets them live in the
+  native core **without even a shim**; otherwise C++. The ABI boundary makes both
+  interchangeable, so no urgency to standardize.

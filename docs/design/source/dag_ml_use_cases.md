@@ -1,48 +1,42 @@
 # DAG-ML Use Cases v1
 
-Statut: design v1. Compagnon des specs `dag_ml_externalization_from_code.md`
-et `ml_data_specification_v1.md`. Chaque use case (UC) materialise le DSL,
-le DAG compile, les invariants, l'ordre des phases et les artifacts.
+Status: design v1. Companion to `dag_ml_externalization_from_code.md`
+and`ml_data_specification_v1.md`. Each use case (UC) materializes the DSL,
+the DAG compiles the invariants, the phase order, and the artifacts.
 
-Notation employee dans tout le document:
+Notation used throughout the document:
 
-- Phases canoniques: `COMPILE -> PLAN -> FIT_CV -> SELECT -> REFIT -> PREDICT [-> EXPLAIN]`.
-- Types references: voir `ml_data/contract.py` (`SourceDescriptor`, `DataBlock`,
-  `DataView`, `FeatureTable`, `ModelInputSpec`, `FusionPolicy`, `DataPlan`,
-  `SampleRelation`, `AggregationPolicy`, `SplitPolicy`, `AugmentationPolicy`,
-  `SeedContext`, `SearchSpace`, `SubgraphNodeSpec`).
-- Identifiants des noeuds: `<kind>:<short>`. Edges: `A.out -> B.in`.
-- Conventions: `OOF` = out-of-fold predictions, `MS` = multi-source.
+- Canonical phases:`COMPILE -> PLAN -> FIT_CV -> SELECT -> REFIT -> PREDICT [-> EXPLAIN]`. - Reference types: see`ml_data/contract.py`(`SourceDescriptor`,`DataBlock`,`DataView`,`FeatureTable`,`ModelInputSpec`,`FusionPolicy`,`DataPlan`,`SampleRelation`,`AggregationPolicy`,`SplitPolicy`,`AugmentationPolicy`,`SeedContext`,`SearchSpace`,`SubgraphNodeSpec`). - Node identifiers:`<kind>:<short>`. Edges:`A.out -> B.in`. - Conventions:`OOF`= out-of-fold predictions,`MS`= multi-source.
 
-Table des matieres:
+Table of contents:
 
-| UC  | Theme principal                                       | Axes couverts                          |
+| UC  | Main theme                                            | Covered axes                           |
 |-----|-------------------------------------------------------|----------------------------------------|
-| UC1 | Multi-source heterogene -> RandomForest               | DataPlan, early fusion, missing sources|
-| UC2 | NIRS multi-instrument (3 spectrometres)               | MS homogene, by_source, concat/stack   |
-| UC3 | Repetitions: plusieurs X pour un Y                    | SampleRelation, group-aware split, agg |
-| UC4 | Entites (patients, parcelles) split-unit              | SplitPolicy(split_unit="group")        |
-| UC5 | Augmentation train-only + OOF correct                 | AugmentationPolicy, origin tracking    |
-| UC6 | Stacking multi-niveau                                 | Branch+merge predictions, meta-modele  |
-| UC7 | Generateurs + tuning bayesien                         | _cartesian_, _grid_, TunerAdapter      |
-| UC8 | Branches par metadata/tag, merge concat               | Separation branches, by_metadata       |
-| UC9 | Refit complet + bundle predict new heterogene         | schema_fingerprint, replay             |
-| UC10| Sous-DAG reifie comme noeud                           | SubgraphNodeSpec, inline vs opaque     |
-| UC11| OOF train preds refusees par defaut                   | Erreurs invariants, leakage opt-in     |
-| UC12| Mixed merge: features + predictions OOF               | Cross-source validation                |
+| UC1 | Heterogeneous multi-source -> RandomForest            | DataPlan, early fusion, missing sources |
+| UC2 | NIRS multi-instrument (3 spectrometers)               | Homogeneous MS, by_source, concat/stack |
+| UC3 | Repetitions: multiple X values for one Y              | SampleRelation, group-aware split, aggregation |
+| UC4 | Entities (patients, plots) split-unit                 | SplitPolicy(split_unit="group")        |
+| UC5 | Train-only augmentation + correct OOF                 | AugmentationPolicy, origin tracking     |
+| UC6 | Multi-level stacking                                  | Branch+merge predictions, meta-model   |
+| UC7 | Generators + Bayesian tuning                          | _cartesian_, _grid_, TunerAdapter      |
+| UC8 | Branches by metadata/tag, merge concat                | Branch separation, by_metadata         |
+| UC9 | Full refit + bundle predict new heterogeneity         | schema_fingerprint, replay             |
+| UC10| SubDAG reifies as node                                | SubgraphNodeSpec, inline vs opaque     |
+| UC11| OOF train predictions rejected by default             | Invariant errors, leakage opt-in       |
+| UC12| Mixed merge: features + OOF predictions               | Cross-source validation                |
 
 ---
 
-## UC1 - Multi-source heterogene vers RandomForest
+## UC1 - Heterogeneous multi-source to RandomForest
 
-### 1.1 Contexte metier
+### 1.1 Business context
 
-Prediction de la teneur en proteines d'une variete de ble a partir de cinq
-modalites par echantillon: 1 spectre NIRS, 2 photos RGB (vue dessus, vue cote),
-1 patrimoine genotypique (SNP dosage), 1 serie meteo journaliere sur la saison
-de culture, plus quelques metadata categorielles (variete, parcelle, annee).
+Predicting the protein content of a wheat variety from five
+methods per sample: 1 NIRS spectrum, 2 RGB photos (top view, side view),
+1 genotypic heritage (SNP dosage), 1 daily weather series over the season
+culture, plus some categorical metadata (variety, plot, year).
 
-### 1.2 Donnees impliquees
+### 1.2 Involved data
 
 | Source       | Type ML_DATA       | Modality      | Granularity         | Native rep                  | Sample key  | N samples | Notes |
 |--------------|---------------------|---------------|---------------------|-----------------------------|-------------|-----------|-------|
@@ -54,9 +48,9 @@ de culture, plus quelques metadata categorielles (variete, parcelle, annee).
 | `meta`       | `table`             | metadata      | `per_sample`        | `tabular_mixed`             | `sample_id` | 800       | variety/plot/year |
 | target `y`   | `table`             | -             | `per_sample`        | `tabular_numeric`           | `sample_id` | 800       | proteine (%) |
 
-Repetitions: aucune. `group_ids = plot_id` (40 parcelles, ~20 samples/parcelle).
+Repetitions: none. `group_ids = plot_id` (40 plots, ~20 samples/plot).
 
-### 1.3 Pipeline DSL souhaite
+### 1.3 Desired DSL pipeline
 
 ```python
 from sklearn.ensemble import RandomForestRegressor
@@ -97,7 +91,7 @@ pipeline = [
 ]
 ```
 
-### 1.4 DAG resultant
+### 1.4 Resulting DAG
 
 ```text
                        +----------------------+
@@ -137,7 +131,7 @@ pipeline = [
                               ExecutionBundle (artifacts + DataPlan + RF model)
 ```
 
-Liste des noeuds (NodeSpec):
+List of nodes (NodeSpec):
 
 | Node id              | kind        | Operator / adapter                    | Phase scope |
 |----------------------|-------------|----------------------------------------|-------------|
@@ -176,69 +170,49 @@ split:cv.folds      -> model:rf.folds
 model:rf.pred_val   -> pred:rf.oof
 ```
 
-### 1.5 Invariants ML cles
+### 1.5 Key ML invariants
 
-- OOF: `model:rf` emet predictions `partition="val"`, alignees par `sample_id`.
-- No leakage: tous les `adapt:*` stateful (`image.embedding`, `genotype.pca`,
-  `tabular.encoder`) ont `fit_scope="fold_train"`. `DataPlanner.execute_fit`
-  les fit sur les samples du fold train uniquement.
-- Split unit: `group` sur `plot_id` (GroupKFold) -> aucun plot n'apparait dans
-  train et val du meme fold.
-- Reproductibilite: `SeedContext.child(node_id="adapt:imgT", fold_id=k)` derive
-  le seed du backbone (dropout, init head). Persiste dans `LineageRecord`.
-- Refit: meme `DataPlan` reapplique sur train complet, `fold_id="final"`,
-  emission de nouveaux `FittedAdapter` pour `image.embedding`, `genotype.pca`,
-  `tabular.encoder`, `fusion.feature_joiner`, `RandomForestRegressor`.
-- Missing sources: `photo_side` manque pour 40 samples -> presence mask
-  propagee -> 1 colonne `indicator__photo_side_present` ajoutee par le joiner.
+- OOF:`model:rf`emits`partition="val"`predictions, aligned by`sample_id`. - No leakage: all stateful`adapt:*`(`image.embedding`,`genotype.pca`,`tabular.encoder`) have`fit_scope="fold_train"`.`DataPlanner.execute_fit`did them on the fold train samples only. - Split unit:`group`on`plot_id`(GroupKFold) -> no plot appears in
+  train and val of the same fold. - Reproducibility:`SeedContext.child(node_id="adapt:imgT", fold_id=k)`derivative
+  the seed of the backbone (dropout, init head). Persists in`LineageRecord`. - Refit: same`DataPlan`reapplied on complete train,`fold_id="final"`,
+  emission of new`FittedAdapter`for`image.embedding`,`genotype.pca`,`tabular.encoder`,`fusion.feature_joiner`,`RandomForestRegressor`. - Missing sources:`photo_side`missing for 40 samples -> presence mask
+  propagated -> 1`indicator__photo_side_present`column added by the joiner.
 
-### 1.6 Points de friction
+### 1.6 Friction points
 
-1. `image.embedding` est lossy + stateful. Faut-il forcer
-   `policy.allow_lossy_adapters=True` explicitement ou exiger un choix utilisateur
-   (escalation `requires_user_choice`) ?
-2. La fusion `concat_features` peut exploser la dimension (256+256+32+36+~50+512
-   ~= 1142). Faut-il imposer `max_output_features` ou warning seulement ?
-3. Pour `photo_side` manquant, quelle politique par defaut: `indicator` (RF aime),
-   `impute` (image -> embedding moyen train), ou `drop` ? Choix est ML, pas data.
-4. `image.embedding` doit-il etre refit par fold (fit_scope="fold_train") ou
-   shared `train_only` (un seul fit sur train complet, fige pour toute la CV) ?
-   Premiere option = correct OOF mais cher; seconde option = leakage acceptable
-   si backbone non finetuned.
+1.`image.embedding`is lossy + stateful. Should we force`policy.allow_lossy_adapters=True`explicitly or require user choice
+   (`requires_user_choice`escalation)? 2.`concat_features`fusion can explode dimension (256+256+32+36+~50+512
+   ~= 1142). Should we impose`max_output_features`or warning only? 3. For missing`photo_side`, which default policy:`indicator`(RF likes),`impute`(image -> medium train embedding), or`drop`? Choice is ML, not data. 4. Does`image.embedding`need to be refit by fold (fit_scope="fold_train") or
+   shared`train_only`(only one fit on full train, freezes for the entire CV)? First option = correct OOF but expensive; second option = acceptable leakage
+   if backbone not finetuned.
 
 ### 1.7 ML_DATA vs DAG-ML
 
 | ML_DATA                                                  | DAG-ML                                                   |
 |----------------------------------------------------------|----------------------------------------------------------|
-| Declare `SourceDescriptor` pour les 6 sources            | Compile le DSL en `GraphSpec`                            |
-| `find_path(src, target="tabular_numeric", policy)`       | Decide `allow_lossy_adapters`, declenche refusal si flou |
-| Execute `materialize`, `adapt`, `align`, `join`          | Choisit la phase (`fit_cv` -> `fold_train` scope)        |
-| Fournit `PresenceMask` pour `photo_side`                 | Decide `missing_source="indicator"`                      |
-| Calcule `schema_fingerprint`                             | Verifie le fingerprint au predict                        |
-| Fournit `SampleRelation` avec `group_ids=plot_id`        | Passe `groups` au splitter `GroupKFold`                  |
+| Declare`SourceDescriptor`for the 6 sources            | Compile the DSL into `GraphSpec`                         |
+| `find_path(src, target="tabular_numeric", policy)`       | Decide `allow_lossy_adapters`, reject if ambiguous       |
+| Execute `materialize`, `adapt`, `align`, `join`          | Choose the phase (`fit_cv` -> `fold_train` scope)        |
+| Provides`PresenceMask`for`photo_side`                 | Decide `missing_source="indicator"`                      |
+| Computes `schema_fingerprint`                           | Check the fingerprint when predicting                    |
+| Provides`SampleRelation`with`group_ids=plot_id`        | Pass `groups` to the `GroupKFold` splitter               |
 
-### 1.8 Resultat attendu
+### 1.8 Expected result
 
-- Artifacts: 5 `FittedAdapter` (image_top, image_side, geno_pca, tab_enc, joiner)
-  + 1 `RandomForestRegressor` final + per-fold artifacts.
-- Predictions: `PredictionBlock` OOF par fold + `fold_id="final"` apres refit.
-- Exports: `ExecutionBundle` (graph + plan + adapters + RF) avec
-  `schema_fingerprint`. Format `.bundle` (joblib + JSON manifest).
-- Lineage: 800 samples x 5 folds = 4000 enregistrements de predictions OOF.
-- Metric: `rmsecv` + `r2_cv` par fold + macro mean.
+- Artifacts: 5`FittedAdapter`(image_top, image_side, geno_pca, tab_enc, joiner)
+  + 1 final`RandomForestRegressor`+ per-fold artifacts. - Predictions:`PredictionBlock`OOF by fold +`fold_id="final"`after refit. - Exports:`ExecutionBundle`(graph + plan + adapters + RF) with`schema_fingerprint`.`.bundle`format (joblib + JSON manifest). - Lineage: 800 samples x 5 folds = 4000 OOF prediction records. - Metric:`rmsecv`+`r2_cv`by fold + macro mean.
 
 ---
 
 ## UC2 - NIRS multi-instrument (3 spectrometres)
 
-### 2.1 Contexte metier
+### 2.1 Business context
 
-Validation cross-instrument: mesurer le meme echantillon physique sur 3
-spectrometres (FOSS NIRS-DS2500, Bruker MPA, ASD FieldSpec). Predire la
-matiere seche (MS, regression). Comparer concat early-fusion vs branch
-`by_source` (un modele specialise par instrument puis ensemble).
+Cross-instrument validation: measure the same physical sample out of 3
+spectrometers (FOSS NIRS-DS2500, Bruker MPA, ASD FieldSpec). Predict the
+dry matter (MS, regression). Compare concat early-fusion vs branch`by_source`(a model specialized by instrument then together).
 
-### 2.2 Donnees impliquees
+### 2.2 Involved data
 
 | Source        | Type      | Modality      | Sample key  | Native rep              | N    | Range          |
 |---------------|-----------|---------------|-------------|-------------------------|------|----------------|
@@ -247,15 +221,15 @@ matiere seche (MS, regression). Comparer concat early-fusion vs branch
 | `nir_asd`     | `dense_signal` | spectroscopy | `sample_id` | `signal_1d` 2151 wl  | 580  | 350-2500 nm    |
 | target `y`    | `table`        | -            | `sample_id` | `tabular_numeric`    | 600  | MS (%)         |
 
-Repetitions: 1 spectre / instrument / sample. Pas de groupes.
+Repetitions: 1 spectrum / instrument / sample. No groups.
 
-### 2.3 Pipeline DSL souhaite
+### 2.3 Desired DSL pipeline
 
 ```python
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.model_selection import KFold
 
-# Variante A: early fusion par resampling sur un axe commun
+# Variant A: early fusion by resampling onto a common axis
 pipeline_concat = [
     {"sources": ["nir_foss", "nir_bruker", "nir_asd"]},
     {"by_source": {
@@ -270,7 +244,7 @@ pipeline_concat = [
     {"model": PLSRegression(n_components=12)},
 ]
 
-# Variante B: branche par source + ensemble OOF
+# Variant B: branch per source + OOF ensemble
 pipeline_branch = [
     {"branch": {"by_source": True, "steps": {
         "nir_foss":   [SNV(), {"_range_": [5, 25, 5]}, {"model": PLSRegression()}],
@@ -283,7 +257,7 @@ pipeline_branch = [
 ]
 ```
 
-### 2.4 DAG resultant (variante A: stack_channels)
+### 2.4 Resulting DAG (variant A: stack_channels)
 
 ```text
 src:nir_foss --resample(wl_512)--> snv --+
@@ -300,7 +274,7 @@ src:nir_asd  --resample-----------> snv -+
                                                 or 3D PLS variant (POP-PLS)
 ```
 
-DAG resultant (variante B: by_source branches):
+Resulting DAG (variant B: by_source branches):
 
 ```text
                        split:KFold(5) (outer)
@@ -327,58 +301,52 @@ ForkNode by_source -> {foss, bruker, asd}
                        OOF meta predictions
 ```
 
-### 2.5 Invariants ML cles
+### 2.5 Key ML invariants
 
-- OOF (variante B): chaque PLS produit predictions `partition="val"` au niveau
-  outer fold; le meta-modele ne consomme que des predictions OOF (refus par
-  defaut si train preds, voir UC11).
-- No leakage: les 3 instruments partagent les memes `sample_id` -> meme fold
-  outer pour les 3 branches.
-- Split unit: `sample`. Pas de groupes.
-- Reproductibilite: meme `KFold(random_state=42)` pour les 3 branches dans
-  variante B (sinon decalage OOF).
-- `nir_asd` n'a que 580/600 samples: `AlignmentPolicy(join="inner")` -> N=580
-  effectifs. Decision a tracer dans le manifest.
+- OOF (variant B): each PLS produces`partition="val"`predictions at the level
+  outer fold; the meta-model only consumes OOF predictions (refusal by
+  default if train preds, see UC11). - No leakage: the 3 instruments share the same`sample_id`-> same fold
+  outer for the 3 branches. - Split unit:`sample`. No groups. - Reproducibility: same`KFold(random_state=42)`for the 3 branches in
+  variant B (otherwise OOF shift). -`nir_asd`only has 580/600 samples:`AlignmentPolicy(join="inner")`-> N=580
+  workforce. Decision to be traced in the manifest.
 
-### 2.6 Points de friction
+### 2.6 Friction points
 
-1. Variante A: que faire si les 3 instruments couvrent des plages differentes
-   (400-2500 vs 800-2500 vs 350-2500) ? Resample sur intersection ou union avec
-   masque ? Intersection 800-2500 perd l'info VIS pour FOSS et ASD.
-2. Variante B: les `_range_` n_components sont differents par branche. Comment
-   selectionner ? Best per branch puis stacker ? Best global apres meta ?
-3. Stack_channels: PLS classique attend 2D, donc faut-il un PLS-3D specialise
-   (POP-PLS) ou flatten ? Le contrat doit etre explicite cote model adapter.
+1. Variant A: what to do if the 3 instruments cover different ranges
+   (400-2500 vs 800-2500 vs 350-2500)? Resample on intersection or union with
+   mask? Intersection 800-2500 loses VIS info for FOSS and ASD. 2. Variant B: the`_range_`n_components are different per branch. How
+   select? Best per branch then stacker? Best overall after meta? 3. Stack_channels: Classic PLS expects 2D, so a specialized PLS-3D is needed
+   (POP-PLS) or flatten? The contract must be explicit about the adapted model.
 
 ### 2.7 ML_DATA vs DAG-ML
 
 | ML_DATA                                                | DAG-ML                                              |
 |--------------------------------------------------------|-----------------------------------------------------|
 | Adapter `spectra.resample(target_axis)`                | Branche `by_source` (ForkNode + MapNode)            |
-| Stack/concat sur axe `processing` ou `channel`         | Generateur `_range_` enumere les variants n_comp    |
-| AlignmentPolicy(inner) selectionne les 580            | PredictionJoin valide OOF avant meta-modele         |
+| Stack/concat on`processing`or`channel`axis         | Generateur `_range_` enumere les variants n_comp    |
+| AlignmentPolicy(inner) selectionne les 580            | Valid OOF PredictionJoin before meta-model         |
 | Fournit `AxisSpec.coordinates` (wavelengths)           | Choisit ranking metric et top_k                     |
 
-### 2.8 Resultat attendu
+### 2.8 Expected result
 
-- Variante A: 1 modele PLS sur tenseur stacke (3 instruments x 512 wl). Bundle = 1.
-- Variante B: 15 PLS variants (3 inst x 5 n_comp) + 1 Ridge meta. Bundle = 16.
+- Variant A: 1 PLS model on the stacked tensor (3 instruments x 512 wl). Bundle = 1.
+- Variant B: 15 PLS variants (3 inst x 5 n_comp) + 1 Ridge meta. Bundle = 16.
 - Predictions OOF par variant + meta-OOF + final refit.
-- Comparison reporting: RMSECV variante A vs variante B.
+- Comparison reporting: RMSECV variant A vs variant B.
 
 ---
 
-## UC3 - Repetitions: plusieurs X pour un Y
+## UC3 - Repetitions: several X for one Y
 
-### 3.1 Contexte metier
+### 3.1 Business context
 
-Mesure NIRS de poudre vegetale: pour chaque echantillon physique (`sample_id`),
-le technicien acquiert 3 spectres (positions A/B/C dans la coupelle) et 1
-mesure chimique de reference (proteines). Le Y existe au niveau du sample, pas
-de l'observation. Le modele NIRS doit predire par observation, mais l'agregation
-finale se fait au niveau sample (mean ou median), avec exclusion d'outliers.
+NIRS measurement of plant powder: for each physical sample (`sample_id`),
+the technician acquires 3 spectra (positions A/B/C in the dish) and 1
+chemical reference measurement (proteins). The Y exists at the sample level, not
+of observation. The NIRS model must predict by observation, but aggregation
+final is done at the sample level (mean or median), with exclusion of outliers.
 
-### 3.2 Donnees impliquees
+### 3.2 Involved data
 
 | Source       | Type            | Modality      | Granularity              | observation_id    | sample_id   | target_id | group_id  |
 |--------------|-----------------|---------------|--------------------------|-------------------|-------------|-----------|-----------|
@@ -388,7 +356,7 @@ finale se fait au niveau sample (mean ou median), avec exclusion d'outliers.
 400 samples logiques, 1200 observations NIRS. 25 lots de production (15-20
 samples/lot). `target_id == "y_" + sample_id`.
 
-### 3.3 Pipeline DSL souhaite
+### 3.3 Desired DSL pipeline
 
 ```python
 pipeline = [
@@ -397,7 +365,7 @@ pipeline = [
     [SNV(), SavitzkyGolay(window=11, deriv=2)],
 
     {"split_policy": SplitPolicy(
-        split_unit="target",           # toutes les obs partageant target_id ensemble
+        split_unit="target",           # all observations sharing target_id together
         forbid_origin_cross_fold=True,
     )},
     GroupKFold(n_splits=5),            # groups = target_id derives de SampleRelation
@@ -413,7 +381,7 @@ pipeline = [
 ]
 ```
 
-### 3.4 DAG resultant
+### 3.4 Resulting DAG
 
 ```text
 materialize("nir", view=v)
@@ -456,59 +424,46 @@ Nodes:
 | `pred:obs`        | prediction   | observation-level                                |
 | `pred:agg`        | aggregator   | sample-level, robust_mean, excl outliers         |
 
-### 3.5 Invariants ML cles
+### 3.5 Key ML invariants
 
-- Les 3 obs d'un sample S001 vont **toutes** dans le meme fold (train ou val),
-  jamais splittees. `split_unit="target"` garantit cela.
-- OOF: les predictions `partition="val"` sont produites au niveau observation,
-  l'agregation sample est faite apres et stockee separement avec
-  `aggregation_level="sample"`.
-- `keep_observation_predictions=True` => DAG-ML stocke deux PredictionBlocks
-  (un obs-level, un sample-level), partageant le meme `fold_id`.
-- Reproductibilite: meme `SampleRelation` au predict (verif via `schema_fingerprint`).
-- Outlier exclusion (0.95): n'agit que sur l'agregation, jamais sur l'OOF brut.
+- The 3 obs of an S001 sample go **all** in the same fold (train or val),
+  never split.`split_unit="target"`guarantees this. - OOF:`partition="val"`predictions are produced at the observation level,
+  the sample aggregation is done afterwards and stored separately with`aggregation_level="sample"`. -`keep_observation_predictions=True`=> DAG-ML stores two PredictionBlocks
+  (one obs-level, one sample-level), sharing the same`fold_id`. - Reproducibility: even`SampleRelation`when predicted (verified via`schema_fingerprint`). - Outlier exclusion (0.95): only acts on aggregation, never on raw OFF.
 
-### 3.6 Points de friction
+### 3.6 Friction points
 
-1. Quel niveau pour ranker/selectionner: RMSE obs-level (1200 preds) ou
-   sample-level (400 preds) ? Le second est ce qui compte metier, mais le
-   premier reduit la variance d'estimation.
-2. Si une observation NIRS d'un sample est tres bruitee, son inclusion biaise
-   le sample-mean. Faut-il un `SpectralQualityFilter` upstream comme
-   `{"exclude": SpectralQualityFilter()}` avant aggregation, ou un filtre sur
-   les predictions ?
-3. Agregation `vote` pour classification multi-classes: comment gerer les
-   egalites (3 votes pour 3 classes differentes) ?
-4. `target_id` peut-il etre derive automatiquement de `sample_id` quand 1:1 ?
-   Ou doit-on toujours l'expliciter dans `SampleRelation` ?
+1. Which level to rank/select: RMSE obs-level (1200 preds) or
+   sample-level (400 preds) ? The second is what matters, but the
+   first reduces the estimation variance. 2. If a NIRS observation of a sample is very noisy, its biased inclusion
+   the sample-mean. Do you need a`SpectralQualityFilter`upstream like`{"exclude": SpectralQualityFilter()}`before aggregation, or a filter on
+   the predictions? 3.`vote`aggregation for multi-class classification: how to manage
+   ties (3 votes for 3 different classes)? 4. Can`target_id`be automatically derived from`sample_id`when 1:1? Or should we always make it explicit in`SampleRelation`?
 
 ### 3.7 ML_DATA vs DAG-ML
 
 | ML_DATA                                                        | DAG-ML                                          |
 |----------------------------------------------------------------|-------------------------------------------------|
 | Fournit `SampleRelation` complet (target_id, group_id)         | Choisit `split_unit="target"`                   |
-| Materialize retourne 1200 obs, pas 400 samples                 | Aggregator node consomme PredictionBlock obs    |
-| Aucune agregation: garde les obs telles quelles                | Implemente `robust_mean` + outlier exclusion    |
-| Stocke `observation_id` dans chaque DataBlock                  | Persiste les 2 niveaux de PredictionBlock       |
+| Materialize returns 1200 observations, not 400 samples         | Aggregator node consumes observation-level PredictionBlock |
+| No aggregation: keeps the obs as is                | Implemente `robust_mean` + outlier exclusion    |
+| Stores`observation_id`in each DataBlock                  | Persists the 2 levels of PredictionBlock       |
 
-### 3.8 Resultat attendu
+### 3.8 Expected result
 
-- 2 PredictionBlocks par fold: obs-level (1200 OOF) et sample-level (400 OOF).
-- Bundle: 1 PLS (refit final) + adapters + `SampleRelation` rejoue au predict.
-- Metric: `rmsecv_sample` (primary), `rmsecv_obs` (secondary).
+- 2 PredictionBlocks per fold: obs-level (1200 OOF) and sample-level (400 OOF). - Bundle: 1 PLS (final refit) + adapters +`SampleRelation`replays predict. - Metric:`rmsecv_sample`(primary),`rmsecv_obs`(secondary).
 
 ---
 
-## UC4 - Split-unit par entite (patients / parcelles / lots)
+## UC4 - Split unit by entity (patients / plots / lots)
 
-### 4.1 Contexte metier
+### 4.1 Business context
 
-Etude clinique multi-patients: prediction d'un score biochimique a partir de
-spectres Raman + parametres cliniques. Chaque patient genere 5 a 15 mesures
-sur 2 ans. Le risque de leakage temporel et inter-patient impose un split au
-niveau `patient_id`.
+Multi-patient clinical study: prediction of a biochemical score from
+Raman spectra + clinical parameters. Each patient generates 5 to 15 measurements
+over 2 years. The risk of temporal and inter-patient leakage requires a split at the`patient_id`level.
 
-### 4.2 Donnees impliquees
+### 4.2 Involved data
 
 | Source     | Type            | Granularity              | sample_id        | group_id      | N samples |
 |------------|-----------------|--------------------------|------------------|---------------|-----------|
@@ -518,7 +473,7 @@ niveau `patient_id`.
 
 300 patients, 8 mesures moyennes/patient.
 
-### 4.3 Pipeline DSL souhaite
+### 4.3 Desired DSL pipeline
 
 ```python
 from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
@@ -550,7 +505,7 @@ pipeline = [
 ]
 ```
 
-### 4.4 DAG resultant
+### 4.4 Resulting DAG
 
 ```text
 materialize(raman)    +-> SNV+SG1 -+
@@ -571,33 +526,24 @@ materialize(clin)     +-> tab.enc -+--> align(exact) --> fusion.join
                                                        OOF preds (per meas), grouped by patient
 ```
 
-Nodes-cles:
+Key nodes:
 
 | Node id      | kind       | Notes                                            |
 |--------------|------------|--------------------------------------------------|
-| `rel:raman`  | sample_rel | retourne `group_ids = patient_id`                |
+| `rel:raman`  | sample_rel | returns `group_ids = patient_id`                |
 | `split:sgkf` | split      | StratifiedGroupKFold, garantit no-patient-cross  |
 
-### 4.5 Invariants ML cles
+### 4.5 Key ML invariants
 
-- Aucun patient n'apparait simultanement dans train et val du meme fold.
-- Stratification sur quantiles de y (regression) ou classes (classif).
-- OOF: predictions sont OOF au niveau `meas_<n>`, on peut aussi agreger
-  patient-level via un `Aggregator` optionnel.
-- Reproductibilite: `random_state=0` + `SeedContext` hierarchique.
-- `join="exact"` impose que raman et clin aient exactement les memes
-  `sample_id` (mesures jumelees, pas de manquant).
+- No patient appears simultaneously in train and valley of the same fold. - Stratification on quantiles of y (regression) or classes (classif). - OOF: predictions are OOF at the`meas_<n>`level, we can also aggregate
+  patient-level via an optional`Aggregator`. - Reproducibility:`random_state=0`+`SeedContext`hierarchical. -`join="exact"`requires that raman and clin have exactly the same`sample_id`(twin measurements, no missing).
 
-### 4.6 Points de friction
+### 4.6 Friction points
 
-1. Si un patient n'a que 2 mesures, le fold val pourrait avoir trop peu de
-   donnees. Quelle taille minimum par patient ? Imposer ou warning ?
-2. Stratification + groupes est non-trivial (`StratifiedGroupKFold` est greedy).
-   Faut-il accepter un ecart de distribution de y entre folds ?
-3. Predict-time: si un nouveau patient arrive avec 1 seule mesure, le bundle
-   doit-il accepter ? Oui, `group_id` n'est utilise qu'au split.
-4. Comment exposer le mapping `patient_id -> [sample_ids]` dans le manifest
-   sans gonfler la taille du bundle ?
+1. If a patient only has 2 measurements, the fold val might have too few
+   data. What minimum size per patient? Impose or warning? 2. Stratification + groups is non-trivial (`StratifiedGroupKFold`is greedy). Should we accept a distribution gap of y between folds? 3. Predict-time: if a new patient arrives with only 1 measurement, the bundle
+   should he accept? Yes,`group_id`is only used in split. 4. How to expose the`patient_id -> [sample_ids]`mapping in the manifest
+   without inflating the bundle size?
 
 ### 4.7 ML_DATA vs DAG-ML
 
@@ -605,27 +551,25 @@ Nodes-cles:
 |------------------------------------------------------|-----------------------------------------------------|
 | Expose `SampleRelation.group_ids = patient_id`       | Selectionne `split_unit="group"`                    |
 | AlignmentPolicy(exact) enforce sample-id parity      | Splitter `StratifiedGroupKFold` consomme groups     |
-| Aucun split, aucune connaissance de fold             | Persiste mapping patient -> folds dans manifest     |
+| No split, no knowledge of fold             | Persiste mapping patient -> folds dans manifest     |
 
-### 4.8 Resultat attendu
+### 4.8 Expected result
 
-- PredictionBlocks par fold avec `sample_ids=meas_*` et `group_ids=patient_*`.
-- Bundle: Ridge + adapters + `SampleRelation` partiel (les patient_ids du train).
-- Metric: rmsecv_meas + rmsecv_patient_mean.
+- PredictionBlocks by fold with`sample_ids=meas_*`and`group_ids=patient_*`. - Bundle: Ridge + adapters + partial`SampleRelation`(the patient_ids of the train). - Metric: rmsecv_meas + rmsecv_patient_mean.
 
 ---
 
 ## UC5 - Augmentation train-only avec OOF correct
 
-### 5.1 Contexte metier
+### 5.1 Business context
 
-Dataset NIRS reduit (180 samples). Application d'augmentations (bruit gaussien,
-shift wavelength, mixup local) pour ameliorer la generalisation, sans contamination
-inter-fold. La validation et le test doivent rester non-augmentes; les OOF
-predictions doivent etre faites pour les samples originaux du fold val, pas
-pour leurs copies generees au train.
+Reduced NIRS dataset (180 samples). Application of augmentations (Gaussian noise,
+shift wavelength, local mixup) to improve generalization, without contamination
+inter-fold. Validation and testing must remain unaugmented; the OOFs
+predictions must be made for the original fold val samples, not
+for their copies generated at the train.
 
-### 5.2 Donnees impliquees
+### 5.2 Involved data
 
 | Source      | Type            | Granularity            | N originaux | apres aug train | sample_id  | origin_id   |
 |-------------|-----------------|------------------------|-------------|------------------|------------|-------------|
@@ -634,7 +578,7 @@ pour leurs copies generees au train.
 
 `inherit_target=True`, `inherit_group=True`.
 
-### 5.3 Pipeline DSL souhaite
+### 5.3 Desired DSL pipeline
 
 ```python
 from nirs4all.operators.augmentation import (
@@ -667,7 +611,7 @@ pipeline = [
 ]
 ```
 
-### 5.4 DAG resultant
+### 5.4 Resulting DAG
 
 ```text
                        KFold(5, shuffle, rs=42)
@@ -705,68 +649,55 @@ PLS(12) fit on 576 augmented train       PLS.predict(val 36 originals)
                   Final PLS + AugmentationAdapter artifact (params, seed) persisted
 ```
 
-### 5.5 Invariants ML cles
+### 5.5 Key ML invariants
 
-- `forbid_validation_augmentation=True`: l'augmentation tourne sur la view
-  `partition="train"` du fold, jamais `val`.
-- `origin_ids` est rempli par l'`AugmentationAdapter` -> DAG-ML verifie que
-  pour tout sample S de val_k, aucune ligne train_k n'a `origin_id=S`.
-  Violation -> `LeakageError`.
-- OOF: 180 predictions (1 par original), pas 720. Les copies augmentees ne
-  recoivent jamais de prediction OOF (elles n'ont pas de Y de validation).
-- Reproductibilite: `SeedContext.child(node_id="aug:noise", fold_id=k)` derive
-  un seed deterministe; le bundle stocke la sequence `(seed, multiplier)`.
-- Refit: `apply_to="train_only"` (default) signifie "augmente toutes les
-  partitions train", ce qui inclut les CV train folds ET le refit final
-  (180 -> 720). Le bundle persiste `AugmentationAdapter` mais le predict ne
-  le rejoue pas (les nouveaux samples ne sont pas augmentes). Pour un refit
-  SANS reaugmentation, utiliser `apply_to="cv_only"` explicitement.
+-`forbid_validation_augmentation=True`: the increase turns on the view`partition="train"`of the fold, never`val`. -`origin_ids`is filled by`AugmentationAdapter`-> DAG-ML verifies that
+  for any sample S of val_k, no line train_k has`origin_id=S`. Violation ->`LeakageError`. - OOF: 180 predictions (1 per original), not 720. Augmented copies do not
+  never receive an OOF prediction (they do not have a validation Y). - Reproducibility:`SeedContext.child(node_id="aug:noise", fold_id=k)`derivative
+  a deterministic seed; the bundle stores the`(seed, multiplier)`sequence. - Refit:`apply_to="train_only"`(default) means "increases all
+  train partitions", which includes the CV train folds AND the final refit
+  (180 -> 720). The bundle persists`AugmentationAdapter`but the predict does not
+  does not play it again (the new samples are not increased). For a refit
+  WITHOUT re-increase, use`apply_to="cv_only"`explicitly.
 
-### 5.6 Points de friction
+### 5.6 Friction points
 
-1. Refit final reapplique-t-il l'augmentation ? Resolu (Q18): default
-   `apply_to="train_only"` = augmenter en CV ET au refit (le modele shippe
-   match la distribution OOF). Opt-out explicite via `apply_to="cv_only"`.
-2. `Mixup` croise deux samples train pour creer un nouveau. Quel `origin_id` ?
-   Conserver les deux (`origin_ids = (id_a, id_b)`) demande un schema list
-   pour `origin_id`. Spec dit single -> faut-il etendre ?
-3. Quand un meta-modele consomme des predictions OOF (UC6), faut-il les
-   produire au niveau origin ou au niveau augmented ? Reponse: origin only.
-4. L'augmentation est lossy par definition. Comment marquer le lineage pour que
-   le predict ne l'applique pas par accident ?
+1. Does Final Refit reapply the augmentation? Solved (Q18): default`apply_to="train_only"`= increase in CV AND at refit (the model ships
+   match the OOF distribution). Explicit opt-out via`apply_to="cv_only"`. 2.`Mixup`crosses two train samples to create a new one. Which`origin_id`? Keeping both (`origin_ids = (id_a, id_b)`) requires a schema list
+   for`origin_id`. Spec says single -> should we extend? 3. When a meta-model consumes OOF predictions (UC6), should they be
+   produce at the original level or at the augmented level? Answer: origin only. 4. Augmentation is lossy by definition. How to mark the lineage so that
+   predict doesn't apply it by accident?
 
 ### 5.7 ML_DATA vs DAG-ML
 
 | ML_DATA                                                | DAG-ML                                              |
 |--------------------------------------------------------|-----------------------------------------------------|
-| `AugmentationAdapter.transform()` produit DataBlock + SampleRelation | Decide quand l'appeler (uniquement view train d'un fold) |
+| `AugmentationAdapter.transform()` produces DataBlock + SampleRelation | Decide when to call it (only view train of a fold) |
 | Stocke `origin_id` non-None dans SampleRelation         | Verifie `forbid_validation_augmentation` invariant  |
-| Persiste `random_state` dans FittedAdapter             | Refuse de faire OOF sur lignes augmentees           |
+| Persiste `random_state` dans FittedAdapter             | Refuses to do OOF on augmented lines           |
 
-### 5.8 Resultat attendu
+### 5.8 Expected result
 
-- 180 OOF predictions (originaux).
-- Bundle: PLS + adapters + AugmentationAdapter (avec seed) marque `phase=REFIT`.
-- Lineage: chaque AugmentedRow porte `lineage=("aug.noise", "aug.shift")`.
+- 180 OOF predictions (originals). - Bundle: PLS + adapters + AugmentationAdapter (with seed) brand`phase=REFIT`. - Lineage: each AugmentedRow carries`lineage=("aug.noise", "aug.shift")`.
 
 ---
 
 ## UC6 - Stacking multi-niveau (3 preprocs/models + meta Ridge)
 
-### 6.1 Contexte metier
+### 6.1 Business context
 
-Estimer une concentration chimique a partir d'un spectre NIRS, en combinant
-3 voies preprocessing/modele complementaires (SNV+PLS, MSC+RF, Detrend+SVR)
-via un meta-modele Ridge entraine sur les predictions OOF.
+Estimate a chemical concentration from a NIRS spectrum, by combining
+3 complementary preprocessing/model channels (SNV+PLS, MSC+RF, Detrend+SVR)
+via a Ridge meta-model trains on OOF predictions.
 
-### 6.2 Donnees impliquees
+### 6.2 Involved data
 
 | Source     | Type             | Granularity   | N samples |
 |------------|------------------|---------------|-----------|
 | `nir`      | `dense_signal`   | `per_sample`  | 500       |
 | target `y` | `table` (numeric)| `per_sample`  | 500       |
 
-### 6.3 Pipeline DSL souhaite
+### 6.3 Desired DSL pipeline
 
 ```python
 from sklearn.ensemble import RandomForestRegressor
@@ -794,7 +725,7 @@ pipeline = [
 ]
 ```
 
-### 6.4 DAG resultant
+### 6.4 Resulting DAG
 
 ```text
                        KFold(5, rs=42)  (level-0 outer CV)
@@ -851,39 +782,28 @@ Nodes:
 | `model:ridge`        | model        | meta-modele                                     |
 | `refit:final`        | refit        | refit base + meta on full data                  |
 
-### 6.5 Invariants ML cles
+### 6.5 Key ML invariants
 
-- Memes folds outer pour les 3 branches (meme `random_state` + meme `split:outer`).
-- `PredictionJoinNode` refuse par defaut tout `PredictionBlock` non-OOF
-  (`partition != "val"`). Si une branche a leak son train, raise.
-- Le meta-modele Ridge consomme uniquement les OOF -> taille (500, 3).
-- Inner CV pour Ridge peut differer; ne change pas la base.
-- Refit: base learners refit sur full train. Meta Ridge refit sur les OOF
-  produites par l'inner CV pre-refit (pas les preds des base learners refit,
-  sinon train leak).
-- `allow_train_predictions_as_features=False` est explicite (default).
-  Voir UC11 pour l'opt-in.
+- Same folds outer for the 3 branches (same`random_state`+ same`split:outer`). -`PredictionJoinNode`refuses by default any non-OOF`PredictionBlock`(`partition != "val"`). If a branch has leaked, raise. - The Ridge meta-model only consumes OOF -> size (500, 3). - Inner CV for Ridge may differ; don't change the base. - Refit: basic learners refit on full train. Meta Ridge refit on OOF
+  produced by the inner CV pre-refit (not the base learners refit preds,
+  otherwise train leak). -`allow_train_predictions_as_features=False`is explicit (default). See UC11 for opt-in.
 
-### 6.6 Points de friction
+### 6.6 Friction points
 
-1. Doit-on stacker les predictions OOF brutes ou des probabilites/quantiles ?
-   Pour regression: y_pred direct. Pour classification: y_proba.
-2. Inner CV du meta peut-il etre `LeaveOneOut` quand N=500 ? Couteux, mais
-   ne change pas la validite du stacking.
-3. Si 2 branches sont quasi-identiques (correlation 0.99 entre preds), le meta
-   Ridge va surfit ces 2. Faut-il un decorrelator amont (drop, PCA) ?
-4. Pour le refit, faut-il refit les base learners avec exactement les memes
-   hyperparams que le meilleur fold ou avec l'agg de tous les folds ?
+1. Should we stack raw OOF predictions or probabilities/quantiles? For regression: y_pred direct. For classification: y_proba. 2. Can Inner CV of the meta be`LeaveOneOut`when N=500? Expensive, but
+   does not change the validity of the stacking. 3. If 2 branches are quasi-identical (correlation 0.99 between preds), the meta
+   Ridge will surf these 2. Do we need an upstream decorrelator (drop, PCA)? 4. For the refit, do we need to refit the basic learners with exactly the same
+   hyperparams as the best fold or with the agg of all folds?
 
 ### 6.7 ML_DATA vs DAG-ML
 
 | ML_DATA                                                       | DAG-ML                                              |
 |---------------------------------------------------------------|-----------------------------------------------------|
-| Materialize nir + applique adapters (SNV, MSC, Detrend)       | Fork/join, validation OOF, refus si non-OOF         |
-| Fournit FeatureTable des preds OOF avec source_ids par col    | Refuse train preds par defaut (opt-in flag explicite) |
-| Aucune connaissance du meta-modele                            | Inner CV du meta, refit infrastructure              |
+| Materialize nir + applique adapters (SNV, MSC, Detrend)       | Fork/join, OOF validation, refusal if non-OOF         |
+| Provides FeatureTable of OOF preds with source_ids per col    | Refuse train preds par defaut (opt-in flag explicite) |
+| No knowledge of the meta-model                            | Inner CV du meta, refit infrastructure              |
 
-### 6.8 Resultat attendu
+### 6.8 Expected result
 
 - 1500 OOF preds base (500 x 3) + 500 OOF preds meta.
 - Bundle: 3 base learners refit + Ridge meta refit + 3 caches OOF.
@@ -893,20 +813,20 @@ Nodes:
 
 ## UC7 - Generateurs + tuning bayesien
 
-### 7.1 Contexte metier
+### 7.1 Business context
 
-Recherche d'hyperparametres a grande echelle: croiser plusieurs preprocessings
-candidats, plusieurs familles de modeles, plusieurs grid combinations, plus
-un tuning bayesien sur les params continus (alpha, gamma). Enumeration lazy.
+Large-scale hyperparameter search: crossing several preprocessings
+candidates, several model families, several grid combinations, more
+a Bayesian tuning on the continuous params (alpha, gamma). Lazy enumeration.
 
-### 7.2 Donnees impliquees
+### 7.2 Involved data
 
 | Source     | Type             | Granularity   | N samples |
 |------------|------------------|---------------|-----------|
 | `nir`      | `dense_signal`   | `per_sample`  | 800       |
 | target `y` | `table` (numeric)| `per_sample`  | 800       |
 
-### 7.3 Pipeline DSL souhaite
+### 7.3 Desired DSL pipeline
 
 ```python
 pipeline = [
@@ -937,7 +857,7 @@ pipeline = [
 ]
 ```
 
-### 7.4 DAG resultant
+### 7.4 Resulting DAG
 
 ```text
 SearchSpace (lazy):
@@ -972,53 +892,42 @@ Nodes:
 | `split:cv`        | split       | KFold(5) shared across trials                        |
 | `model:<kind>`    | model       | depends on trial                                     |
 
-### 7.5 Invariants ML cles
+### 7.5 Key ML invariants
 
-- Chaque trial respecte l'OOF: 5-fold CV stricte.
-- Stateful adapters (SG) sont fit fold-train uniquement.
-- Reproductibilite: `SeedContext.child(trial_id=k)` derive `random_state`.
-- Tuner separation: `TunerAdapter` ne voit pas les val data, seulement la
-  score `rmsecv`.
-- Pruning bayesien autorise mais doit logger `trial.state="pruned"`.
-- Refit: meilleur variant uniquement, pas tous les trials.
+- Each trial respects the strict OOF: 5-fold CV. - Stateful adapters (SG) are fit fold-train only. - Reproducibility:`SeedContext.child(trial_id=k)`derives`random_state`. - Tuner separation:`TunerAdapter`does not see the val data, only the`rmsecv`score. - Bayesian pruning authorizes but must log`trial.state="pruned"`. - Refit: best variant only, not all trials.
 
-### 7.6 Points de friction
+### 7.6 Friction points
 
-1. Comment definir le `SearchSpace` pour mix discret (`_cartesian_`, `_grid_`)
-   et continu (`_sample_`) ? Tuner bayesien attend des bornes continues.
-2. Doit-on faire du `early_stopping` (Hyperband, BOHB) pour eviter de finir
-   des trials clairement perdants apres 1 fold ?
-3. Si un trial fail (operator incompatible), comment marquer sans corrompre
-   l'historique du tuner ? `TrialResult.state="error"` + ne pas record score.
-4. La transmission des `params` du tuner au noeud `model` et au noeud `adapt`
+1. How to set`SearchSpace`for discrete mix (`_cartesian_`,`_grid_`)
+   and continuous (`_sample_`)? Bayesian tuner expects continuous bounds. 2. Should we do`early_stopping`(Hyperband, BOHB) to avoid ending up
+   trials clearly losing after 1 fold? 3. If a trial fails (operator incompatible), how to mark without corrupting
+   tuner history?`TrialResult.state="error"`+ does not record score. 4. Transmission of`params`from the tuner to the`model`node and to the`adapt`node
    simultanement: format unifie ou per-node ?
 
 ### 7.7 ML_DATA vs DAG-ML
 
 | ML_DATA                                                       | DAG-ML                                              |
 |---------------------------------------------------------------|-----------------------------------------------------|
-| Materialize nir + applique l'adapter (SNV/MSC/...) du trial   | Implemente `SearchSpace`, `TunerAdapter`            |
-| Aucune connaissance des trials                                | Enumeration lazy, scheduling, pruning              |
-| Persiste `random_state` derive                                | Persiste tous les `TrialResult` dans le manifest    |
+| Materialize nir + applies the trial adapter (SNV/MSC/...)   | Implemente `SearchSpace`, `TunerAdapter`            |
+| No knowledge of trials                                | Enumeration lazy, scheduling, pruning              |
+| Persiste `random_state` derive                                | Persist all`TrialResult`in manifest    |
 
-### 7.8 Resultat attendu
+### 7.8 Expected result
 
-- 40 `TrialResult` (params, score, time, pruned flag).
-- 1 `SelectedGraph` correspondant au meilleur trial.
-- Bundle refit + journal complet des trials (utile pour reporting Bayes).
+- 40`TrialResult`(params, score, time, pruned flag). - 1`SelectedGraph`corresponding to the best trial. - Refit bundle + complete trial log (useful for Bayes reporting).
 
 ---
 
-## UC8 - Branches par metadata, merge concat
+## UC8 - Branches by metadata, merge concat
 
-### 8.1 Contexte metier
+### 8.1 Business context
 
-Dataset NIRS multi-site (3 sites de production: A/B/C). Hypothese: chaque site
-a des biais d'instrument differents et un modele specifique par site est plus
-performant qu'un modele global. Apres entrainement par site, concatenation des
-predictions pour produire une PredictionBlock unifiee (alignee `sample_id`).
+Multi-site NIRS dataset (3 production sites: A/B/C). Hypothesis: each site
+has different instrument biases and a site-specific model is more
+efficient than a global model. After training by site, concatenation of
+predictions to produce a unified PredictionBlock (`sample_id`aligned).
 
-### 8.2 Donnees impliquees
+### 8.2 Involved data
 
 | Source     | Type             | Granularity   | Metadata `site` | N par site | Total |
 |------------|------------------|---------------|-----------------|------------|-------|
@@ -1026,7 +935,7 @@ predictions pour produire une PredictionBlock unifiee (alignee `sample_id`).
 | `meta`     | `table`          | `per_sample`  | site, year, op  | 750        | 750   |
 | target `y` | `table` (num)    | `per_sample`  | -               | -          | 750   |
 
-### 8.3 Pipeline DSL souhaite
+### 8.3 Desired DSL pipeline
 
 ```python
 pipeline = [
@@ -1050,7 +959,7 @@ pipeline = [
 ]
 ```
 
-### 8.4 DAG resultant
+### 8.4 Resulting DAG
 
 ```text
                        src:nir + src:meta
@@ -1076,7 +985,7 @@ pipeline = [
                   Unified PredictionBlock (750, ordered)
 ```
 
-Nodes-cles:
+Key nodes:
 
 | Node id           | kind        | Notes                                            |
 |-------------------|-------------|--------------------------------------------------|
@@ -1084,53 +993,42 @@ Nodes-cles:
 | `branch:A/B/C`    | subgraph    | independent CV + model per branch                |
 | `merge:concat`    | prediction_join | reassemble sample order, no overlap            |
 
-### 8.5 Invariants ML cles
+### 8.5 Key ML invariants
 
-- Separation: les 3 branches sont disjointes (intersection vide sur sample_id).
-- Chaque branche fait sa propre CV (folds disjoints intra-branche).
-- Merge `concat` exige union exacte = ensemble des sample_ids -> erreur si
-  un sample n'est dans aucune branche (incoherence metadata).
-- OOF: chaque sample a 1 prediction OOF (sa branche), pas 3.
-- Refit: 3 modeles refit independamment, bundle contient les 3.
-- Predict-time: nouveau sample classe par `site` (lookup metadata), dispatch
-  vers le bon modele du bundle.
+- Separation: the 3 branches are disjoint (empty intersection on sample_id). - Each branch makes its own CV (disjoint intra-branch folders). - Merge`concat`requires exact union = set of sample_ids -> error if
+  a sample is not in any branch (metadata inconsistency). - OOF: each sample has 1 OOF prediction (its branch), not 3. - Refit: 3 models refit independently, bundle contains all 3. - Predict-time: new sample classified by`site`(lookup metadata), dispatch
+  to the correct bundle model.
 
-### 8.6 Points de friction
+### 8.6 Friction points
 
-1. Un site avec trop peu de samples (ex: 50) ne supporte pas 5 folds. Fallback
-   automatique vers 3 folds ou erreur ?
-2. Comment gerer un nouveau site `D` au predict ? Strategies: error, fallback
-   au modele global (s'il existe), nearest neighbour site.
-3. Faut-il toujours produire un modele "global" comme reference ? Option du DSL.
-4. Si on veut comparer 3 modeles separes vs 1 modele global, on cree deux
-   variants. Comment les coexister dans le meme run ?
+1. A site with too few samples (ex: 50) does not support 5 folds. Fallback
+   automatic towards 3 folds or error? 2. How to manage a new`D`site in predict? Strategies: error, fallback
+   to the global model (if it exists), nearest neighbor site. 3. Should we always produce a “global” model as a reference? DSL option. 4. If we want to compare 3 separate models vs 1 global model, we create two
+   variants. How can they coexist in the same run?
 
 ### 8.7 ML_DATA vs DAG-ML
 
 | ML_DATA                                                | DAG-ML                                              |
 |--------------------------------------------------------|-----------------------------------------------------|
 | Materialize `meta` + expose colonne `site`             | ForkNode interprete `by_metadata="site"`            |
-| Fournit DataView avec sous-ensemble de sample_ids      | Gere CV par branche (folds independants)            |
-| Aucune separation par metadata cote data               | Merge concat valide non-overlap                     |
+| Provide DataView with subset of sample_ids      | Gere CV par branche (folds independants)            |
+| No separation by metadata side data               | Merge concat valide non-overlap                     |
 
-### 8.8 Resultat attendu
+### 8.8 Expected result
 
-- 3 modeles refit + 1 PredictionBlock concatene (750 OOF).
-- Bundle: dict des modeles par site + `site -> sample_ids` mapping.
-- Metric: rmsecv global + par site.
+- 3 refit models + 1 concatenate PredictionBlock (750 OOF). - Bundle: dictate models per site +`site -> sample_ids`mapping. - Metric: global rmsecv + per site.
 
 ---
 
 ## UC9 - Refit + bundle + predict new heterogene
 
-### 9.1 Contexte metier
+### 9.1 Business context
 
-Apres entrainement UC1, deployer le bundle sur 50 nouveaux echantillons recus
-6 mois plus tard. Verifier la compatibilite du schema (fingerprint), gerer
-le cas ou `photo_side` manque pour 5 echantillons, refuser si le `weather`
-arrive avec un schema different (changement de capteur).
+After UC1 training, deploy the bundle on 50 new samples received
+6 months later. Check schema compatibility (fingerprint), manage
+in the case where`photo_side`is missing for 5 samples, refuse if the`weather`arrives with a different diagram (change of sensor).
 
-### 9.2 Donnees impliquees
+### 9.2 Involved data
 
 | Source       | Train (UC1) | Predict (new)   | Schema diff |
 |--------------|-------------|------------------|-------------|
@@ -1158,7 +1056,7 @@ result = dagml.predict(
 )
 ```
 
-### 9.4 DAG resultant (predict)
+### 9.4 Resulting DAG (predict)
 
 ```text
 load_bundle("uc1_protein.bundle")
@@ -1186,30 +1084,21 @@ execute_transform(data_plan, new_dataset, view=full, fitted=adapters):
 returns PredictionBlock(partition="predict", sample_ids=new, y_pred=...)
 ```
 
-### 9.5 Invariants ML cles
+### 9.5 Key ML invariants
 
-- `schema_fingerprint` recalcule avec les memes sources + fusion + adapter
-  specs. Mismatch -> default refuse.
-- Aucun fit a predict-time. Tous les adapters stateful viennent du bundle.
-- `photo_side` manquant: la presence mask de la nouvelle data alimente la
-  colonne `indicator__photo_side_present` (logique du joiner train).
-- `weather` schema diverge -> erreur claire avec payload structure {expected,
-  got, diff}.
-- Reproductibilite: meme ordre de colonnes que train (lock par le FeatureJoiner).
-- Lineage: PredictionBlock porte `bundle_id`, `bundle_version`.
+-`schema_fingerprint`recalculates with the same sources + merge + adapt
+  specs. Mismatch -> default refuses. - No fit to predict-time. All stateful adapters come from the bundle. -`photo_side`missing: the presence mask of the new data feeds the
+  column`indicator__photo_side_present`(joiner train logic). -`weather`schema diverges -> clear error with payload structure {expected,
+  got, diff}. - Reproducibility: same order of columns as train (lock by the FeatureJoiner). - Lineage: PredictionBlock carries`bundle_id`,`bundle_version`.
 
-### 9.6 Points de friction
+### 9.6 Friction points
 
-1. Quels champs comparer dans le fingerprint ? Sources (id+axes), fusion policy,
-   adapter ids + versions. Pas les sample_ids (qui changent toujours).
-2. Que faire si une source train est `optional=True` dans `ModelInputSpec`
-   et absente au predict ? La spec dit OK; mais le RF a appris avec, donc
-   degradation possible -> warning.
-3. Comment migrer entre majeures (image embedding v1 -> v2) ? Re-fit ou
-   refus ? `PluginVersionError` + path de migration explicite.
-4. Le DataPlan stocke `adapter_id` + `params`. Si l'utilisateur a redefini
-   un adapter avec le meme id mais semantique differente, le bundle est
-   silencieusement compromis. Hash de l'implementation requis ?
+1. Which fields to compare in the fingerprint? Sources (id+axes), fusion policy,
+   adapt ids + versions. Not the sample_ids (which always change). 2. What to do if a train source is`optional=True`in`ModelInputSpec`and absent from the forecast? The spec says OK; but the RF learned with it, so
+   possible degradation -> warning. 3. How to migrate between majors (image embedding v1 -> v2)? Re-fit or
+   refusal?`PluginVersionError`+ explicit migration path. 4. The DataPlan stores`adapter_id`+`params`. If the user has redefined
+   an adapter with the same id but different semantics, the bundle is
+   silently compromised. Implementation hash required?
 
 ### 9.7 ML_DATA vs DAG-ML
 
@@ -1217,28 +1106,25 @@ returns PredictionBlock(partition="predict", sample_ids=new, y_pred=...)
 |---------------------------------------------------------------|-----------------------------------------------------|
 | Calcule `schema_fingerprint(schema, fusion, adapters)`        | Compare fingerprint et decide accept/refuse         |
 | `execute_transform(plan, fitted, view)` rejoue le DataPlan    | Charge le bundle, dispatch predict                  |
-| Refuse si plugin manquant ou version out-of-range            | Refuse si schema_check echoue                       |
+| Reject if missing plugin or out-of-range version            | Reject if schema_check fails                       |
 
-### 9.8 Resultat attendu
+### 9.8 Expected result
 
-- `PredictionBlock(partition="predict", sample_ids=new50, y_pred=...)`.
-- Aucun nouvel artifact (predict est pur read-only sur le bundle).
-- Si fingerprint mismatch: `SchemaFingerprintMismatch` avec payload JSON
-  detaillant la diff. Pas de prediction silencieuse.
+-`PredictionBlock(partition="predict", sample_ids=new50, y_pred=...)`. - No new artifacts (predict is pure read-only on the bundle). - If fingerprint mismatch:`SchemaFingerprintMismatch`with JSON payload
+  detailing the difference. No silent prediction.
 
 ---
 
-## UC10 - Sous-DAG reifie comme noeud (SubgraphNodeSpec)
+## UC10 - SubDAG reified as node (SubgraphNodeSpec)
 
-### 10.1 Contexte metier
+### 10.1 Business context
 
-Une equipe NIRS a developpe un sous-pipeline "NIR canonical preproc + PLS"
-generique reutilise dans 5 projets. Le packager comme `SubgraphNodeSpec`
-versionne, puis l'inserer comme noeud dans un nouveau DAG plus large (par
-exemple, alimenter un meta-stacking avec ce sous-DAG comme une "base learner"
-parmi d'autres). Choisir `inline` vs `opaque` selon le besoin de cache fin.
+A NIRS team developed a “NIR canonical preproc + PLS” sub-pipeline
+generic reused in 5 projects. Package it like`SubgraphNodeSpec`version, then insert it as a node in a new, larger DAG (by
+example, feed a meta-stacking with this sub-DAG as a “base learner”
+among others). Choose`inline`vs`opaque`depending on the need for thin cache.
 
-### 10.2 Donnees impliquees
+### 10.2 Involved data
 
 | Source     | Type             | Granularity   | N samples |
 |------------|------------------|---------------|-----------|
@@ -1246,7 +1132,7 @@ parmi d'autres). Choisir `inline` vs `opaque` selon le besoin de cache fin.
 | `tab`      | `table`          | `per_sample`  | 1000      |
 | target `y` | `table` (num)    | `per_sample`  | 1000      |
 
-### 10.3 Pipeline DSL souhaite
+### 10.3 Desired DSL pipeline
 
 ```python
 # Sub-DAG defined once and registered:
@@ -1302,7 +1188,7 @@ pipeline = [
 ]
 ```
 
-### 10.4 DAG resultant
+### 10.4 Resulting DAG
 
 ```text
 Parent DAG (compiled):
@@ -1346,64 +1232,54 @@ inline_policy="auto":
   - opaque otherwise
 ```
 
-### 10.5 Invariants ML cles
+### 10.5 Key ML invariants
 
-- `GraphInterface` doit etre declaree pour qu'un sous-DAG soit composable.
-- Compatibility check: `input_mapping["X"].representation` doit etre compatible
-  avec `PortSpec.representation` du sous-DAG.
-- OOF: que ce soit inline ou opaque, le sous-DAG respecte son propre invariant
-  OOF (fold-train pour les adapters stateful).
-- Reproductibilite: `SeedContext.child(node_id="branch:nir_canon", ...)`
-  derive le seed du sous-DAG (root_seed + subgraph_id + fold_id).
-- Refit: le sous-DAG est refit comme une unite.
-- Versioning: `SerializableRef(version="1.2.0")` -> upgrade `1.3.0` doit etre
-  explicit (le bundle stocke la version exacte).
+-`GraphInterface`must be declared for a sub-DAG to be composable. - Compatibility check:`input_mapping["X"].representation`must be compatible
+  with`PortSpec.representation`of sub-DAG. - OOF: whether inline or opaque, the sub-DAG respects its own invariant
+  OOF (fold-train for stateful adapters). - Reproducibility:`SeedContext.child(node_id="branch:nir_canon", ...)`derive the seed from the subDAG (root_seed + subgraph_id + fold_id). - Refit: the sub-DAG is refit as a unit. - Versioning:`SerializableRef(version="1.2.0")`-> upgrade`1.3.0`must be
+  explicit (the bundle stores the exact version).
 
-### 10.6 Points de friction
+### 10.6 Friction points
 
-1. Si un sous-DAG opaque a son propre SearchSpace, doit-il apparaitre dans le
-   tuner du parent ou non ? Reponse v1: non, opacite = scope ferme.
-2. Pour `inline`, le planner doit-il refuser si deux sous-DAGs ont des noeuds
-   de meme id ? Solution: prefixer par `subgraph_id`.
-3. Pour `inline_policy="auto"`, quel critere precis declenche `inline` ? Reuse
-   detecte par hash de l'IR amont ? Score d'utilite ?
-4. Un sous-DAG peut-il etre un DAG-ML d'une version differente du parent ? Si
-   oui, contrats `ml_data.contract` version-stables (v1 -> v1 ok), majeure
-   different -> refus.
+1. If an opaque sub-DAG has its own SearchSpace, should it appear in the
+   parent tuner or not? Answer v1: no, opacity = closed scope. 2. For`inline`, should the planner refuse if two sub-DAGs have nodes
+   same id? Solution: prefix with`subgraph_id`. 3. For`inline_policy="auto"`, what precise criterion triggers`inline`? Reuse
+   detected by hash of the upstream IR? Utility score? 4. Can a sub-DAG be a DAG-ML of a different version from the parent? If
+   yes, version-stable`ml_data.contract`contracts (v1 -> v1 ok), major
+   different -> refusal.
 
 ### 10.7 ML_DATA vs DAG-ML
 
 | ML_DATA                                            | DAG-ML                                              |
 |----------------------------------------------------|-----------------------------------------------------|
-| Aucune notion de sous-DAG                          | Definit `SubgraphNodeSpec`, `GraphInterface`        |
-| Fournit les meme contrats data au sous-DAG         | Planner decide inline vs opaque                     |
+| No concept of sub-DAG                          | Definit `SubgraphNodeSpec`, `GraphInterface`        |
+| Provides the same data contracts to the sub-DAG         | Planner decide inline vs opaque                     |
 | -                                                  | Cache key inclut `subgraph_id + version`            |
 
-### 10.8 Resultat attendu
+### 10.8 Expected result
 
-- Bundle parent contient: 1 entree pour le sous-DAG opaque (refit-as-unit),
-  les noeuds individuels pour la version inlined, et le Ridge meta.
-- Lineage: chaque PredictionBlock porte `producer_node_id` complet incluant
-  le path subgraph (ex: `branch:nir_canon/model:pls`).
+- Parent bundle contains: 1 entry for the opaque sub-DAG (refit-as-unit),
+  individual nodes for the inlined version, and the Ridge meta. - Lineage: each PredictionBlock carries complete`producer_node_id`including
+  the path subgraph (ex:`branch:nir_canon/model:pls`).
 
 ---
 
 ## UC11 - Piege OOF: train predictions refusees par defaut
 
-### 11.1 Contexte metier
+### 11.1 Business context
 
-Un utilisateur tente de stacker en utilisant les predictions de train (non-OOF)
-des base learners comme features pour le meta-modele. C'est une fuite de
-donnees classique: le meta-modele apprend a corriger les surapprentissages
-des base learners.
+A user attempts to stack using train predictions (non-OOF)
+base learners as features for the meta-model. It's a leak
+classic data: the meta-model learns to correct overfitting
+basic learners.
 
-### 11.2 Donnees impliquees
+### 11.2 Involved data
 
 | Source     | Type             | Granularity   | N samples |
 |------------|------------------|---------------|-----------|
 | `nir`      | `dense_signal`   | `per_sample`  | 500       |
 
-### 11.3 Pipeline DSL souhaite (PIEGE)
+### 11.3 Desired DSL pipeline (trap)
 
 ```python
 # User attempts:
@@ -1423,7 +1299,7 @@ pipeline = [
 ]
 ```
 
-### 11.4 DAG resultant + comportement attendu
+### 11.4 Resulting DAG + expected behavior
 
 ```text
 COMPILE phase:
@@ -1478,49 +1354,35 @@ Diagramme:
                                        (lineage marked leakage_acknowledged=True)
 ```
 
-### 11.5 Invariants ML cles
+### 11.5 Key ML invariants
 
-- DEFAULT: refuse train predictions; raise `OOFLeakageError`.
-- ESCAPE: single boolean `allow_train_predictions_as_features=True` on the
-  `PredictionJoinNode`. The verbose name does the double-confirmation work.
-- PredictionBlock porte un champ `oof_safe: bool` derive de partition + fold_id.
-- `PredictionJoinNode` validate: `all(block.oof_safe for block in inputs)` sauf
-  si le flag d'opt-in est set.
-- Lineage: la PredictionBlock du Ridge meta porte
-  `flags=["train_predictions_used"]`, et le join porte
-  `leakage_acknowledged=True`. Apparait dans le manifest, dans les
-  metriques, et dans tout report.
-- Selection: `RankingPolicy.exclude_leaky_variants=True` (default) ecarte ces
-  variants de la selection top-k automatique.
+- DEFAULT: refuse train predictions; raise`OOFLeakageError`. - ESCAPE: single boolean`allow_train_predictions_as_features=True`on the`PredictionJoinNode`. The verbose name does the double-confirmation work. - PredictionBlock carries a`oof_safe: bool`field derived from partition + fold_id. -`PredictionJoinNode`validate:`all(block.oof_safe for block in inputs)`except
+  if the opt-in flag is set. - Lineage: the PredictionBlock of the Ridge meta door`flags=["train_predictions_used"]`, and the joint carries`leakage_acknowledged=True`. Appears in the manifest, in the
+  metrics, and in any report. - Selection:`RankingPolicy.exclude_leaky_variants=True`(default) excludes these
+  variants of automatic top-k selection.
 
-### 11.6 Points de friction (3-4 questions)
+### 11.6 Friction points (3-4 questions)
 
-1. Un single flag avec nom verbose suffit-il ou faut-il une seconde confirmation
-   pour le webapp UI ? Decision v1: single flag. UI peut imposer une second
-   confirmation par-dessus (modal), mais l'API Python reste mono-flag.
-2. Faut-il aussi rejeter les predictions test (partition="test") comme features ?
-   Oui, par defaut. Sauf cas transfer learning (a discuter).
-3. Une PredictionBlock OOF mais avec un nombre de samples != train_full doit-elle
-   etre acceptee (cas augmentation: origins only)? Oui, c'est correct.
-4. Comment exposer ce message d'erreur de facon comprehensible ? Payload JSON
-   structure + traduction i18n via webapp.
+1. Is a single flag with verbose name sufficient or do we need a second confirmation
+   for the webapp UI? Decision v1: single flag. UI can impose a second
+   confirmation over (modal), but the Python API remains single-flag. 2. Should we also reject predictions test (partition="test") as features? Yes, by default. Except in the case of transfer learning (to be discussed). 3. Should an OOF PredictionBlock but with a number of samples != train_full
+   be accepted (case augmentation: origins only)? Yes, that's correct. 4. How can I present this error message in an understandable way? Payload JSON
+   structure + i18n translation via webapp.
 
 ### 11.7 ML_DATA vs DAG-ML
 
 | ML_DATA                                            | DAG-ML                                              |
 |----------------------------------------------------|-----------------------------------------------------|
-| Aucune notion de OOF / partition                   | Toute la logique OOF, OOFLeakageError              |
-| Materialize les donnees sans connaitre l'usage     | PredictionJoinNode valide partitions                |
+| No concept of OOF / partition                   | All OOF logic, OOFLeakageError              |
+| Materialize data without knowing the use     | PredictionJoinNode valide partitions                |
 | -                                                  | Definit champs `oof_safe`, `flags`, `leakage_acknowledged` |
 
-### 11.8 Resultat attendu
+### 11.8 Expected result
 
-- En mode safe (default): refus avec `OOFLeakageError` + remediation message.
-- En mode opt-in: pipeline tourne mais predictions et bundle portent
-  un drapeau permanent `train_predictions_used` + `leakage_acknowledged=True`
-  sur le join.
+- In safe mode (default): refusal with`OOFLeakageError`+ remediation message. - In opt-in mode: pipeline runs but predictions and bundle carry
+  a permanent flag`train_predictions_used`+`leakage_acknowledged=True`on the joint.
 
-Message d'erreur attendu (extrait JSON):
+Expected error message (JSON extract):
 
 ```json
 {
@@ -1540,21 +1402,21 @@ Message d'erreur attendu (extrait JSON):
 
 ## UC12 - Mixed merge: features + predictions OOF
 
-### 12.1 Contexte metier
+### 12.1 Business context
 
-Un stacking ou certaines branches contribuent leurs features transformees
-directement (preprocessings utiles tels quels, comme PCA(20)) et d'autres
-branches contribuent leurs predictions OOF (modeles non-lineaires comme RF
-ou SVR). Le meta-modele consomme l'union des deux.
+A stacking where certain branches contribute their transformed features
+directly (useful preprocessings as is, like PCA(20)) and others
+branches contribute their OOF predictions (non-linear models like RF
+or SVR). The meta-model consumes the union of the two.
 
-### 12.2 Donnees impliquees
+### 12.2 Involved data
 
 | Source     | Type             | Granularity   | N samples |
 |------------|------------------|---------------|-----------|
 | `nir`      | `dense_signal`   | `per_sample`  | 600       |
 | target `y` | `table` (num)    | `per_sample`  | 600       |
 
-### 12.3 Pipeline DSL souhaite
+### 12.3 Desired DSL pipeline
 
 ```python
 pipeline = [
@@ -1588,7 +1450,7 @@ pipeline = [
 ]
 ```
 
-### 12.4 DAG resultant
+### 12.4 Resulting DAG
 
 ```text
                        KFold(5, rs=42)
@@ -1624,106 +1486,79 @@ Nodes:
 | `mixed:join`      | mixed_join        | accepts FeatureBlock + PredictionBlock    |
 | `validate:oof`    | invariant_check   | validates partition=val for pred branches |
 
-### 12.5 Invariants ML cles
+### 12.5 Key ML invariants
 
-- Features de branche 0: `tabular.pca` fit sur fold train -> transform train et
-  val. Pour le join, seules les lignes val sont utilisees (sinon mismatch avec
-  preds OOF de b1 et b2 qui ne contiennent que val).
-- Predictions de branches 1, 2: OOF strict, refus si train.
-- Alignment: les 3 blocs partagent `sample_ids` du fold val.
-- Reproductibilite: meme fold (meme seed) pour les 3 branches.
-- Refit: PCA b0 refit sur full train, base learners b1/b2 refit sur full train,
-  meta Ridge refit sur OOF concat (cache des OOF utilises pour le fit meta).
+- Features of branch 0:`tabular.pca`fit on fold train -> transform train and
+  val. For the join, only the val lines are used (otherwise mismatch with
+  preds OOF of b1 and b2 which only contain val). - Predictions of branches 1, 2: strict OOF, refusal if train. - Alignment: the 3 blocks share`sample_ids`of the fold val. - Reproducibility: same fold (same seed) for the 3 branches. - Refit: PCA b0 refit on full train, base learners b1/b2 refit on full train,
+  meta Ridge refit on OOF concat (cache of OOFs used for meta fit).
 
-### 12.6 Points de friction
+### 12.6 Friction points
 
-1. Comment unifier le contrat ? Branche 0 produit `FeatureBlock`, branche 1/2
-   produit `PredictionBlock`. Le `MixedJoinNode` accepte une union avec
-   discriminator (`block_kind: "feature" | "prediction"`).
-2. Le PCA b0 doit etre fit fold-train et appliquer aux samples val. Mais en
-   refit, on fit sur full train -> au predict, pas de fold. Donc deux artifacts
-   PCA (CV vs refit). Cache de l'OOF preserve seulement pour le CV.
-3. Si la branche 0 a une dimension de sortie tres grande (PCA k=200), les
-   colonnes features dominent les 2 colonnes predictions. Faut-il scaler ?
-4. Validation cross-source: une feature de b0 pourrait fuiter (PCA non stateful?
-   on a dit stateful). S'assurer que `fit_scope=fold_train`.
+1. How to unify the contract? Branch 0 product`FeatureBlock`, branch 1/2
+   product`PredictionBlock`. The`MixedJoinNode`accepts a union with
+   discriminator (`block_kind: "feature" | "prediction"`). 2. The PCA b0 must be fit fold-train and applied to the val samples. But in
+   refit, we did on full train -> as predicted, no fold. So two artifacts
+   PCA (CV vs refit). Cache of the OFA preserved only for the CV. 3. If branch 0 has a very large output dimension (PCA k=200), the
+   features columns dominate the 2 predictions columns. Should we scale? 4. Cross-source validation: a feature of b0 could leak (PCA not stateful? we said stateful). Ensure that`fit_scope=fold_train`.
 
 ### 12.7 ML_DATA vs DAG-ML
 
 | ML_DATA                                            | DAG-ML                                              |
 |----------------------------------------------------|-----------------------------------------------------|
-| Fournit `FeatureTable` (b0) avec stateful PCA      | MixedJoinNode unifie feat + pred                    |
+| Provides`FeatureTable`(b0) with stateful PCA      | MixedJoinNode unifie feat + pred                    |
 | Fit `tabular.pca` avec fold_train scope            | Valide OOF pour pred blocks                         |
-| Aucune notion de partition                         | Selectionne uniquement val rows pour le join        |
+| No notion of partition                         | Select only val rows for join        |
 
-### 12.8 Resultat attendu
+### 12.8 Expected result
 
-- 600 OOF preds meta + bundle (b0 PCA refit + b1 PLS refit + b2 RF refit + Ridge).
-- 22 colonnes meta features (20 PCA + 2 preds).
-- Lineage: chaque colonne porte son `source_id` = `branch:0/...` ou `branch:1/model:pls`.
+- 600 OOF preds meta + bundle (b0 PCA refit + b1 PLS refit + b2 RF refit + Ridge). - 22 meta features columns (20 PCA + 2 preds). - Lineage: each column carries its`source_id`=`branch:0/...`or`branch:1/model:pls`.
 
 ---
 
 ## Decisions design transverses
 
-Synthese des questions de friction recurrentes dans les UC. Ces questions
-restent ouvertes et doivent etre tranchees avant implementation v1.
+Summary of recurring friction issues in CUs. These questions
+remain open and must be decided before implementation v1.
 
 ### D1 - Auto-resolution lossy vs explicit user choice
 
-UC1 (image embedding), UC2 (resample), UC5 (augmentation), UC10 (sub-DAG):
-- Quand `find_path` trouve une chaine d'adapters lossy (image embedding,
-  PCA genotype, resampling avec interpolation), DAG-ML doit-il:
-  (a) auto-resolve si `policy.allow_lossy_adapters=True` (defaut current)?
-  (b) toujours escalader via `requires_user_choice`?
-  (c) escalader uniquement si plusieurs chaines lossy concurrent?
+UC1 (image embedding), UC2 (resample), UC5 (increase), UC10 (sub-DAG): - When`find_path`finds a chain of lossy adapters (image embedding,
+  PCA genotype, resampling with interpolation), should DAG-ML: (a) auto-resolve if`policy.allow_lossy_adapters=True`(default current)? (b) always escalate via`requires_user_choice`? (c) only escalate if multiple competing lossy chains?
 
 Proposition: (c) par defaut. Plus un mode strict (a) opt-in via DSL.
 
-### D2 - Niveau du ranking et selection
+### D2 - Ranking level and selection
 
 UC3 (obs vs sample), UC4 (meas vs patient), UC6 (per-branch vs meta), UC8
-(global vs per-site):
-- Quand un pipeline produit des predictions a plusieurs niveaux (observation,
-  sample, group, branche, meta), quel niveau utilise-t-on pour ranker?
-  Reponse v1: niveau le plus aggrege (sample > group > observation), sauf
-  override via `ranking_level` dans `SelectPolicy`.
+(global vs per-site): - When a pipeline produces predictions at several levels (observation,
+  sample, group, branch, meta), what level do we use to rank? Answer v1: most aggregated level (sample > group > observation), except
+  override via`ranking_level`in`SelectPolicy`.
 
 ### D3 - Refit semantics: same hyperparams or aggregate?
 
-UC6 (stacking refit), UC7 (tuner best refit), UC8 (per-branch refit):
-- Au refit, doit-on:
-  (a) reutiliser exactement les hyperparams du meilleur fold?
-  (b) refit avec un agregat (par exemple median des n_components des 5 folds)?
-  (c) re-tuner sur full train?
+UC6 (stacking refit), UC7 (tuner best refit), UC8 (per-branch refit): - At refit, should we: (a) reuse exactly the hyperparams of the best fold? (b) refit with an aggregate (for example median of the n_components of the 5 folds)? (c) re-tuner on full train?
 
 Proposition: (a) par defaut, (c) opt-in.
 
 ### D4 - Schema fingerprint scope
 
-UC9 (predict + diverge weather), UC10 (subgraph versioning):
-- Le fingerprint doit-il inclure:
-  - axe coordinates (wavelengths exactes)?
-  - feature names exacts post-encoder?
-  - les seeds utilises?
-  - les versions des plugins?
+UC9 (predict + diverge weather), UC10 (subgraph versioning): - Should the fingerprint include: - axis coordinates (exact wavelengths)? - exact feature names post-encoder? - the seeds used? - plugin versions?
 
 Proposition: oui pour axes, feature names, plugin versions. Non pour seeds
-(qui changent par run, c'est `LineageRecord` qui les porte).
+(which change per run,`LineageRecord`wears them).
 
-### D5 - Parallelism granularity et seeding
+### D5 - Parallelism granularity and seeding
 
-UC1 (5 folds + 6 sources), UC7 (40 trials), UC10 (inline subgraphs):
-- A quel niveau paralleliser?
-  - variant (joblib loky, default)
-  - fold (utile pour gros models)
-  - branche (pour separation)
+UC1 (5 folds + 6 sources), UC7 (40 trials), UC10 (inline subgraphs): - At what level to parallelize? - variant (joblib loky, default)
+  - fold (useful for large models)
+  - branch (for separation)
   - sub-DAG inline (rare)
-- Et comment garantir que la parallelisation imbrique n'explose pas les
+- And how to guarantee that nested parallelization does not explode the
   threads (BLAS x joblib x torch)?
 
 Proposition: parallelism budget unique au niveau `RunContext`, distribue
-top-down par le scheduler. Un seul niveau parallele actif par defaut.
+top-down by the scheduler. Only one parallel level active by default.
 
 ---
 
@@ -1788,12 +1623,11 @@ top-down par le scheduler. Un seul niveau parallele actif par defaut.
 | PREDICT   | X   | X   | X   | X   | X   | X   | X   | X   | X   | X   | -   | X   |
 | EXPLAIN   | -   | -   | -   | -   | -   | -   | -   | -   | -   | -   | -   | -   |
 
-UC9 ne traverse que `COMPILE -> PLAN -> PREDICT` car il consomme un bundle existant.
-UC11 s'arrete a `FIT_CV` quand l'invariant OOF est viole (refus du run).
+UC9 only traverses`COMPILE -> PLAN -> PREDICT`because it consumes an existing bundle. UC11 stops at`FIT_CV`when the OOF invariant is violated (run refusal).
 
 ---
 
-## Annexe D - Artifacts produits par UC
+## Appendix D - Artifacts produced by UC
 
 | UC  | FittedAdapter(s)                              | Model(s)                       | Sub-bundles |
 |-----|-----------------------------------------------|--------------------------------|-------------|
@@ -1844,7 +1678,7 @@ Format payload commun:
 
 ---
 
-## Annexe F - Ordre des phases par UC (resumee)
+## Appendix F - Order of phases by CPU (summary)
 
 | UC  | Phases executees                                                |
 |-----|-----------------------------------------------------------------|

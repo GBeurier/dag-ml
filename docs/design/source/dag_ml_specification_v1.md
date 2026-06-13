@@ -348,7 +348,7 @@ pipeline = [
 | `{"rep_to_pp"}`            | `RestructureNode` (kind=RESTRUCTURE, mode="to_processings")| groups repetitions into preprocessing channels of one source                          |
 | `{"aggregate": {...}}`     | `AggregatorNode` (kind=AGGREGATOR)                        | observation -> sample/group reduction; `method`, `level`, `keep_observation_predictions` |
 | `{"branch": [...]}`        | `ForkNode` (duplication) + `MapNode`                      | one `MapNode` per branch path; subgraph per branch               |
-| `{"branch": {"by_X": ...}}`| `ForkNode` (separation, mode=by_metadata/by_tag/by_source)| disjoint sample subsets; merge typically `concat`                |
+| `{"branch": {"by_X": ...}}`| `ForkNode`(separation, mode=by_metadata/by_tag/by_source)| disjoint sample subsets; merge typically `concat`                |
 | `{"merge": "predictions"}` | `PredictionJoinNode`                                      | requires OOF (section 8)                                         |
 | `{"merge": "features"}`    | `FeatureJoinNode`                                         | horizontal concat of FeatureTables                               |
 | `{"merge": "concat"}`      | `FeatureJoinNode` in separation mode (reassembly)         |                                                                  |
@@ -2220,7 +2220,7 @@ Phase walk:
 | export  | ExecutionBundle with SNV, YScaler, PLS artifacts                                         |
 | PREDICT | replay: SNV.transform -> YScaler keeps inverse_transform -> PLS.predict                 |
 
-### UC2: Multi-source heterogeneous (NIRS + photo + genotype + meteo + metadata) -> RandomForest
+### UC2: Multi-source heterogeneous (NIRS + photo + genotype + weather + metadata) -> RandomForest
 
 ```text
 DSL pipeline = [
