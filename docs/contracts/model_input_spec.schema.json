@@ -22,6 +22,12 @@
         { "type": "null" }
       ]
     },
+    "fit_influence_policy": {
+      "anyOf": [
+        { "$ref": "#/$defs/fit_influence_policy" },
+        { "type": "null" }
+      ]
+    },
     "metadata": {
       "type": "object"
     }
@@ -30,6 +36,17 @@
     "non_empty_string": {
       "type": "string",
       "minLength": 1
+    },
+    "fit_influence_policy": {
+      "enum": [
+        "auto",
+        "uniform_rows",
+        "equal_sample_influence",
+        "resample_equalized",
+        "backend_loss_weight",
+        "scorer_only",
+        "strict_weight_support"
+      ]
     },
     "input_port": {
       "type": "object",

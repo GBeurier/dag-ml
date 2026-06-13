@@ -177,6 +177,43 @@ ENTITY_UNIT_LEVELS = {"physical_sample", "source_sample", "observation", "combo"
 EVALUATION_SCOPES = {"oof", "holdout", "final", "train", "refit"}
 PREDICTION_LEVELS = {"observation", "sample", "target", "group"}
 SPLIT_UNITS = {"physical_sample", "observation", "sample", "target", "group"}
+FIT_INFLUENCE_POLICIES = {
+    "auto",
+    "uniform_rows",
+    "equal_sample_influence",
+    "resample_equalized",
+    "backend_loss_weight",
+    "scorer_only",
+    "strict_weight_support",
+}
+FIT_INFLUENCE_MECHANISMS = {
+    "uniform_rows",
+    "sample_weights",
+    "row_resampling",
+    "backend_loss_weights",
+    "scorer_only",
+}
+CONTROLLER_CAPABILITIES = {
+    "deterministic",
+    "thread_safe",
+    "process_safe",
+    "needs_python_gil",
+    "emits_predictions",
+    "consumes_oof_predictions",
+    "emits_artifacts",
+    "stateful",
+    "emits_relation",
+    "uses_core_rng",
+    "shape_changing",
+    "generates_data",
+    "generates_model",
+    "expands_variants",
+    "aggregates_predictions",
+    "supports_sample_weights",
+    "supports_row_resampling",
+    "supports_backend_loss_weights",
+    "supports_missing_masks",
+}
 MISSINGNESS_POLICIES = {
     "strict",
     "warn",
@@ -777,6 +814,10 @@ def validate_execution_plan_schema(schema: Any, label: str) -> None:
         f"{label} ExecutionPlan phase enum is not aligned",
     )
     require(
+        set(defs.get("controller_capability", {}).get("enum", [])) == CONTROLLER_CAPABILITIES,
+        f"{label} ExecutionPlan capability enum is not aligned",
+    )
+    require(
         defs.get("node_kind", {}).get("enum")
         == [
             "transform",
@@ -842,6 +883,14 @@ def validate_model_input_spec_schema(schema: Any, label: str) -> None:
     require(isinstance(defs, dict), f"{label} ModelInputSpec $defs missing")
     require("input_port" in defs, f"{label} ModelInputSpec schema misses input_port")
     require("fusion_policy" in defs, f"{label} ModelInputSpec schema misses fusion_policy")
+    require(
+        "fit_influence_policy" in properties,
+        f"{label} ModelInputSpec schema misses fit_influence_policy property",
+    )
+    require(
+        set(defs.get("fit_influence_policy", {}).get("enum", [])) == FIT_INFLUENCE_POLICIES,
+        f"{label} ModelInputSpec fit influence enum is not aligned",
+    )
     require(
         defs.get("fusion_policy", {}).get("properties", {}).get("mode", {}).get("enum")
         == [
@@ -943,25 +992,12 @@ def validate_controller_manifest_schema(schema: Any, label: str) -> None:
         f"{label} ControllerManifest node_kind enum is not aligned",
     )
     require(
-        defs.get("controller_capability", {}).get("enum")
-        == [
-            "deterministic",
-            "thread_safe",
-            "process_safe",
-            "needs_python_gil",
-            "emits_predictions",
-            "consumes_oof_predictions",
-            "emits_artifacts",
-            "stateful",
-            "emits_relation",
-            "uses_core_rng",
-            "shape_changing",
-            "generates_data",
-            "generates_model",
-            "expands_variants",
-            "aggregates_predictions",
-        ],
+        set(defs.get("controller_capability", {}).get("enum", [])) == CONTROLLER_CAPABILITIES,
         f"{label} ControllerManifest capability enum is not aligned",
+    )
+    require(
+        set(defs.get("fit_influence_policy", {}).get("enum", [])) == FIT_INFLUENCE_POLICIES,
+        f"{label} ControllerManifest fit influence enum is not aligned",
     )
     require(
         defs.get("controller_fit_scope", {}).get("enum")
@@ -983,7 +1019,12 @@ def validate_controller_manifest_schema(schema: Any, label: str) -> None:
         == ["serializable", "host_only", "content_addressed", "replay_required"],
         f"{label} ControllerManifest artifact_policy enum is not aligned",
     )
-    for definition_name in ("port_spec", "model_input_spec", "model_input_fusion_policy"):
+    for definition_name in (
+        "port_spec",
+        "model_input_spec",
+        "model_input_fusion_policy",
+        "fit_influence_policy",
+    ):
         require(
             definition_name in defs,
             f"{label} ControllerManifest schema misses `{definition_name}`",
@@ -1611,8 +1652,12 @@ def validate_node_task_schema(schema: Any, label: str) -> None:
         "data_provider_view_spec",
         "prediction_input_spec",
         "artifact_input_spec",
+        "fit_influence_task",
     ):
         require(definition_name in defs, f"{label} NodeTask schema misses `{definition_name}`")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} NodeTask properties missing")
+    require("fit_influence" in properties, f"{label} NodeTask schema misses fit_influence")
     require(
         defs.get("handle_kind", {}).get("enum")
         == ["data", "data_view", "model", "artifact", "prediction", "relation"],
@@ -1622,6 +1667,19 @@ def validate_node_task_schema(schema: Any, label: str) -> None:
         defs.get("phase", {}).get("enum")
         == ["COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"],
         f"{label} NodeTask phase enum mismatch",
+    )
+    require(
+        set(defs.get("controller_capability", {}).get("enum", [])) == CONTROLLER_CAPABILITIES,
+        f"{label} NodeTask capability enum mismatch",
+    )
+    require(
+        set(defs.get("fit_influence_policy", {}).get("enum", [])) == FIT_INFLUENCE_POLICIES,
+        f"{label} NodeTask fit influence policy enum mismatch",
+    )
+    require(
+        set(defs.get("fit_influence_mechanism", {}).get("enum", []))
+        == FIT_INFLUENCE_MECHANISMS,
+        f"{label} NodeTask fit influence mechanism enum mismatch",
     )
 
 
@@ -1653,8 +1711,15 @@ def validate_node_result_schema(schema: Any, label: str) -> None:
         "shape_delta",
         "artifact_ref",
         "lineage_record",
+        "fit_influence_diagnostic",
     ):
         require(definition_name in defs, f"{label} NodeResult schema misses `{definition_name}`")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} NodeResult properties missing")
+    require(
+        "fit_influence_diagnostics" in properties,
+        f"{label} NodeResult schema misses fit_influence_diagnostics",
+    )
     require(
         defs.get("prediction_partition", {}).get("enum")
         == ["train", "validation", "test", "final"],
@@ -1664,6 +1729,15 @@ def validate_node_result_schema(schema: Any, label: str) -> None:
         defs.get("shape_delta_kind", {}).get("enum")
         == ["row", "feature", "target", "prediction"],
         f"{label} NodeResult shape_delta_kind enum mismatch",
+    )
+    require(
+        set(defs.get("fit_influence_policy", {}).get("enum", [])) == FIT_INFLUENCE_POLICIES,
+        f"{label} NodeResult fit influence policy enum mismatch",
+    )
+    require(
+        set(defs.get("fit_influence_mechanism", {}).get("enum", []))
+        == FIT_INFLUENCE_MECHANISMS,
+        f"{label} NodeResult fit influence mechanism enum mismatch",
     )
 
 
@@ -3042,6 +3116,12 @@ def validate_model_input_spec(value: Any, label: str) -> None:
                 fusion.get("adapter_id"),
                 f"{label}.default_fusion.adapter_id",
             )
+    fit_influence_policy = value.get("fit_influence_policy")
+    if fit_influence_policy is not None:
+        require(
+            fit_influence_policy in FIT_INFLUENCE_POLICIES,
+            f"{label}.fit_influence_policy is invalid",
+        )
 
 
 def validate_data_plan(value: Any, label: str) -> None:
@@ -3168,23 +3248,7 @@ def validate_controller_manifest(value: Any, label: str) -> None:
     require(len(set(capabilities)) == len(capabilities), f"{label}.capabilities contain duplicates")
     for index, capability in enumerate(capabilities):
         require(
-            capability
-            in {
-                "deterministic",
-                "thread_safe",
-                "process_safe",
-                "needs_python_gil",
-                "emits_predictions",
-                "consumes_oof_predictions",
-                "emits_artifacts",
-                "stateful",
-                "emits_relation",
-                "uses_core_rng",
-                "shape_changing",
-                "generates_data",
-                "generates_model",
-                "expands_variants",
-            },
+            capability in CONTROLLER_CAPABILITIES,
             f"{label}.capabilities[{index}] is invalid",
         )
     require(
@@ -3392,6 +3456,48 @@ def validate_handle_ref(value: Any, label: str) -> None:
     require_identifier(value.get("owner_controller"), f"{label}.owner_controller")
 
 
+def validate_fit_influence_task(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} must be an object")
+    requested = value.get("requested_policy")
+    effective = value.get("effective_policy")
+    mechanism = value.get("mechanism")
+    require(requested in FIT_INFLUENCE_POLICIES, f"{label}.requested_policy invalid")
+    require(effective in FIT_INFLUENCE_POLICIES, f"{label}.effective_policy invalid")
+    require(mechanism in FIT_INFLUENCE_MECHANISMS, f"{label}.mechanism invalid")
+    weights = value.get("row_weights", [])
+    require(isinstance(weights, list), f"{label}.row_weights must be an array")
+    for index, weight in enumerate(weights):
+        require(
+            isinstance(weight, (int, float)) and not isinstance(weight, bool) and math.isfinite(weight) and weight > 0,
+            f"{label}.row_weights[{index}] must be finite and > 0",
+        )
+    warnings = value.get("warnings", [])
+    require(isinstance(warnings, list), f"{label}.warnings must be an array")
+    for index, warning in enumerate(warnings):
+        require_non_empty_string(warning, f"{label}.warnings[{index}]")
+    if effective in {"equal_sample_influence", "backend_loss_weight"}:
+        require(weights, f"{label}.{effective} requires row_weights")
+    if requested == "strict_weight_support" and effective == "uniform_rows":
+        raise ContractError(f"{label} strict_weight_support cannot fall back to uniform_rows")
+
+
+def validate_fit_influence_diagnostic(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} must be an object")
+    for field in ("requested_policy", "effective_policy"):
+        require(value.get(field) in FIT_INFLUENCE_POLICIES, f"{label}.{field} invalid")
+    require(value.get("mechanism") in FIT_INFLUENCE_MECHANISMS, f"{label}.mechanism invalid")
+    require(isinstance(value.get("fallback_used", False), bool), f"{label}.fallback_used boolean")
+    row_weight_count = value.get("row_weight_count", 0)
+    require(
+        isinstance(row_weight_count, int) and row_weight_count >= 0,
+        f"{label}.row_weight_count invalid",
+    )
+    warnings = value.get("warnings", [])
+    require(isinstance(warnings, list), f"{label}.warnings must be an array")
+    for index, warning in enumerate(warnings):
+        require_non_empty_string(warning, f"{label}.warnings[{index}]")
+
+
 def validate_node_task(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} NodeTask must be an object")
     require_identifier(value.get("run_id"), f"{label}.run_id")
@@ -3434,6 +3540,9 @@ def validate_node_task(value: Any, label: str) -> None:
     for key, handle in value.get("input_handles", {}).items():
         require_non_empty_string(key, f"{label}.input_handles key")
         validate_handle_ref(handle, f"{label}.input_handles[{key}]")
+    fit_influence = value.get("fit_influence")
+    if fit_influence is not None:
+        validate_fit_influence_task(fit_influence, f"{label}.fit_influence")
 
 
 def validate_node_result(value: Any, label: str) -> None:
@@ -3451,6 +3560,13 @@ def validate_node_result(value: Any, label: str) -> None:
     for artifact_id, handle in artifact_handles.items():
         require_identifier(artifact_id, f"{label}.artifact_handles key")
         validate_handle_ref(handle, f"{label}.artifact_handles[{artifact_id}]")
+    diagnostics = value.get("fit_influence_diagnostics", [])
+    require(isinstance(diagnostics, list), f"{label}.fit_influence_diagnostics must be an array")
+    for index, diagnostic in enumerate(diagnostics):
+        validate_fit_influence_diagnostic(
+            diagnostic,
+            f"{label}.fit_influence_diagnostics[{index}]",
+        )
     lineage = value.get("lineage")
     require(isinstance(lineage, dict), f"{label}.lineage must be an object")
     for field in ("record_id", "run_id", "node_id", "controller_id"):

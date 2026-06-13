@@ -162,7 +162,11 @@
         "generates_data",
         "generates_model",
         "expands_variants",
-        "aggregates_predictions"
+        "aggregates_predictions",
+        "supports_sample_weights",
+        "supports_row_resampling",
+        "supports_backend_loss_weights",
+        "supports_missing_masks"
       ]
     },
     "operator_selector": {
@@ -240,10 +244,27 @@
             { "type": "null" }
           ]
         },
+        "fit_influence_policy": {
+          "anyOf": [
+            { "$ref": "#/$defs/fit_influence_policy" },
+            { "type": "null" }
+          ]
+        },
         "metadata": {
           "type": "object"
         }
       }
+    },
+    "fit_influence_policy": {
+      "enum": [
+        "auto",
+        "uniform_rows",
+        "equal_sample_influence",
+        "resample_equalized",
+        "backend_loss_weight",
+        "scorer_only",
+        "strict_weight_support"
+      ]
     },
     "model_input_port": {
       "type": "object",

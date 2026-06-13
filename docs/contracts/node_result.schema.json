@@ -57,6 +57,12 @@
         "$ref": "#/$defs/handle_ref"
       }
     },
+    "fit_influence_diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fit_influence_diagnostic"
+      }
+    },
     "lineage": {
       "$ref": "#/$defs/lineage_record"
     }
@@ -93,6 +99,61 @@
     },
     "artifact_backend": {
       "enum": ["joblib", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
+    },
+    "fit_influence_policy": {
+      "enum": [
+        "auto",
+        "uniform_rows",
+        "equal_sample_influence",
+        "resample_equalized",
+        "backend_loss_weight",
+        "scorer_only",
+        "strict_weight_support"
+      ]
+    },
+    "fit_influence_mechanism": {
+      "enum": [
+        "uniform_rows",
+        "sample_weights",
+        "row_resampling",
+        "backend_loss_weights",
+        "scorer_only"
+      ]
+    },
+    "fit_influence_diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_policy",
+        "effective_policy",
+        "mechanism",
+        "fallback_used",
+        "row_weight_count"
+      ],
+      "properties": {
+        "requested_policy": {
+          "$ref": "#/$defs/fit_influence_policy"
+        },
+        "effective_policy": {
+          "$ref": "#/$defs/fit_influence_policy"
+        },
+        "mechanism": {
+          "$ref": "#/$defs/fit_influence_mechanism"
+        },
+        "fallback_used": {
+          "type": "boolean"
+        },
+        "row_weight_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
     },
     "handle_ref": {
       "type": "object",

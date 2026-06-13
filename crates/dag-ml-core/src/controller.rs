@@ -7,6 +7,7 @@ use crate::error::{DagMlError, Result};
 use crate::graph::{NodeKind, NodeSpec, PortKind, PortSpec};
 use crate::ids::ControllerId;
 use crate::phase::Phase;
+use crate::policy::FitInfluencePolicy;
 
 pub const CONTROLLER_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const CONTROLLER_MANIFEST_SCHEMA_ID: &str =
@@ -30,6 +31,10 @@ pub enum ControllerCapability {
     GeneratesModel,
     ExpandsVariants,
     AggregatesPredictions,
+    SupportsSampleWeights,
+    SupportsRowResampling,
+    SupportsBackendLossWeights,
+    SupportsMissingMasks,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -230,6 +235,10 @@ impl ControllerManifest {
                 .contains(&ControllerCapability::ProcessSafe)
     }
 
+    pub fn supports_fit_influence_policy(&self, policy: FitInfluencePolicy) -> bool {
+        capabilities_support_fit_influence(&self.capabilities, policy)
+    }
+
     pub fn model_input_spec(&self) -> Result<Option<ModelInputSpec>> {
         self.data_requirements
             .as_ref()
@@ -242,6 +251,31 @@ impl ControllerManifest {
                 })
             })
             .transpose()
+    }
+}
+
+pub fn capabilities_support_fit_influence(
+    capabilities: &BTreeSet<ControllerCapability>,
+    policy: FitInfluencePolicy,
+) -> bool {
+    match policy {
+        FitInfluencePolicy::Auto
+        | FitInfluencePolicy::UniformRows
+        | FitInfluencePolicy::ScorerOnly => true,
+        FitInfluencePolicy::EqualSampleInfluence => {
+            capabilities.contains(&ControllerCapability::SupportsSampleWeights)
+        }
+        FitInfluencePolicy::ResampleEqualized => {
+            capabilities.contains(&ControllerCapability::SupportsRowResampling)
+        }
+        FitInfluencePolicy::BackendLossWeight => {
+            capabilities.contains(&ControllerCapability::SupportsBackendLossWeights)
+        }
+        FitInfluencePolicy::StrictWeightSupport => {
+            capabilities.contains(&ControllerCapability::SupportsSampleWeights)
+                || capabilities.contains(&ControllerCapability::SupportsRowResampling)
+                || capabilities.contains(&ControllerCapability::SupportsBackendLossWeights)
+        }
     }
 }
 

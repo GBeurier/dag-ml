@@ -20,7 +20,7 @@ use crate::bundle::{
     BundlePredictionRequirement, ExecutionBundle, RefitArtifactRecord, ReplayPhaseRequest,
 };
 use crate::campaign::stable_json_fingerprint;
-use crate::controller::ControllerCapability;
+use crate::controller::{capabilities_support_fit_influence, ControllerCapability};
 use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::fold::{FoldAssignment, FoldSet};
@@ -33,7 +33,9 @@ use crate::ids::{
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::{CampaignSpec, ExecutionPlan, NodePlan};
-use crate::policy::{AggregationPolicy, PredictionLevel, ShapeDelta, ShapeDeltaKind};
+use crate::policy::{
+    AggregationPolicy, FitInfluencePolicy, PredictionLevel, ShapeDelta, ShapeDeltaKind,
+};
 use crate::relation::SampleRelationSet;
 use crate::rng::SeedContext;
 
@@ -2291,7 +2293,152 @@ pub struct NodeTask {
     /// construction (inner ⊆ outer-train); see [`crate::fold::NestedCvSpec`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inner_fold_set: Option<FoldSet>,
+    #[serde(default, skip_serializing_if = "FitInfluenceTask::is_default")]
+    pub fit_influence: FitInfluenceTask,
     pub seed: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FitInfluenceMechanism {
+    UniformRows,
+    SampleWeights,
+    RowResampling,
+    BackendLossWeights,
+    ScorerOnly,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FitInfluenceTask {
+    pub requested_policy: FitInfluencePolicy,
+    pub effective_policy: FitInfluencePolicy,
+    pub mechanism: FitInfluenceMechanism,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub row_weights: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+impl Default for FitInfluenceTask {
+    fn default() -> Self {
+        Self {
+            requested_policy: FitInfluencePolicy::UniformRows,
+            effective_policy: FitInfluencePolicy::UniformRows,
+            mechanism: FitInfluenceMechanism::UniformRows,
+            row_weights: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+impl FitInfluenceTask {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub fn diagnostic(&self) -> FitInfluenceDiagnostic {
+        FitInfluenceDiagnostic {
+            requested_policy: self.requested_policy,
+            effective_policy: self.effective_policy,
+            mechanism: self.mechanism,
+            fallback_used: !self.warnings.is_empty(),
+            row_weight_count: self.row_weights.len(),
+            warnings: self.warnings.clone(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !self
+            .row_weights
+            .iter()
+            .all(|weight| weight.is_finite() && *weight > 0.0)
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "fit influence row_weights must be finite and > 0".to_string(),
+            ));
+        }
+        if self
+            .warnings
+            .iter()
+            .any(|warning| warning.trim().is_empty())
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "fit influence warnings must not be empty".to_string(),
+            ));
+        }
+        match self.effective_policy {
+            FitInfluencePolicy::EqualSampleInfluence | FitInfluencePolicy::BackendLossWeight
+                if self.row_weights.is_empty() =>
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "fit influence {:?} requires row_weights",
+                    self.effective_policy
+                )));
+            }
+            _ => {}
+        }
+        if self.requested_policy == FitInfluencePolicy::StrictWeightSupport
+            && self.effective_policy == FitInfluencePolicy::UniformRows
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "strict fit influence cannot fall back to uniform_rows".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FitInfluenceDiagnostic {
+    pub requested_policy: FitInfluencePolicy,
+    pub effective_policy: FitInfluencePolicy,
+    pub mechanism: FitInfluenceMechanism,
+    #[serde(default)]
+    pub fallback_used: bool,
+    #[serde(default)]
+    pub row_weight_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+impl FitInfluenceDiagnostic {
+    pub fn validate(&self, task: &NodeTask) -> Result<()> {
+        if self.requested_policy != task.fit_influence.requested_policy {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "fit influence diagnostic requested_policy {:?} does not match task {:?}",
+                self.requested_policy, task.fit_influence.requested_policy
+            )));
+        }
+        if self.effective_policy != task.fit_influence.effective_policy {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "fit influence diagnostic effective_policy {:?} does not match task {:?}",
+                self.effective_policy, task.fit_influence.effective_policy
+            )));
+        }
+        if self.mechanism != task.fit_influence.mechanism {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "fit influence diagnostic mechanism {:?} does not match task {:?}",
+                self.mechanism, task.fit_influence.mechanism
+            )));
+        }
+        if self.row_weight_count != task.fit_influence.row_weights.len() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "fit influence diagnostic row_weight_count {} does not match task {}",
+                self.row_weight_count,
+                task.fit_influence.row_weights.len()
+            )));
+        }
+        if self
+            .warnings
+            .iter()
+            .any(|warning| warning.trim().is_empty())
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "fit influence diagnostic warnings must not be empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -2458,6 +2605,8 @@ pub struct NodeResult {
     pub artifacts: Vec<ArtifactRef>,
     #[serde(default)]
     pub artifact_handles: BTreeMap<ArtifactId, HandleRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fit_influence_diagnostics: Vec<FitInfluenceDiagnostic>,
     pub lineage: LineageRecord,
 }
 
@@ -2541,6 +2690,10 @@ impl NodeResult {
                 self.lineage.params_fingerprint,
                 task.node_plan.params_fingerprint
             )));
+        }
+        task.fit_influence.validate()?;
+        for diagnostic in &self.fit_influence_diagnostics {
+            diagnostic.validate(task)?;
         }
         validate_lineage_shape_fingerprints(&self.lineage, task)?;
         if !self.explanations.is_empty() && task.phase != Phase::Explain {
@@ -2814,6 +2967,245 @@ fn validation_view_sample_ids(task: &NodeTask) -> Option<BTreeSet<SampleId>> {
         }
     }
     (!sample_ids.is_empty()).then_some(sample_ids)
+}
+
+fn fit_influence_task_for_node(
+    plan: &ExecutionPlan,
+    node_plan: &NodePlan,
+    data_views: &BTreeMap<String, DataProviderViewSpec>,
+) -> Result<FitInfluenceTask> {
+    let manifest = plan
+        .controller_manifests
+        .get(&node_plan.controller_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "node `{}` references missing controller manifest `{}`",
+                node_plan.node_id, node_plan.controller_id
+            ))
+        })?;
+    let Some(model_input_spec) = manifest.model_input_spec()? else {
+        return Ok(FitInfluenceTask::default());
+    };
+    let Some(requested_policy) = model_input_spec.fit_influence_policy else {
+        return Ok(FitInfluenceTask::default());
+    };
+    resolve_fit_influence_task(
+        requested_policy,
+        &node_plan.controller_capabilities,
+        data_views,
+    )
+}
+
+fn resolve_fit_influence_task(
+    requested_policy: FitInfluencePolicy,
+    capabilities: &BTreeSet<ControllerCapability>,
+    data_views: &BTreeMap<String, DataProviderViewSpec>,
+) -> Result<FitInfluenceTask> {
+    let row_weights = equal_sample_influence_weights(data_views);
+    match requested_policy {
+        FitInfluencePolicy::UniformRows => Ok(FitInfluenceTask {
+            requested_policy,
+            effective_policy: FitInfluencePolicy::UniformRows,
+            mechanism: FitInfluenceMechanism::UniformRows,
+            row_weights: Vec::new(),
+            warnings: Vec::new(),
+        }),
+        FitInfluencePolicy::ScorerOnly => Ok(FitInfluenceTask {
+            requested_policy,
+            effective_policy: FitInfluencePolicy::ScorerOnly,
+            mechanism: FitInfluenceMechanism::ScorerOnly,
+            row_weights: Vec::new(),
+            warnings: Vec::new(),
+        }),
+        FitInfluencePolicy::EqualSampleInfluence => {
+            require_fit_influence_support(capabilities, requested_policy)?;
+            let weights = row_weights.ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "equal_sample_influence requires task row sample ids".to_string(),
+                )
+            })?;
+            Ok(FitInfluenceTask {
+                requested_policy,
+                effective_policy: FitInfluencePolicy::EqualSampleInfluence,
+                mechanism: FitInfluenceMechanism::SampleWeights,
+                row_weights: weights,
+                warnings: Vec::new(),
+            })
+        }
+        FitInfluencePolicy::ResampleEqualized => {
+            require_fit_influence_support(capabilities, requested_policy)?;
+            Ok(FitInfluenceTask {
+                requested_policy,
+                effective_policy: FitInfluencePolicy::ResampleEqualized,
+                mechanism: FitInfluenceMechanism::RowResampling,
+                row_weights: Vec::new(),
+                warnings: Vec::new(),
+            })
+        }
+        FitInfluencePolicy::BackendLossWeight => {
+            require_fit_influence_support(capabilities, requested_policy)?;
+            let weights = row_weights.ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "backend_loss_weight requires task row sample ids".to_string(),
+                )
+            })?;
+            Ok(FitInfluenceTask {
+                requested_policy,
+                effective_policy: FitInfluencePolicy::BackendLossWeight,
+                mechanism: FitInfluenceMechanism::BackendLossWeights,
+                row_weights: weights,
+                warnings: Vec::new(),
+            })
+        }
+        FitInfluencePolicy::StrictWeightSupport => {
+            require_fit_influence_support(capabilities, requested_policy)?;
+            strict_fit_influence_task(capabilities, row_weights, requested_policy)
+        }
+        FitInfluencePolicy::Auto => Ok(auto_fit_influence_task(capabilities, row_weights)),
+    }
+}
+
+fn require_fit_influence_support(
+    capabilities: &BTreeSet<ControllerCapability>,
+    policy: FitInfluencePolicy,
+) -> Result<()> {
+    if capabilities_support_fit_influence(capabilities, policy) {
+        return Ok(());
+    }
+    Err(DagMlError::RuntimeValidation(format!(
+        "controller capabilities do not support requested fit influence policy {:?}",
+        policy
+    )))
+}
+
+fn strict_fit_influence_task(
+    capabilities: &BTreeSet<ControllerCapability>,
+    row_weights: Option<Vec<f64>>,
+    requested_policy: FitInfluencePolicy,
+) -> Result<FitInfluenceTask> {
+    if capabilities.contains(&ControllerCapability::SupportsBackendLossWeights) {
+        let weights = row_weights.ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "strict_weight_support with backend loss weights requires task row sample ids"
+                    .to_string(),
+            )
+        })?;
+        return Ok(FitInfluenceTask {
+            requested_policy,
+            effective_policy: FitInfluencePolicy::BackendLossWeight,
+            mechanism: FitInfluenceMechanism::BackendLossWeights,
+            row_weights: weights,
+            warnings: Vec::new(),
+        });
+    }
+    if capabilities.contains(&ControllerCapability::SupportsSampleWeights) {
+        let weights = row_weights.ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "strict_weight_support with sample weights requires task row sample ids"
+                    .to_string(),
+            )
+        })?;
+        return Ok(FitInfluenceTask {
+            requested_policy,
+            effective_policy: FitInfluencePolicy::EqualSampleInfluence,
+            mechanism: FitInfluenceMechanism::SampleWeights,
+            row_weights: weights,
+            warnings: Vec::new(),
+        });
+    }
+    Ok(FitInfluenceTask {
+        requested_policy,
+        effective_policy: FitInfluencePolicy::ResampleEqualized,
+        mechanism: FitInfluenceMechanism::RowResampling,
+        row_weights: Vec::new(),
+        warnings: Vec::new(),
+    })
+}
+
+fn auto_fit_influence_task(
+    capabilities: &BTreeSet<ControllerCapability>,
+    row_weights: Option<Vec<f64>>,
+) -> FitInfluenceTask {
+    if capabilities.contains(&ControllerCapability::SupportsSampleWeights) {
+        if let Some(weights) = row_weights.clone() {
+            return FitInfluenceTask {
+                requested_policy: FitInfluencePolicy::Auto,
+                effective_policy: FitInfluencePolicy::EqualSampleInfluence,
+                mechanism: FitInfluenceMechanism::SampleWeights,
+                row_weights: weights,
+                warnings: Vec::new(),
+            };
+        }
+    }
+    if capabilities.contains(&ControllerCapability::SupportsRowResampling) {
+        return FitInfluenceTask {
+            requested_policy: FitInfluencePolicy::Auto,
+            effective_policy: FitInfluencePolicy::ResampleEqualized,
+            mechanism: FitInfluenceMechanism::RowResampling,
+            row_weights: Vec::new(),
+            warnings: Vec::new(),
+        };
+    }
+    if capabilities.contains(&ControllerCapability::SupportsBackendLossWeights) {
+        if let Some(weights) = row_weights {
+            return FitInfluenceTask {
+                requested_policy: FitInfluencePolicy::Auto,
+                effective_policy: FitInfluencePolicy::BackendLossWeight,
+                mechanism: FitInfluenceMechanism::BackendLossWeights,
+                row_weights: weights,
+                warnings: Vec::new(),
+            };
+        }
+    }
+    FitInfluenceTask {
+        requested_policy: FitInfluencePolicy::Auto,
+        effective_policy: FitInfluencePolicy::UniformRows,
+        mechanism: FitInfluenceMechanism::UniformRows,
+        row_weights: Vec::new(),
+        warnings: vec![
+            "auto fit influence fell back to uniform_rows because no supported weighting capability was usable".to_string(),
+        ],
+    }
+}
+
+fn equal_sample_influence_weights(
+    data_views: &BTreeMap<String, DataProviderViewSpec>,
+) -> Option<Vec<f64>> {
+    let row_sample_ids = data_views
+        .values()
+        .filter(|view| {
+            matches!(
+                view.partition,
+                DataRequestPartition::FoldTrain | DataRequestPartition::FullTrain
+            )
+        })
+        .filter_map(|view| view.sample_ids.as_ref())
+        .find(|sample_ids| !sample_ids.is_empty())
+        .or_else(|| {
+            data_views
+                .values()
+                .filter_map(|view| view.sample_ids.as_ref())
+                .find(|sample_ids| !sample_ids.is_empty())
+        })?;
+    let mut counts = BTreeMap::<&SampleId, usize>::new();
+    for sample_id in row_sample_ids {
+        *counts.entry(sample_id).or_default() += 1;
+    }
+    Some(
+        row_sample_ids
+            .iter()
+            .map(|sample_id| 1.0 / *counts.get(sample_id).expect("counted sample id") as f64)
+            .collect(),
+    )
+}
+
+fn record_fit_influence_diagnostic(task: &NodeTask, result: &mut NodeResult) {
+    if task.fit_influence.is_default() || !result.fit_influence_diagnostics.is_empty() {
+        return;
+    }
+    result
+        .fit_influence_diagnostics
+        .push(task.fit_influence.diagnostic());
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -3708,6 +4100,11 @@ impl SequentialScheduler {
                     node_plan,
                     &scope,
                 )?;
+                let fit_influence = fit_influence_task_for_node(
+                    plan,
+                    &task_node_plan,
+                    &collected_inputs.data_views,
+                )?;
                 let task = NodeTask {
                     inner_fold_set,
                     run_id: ctx.run_id.clone(),
@@ -3721,6 +4118,7 @@ impl SequentialScheduler {
                     data_views: collected_inputs.data_views,
                     prediction_inputs: collected_inputs.prediction_inputs,
                     artifact_inputs,
+                    fit_influence,
                     seed: derive_task_seed(
                         scope.seed_root,
                         scope.variant_id.as_ref(),
@@ -3738,6 +4136,7 @@ impl SequentialScheduler {
                 )
                 .entered();
                 let mut result = controller.invoke(&task)?;
+                record_fit_influence_diagnostic(&task, &mut result);
                 result.validate_for_task(&task)?;
                 apply_result_prediction_aggregation(
                     plan,
@@ -4153,6 +4552,11 @@ impl ParallelScheduler {
                     node_plan,
                     &scope,
                 )?;
+                let fit_influence = fit_influence_task_for_node(
+                    plan,
+                    &task_node_plan,
+                    &collected_inputs.data_views,
+                )?;
                 prepared.push(PreparedNodeTask {
                     node_id: node_id.clone(),
                     task: NodeTask {
@@ -4168,6 +4572,7 @@ impl ParallelScheduler {
                         data_views: collected_inputs.data_views,
                         prediction_inputs: collected_inputs.prediction_inputs,
                         artifact_inputs,
+                        fit_influence,
                         seed: derive_task_seed(
                             scope.seed_root,
                             scope.variant_id.as_ref(),
@@ -4203,7 +4608,8 @@ impl ParallelScheduler {
                                     prepared_task.task.node_plan.controller_id.as_str(),
                                 )
                                 .entered();
-                                let result = controller.invoke(&prepared_task.task)?;
+                                let mut result = controller.invoke(&prepared_task.task)?;
+                                record_fit_influence_diagnostic(&prepared_task.task, &mut result);
                                 result.validate_for_task(&prepared_task.task)?;
                                 Ok(result)
                             }));

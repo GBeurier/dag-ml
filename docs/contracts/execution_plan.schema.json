@@ -119,7 +119,12 @@
         "shape_changing",
         "generates_data",
         "generates_model",
-        "expands_variants"
+        "expands_variants",
+        "aggregates_predictions",
+        "supports_sample_weights",
+        "supports_row_resampling",
+        "supports_backend_loss_weights",
+        "supports_missing_masks"
       ]
     },
     "controller_fit_scope": {

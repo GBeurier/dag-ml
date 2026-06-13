@@ -47,6 +47,11 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   leakage split vocabulary to explicit `physical_sample`, adds optional OOF
   evaluation/refit/stacking selection contracts, and extends prediction-cache
   metadata with relation/reduction/evaluation lineage markers.
+- Heterogeneous multi-source repetitions roadmap D5 adds optional
+  `FitInfluencePolicy` contracts to model inputs and node tasks, explicit
+  controller capabilities for sample weights/resampling/backend loss weights
+  and missing masks, and node-result diagnostics so unsupported strict
+  weighting fails while `auto` fallbacks are visible.
 - Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
   `examples/README.md` audience matrix.

@@ -60,11 +60,11 @@ pub struct PortSpec {
     pub kind: PortKind,
     pub representation: Option<String>,
     pub cardinality: PortCardinality,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit_level: Option<EntityUnitLevel>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alignment_key: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_level: Option<EntityUnitLevel>,
     #[serde(default)]
     pub description: String,
@@ -88,17 +88,17 @@ pub struct PortRef {
 pub struct EdgeContract {
     pub kind: PortKind,
     pub representation: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit_level: Option<EntityUnitLevel>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alignment_key: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_level: Option<EntityUnitLevel>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relation_contract: Option<RelationContract>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub allows_broadcast: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub missingness_policy: Option<MissingnessPolicy>,
     #[serde(default)]
     pub requires_oof: bool,
@@ -110,9 +110,9 @@ pub struct EdgeContract {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RelationContract {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relation_fingerprint: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub required: bool,
 }
 
@@ -129,6 +129,10 @@ pub enum MissingnessPolicy {
 
 fn default_true() -> bool {
     true
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl EdgeContract {
@@ -587,15 +591,14 @@ fn validate_edge_unit_alignment(
         }
     }
 
-    if edge.contract.allows_broadcast {
-        if edge.contract.alignment_key.is_none()
-            && source_port.alignment_key.is_none()
-            && target_port.alignment_key.is_none()
-        {
-            return Err(DagMlError::GraphValidation(format!(
-                "{label} allows broadcast but declares no alignment_key"
-            )));
-        }
+    if edge.contract.allows_broadcast
+        && edge.contract.alignment_key.is_none()
+        && source_port.alignment_key.is_none()
+        && target_port.alignment_key.is_none()
+    {
+        return Err(DagMlError::GraphValidation(format!(
+            "{label} allows broadcast but declares no alignment_key"
+        )));
     }
     Ok(())
 }

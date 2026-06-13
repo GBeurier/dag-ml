@@ -4801,6 +4801,7 @@ impl RuntimeController for CapiMockController {
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{}:{}",
@@ -5058,6 +5059,7 @@ mod tests {
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:cabi.replay:{}",
@@ -5330,6 +5332,7 @@ mod tests {
             data_views: BTreeMap::new(),
             prediction_inputs: BTreeMap::new(),
             artifact_inputs: BTreeMap::new(),
+            fit_influence: dag_ml_core::FitInfluenceTask::default(),
             seed: Some(42),
         };
         let result = NodeResult {
@@ -5349,6 +5352,7 @@ mod tests {
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new("lineage:cabi.controller").unwrap(),
                 run_id: task.run_id.clone(),

@@ -37,7 +37,8 @@ use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::plan::{build_execution_plan, CampaignSpec, SplitInvocation};
 use crate::policy::{
     AggregationControllerSpec, AggregationMethod, AggregationPolicy, DataModelShapePlan,
-    FitBoundary, Granularity, LeakageUnitPolicy, ShapeDelta, ShapeDeltaKind, SplitUnit,
+    FitBoundary, FitInfluencePolicy, Granularity, LeakageUnitPolicy, ShapeDelta, ShapeDeltaKind,
+    SplitUnit,
 };
 use crate::relation::{SampleRelation, SampleRelationSet};
 use serde_json::json;
@@ -85,6 +86,7 @@ impl RuntimeController for VariantProbeController {
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{variant_label}",
@@ -156,6 +158,7 @@ impl RuntimeController for ShapeDataController {
             shape_deltas: vec![shape_delta],
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{}:shape",
@@ -236,6 +239,7 @@ impl RuntimeController for DataViewProbeController {
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{}:probe",
@@ -362,6 +366,7 @@ impl RuntimeController for MockController {
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{variant_label}:{fold_label}",
@@ -527,6 +532,7 @@ impl RuntimeController for ReplayMockController {
             shape_deltas: Vec::new(),
             artifacts: artifacts.clone(),
             artifact_handles,
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:replay:{}:{:?}",
@@ -681,6 +687,7 @@ impl RuntimeController for OofEdgeController {
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:oof:{}:{}",
@@ -786,6 +793,7 @@ impl RuntimeController for ExpectedRefitOofController {
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:grouped-oof:{}:{:?}",
@@ -890,6 +898,7 @@ impl RuntimeController for GroupAggregatedOofController {
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:group-oof:{}:{}:{:?}",
@@ -1179,6 +1188,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:obs-runtime:{}:{}",
@@ -2320,6 +2330,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
+                fit_influence_diagnostics: Vec::new(),
                 lineage: LineageRecord {
                     record_id: LineageId::new(format!(
                         "lineage:parallel:{}",
@@ -2468,6 +2479,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
+                fit_influence_diagnostics: Vec::new(),
                 lineage: LineageRecord {
                     record_id: LineageId::new(format!(
                         "lineage:stress:{}:{}:{}",
@@ -5151,6 +5163,89 @@ fn parallel_campaign_refit_captures_emitted_artifact_handles() {
     );
 }
 
+fn fit_influence_view(sample_ids: Vec<&str>) -> BTreeMap<String, DataProviderViewSpec> {
+    BTreeMap::from([(
+        "data:x:train".to_string(),
+        DataProviderViewSpec {
+            sample_ids: Some(
+                sample_ids
+                    .into_iter()
+                    .map(|sample_id| SampleId::new(sample_id).unwrap())
+                    .collect(),
+            ),
+            partition: DataRequestPartition::FoldTrain,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            source_ids: None,
+            columns: None,
+            include_augmented: false,
+            include_excluded: false,
+            branch_view: None,
+            extra: BTreeMap::new(),
+        },
+    )])
+}
+
+#[test]
+fn fit_influence_strict_requires_weight_support() {
+    let error = resolve_fit_influence_task(
+        FitInfluencePolicy::StrictWeightSupport,
+        &BTreeSet::new(),
+        &fit_influence_view(vec!["s1", "s1", "s2"]),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("fit influence"),
+        "unexpected strict support error: {error}"
+    );
+}
+
+#[test]
+fn fit_influence_auto_falls_back_with_warning() {
+    let task = resolve_fit_influence_task(
+        FitInfluencePolicy::Auto,
+        &BTreeSet::new(),
+        &fit_influence_view(vec!["s1", "s1", "s2"]),
+    )
+    .unwrap();
+
+    assert_eq!(task.effective_policy, FitInfluencePolicy::UniformRows);
+    assert_eq!(task.mechanism, FitInfluenceMechanism::UniformRows);
+    assert!(task.warnings[0].contains("fell back"));
+    task.validate().unwrap();
+
+    let diagnostic = task.diagnostic();
+    assert!(diagnostic.fallback_used);
+    assert_eq!(diagnostic.row_weight_count, 0);
+    assert_eq!(diagnostic.warnings, task.warnings);
+}
+
+#[test]
+fn equal_sample_influence_emits_per_row_weights_without_aggregation_weights() {
+    let capabilities = BTreeSet::from([ControllerCapability::SupportsSampleWeights]);
+    let task = resolve_fit_influence_task(
+        FitInfluencePolicy::EqualSampleInfluence,
+        &capabilities,
+        &fit_influence_view(vec!["s1", "s1", "s2"]),
+    )
+    .unwrap();
+
+    assert_eq!(task.mechanism, FitInfluenceMechanism::SampleWeights);
+    assert_eq!(task.row_weights, vec![0.5, 0.5, 1.0]);
+
+    let aggregation = AggregationPolicy {
+        method: AggregationMethod::WeightedMean,
+        weights: crate::policy::AggregationWeights::RepetitionCount,
+        ..AggregationPolicy::default()
+    };
+    aggregation.validate().unwrap();
+    assert_eq!(
+        task.effective_policy,
+        FitInfluencePolicy::EqualSampleInfluence
+    );
+}
+
 #[test]
 fn node_result_validation_rejects_external_conformance_mismatches() {
     let plan = build_execution_plan(
@@ -5190,6 +5285,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        fit_influence: FitInfluenceTask::default(),
         seed: Some(99),
     };
     let controller = MockController {
@@ -5280,6 +5376,7 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        fit_influence: FitInfluenceTask::default(),
         seed: Some(99),
     };
     let controller = MockController {
@@ -5368,6 +5465,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        fit_influence: FitInfluenceTask::default(),
         seed: Some(99),
     };
     let controller = MockController {
@@ -5589,6 +5687,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
         )]),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        fit_influence: FitInfluenceTask::default(),
         seed: Some(99),
     };
     let result = NodeResult {
@@ -5616,6 +5715,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
         shape_deltas: Vec::new(),
         artifacts: Vec::new(),
         artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
         lineage: LineageRecord {
             record_id: LineageId::new("lineage:bad.sample").unwrap(),
             run_id: task.run_id.clone(),

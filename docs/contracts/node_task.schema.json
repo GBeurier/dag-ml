@@ -69,6 +69,9 @@
         { "type": "null" }
       ]
     },
+    "fit_influence": {
+      "$ref": "#/$defs/fit_influence_task"
+    },
     "seed": {
       "type": ["integer", "null"],
       "minimum": 0
@@ -195,8 +198,62 @@
         "shape_changing",
         "generates_data",
         "generates_model",
-        "expands_variants"
+        "expands_variants",
+        "aggregates_predictions",
+        "supports_sample_weights",
+        "supports_row_resampling",
+        "supports_backend_loss_weights",
+        "supports_missing_masks"
       ]
+    },
+    "fit_influence_policy": {
+      "enum": [
+        "auto",
+        "uniform_rows",
+        "equal_sample_influence",
+        "resample_equalized",
+        "backend_loss_weight",
+        "scorer_only",
+        "strict_weight_support"
+      ]
+    },
+    "fit_influence_mechanism": {
+      "enum": [
+        "uniform_rows",
+        "sample_weights",
+        "row_resampling",
+        "backend_loss_weights",
+        "scorer_only"
+      ]
+    },
+    "fit_influence_task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_policy", "effective_policy", "mechanism"],
+      "properties": {
+        "requested_policy": {
+          "$ref": "#/$defs/fit_influence_policy"
+        },
+        "effective_policy": {
+          "$ref": "#/$defs/fit_influence_policy"
+        },
+        "mechanism": {
+          "$ref": "#/$defs/fit_influence_mechanism"
+        },
+        "row_weights": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
     },
     "controller_fit_scope": {
       "enum": ["stateless", "fold_train", "full_train", "inference_only"]

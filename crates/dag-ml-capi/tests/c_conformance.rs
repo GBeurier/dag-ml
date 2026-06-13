@@ -5,9 +5,9 @@ use std::process::Command;
 use dag_ml_core::{
     build_execution_bundle, build_execution_plan, ArtifactId, ArtifactPolicy, ArtifactRef,
     BundleId, CampaignSpec, ControllerCapability, ControllerFitScope, ControllerId,
-    ControllerManifest, ControllerRegistry, FoldId, GraphSpec, HandleKind, HandleRef, LineageId,
-    LineageRecord, NodeId, NodeKind, NodePlan, NodeResult, NodeTask, Phase, RefitArtifactRecord,
-    RngPolicy, RunId, VariantId,
+    ControllerManifest, ControllerRegistry, FitInfluenceTask, FoldId, GraphSpec, HandleKind,
+    HandleRef, LineageId, LineageRecord, NodeId, NodeKind, NodePlan, NodeResult, NodeTask, Phase,
+    RefitArtifactRecord, RngPolicy, RunId, VariantId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -2373,6 +2373,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        fit_influence: FitInfluenceTask::default(),
         seed: Some(42),
     };
     let result = NodeResult {
@@ -2392,6 +2393,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
         shape_deltas: Vec::new(),
         artifacts: Vec::new(),
         artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
         lineage: LineageRecord {
             record_id: LineageId::new("lineage:c.conformance.node-result").unwrap(),
             run_id: task.run_id.clone(),

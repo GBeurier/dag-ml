@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{DagMlError, Result};
 use crate::ids::{ControllerId, FoldId, NodeId, RunId, VariantId};
 use crate::phase::Phase;
+use crate::policy::FitInfluencePolicy;
 use crate::relation::SampleRelationSet;
 use crate::runtime::{
     DataMaterializationRequest, DataProviderViewSpec, DataViewRequest, HandleKind, HandleRef,
@@ -264,6 +265,8 @@ pub struct ModelInputSpec {
     pub ports: Vec<ModelInputPortSpec>,
     #[serde(default)]
     pub default_fusion: Option<ModelInputFusionPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit_influence_policy: Option<FitInfluencePolicy>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }

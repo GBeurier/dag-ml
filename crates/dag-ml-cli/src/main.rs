@@ -2223,6 +2223,10 @@ fn validate_sklearn_complex_demo(
         },
         required_metric_level: Some(dag_ml_core::PredictionLevel::Sample),
         require_finite: true,
+        evaluation_scope: None,
+        refit_slot_plan: None,
+        stacking_fit_contract: None,
+        reduction_id: None,
     };
     let branch_candidates = metric_candidates(report, "branch_variant_metrics")?;
     let branch_groups = branch_groups_from_report(report)?;
@@ -3958,6 +3962,7 @@ impl RuntimeController for CliMockController {
             aggregated_predictions: Vec::new(),
             explanations,
             shape_deltas: Vec::new(),
+            fit_influence_diagnostics: Vec::new(),
             artifacts: artifacts.clone(),
             artifact_handles,
             lineage: LineageRecord {

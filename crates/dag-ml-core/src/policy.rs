@@ -73,6 +73,19 @@ pub enum PredictionLevel {
     Group,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FitInfluencePolicy {
+    Auto,
+    #[default]
+    UniformRows,
+    EqualSampleInfluence,
+    ResampleEqualized,
+    BackendLossWeight,
+    ScorerOnly,
+    StrictWeightSupport,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AggregationMethod {
