@@ -5,6 +5,11 @@
 # dependency versions (kept in sync with the root workspace) instead of
 # inheriting `*.workspace = true`, exactly like the excluded `dag-ml-data-r`
 # and the sibling repos' `bindings/python`.
+#
+# Keep this as a workspace root so maturin still works when the repo is checked
+# out inside another Cargo workspace during cross-repo CI.
+[workspace]
+
 [package]
 name = "dag-ml-py"
 description = "Python bindings for DAG-ML JSON contracts."

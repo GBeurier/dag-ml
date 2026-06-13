@@ -123,7 +123,7 @@ pub fn stratified_kfold_split_json(
 /// Rank candidate variants and return the winner — the SELECT phase for in-browser
 /// generators/finetune. Selection stays in dag-ml (deterministic argmin/argmax +
 /// id tie-break), not the host. `policy_json` = SelectionPolicy, `candidates_json`
-/// = CandidateScore[]. With `groups_json` (group_id → [candidate_id]) returns a
+/// = `CandidateScore` array. With `groups_json` (group id to candidate ids) returns a
 /// {group → SelectionDecision} map; otherwise a single SelectionDecision.
 #[wasm_bindgen]
 pub fn select_candidates_json(

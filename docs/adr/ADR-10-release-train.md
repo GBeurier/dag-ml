@@ -23,8 +23,9 @@ The release train is a fixed five-step sequence, scripted and CI-gated:
 
 ### CI gates
 
-- Each release tag triggers `release.yml` which calls `scripts/release/check_pinning.py` — fails if any consumer Cargo.toml references a yanked or unreleased version.
-- `cargo publish --dry-run` runs on every PR touching `Cargo.toml` for any crate to be published.
+- Each release tag triggers `release-crates.yml` in the repo being released. The workflow validates release metadata, validates the Cargo publish plan, checks that the `v*` tag matches the workspace version and publishes crates in dependency order.
+- `release-crates.yml` accepts prerelease SemVer tags such as `v0.1.0-alpha.1`; this is required while `dag-ml` and `dag-ml-data` are still in alpha.
+- `cargo publish --dry-run` runs in CI through `scripts/release/check_publish_plan.py --dry-run`.
 - A "release ready" PR check verifies CHANGELOG, ADR delta, and ABI snapshot are present.
 
 ### Hotfix path
@@ -33,7 +34,7 @@ For a single-repo hotfix (e.g. dag-ml only, leaving dag-ml-data unchanged), the 
 
 ## Consequences
 
-- `scripts/release/` lands in both repos with a shared `release_train.py` and per-repo `release.yml` GitHub Actions workflow.
+- `scripts/release/` lands in both repos with per-repo `release-crates.yml` GitHub Actions workflows for crates.io publication.
 - CONTRIBUTING.md documents the train and the hotfix exception.
 - Version pinning becomes a hard CI constraint; manual edits are reverted by the bot.
 
