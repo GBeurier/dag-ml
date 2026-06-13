@@ -389,7 +389,10 @@ This DAG-ML runtime contract is embedded under the reserved
 `DataProviderViewSpec.extra["dag_ml_output"]` key when a data-producing DAG node
 emits a downstream data view. It records the producer node/port/phase,
 variant/fold scope, shape-plan and aggregation fingerprints, current feature
-schema fingerprint and emitted shape deltas. Controllers and host bindings can
+schema fingerprint and emitted shape deltas. D6/D7 add optional representation
+plans, replay manifests, relation-delta fingerprints and train/predict
+compatibility reports so serve-time missing source or repetition differences
+are explicit, policy-bound and replayable. Controllers and host bindings can
 discover and validate this metadata without reverse-engineering free-form JSON
 or hardcoding Rust-only constants.
 

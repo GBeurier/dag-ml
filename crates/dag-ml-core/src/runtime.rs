@@ -22,8 +22,8 @@ use crate::bundle::{
 use crate::campaign::stable_json_fingerprint;
 use crate::controller::{capabilities_support_fit_influence, ControllerCapability};
 use crate::data::{
-    DataBinding, DataRequestPartition, ExternalDataPlanEnvelope, RepresentationPlan,
-    RepresentationReplayManifest,
+    DataBinding, DataRequestPartition, ExternalDataPlanEnvelope, RepresentationCompatibilityReport,
+    RepresentationPlan, RepresentationReplayManifest,
 };
 use crate::error::{DagMlError, Result};
 use crate::fold::{FoldAssignment, FoldSet};
@@ -3327,6 +3327,8 @@ pub struct DataOutputProvenance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub representation_replay_manifest: Option<RepresentationReplayManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation_compatibility: Option<RepresentationCompatibilityReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relation_delta_fingerprint: Option<String>,
     #[serde(default)]
     pub shape_deltas: Vec<ShapeDelta>,
@@ -3378,6 +3380,14 @@ impl DataOutputProvenance {
             replay_manifest.validate().map_err(|error| {
                 DagMlError::RuntimeValidation(format!(
                     "data output provenance for `{}` has invalid representation_replay_manifest: {error}",
+                    self.producer_node
+                ))
+            })?;
+        }
+        if let Some(report) = &self.representation_compatibility {
+            report.validate().map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "data output provenance for `{}` has invalid representation_compatibility: {error}",
                     self.producer_node
                 ))
             })?;
@@ -6304,6 +6314,7 @@ fn output_data_view_for_port(
         feature_schema_fingerprint: None,
         representation_plan: None,
         representation_replay_manifest: None,
+        representation_compatibility: None,
         relation_delta_fingerprint: None,
         shape_deltas,
     };

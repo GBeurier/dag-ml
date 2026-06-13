@@ -66,6 +66,12 @@
         { "type": "null" }
       ]
     },
+    "representation_compatibility": {
+      "anyOf": [
+        { "$ref": "#/$defs/representation_compatibility_report" },
+        { "type": "null" }
+      ]
+    },
     "relation_delta_fingerprint": {
       "anyOf": [
         { "$ref": "#/$defs/sha256" },
@@ -105,6 +111,12 @@
     },
     "representation_cardinality": {
       "enum": ["one_to_one", "one_to_many", "many_to_one", "many_to_many", "bounded_many"]
+    },
+    "representation_compatibility_severity": {
+      "enum": ["info", "warning", "error"]
+    },
+    "representation_compatibility_outcome": {
+      "enum": ["compatible", "compatible_with_fallback", "incompatible"]
     },
     "combination_plan": {
       "type": "object",
@@ -295,6 +307,69 @@
             { "$ref": "#/$defs/entity_unit_level" },
             { "type": "null" }
           ]
+        },
+        "train_compatibility": {
+          "anyOf": [
+            { "$ref": "#/$defs/representation_compatibility_report" },
+            { "type": "null" }
+          ]
+        },
+        "predict_compatibility": {
+          "anyOf": [
+            { "$ref": "#/$defs/representation_compatibility_report" },
+            { "type": "null" }
+          ]
+        },
+        "metadata": { "type": "object" }
+      }
+    },
+    "representation_compatibility_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "outcome"],
+      "properties": {
+        "policy": { "$ref": "#/$defs/representation_missing_source_policy" },
+        "outcome": { "$ref": "#/$defs/representation_compatibility_outcome" },
+        "fallback_used": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "warning_severity": {
+          "anyOf": [
+            { "$ref": "#/$defs/representation_compatibility_severity" },
+            { "type": "null" }
+          ]
+        },
+        "affected_source_count": { "type": "integer", "minimum": 0 },
+        "affected_repetition_count": { "type": "integer", "minimum": 0 },
+        "affected_sample_count": { "type": "integer", "minimum": 0 },
+        "train_relation_fingerprint": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "predict_relation_fingerprint": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "train_unit_count": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "predict_unit_count": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "fixed_width_required": { "type": "boolean" },
+        "final_reducer_stabilizes_output": { "type": "boolean" },
+        "cartesian_combo_count_changed": { "type": "boolean" },
+        "late_fusion_branch_delta": { "type": "boolean" },
+        "messages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/non_empty_string" }
         },
         "metadata": { "type": "object" }
       }

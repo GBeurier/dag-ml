@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::aggregation::{AggregatedPredictionBlock, PredictionUnitId};
 use crate::campaign::stable_json_fingerprint;
-use crate::data::ExternalDataPlanEnvelope;
+use crate::data::{
+    ExternalDataPlanEnvelope, RepresentationCompatibilityReport, RepresentationReplayManifest,
+};
 use crate::error::{DagMlError, Result};
 use crate::ids::{BundleId, ControllerId, FoldId, NodeId, SampleId, VariantId};
 use crate::oof::{PredictionBlock, PredictionPartition};
@@ -136,7 +138,7 @@ pub fn prediction_cache_payload_schema_migration_policy() -> SchemaMigrationPoli
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BundleDataRequirement {
     pub node_id: NodeId,
     pub input_name: String,
@@ -147,11 +149,25 @@ pub struct BundleDataRequirement {
     pub output_representation: String,
     #[serde(default)]
     pub feature_set_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation_replay_manifest: Option<RepresentationReplayManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation_compatibility: Option<RepresentationCompatibilityReport>,
 }
 
 impl BundleDataRequirement {
     pub fn key(&self) -> String {
         format!("{}.{}", self.node_id, self.input_name)
+    }
+
+    fn matches_plan_requirement(&self, expected: &Self) -> bool {
+        self.node_id == expected.node_id
+            && self.input_name == expected.input_name
+            && self.schema_fingerprint == expected.schema_fingerprint
+            && self.plan_fingerprint == expected.plan_fingerprint
+            && self.relation_fingerprint == expected.relation_fingerprint
+            && self.output_representation == expected.output_representation
+            && self.feature_set_id == expected.feature_set_id
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -165,6 +181,23 @@ impl BundleDataRequirement {
         validate_fingerprint("plan", &self.plan_fingerprint)?;
         if let Some(relation_fingerprint) = &self.relation_fingerprint {
             validate_fingerprint("relation", relation_fingerprint)?;
+        }
+        if let Some(replay_manifest) = &self.representation_replay_manifest {
+            replay_manifest.validate()?;
+            if let (Some(requirement), Some(manifest)) = (
+                self.relation_fingerprint.as_deref(),
+                replay_manifest.relation_fingerprint.as_deref(),
+            ) {
+                if requirement != manifest {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "bundle data requirement `{}` relation_fingerprint does not match representation replay manifest",
+                        self.key()
+                    )));
+                }
+            }
+        }
+        if let Some(report) = &self.representation_compatibility {
+            report.validate()?;
         }
         if self.output_representation.trim().is_empty() {
             return Err(DagMlError::CampaignValidation(format!(
@@ -1056,11 +1089,30 @@ impl ExecutionBundle {
         };
         self.validate_selections_against_plan(plan)?;
         let expected_requirements = collect_data_requirements(plan)?;
-        if self.data_requirements != expected_requirements {
+        let expected_by_key = expected_requirements
+            .iter()
+            .map(|requirement| (requirement.key(), requirement))
+            .collect::<BTreeMap<_, _>>();
+        if self.data_requirements.len() != expected_by_key.len() {
             return Err(DagMlError::RuntimeValidation(format!(
-                "bundle `{}` data requirements do not match execution plan",
+                "bundle `{}` data requirement count does not match execution plan",
                 self.bundle_id
             )));
+        }
+        for requirement in &self.data_requirements {
+            let key = requirement.key();
+            let expected = expected_by_key.get(&key).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` data requirement `{key}` does not exist in execution plan",
+                    self.bundle_id
+                ))
+            })?;
+            if !requirement.matches_plan_requirement(expected) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` data requirement `{key}` does not match execution plan",
+                    self.bundle_id
+                )));
+            }
         }
         for artifact in &self.refit_artifacts {
             let node_plan = plan.node_plans.get(&artifact.node_id).ok_or_else(|| {
@@ -1481,6 +1533,8 @@ fn collect_data_requirements(plan: &ExecutionPlan) -> Result<Vec<BundleDataRequi
                 relation_fingerprint: binding.relation_fingerprint.clone(),
                 output_representation: binding.output_representation.clone(),
                 feature_set_id: binding.feature_set_id.clone(),
+                representation_replay_manifest: None,
+                representation_compatibility: None,
             });
         }
     }
@@ -2058,10 +2112,16 @@ impl ReplayPhaseRequest {
 mod tests {
     use super::*;
     use crate::controller::{ControllerManifest, ControllerRegistry};
+    use crate::data::{
+        AggregateRepresentation, RepresentationCardinality, RepresentationCompatibilityOutcome,
+        RepresentationCompatibilityReport, RepresentationMissingSourcePolicy, RepresentationPlan,
+        RepresentationReplayManifest,
+    };
     use crate::dsl::{compile_pipeline_dsl_with_generation, PipelineDslSpec};
     use crate::graph::GraphSpec;
     use crate::ids::{ArtifactId, FoldId, SampleId, TargetId};
     use crate::plan::{build_execution_plan, CampaignSpec};
+    use crate::relation::EntityUnitLevel;
     use crate::selection::{
         select_candidate, CandidateScore, MetricObjective, SelectionMetric, SelectionPolicy,
     };
@@ -2297,6 +2357,82 @@ mod tests {
 
         bundle.validate_against_plan(&plan).unwrap();
         assert_eq!(bundle.data_requirements.len(), 1);
+    }
+
+    #[test]
+    fn bundle_data_requirements_accept_d7_replay_contracts() {
+        let plan = plan();
+        let artifact = model_base_refit_artifact(&plan);
+        let mut bundle = build_execution_bundle(
+            BundleId::new("bundle:d7.replay").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::from([("merge".to_string(), decision())]),
+            vec![artifact],
+        )
+        .unwrap();
+        let relation_fingerprint = bundle.data_requirements[0]
+            .relation_fingerprint
+            .clone()
+            .unwrap_or_else(|| "a".repeat(64));
+        bundle.data_requirements[0].representation_replay_manifest =
+            Some(RepresentationReplayManifest {
+                manifest_id: "repr:d7.bundle".to_string(),
+                representation_plan: RepresentationPlan::Aggregate(AggregateRepresentation {
+                    input_unit_level: EntityUnitLevel::Observation,
+                    output_unit_level: EntityUnitLevel::PhysicalSample,
+                    reducer_id: None,
+                    method: Some("mean".to_string()),
+                    cardinality: RepresentationCardinality::ManyToOne,
+                }),
+                combination_plan: None,
+                output_unit_level: EntityUnitLevel::PhysicalSample,
+                output_representation: Some("tabular_numeric".to_string()),
+                relation_fingerprint: Some(relation_fingerprint.clone()),
+                feature_schema_fingerprint: Some("b".repeat(64)),
+                final_reduction_id: None,
+                sample_observation_mapping: Vec::new(),
+                combo_selection: Vec::new(),
+                qc_policy_refs: Vec::new(),
+                outlier_policy_refs: Vec::new(),
+                missing_source_policy: None,
+                missing_repetition_policy: None,
+                prediction_representation: None,
+                final_output_unit_level: Some(EntityUnitLevel::PhysicalSample),
+                train_compatibility: None,
+                predict_compatibility: None,
+                metadata: BTreeMap::new(),
+            });
+        bundle.data_requirements[0].representation_compatibility =
+            Some(RepresentationCompatibilityReport {
+                policy: RepresentationMissingSourcePolicy::Strict,
+                outcome: RepresentationCompatibilityOutcome::Compatible,
+                fallback_used: None,
+                warning_severity: None,
+                affected_source_count: 0,
+                affected_repetition_count: 0,
+                affected_sample_count: 0,
+                train_relation_fingerprint: Some(relation_fingerprint),
+                predict_relation_fingerprint: None,
+                train_unit_count: Some(2),
+                predict_unit_count: Some(2),
+                fixed_width_required: false,
+                final_reducer_stabilizes_output: true,
+                cartesian_combo_count_changed: false,
+                late_fusion_branch_delta: false,
+                messages: Vec::new(),
+                metadata: BTreeMap::new(),
+            });
+        bundle.validate_against_plan(&plan).unwrap();
+
+        bundle.data_requirements[0]
+            .representation_replay_manifest
+            .as_mut()
+            .unwrap()
+            .relation_fingerprint = Some("c".repeat(64));
+        if bundle.data_requirements[0].relation_fingerprint.is_some() {
+            assert!(bundle.validate().is_err());
+        }
     }
 
     #[test]

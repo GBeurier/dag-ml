@@ -57,6 +57,10 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   padded/masked-stack data views, plus replay manifests and data-output
   provenance fields so hosts can materialize heterogeneous fusion views while
   the core validates only identities, fingerprints and policy metadata.
+- Heterogeneous multi-source repetitions roadmap D7 adds representation
+  compatibility reports for train/predict replay, explicit fallback severity
+  and affected-count metadata, and bundle/data-output validation that rejects
+  silent fixed-width, cartesian-count or late-fusion missingness mismatches.
 - Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
   `examples/README.md` audience matrix.

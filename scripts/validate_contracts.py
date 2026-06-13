@@ -216,6 +216,12 @@ REPRESENTATION_KINDS = {
     "stack_fixed",
     "stack_padded_masked",
 }
+REPRESENTATION_COMPATIBILITY_SEVERITIES = {"info", "warning", "error"}
+REPRESENTATION_COMPATIBILITY_OUTCOMES = {
+    "compatible",
+    "compatible_with_fallback",
+    "incompatible",
+}
 FIT_INFLUENCE_MECHANISMS = {
     "uniform_rows",
     "sample_weights",
@@ -550,6 +556,107 @@ def validate_representation_plan(value: Any, label: str) -> None:
     )
 
 
+def validate_representation_compatibility_report(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} must be an object")
+    policy = value.get("policy")
+    outcome = value.get("outcome")
+    require(
+        policy in REPRESENTATION_MISSING_SOURCE_POLICIES,
+        f"{label}.policy is invalid",
+    )
+    require(
+        outcome in REPRESENTATION_COMPATIBILITY_OUTCOMES,
+        f"{label}.outcome is invalid",
+    )
+    require_optional_non_empty_string(value.get("fallback_used"), f"{label}.fallback_used")
+    warning_severity = value.get("warning_severity")
+    if warning_severity is not None:
+        require(
+            warning_severity in REPRESENTATION_COMPATIBILITY_SEVERITIES,
+            f"{label}.warning_severity is invalid",
+        )
+    counts = {}
+    for field in (
+        "affected_source_count",
+        "affected_repetition_count",
+        "affected_sample_count",
+    ):
+        count = value.get(field, 0)
+        require_non_negative_int(count, f"{label}.{field}")
+        counts[field] = count
+    for field in ("train_relation_fingerprint", "predict_relation_fingerprint"):
+        fingerprint = value.get(field)
+        if fingerprint is not None:
+            require_sha256(fingerprint, f"{label}.{field}")
+    for field in ("train_unit_count", "predict_unit_count"):
+        count = value.get(field)
+        if count is not None:
+            require_non_negative_int(count, f"{label}.{field}")
+    for field in (
+        "fixed_width_required",
+        "final_reducer_stabilizes_output",
+        "cartesian_combo_count_changed",
+        "late_fusion_branch_delta",
+    ):
+        require(isinstance(value.get(field, False), bool), f"{label}.{field} must be bool")
+    messages = value.get("messages", [])
+    require(isinstance(messages, list), f"{label}.messages must be an array")
+    for index, message in enumerate(messages):
+        require_non_empty_string(message, f"{label}.messages[{index}]")
+    validate_metadata_object(value.get("metadata"), f"{label}.metadata")
+
+    affected_total = sum(counts.values())
+    fallback_used = value.get("fallback_used")
+    if affected_total == 0:
+        require(
+            outcome != "compatible_with_fallback",
+            f"{label}.outcome cannot use fallback when no units are affected",
+        )
+        require(
+            warning_severity is None,
+            f"{label}.warning_severity requires affected units",
+        )
+    elif policy == "strict":
+        require(outcome == "incompatible", f"{label}.strict affected outcome invalid")
+        require(fallback_used is None, f"{label}.strict cannot use fallback")
+    else:
+        require(warning_severity is not None, f"{label}.warning_severity required")
+        require(outcome != "compatible", f"{label}.affected outcome cannot be compatible")
+        if outcome == "compatible_with_fallback":
+            require(fallback_used is not None, f"{label}.fallback_used required")
+    if outcome == "incompatible":
+        require(fallback_used is None, f"{label}.incompatible cannot use fallback")
+
+    train_unit_count = value.get("train_unit_count")
+    predict_unit_count = value.get("predict_unit_count")
+    unit_count_changed = (
+        train_unit_count is not None
+        and predict_unit_count is not None
+        and train_unit_count != predict_unit_count
+    )
+    if value.get("fixed_width_required", False) and unit_count_changed:
+        if outcome != "incompatible":
+            require(
+                policy in {"mask", "pad"} or fallback_used in {"mask", "pad"},
+                f"{label}.fixed_width mismatch requires mask or pad",
+            )
+    if value.get("cartesian_combo_count_changed", False):
+        if outcome != "incompatible":
+            require(
+                value.get("final_reducer_stabilizes_output", False) is True,
+                f"{label}.cartesian_combo_count_changed requires final reducer",
+            )
+    if value.get("late_fusion_branch_delta", False):
+        if outcome != "incompatible":
+            require(
+                policy
+                in {"drop_incomplete", "impute_declared", "mask", "partial_model", "pad"}
+                or fallback_used
+                in {"drop_incomplete", "impute_declared", "mask", "partial_model", "pad"},
+                f"{label}.late_fusion_branch_delta requires declared fallback policy",
+            )
+
+
 def validate_representation_replay_manifest(value: Any, label: str) -> None:
     require(isinstance(value, dict), f"{label} must be an object")
     require_identifier(value.get("manifest_id"), f"{label}.manifest_id")
@@ -655,6 +762,10 @@ def validate_representation_replay_manifest(value: Any, label: str) -> None:
     final_output_unit_level = value.get("final_output_unit_level")
     if final_output_unit_level is not None:
         require_unit_level(final_output_unit_level, f"{label}.final_output_unit_level")
+    for field in ("train_compatibility", "predict_compatibility"):
+        report = value.get(field)
+        if report is not None:
+            validate_representation_compatibility_report(report, f"{label}.{field}")
     for field in ("relation_fingerprint", "feature_schema_fingerprint"):
         field_value = value.get(field)
         if field_value is not None:
@@ -1978,6 +2089,7 @@ def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
     for field in (
         "representation_plan",
         "representation_replay_manifest",
+        "representation_compatibility",
         "relation_delta_fingerprint",
     ):
         require(
@@ -1990,8 +2102,11 @@ def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
         "combination_plan",
         "representation_plan",
         "representation_replay_manifest",
+        "representation_compatibility_report",
         "representation_sample_observation_mapping",
         "representation_combo_selection_record",
+        "representation_compatibility_severity",
+        "representation_compatibility_outcome",
         "combination_mode",
         "representation_missing_source_policy",
         "representation_cardinality",
@@ -2007,6 +2122,16 @@ def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
     require(
         defs.get("sha256", {}).get("pattern") == "^[0-9A-Fa-f]{64}$",
         f"{label} data-output provenance sha256 definition mismatch",
+    )
+    require(
+        set(defs.get("representation_compatibility_severity", {}).get("enum", []))
+        == REPRESENTATION_COMPATIBILITY_SEVERITIES,
+        f"{label} data-output provenance compatibility severities mismatch",
+    )
+    require(
+        set(defs.get("representation_compatibility_outcome", {}).get("enum", []))
+        == REPRESENTATION_COMPATIBILITY_OUTCOMES,
+        f"{label} data-output provenance compatibility outcomes mismatch",
     )
     shape_delta = defs.get("shape_delta")
     require(isinstance(shape_delta, dict), f"{label} data-output shape_delta definition missing")
@@ -3837,6 +3962,12 @@ def validate_data_output_provenance(value: Any, label: str) -> None:
         validate_representation_replay_manifest(
             representation_replay_manifest,
             f"{label}.representation_replay_manifest",
+        )
+    representation_compatibility = value.get("representation_compatibility")
+    if representation_compatibility is not None:
+        validate_representation_compatibility_report(
+            representation_compatibility,
+            f"{label}.representation_compatibility",
         )
     deltas = value.get("shape_deltas", [])
     require(isinstance(deltas, list), f"{label}.shape_deltas must be an array")

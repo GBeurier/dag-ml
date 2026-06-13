@@ -576,6 +576,202 @@ impl RepresentationComboSelectionRecord {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepresentationCompatibilitySeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepresentationCompatibilityOutcome {
+    Compatible,
+    CompatibleWithFallback,
+    Incompatible,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepresentationCompatibilityReport {
+    pub policy: RepresentationMissingSourcePolicy,
+    pub outcome: RepresentationCompatibilityOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_used: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning_severity: Option<RepresentationCompatibilitySeverity>,
+    #[serde(default)]
+    pub affected_source_count: u64,
+    #[serde(default)]
+    pub affected_repetition_count: u64,
+    #[serde(default)]
+    pub affected_sample_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub train_relation_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predict_relation_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub train_unit_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predict_unit_count: Option<u64>,
+    #[serde(default)]
+    pub fixed_width_required: bool,
+    #[serde(default)]
+    pub final_reducer_stabilizes_output: bool,
+    #[serde(default)]
+    pub cartesian_combo_count_changed: bool,
+    #[serde(default)]
+    pub late_fusion_branch_delta: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl RepresentationCompatibilityReport {
+    pub fn validate(&self) -> Result<()> {
+        validate_optional_non_empty(
+            "representation compatibility fallback_used",
+            &self.fallback_used,
+        )?;
+        if let Some(fingerprint) = &self.train_relation_fingerprint {
+            validate_fingerprint("representation compatibility train relation", fingerprint)?;
+        }
+        if let Some(fingerprint) = &self.predict_relation_fingerprint {
+            validate_fingerprint("representation compatibility predict relation", fingerprint)?;
+        }
+        validate_string_list_entries("representation compatibility messages", &self.messages)?;
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(
+                    "representation compatibility metadata contains an empty key".to_string(),
+                ));
+            }
+        }
+
+        let affected_total = self
+            .affected_source_count
+            .saturating_add(self.affected_repetition_count)
+            .saturating_add(self.affected_sample_count);
+        if affected_total == 0 {
+            if self.outcome == RepresentationCompatibilityOutcome::CompatibleWithFallback {
+                return Err(DagMlError::CampaignValidation(
+                    "representation compatibility cannot use fallback when no units are affected"
+                        .to_string(),
+                ));
+            }
+            if self.warning_severity.is_some() {
+                return Err(DagMlError::CampaignValidation(
+                    "representation compatibility warning_severity requires affected units"
+                        .to_string(),
+                ));
+            }
+        } else if self.policy == RepresentationMissingSourcePolicy::Strict {
+            if self.outcome != RepresentationCompatibilityOutcome::Incompatible {
+                return Err(DagMlError::CampaignValidation(
+                    "strict representation compatibility with affected units must be incompatible"
+                        .to_string(),
+                ));
+            }
+            if self.fallback_used.is_some() {
+                return Err(DagMlError::CampaignValidation(
+                    "strict representation compatibility cannot declare fallback_used".to_string(),
+                ));
+            }
+        } else {
+            if self.warning_severity.is_none() {
+                return Err(DagMlError::CampaignValidation(
+                    "non-strict representation compatibility with affected units requires warning_severity"
+                        .to_string(),
+                ));
+            }
+            if self.outcome == RepresentationCompatibilityOutcome::Compatible {
+                return Err(DagMlError::CampaignValidation(
+                    "representation compatibility with affected units cannot be compatible"
+                        .to_string(),
+                ));
+            }
+            if self.outcome == RepresentationCompatibilityOutcome::CompatibleWithFallback
+                && self.fallback_used.is_none()
+            {
+                return Err(DagMlError::CampaignValidation(
+                    "compatible_with_fallback representation compatibility requires fallback_used"
+                        .to_string(),
+                ));
+            }
+        }
+
+        if self.outcome == RepresentationCompatibilityOutcome::Incompatible
+            && self.fallback_used.is_some()
+        {
+            return Err(DagMlError::CampaignValidation(
+                "incompatible representation compatibility cannot declare fallback_used"
+                    .to_string(),
+            ));
+        }
+
+        let unit_count_changed = matches!(
+            (self.train_unit_count, self.predict_unit_count),
+            (Some(train), Some(predict)) if train != predict
+        );
+        if self.fixed_width_required && unit_count_changed && !self.allows_fixed_width_fallback() {
+            if self.outcome == RepresentationCompatibilityOutcome::Incompatible {
+                return Ok(());
+            }
+            return Err(DagMlError::CampaignValidation(
+                "fixed-width representation compatibility mismatch requires mask or pad policy/fallback"
+                    .to_string(),
+            ));
+        }
+        if self.cartesian_combo_count_changed && !self.final_reducer_stabilizes_output {
+            if self.outcome == RepresentationCompatibilityOutcome::Incompatible {
+                return Ok(());
+            }
+            return Err(DagMlError::CampaignValidation(
+                "cartesian representation combo count may vary only when final reducer stabilizes output"
+                    .to_string(),
+            ));
+        }
+        if self.late_fusion_branch_delta && !self.allows_late_fusion_delta() {
+            if self.outcome == RepresentationCompatibilityOutcome::Incompatible {
+                return Ok(());
+            }
+            return Err(DagMlError::CampaignValidation(
+                "late-fusion source deltas require an explicit drop/impute/mask/partial-model/pad policy or fallback"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn allows_fixed_width_fallback(&self) -> bool {
+        matches!(
+            self.policy,
+            RepresentationMissingSourcePolicy::Mask | RepresentationMissingSourcePolicy::Pad
+        ) || self
+            .fallback_used
+            .as_deref()
+            .is_some_and(|fallback| matches!(fallback, "mask" | "pad"))
+    }
+
+    fn allows_late_fusion_delta(&self) -> bool {
+        matches!(
+            self.policy,
+            RepresentationMissingSourcePolicy::DropIncomplete
+                | RepresentationMissingSourcePolicy::ImputeDeclared
+                | RepresentationMissingSourcePolicy::Mask
+                | RepresentationMissingSourcePolicy::PartialModel
+                | RepresentationMissingSourcePolicy::Pad
+        ) || self.fallback_used.as_deref().is_some_and(|fallback| {
+            matches!(
+                fallback,
+                "drop_incomplete" | "impute_declared" | "mask" | "partial_model" | "pad"
+            )
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepresentationReplayManifest {
@@ -608,6 +804,10 @@ pub struct RepresentationReplayManifest {
     pub prediction_representation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_output_unit_level: Option<EntityUnitLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub train_compatibility: Option<RepresentationCompatibilityReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predict_compatibility: Option<RepresentationCompatibilityReport>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
@@ -669,6 +869,12 @@ impl RepresentationReplayManifest {
                     record.combo_unit_id
                 )));
             }
+        }
+        if let Some(report) = &self.train_compatibility {
+            report.validate()?;
+        }
+        if let Some(report) = &self.predict_compatibility {
+            report.validate()?;
         }
         if let Some(fingerprint) = &self.relation_fingerprint {
             validate_fingerprint("representation replay relation", fingerprint)?;
@@ -1878,6 +2084,28 @@ mod tests {
         }
     }
 
+    fn compatibility_report() -> RepresentationCompatibilityReport {
+        RepresentationCompatibilityReport {
+            policy: RepresentationMissingSourcePolicy::Mask,
+            outcome: RepresentationCompatibilityOutcome::CompatibleWithFallback,
+            fallback_used: Some("mask".to_string()),
+            warning_severity: Some(RepresentationCompatibilitySeverity::Warning),
+            affected_source_count: 1,
+            affected_repetition_count: 2,
+            affected_sample_count: 3,
+            train_relation_fingerprint: Some("c".repeat(64)),
+            predict_relation_fingerprint: Some("d".repeat(64)),
+            train_unit_count: Some(6),
+            predict_unit_count: Some(4),
+            fixed_width_required: true,
+            final_reducer_stabilizes_output: true,
+            cartesian_combo_count_changed: true,
+            late_fusion_branch_delta: true,
+            messages: vec!["mask fallback applied for missing source".to_string()],
+            metadata: BTreeMap::new(),
+        }
+    }
+
     #[test]
     fn representation_plan_validates_cartesian_and_monte_carlo_contracts() {
         let cartesian = RepresentationPlan::CartesianProduct(CartesianProductRepresentation {
@@ -1947,6 +2175,45 @@ mod tests {
     }
 
     #[test]
+    fn representation_compatibility_report_enforces_missingness_policy() {
+        compatibility_report().validate().unwrap();
+
+        let strict = RepresentationCompatibilityReport {
+            policy: RepresentationMissingSourcePolicy::Strict,
+            outcome: RepresentationCompatibilityOutcome::Incompatible,
+            fallback_used: None,
+            warning_severity: None,
+            affected_source_count: 1,
+            affected_repetition_count: 0,
+            affected_sample_count: 1,
+            train_relation_fingerprint: None,
+            predict_relation_fingerprint: None,
+            train_unit_count: None,
+            predict_unit_count: None,
+            fixed_width_required: false,
+            final_reducer_stabilizes_output: false,
+            cartesian_combo_count_changed: false,
+            late_fusion_branch_delta: false,
+            messages: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+        strict.validate().unwrap();
+
+        let mut bad_non_strict = compatibility_report();
+        bad_non_strict.fallback_used = None;
+        assert!(bad_non_strict.validate().is_err());
+
+        let mut bad_fixed_width = compatibility_report();
+        bad_fixed_width.policy = RepresentationMissingSourcePolicy::ImputeDeclared;
+        bad_fixed_width.fallback_used = Some("impute_declared".to_string());
+        assert!(bad_fixed_width.validate().is_err());
+
+        let mut bad_cartesian = compatibility_report();
+        bad_cartesian.final_reducer_stabilizes_output = false;
+        assert!(bad_cartesian.validate().is_err());
+    }
+
+    #[test]
     fn representation_replay_manifest_round_trips_and_validates() {
         let plan = RepresentationPlan::CartesianProduct(CartesianProductRepresentation {
             combination_plan: cartesian_combination(),
@@ -1987,6 +2254,26 @@ mod tests {
             missing_repetition_policy: Some(RepresentationMissingSourcePolicy::Warn),
             prediction_representation: Some("sample_prediction".to_string()),
             final_output_unit_level: Some(EntityUnitLevel::PhysicalSample),
+            train_compatibility: Some(RepresentationCompatibilityReport {
+                policy: RepresentationMissingSourcePolicy::Strict,
+                outcome: RepresentationCompatibilityOutcome::Compatible,
+                fallback_used: None,
+                warning_severity: None,
+                affected_source_count: 0,
+                affected_repetition_count: 0,
+                affected_sample_count: 0,
+                train_relation_fingerprint: Some("a".repeat(64)),
+                predict_relation_fingerprint: None,
+                train_unit_count: Some(1),
+                predict_unit_count: Some(1),
+                fixed_width_required: false,
+                final_reducer_stabilizes_output: true,
+                cartesian_combo_count_changed: false,
+                late_fusion_branch_delta: false,
+                messages: Vec::new(),
+                metadata: BTreeMap::new(),
+            }),
+            predict_compatibility: Some(compatibility_report()),
             metadata: BTreeMap::new(),
         };
 
