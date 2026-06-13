@@ -92,3 +92,10 @@ That milestone is intentionally smaller than full pipeline execution. The next
 gate is to expose selection/bundle/replay through CLI/C ABI and replace the
 Python-side orchestration in the sklearn demonstrator with host controller
 adapters driven by the Rust scheduler.
+
+## License
+
+`dag-ml` is dual-licensed open-source — **`CeCILL-2.1 OR AGPL-3.0-or-later`** (your choice). See
+[`LICENSING.md`](LICENSING.md), the full texts under [`LICENSES/`](LICENSES/), third-party
+attributions in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), and the licensing decision in
+[`docs/adr/ADR-18-licensing.md`](docs/adr/ADR-18-licensing.md).

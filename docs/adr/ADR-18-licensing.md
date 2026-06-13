@@ -1,7 +1,23 @@
 # ADR-18: Licensing (CeCILL-2.1 vs MIT)
 
-**Status**: proposed (2026-05-29) — **requires maintainer decision**
+**Status**: accepted (2026-06-13) — relicensed to dual `CeCILL-2.1 OR AGPL-3.0-or-later`
 **Blocks**: workstream C, workstream D, all releases
+
+## Accepted decision (2026-06-13)
+
+The maintainer chose to **relicense `dag-ml` and `dag-ml-data` to the ecosystem-standard
+dual open-source license `CeCILL-2.1 OR AGPL-3.0-or-later`** (a stronger variant of option
+(b) below — CeCILL-2.1 with AGPL-3.0-or-later as the co-equal international equivalent, rather
+than MIT). This makes the crates license-compatible with the rest of the nirs4all ecosystem
+(`nirs4all`, `nirs4all-methods`, `nirs4all-io`, `nirs4all-formats`, …), so they can be combined
+or vendored without the path-(c) non-incorporation constraint. No commercial layer is attached
+to these two low-level coordinator libraries.
+
+Crate metadata now declares `license = "CECILL-2.1 OR AGPL-3.0-or-later"`; the root `LICENSE`
+ships the AGPL-3.0-or-later text (recognized by code hosts) and the dual choice is documented in
+`LICENSING.md`. The options below are retained for historical context.
+
+
 
 ## Context
 
