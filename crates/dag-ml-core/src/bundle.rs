@@ -2436,6 +2436,40 @@ mod tests {
     }
 
     #[test]
+    fn d9_negative_prediction_cache_refuses_missing_aggregated_unit_ids() {
+        let cache = BundlePredictionCacheRecord {
+            requirement_key: "model:base.oof->model:meta.pred".to_string(),
+            cache_id: "prediction-cache:d9.missing-units".to_string(),
+            format: BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Target,
+            fold_ids: vec![FoldId::new("fold:0").unwrap()],
+            unit_ids: Vec::new(),
+            sample_ids: Vec::new(),
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+            block_count: 1,
+            row_count: 1,
+            content_fingerprint: "d".repeat(64),
+            blocks: vec![BundlePredictionBlockCacheRecord {
+                prediction_id: Some("prediction:d9.target.fold0".to_string()),
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                prediction_level: PredictionLevel::Target,
+                row_count: 1,
+                unit_ids: vec![PredictionUnitId::Target(TargetId::new("target:a").unwrap())],
+                sample_ids: Vec::new(),
+                content_fingerprint: "e".repeat(64),
+            }],
+        };
+
+        let error = cache.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("row_count does not match unique unit ids"),
+            "unexpected D9 missing-unit-id cache error: {error}"
+        );
+    }
+
+    #[test]
     fn refit_artifact_validation_checks_portable_artifact_metadata() {
         let plan = plan();
         let mut artifact = model_base_refit_artifact(&plan);

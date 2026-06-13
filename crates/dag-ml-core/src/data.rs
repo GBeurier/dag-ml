@@ -654,7 +654,30 @@ impl RepresentationCompatibilityReport {
             .affected_source_count
             .saturating_add(self.affected_repetition_count)
             .saturating_add(self.affected_sample_count);
+        let relation_fingerprint_changed = matches!(
+            (
+                self.train_relation_fingerprint.as_deref(),
+                self.predict_relation_fingerprint.as_deref()
+            ),
+            (Some(train), Some(predict)) if train != predict
+        );
+        let unit_count_changed = matches!(
+            (self.train_unit_count, self.predict_unit_count),
+            (Some(train), Some(predict)) if train != predict
+        );
         if affected_total == 0 {
+            if relation_fingerprint_changed {
+                return Err(DagMlError::CampaignValidation(
+                    "representation compatibility relation fingerprint mismatch requires affected units"
+                        .to_string(),
+                ));
+            }
+            if unit_count_changed {
+                return Err(DagMlError::CampaignValidation(
+                    "representation compatibility unit count mismatch requires affected units"
+                        .to_string(),
+                ));
+            }
             if self.outcome == RepresentationCompatibilityOutcome::CompatibleWithFallback {
                 return Err(DagMlError::CampaignValidation(
                     "representation compatibility cannot use fallback when no units are affected"
@@ -711,10 +734,6 @@ impl RepresentationCompatibilityReport {
             ));
         }
 
-        let unit_count_changed = matches!(
-            (self.train_unit_count, self.predict_unit_count),
-            (Some(train), Some(predict)) if train != predict
-        );
         if self.fixed_width_required && unit_count_changed && !self.allows_fixed_width_fallback() {
             if self.outcome == RepresentationCompatibilityOutcome::Incompatible {
                 return Ok(());
@@ -2106,6 +2125,98 @@ mod tests {
         }
     }
 
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct D9GoldenFixture {
+        schema_version: u32,
+        golden_scenarios: Vec<D9GoldenScenario>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct D9GoldenScenario {
+        scenario_id: String,
+        flow: Vec<String>,
+        mock_phase_path: Vec<String>,
+        representation_replay_manifest: RepresentationReplayManifest,
+        assertions: Vec<String>,
+    }
+
+    #[test]
+    fn d9_golden_multisource_repetition_manifests_validate() {
+        let fixture: D9GoldenFixture = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/runtime/d9_golden_multisource_scenarios.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture.schema_version, 1);
+        assert_eq!(fixture.golden_scenarios.len(), 7);
+
+        let mut scenario_ids = BTreeSet::new();
+        let mut has_same_repetition_replay = false;
+        let mut has_changed_repetition_replay = false;
+        let mut has_combo_meta_fit_influence = false;
+        for scenario in &fixture.golden_scenarios {
+            assert!(
+                scenario_ids.insert(scenario.scenario_id.as_str()),
+                "duplicate D9 scenario {}",
+                scenario.scenario_id
+            );
+            assert!(!scenario.flow.is_empty());
+            assert_eq!(scenario.mock_phase_path, ["fit_cv", "refit", "predict"]);
+            assert!(!scenario.assertions.is_empty());
+
+            let manifest = &scenario.representation_replay_manifest;
+            manifest.validate().unwrap();
+            assert_eq!(
+                manifest.final_output_unit_level,
+                Some(EntityUnitLevel::PhysicalSample),
+                "{} must publish sample-level outputs",
+                scenario.scenario_id
+            );
+            if manifest.output_unit_level == EntityUnitLevel::Combo {
+                assert!(
+                    manifest.final_reduction_id.is_some(),
+                    "{} must declare combo-to-sample reduction",
+                    scenario.scenario_id
+                );
+                assert!(
+                    !manifest.combo_selection.is_empty(),
+                    "{} must retain relation-backed combo identities",
+                    scenario.scenario_id
+                );
+            }
+
+            if let (Some(train), Some(predict)) = (
+                &manifest.train_compatibility,
+                &manifest.predict_compatibility,
+            ) {
+                has_same_repetition_replay |= train.train_unit_count == predict.predict_unit_count
+                    && train.train_relation_fingerprint == predict.predict_relation_fingerprint;
+                has_changed_repetition_replay |= train.train_unit_count
+                    != predict.predict_unit_count
+                    || train.train_relation_fingerprint != predict.predict_relation_fingerprint;
+            }
+
+            if scenario.scenario_id == "d9.combo_meta_post.relation_backed_adapters" {
+                has_combo_meta_fit_influence = manifest
+                    .metadata
+                    .get("fit_influence_policy")
+                    .is_some_and(|value| value == "equal_sample_influence");
+            }
+        }
+
+        assert!(scenario_ids.contains("d9.per_source_aggregate.source_models.sample_reducer"));
+        assert!(scenario_ids.contains("d9.late_fusion_by_source.prediction_join.meta_model"));
+        assert!(scenario_ids.contains("d9.cartesian_full.model.combo_to_sample_reducer"));
+        assert!(scenario_ids.contains("d9.cartesian_mc.deterministic_replay"));
+        assert!(scenario_ids.contains("d9.stack_fixed.strict_cardinality"));
+        assert!(scenario_ids.contains("d9.stack_padded_masked.missing_repetition"));
+        assert!(scenario_ids.contains("d9.combo_meta_post.relation_backed_adapters"));
+        assert!(has_same_repetition_replay);
+        assert!(has_changed_repetition_replay);
+        assert!(has_combo_meta_fit_influence);
+    }
+
     #[test]
     fn representation_plan_validates_cartesian_and_monte_carlo_contracts() {
         let cartesian = RepresentationPlan::CartesianProduct(CartesianProductRepresentation {
@@ -2211,6 +2322,41 @@ mod tests {
         let mut bad_cartesian = compatibility_report();
         bad_cartesian.final_reducer_stabilizes_output = false;
         assert!(bad_cartesian.validate().is_err());
+
+        let bad_relation_drift = RepresentationCompatibilityReport {
+            policy: RepresentationMissingSourcePolicy::Strict,
+            outcome: RepresentationCompatibilityOutcome::Compatible,
+            fallback_used: None,
+            warning_severity: None,
+            affected_source_count: 0,
+            affected_repetition_count: 0,
+            affected_sample_count: 0,
+            train_relation_fingerprint: Some("a".repeat(64)),
+            predict_relation_fingerprint: Some("b".repeat(64)),
+            train_unit_count: Some(3),
+            predict_unit_count: Some(3),
+            fixed_width_required: false,
+            final_reducer_stabilizes_output: true,
+            cartesian_combo_count_changed: false,
+            late_fusion_branch_delta: false,
+            messages: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+        let error = bad_relation_drift.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("relation fingerprint mismatch requires affected units"),
+            "unexpected D9 relation drift error: {error}"
+        );
+
+        let mut bad_unit_drift = bad_relation_drift;
+        bad_unit_drift.predict_relation_fingerprint =
+            bad_unit_drift.train_relation_fingerprint.clone();
+        bad_unit_drift.predict_unit_count = Some(2);
+        let error = bad_unit_drift.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("unit count mismatch requires affected units"),
+            "unexpected D9 unit-count drift error: {error}"
+        );
     }
 
     #[test]

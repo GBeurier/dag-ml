@@ -3019,6 +3019,75 @@ fn requires_oof_prediction_edge_refit_uses_cv_oof_coverage() {
 }
 
 #[test]
+fn d9_golden_oof_refit_and_predict_replay_mock_run() {
+    let oof_plan = build_execution_plan(
+        "plan:d9.oof.refit",
+        oof_edge_graph(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+    )
+    .unwrap();
+    let mut oof_ctx = RunContext::new(RunId::new("run:d9.oof.refit").unwrap(), Some(11));
+    let fit_controllers = oof_edge_runtime_controllers(
+        Some(PredictionPartition::Validation),
+        OofSampleMode::Aligned,
+    );
+    let fit_results = SequentialScheduler
+        .execute_campaign_phase(&oof_plan, &fit_controllers, &mut oof_ctx, Phase::FitCv)
+        .unwrap();
+    assert_eq!(fit_results.len(), 4);
+    assert_eq!(oof_ctx.prediction_store.blocks().len(), 2);
+
+    let refit_controllers = oof_edge_runtime_controllers(None, OofSampleMode::Aligned);
+    let refit_results = SequentialScheduler
+        .execute_campaign_phase(&oof_plan, &refit_controllers, &mut oof_ctx, Phase::Refit)
+        .unwrap();
+    assert_eq!(
+        refit_results
+            .iter()
+            .filter(|result| result.node_id.as_str() == "model:meta")
+            .count(),
+        1
+    );
+
+    let replay_plan = fixture_plan("plan:d9.predict.replay");
+    let bundle = replay_bundle(&replay_plan);
+    let request = replay_request(&bundle, Phase::Predict);
+    let envelopes = replay_envelopes();
+    let provider = replay_data_provider();
+    let store = replay_artifact_store(&bundle);
+    let controllers = replay_runtime_controllers();
+    let mut replay_ctx = RunContext::new(RunId::new("run:d9.predict.replay").unwrap(), Some(11));
+    let replay_results = SequentialScheduler
+        .execute_bundle_replay(
+            BundleReplayExecution {
+                plan: &replay_plan,
+                bundle: &bundle,
+                replay_request: &request,
+                prediction_cache_store: None,
+                controllers: &controllers,
+                data_provider: &provider,
+                artifact_store: &store,
+                data_envelopes: &envelopes,
+            },
+            &mut replay_ctx,
+        )
+        .unwrap();
+
+    assert_eq!(replay_results.len(), 2);
+    assert_eq!(provider.view_records().len(), 1);
+    assert_eq!(
+        provider.view_records()[0].view.partition,
+        DataRequestPartition::Predict
+    );
+    assert_eq!(replay_ctx.prediction_store.blocks().len(), 1);
+    assert_eq!(
+        replay_ctx.prediction_store.blocks()[0].partition,
+        PredictionPartition::Final
+    );
+}
+
+#[test]
 fn requires_oof_prediction_edge_feeds_live_group_units_to_fit_cv_and_refit() {
     let plan = live_group_oof_runtime_plan();
     let mut controllers = RuntimeControllerRegistry::new();
@@ -5214,6 +5283,22 @@ fn fit_influence_strict_requires_weight_support() {
     assert!(
         error.contains("fit influence"),
         "unexpected strict support error: {error}"
+    );
+}
+
+#[test]
+fn d9_negative_controller_lacking_fit_influence_capability_is_rejected() {
+    let error = resolve_fit_influence_task(
+        FitInfluencePolicy::EqualSampleInfluence,
+        &BTreeSet::new(),
+        &fit_influence_view(vec!["s1", "s1", "s2"]),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("controller capabilities do not support requested fit influence policy"),
+        "unexpected D9 fit-influence capability error: {error}"
     );
 }
 

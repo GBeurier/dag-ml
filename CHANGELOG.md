@@ -67,6 +67,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   fallback, stacking OOF, invalid unit joins and row-vs-sample selection
   mismatch. The audit records that D1-D7 were additive JSON/Rust contract
   changes and did not add new C ABI, Python or WASM entry points.
+- Heterogeneous multi-source repetitions roadmap D9 adds golden runtime
+  fixtures for per-source aggregate, late fusion, full and sampled cartesian,
+  fixed and padded/masked stack and combo-meta-post flows; runtime mock-run
+  coverage through FitCv/OOF/Refit/Predict replay; and negative tests for
+  relation replay drift, unit-join schema rejection, row-vs-sample selection,
+  missing prediction-cache unit ids and missing fit-influence capability.
 - Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
   `examples/README.md` audience matrix.

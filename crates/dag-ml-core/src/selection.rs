@@ -630,6 +630,24 @@ mod tests {
     }
 
     #[test]
+    fn d9_negative_row_level_metric_cannot_drive_sample_refit() {
+        let mut policy = rmse_policy();
+        policy.required_metric_level = Some(PredictionLevel::Sample);
+
+        let error = select_candidate(
+            &policy,
+            &[candidate_with_level("model:row_metric", 0.1, "observation")],
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("metric_level `observation` does not match required `sample`"),
+            "unexpected D9 row-vs-sample metric error: {error}"
+        );
+    }
+
+    #[test]
     fn selection_policy_echoes_evaluation_and_refit_contracts() {
         let mut policy = rmse_policy();
         policy.evaluation_scope = Some(EvaluationScope::Oof);

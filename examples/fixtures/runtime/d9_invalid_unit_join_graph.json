@@ -1,0 +1,63 @@
+{
+  "id": "g:d9.invalid.unit.join",
+  "nodes": [
+    {
+      "id": "source:observation",
+      "kind": "model",
+      "operator": null,
+      "ports": {
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "x",
+            "kind": "data",
+            "representation": "tabular",
+            "cardinality": "one",
+            "unit_level": "observation",
+            "alignment_key": "sample_id",
+            "description": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "model:sample",
+      "kind": "model",
+      "operator": null,
+      "ports": {
+        "inputs": [
+          {
+            "name": "x",
+            "kind": "data",
+            "representation": "tabular",
+            "cardinality": "one",
+            "unit_level": "physical_sample",
+            "alignment_key": "sample_id",
+            "description": ""
+          }
+        ],
+        "outputs": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": {
+        "node_id": "source:observation",
+        "port_name": "x"
+      },
+      "target": {
+        "node_id": "model:sample",
+        "port_name": "x"
+      },
+      "contract": {
+        "kind": "data",
+        "representation": "tabular",
+        "relation_contract": {
+          "relation_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "required": true
+        }
+      }
+    }
+  ]
+}

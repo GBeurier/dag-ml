@@ -379,6 +379,31 @@ fn cli_builds_dsl_plan_with_registry_inferred_minimal_alias_kind() {
 }
 
 #[test]
+fn cli_rejects_d9_invalid_unit_join_plan() {
+    let root = repo_root();
+
+    let validate = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-graph",
+            "examples/fixtures/runtime/d9_invalid_unit_join_graph.json",
+        ])
+        .output()
+        .expect("failed to run dag-ml-cli validate-graph on D9 invalid graph");
+    assert!(
+        !validate.status.success(),
+        "D9 invalid graph unexpectedly validated\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&validate.stdout),
+        String::from_utf8_lossy(&validate.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&validate.stderr);
+    assert!(
+        stderr.contains("incompatible unit levels"),
+        "unexpected D9 invalid unit join error: {stderr}"
+    );
+}
+
+#[test]
 fn cli_scores_regression_prediction_blocks() {
     let root = repo_root();
     let suffix = unique_suffix();

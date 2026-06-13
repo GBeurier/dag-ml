@@ -55,6 +55,22 @@ D8 heterogeneous multi-source scenario audit is encoded in
 - `row_vs_sample_selection_mismatch.v1`: negative metric-level mismatch and
   train-prediction leakage refusal.
 
+D9 heterogeneous multi-source golden and negative coverage is encoded in
+`examples/fixtures/runtime/d9_golden_multisource_scenarios.json`,
+`examples/fixtures/runtime/d9_invalid_unit_join_graph.json` and targeted Rust/CLI
+tests. The coverage is:
+
+- seven golden manifests for per-source aggregate late fusion, full cartesian,
+  Monte Carlo cartesian replay, fixed stack, padded/masked stack and
+  combo-meta-post relation-backed flows;
+- runtime mock-run through `fit_cv`, OOF handoff, `refit` and `predict` replay;
+- same-repetition and changed-repetition replay compatibility checks;
+- negative refusals for fold/OOF leakage, incompatible unit joins,
+  row-vs-sample selection mismatch, missing-source fallback gaps,
+  train/predict relation fingerprint drift, missing prediction-cache unit ids
+  and missing fit-influence controller capability;
+- CLI schema rejection for the invalid D9 unit-join graph fixture.
+
 D1-D7 did not introduce new C ABI functions, Python facade methods or WASM
 exports. Their public movement is covered by additive JSON/Rust contract fields,
 schema fixtures, C header validation for existing schema helpers and the

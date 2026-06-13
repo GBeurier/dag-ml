@@ -168,8 +168,12 @@ a real `dag-ml-data` f64 provider, read feature/target Arrow exports and verify
 data/view handle release. The shared conformance pack now also carries the D8
 heterogeneous multi-source scenario audit for relation-backed repetitions,
 late fusion, combo reduction, serve-time fallback, OOF stacking and the negative
-unit/selection mismatch cases. The remaining integration hardening is broader
-provider backends beyond the in-memory fixture.
+unit/selection mismatch cases. D9 now adds replayable golden manifests and
+negative fixtures/tests for the heterogeneous multi-source repetition roadmap,
+including FitCv/OOF/Refit/Predict mock-run coverage, same-vs-different
+repetition replay, relation drift refusal, invalid unit joins and
+prediction-cache unit identity checks. The remaining integration hardening is
+broader provider backends beyond the in-memory fixture.
 
 ## Phase 4: Parallelism
 

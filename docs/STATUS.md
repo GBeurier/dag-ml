@@ -118,6 +118,12 @@ Implemented:
   invalid unit joins and row-vs-sample selection mismatch. The audited D1-D7
   changes are additive Rust/JSON contract fields; no new C ABI function,
   Python facade method or WASM export was introduced for this roadmap slice;
+- heterogeneous multi-source repetitions D9 golden/negative coverage: seven
+  golden manifests validate per-source aggregate, late fusion, cartesian,
+  Monte Carlo replay, stack and combo-meta-post relation-backed flows; runtime
+  tests mock-run FitCv/OOF/Refit/Predict replay; and negative tests reject
+  relation drift, incompatible unit joins, row-vs-sample selection, missing
+  prediction-cache unit ids and missing fit-influence capabilities;
 - research provenance package profile describing the publishable package shape,
   RO-Crate checksum rules, PROV sections, OpenLineage facets and required CLI
   conformance tests, validated by the stdlib contract script;
