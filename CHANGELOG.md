@@ -27,6 +27,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   decision, and adds the per-feature ADR-02 migration checklist. Vocabulary and
   ledger surfaced in `docs/COORDINATOR_SPEC.md`, `docs/ARCHITECTURE.md` and
   `docs/contracts/README.md`.
+- Heterogeneous multi-source repetitions roadmap D1 extends coordinator
+  relation records with `EntityUnitLevel`, optional unit/source/rep/combo
+  provenance, component observation ids, sample influence weights, quality
+  flags, deterministic relation fingerprinting, schema/conformance updates and
+  an A=2/B=3/C=2 multisource fixture while keeping public prediction levels
+  unchanged.
 - Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
   `examples/README.md` audience matrix.

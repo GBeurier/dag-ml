@@ -1102,15 +1102,9 @@ mod tests {
     }
 
     fn relation(observation: &str, sample: &str) -> SampleRelation {
-        SampleRelation {
-            observation_id: oid(observation),
-            sample_id: sid(sample),
-            target_id: Some(TargetId::new(format!("target:{sample}")).unwrap()),
-            group_id: None,
-            origin_sample_id: None,
-            source_id: None,
-            is_augmented: false,
-        }
+        let mut relation = SampleRelation::new(oid(observation), sid(sample));
+        relation.target_id = Some(TargetId::new(format!("target:{sample}")).unwrap());
+        relation
     }
 
     fn relation_with_units(
@@ -1119,15 +1113,10 @@ mod tests {
         target: &str,
         group: &str,
     ) -> SampleRelation {
-        SampleRelation {
-            observation_id: oid(observation),
-            sample_id: sid(sample),
-            target_id: Some(TargetId::new(target).unwrap()),
-            group_id: Some(GroupId::new(group).unwrap()),
-            origin_sample_id: None,
-            source_id: None,
-            is_augmented: false,
-        }
+        let mut relation = SampleRelation::new(oid(observation), sid(sample));
+        relation.target_id = Some(TargetId::new(target).unwrap());
+        relation.group_id = Some(GroupId::new(group).unwrap());
+        relation
     }
 
     fn custom_policy(level: PredictionLevel) -> AggregationPolicy {
@@ -1512,15 +1501,7 @@ mod tests {
     #[test]
     fn refuses_target_group_aggregation_without_relation_units() {
         let relations = SampleRelationSet {
-            records: vec![SampleRelation {
-                observation_id: oid("obs:1"),
-                sample_id: sid("sample:1"),
-                target_id: None,
-                group_id: None,
-                origin_sample_id: None,
-                source_id: None,
-                is_augmented: false,
-            }],
+            records: vec![SampleRelation::new(oid("obs:1"), sid("sample:1"))],
         };
         let block = PredictionBlock {
             prediction_id: None,

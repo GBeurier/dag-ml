@@ -1923,15 +1923,16 @@ fn sample_relation(
     origin_sample_id: Option<&str>,
     is_augmented: bool,
 ) -> SampleRelation {
-    SampleRelation {
-        observation_id: ObservationId::new(observation_id).unwrap(),
-        sample_id: SampleId::new(sample_id).unwrap(),
-        target_id: Some(TargetId::new(target_id).unwrap()),
-        group_id: Some(GroupId::new(group_id).unwrap()),
-        origin_sample_id: origin_sample_id.map(|value| SampleId::new(value).unwrap()),
-        source_id: Some("nir".to_string()),
-        is_augmented,
-    }
+    let mut relation = SampleRelation::new(
+        ObservationId::new(observation_id).unwrap(),
+        SampleId::new(sample_id).unwrap(),
+    );
+    relation.target_id = Some(TargetId::new(target_id).unwrap());
+    relation.group_id = Some(GroupId::new(group_id).unwrap());
+    relation.origin_sample_id = origin_sample_id.map(|value| SampleId::new(value).unwrap());
+    relation.source_id = Some("nir".to_string());
+    relation.is_augmented = is_augmented;
+    relation
 }
 
 fn grouped_repetition_relations() -> SampleRelationSet {

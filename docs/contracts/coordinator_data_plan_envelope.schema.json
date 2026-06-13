@@ -46,6 +46,9 @@
       "type": "string",
       "minLength": 1
     },
+    "entity_unit_level": {
+      "enum": ["physical_sample", "source_sample", "observation", "combo"]
+    },
     "coordinator_relation_set": {
       "type": "object",
       "required": ["records"],
@@ -64,11 +67,33 @@
       "type": "object",
       "required": ["observation_id", "sample_id"],
       "properties": {
+        "unit_level": {
+          "$ref": "#/$defs/entity_unit_level",
+          "default": "observation"
+        },
+        "unit_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ]
+        },
         "observation_id": {
           "$ref": "#/$defs/id"
         },
         "sample_id": {
           "$ref": "#/$defs/id"
+        },
+        "source_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ]
+        },
+        "rep_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ]
         },
         "target_id": {
           "anyOf": [
@@ -88,7 +113,30 @@
             { "type": "null" }
           ]
         },
-        "source_id": {
+        "derived_unit_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ]
+        },
+        "component_observation_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "sample_influence_weight": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            { "type": "null" }
+          ]
+        },
+        "quality_flag": {
           "anyOf": [
             { "$ref": "#/$defs/id" },
             { "type": "null" }

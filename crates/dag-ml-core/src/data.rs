@@ -1178,6 +1178,27 @@ mod tests {
     }
 
     #[test]
+    fn validates_multisource_repetition_envelope_fixture() {
+        let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_multisource_repetitions.json"
+        ))
+        .unwrap();
+
+        envelope.validate().unwrap();
+        let relations = envelope.coordinator_relations.as_ref().unwrap();
+        assert_eq!(relations.records.len(), 8);
+        assert_eq!(
+            relations
+                .sample_for_observation(
+                    &crate::ids::ObservationId::new("obs.s1.combo.A0.B0.C0").unwrap()
+                )
+                .unwrap()
+                .as_str(),
+            "sample:1"
+        );
+    }
+
+    #[test]
     fn published_external_data_envelope_schema_declares_current_version() {
         let schema: serde_json::Value = serde_json::from_str(include_str!(
             "../../../docs/contracts/coordinator_data_plan_envelope.schema.json"

@@ -1278,14 +1278,14 @@ mod tests {
                 .to_string(),
             relation_fingerprint: None,
             coordinator_relations: Some(SampleRelationSet {
-                records: vec![SampleRelation {
-                    observation_id: ObservationId::new("obs:outside").unwrap(),
-                    sample_id: SampleId::new("sample:outside").unwrap(),
-                    target_id: Some(TargetId::new("target:outside").unwrap()),
-                    group_id: None,
-                    origin_sample_id: None,
-                    source_id: Some("nir".to_string()),
-                    is_augmented: false,
+                records: vec![{
+                    let mut relation = SampleRelation::new(
+                        ObservationId::new("obs:outside").unwrap(),
+                        SampleId::new("sample:outside").unwrap(),
+                    );
+                    relation.target_id = Some(TargetId::new("target:outside").unwrap());
+                    relation.source_id = Some("nir".to_string());
+                    relation
                 }],
             }),
         };

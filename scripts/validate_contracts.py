@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -61,6 +62,9 @@ RESEARCH_PROVENANCE_PROFILE_REL = Path(
     "docs/contracts/research_provenance_package_profile.v1.json"
 )
 LOCAL_FIXTURE_REL = Path("examples/fixtures/data/coordinator_data_plan_envelope_nir.json")
+LOCAL_MULTISOURCE_FIXTURE_REL = Path(
+    "examples/fixtures/data/coordinator_data_plan_envelope_multisource_repetitions.json"
+)
 LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
 )
@@ -1578,19 +1582,109 @@ def validate_envelope(envelope: Any, label: str) -> None:
         isinstance(records, list) and records,
         f"{label} coordinator_relations.records must be a non-empty array",
     )
+    observation_samples: dict[str, str] = {}
+    effective_unit_ids: dict[str, str] = {}
     for index, record in enumerate(records):
         record_label = f"{label} coordinator relation #{index}"
         require(isinstance(record, dict), f"{record_label} must be an object")
-        require_non_empty_string(record.get("observation_id"), f"{record_label}.observation_id")
-        require_non_empty_string(record.get("sample_id"), f"{record_label}.sample_id")
-        for field in ("target_id", "group_id", "origin_sample_id", "source_id"):
+        unit_level = record.get("unit_level", "observation")
+        require(
+            unit_level in {"physical_sample", "source_sample", "observation", "combo"},
+            f"{record_label}.unit_level invalid",
+        )
+        observation_id = record.get("observation_id")
+        sample_id = record.get("sample_id")
+        require_non_empty_string(observation_id, f"{record_label}.observation_id")
+        require_non_empty_string(sample_id, f"{record_label}.sample_id")
+        require(
+            observation_id not in observation_samples,
+            f"{record_label}.observation_id duplicates another relation",
+        )
+        observation_samples[observation_id] = sample_id
+        for field in (
+            "unit_id",
+            "target_id",
+            "group_id",
+            "origin_sample_id",
+            "source_id",
+            "derived_unit_id",
+            "quality_flag",
+        ):
             value = record.get(field)
             if value is not None:
                 require_non_empty_string(value, f"{record_label}.{field}")
+        rep_id = record.get("rep_id")
+        if rep_id is not None:
+            require_identifier(rep_id, f"{record_label}.rep_id")
+        if unit_level == "source_sample":
+            require(
+                record.get("source_id") is not None,
+                f"{record_label} source_sample requires source_id",
+            )
+        effective_unit_id = record.get("unit_id")
+        if effective_unit_id is None:
+            if unit_level == "physical_sample":
+                effective_unit_id = sample_id
+            elif unit_level == "source_sample":
+                effective_unit_id = f"{sample_id}::{record.get('source_id')}"
+            elif unit_level == "combo":
+                effective_unit_id = record.get("derived_unit_id")
+                require(
+                    effective_unit_id is not None,
+                    f"{record_label} combo requires derived_unit_id",
+                )
+            else:
+                effective_unit_id = observation_id
+        require(
+            effective_unit_id not in effective_unit_ids,
+            f"{record_label}.effective_unit_id duplicates {effective_unit_ids.get(effective_unit_id)}",
+        )
+        effective_unit_ids[effective_unit_id] = observation_id
+        components = record.get("component_observation_ids", [])
+        require(isinstance(components, list), f"{record_label}.component_observation_ids must be an array")
+        require(len(set(components)) == len(components), f"{record_label}.component_observation_ids duplicate entries")
+        for component_index, component_id in enumerate(components):
+            require_non_empty_string(component_id, f"{record_label}.component_observation_ids[{component_index}]")
+        if unit_level != "combo":
+            require(not components, f"{record_label}.component_observation_ids require unit_level combo")
+        sample_weight = record.get("sample_influence_weight")
+        if sample_weight is not None:
+            require(
+                isinstance(sample_weight, (int, float))
+                and not isinstance(sample_weight, bool)
+                and math.isfinite(sample_weight)
+                and sample_weight > 0,
+                f"{record_label}.sample_influence_weight must be finite and > 0",
+            )
         if "is_augmented" in record:
             require(
                 isinstance(record["is_augmented"], bool),
                 f"{record_label}.is_augmented must be boolean",
+            )
+    for index, record in enumerate(records):
+        if record.get("unit_level", "observation") != "combo":
+            continue
+        record_label = f"{label} coordinator relation #{index}"
+        components = record.get("component_observation_ids", [])
+        require(
+            record.get("derived_unit_id") is not None,
+            f"{record_label} combo requires derived_unit_id",
+        )
+        require(components, f"{record_label} combo requires component_observation_ids")
+        origin_sample_id = record.get("origin_sample_id")
+        if origin_sample_id is not None:
+            require(
+                origin_sample_id == record["sample_id"],
+                f"{record_label}.origin_sample_id must equal sample_id for combo",
+            )
+        for component_id in components:
+            require(
+                component_id in observation_samples,
+                f"{record_label} references missing component observation {component_id}",
+            )
+            require(
+                observation_samples[component_id] == record["sample_id"],
+                f"{record_label} component {component_id} belongs to another sample",
             )
 
 
@@ -3713,6 +3807,7 @@ def main() -> int:
         local_process_adapter_frame_schema = load_json(ROOT / PROCESS_ADAPTER_FRAME_SCHEMA_REL)
         local_research_provenance_profile = load_json(ROOT / RESEARCH_PROVENANCE_PROFILE_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
+        local_multisource_fixture = load_json(ROOT / LOCAL_MULTISOURCE_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
         local_fold_set_fixture = load_json(ROOT / SHARED_FOLD_SET_FIXTURE_REL)
         local_graph_spec_fixture = load_json(ROOT / LOCAL_GRAPH_SPEC_FIXTURE_REL)
@@ -3796,6 +3891,7 @@ def main() -> int:
         )
         validate_process_adapter_frame_schema(local_process_adapter_frame_schema, "dag-ml")
         validate_envelope(local_fixture, "dag-ml")
+        validate_envelope(local_multisource_fixture, "dag-ml multisource")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml")
         validate_fold_set_fixture(local_fold_set_fixture, "dag-ml shared")
         require(
