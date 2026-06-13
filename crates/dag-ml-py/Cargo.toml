@@ -1,0 +1,32 @@
+# This crate is excluded from the root workspace (see ../../Cargo.toml): its
+# `abi3-py311` floor would otherwise force `cargo test --workspace` /
+# `cargo llvm-cov` to require Python >= 3.11 on the host. It is built standalone
+# with maturin for the PyPI wheel, so it pins its own package metadata and
+# dependency versions (kept in sync with the root workspace) instead of
+# inheriting `*.workspace = true`, exactly like the excluded `dag-ml-data-r`
+# and the sibling repos' `bindings/python`.
+[package]
+name = "dag-ml-py"
+description = "Python bindings for DAG-ML JSON contracts."
+version = "0.1.0-alpha.0"
+edition = "2021"
+rust-version = "1.83"
+license = "MIT"
+authors = ["G. Beurier <beurier@cirad.fr>"]
+repository = "https://github.com/GBeurier/dag-ml"
+homepage = "https://github.com/GBeurier/dag-ml"
+publish = false
+
+[lib]
+name = "_dag_ml"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+dag-ml-core = { path = "../dag-ml-core", version = "0.1.0-alpha.0" }
+pyo3 = { version = "0.28.3", features = ["abi3-py311"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

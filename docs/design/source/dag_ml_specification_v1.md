@@ -24,6 +24,7 @@ DAG-ML is a local, in-process ML engine that formalises:
 - predict / explain replay from an `ExecutionBundle`;
 - artifact / cache / lineage / trace stores;
 - node-level parallelism (variant, branch, fold) via pluggable schedulers;
+- controller-side multitask execution for known static task groups or subgraphs;
 - a stable adapter contract for operators (sklearn, PyTorch, TF, Keras, LightGBM, XGBoost, custom);
 - multi-source / multi-modal compatibility through the ML_DATA contract.
 
@@ -347,7 +348,7 @@ pipeline = [
 | `{"rep_to_pp"}`            | `RestructureNode` (kind=RESTRUCTURE, mode="to_processings")| groups repetitions into preprocessing channels of one source                          |
 | `{"aggregate": {...}}`     | `AggregatorNode` (kind=AGGREGATOR)                        | observation -> sample/group reduction; `method`, `level`, `keep_observation_predictions` |
 | `{"branch": [...]}`        | `ForkNode` (duplication) + `MapNode`                      | one `MapNode` per branch path; subgraph per branch               |
-| `{"branch": {"by_X": ...}}`| `ForkNode` (separation, mode=by_metadata/by_tag/by_source)| disjoint sample subsets; merge typically `concat`                |
+| `{"branch": {"by_X": ...}}`| `ForkNode`(separation, mode=by_metadata/by_tag/by_source)| disjoint sample subsets; merge typically `concat`                |
 | `{"merge": "predictions"}` | `PredictionJoinNode`                                      | requires OOF (section 8)                                         |
 | `{"merge": "features"}`    | `FeatureJoinNode`                                         | horizontal concat of FeatureTables                               |
 | `{"merge": "concat"}`      | `FeatureJoinNode` in separation mode (reassembly)         |                                                                  |
@@ -477,6 +478,25 @@ class NodePlan:
     resource_hints: ResourceHints | None = None
     fingerprint: str = ""                  # SHA256 of (operator_id, params_canonical)
 
+TaskGroupMode = Literal["controller_batch", "static_subgraph"]
+TaskGroupAxis = Literal["node", "branch", "fold", "variant", "trial"]
+
+@dataclass(frozen=True)
+class TaskGroupTemplate:
+    id: str
+    mode: TaskGroupMode
+    controller_id: str                     # controller that accepts the group
+    members: tuple[str, ...]               # logical node ids covered by the group
+    axes: tuple[TaskGroupAxis, ...] = ("node",)
+                                           # axes over which runtime tasks may be coalesced
+    max_tasks: int | None = None
+    requires_same_phase: bool = True
+    requires_same_fold: bool = True
+    requires_same_view: bool = True
+    requires_same_branch_path: bool = False
+    fallback: Literal["scalar_tasks", "refuse"] = "scalar_tasks"
+    fingerprint: str = ""                  # pattern + controller + members + limits
+
 @dataclass(frozen=True)
 class ExecutionPlan:
     variant_id: str
@@ -485,6 +505,7 @@ class ExecutionPlan:
     topological_order: tuple[str, ...]
     schema_fingerprint: str
     plugin_versions: dict[str, str] = field(default_factory=dict)
+    task_groups: tuple[TaskGroupTemplate, ...] = ()
     warnings: tuple[str, ...] = ()
 ```
 
@@ -549,6 +570,11 @@ def plan(graph: GraphSpec, ctx: PlanningContext) -> ExecutionPlan:
             fingerprint=_fingerprint(node.operator, node.params),
         )
 
+    # 4. optional controller-side multitask grouping.
+    # This annotates executable groups only; it never removes logical nodes
+    # or changes graph topology.
+    task_groups = _plan_multitask_groups(graph, topo, node_plans, ctx.registry)
+
     schema_fp = _schema_fingerprint(ctx.dataset_schema, ctx.policy, node_plans)
     plan = ExecutionPlan(
         variant_id=ctx.variant.id,
@@ -557,6 +583,7 @@ def plan(graph: GraphSpec, ctx: PlanningContext) -> ExecutionPlan:
         topological_order=tuple(topo),
         schema_fingerprint=schema_fp,
         plugin_versions=_collect_plugin_versions(node_plans),
+        task_groups=task_groups,
     )
     if ctx.cache:
         ctx.cache.put(cache_key, plan)
@@ -616,6 +643,9 @@ class NodeTask:
     view: "DataView"
     fold_id: str | int | None
     seed: "SeedContext"
+    variant_id: str | None = None
+    branch_path: tuple[str, ...] = ()
+    trial_id: str | None = None
 
 @dataclass(frozen=True)
 class NodeResult:
@@ -688,7 +718,99 @@ def resolve(node):
     return candidates[0]()
 ```
 
-### 6.5 Core adapters shipped with DAG-ML
+### 6.5 Multitask controller adapters
+
+A multitask controller adapter can execute several logical `NodeTask`s, or a
+small static subgraph, through one host call. This is an execution optimisation,
+not a graph abstraction: every logical node, variant, fold, branch, port,
+cache key and lineage record remains visible to DAG-ML.
+
+Typical use cases:
+
+- a GPU preprocessing bank that applies a known list of preprocessings to the
+  same fold view in one kernel launch;
+- a C++ controller that evaluates a cartesian preprocessing block as one
+  fused static subgraph;
+- a model family that shares a costly upstream embedding but emits one logical
+  prediction block per candidate.
+
+```python
+@dataclass(frozen=True)
+class BatchPattern:
+    id: str
+    mode: TaskGroupMode
+    node_kinds: tuple[NodeKind, ...]
+    axes: tuple[TaskGroupAxis, ...] = ("node",)
+    max_tasks: int | None = None
+    requires_same_phase: bool = True
+    requires_same_fold: bool = True
+    requires_same_view: bool = True
+    requires_same_branch_path: bool = False
+    supports_artifacts: bool = True
+    supports_predictions: bool = True
+
+@dataclass(frozen=True)
+class ControllerTaskBatch:
+    batch_id: str
+    template: TaskGroupTemplate
+    tasks: tuple[NodeTask, ...]
+    member_order: tuple[str, ...]          # canonical member task ids
+    seed: "SeedContext"                   # parent seed; each member keeps its own seed
+
+@dataclass(frozen=True)
+class BatchNodeResult:
+    batch_id: str
+    results: dict[str, NodeResult]         # member task id -> logical result
+    batch_metrics: dict[str, float] = field(default_factory=dict)
+    lineage: "LineageRecord | None" = None # optional parent invocation lineage
+
+class MultitaskOperatorAdapter(OperatorAdapter, Protocol):
+    def batch_patterns(self, graph: GraphSpec) -> tuple[BatchPattern, ...]: ...
+
+    def can_execute_batch(
+        self,
+        batch: ControllerTaskBatch,
+        ctx: "RunContext",
+    ) -> bool: ...
+
+    def execute_batch(
+        self,
+        batch: ControllerTaskBatch,
+        ctx: "RunContext",
+    ) -> BatchNodeResult: ...
+```
+
+Admission rules:
+
+- All member tasks must be known by PLAN time. Runtime-generated unknown lists
+  belong to generator or tuner nodes, not to multitask execution.
+- A `controller_batch` group may coalesce independent ready tasks that share
+  the declared compatibility keys. It cannot hide a dependency between members.
+- A `static_subgraph` group may cover an acyclic closed sub-DAG fragment. Any
+  intermediate output that has an external consumer remains a logical output in
+  `BatchNodeResult`.
+- Unless the pattern explicitly relaxes it, members must share phase, fold,
+  data view and branch path. They must never mix train and validation views.
+- The scheduler may split a large group into smaller batches using `max_tasks`
+  or resource hints.
+- If `fallback="scalar_tasks"`, failure to form or admit the batch falls back
+  to the original `NodeTask`s. If `fallback="refuse"`, planning or execution
+  fails with `BatchAdmissionError`.
+
+Determinism and validation:
+
+- `member_order` is canonical: `(variant_id, fold_id, branch_path, node_id,
+  trial_id)` sorted lexicographically with `None` last.
+- Each member keeps the same `SeedContext` it would have received as a scalar
+  task. The batch parent seed is only for controller-internal scheduling.
+- Cache, artifact and prediction records are written per logical member. The
+  optional parent batch lineage may record shared GPU kernels, memory pools or
+  fused library calls, but it does not replace member lineage.
+- Before dispatch, DAG-ML validates every member task exactly as it validates a
+  scalar `NodeTask`; after dispatch, every `NodeResult` in `BatchNodeResult` is
+  checked against the member's ports, shape plan, fold and OOF contracts.
+
+### 6.6 Core adapters shipped with DAG-ML
 
 | Adapter id                       | NodeKind        | Operator type accepted                              | Phases supported                  | Notes                                                  |
 |----------------------------------|-----------------|-----------------------------------------------------|-----------------------------------|--------------------------------------------------------|
@@ -1247,6 +1369,35 @@ ray    = ["ray[tune]>=2.0"]
 The adapter wraps the external tuner's API. DAG-ML never imports
 `optuna`/`ray` at the core level.
 
+### 10.7 Known cartesian blocks and multitask execution
+
+When a `_cartesian_` or coordinated generator yields a known finite list of
+preprocessings, DAG-ML may expose that list to a multitask controller without
+changing the search-space semantics.
+
+Example: a GPU controller declares a `BatchPattern` for a preprocessing bank
+over the `variant` or `node` axis. The compiler still expands the cartesian
+block into logical variants or branch-local nodes. During execution, the
+scheduler groups compatible tasks that share the same fold/view/input lineage
+and sends one `ControllerTaskBatch` containing the ordered preprocessing specs.
+The controller returns one `NodeResult` per preprocessing. Downstream models,
+scores and selection see the same logical graph they would see without
+batching.
+
+This keeps three boundaries clean:
+
+- **Search semantics** stay in DAG-ML: variant ids, priorities, max-variant
+  limits, seeds and selection candidates are unchanged.
+- **Compute fusion** stays in the controller: GPU kernels, memory layout,
+  tensor stacking and fused preprocessing internals are opaque.
+- **ML invariants** stay in DAG-ML: fold views, OOF coverage, lineage, cache
+  keys and shape deltas are validated per logical result.
+
+A controller must not discover new cartesian choices during `execute_batch`.
+If the candidate list depends on runtime scores or data inspection beyond the
+declared PLAN contract, model it as a `TUNER`, a runtime generator controller
+or an explicit graph node instead.
+
 ---
 
 ## 11. Selection and refit
@@ -1595,13 +1746,16 @@ class Scheduler(Protocol):
         self,
         tasks: tuple["ScheduledTask", ...],
         ctx: ExecutionContext,
-    ) -> tuple["NodeResult", ...]: ...
+    ) -> tuple["NodeResult | BatchNodeResult", ...]: ...
 
-    def supports_parallelism(self, kind: Literal["variant", "branch", "fold"]) -> bool: ...
+    def supports_parallelism(
+        self,
+        kind: Literal["variant", "branch", "fold", "controller_batch"],
+    ) -> bool: ...
 
 @dataclass(frozen=True)
 class ScheduledTask:
-    task: NodeTask
+    task: NodeTask | ControllerTaskBatch
     dependencies: tuple[str, ...]          # node ids
     fan_in: int
 ```
@@ -1623,11 +1777,21 @@ class ScheduledTask:
 - Branch-level: a `MapNode` with `parallel=True` and a parallel scheduler
   spawns one task per branch.
 - Fold-level: a `ModelNode` with `n_jobs_folds > 1` may parallelise folds.
+- Controller-batch level: compatible ready `NodeTask`s may be coalesced into a
+  `ControllerTaskBatch` when the resolved controller exposes a matching
+  `BatchPattern`. This is bounded by resource hints and never overrides fold,
+  partition or OOF rules.
 - Nested parallelism is forbidden by default
   (`ResourceHints.nested_parallelism="forbid"`). A node nested inside a
   parallel context runs single-threaded.
 
 ### 14.5 Topological execution loop
+
+`build_scheduled_work` first builds scalar tasks from the ready frontier, then
+applies `TaskGroupTemplate`s. For `controller_batch`, it coalesces independent
+ready tasks. For `static_subgraph`, it may claim a closed sub-DAG once all
+external dependencies of that fragment are satisfied; all claimed logical nodes
+remain in `remaining` until their member results are validated.
 
 ```text
 def execute(plan: ExecutionPlan, ctx: ExecutionContext):
@@ -1635,17 +1799,30 @@ def execute(plan: ExecutionPlan, ctx: ExecutionContext):
              if not plan.graph.predecessors(nid)]
     remaining = set(plan.topological_order)
     while remaining:
-        batch = [n for n in ready if all_deps_done(n, plan)]
-        if not batch:
+        frontier = [n for n in ready if all_deps_done(n, plan)]
+        if not frontier:
             raise SchedulerError("deadlock")
-        tasks = [build_task(n, ctx) for n in batch]
-        results = ctx.scheduler.submit(tasks, ctx)
-        for nid, res in zip(batch, results):
-            ctx.runtime[nid] = res
-            ctx.lineage.record(res.lineage)
-            for art in res.artifacts:
+        scalar_tasks = [build_task(n, ctx) for n in frontier]
+        scheduled = build_scheduled_work(frontier,
+                                         scalar_tasks,
+                                         plan.task_groups,
+                                         ctx)
+        scheduled_results = ctx.scheduler.submit(scheduled, ctx)
+        for item, res in zip(scheduled, scheduled_results):
+            if isinstance(item.task, ControllerTaskBatch):
+                for member_id, member_res in res.results.items():
+                    nid = member_node_id(member_id)
+                    ctx.runtime[nid] = member_res
+                    ctx.lineage.record(member_res.lineage)
+                    remaining.discard(nid)
+                ctx.lineage.record(res.lineage)
+            else:
+                nid = item.task.node_id
+                ctx.runtime[nid] = res
+                ctx.lineage.record(res.lineage)
+                remaining.discard(nid)
+            for art in iter_artifacts(res):
                 ctx.run.artifact_store  # already persisted by node
-            remaining.discard(nid)
             ready = [n for n in plan.topological_order
                      if n in remaining and all_deps_done(n, plan)]
     return collect_terminal_outputs(plan, ctx)
@@ -1685,6 +1862,7 @@ class MissingSourceError(DagMLError): ...
 
 class SchedulerError(DagMLError): ...
 class ResourceContentionError(SchedulerError): ...
+class BatchAdmissionError(SchedulerError): ...
 ```
 
 Every exception carries a structured `payload: dict` (JSON-serialisable) so
@@ -1715,6 +1893,13 @@ Before each `NodeTask` is dispatched, the executor verifies:
 | Augmented observation never lands in val of its origin's fold      | `OOFError` (caught during fold validation)    |
 | Producers of a `PredictionJoin` share the upstream `SplitNode`     | `OOFFoldMisalignError`                        |
 | Cache hit lineage record refers to a still-valid `ArtifactRef`     | re-execute on stale cache hit                 |
+
+For a `ControllerTaskBatch`, DAG-ML applies the same checks to every member
+`NodeTask` before dispatch, then also checks the batch against its
+`TaskGroupTemplate`: phase, fold, data view, branch path, declared axes,
+`max_tasks` and resource limits. After dispatch, each member `NodeResult` is
+validated against that member's logical node contract before it is made
+visible to downstream nodes.
 
 ### 14.8 MetricsLogger
 
@@ -2035,7 +2220,7 @@ Phase walk:
 | export  | ExecutionBundle with SNV, YScaler, PLS artifacts                                         |
 | PREDICT | replay: SNV.transform -> YScaler keeps inverse_transform -> PLS.predict                 |
 
-### UC2: Multi-source heterogeneous (NIRS + photo + genotype + meteo + metadata) -> RandomForest
+### UC2: Multi-source heterogeneous (NIRS + photo + genotype + weather + metadata) -> RandomForest
 
 ```text
 DSL pipeline = [
@@ -2237,6 +2422,7 @@ SplitPolicyError("split_unit='group' requires SampleRelation.group_ids,
 | Variant-level parallelism                          | `loky` / `ray` schedulers            | each worker isolates its stores; orchestrator merges                   |
 | Branch-level parallelism                           | `MapNode.parallel=True`              | sibling branches execute concurrently                                  |
 | Fold-level parallelism                             | `ModelNode.n_jobs_folds`             | each fold of CV runs on a worker                                       |
+| Controller multitask batching                      | `TaskGroupTemplate` + `execute_batch`| one host/GPU call can emit many logical node results                    |
 | Operator caching by hash                           | `OperatorAdapter.cache_key`          | reuse `(transformer, params, fold)` instead of refit                   |
 | `find_path` Dijkstra cache                         | inside ML_DATA `AdapterRegistry`     | constant-time path lookup for repeated schemas                         |
 | Lineage write batching                             | `LineageRecorder.record()` flush     | amortise DB writes                                                     |

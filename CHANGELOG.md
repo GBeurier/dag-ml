@@ -1,0 +1,135 @@
+# Changelog
+
+All notable changes to `dag-ml` are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims
+to adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Contract/wire-shape changes follow [ADR-02](docs/adr/ADR-02-schema-evolution-sla.md);
+deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
+
+## [Unreleased]
+
+### Added
+- `docs/adr/` — eighteen Phase-0 Architecture Decision Records fixing the
+  contract for the nirs4all backend integration (compatibility ledger, schema
+  evolution SLA, separation-branch semantics, tag/exclude masks, repetition-CV
+  invariant, signal-type ownership, aggregation reducers, session persistence,
+  docs stack, release train, error taxonomy, observability, process-adapter
+  security, deprecation policy, GIL/async, artifact security, cutover/rollback,
+  licensing). See `docs/adr/README.md`.
+- Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
+  `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
+  `examples/README.md` audience matrix.
+- Canonical `FoldSet` fingerprints exposed in Rust, Python and WASM bindings so
+  OOF partitions can participate in replay and lineage checks.
+- Shared `FoldSet` fixture and contract validation keep the canonical
+  fingerprint byte-identical with `dag-ml-data` for the common JSON shape.
+- Shared parity-oracle handoff manifest pins the first nirs4all-lite parity
+  cases, fixtures, Python/WASM gates and invariants for the future consumer
+  compatibility ledger.
+- Python/WASM `contract_manifest_json()` exposes the versioned integration
+  surface, supported contract ids, exported helper names and shared fixture
+  digests for host/browser compatibility checks.
+- ADR-11 structured error descriptors now expose stable `category`, `code`,
+  `severity`, remediation hints and context in Rust, Python exception
+  attributes, WASM error payloads and C ABI `DagMlError` refusals.
+- Web-target WASM integration smoke composes `dag-ml` with sibling
+  `dag-ml-data`, validates manifests/fold fingerprints, builds a coordinator
+  data-plan envelope, compiles the nirs4all-compatible DSL fixture and builds a
+  scheduler-ready execution plan.
+- Python package facade now exposes validated contract wrappers
+  (`PipelineDslSpec`, `GraphSpec`, `CampaignSpec`, `ControllerManifests`,
+  `ExecutionPlan`, `FoldSet`) and typed compile/plan helpers on top of the
+  stable JSON functions.
+- Installed-wheel Python integration smoke composes `dag_ml` with
+  `dag_ml_data` through the typed facades, builds a nirs4all-lite data-plan
+  envelope, compiles the nirs4all-compatible DSL fixture and validates the
+  resulting execution plan.
+- Python wheel metadata smoke now validates built wheel name/version,
+  `Requires-Python`, MIT license file, `abi3` tag, native extension, stubs and
+  `py.typed` before install smokes run.
+- CI now gates Rust documentation with `RUSTDOCFLAGS="-D warnings" cargo doc`
+  and runs a workspace package dry-run so publishability regressions fail
+  before release.
+- Sphinx/MyST documentation site scaffold (`docs/conf.py`, `docs/index.md`,
+  `docs/installation.md`, `docs/requirements.txt`) now builds in CI with
+  warnings denied, closing the ADR-09 local docs gate before hosted publishing.
+- ADR-14 managed-debt lint (`scripts/check_deprecations.py`) now rejects
+  unexplained production-path `TODO`/`FIXME` markers and unmanaged
+  `#[deprecated]` attributes in CI.
+- Public Rust doc coverage now has a ratcheted CI gate
+  (`scripts/check_public_docs.py`), making the current docstring debt visible
+  without claiming the final 95% target is complete.
+- ADR-10 publish-plan check (`scripts/release/check_publish_plan.py`) validates
+  workspace internal dependency pinning and runs `cargo publish --dry-run` for
+  currently publishable root crates before release.
+- CI now gates the declared Rust MSRV with `RUST_MSRV: "1.83.0"` and
+  `cargo check --workspace --all-targets`.
+- CI now gates Rust dependencies with pinned `cargo-audit` and
+  `cargo audit --deny warnings`.
+- Web-target WASM packages are packed with `wasm-pack pack` in CI after smoke
+  loading, so npm tarball regressions are caught before release.
+- WASM npm tarball dry-run metadata smoke validates package name/version,
+  integrity, bundled-dependency absence and required published files for both
+  local and cross-repo browser packages.
+- WASM smokes now validate generated npm metadata (`package.json` name,
+  version, JS entry, typings, packaged files and required TypeScript exports)
+  against the Rust contract manifest.
+- Release metadata validation now checks Cargo workspace inheritance, internal
+  path-dependency versions, Python PEP 440 wheel version, `abi3-py311`, MSRV
+  pins, MSRV-sensitive dependency pins, CI tool pins, required governance files
+  and the Sphinx docs-site / managed-debt / publish-plan gates before release.
+- Public C ABI header snapshot validation now locks `dag_ml.h` through a
+  checked-in SHA-256 manifest so ABI changes are explicit in review.
+- The shared conformance pack now requires the producer-side
+  `dagmldata_coordinator_multi_target_arrow_json` symbol from `dag-ml-data`,
+  so multi-output target export is an explicit integration capability.
+
+### Fixed
+- Workspace path dependencies now carry explicit SemVer requirements, so
+  `cargo package --workspace --allow-dirty --no-verify` succeeds for all Rust
+  crates instead of failing at publish packaging time.
+- `crates/dag-ml-cli/tests/cli_contracts.rs` — formatting brought back under
+  `cargo fmt --all --check` (the green gate now passes clean).
+- Controller YAML parsing now uses `yaml_serde` instead of the RustSec-flagged
+  `serde_yml/libyml` stack.
+
+## [0.1.0-alpha.0] - 2026-05-29
+
+Initial active core scaffold. Executable Rust crates with:
+
+### Added
+- **Graph** model + validation (acyclicity, port-kind contracts, parallel-level
+  computation).
+- **Plan** — `GraphPlan`, `CampaignSpec`, `ExecutionPlan`, `NodePlan`,
+  `NodeTask`, `NodeResult`; variant enumeration, split invocation, phase
+  schedules.
+- **Runtime** — sequential and parallel schedulers (byte-for-byte identical
+  outputs) over `(variant, fold)` scopes; `PredictionStore` joining OOF
+  predictions by stable `sample_id`.
+- **OOF / leakage safety** — `requires_oof` edge enforcement; train predictions
+  refused as meta-model training features by default; identity-only fold
+  assignments; augmentation-origin and group constraints.
+- **Selection** — deterministic variant ranking from persisted OOF metrics.
+- **Bundle / replay** — `ExecutionBundle` locking plan/data/artifact/controller
+  fingerprints; file-backed artifact manifest and prediction-cache payloads
+  with SHA-256 tamper detection.
+- **Provenance** — W3C PROV, Workflow Run RO-Crate, and OpenLineage export
+  derived from validated lineage.
+- **Pipeline DSL compiler** — linear/branching/generation/augmentation; nirs4all
+  JSON import.
+- **C ABI** (`crates/dag-ml-capi`, `include/dag_ml.h`) — versioned controller,
+  artifact-store, and prediction-cache vtables (v1/v2/v3 ownership lifecycle).
+- **CLI** (`dag-ml-cli`) — graph/bundle/replay validation and smoke execution.
+- 23 JSON Schemas in `docs/contracts/`, shared JSON-identical with
+  `dag-ml-data` and validated by `scripts/validate_contracts.py`.
+
+### Not yet implemented
+- EXPLAIN phase executor (lineage/provenance export exists; per-node explain
+  dispatch is scaffolded).
+- Production host controllers beyond the sklearn / prospectr / mdatools
+  references.
+- Direct Python/YAML DSL frontends (JSON-only parser today).
+
+[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.1.0-alpha.0...HEAD
+[0.1.0-alpha.0]: https://github.com/GBeurier/dag-ml/releases/tag/v0.1.0-alpha.0

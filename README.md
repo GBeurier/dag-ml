@@ -9,8 +9,9 @@ buffers; those contracts live in the companion `dag-ml-data` repository.
 > Status: active core scaffold. The project has executable Rust crates, C ABI
 > graph/selection/bundle validation, CLI validation, coordinator
 > planning/runtime contracts, data-plan fingerprints, OOF leakage checks,
-> deterministic selection and first versioned refit/replay bundle contracts
-> with CLI build/validate commands. Host controller adapters are still pending.
+> deterministic selection, ADR-11 structured error descriptors and first
+> versioned refit/replay bundle contracts with CLI build/validate commands.
+> Host controller adapters are still pending.
 
 ## Repository Layout
 
@@ -19,6 +20,8 @@ crates/
   dag-ml-core/      # graph, phase, OOF, selection, bundle and control contracts
   dag-ml/           # Rust facade re-exporting stable core APIs
   dag-ml-capi/      # C ABI surface and header for host/controller integration
+  dag-ml-py/        # PyO3/maturin JSON-contract bindings for Python hosts
+  dag-ml-wasm/      # wasm-bindgen JSON-contract bindings for browser hosts
   dag-ml-cli/       # small validation CLI for specs and fixtures
 docs/
   TOC.md            # validation-oriented table of contents
@@ -37,9 +40,39 @@ examples/
 
 ```bash
 cargo fmt --all --check
+cargo +1.83.0 check --workspace --all-targets
 cargo test --workspace
+cargo test -p dag-ml-wasm
+# dag-ml-py is excluded from the workspace (abi3-py311); test it standalone:
+PYO3_PYTHON=python3.11 cargo test --manifest-path crates/dag-ml-py/Cargo.toml
+python3 scripts/validate_release_metadata.py
+python3 scripts/check_error_taxonomy.py
+python3 scripts/check_deprecations.py
+python3 scripts/check_public_docs.py
+python3 scripts/release/check_publish_plan.py --dry-run
+python3 scripts/validate_abi_snapshot.py
+cargo audit --deny warnings
+python3 -m pip install -r docs/requirements.txt
+sphinx-build -W --keep-going -b html docs docs/_build/html
 cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
 cargo run -p dag-ml-cli -- validate-bundle --bundle examples/generated/execution_bundle_minimal.json --graph examples/minimal_graph.json --campaign examples/campaign_oof_generation.json --controllers examples/controller_manifests.json --envelope model:base.x=examples/fixtures/data/coordinator_data_plan_envelope_sample12.json --replay-request examples/fixtures/bundle/replay_request_predict.json --plan-id plan:cli.bundle
+(cd crates/dag-ml-py && maturin build --release --features extension-module --out ../../target/wheels)
+python3 scripts/smoke_python_wheel_metadata.py target/wheels/dag_ml-*.whl
+python3 scripts/smoke_python_bindings.py      # after installing the built wheel
+python3 scripts/smoke_python_integration.py ../dag-ml-data  # after installing dag-ml + dag-ml-data wheels
+node_out_dir="$PWD/target/wasm/dag-ml-wasm"
+wasm-pack build crates/dag-ml-wasm --target nodejs --out-dir "$node_out_dir" --release
+node scripts/smoke_wasm_bindings.cjs "$node_out_dir"
+web_out_dir="$PWD/crates/dag-ml-wasm/pkg-web"
+rm -rf "$web_out_dir"
+wasm-pack build crates/dag-ml-wasm --target web --out-dir "$web_out_dir" --release
+node scripts/smoke_wasm_web_bindings.mjs "$web_out_dir"
+(cd crates/dag-ml-wasm && wasm-pack pack --pkg-dir pkg-web .)
+node scripts/smoke_wasm_tarball_metadata.mjs "$web_out_dir"
+data_web_out_dir="$PWD/target/wasm-web/dag-ml-data-wasm"
+wasm-pack build ../dag-ml-data/crates/dag-ml-data-wasm --target web --out-dir "$data_web_out_dir" --release
+node scripts/smoke_wasm_tarball_metadata.mjs "$data_web_out_dir"
+node scripts/smoke_wasm_integration.mjs "$web_out_dir" "$data_web_out_dir" ../dag-ml-data
 ```
 
 ## First Implementation Target

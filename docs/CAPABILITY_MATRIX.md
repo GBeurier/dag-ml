@@ -15,7 +15,7 @@ leakage guarantees.
 | Grouped samples | group-aware split validation | expose group ids in sample relations | group id cannot appear in both train and validation for a fold |
 | Augmentation | train-only phase gating, origin checks | expose `origin_id`, augmentation adapter declarations | validation origins cannot be augmented into train leakage or vice versa |
 | Processings | node lineage and fit scope | representation adapters and fitted adapter refs | stateful processing fits only on fold train during CV |
-| Splitters | identity fold generation and validation | group/origin/sample identity inputs | folds are sample-id based, deterministic and replayable |
+| Splitters | identity fold generation, validation and canonical fold fingerprints | group/origin/sample identity inputs | folds are sample-id based, deterministic and replayable |
 | Models | controller ABI, fit/predict phase ordering | host controller implementation | downstream training may consume only validation OOF predictions by default |
 | Refit | selected graph replay and final-fit phase | replay data plans and fitted adapter refs | refit artifacts cannot be used to manufacture training meta-features |
 | Branching | fork/map/subgraph semantics | branch-local views and materialization | branch outputs preserve lineage and fold identity |
@@ -24,6 +24,7 @@ leakage guarantees.
 | Finetuning | phase/fold control and leakage flags | stateful controller/adapter fit implementation | any learned transform/model is fitted on fold train only during CV |
 | Generation | search-space expansion, variant fingerprints, typed node-param override lowering | adapter/model params as serializable JSON | each variant has deterministic seeds, fingerprints, effective params and lineage |
 | Tuning | tuner node phase control and nested split policy | tuner/controller execution | tuner observations respect nested CV boundaries |
+| Controller multitask | explicit task-group templates, batch admission, fallback and per-member validation | fused host/GPU execution for known task groups or closed static subgraphs | batching cannot hide topology, mix fold partitions, or replace per-node lineage/results |
 | Prediction replay | bundle validation and phase restrictions | schema fingerprint and data plan replay | predict never reuses CV validation labels/features in training mode |
 | Explainability | replay hooks and opaque outputs | controller-specific explanations | explanation payloads do not alter fit/predict lineage |
 
@@ -43,6 +44,8 @@ leakage guarantees.
 8. A training-phase edge marked `requires_oof` must be backed by validation
    predictions in the core `PredictionStore`; raw upstream handles are not
    forwarded across that edge.
+9. A multitask controller batch is accepted only if every member task is valid
+   on its own and every member result is returned and validated separately.
 
 ## MVP To Full Replacement Path
 

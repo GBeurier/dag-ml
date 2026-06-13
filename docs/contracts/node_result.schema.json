@@ -33,6 +33,12 @@
         "$ref": "#/$defs/aggregated_prediction_block"
       }
     },
+    "explanations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/explanation_block"
+      }
+    },
     "shape_deltas": {
       "type": "array",
       "items": {
@@ -260,6 +266,23 @@
             "$ref": "#/$defs/non_empty_string"
           }
         }
+      }
+    },
+    "explanation_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_node", "method", "payload"],
+      "properties": {
+        "producer_node": {
+          "$ref": "#/$defs/identifier"
+        },
+        "method": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "target_name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "payload": {}
       }
     },
     "prediction_unit_id": {

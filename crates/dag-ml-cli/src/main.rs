@@ -24,15 +24,15 @@ use dag_ml_core::{
     BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
     BundleReplayExecution, CampaignSpec, CandidateScore, ColumnarPredictionCacheStore,
     ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataRequestPartition,
-    ExecutionBundle, ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
-    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
-    InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
-    OofCampaign, ParallelScheduler, Phase, PipelineDslSpec, PredictionBlock, PredictionLevel,
-    PredictionPartition, PredictionUnitId, RefitArtifactRecord, RegressionMetricKind,
-    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage,
-    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
-    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionMetric,
-    SelectionPolicy, SequentialScheduler, VariantId,
+    ExecutionBundle, ExplanationBlock, ExternalDataPlanEnvelope, FileArtifactManifestStore,
+    FileArtifactPayloadStore, FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef,
+    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId,
+    NodeResult, NodeTask, OofCampaign, ParallelScheduler, Phase, PipelineDslSpec, PredictionBlock,
+    PredictionLevel, PredictionPartition, PredictionUnitId, RefitArtifactRecord,
+    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
+    ResearchProvenancePackage, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
+    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
+    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -275,6 +275,30 @@ enum Command {
         #[arg(long, default_value = "plan:cli.mock")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.mock")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
+    },
+    /// Run a FIT_CV campaign whose `inner_cv` policy makes the runtime build a
+    /// nested (inner) FoldSet per outer fold from outer-train samples only, and
+    /// report how many node-tasks received an inner FoldSet (delivered via
+    /// `NodeTask.inner_fold_set`). Demonstrates nested-CV declaration + delivery.
+    RunMockNestedCv {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long, default_value = "plan:cli.nested.cv")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.nested.cv")]
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
@@ -771,7 +795,25 @@ enum Command {
     },
 }
 
+/// Install the ADR-12 `tracing` sink driven by `RUST_LOG`. Emits JSON-logfmt span
+/// events to stderr. No-op when `RUST_LOG` is unset/empty or a global subscriber
+/// is already installed, so ordinary runs stay quiet.
+fn init_tracing() {
+    use tracing_subscriber::fmt::format::FmtSpan;
+    use tracing_subscriber::{fmt, EnvFilter};
+    let Ok(filter) = EnvFilter::try_from_default_env() else {
+        return;
+    };
+    let _ = fmt()
+        .json()
+        .with_env_filter(filter)
+        .with_span_events(FmtSpan::CLOSE)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
 fn main() -> Result<()> {
+    init_tracing();
     let cli = Cli::parse();
 
     match cli.command {
@@ -992,6 +1034,64 @@ fn main() -> Result<()> {
                 ctx.prediction_store.blocks().len(),
                 data_provider.handle_records().len(),
                 data_provider.view_records().len(),
+                scheduler.scheduler.label(),
+                scheduler.workers
+            );
+        }
+        Command::RunMockNestedCv {
+            graph,
+            campaign,
+            controllers,
+            envelope,
+            plan_id,
+            run_id,
+            root_seed,
+            scheduler,
+            scheduler_workers,
+        } => {
+            let graph_spec: GraphSpec = read_json(&graph, "graph")?;
+            let campaign_spec: CampaignSpec = read_json(&campaign, "campaign")?;
+            if campaign_spec.inner_cv.is_none() {
+                bail!("run-mock-nested-cv requires a campaign with an `inner_cv` policy");
+            }
+            let registry = controller_registry_from_path(&controllers)?;
+            let plan = build_execution_plan(plan_id, graph_spec, campaign_spec, &registry)
+                .with_context(|| "failed to build execution plan")?;
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
+            let runtime_controllers = mock_runtime_controllers(&plan)?;
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let results = execute_campaign_phase_with_scheduler(
+                scheduler,
+                &plan,
+                &runtime_controllers,
+                &data_provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .with_context(|| "mock nested-cv execution failed")?;
+            let inner_cv_records = ctx
+                .lineage
+                .records()
+                .filter(|record| record.metrics.contains_key("inner_fold_count"))
+                .count();
+            let total_inner_folds: f64 = ctx
+                .lineage
+                .records()
+                .filter_map(|record| record.metrics.get("inner_fold_count"))
+                .sum();
+            if inner_cv_records == 0 {
+                bail!("nested-cv smoke delivered no inner FoldSet to any node-task");
+            }
+            println!(
+                "mock nested-cv run: {} result(s), {} lineage record(s), {} node-task(s) received an inner FoldSet, {} total inner fold(s), {} prediction block(s), scheduler={}, scheduler worker(s)={}",
+                results.len(),
+                ctx.lineage.len(),
+                inner_cv_records,
+                total_inner_folds as u64,
+                ctx.prediction_store.blocks().len(),
                 scheduler.scheduler.label(),
                 scheduler.workers
             );
@@ -1956,11 +2056,14 @@ fn main() -> Result<()> {
                 &mut ctx,
             )
             .with_context(|| "mock replay execution failed")?;
+            let explanation_blocks: usize =
+                results.iter().map(|result| result.explanations.len()).sum();
             println!(
-                "mock replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} data handle(s), {} data view(s), {} artifact handle(s), {} prediction cache handle(s), scheduler={}, scheduler worker(s)={}",
+                "mock replay run: {} result(s), {} lineage record(s), {} prediction block(s), {} explanation block(s), {} data handle(s), {} data view(s), {} artifact handle(s), {} prediction cache handle(s), scheduler={}, scheduler worker(s)={}",
                 results.len(),
                 ctx.lineage.len(),
                 ctx.prediction_store.blocks().len(),
+                explanation_blocks,
                 data_provider.handle_records().len(),
                 data_provider.view_records().len(),
                 artifact_store.artifact_handle_count(),
@@ -3716,7 +3819,10 @@ impl RuntimeController for CliMockController {
             }
         }
 
-        if task.phase == Phase::Predict
+        // PREDICT and EXPLAIN both replay a fitted model, so the model node must
+        // receive its stored replay artifact handle before producing predictions
+        // or explanations.
+        if matches!(task.phase, Phase::Predict | Phase::Explain)
             && matches!(task.node_plan.kind, dag_ml_core::NodeKind::Model)
         {
             let artifact_handles = task
@@ -3817,12 +3923,40 @@ impl RuntimeController for CliMockController {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        // EXPLAIN phase: model nodes emit a mock explanation block so the
+        // EXPLAIN executor contract (NodeResult.explanations, gated to EXPLAIN)
+        // is exercised end-to-end.
+        let explanations = if task.phase == Phase::Explain
+            && matches!(task.node_plan.kind, dag_ml_core::NodeKind::Model)
+        {
+            vec![ExplanationBlock {
+                producer_node: task.node_plan.node_id.clone(),
+                method: "mock_feature_importance".to_string(),
+                target_name: Some("y".to_string()),
+                payload: serde_json::json!({
+                    "feature_importances": [0.5_f64, 0.3, 0.2],
+                    "node": task.node_plan.node_id.as_str(),
+                }),
+            }]
+        } else {
+            Vec::new()
+        };
+        // Nested CV: record how many inner folds the runtime delivered for this
+        // task so a smoke can observe inner-fold delivery without inspecting buffers.
+        let mut metrics = BTreeMap::new();
+        if let Some(inner_fold_set) = &task.inner_fold_set {
+            metrics.insert(
+                "inner_fold_count".to_string(),
+                inner_fold_set.folds.len() as f64,
+            );
+        }
         Ok(NodeResult {
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("out".to_string(), output)]),
             predictions,
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations,
             shape_deltas: Vec::new(),
             artifacts: artifacts.clone(),
             artifact_handles,
@@ -3855,7 +3989,7 @@ impl RuntimeController for CliMockController {
                 aggregation_policy_fingerprint: None,
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
-                metrics: BTreeMap::new(),
+                metrics,
             },
         })
     }

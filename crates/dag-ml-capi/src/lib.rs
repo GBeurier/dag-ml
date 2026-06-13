@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
@@ -516,6 +517,89 @@ pub extern "C" fn dagml_version() -> DagMlVersion {
         major: 0,
         minor: 1,
         patch: 0,
+    }
+}
+
+thread_local! {
+    /// ADR-11 thread-local last-error buffer: the structured descriptor JSON and
+    /// numeric error code of the most recent failing C ABI call on this thread.
+    static LAST_ERROR: RefCell<Option<(String, u32)>> = const { RefCell::new(None) };
+}
+
+/// Record the descriptor JSON and numeric code of the most recent error in the
+/// calling thread's last-error buffer.
+fn store_last_error(payload: &str, code: u32) {
+    LAST_ERROR.with(|cell| *cell.borrow_mut() = Some((payload.to_string(), code)));
+}
+
+/// Writes the structured ADR-11 descriptor JSON of the most recent failing C ABI
+/// call on the calling thread into `out`.
+///
+/// The buffer is thread-local and persists until the next failing call on the
+/// same thread. When no error has been recorded, `out` is set to an empty string
+/// (`ptr` is null). Returns [`DagMlStatusCode::OK`].
+///
+/// # Safety
+///
+/// `out` may be null; when non-null it must point to writable memory for one
+/// `DagMlString`. Any returned string must be released with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_last_error_json(out: *mut DagMlString) -> DagMlStatusCode {
+    // Clone the payload out of the borrow before writing: the writer must not be
+    // a path that re-borrows LAST_ERROR. `write_error_string` is the pure writer
+    // (it does not touch the thread-local), so reading it here is not "the most
+    // recent failing call" and must not overwrite the buffer.
+    let payload = LAST_ERROR.with(|cell| cell.borrow().as_ref().map(|(p, _)| p.clone()));
+    clear_error(out);
+    if let Some(payload) = payload {
+        write_error_string(out, payload);
+    }
+    DagMlStatusCode::OK
+}
+
+/// Returns the stable ADR-11 numeric error code (`(category << 16) | code`) of the
+/// most recent failing C ABI call on the calling thread, or `0` when no error has
+/// been recorded. The buffer is thread-local and persists until the next failing
+/// call on the same thread.
+#[no_mangle]
+pub extern "C" fn dagml_last_error_code() -> u32 {
+    LAST_ERROR.with(|cell| cell.borrow().as_ref().map(|(_, code)| *code).unwrap_or(0))
+}
+
+/// Install a process-global ADR-12 `tracing` subscriber writing span/event
+/// telemetry to stderr, filtered by the `RUST_LOG` environment variable
+/// (defaulting to `info` when unset). When `json_output` is non-zero, events are
+/// emitted as JSON-logfmt; otherwise as a compact text format. Phase/node span
+/// close events are included, so the host sees per-phase and per-node timing.
+///
+/// This is the minimal C-host telemetry hook (ADR-12). Returns
+/// [`DagMlStatusCode::OK`] on success, or [`DagMlStatusCode::VALIDATION_ERROR`]
+/// if a global subscriber is already installed (the call is then a no-op). Call
+/// it once near host startup, before driving a run.
+#[no_mangle]
+pub extern "C" fn dagml_init_tracing(json_output: u8) -> DagMlStatusCode {
+    use tracing_subscriber::fmt::format::FmtSpan;
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let builder = fmt()
+        .with_env_filter(filter)
+        .with_span_events(FmtSpan::CLOSE)
+        .with_writer(std::io::stderr);
+    let installed = if json_output != 0 {
+        builder.json().try_init().is_ok()
+    } else {
+        builder.try_init().is_ok()
+    };
+    if installed {
+        DagMlStatusCode::OK
+    } else {
+        // Refusal is still a failing call: keep the thread-local last-error
+        // consistent with the returned status (errno-like contract).
+        store_last_error(
+            &c_abi_argument_descriptor("a tracing subscriber is already installed"),
+            C_ABI_ARGUMENT_ERROR_CODE,
+        );
+        DagMlStatusCode::VALIDATION_ERROR
     }
 }
 
@@ -1589,10 +1673,7 @@ pub unsafe extern "C" fn dagml_select_candidate_json(
     };
     match select_candidate(&policy, &candidates) {
         Ok(decision) => write_owned_json(out_json, error_out, &decision),
-        Err(error) => {
-            set_error(error_out, error.to_string());
-            DagMlStatusCode::VALIDATION_ERROR
-        }
+        Err(error) => validation_error(error_out, error),
     }
 }
 
@@ -1645,10 +1726,7 @@ pub unsafe extern "C" fn dagml_select_candidate_groups_json(
     };
     match select_candidate_groups(&policy, &candidates, &groups) {
         Ok(decisions) => write_owned_json(out_json, error_out, &decisions),
-        Err(error) => {
-            set_error(error_out, error.to_string());
-            DagMlStatusCode::VALIDATION_ERROR
-        }
+        Err(error) => validation_error(error_out, error),
     }
 }
 
@@ -2068,10 +2146,7 @@ pub unsafe extern "C" fn dagml_execution_bundle_validate_replay_envelopes_json(
     };
     match bundle.validate_replay_envelopes(&envelopes) {
         Ok(()) => DagMlStatusCode::OK,
-        Err(error) => {
-            set_error(error_out, error.to_string());
-            DagMlStatusCode::VALIDATION_ERROR
-        }
+        Err(error) => validation_error(error_out, error),
     }
 }
 
@@ -2105,10 +2180,7 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_json(
     };
     match request.validate_for_bundle(&bundle) {
         Ok(()) => DagMlStatusCode::OK,
-        Err(error) => {
-            set_error(error_out, error.to_string());
-            DagMlStatusCode::VALIDATION_ERROR
-        }
+        Err(error) => validation_error(error_out, error),
     }
 }
 
@@ -2142,10 +2214,7 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_validate_for_bundle_json
     };
     match payload.validate_against_bundle(&bundle) {
         Ok(()) => DagMlStatusCode::OK,
-        Err(error) => {
-            set_error(error_out, error.to_string());
-            DagMlStatusCode::VALIDATION_ERROR
-        }
+        Err(error) => validation_error(error_out, error),
     }
 }
 
@@ -2481,10 +2550,7 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_with_predictio
     };
     match request.validate_for_bundle_with_prediction_cache_payloads(&bundle, Some(&payload)) {
         Ok(()) => DagMlStatusCode::OK,
-        Err(error) => {
-            set_error(error_out, error.to_string());
-            DagMlStatusCode::VALIDATION_ERROR
-        }
+        Err(error) => validation_error(error_out, error),
     }
 }
 
@@ -2752,10 +2818,7 @@ pub unsafe extern "C" fn dagml_mock_replay_execute_json(
 
     match execute_mock_replay(&plan, &bundle, &request, &envelopes) {
         Ok(summary) => write_owned_json(out_json, error_out, &summary),
-        Err(error) => {
-            set_error(error_out, error.to_string());
-            DagMlStatusCode::VALIDATION_ERROR
-        }
+        Err(error) => validation_error(error_out, error),
     }
 }
 
@@ -2979,17 +3042,51 @@ unsafe fn clear_f32_columnar_tensor(out_tensor: *mut DagMlF32ColumnarTensor) {
     }
 }
 
-unsafe fn set_error(error_out: *mut DagMlString, message: impl Into<String>) {
+/// Numeric ADR-11 code for generic C ABI boundary/argument errors that do not
+/// originate from a `DagMlError` (null pointers, malformed UTF-8, JSON parse
+/// failures): validation category (0), reserved C-ABI code id `0xFFFF`.
+const C_ABI_ARGUMENT_ERROR_CODE: u32 = 0x0000_FFFF;
+
+/// Build a structured descriptor for a plain boundary `message`, so the
+/// thread-local last-error stays valid JSON and carries a stable taxonomy.
+fn c_abi_argument_descriptor(message: &str) -> String {
+    serde_json::json!({
+        "category": "validation",
+        "code": "c_abi_argument",
+        "severity": "error",
+        "message": message,
+        "remediation_hint": "Pass valid, non-null arguments that satisfy the C ABI contract.",
+        "context": {"detail": message},
+    })
+    .to_string()
+}
+
+/// Write `message` into `error_out` (no-op when null). Does not touch the
+/// thread-local last-error buffer; callers record that separately so structured
+/// and boundary errors store the correct descriptor.
+unsafe fn write_error_string(error_out: *mut DagMlString, message: String) {
     if error_out.is_null() {
         return;
     }
-    let sanitized = message.into().replace('\0', "\\0");
+    let sanitized = message.replace('\0', "\\0");
     let c_string = CString::new(sanitized).expect("nul bytes were sanitized");
     let len = c_string.as_bytes().len();
     *error_out = DagMlString {
         ptr: c_string.into_raw(),
         len,
     };
+}
+
+/// Record a plain boundary error: update the thread-local last-error with a
+/// generic descriptor and write the message to `error_out`. The thread-local is
+/// updated even when `error_out` is null so `dagml_last_error_*` stay accurate.
+unsafe fn set_error(error_out: *mut DagMlString, message: impl Into<String>) {
+    let message = message.into();
+    store_last_error(
+        &c_abi_argument_descriptor(&message),
+        C_ABI_ARGUMENT_ERROR_CODE,
+    );
+    write_error_string(error_out, message);
 }
 
 unsafe fn validate_json<T>(
@@ -3009,10 +3106,7 @@ where
     };
     match validate(&value) {
         Ok(()) => DagMlStatusCode::OK,
-        Err(error) => {
-            set_error(error_out, error.to_string());
-            DagMlStatusCode::VALIDATION_ERROR
-        }
+        Err(error) => validation_error(error_out, error),
     }
 }
 
@@ -3046,13 +3140,9 @@ unsafe fn parse_pipeline_dsl_ptr(
         return Err(DagMlStatusCode::INVALID_ARGUMENT);
     }
     let json = slice::from_raw_parts(json_ptr, json_len);
-    parse_pipeline_dsl_json(json).map_err(|error| {
-        set_error(
-            error_out,
-            format!("failed to parse pipeline DSL JSON: {error}"),
-        );
-        DagMlStatusCode::VALIDATION_ERROR
-    })
+    // `parse_pipeline_dsl_json` returns a real `DagMlError` (e.g. GraphValidation);
+    // emit its true descriptor/code rather than the generic c_abi_argument.
+    parse_pipeline_dsl_json(json).map_err(|error| validation_error(error_out, error))
 }
 
 unsafe fn parse_optional_json_ptr<T>(
@@ -3637,8 +3727,16 @@ fn build_prediction_cache_tensor_metadata(
 }
 
 unsafe fn validation_error(error_out: *mut DagMlString, error: DagMlError) -> DagMlStatusCode {
-    set_error(error_out, error.to_string());
+    set_structured_error(error_out, &error);
     DagMlStatusCode::VALIDATION_ERROR
+}
+
+unsafe fn set_structured_error(error_out: *mut DagMlString, error: &DagMlError) {
+    let payload = error
+        .descriptor_json()
+        .unwrap_or_else(|_| error.to_string());
+    store_last_error(&payload, error.error_code());
+    write_error_string(error_out, payload);
 }
 
 unsafe fn parse_controller_id_view(
@@ -3647,10 +3745,7 @@ unsafe fn parse_controller_id_view(
     label: &str,
 ) -> Result<ControllerId, DagMlStatusCode> {
     let raw = parse_utf8_view(view, error_out, label)?;
-    ControllerId::new(raw).map_err(|error| {
-        set_error(error_out, error.to_string());
-        DagMlStatusCode::VALIDATION_ERROR
-    })
+    ControllerId::new(raw).map_err(|error| validation_error(error_out, error))
 }
 
 unsafe fn parse_utf8_view(
@@ -3688,15 +3783,11 @@ unsafe fn build_controller_registry(
     for binding in bindings {
         let controller_id =
             parse_controller_id_view(binding.controller_id, error_out, "controller id")?;
-        let controller =
-            CAbiRuntimeController::new(controller_id, binding.vtable).map_err(|error| {
-                set_error(error_out, error.to_string());
-                DagMlStatusCode::VALIDATION_ERROR
-            })?;
-        registry.register(Box::new(controller)).map_err(|error| {
-            set_error(error_out, error.to_string());
-            DagMlStatusCode::VALIDATION_ERROR
-        })?;
+        let controller = CAbiRuntimeController::new(controller_id, binding.vtable)
+            .map_err(|error| validation_error(error_out, error))?;
+        registry
+            .register(Box::new(controller))
+            .map_err(|error| validation_error(error_out, error))?;
     }
     Ok(registry)
 }
@@ -4706,6 +4797,7 @@ impl RuntimeController for CapiMockController {
             predictions,
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -4962,6 +5054,7 @@ mod tests {
             predictions,
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -5205,8 +5298,10 @@ mod tests {
         let controller_id = ControllerId::new("controller:transform").unwrap();
         let node_id = NodeId::new("transform:scale").unwrap();
         let task = NodeTask {
+            inner_fold_set: None,
             run_id: RunId::new("run:cabi.controller").unwrap(),
             node_plan: NodePlan {
+                inner_cv: None,
                 node_id: node_id.clone(),
                 kind: NodeKind::Transform,
                 controller_id: controller_id.clone(),
@@ -5250,6 +5345,7 @@ mod tests {
             predictions: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -6152,6 +6248,96 @@ mod tests {
 
         assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
         assert!(error.ptr.is_null());
+    }
+
+    #[test]
+    fn last_error_accessors_expose_structured_taxonomy() {
+        let invalid = br#"{"id":"","interface":{},"nodes":[],"edges":[]}"#;
+        let mut error = DagMlString::default();
+        let status =
+            unsafe { dagml_graph_validate_json(invalid.as_ptr(), invalid.len(), &mut error) };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+
+        // validation (0) << 16 | graph_validation (2) == 0x0000_0002 (code ids are 1-based).
+        assert_eq!(dagml_last_error_code(), 0x0000_0002);
+
+        let mut last = DagMlString::default();
+        let last_status = unsafe { dagml_last_error_json(&mut last) };
+        assert_eq!(last_status, DagMlStatusCode::OK);
+        assert!(!last.ptr.is_null());
+        let json = error_message(&last);
+        let descriptor: serde_json::Value =
+            serde_json::from_str(&json).expect("last error descriptor json");
+        assert_eq!(descriptor["category"], "validation");
+        assert_eq!(descriptor["code"], "graph_validation");
+        // The thread-local payload matches the failing call's out-parameter.
+        assert_eq!(json, error_message(&error));
+
+        unsafe {
+            dagml_string_free(error);
+            dagml_string_free(last);
+        }
+    }
+
+    #[test]
+    fn pipeline_dsl_parse_error_preserves_real_taxonomy() {
+        // An invalid DSL surfaces a real `DagMlError` descriptor, not the generic
+        // c_abi_argument boundary code.
+        let invalid = br#"{ not valid dsl"#;
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_pipeline_dsl_validate_json(invalid.as_ptr(), invalid.len(), &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        let code = dagml_last_error_code();
+        assert_ne!(code, 0, "a failing call must record a non-zero code");
+        assert_ne!(
+            code, C_ABI_ARGUMENT_ERROR_CODE,
+            "a real DagMlError must not be downgraded to c_abi_argument"
+        );
+        let mut last = DagMlString::default();
+        let _ = unsafe { dagml_last_error_json(&mut last) };
+        let descriptor: serde_json::Value =
+            serde_json::from_str(&error_message(&last)).expect("descriptor json");
+        assert_ne!(descriptor["code"], "c_abi_argument");
+        unsafe {
+            dagml_string_free(error);
+            dagml_string_free(last);
+        }
+    }
+
+    #[test]
+    fn init_tracing_refuses_second_install() {
+        // The first call may succeed or find a subscriber already installed by
+        // another test; either way a subscriber is installed afterwards, so the
+        // next call must refuse rather than panic.
+        let _ = dagml_init_tracing(0);
+        assert_eq!(dagml_init_tracing(1), DagMlStatusCode::VALIDATION_ERROR);
+        // The refusal is a failing call, so it must update the thread-local.
+        assert_eq!(dagml_last_error_code(), C_ABI_ARGUMENT_ERROR_CODE);
+    }
+
+    #[test]
+    fn last_error_records_boundary_argument_errors() {
+        // A null-pointer (INVALID_ARGUMENT) failure must still update the
+        // thread-local so it is never stale relative to the returned error.
+        let mut error = DagMlString::default();
+        let status = unsafe { dagml_graph_validate_json(std::ptr::null(), 0, &mut error) };
+        assert_eq!(status, DagMlStatusCode::INVALID_ARGUMENT);
+        assert_eq!(dagml_last_error_code(), C_ABI_ARGUMENT_ERROR_CODE);
+
+        let mut last = DagMlString::default();
+        let last_status = unsafe { dagml_last_error_json(&mut last) };
+        assert_eq!(last_status, DagMlStatusCode::OK);
+        let descriptor: serde_json::Value =
+            serde_json::from_str(&error_message(&last)).expect("boundary descriptor json");
+        assert_eq!(descriptor["category"], "validation");
+        assert_eq!(descriptor["code"], "c_abi_argument");
+
+        unsafe {
+            dagml_string_free(error);
+            dagml_string_free(last);
+        }
     }
 
     #[test]

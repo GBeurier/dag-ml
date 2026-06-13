@@ -113,8 +113,9 @@ Each controller must expose a manifest equivalent to:
 | `supported_phases` | compile, plan, fit_cv, select, refit, predict, explain |
 | `input_ports` / `output_ports` | typed port contracts |
 | `data_requirements` | `ModelInputSpec`, aux inputs, required sources or target |
-| `capabilities` | deterministic, thread_safe, process_safe, needs_python_gil, emits_predictions, consumes_oof_predictions, emits_artifacts, stateful, emits_relation |
+| `capabilities` | deterministic, thread_safe, process_safe, needs_python_gil, emits_predictions, consumes_oof_predictions, emits_artifacts, stateful, emits_relation, accepts_task_batch, accepts_static_subgraph |
 | `operator_selectors` | optional alias/class/function/ref/type selectors used by the registry to route opaque operator payloads before falling back to generic kind routing |
+| `batch_patterns` | optional static patterns for controller-side multitask execution, including allowed node kinds, axes, limits and compatibility constraints |
 | `fit_scope` | stateless, fold_train, full_train, inference_only |
 | `rng_policy` | uses core seed, ignores seed, externally deterministic, nondeterministic |
 | `artifact_policy` | serializable, host_only, content_addressed, replay_required |
@@ -126,11 +127,19 @@ Minimum callable operations:
 | `describe` | manifest and static contracts |
 | `plan` | controller-specific plan details, no heavy compute |
 | `invoke` | phase-specific execution over handles and identity views |
+| `invoke_batch` | optional execution of a validated group of logical tasks or a closed static subgraph |
 | `release` | lifecycle cleanup for host handles |
 
 Specialized operations such as `fit`, `predict`, `transform`, `split`,
 `augment`, `score` may exist behind `invoke`, but the Rust core should schedule
 typed tasks rather than know library-specific APIs.
+
+`invoke_batch` is never a license for controller-owned topology. It is a
+transport and scheduling optimisation for logical tasks that the Rust core has
+already planned. A controller may use it to launch many preprocessings on one
+GPU call or to execute a closed, static subgraph, but it must return one
+logical response per member task so cache, OOF validation, lineage and replay
+remain coordinator-owned.
 
 Controller inputs:
 
@@ -221,6 +230,8 @@ Minimum controller-facing request/response shapes:
 | `SplitRequest` | identity table, sample relation table, split policy, seed context |
 | `TaskRequest` | phase, node id, fold id, branch path, variant id plus generated choices/fingerprint, data view, data-plan refs, input handles, prediction input metadata, artifact input metadata, seed context |
 | `TaskResponse` | output handles, prediction blocks, sample relation deltas, metrics, artifacts, lineage payload |
+| `TaskBatchRequest` | batch id, batch pattern id, canonical member task ids, ordered `TaskRequest` members, parent seed, resource limits |
+| `TaskBatchResponse` | batch id, one `TaskResponse` per member task id, optional parent batch metrics/lineage |
 
 Every shape-changing operation must declare the affected domain:
 
@@ -585,6 +596,8 @@ An `ExecutionPlan` is the Rust-owned, immutable plan after compile and plan:
 - aggregation policies for prediction/evaluation/refit;
 - topological order and deterministic parallel node levels;
 - phase execution schedules expanded by variant and fold;
+- controller multitask group templates for eligible known task groups or closed
+  static subgraphs;
 - phase gates per node;
 - expected input/output contracts;
 - cache key templates;
@@ -603,6 +616,7 @@ Parallelism dimensions:
 - folds;
 - branches;
 - independent DAG nodes;
+- controller multitask groups;
 - controller-declared internal parallelism.
 
 Scheduler rules:
@@ -612,7 +626,13 @@ Scheduler rules:
 3. Nested parallelism is controlled by controller capabilities and resource policy.
 4. Python/GIL-bound controllers may be process-scheduled; native thread-safe
    controllers may be thread-scheduled.
-5. A task result is accepted only after runtime validation.
+5. Compatible ready tasks may be coalesced into a controller multitask batch
+   only when a manifest-declared pattern admits them. Default compatibility is
+   same phase, same fold, same data view and no hidden dependency between
+   members.
+6. Batches can be split by resource limits, and may fall back to scalar
+   `TaskRequest`s unless the manifest explicitly marks the group as required.
+7. A task result is accepted only after runtime validation.
 
 ## Runtime Validation
 
@@ -629,6 +649,11 @@ Before dispatch, the Rust core checks:
 - seed is derived from the canonical path;
 - unsafe policy is explicit if required.
 
+For `TaskBatchRequest`, every member `TaskRequest` is checked first. The batch
+itself is then checked against the selected `batch_patterns` entry: allowed
+node kinds, coalescing axes, canonical member order, phase/fold/view/branch
+compatibility, `max_tasks` and resource hints.
+
 After dispatch, the Rust core checks:
 
 - output ports match declared contracts;
@@ -642,6 +667,10 @@ After dispatch, the Rust core checks:
 - artifact refs, portable backend/URI/content metadata and handle lifetimes are
   registered;
 - lineage was recorded.
+
+For `TaskBatchResponse`, every member response is validated as if it had been
+returned by a scalar invocation. Parent batch metrics and lineage are retained
+only as extra provenance; they cannot replace member-level records.
 
 ## OOF And Leakage Rules
 

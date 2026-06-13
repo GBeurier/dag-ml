@@ -2341,8 +2341,10 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
     let controller_id = ControllerId::new("controller:transform").unwrap();
     let node_id = NodeId::new("transform:scale").unwrap();
     let task = NodeTask {
+        inner_fold_set: None,
         run_id: RunId::new("run:c.conformance.node-result").unwrap(),
         node_plan: NodePlan {
+            inner_cv: None,
             node_id: node_id.clone(),
             kind: NodeKind::Transform,
             controller_id: controller_id.clone(),
@@ -2386,6 +2388,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
         predictions: Vec::new(),
         observation_predictions: Vec::new(),
         aggregated_predictions: Vec::new(),
+        explanations: Vec::new(),
         shape_deltas: Vec::new(),
         artifacts: Vec::new(),
         artifact_handles: BTreeMap::new(),

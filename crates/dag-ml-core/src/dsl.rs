@@ -5,6 +5,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use crate::controller::ControllerRegistry;
 use crate::data::{BranchViewMode, BranchViewPlan, DataBinding, DataViewSelector};
 use crate::error::{DagMlError, Result};
+use crate::fold::NestedCvSpec;
 use crate::generation::{
     generation_spec_fingerprint, GenerationChoice, GenerationDimension, GenerationParamOverride,
     GenerationSpec, GenerationStrategy,
@@ -50,6 +51,10 @@ pub struct PipelineDslSpec {
     pub aggregation_policy: Option<AggregationPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split_invocation: Option<SplitInvocation>,
+    /// Campaign-wide default nested (inner) CV policy; a per-step `inner_cv`
+    /// overrides it (compiled to `CampaignSpec.inner_cv`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_cv: Option<NestedCvSpec>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub campaign_metadata: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -149,6 +154,11 @@ pub struct PipelineDslOperatorStep {
     pub param_generators: Vec<PipelineDslParamGenerator>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<PipelineDslShapePlan>,
+    /// Node-local nested (inner) CV policy (e.g. for a finetune/tuner step);
+    /// overrides the campaign-wide default. Compiled to `NodePlan.inner_cv` via
+    /// the node's `dsl_inner_cv` metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_cv: Option<NestedCvSpec>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -472,6 +482,10 @@ pub struct PipelineDslMergeModelStep {
     pub param_generators: Vec<PipelineDslParamGenerator>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<PipelineDslShapePlan>,
+    /// Node-local nested (inner) CV policy for this meta-model (the meta-stacker's
+    /// inner CV is nested inside the outer CV); overrides the campaign default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_cv: Option<NestedCvSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -977,6 +991,7 @@ impl CompatDslLowerer {
             (None, None) => None,
         };
         Ok(PipelineDslSpec {
+            inner_cv: optional_root_field(root, "inner_cv")?,
             id,
             input: optional_root_field(root, "input")?.unwrap_or_default(),
             output: optional_root_field(root, "output")?.unwrap_or_default(),
@@ -1516,6 +1531,7 @@ impl CompatDslLowerer {
         let (merge_mode, include_original_data, _) = compat_merge_modes(merge_object)?;
         let operator_step = self.compat_operator_step(Some(next), "model", operator, None, None)?;
         Ok(Some(PipelineDslMergeModelStep {
+            inner_cv: operator_step.inner_cv,
             id: operator_step.id,
             operator: operator_step.operator,
             params: operator_step.params,
@@ -2213,6 +2229,7 @@ impl CompatDslLowerer {
             None => fallback_shape,
         };
         let mut step = PipelineDslOperatorStep {
+            inner_cv: optional_object_field_from_option(object, "inner_cv")?,
             id: match object {
                 Some(object) => {
                     explicit_or_generated_node_id(object, "id", || self.next_node_id(id_prefix))?
@@ -2273,6 +2290,7 @@ impl CompatDslLowerer {
         shape: Option<PipelineDslShapePlan>,
     ) -> Result<PipelineDslOperatorStep> {
         let mut step = PipelineDslOperatorStep {
+            inner_cv: None,
             id: self.next_node_id(compat_node_prefix(keyword))?,
             operator,
             params,
@@ -4415,6 +4433,7 @@ impl PipelineCompiler {
             &mut metadata,
             &step.train_params,
             step.tuning.as_ref(),
+            step.inner_cv.as_ref(),
             &step.id,
         )?;
         metadata.insert(
@@ -4706,6 +4725,7 @@ fn build_campaign_template(
     branch_view_plans: &[BranchViewPlan],
 ) -> Result<CampaignSpec> {
     let campaign = CampaignSpec {
+        inner_cv: spec.inner_cv.clone(),
         id: spec
             .campaign_id
             .clone()
@@ -5478,6 +5498,7 @@ fn operator_runtime_metadata(
         &mut metadata,
         &step.train_params,
         step.tuning.as_ref(),
+        step.inner_cv.as_ref(),
         &step.id,
     )?;
     Ok(metadata)
@@ -6529,8 +6550,21 @@ fn insert_training_metadata(
     metadata: &mut BTreeMap<String, serde_json::Value>,
     train_params: &BTreeMap<String, serde_json::Value>,
     tuning: Option<&PipelineDslTuningSpec>,
+    inner_cv: Option<&NestedCvSpec>,
     node_id: &NodeId,
 ) -> Result<()> {
+    if let Some(inner_cv) = inner_cv {
+        // Carry the node-local nested-CV policy on the graph node so
+        // build_execution_plan can lower it into NodePlan.inner_cv.
+        metadata.insert(
+            "dsl_inner_cv".to_string(),
+            serde_json::to_value(inner_cv).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to serialize pipeline DSL inner_cv for node `{node_id}`: {error}"
+                ))
+            })?,
+        );
+    }
     if !train_params.is_empty() {
         metadata.insert(
             "dsl_train_params".to_string(),
@@ -8853,5 +8887,150 @@ mod tests {
         let error = compile_pipeline_dsl(&spec).unwrap_err();
         assert!(format!("{error}")
             .contains("must produce at least one model, merge prediction or transformed data"));
+    }
+
+    #[test]
+    fn dsl_top_level_inner_cv_maps_to_campaign_template() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-inner-cv-campaign",
+  "inner_cv": {"kind": "kfold", "n_splits": 4, "shuffle": true, "seed": 7},
+  "steps": [
+    {"kind": "model", "id": "model:base", "operator": {"type": "Ridge"}, "params": {"alpha": 0.5}}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+        match compiled.campaign_template.inner_cv {
+            Some(crate::fold::NestedCvSpec::KFold(ref k)) => {
+                assert_eq!(k.n_splits, 4);
+                assert!(k.shuffle);
+                assert_eq!(k.seed, Some(7));
+            }
+            ref other => panic!("expected campaign-level KFold inner_cv, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dsl_model_step_inner_cv_maps_to_node_metadata() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-inner-cv-node",
+  "steps": [
+    {
+      "kind": "model",
+      "id": "model:meta",
+      "operator": {"type": "Ridge"},
+      "inner_cv": {"kind": "group_kfold", "n_splits": 3}
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "model:meta")
+            .expect("compiled model node exists");
+        let value = node
+            .metadata
+            .get("dsl_inner_cv")
+            .expect("node carries dsl_inner_cv metadata");
+        let inner: crate::fold::NestedCvSpec = serde_json::from_value(value.clone()).unwrap();
+        match inner {
+            crate::fold::NestedCvSpec::GroupKFold(ref g) => assert_eq!(g.n_splits, 3),
+            other => panic!("expected node-local GroupKFold inner_cv, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dsl_absent_inner_cv_leaves_campaign_and_nodes_unset() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-no-inner-cv",
+  "steps": [
+    {"kind": "model", "id": "model:base", "operator": {"type": "Ridge"}}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+        assert!(compiled.campaign_template.inner_cv.is_none());
+        for node in &compiled.graph.nodes {
+            assert!(!node.metadata.contains_key("dsl_inner_cv"));
+        }
+    }
+
+    #[test]
+    fn compat_pipeline_preserves_campaign_and_model_inner_cv() {
+        // nirs4all-compatible dict form ("pipeline" key) routes through the compat
+        // lowerer; campaign-global and node-local inner_cv must survive lowering.
+        let spec = parse_pipeline_dsl_json(
+            br#"{
+  "id": "dsl-compat-inner-cv",
+  "inner_cv": {"kind": "kfold", "n_splits": 5, "shuffle": false, "seed": 3},
+  "pipeline": [
+    {"split": {"type": "KFold", "n_splits": 4}},
+    {"model": "Ridge", "id": "model:base", "inner_cv": {"kind": "group_kfold", "n_splits": 3}}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        match spec.inner_cv {
+            Some(crate::fold::NestedCvSpec::KFold(ref k)) => assert_eq!(k.n_splits, 5),
+            ref other => panic!("expected compat campaign-global KFold inner_cv, got {other:?}"),
+        }
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "model:base")
+            .expect("compat model node exists");
+        let inner: crate::fold::NestedCvSpec =
+            serde_json::from_value(node.metadata.get("dsl_inner_cv").cloned().unwrap()).unwrap();
+        match inner {
+            crate::fold::NestedCvSpec::GroupKFold(ref g) => assert_eq!(g.n_splits, 3),
+            other => panic!("expected compat node-local GroupKFold inner_cv, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compat_merge_model_collapse_preserves_inner_cv() {
+        // The compat `merge` + `model` stacker shorthand collapses into a
+        // merge-model step; its node-local inner_cv must reach the graph node.
+        let spec = parse_pipeline_dsl_json(
+            br#"{
+  "id": "dsl-compat-merge-inner-cv",
+  "pipeline": [
+    {"_chain_": [
+      {"_grid_": {"model": ["PLSRegression"], "n_components": [5, 10]}},
+      {"_grid_": {"model": ["Ridge"], "alpha": [0.1, 1.0]}}
+    ]},
+    {"merge": "predictions"},
+    {"model": "Ridge", "id": "model:meta", "params": {"alpha": 0.5}, "inner_cv": {"kind": "kfold", "n_splits": 4, "shuffle": false, "seed": null}}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let graph = compile_pipeline_dsl(&spec).unwrap();
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "model:meta")
+            .expect("compat merge-model node exists");
+        let inner: crate::fold::NestedCvSpec =
+            serde_json::from_value(node.metadata.get("dsl_inner_cv").cloned().unwrap()).unwrap();
+        match inner {
+            crate::fold::NestedCvSpec::KFold(ref k) => assert_eq!(k.n_splits, 4),
+            other => panic!("expected merge-model KFold inner_cv, got {other:?}"),
+        }
     }
 }

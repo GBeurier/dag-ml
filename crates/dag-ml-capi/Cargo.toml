@@ -16,3 +16,4 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 dag-ml-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing-subscriber.workspace = true

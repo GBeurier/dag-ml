@@ -8,3 +8,14 @@
 __pycache__/
 .pytest_cache/
 external/
+crates/*/pkg-web/
+/docs/_build/
+
+# local code-intelligence index
+.codegraph/
+
+# coverage artifacts
+coverage.xml
+
+# personal backlog (local only)
+GB_backlog.txt

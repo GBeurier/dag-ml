@@ -81,6 +81,7 @@ impl RuntimeController for VariantProbeController {
             predictions: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -151,6 +152,7 @@ impl RuntimeController for ShapeDataController {
             predictions: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: vec![shape_delta],
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -230,6 +232,7 @@ impl RuntimeController for DataViewProbeController {
             }],
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -355,6 +358,7 @@ impl RuntimeController for MockController {
             predictions,
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -519,6 +523,7 @@ impl RuntimeController for ReplayMockController {
             predictions,
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: artifacts.clone(),
             artifact_handles,
@@ -672,6 +677,7 @@ impl RuntimeController for OofEdgeController {
             predictions,
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -776,6 +782,7 @@ impl RuntimeController for ExpectedRefitOofController {
             predictions: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -879,6 +886,7 @@ impl RuntimeController for GroupAggregatedOofController {
             predictions: Vec::new(),
             observation_predictions,
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -1165,6 +1173,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
                 target_names: vec!["y".to_string()],
             }],
             aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
             shape_deltas: Vec::new(),
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
@@ -1299,6 +1308,7 @@ fn aggregation_dispatch_plan(with_capability: bool) -> ExecutionPlan {
         metadata: BTreeMap::new(),
     };
     let campaign = CampaignSpec {
+        inner_cv: None,
         id: "campaign:aggregation.dispatch".to_string(),
         root_seed: Some(7),
         leakage_policy: Default::default(),
@@ -1364,6 +1374,7 @@ fn observation_prediction_runtime_plan() -> ExecutionPlan {
     let mut data_bindings = BTreeMap::new();
     data_bindings.insert(model_id.clone(), vec![data_binding(&model_id)]);
     let campaign = CampaignSpec {
+        inner_cv: None,
         id: "campaign:observation.prediction.runtime".to_string(),
         root_seed: Some(17),
         leakage_policy: Default::default(),
@@ -1485,6 +1496,7 @@ fn live_group_oof_runtime_plan() -> ExecutionPlan {
         ..LeakageUnitPolicy::default()
     };
     let campaign = CampaignSpec {
+        inner_cv: None,
         id: "campaign:live.group.oof".to_string(),
         root_seed: Some(19),
         leakage_policy: leakage_policy.clone(),
@@ -1988,6 +2000,7 @@ fn grouped_repetition_relations() -> SampleRelationSet {
 fn grouped_oof_campaign(fold_set: FoldSet) -> CampaignSpec {
     let leakage_policy = grouped_leakage_policy();
     CampaignSpec {
+        inner_cv: None,
         id: "campaign:oof.grouped-repetition".to_string(),
         root_seed: Some(11),
         leakage_policy: leakage_policy.clone(),
@@ -2030,6 +2043,7 @@ fn data_binding(node_id: &NodeId) -> crate::data::DataBinding {
 
 fn oof_edge_campaign() -> CampaignSpec {
     CampaignSpec {
+        inner_cv: None,
         id: "campaign:oof.edge".to_string(),
         root_seed: Some(11),
         leakage_policy: Default::default(),
@@ -2051,6 +2065,7 @@ fn oof_edge_campaign() -> CampaignSpec {
 
 fn parallel_stress_campaign() -> CampaignSpec {
     CampaignSpec {
+        inner_cv: None,
         id: "campaign:parallel.stress".to_string(),
         root_seed: Some(31),
         leakage_policy: Default::default(),
@@ -2224,6 +2239,7 @@ fn sequential_scheduler_invokes_mock_controllers_in_topological_order() {
         "plan:fitcv",
         simple_graph(),
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:fitcv".to_string(),
             root_seed: Some(11),
             leakage_policy: Default::default(),
@@ -2304,6 +2320,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
                 predictions: Vec::new(),
                 observation_predictions: Vec::new(),
                 aggregated_predictions: Vec::new(),
+                explanations: Vec::new(),
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
@@ -2339,6 +2356,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
         "plan:parallel",
         independent_parallel_graph(),
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:parallel".to_string(),
             root_seed: Some(11),
             leakage_policy: Default::default(),
@@ -2450,6 +2468,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
                 predictions,
                 observation_predictions: Vec::new(),
                 aggregated_predictions: Vec::new(),
+                explanations: Vec::new(),
                 shape_deltas: Vec::new(),
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
@@ -2696,6 +2715,7 @@ fn campaign_scheduler_expands_variants_and_cv_folds() {
         "plan:campaign",
         simple_graph(),
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:fitcv".to_string(),
             root_seed: Some(11),
             leakage_policy: Default::default(),
@@ -2764,6 +2784,7 @@ fn node_tasks_expose_generation_variant_context() {
         "plan:generation.task.context",
         simple_graph(),
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:generation.task.context".to_string(),
             root_seed: Some(23),
             leakage_policy: Default::default(),
@@ -4233,6 +4254,7 @@ fn data_bindings_require_runtime_provider_and_materialize_handles() {
         "plan:data",
         simple_graph(),
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:data".to_string(),
             root_seed: Some(11),
             leakage_policy: Default::default(),
@@ -4287,6 +4309,7 @@ fn campaign_data_bindings_create_fold_train_views() {
         "plan:data.folds",
         simple_graph(),
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:data.folds".to_string(),
             root_seed: Some(11),
             leakage_policy: Default::default(),
@@ -4441,6 +4464,7 @@ fn data_edges_propagate_fold_views_from_data_producing_nodes() {
         "plan:data.edge.views",
         graph,
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:data.edge.views".to_string(),
             root_seed: Some(11),
             leakage_policy: Default::default(),
@@ -4781,6 +4805,7 @@ fn scheduler_extracts_branch_view_from_node_metadata() {
             parallel_levels: Vec::new(),
         },
         campaign: crate::plan::CampaignSpec {
+            inner_cv: None,
             id: "campaign:test".to_string(),
             root_seed: None,
             leakage_policy: Default::default(),
@@ -5138,6 +5163,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         "plan:result.validation",
         simple_graph(),
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:result.validation".to_string(),
             root_seed: Some(11),
             leakage_policy: Default::default(),
@@ -5158,6 +5184,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         .unwrap()
         .clone();
     let task = NodeTask {
+        inner_fold_set: None,
         run_id: RunId::new("run:result.validation").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -5230,6 +5257,7 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
         "plan:result.validation.shape",
         simple_graph(),
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:result.validation.shape".to_string(),
             root_seed: Some(11),
             leakage_policy: Default::default(),
@@ -5246,6 +5274,7 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
     .unwrap();
     let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
     let task = NodeTask {
+        inner_fold_set: None,
         run_id: RunId::new("run:result.validation.shape").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -5312,6 +5341,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         "plan:result.validation.artifacts",
         simple_graph(),
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:result.validation.artifacts".to_string(),
             root_seed: Some(11),
             leakage_policy: Default::default(),
@@ -5332,6 +5362,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         .unwrap()
         .clone();
     let task = NodeTask {
+        inner_fold_set: None,
         run_id: RunId::new("run:result.validation.artifacts").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::Refit,
@@ -5516,6 +5547,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
         "plan:result.validation.samples",
         simple_graph(),
         CampaignSpec {
+            inner_cv: None,
             id: "campaign:result.validation.samples".to_string(),
             root_seed: Some(11),
             leakage_policy: Default::default(),
@@ -5538,6 +5570,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
     .unwrap();
     let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
     let task = NodeTask {
+        inner_fold_set: None,
         run_id: RunId::new("run:result.validation.samples").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -5585,6 +5618,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
         }],
         observation_predictions: Vec::new(),
         aggregated_predictions: Vec::new(),
+        explanations: Vec::new(),
         shape_deltas: Vec::new(),
         artifacts: Vec::new(),
         artifact_handles: BTreeMap::new(),
@@ -5792,4 +5826,100 @@ fn bundle_replay_rejects_missing_artifact_unsupported_phase_and_bad_envelope() {
             &mut ctx,
         )
         .is_err());
+}
+
+#[test]
+fn fit_cv_node_with_inner_cv_carries_inner_fold_set_subset_of_outer_train() {
+    use crate::fold::{KFoldSpec, NestedCvSpec};
+    use crate::ids::SampleId;
+
+    // Reuse a real plan's campaign + a node plan, but drive nesting with a fresh
+    // outer fold set that has enough train samples for an inner KFold.
+    let plan = live_group_oof_runtime_plan();
+    let mut campaign = plan.campaign.clone();
+    let node_plan = plan
+        .node_plans
+        .values()
+        .next()
+        .expect("plan has at least one node")
+        .clone();
+    assert!(
+        node_plan.inner_cv.is_none(),
+        "node falls back to campaign default"
+    );
+
+    let samples = ["s1", "s2", "s3", "s4"]
+        .into_iter()
+        .map(|s| SampleId::new(s).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 2,
+        shuffle: false,
+        seed: Some(0),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let outer_fold = outer.folds[0].clone();
+    let fit_scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: None,
+        variant: None,
+        fold_id: Some(outer_fold.fold_id.clone()),
+        seed_root: None,
+    };
+
+    // With a campaign-level inner CV and no node override, the node gets an inner
+    // fold set built from this outer fold's TRAIN samples (⊆ outer-train).
+    campaign.inner_cv = Some(NestedCvSpec::KFold(KFoldSpec {
+        n_splits: 2,
+        shuffle: false,
+        seed: Some(1),
+    }));
+    let inner = inner_fold_set_for_scope(&campaign, Some(&outer), &node_plan, &fit_scope)
+        .expect("inner fold set builds")
+        .expect("inner fold set present for FIT_CV node with inner_cv");
+    let outer_train = outer_fold
+        .train_sample_ids
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    for sample_id in &inner.sample_ids {
+        assert!(
+            outer_train.contains(sample_id),
+            "inner sample escapes outer-train"
+        );
+    }
+    assert_eq!(
+        inner
+            .sample_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        outer_train
+    );
+
+    // No effective inner CV → no inner fold set.
+    campaign.inner_cv = None;
+    assert!(
+        inner_fold_set_for_scope(&campaign, Some(&outer), &node_plan, &fit_scope)
+            .unwrap()
+            .is_none()
+    );
+
+    // Non-FIT_CV phases never carry an inner fold set, even with inner_cv declared.
+    campaign.inner_cv = Some(NestedCvSpec::KFold(KFoldSpec {
+        n_splits: 2,
+        shuffle: false,
+        seed: Some(1),
+    }));
+    let predict_scope = PhaseScope {
+        phase: Phase::Predict,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    assert!(
+        inner_fold_set_for_scope(&campaign, Some(&outer), &node_plan, &predict_scope)
+            .unwrap()
+            .is_none()
+    );
 }
