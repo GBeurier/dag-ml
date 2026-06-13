@@ -107,10 +107,14 @@ Canonical fixture: `examples/fixtures/data/feature_fusion_selector_nir_chem.json
 
 Runtime shape passed through data-provider `feature_arrow` when the provider
 supports `dag-ml-data` multi-source fusion:
-`{ schema_version, feature_set_id, sources, alignment, policy? }`, where each
-source maps a `source_id` to a provider-owned `feature_set_id` and optional
-column subset. This keeps `DagMlDataVTable` ABI-compatible while making feature
-fusion explicit.
+`{ schema_version, feature_set_id, sources, alignment, combination_plan?,
+representation_plan?, policy? }`, where each source maps a `source_id` to a
+provider-owned `feature_set_id` and optional column subset. The optional D6
+plans describe host-owned representation work such as cartesian, sampled
+cartesian, fixed stack and padded/masked stack materialization; the core
+validates identity, unit, replay and provenance contracts without materializing
+feature buffers. This keeps `DagMlDataVTable` ABI-compatible while making
+feature fusion explicit.
 
 ## GraphSpec v1
 

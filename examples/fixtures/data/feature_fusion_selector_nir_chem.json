@@ -27,6 +27,24 @@
       }
     ]
   },
+  "combination_plan": {
+    "mode": "cartesian",
+    "component_source_ids": ["nir", "chem"],
+    "budget": 8,
+    "missing_source_policy": "strict"
+  },
+  "representation_plan": {
+    "kind": "cartesian_product",
+    "combination_plan": {
+      "mode": "cartesian",
+      "component_source_ids": ["nir", "chem"],
+      "budget": 8,
+      "missing_source_policy": "strict"
+    },
+    "output_unit_level": "combo",
+    "cardinality": "many_to_many",
+    "preserve_provenance": true
+  },
   "policy": {
     "namespace_columns": true
   }

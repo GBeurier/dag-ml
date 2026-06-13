@@ -186,6 +186,36 @@ FIT_INFLUENCE_POLICIES = {
     "scorer_only",
     "strict_weight_support",
 }
+COMBINATION_MODES = {
+    "cartesian",
+    "zip",
+    "match_by",
+    "sample_k",
+    "reference_broadcast",
+}
+REPRESENTATION_MISSING_SOURCE_POLICIES = {
+    "strict",
+    "warn",
+    "drop_incomplete",
+    "impute_declared",
+    "mask",
+    "partial_model",
+    "pad",
+}
+REPRESENTATION_CARDINALITIES = {
+    "one_to_one",
+    "one_to_many",
+    "many_to_one",
+    "many_to_many",
+    "bounded_many",
+}
+REPRESENTATION_KINDS = {
+    "aggregate",
+    "cartesian_product",
+    "monte_carlo_cartesian",
+    "stack_fixed",
+    "stack_padded_masked",
+}
 FIT_INFLUENCE_MECHANISMS = {
     "uniform_rows",
     "sample_weights",
@@ -341,6 +371,297 @@ def require_no_unknown_keys(value: dict[str, Any], allowed: set[str], label: str
     require(not extra, f"{label} contains unknown field(s): {sorted(extra)}")
 
 
+def require_positive_int(value: Any, label: str) -> None:
+    require(
+        isinstance(value, int) and not isinstance(value, bool) and value > 0,
+        f"{label} must be a positive integer",
+    )
+
+
+def require_non_negative_int(value: Any, label: str) -> None:
+    require(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+        f"{label} must be a non-negative integer",
+    )
+
+
+def validate_optional_string_array(value: Any, label: str) -> list[str]:
+    if value is None:
+        return []
+    require(isinstance(value, list), f"{label} must be an array")
+    for index, item in enumerate(value):
+        require_non_empty_string(item, f"{label}[{index}]")
+    require(len(set(value)) == len(value), f"{label} contains duplicates")
+    return value
+
+
+def validate_metadata_object(value: Any, label: str) -> None:
+    if value is None:
+        return
+    require(isinstance(value, dict), f"{label} must be an object")
+    for key in value:
+        require_non_empty_string(key, f"{label} key")
+
+
+def validate_combination_plan(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} must be an object")
+    mode = value.get("mode")
+    require(mode in COMBINATION_MODES, f"{label}.mode is invalid")
+    component_source_ids = validate_optional_string_array(
+        value.get("component_source_ids"),
+        f"{label}.component_source_ids",
+    )
+    validate_optional_string_array(
+        value.get("component_unit_ids"),
+        f"{label}.component_unit_ids",
+    )
+    require_optional_non_empty_string(value.get("match_key"), f"{label}.match_key")
+    require_optional_non_empty_string(
+        value.get("reference_source_id"),
+        f"{label}.reference_source_id",
+    )
+    seed = value.get("seed")
+    if seed is not None:
+        require_non_negative_int(seed, f"{label}.seed")
+    cap = value.get("cap")
+    if cap is not None:
+        require_positive_int(cap, f"{label}.cap")
+    budget = value.get("budget")
+    if budget is not None:
+        require_positive_int(budget, f"{label}.budget")
+    missing_source_policy = value.get("missing_source_policy")
+    if missing_source_policy is not None:
+        require(
+            missing_source_policy in REPRESENTATION_MISSING_SOURCE_POLICIES,
+            f"{label}.missing_source_policy is invalid",
+        )
+    validate_metadata_object(value.get("metadata"), f"{label}.metadata")
+
+    if mode in {"cartesian", "zip"}:
+        require(
+            len(component_source_ids) >= 2,
+            f"{label}.{mode} requires at least two component_source_ids",
+        )
+    elif mode == "match_by":
+        require(value.get("match_key") is not None, f"{label}.match_key is required")
+    elif mode == "sample_k":
+        require(seed is not None, f"{label}.seed is required")
+        require(cap is not None, f"{label}.cap is required")
+    elif mode == "reference_broadcast":
+        reference = value.get("reference_source_id")
+        require(reference is not None, f"{label}.reference_source_id is required")
+        require(
+            not component_source_ids or reference in component_source_ids,
+            f"{label}.reference_source_id must be listed in component_source_ids",
+        )
+
+
+def require_unit_level(value: Any, label: str) -> None:
+    require(value in ENTITY_UNIT_LEVELS, f"{label} has invalid entity unit level")
+
+
+def require_combo_like_output(value: Any, label: str) -> None:
+    require(
+        value in {"combo", "observation"},
+        f"{label} output_unit_level must be combo or observation",
+    )
+
+
+def representation_output_unit_level(value: dict[str, Any]) -> Any:
+    return value.get("output_unit_level")
+
+
+def validate_representation_plan(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} must be an object")
+    kind = value.get("kind")
+    require(kind in REPRESENTATION_KINDS, f"{label}.kind is invalid")
+
+    if kind == "aggregate":
+        require_unit_level(value.get("input_unit_level"), f"{label}.input_unit_level")
+        require_unit_level(value.get("output_unit_level"), f"{label}.output_unit_level")
+        require_optional_non_empty_string(value.get("reducer_id"), f"{label}.reducer_id")
+        require_optional_non_empty_string(value.get("method"), f"{label}.method")
+        require(
+            value.get("cardinality") == "many_to_one",
+            f"{label}.cardinality must be many_to_one",
+        )
+        return
+
+    if kind in {"cartesian_product", "monte_carlo_cartesian"}:
+        combination_plan = value.get("combination_plan")
+        validate_combination_plan(combination_plan, f"{label}.combination_plan")
+        expected_mode = "cartesian" if kind == "cartesian_product" else "sample_k"
+        require(
+            combination_plan.get("mode") == expected_mode,
+            f"{label}.combination_plan.mode must be {expected_mode}",
+        )
+        require_unit_level(value.get("output_unit_level"), f"{label}.output_unit_level")
+        require_combo_like_output(value.get("output_unit_level"), label)
+        expected_cardinality = (
+            "many_to_many" if kind == "cartesian_product" else "bounded_many"
+        )
+        require(
+            value.get("cardinality") == expected_cardinality,
+            f"{label}.cardinality must be {expected_cardinality}",
+        )
+        preserve_provenance = value.get("preserve_provenance")
+        if preserve_provenance is not None:
+            require(isinstance(preserve_provenance, bool), f"{label}.preserve_provenance bool")
+        return
+
+    if kind == "stack_fixed":
+        require_unit_level(value.get("output_unit_level"), f"{label}.output_unit_level")
+        require(
+            value.get("cardinality") == "one_to_many",
+            f"{label}.cardinality must be one_to_many",
+        )
+        require_positive_int(
+            value.get("expected_cardinality"),
+            f"{label}.expected_cardinality",
+        )
+        validate_optional_string_array(
+            value.get("component_source_ids"),
+            f"{label}.component_source_ids",
+        )
+        return
+
+    require(kind == "stack_padded_masked", f"{label}.kind is invalid")
+    require_unit_level(value.get("output_unit_level"), f"{label}.output_unit_level")
+    require(
+        value.get("cardinality") == "bounded_many",
+        f"{label}.cardinality must be bounded_many",
+    )
+    require_positive_int(
+        value.get("expected_cardinality"),
+        f"{label}.expected_cardinality",
+    )
+    require(
+        value.get("missing_source_policy") in {"mask", "pad"},
+        f"{label}.missing_source_policy must be mask or pad",
+    )
+    requires_missing_masks = value.get("requires_missing_masks", True)
+    require(
+        requires_missing_masks is True,
+        f"{label}.requires_missing_masks must be true",
+    )
+    validate_optional_string_array(
+        value.get("component_source_ids"),
+        f"{label}.component_source_ids",
+    )
+
+
+def validate_representation_replay_manifest(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} must be an object")
+    require_identifier(value.get("manifest_id"), f"{label}.manifest_id")
+    representation_plan = value.get("representation_plan")
+    validate_representation_plan(representation_plan, f"{label}.representation_plan")
+    combination_plan = value.get("combination_plan")
+    if combination_plan is not None:
+        validate_combination_plan(combination_plan, f"{label}.combination_plan")
+    output_unit_level = value.get("output_unit_level")
+    require_unit_level(output_unit_level, f"{label}.output_unit_level")
+    require(
+        output_unit_level == representation_output_unit_level(representation_plan),
+        f"{label}.output_unit_level must match representation_plan",
+    )
+    require_optional_non_empty_string(
+        value.get("output_representation"),
+        f"{label}.output_representation",
+    )
+    require_optional_non_empty_string(
+        value.get("final_reduction_id"),
+        f"{label}.final_reduction_id",
+    )
+    sample_observation_mapping = value.get("sample_observation_mapping", [])
+    require(
+        isinstance(sample_observation_mapping, list),
+        f"{label}.sample_observation_mapping must be an array",
+    )
+    sample_source_pairs: set[tuple[str, str]] = set()
+    for index, mapping in enumerate(sample_observation_mapping):
+        mapping_label = f"{label}.sample_observation_mapping[{index}]"
+        require(isinstance(mapping, dict), f"{mapping_label} must be an object")
+        require_non_empty_string(
+            mapping.get("physical_sample_id"),
+            f"{mapping_label}.physical_sample_id",
+        )
+        require_non_empty_string(mapping.get("source_id"), f"{mapping_label}.source_id")
+        observation_ids = mapping.get("observation_ids")
+        require(
+            isinstance(observation_ids, list) and observation_ids,
+            f"{mapping_label}.observation_ids must be a non-empty array",
+        )
+        for obs_index, observation_id in enumerate(observation_ids):
+            require_non_empty_string(
+                observation_id,
+                f"{mapping_label}.observation_ids[{obs_index}]",
+            )
+        require(
+            len(set(observation_ids)) == len(observation_ids),
+            f"{mapping_label}.observation_ids contains duplicates",
+        )
+        pair = (mapping["physical_sample_id"], mapping["source_id"])
+        require(
+            pair not in sample_source_pairs,
+            f"{mapping_label} duplicates physical_sample_id/source_id",
+        )
+        sample_source_pairs.add(pair)
+    combo_selection = value.get("combo_selection", [])
+    require(isinstance(combo_selection, list), f"{label}.combo_selection must be an array")
+    combo_unit_ids: set[str] = set()
+    for index, record in enumerate(combo_selection):
+        record_label = f"{label}.combo_selection[{index}]"
+        require(isinstance(record, dict), f"{record_label} must be an object")
+        require_non_empty_string(record.get("combo_unit_id"), f"{record_label}.combo_unit_id")
+        require_non_empty_string(
+            record.get("physical_sample_id"),
+            f"{record_label}.physical_sample_id",
+        )
+        component_observation_ids = record.get("component_observation_ids")
+        require(
+            isinstance(component_observation_ids, list) and component_observation_ids,
+            f"{record_label}.component_observation_ids must be a non-empty array",
+        )
+        for component_index, observation_id in enumerate(component_observation_ids):
+            require_non_empty_string(
+                observation_id,
+                f"{record_label}.component_observation_ids[{component_index}]",
+            )
+        require(
+            len(set(component_observation_ids)) == len(component_observation_ids),
+            f"{record_label}.component_observation_ids contains duplicates",
+        )
+        seed = record.get("seed")
+        if seed is not None:
+            require_non_negative_int(seed, f"{record_label}.seed")
+        require(
+            record["combo_unit_id"] not in combo_unit_ids,
+            f"{record_label}.combo_unit_id duplicates another combo",
+        )
+        combo_unit_ids.add(record["combo_unit_id"])
+    for field in ("qc_policy_refs", "outlier_policy_refs"):
+        validate_optional_string_array(value.get(field), f"{label}.{field}")
+    for field in ("missing_source_policy", "missing_repetition_policy"):
+        policy = value.get(field)
+        if policy is not None:
+            require(
+                policy in REPRESENTATION_MISSING_SOURCE_POLICIES,
+                f"{label}.{field} is invalid",
+            )
+    require_optional_non_empty_string(
+        value.get("prediction_representation"),
+        f"{label}.prediction_representation",
+    )
+    final_output_unit_level = value.get("final_output_unit_level")
+    if final_output_unit_level is not None:
+        require_unit_level(final_output_unit_level, f"{label}.final_output_unit_level")
+    for field in ("relation_fingerprint", "feature_schema_fingerprint"):
+        field_value = value.get(field)
+        if field_value is not None:
+            require_sha256(field_value, f"{label}.{field}")
+    validate_metadata_object(value.get("metadata"), f"{label}.metadata")
+
+
 def validate_schema_artifact(schema: Any, expected_id: str, label: str) -> None:
     require(isinstance(schema, dict), f"{label} schema must be a JSON object")
     require(
@@ -405,10 +726,38 @@ def validate_feature_fusion_schema_artifact(schema: Any, expected_id: str, label
         properties.get("schema_version", {}).get("const") == 1,
         f"{label} feature-fusion schema_version const must be 1",
     )
+    for field in ("combination_plan", "representation_plan"):
+        require(
+            field in properties,
+            f"{label} feature-fusion schema must declare optional `{field}`",
+        )
     defs = schema.get("$defs")
     require(isinstance(defs, dict), f"{label} feature-fusion $defs are missing")
-    for name in ("source", "alignment", "presence_mask"):
+    for name in (
+        "source",
+        "alignment",
+        "presence_mask",
+        "combination_plan",
+        "representation_plan",
+        "combination_mode",
+        "representation_missing_source_policy",
+        "representation_cardinality",
+    ):
         require(name in defs, f"{label} feature-fusion schema misses `{name}` definition")
+    require(
+        set(defs.get("combination_mode", {}).get("enum", [])) == COMBINATION_MODES,
+        f"{label} feature-fusion combination modes are not aligned",
+    )
+    require(
+        set(defs.get("representation_missing_source_policy", {}).get("enum", []))
+        == REPRESENTATION_MISSING_SOURCE_POLICIES,
+        f"{label} feature-fusion missing-source policies are not aligned",
+    )
+    require(
+        set(defs.get("representation_cardinality", {}).get("enum", []))
+        == REPRESENTATION_CARDINALITIES,
+        f"{label} feature-fusion representation cardinalities are not aligned",
+    )
 
 
 def validate_branch_view_schema_artifact(schema: Any, expected_id: str, label: str) -> None:
@@ -883,6 +1232,17 @@ def validate_model_input_spec_schema(schema: Any, label: str) -> None:
     require(isinstance(defs, dict), f"{label} ModelInputSpec $defs missing")
     require("input_port" in defs, f"{label} ModelInputSpec schema misses input_port")
     require("fusion_policy" in defs, f"{label} ModelInputSpec schema misses fusion_policy")
+    for definition_name in (
+        "combination_plan",
+        "representation_plan",
+        "combination_mode",
+        "representation_missing_source_policy",
+        "representation_cardinality",
+    ):
+        require(
+            definition_name in defs,
+            f"{label} ModelInputSpec schema misses {definition_name}",
+        )
     require(
         "fit_influence_policy" in properties,
         f"{label} ModelInputSpec schema misses fit_influence_policy property",
@@ -901,6 +1261,11 @@ def validate_model_input_spec_schema(schema: Any, label: str) -> None:
             "custom",
         ],
         f"{label} ModelInputSpec fusion modes are not aligned",
+    )
+    require(
+        "representation_plan"
+        in defs.get("fusion_policy", {}).get("properties", {}),
+        f"{label} ModelInputSpec fusion policy misses representation_plan",
     )
 
 
@@ -1024,11 +1389,21 @@ def validate_controller_manifest_schema(schema: Any, label: str) -> None:
         "model_input_spec",
         "model_input_fusion_policy",
         "fit_influence_policy",
+        "combination_plan",
+        "representation_plan",
+        "combination_mode",
+        "representation_missing_source_policy",
+        "representation_cardinality",
     ):
         require(
             definition_name in defs,
             f"{label} ControllerManifest schema misses `{definition_name}`",
         )
+    require(
+        "representation_plan"
+        in defs.get("model_input_fusion_policy", {}).get("properties", {}),
+        f"{label} ControllerManifest model input fusion policy misses representation_plan",
+    )
 
 
 def validate_selection_policy_schema(schema: Any, label: str) -> None:
@@ -1600,8 +1975,31 @@ def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
         == ["COMPILE", "PLAN", "FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN"],
         f"{label} data-output provenance phase enum mismatch",
     )
+    for field in (
+        "representation_plan",
+        "representation_replay_manifest",
+        "relation_delta_fingerprint",
+    ):
+        require(
+            field in properties,
+            f"{label} data-output provenance must declare optional `{field}`",
+        )
     defs = schema.get("$defs")
     require(isinstance(defs, dict), f"{label} data-output provenance $defs are missing")
+    for definition_name in (
+        "combination_plan",
+        "representation_plan",
+        "representation_replay_manifest",
+        "representation_sample_observation_mapping",
+        "representation_combo_selection_record",
+        "combination_mode",
+        "representation_missing_source_policy",
+        "representation_cardinality",
+    ):
+        require(
+            definition_name in defs,
+            f"{label} data-output provenance misses `{definition_name}` definition",
+        )
     require(
         defs.get("identifier", {}).get("pattern") == "^[A-Za-z0-9_.:-]+$",
         f"{label} data-output provenance identifier definition mismatch",
@@ -2119,6 +2517,12 @@ def validate_feature_fusion_selector(selector: Any, label: str) -> None:
                 isinstance(namespace_columns, bool),
                 f"{label}.policy.namespace_columns must be bool",
             )
+    combination_plan = selector.get("combination_plan")
+    if combination_plan is not None:
+        validate_combination_plan(combination_plan, f"{label}.combination_plan")
+    representation_plan = selector.get("representation_plan")
+    if representation_plan is not None:
+        validate_representation_plan(representation_plan, f"{label}.representation_plan")
 
 
 def validate_fold_set_fixture(fold_set: Any, label: str) -> None:
@@ -3116,6 +3520,12 @@ def validate_model_input_spec(value: Any, label: str) -> None:
                 fusion.get("adapter_id"),
                 f"{label}.default_fusion.adapter_id",
             )
+        representation_plan = fusion.get("representation_plan")
+        if representation_plan is not None:
+            validate_representation_plan(
+                representation_plan,
+                f"{label}.default_fusion.representation_plan",
+            )
     fit_influence_policy = value.get("fit_influence_policy")
     if fit_influence_policy is not None:
         require(
@@ -3414,10 +3824,20 @@ def validate_data_output_provenance(value: Any, label: str) -> None:
         "shape_plan_fingerprint",
         "aggregation_policy_fingerprint",
         "feature_schema_fingerprint",
+        "relation_delta_fingerprint",
     ):
         field_value = value.get(field)
         if field_value is not None:
             require_sha256(field_value, f"{label}.{field}")
+    representation_plan = value.get("representation_plan")
+    if representation_plan is not None:
+        validate_representation_plan(representation_plan, f"{label}.representation_plan")
+    representation_replay_manifest = value.get("representation_replay_manifest")
+    if representation_replay_manifest is not None:
+        validate_representation_replay_manifest(
+            representation_replay_manifest,
+            f"{label}.representation_replay_manifest",
+        )
     deltas = value.get("shape_deltas", [])
     require(isinstance(deltas, list), f"{label}.shape_deltas must be an array")
     last_feature_after = None

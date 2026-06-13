@@ -7,7 +7,7 @@ use crate::error::{DagMlError, Result};
 use crate::ids::{ControllerId, FoldId, NodeId, RunId, VariantId};
 use crate::phase::Phase;
 use crate::policy::FitInfluencePolicy;
-use crate::relation::SampleRelationSet;
+use crate::relation::{EntityUnitLevel, SampleRelationSet};
 use crate::runtime::{
     DataMaterializationRequest, DataProviderViewSpec, DataViewRequest, HandleKind, HandleRef,
     RuntimeDataProvider,
@@ -162,7 +162,532 @@ impl BranchViewPlan {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CombinationMode {
+    #[default]
+    Cartesian,
+    Zip,
+    MatchBy,
+    SampleK,
+    ReferenceBroadcast,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepresentationMissingSourcePolicy {
+    Strict,
+    Warn,
+    DropIncomplete,
+    ImputeDeclared,
+    Mask,
+    PartialModel,
+    Pad,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepresentationCardinality {
+    OneToOne,
+    OneToMany,
+    ManyToOne,
+    ManyToMany,
+    BoundedMany,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CombinationPlan {
+    pub mode: CombinationMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub component_source_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub component_unit_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_source_policy: Option<RepresentationMissingSourcePolicy>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl CombinationPlan {
+    pub fn validate(&self) -> Result<()> {
+        validate_string_list_entries(
+            "combination plan component_source_ids",
+            &self.component_source_ids,
+        )?;
+        validate_unique_strings(
+            "combination plan component_source_ids",
+            &self.component_source_ids,
+        )?;
+        validate_string_list_entries(
+            "combination plan component_unit_ids",
+            &self.component_unit_ids,
+        )?;
+        validate_unique_strings(
+            "combination plan component_unit_ids",
+            &self.component_unit_ids,
+        )?;
+        validate_optional_non_empty("combination plan match_key", &self.match_key)?;
+        validate_optional_non_empty(
+            "combination plan reference_source_id",
+            &self.reference_source_id,
+        )?;
+        if self.cap == Some(0) {
+            return Err(DagMlError::CampaignValidation(
+                "combination plan cap must be positive when present".to_string(),
+            ));
+        }
+        if self.budget == Some(0) {
+            return Err(DagMlError::CampaignValidation(
+                "combination plan budget must be positive when present".to_string(),
+            ));
+        }
+        match self.mode {
+            CombinationMode::Cartesian => {
+                if self.component_source_ids.len() < 2 {
+                    return Err(DagMlError::CampaignValidation(
+                        "cartesian combination requires at least two component_source_ids"
+                            .to_string(),
+                    ));
+                }
+            }
+            CombinationMode::Zip => {
+                if self.component_source_ids.len() < 2 {
+                    return Err(DagMlError::CampaignValidation(
+                        "zip combination requires at least two component_source_ids".to_string(),
+                    ));
+                }
+            }
+            CombinationMode::MatchBy => {
+                if self.match_key.is_none() {
+                    return Err(DagMlError::CampaignValidation(
+                        "match_by combination requires match_key".to_string(),
+                    ));
+                }
+            }
+            CombinationMode::SampleK => {
+                if self.seed.is_none() {
+                    return Err(DagMlError::CampaignValidation(
+                        "sample_k combination requires seed".to_string(),
+                    ));
+                }
+                if self.cap.is_none() {
+                    return Err(DagMlError::CampaignValidation(
+                        "sample_k combination requires cap".to_string(),
+                    ));
+                }
+            }
+            CombinationMode::ReferenceBroadcast => {
+                let Some(reference) = &self.reference_source_id else {
+                    return Err(DagMlError::CampaignValidation(
+                        "reference_broadcast combination requires reference_source_id".to_string(),
+                    ));
+                };
+                if !self.component_source_ids.is_empty()
+                    && !self
+                        .component_source_ids
+                        .iter()
+                        .any(|source| source == reference)
+                {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "reference_broadcast reference_source_id `{reference}` is not in component_source_ids"
+                    )));
+                }
+            }
+        }
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(
+                    "combination plan metadata contains an empty key".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RepresentationPlan {
+    Aggregate(AggregateRepresentation),
+    CartesianProduct(CartesianProductRepresentation),
+    MonteCarloCartesian(MonteCarloCartesianRepresentation),
+    StackFixed(StackFixedRepresentation),
+    StackPaddedMasked(StackPaddedMaskedRepresentation),
+}
+
+impl RepresentationPlan {
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::Aggregate(plan) => plan.validate(),
+            Self::CartesianProduct(plan) => plan.validate(),
+            Self::MonteCarloCartesian(plan) => plan.validate(),
+            Self::StackFixed(plan) => plan.validate(),
+            Self::StackPaddedMasked(plan) => plan.validate(),
+        }
+    }
+
+    pub fn output_unit_level(&self) -> EntityUnitLevel {
+        match self {
+            Self::Aggregate(plan) => plan.output_unit_level,
+            Self::CartesianProduct(plan) => plan.output_unit_level,
+            Self::MonteCarloCartesian(plan) => plan.output_unit_level,
+            Self::StackFixed(plan) => plan.output_unit_level,
+            Self::StackPaddedMasked(plan) => plan.output_unit_level,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AggregateRepresentation {
+    pub input_unit_level: EntityUnitLevel,
+    pub output_unit_level: EntityUnitLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reducer_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    pub cardinality: RepresentationCardinality,
+}
+
+impl AggregateRepresentation {
+    pub fn validate(&self) -> Result<()> {
+        validate_optional_non_empty("aggregate representation reducer_id", &self.reducer_id)?;
+        validate_optional_non_empty("aggregate representation method", &self.method)?;
+        if self.cardinality != RepresentationCardinality::ManyToOne {
+            return Err(DagMlError::CampaignValidation(
+                "aggregate representation cardinality must be many_to_one".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CartesianProductRepresentation {
+    pub combination_plan: CombinationPlan,
+    pub output_unit_level: EntityUnitLevel,
+    pub cardinality: RepresentationCardinality,
+    #[serde(default = "default_true")]
+    pub preserve_provenance: bool,
+}
+
+impl CartesianProductRepresentation {
+    pub fn validate(&self) -> Result<()> {
+        self.combination_plan.validate()?;
+        if self.combination_plan.mode != CombinationMode::Cartesian {
+            return Err(DagMlError::CampaignValidation(
+                "cartesian_product representation requires combination_plan.mode=cartesian"
+                    .to_string(),
+            ));
+        }
+        validate_combo_like_output("cartesian_product", self.output_unit_level)?;
+        if self.cardinality != RepresentationCardinality::ManyToMany {
+            return Err(DagMlError::CampaignValidation(
+                "cartesian_product representation cardinality must be many_to_many".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MonteCarloCartesianRepresentation {
+    pub combination_plan: CombinationPlan,
+    pub output_unit_level: EntityUnitLevel,
+    pub cardinality: RepresentationCardinality,
+    #[serde(default = "default_true")]
+    pub preserve_provenance: bool,
+}
+
+impl MonteCarloCartesianRepresentation {
+    pub fn validate(&self) -> Result<()> {
+        self.combination_plan.validate()?;
+        if self.combination_plan.mode != CombinationMode::SampleK {
+            return Err(DagMlError::CampaignValidation(
+                "monte_carlo_cartesian representation requires combination_plan.mode=sample_k"
+                    .to_string(),
+            ));
+        }
+        validate_combo_like_output("monte_carlo_cartesian", self.output_unit_level)?;
+        if self.cardinality != RepresentationCardinality::BoundedMany {
+            return Err(DagMlError::CampaignValidation(
+                "monte_carlo_cartesian representation cardinality must be bounded_many".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StackFixedRepresentation {
+    pub output_unit_level: EntityUnitLevel,
+    pub cardinality: RepresentationCardinality,
+    pub expected_cardinality: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub component_source_ids: Vec<String>,
+}
+
+impl StackFixedRepresentation {
+    pub fn validate(&self) -> Result<()> {
+        if self.expected_cardinality == 0 {
+            return Err(DagMlError::CampaignValidation(
+                "stack_fixed representation expected_cardinality must be positive".to_string(),
+            ));
+        }
+        if self.cardinality != RepresentationCardinality::OneToMany {
+            return Err(DagMlError::CampaignValidation(
+                "stack_fixed representation cardinality must be one_to_many".to_string(),
+            ));
+        }
+        validate_string_list_entries(
+            "stack_fixed representation component_source_ids",
+            &self.component_source_ids,
+        )?;
+        validate_unique_strings(
+            "stack_fixed representation component_source_ids",
+            &self.component_source_ids,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StackPaddedMaskedRepresentation {
+    pub output_unit_level: EntityUnitLevel,
+    pub cardinality: RepresentationCardinality,
+    pub expected_cardinality: usize,
+    pub missing_source_policy: RepresentationMissingSourcePolicy,
+    #[serde(default = "default_true")]
+    pub requires_missing_masks: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub component_source_ids: Vec<String>,
+}
+
+impl StackPaddedMaskedRepresentation {
+    pub fn validate(&self) -> Result<()> {
+        if self.expected_cardinality == 0 {
+            return Err(DagMlError::CampaignValidation(
+                "stack_padded_masked representation expected_cardinality must be positive"
+                    .to_string(),
+            ));
+        }
+        if self.cardinality != RepresentationCardinality::BoundedMany {
+            return Err(DagMlError::CampaignValidation(
+                "stack_padded_masked representation cardinality must be bounded_many".to_string(),
+            ));
+        }
+        if !matches!(
+            self.missing_source_policy,
+            RepresentationMissingSourcePolicy::Mask | RepresentationMissingSourcePolicy::Pad
+        ) {
+            return Err(DagMlError::CampaignValidation(
+                "stack_padded_masked representation requires missing_source_policy=mask or pad"
+                    .to_string(),
+            ));
+        }
+        if !self.requires_missing_masks {
+            return Err(DagMlError::CampaignValidation(
+                "stack_padded_masked representation requires missing-mask controller support"
+                    .to_string(),
+            ));
+        }
+        validate_string_list_entries(
+            "stack_padded_masked representation component_source_ids",
+            &self.component_source_ids,
+        )?;
+        validate_unique_strings(
+            "stack_padded_masked representation component_source_ids",
+            &self.component_source_ids,
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepresentationSampleObservationMapping {
+    pub physical_sample_id: String,
+    pub source_id: String,
+    pub observation_ids: Vec<String>,
+}
+
+impl RepresentationSampleObservationMapping {
+    pub fn validate(&self) -> Result<()> {
+        validate_non_empty(
+            "representation sample observation mapping physical_sample_id",
+            &self.physical_sample_id,
+        )?;
+        validate_non_empty(
+            "representation sample observation mapping source_id",
+            &self.source_id,
+        )?;
+        validate_non_empty_list(
+            "representation sample observation mapping observation_ids",
+            &self.observation_ids,
+        )?;
+        validate_unique_strings(
+            "representation sample observation mapping observation_ids",
+            &self.observation_ids,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepresentationComboSelectionRecord {
+    pub combo_unit_id: String,
+    pub physical_sample_id: String,
+    pub component_observation_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+}
+
+impl RepresentationComboSelectionRecord {
+    pub fn validate(&self) -> Result<()> {
+        validate_non_empty(
+            "representation combo selection combo_unit_id",
+            &self.combo_unit_id,
+        )?;
+        validate_non_empty(
+            "representation combo selection physical_sample_id",
+            &self.physical_sample_id,
+        )?;
+        validate_non_empty_list(
+            "representation combo selection component_observation_ids",
+            &self.component_observation_ids,
+        )?;
+        validate_unique_strings(
+            "representation combo selection component_observation_ids",
+            &self.component_observation_ids,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepresentationReplayManifest {
+    pub manifest_id: String,
+    pub representation_plan: RepresentationPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combination_plan: Option<CombinationPlan>,
+    pub output_unit_level: EntityUnitLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_representation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_schema_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_reduction_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sample_observation_mapping: Vec<RepresentationSampleObservationMapping>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub combo_selection: Vec<RepresentationComboSelectionRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub qc_policy_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outlier_policy_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_source_policy: Option<RepresentationMissingSourcePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_repetition_policy: Option<RepresentationMissingSourcePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction_representation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_output_unit_level: Option<EntityUnitLevel>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl RepresentationReplayManifest {
+    pub fn validate(&self) -> Result<()> {
+        validate_non_empty("representation replay manifest_id", &self.manifest_id)?;
+        self.representation_plan.validate()?;
+        if let Some(combination_plan) = &self.combination_plan {
+            combination_plan.validate()?;
+        }
+        if self.output_unit_level != self.representation_plan.output_unit_level() {
+            return Err(DagMlError::CampaignValidation(
+                "representation replay output_unit_level must match representation_plan"
+                    .to_string(),
+            ));
+        }
+        validate_optional_non_empty(
+            "representation replay output_representation",
+            &self.output_representation,
+        )?;
+        validate_optional_non_empty(
+            "representation replay final_reduction_id",
+            &self.final_reduction_id,
+        )?;
+        validate_string_list_entries("representation replay qc_policy_refs", &self.qc_policy_refs)?;
+        validate_unique_strings("representation replay qc_policy_refs", &self.qc_policy_refs)?;
+        validate_string_list_entries(
+            "representation replay outlier_policy_refs",
+            &self.outlier_policy_refs,
+        )?;
+        validate_unique_strings(
+            "representation replay outlier_policy_refs",
+            &self.outlier_policy_refs,
+        )?;
+        validate_optional_non_empty(
+            "representation replay prediction_representation",
+            &self.prediction_representation,
+        )?;
+        let mut sample_source_pairs = BTreeSet::new();
+        for mapping in &self.sample_observation_mapping {
+            mapping.validate()?;
+            if !sample_source_pairs.insert((
+                mapping.physical_sample_id.as_str(),
+                mapping.source_id.as_str(),
+            )) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "representation replay sample_observation_mapping contains duplicate physical_sample_id/source_id `{}`/`{}`",
+                    mapping.physical_sample_id, mapping.source_id
+                )));
+            }
+        }
+        let mut combo_unit_ids = BTreeSet::new();
+        for record in &self.combo_selection {
+            record.validate()?;
+            if !combo_unit_ids.insert(record.combo_unit_id.as_str()) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "representation replay combo_selection contains duplicate combo_unit_id `{}`",
+                    record.combo_unit_id
+                )));
+            }
+        }
+        if let Some(fingerprint) = &self.relation_fingerprint {
+            validate_fingerprint("representation replay relation", fingerprint)?;
+        }
+        if let Some(fingerprint) = &self.feature_schema_fingerprint {
+            validate_fingerprint("representation replay feature schema", fingerprint)?;
+        }
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(
+                    "representation replay metadata contains an empty key".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelInputFusionPolicy {
     pub mode: ModelInputFusionMode,
@@ -170,6 +695,8 @@ pub struct ModelInputFusionPolicy {
     pub alignment: Option<String>,
     #[serde(default)]
     pub adapter_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation_plan: Option<RepresentationPlan>,
     #[serde(default)]
     pub params: BTreeMap<String, serde_json::Value>,
 }
@@ -198,6 +725,9 @@ impl ModelInputFusionPolicy {
             return Err(DagMlError::CampaignValidation(
                 "custom model input fusion policy requires adapter_id".to_string(),
             ));
+        }
+        if let Some(representation_plan) = &self.representation_plan {
+            representation_plan.validate()?;
         }
         for key in self.params.keys() {
             if key.trim().is_empty() {
@@ -257,7 +787,7 @@ impl ModelInputPortSpec {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelInputSpec {
     #[serde(default = "default_model_input_spec_schema_version")]
@@ -980,6 +1510,25 @@ fn validate_non_empty(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_optional_non_empty(label: &str, value: &Option<String>) -> Result<()> {
+    if let Some(value) = value {
+        validate_non_empty(label, value)?;
+    }
+    Ok(())
+}
+
+fn validate_combo_like_output(label: &str, unit_level: EntityUnitLevel) -> Result<()> {
+    if matches!(
+        unit_level,
+        EntityUnitLevel::Combo | EntityUnitLevel::Observation
+    ) {
+        return Ok(());
+    }
+    Err(DagMlError::CampaignValidation(format!(
+        "{label} representation output_unit_level must be combo or observation"
+    )))
+}
+
 fn validate_non_empty_list(label: &str, values: &[String]) -> Result<()> {
     if values.is_empty() {
         return Err(DagMlError::CampaignValidation(format!(
@@ -1062,6 +1611,18 @@ mod tests {
             .unwrap()
             .iter()
             .any(|field| field.as_str() == Some("accepted_representations")));
+        assert!(model_input_schema["$defs"]["fusion_policy"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("representation_plan"));
+        assert!(model_input_schema["$defs"]
+            .as_object()
+            .unwrap()
+            .contains_key("combination_plan"));
+        assert!(model_input_schema["$defs"]
+            .as_object()
+            .unwrap()
+            .contains_key("representation_plan"));
 
         let data_plan_schema: serde_json::Value = serde_json::from_str(include_str!(
             "../../../docs/contracts/data_plan.schema.json"
@@ -1300,5 +1861,138 @@ mod tests {
                 binding: binding(),
             })
             .is_err());
+    }
+
+    fn cartesian_combination() -> CombinationPlan {
+        CombinationPlan {
+            mode: CombinationMode::Cartesian,
+            component_source_ids: vec!["source:a".to_string(), "source:b".to_string()],
+            component_unit_ids: Vec::new(),
+            match_key: None,
+            reference_source_id: None,
+            seed: None,
+            cap: None,
+            budget: Some(32),
+            missing_source_policy: Some(RepresentationMissingSourcePolicy::Strict),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn representation_plan_validates_cartesian_and_monte_carlo_contracts() {
+        let cartesian = RepresentationPlan::CartesianProduct(CartesianProductRepresentation {
+            combination_plan: cartesian_combination(),
+            output_unit_level: EntityUnitLevel::Combo,
+            cardinality: RepresentationCardinality::ManyToMany,
+            preserve_provenance: true,
+        });
+        cartesian.validate().unwrap();
+
+        let monte_carlo =
+            RepresentationPlan::MonteCarloCartesian(MonteCarloCartesianRepresentation {
+                combination_plan: CombinationPlan {
+                    mode: CombinationMode::SampleK,
+                    component_source_ids: vec!["source:a".to_string(), "source:b".to_string()],
+                    component_unit_ids: Vec::new(),
+                    match_key: None,
+                    reference_source_id: None,
+                    seed: Some(42),
+                    cap: Some(8),
+                    budget: None,
+                    missing_source_policy: Some(RepresentationMissingSourcePolicy::Warn),
+                    metadata: BTreeMap::new(),
+                },
+                output_unit_level: EntityUnitLevel::Observation,
+                cardinality: RepresentationCardinality::BoundedMany,
+                preserve_provenance: true,
+            });
+        monte_carlo.validate().unwrap();
+
+        let mut bad = cartesian_combination();
+        bad.mode = CombinationMode::SampleK;
+        bad.seed = Some(7);
+        bad.cap = Some(0);
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn stack_representations_validate_cardinality_and_mask_policy() {
+        let fixed = RepresentationPlan::StackFixed(StackFixedRepresentation {
+            output_unit_level: EntityUnitLevel::SourceSample,
+            cardinality: RepresentationCardinality::OneToMany,
+            expected_cardinality: 3,
+            component_source_ids: vec!["source:a".to_string(), "source:b".to_string()],
+        });
+        fixed.validate().unwrap();
+
+        let padded = RepresentationPlan::StackPaddedMasked(StackPaddedMaskedRepresentation {
+            output_unit_level: EntityUnitLevel::SourceSample,
+            cardinality: RepresentationCardinality::BoundedMany,
+            expected_cardinality: 4,
+            missing_source_policy: RepresentationMissingSourcePolicy::Mask,
+            requires_missing_masks: true,
+            component_source_ids: vec!["source:a".to_string()],
+        });
+        padded.validate().unwrap();
+
+        let bad = RepresentationPlan::StackPaddedMasked(StackPaddedMaskedRepresentation {
+            output_unit_level: EntityUnitLevel::SourceSample,
+            cardinality: RepresentationCardinality::BoundedMany,
+            expected_cardinality: 4,
+            missing_source_policy: RepresentationMissingSourcePolicy::ImputeDeclared,
+            requires_missing_masks: false,
+            component_source_ids: Vec::new(),
+        });
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn representation_replay_manifest_round_trips_and_validates() {
+        let plan = RepresentationPlan::CartesianProduct(CartesianProductRepresentation {
+            combination_plan: cartesian_combination(),
+            output_unit_level: EntityUnitLevel::Combo,
+            cardinality: RepresentationCardinality::ManyToMany,
+            preserve_provenance: true,
+        });
+        let manifest = RepresentationReplayManifest {
+            manifest_id: "repr:combo.ab".to_string(),
+            representation_plan: plan,
+            combination_plan: Some(cartesian_combination()),
+            output_unit_level: EntityUnitLevel::Combo,
+            output_representation: Some("combo_observation".to_string()),
+            relation_fingerprint: Some("a".repeat(64)),
+            feature_schema_fingerprint: Some("b".repeat(64)),
+            final_reduction_id: Some("reduction:combo_to_sample".to_string()),
+            sample_observation_mapping: vec![
+                RepresentationSampleObservationMapping {
+                    physical_sample_id: "sample:1".to_string(),
+                    source_id: "source:a".to_string(),
+                    observation_ids: vec!["obs:a.1".to_string(), "obs:a.2".to_string()],
+                },
+                RepresentationSampleObservationMapping {
+                    physical_sample_id: "sample:1".to_string(),
+                    source_id: "source:b".to_string(),
+                    observation_ids: vec!["obs:b.1".to_string()],
+                },
+            ],
+            combo_selection: vec![RepresentationComboSelectionRecord {
+                combo_unit_id: "combo:sample1:a1:b1".to_string(),
+                physical_sample_id: "sample:1".to_string(),
+                component_observation_ids: vec!["obs:a.1".to_string(), "obs:b.1".to_string()],
+                seed: Some(42),
+            }],
+            qc_policy_refs: vec!["qc:default".to_string()],
+            outlier_policy_refs: vec!["outlier:none".to_string()],
+            missing_source_policy: Some(RepresentationMissingSourcePolicy::Strict),
+            missing_repetition_policy: Some(RepresentationMissingSourcePolicy::Warn),
+            prediction_representation: Some("sample_prediction".to_string()),
+            final_output_unit_level: Some(EntityUnitLevel::PhysicalSample),
+            metadata: BTreeMap::new(),
+        };
+
+        manifest.validate().unwrap();
+        let encoded = serde_json::to_string(&manifest).unwrap();
+        let decoded: RepresentationReplayManifest = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, manifest);
     }
 }

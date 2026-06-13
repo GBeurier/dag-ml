@@ -9,6 +9,59 @@
   "aggregation_policy_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "feature_namespace": "augmented.noise",
   "feature_schema_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "representation_plan": {
+    "kind": "aggregate",
+    "input_unit_level": "observation",
+    "output_unit_level": "physical_sample",
+    "reducer_id": "reducer:augmented.noise.sample",
+    "method": "mean",
+    "cardinality": "many_to_one"
+  },
+  "representation_replay_manifest": {
+    "manifest_id": "repr:augmented.noise.sample",
+    "representation_plan": {
+      "kind": "aggregate",
+      "input_unit_level": "observation",
+      "output_unit_level": "physical_sample",
+      "reducer_id": "reducer:augmented.noise.sample",
+      "method": "mean",
+      "cardinality": "many_to_one"
+    },
+    "output_unit_level": "physical_sample",
+    "output_representation": "tabular_numeric",
+    "feature_schema_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "final_reduction_id": "reducer:augmented.noise.sample",
+    "sample_observation_mapping": [
+      {
+        "physical_sample_id": "S001",
+        "source_id": "augmented",
+        "observation_ids": ["obs:S001:aug:0", "obs:S001:aug:1"]
+      },
+      {
+        "physical_sample_id": "S002",
+        "source_id": "augmented",
+        "observation_ids": ["obs:S002:aug:0"]
+      }
+    ],
+    "combo_selection": [
+      {
+        "combo_unit_id": "combo:S001:aug:0",
+        "physical_sample_id": "S001",
+        "component_observation_ids": ["obs:S001:aug:0"],
+        "seed": 42
+      }
+    ],
+    "qc_policy_refs": ["qc:augmented.default"],
+    "outlier_policy_refs": ["outlier:augmented.none"],
+    "missing_source_policy": "warn",
+    "missing_repetition_policy": "warn",
+    "prediction_representation": "sample_prediction",
+    "final_output_unit_level": "physical_sample",
+    "metadata": {
+      "replay_scope": "fixture"
+    }
+  },
+  "relation_delta_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "shape_deltas": [
     {
       "node_id": "branch:b1.augment:noise",

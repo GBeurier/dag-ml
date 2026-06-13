@@ -52,6 +52,11 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   controller capabilities for sample weights/resampling/backend loss weights
   and missing masks, and node-result diagnostics so unsupported strict
   weighting fails while `auto` fallbacks are visible.
+- Heterogeneous multi-source repetitions roadmap D6 adds representation and
+  combination plan contracts for cartesian, sampled-cartesian, fixed-stack and
+  padded/masked-stack data views, plus replay manifests and data-output
+  provenance fields so hosts can materialize heterogeneous fusion views while
+  the core validates only identities, fingerprints and policy metadata.
 - Governance: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   `.github/` issue/PR templates, `CODEOWNERS`, `dependabot.yml`,
   `examples/README.md` audience matrix.

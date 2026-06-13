@@ -21,7 +21,10 @@ use crate::bundle::{
 };
 use crate::campaign::stable_json_fingerprint;
 use crate::controller::{capabilities_support_fit_influence, ControllerCapability};
-use crate::data::{DataBinding, DataRequestPartition, ExternalDataPlanEnvelope};
+use crate::data::{
+    DataBinding, DataRequestPartition, ExternalDataPlanEnvelope, RepresentationPlan,
+    RepresentationReplayManifest,
+};
 use crate::error::{DagMlError, Result};
 use crate::fold::{FoldAssignment, FoldSet};
 use crate::generation::{GenerationChoice, VariantPlan};
@@ -3300,7 +3303,7 @@ impl DataProviderViewSpec {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DataOutputProvenance {
     #[serde(default = "default_data_output_provenance_schema_version")]
     pub schema_version: u32,
@@ -3319,6 +3322,12 @@ pub struct DataOutputProvenance {
     pub feature_namespace: Option<String>,
     #[serde(default)]
     pub feature_schema_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation_plan: Option<RepresentationPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation_replay_manifest: Option<RepresentationReplayManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation_delta_fingerprint: Option<String>,
     #[serde(default)]
     pub shape_deltas: Vec<ShapeDelta>,
 }
@@ -3352,6 +3361,27 @@ impl DataOutputProvenance {
             &self.feature_schema_fingerprint,
             &self.producer_node,
         )?;
+        validate_optional_fingerprint(
+            "relation_delta_fingerprint",
+            &self.relation_delta_fingerprint,
+            &self.producer_node,
+        )?;
+        if let Some(representation_plan) = &self.representation_plan {
+            representation_plan.validate().map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "data output provenance for `{}` has invalid representation_plan: {error}",
+                    self.producer_node
+                ))
+            })?;
+        }
+        if let Some(replay_manifest) = &self.representation_replay_manifest {
+            replay_manifest.validate().map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "data output provenance for `{}` has invalid representation_replay_manifest: {error}",
+                    self.producer_node
+                ))
+            })?;
+        }
         if self
             .feature_namespace
             .as_ref()
@@ -6272,6 +6302,9 @@ fn output_data_view_for_port(
         aggregation_policy_fingerprint: None,
         feature_namespace: None,
         feature_schema_fingerprint: None,
+        representation_plan: None,
+        representation_replay_manifest: None,
+        relation_delta_fingerprint: None,
         shape_deltas,
     };
     if let Some(shape_plan) = &task.node_plan.shape_plan {

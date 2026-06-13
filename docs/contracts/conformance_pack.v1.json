@@ -10,7 +10,7 @@
     "feature_fusion_selector.v1": {
       "kind": "json_schema",
       "schema_version": 1,
-      "normalized_sha256": "45ae4c55911873893d32630495d8a9546c3d51f63cccad864ff9aafb9e3492b6"
+      "normalized_sha256": "44820d64f6dbc0f5324535135b6806f350518e06e9da63c2b79a8607ba31e84b"
     },
     "coordinator_branch_view.v1": {
       "kind": "json_schema",
@@ -35,7 +35,7 @@
     },
     "feature_fusion_selector_nir_chem.v1": {
       "contract": "feature_fusion_selector.v1",
-      "canonical_json_sha256": "09dd64df52e2b991b481d05acfa6599625293b2136501f078f20a13cf44b6dcd"
+      "canonical_json_sha256": "aee68b20abc4cd9462171c43e034a67d3033768727995b8592bbf61226961f3f"
     }
   },
   "c_abi": {

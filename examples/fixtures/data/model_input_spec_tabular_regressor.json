@@ -5,6 +5,15 @@
     "mode": "concatenate_features",
     "params": {
       "namespace_columns": true
+    },
+    "representation_plan": {
+      "kind": "stack_padded_masked",
+      "output_unit_level": "observation",
+      "cardinality": "bounded_many",
+      "expected_cardinality": 2,
+      "missing_source_policy": "mask",
+      "requires_missing_masks": true,
+      "component_source_ids": ["nir", "chem"]
     }
   },
   "metadata": {

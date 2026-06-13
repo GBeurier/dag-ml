@@ -4632,6 +4632,9 @@ fn data_provider_view_validates_typed_output_provenance() {
         aggregation_policy_fingerprint: Some("d".repeat(64)),
         feature_namespace: Some("augmented.noise".to_string()),
         feature_schema_fingerprint: Some(after_feature_schema.clone()),
+        representation_plan: None,
+        representation_replay_manifest: None,
+        relation_delta_fingerprint: None,
         shape_deltas: vec![ShapeDelta {
             node_id: producer.clone(),
             kind: ShapeDeltaKind::Feature,
@@ -4863,6 +4866,16 @@ fn published_data_output_provenance_schema_declares_current_version() {
     assert!(required
         .iter()
         .any(|field| field.as_str() == Some("producer_node")));
+    let properties = schema["properties"].as_object().unwrap();
+    assert!(properties.contains_key("representation_plan"));
+    assert!(properties.contains_key("representation_replay_manifest"));
+    assert!(properties.contains_key("relation_delta_fingerprint"));
+    let defs = schema["$defs"].as_object().unwrap();
+    assert!(defs.contains_key("combination_plan"));
+    assert!(defs.contains_key("representation_plan"));
+    assert!(defs.contains_key("representation_replay_manifest"));
+    assert!(defs.contains_key("representation_sample_observation_mapping"));
+    assert!(defs.contains_key("representation_combo_selection_record"));
 }
 
 #[test]

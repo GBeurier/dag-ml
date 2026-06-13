@@ -48,6 +48,157 @@
         "strict_weight_support"
       ]
     },
+    "entity_unit_level": {
+      "enum": ["physical_sample", "source_sample", "observation", "combo"]
+    },
+    "combination_mode": {
+      "enum": ["cartesian", "zip", "match_by", "sample_k", "reference_broadcast"]
+    },
+    "representation_missing_source_policy": {
+      "enum": ["strict", "warn", "drop_incomplete", "impute_declared", "mask", "partial_model", "pad"]
+    },
+    "representation_cardinality": {
+      "enum": ["one_to_one", "one_to_many", "many_to_one", "many_to_many", "bounded_many"]
+    },
+    "combination_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/combination_mode"
+        },
+        "component_source_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "component_unit_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "match_key": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "reference_source_id": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "seed": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "cap": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "budget": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "missing_source_policy": {
+          "anyOf": [
+            { "$ref": "#/$defs/representation_missing_source_policy" },
+            { "type": "null" }
+          ]
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "representation_plan": {
+      "oneOf": [
+        { "$ref": "#/$defs/aggregate_representation" },
+        { "$ref": "#/$defs/cartesian_product_representation" },
+        { "$ref": "#/$defs/monte_carlo_cartesian_representation" },
+        { "$ref": "#/$defs/stack_fixed_representation" },
+        { "$ref": "#/$defs/stack_padded_masked_representation" }
+      ]
+    },
+    "aggregate_representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "input_unit_level", "output_unit_level", "cardinality"],
+      "properties": {
+        "kind": { "const": "aggregate" },
+        "input_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "reducer_id": { "type": ["string", "null"], "minLength": 1 },
+        "method": { "type": ["string", "null"], "minLength": 1 },
+        "cardinality": { "$ref": "#/$defs/representation_cardinality" }
+      }
+    },
+    "cartesian_product_representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "combination_plan", "output_unit_level", "cardinality"],
+      "properties": {
+        "kind": { "const": "cartesian_product" },
+        "combination_plan": { "$ref": "#/$defs/combination_plan" },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "cardinality": { "$ref": "#/$defs/representation_cardinality" },
+        "preserve_provenance": { "type": "boolean" }
+      }
+    },
+    "monte_carlo_cartesian_representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "combination_plan", "output_unit_level", "cardinality"],
+      "properties": {
+        "kind": { "const": "monte_carlo_cartesian" },
+        "combination_plan": { "$ref": "#/$defs/combination_plan" },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "cardinality": { "$ref": "#/$defs/representation_cardinality" },
+        "preserve_provenance": { "type": "boolean" }
+      }
+    },
+    "stack_fixed_representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "output_unit_level", "cardinality", "expected_cardinality"],
+      "properties": {
+        "kind": { "const": "stack_fixed" },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "cardinality": { "$ref": "#/$defs/representation_cardinality" },
+        "expected_cardinality": { "type": "integer", "minimum": 1 },
+        "component_source_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
+    "stack_padded_masked_representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "output_unit_level",
+        "cardinality",
+        "expected_cardinality",
+        "missing_source_policy"
+      ],
+      "properties": {
+        "kind": { "const": "stack_padded_masked" },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "cardinality": { "$ref": "#/$defs/representation_cardinality" },
+        "expected_cardinality": { "type": "integer", "minimum": 1 },
+        "missing_source_policy": { "$ref": "#/$defs/representation_missing_source_policy" },
+        "requires_missing_masks": { "type": "boolean" },
+        "component_source_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
     "input_port": {
       "type": "object",
       "additionalProperties": false,
@@ -114,6 +265,12 @@
         "adapter_id": {
           "type": ["string", "null"],
           "minLength": 1
+        },
+        "representation_plan": {
+          "anyOf": [
+            { "$ref": "#/$defs/representation_plan" },
+            { "type": "null" }
+          ]
         },
         "params": {
           "type": "object"

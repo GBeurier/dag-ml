@@ -54,6 +54,24 @@
         { "type": "null" }
       ]
     },
+    "representation_plan": {
+      "anyOf": [
+        { "$ref": "#/$defs/representation_plan" },
+        { "type": "null" }
+      ]
+    },
+    "representation_replay_manifest": {
+      "anyOf": [
+        { "$ref": "#/$defs/representation_replay_manifest" },
+        { "type": "null" }
+      ]
+    },
+    "relation_delta_fingerprint": {
+      "anyOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
     "shape_deltas": {
       "type": "array",
       "items": {
@@ -75,6 +93,245 @@
     "sha256": {
       "type": "string",
       "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "entity_unit_level": {
+      "enum": ["physical_sample", "source_sample", "observation", "combo"]
+    },
+    "combination_mode": {
+      "enum": ["cartesian", "zip", "match_by", "sample_k", "reference_broadcast"]
+    },
+    "representation_missing_source_policy": {
+      "enum": ["strict", "warn", "drop_incomplete", "impute_declared", "mask", "partial_model", "pad"]
+    },
+    "representation_cardinality": {
+      "enum": ["one_to_one", "one_to_many", "many_to_one", "many_to_many", "bounded_many"]
+    },
+    "combination_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "$ref": "#/$defs/combination_mode" },
+        "component_source_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "component_unit_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "match_key": { "type": ["string", "null"], "minLength": 1 },
+        "reference_source_id": { "type": ["string", "null"], "minLength": 1 },
+        "seed": { "type": ["integer", "null"], "minimum": 0 },
+        "cap": { "type": ["integer", "null"], "minimum": 1 },
+        "budget": { "type": ["integer", "null"], "minimum": 1 },
+        "missing_source_policy": {
+          "anyOf": [
+            { "$ref": "#/$defs/representation_missing_source_policy" },
+            { "type": "null" }
+          ]
+        },
+        "metadata": { "type": "object" }
+      }
+    },
+    "representation_plan": {
+      "oneOf": [
+        { "$ref": "#/$defs/aggregate_representation" },
+        { "$ref": "#/$defs/cartesian_product_representation" },
+        { "$ref": "#/$defs/monte_carlo_cartesian_representation" },
+        { "$ref": "#/$defs/stack_fixed_representation" },
+        { "$ref": "#/$defs/stack_padded_masked_representation" }
+      ]
+    },
+    "aggregate_representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "input_unit_level", "output_unit_level", "cardinality"],
+      "properties": {
+        "kind": { "const": "aggregate" },
+        "input_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "reducer_id": { "type": ["string", "null"], "minLength": 1 },
+        "method": { "type": ["string", "null"], "minLength": 1 },
+        "cardinality": { "$ref": "#/$defs/representation_cardinality" }
+      }
+    },
+    "cartesian_product_representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "combination_plan", "output_unit_level", "cardinality"],
+      "properties": {
+        "kind": { "const": "cartesian_product" },
+        "combination_plan": { "$ref": "#/$defs/combination_plan" },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "cardinality": { "$ref": "#/$defs/representation_cardinality" },
+        "preserve_provenance": { "type": "boolean" }
+      }
+    },
+    "monte_carlo_cartesian_representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "combination_plan", "output_unit_level", "cardinality"],
+      "properties": {
+        "kind": { "const": "monte_carlo_cartesian" },
+        "combination_plan": { "$ref": "#/$defs/combination_plan" },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "cardinality": { "$ref": "#/$defs/representation_cardinality" },
+        "preserve_provenance": { "type": "boolean" }
+      }
+    },
+    "stack_fixed_representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "output_unit_level", "cardinality", "expected_cardinality"],
+      "properties": {
+        "kind": { "const": "stack_fixed" },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "cardinality": { "$ref": "#/$defs/representation_cardinality" },
+        "expected_cardinality": { "type": "integer", "minimum": 1 },
+        "component_source_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
+    "stack_padded_masked_representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "output_unit_level",
+        "cardinality",
+        "expected_cardinality",
+        "missing_source_policy"
+      ],
+      "properties": {
+        "kind": { "const": "stack_padded_masked" },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "cardinality": { "$ref": "#/$defs/representation_cardinality" },
+        "expected_cardinality": { "type": "integer", "minimum": 1 },
+        "missing_source_policy": { "$ref": "#/$defs/representation_missing_source_policy" },
+        "requires_missing_masks": { "type": "boolean" },
+        "component_source_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
+    "representation_replay_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_id", "representation_plan", "output_unit_level"],
+      "properties": {
+        "manifest_id": { "$ref": "#/$defs/identifier" },
+        "representation_plan": { "$ref": "#/$defs/representation_plan" },
+        "combination_plan": {
+          "anyOf": [
+            { "$ref": "#/$defs/combination_plan" },
+            { "type": "null" }
+          ]
+        },
+        "output_unit_level": { "$ref": "#/$defs/entity_unit_level" },
+        "output_representation": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "relation_fingerprint": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "feature_schema_fingerprint": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "final_reduction_id": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "sample_observation_mapping": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/representation_sample_observation_mapping" }
+        },
+        "combo_selection": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/representation_combo_selection_record" }
+        },
+        "qc_policy_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "outlier_policy_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "missing_source_policy": {
+          "anyOf": [
+            { "$ref": "#/$defs/representation_missing_source_policy" },
+            { "type": "null" }
+          ]
+        },
+        "missing_repetition_policy": {
+          "anyOf": [
+            { "$ref": "#/$defs/representation_missing_source_policy" },
+            { "type": "null" }
+          ]
+        },
+        "prediction_representation": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "final_output_unit_level": {
+          "anyOf": [
+            { "$ref": "#/$defs/entity_unit_level" },
+            { "type": "null" }
+          ]
+        },
+        "metadata": { "type": "object" }
+      }
+    },
+    "representation_sample_observation_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["physical_sample_id", "source_id", "observation_ids"],
+      "properties": {
+        "physical_sample_id": { "$ref": "#/$defs/non_empty_string" },
+        "source_id": { "$ref": "#/$defs/non_empty_string" },
+        "observation_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
+    "representation_combo_selection_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["combo_unit_id", "physical_sample_id", "component_observation_ids"],
+      "properties": {
+        "combo_unit_id": { "$ref": "#/$defs/non_empty_string" },
+        "physical_sample_id": { "$ref": "#/$defs/non_empty_string" },
+        "component_observation_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "seed": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        }
+      }
     },
     "shape_delta": {
       "type": "object",
