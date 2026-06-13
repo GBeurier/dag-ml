@@ -399,6 +399,32 @@ mod tests {
     }
 
     #[test]
+    fn python_binding_rejects_d9_invalid_unit_join_plan() {
+        Python::initialize();
+        let error = validate_graph_json(include_str!(
+            "../../../examples/fixtures/runtime/d9_invalid_unit_join_graph.json"
+        ))
+        .expect_err("D9 invalid unit-join graph should fail");
+
+        assert!(
+            error.to_string().contains("incompatible unit levels"),
+            "unexpected D9 Python invalid unit join error: {error}"
+        );
+        Python::attach(|py| {
+            let value = error.value(py);
+            assert!(value.is_instance_of::<DagMlValidationError>());
+            assert_eq!(
+                value
+                    .getattr("category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "validation"
+            );
+        });
+    }
+
+    #[test]
     fn compiles_minimal_fixture_dsl() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

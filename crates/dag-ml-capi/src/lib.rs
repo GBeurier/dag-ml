@@ -6255,6 +6255,25 @@ mod tests {
     }
 
     #[test]
+    fn c_abi_rejects_d9_invalid_unit_join_plan() {
+        let graph =
+            include_bytes!("../../../examples/fixtures/runtime/d9_invalid_unit_join_graph.json");
+        let mut error = DagMlString::default();
+
+        let status = unsafe { dagml_graph_validate_json(graph.as_ptr(), graph.len(), &mut error) };
+
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        let message = error_message(&error);
+        assert!(
+            message.contains("incompatible unit levels"),
+            "unexpected D9 C ABI invalid unit join error: {message}"
+        );
+        unsafe {
+            dagml_string_free(error);
+        }
+    }
+
+    #[test]
     fn last_error_accessors_expose_structured_taxonomy() {
         let invalid = br#"{"id":"","interface":{},"nodes":[],"edges":[]}"#;
         let mut error = DagMlString::default();

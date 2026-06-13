@@ -69,7 +69,8 @@ tests. The coverage is:
   row-vs-sample selection mismatch, missing-source fallback gaps,
   train/predict relation fingerprint drift, missing prediction-cache unit ids
   and missing fit-influence controller capability;
-- CLI schema rejection for the invalid D9 unit-join graph fixture.
+- C ABI, Python binding and CLI schema rejection for the invalid D9 unit-join
+  graph fixture.
 
 D1-D7 did not introduce new C ABI functions, Python facade methods or WASM
 exports. Their public movement is covered by additive JSON/Rust contract fields,
