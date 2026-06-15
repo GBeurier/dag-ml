@@ -709,6 +709,7 @@ fn validate_campaign_node_targets(graph: &GraphSpec, campaign: &CampaignSpec) ->
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::controller::{
@@ -1008,6 +1009,75 @@ mod tests {
         registry
     }
 
+    fn campaign(id: &str) -> CampaignSpec {
+        CampaignSpec {
+            id: id.to_string(),
+            root_seed: Some(7),
+            leakage_policy: LeakageUnitPolicy::default(),
+            aggregation_policy: AggregationPolicy::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            inner_cv: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn large_linear_graph(transform_count: usize) -> GraphSpec {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for node_idx in 0..transform_count {
+            let node_id = format!("transform:t{node_idx:04}");
+            nodes.push(node(
+                &node_id,
+                NodeKind::Transform,
+                vec![port("x", PortKind::Data)],
+                vec![port("x", PortKind::Data)],
+            ));
+            if node_idx > 0 {
+                edges.push(EdgeSpec {
+                    source: PortRef {
+                        node_id: NodeId::new(format!("transform:t{:04}", node_idx - 1)).unwrap(),
+                        port_name: "x".to_string(),
+                    },
+                    target: PortRef {
+                        node_id: NodeId::new(&node_id).unwrap(),
+                        port_name: "x".to_string(),
+                    },
+                    contract: EdgeContract::new(PortKind::Data, None),
+                });
+            }
+        }
+        nodes.push(node(
+            "model:final",
+            NodeKind::Model,
+            vec![port("x", PortKind::Data)],
+            vec![port("pred", PortKind::Prediction)],
+        ));
+        edges.push(EdgeSpec {
+            source: PortRef {
+                node_id: NodeId::new(format!("transform:t{:04}", transform_count - 1)).unwrap(),
+                port_name: "x".to_string(),
+            },
+            target: PortRef {
+                node_id: NodeId::new("model:final").unwrap(),
+                port_name: "x".to_string(),
+            },
+            contract: EdgeContract::new(PortKind::Data, None),
+        });
+
+        GraphSpec {
+            id: "g:perf.linear".to_string(),
+            interface: GraphInterface::default(),
+            nodes,
+            edges,
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
     fn oof_graph() -> GraphSpec {
         GraphSpec {
             id: "g:oof.capabilities".to_string(),
@@ -1151,6 +1221,27 @@ mod tests {
         assert_eq!(plan.id, "plan:fixture.execution.branch_merge");
         assert_eq!(plan.variants.len(), 2);
         assert_eq!(plan.node_plans.len(), plan.graph_plan.graph.nodes.len());
+    }
+
+    #[test]
+    #[ignore = "perf sanity probe; run with --release --ignored --nocapture"]
+    fn build_execution_plan_large_linear_graph_under_1500ms() {
+        let started = Instant::now();
+        let plan = build_execution_plan(
+            "plan:perf.linear",
+            large_linear_graph(400),
+            campaign("campaign:perf.linear"),
+            &registry(),
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(plan.graph_plan.topological_order.len(), 401);
+        assert_eq!(plan.node_plans.len(), 401);
+        assert!(
+            elapsed <= Duration::from_millis(1_500),
+            "large execution-plan build took {elapsed:?}"
+        );
     }
 
     #[test]

@@ -11,12 +11,12 @@ disclosure timeline before any public discussion.
 
 ## Supported versions
 
-`dag-ml` is pre-1.0 (`0.1.0-alpha.x`). Security fixes target the latest
+`dag-ml` is pre-1.0 (`0.2.x`). Security fixes target the latest
 published version only until a stable line exists.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.1.0-alpha.x | ✅ latest only |
+| 0.2.x | ✅ latest only |
 
 ## Trust model — two host-code surfaces
 

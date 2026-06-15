@@ -9,6 +9,10 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [0.2.0] - 2026-06-15
+
 ### Added
 - `docs/adr/` — eighteen Phase-0 Architecture Decision Records fixing the
   contract for the nirs4all backend integration (compatibility ledger, schema
@@ -102,7 +106,7 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   envelope, compiles the nirs4all-compatible DSL fixture and validates the
   resulting execution plan.
 - Python wheel metadata smoke now validates built wheel name/version,
-  `Requires-Python`, MIT license file, `abi3` tag, native extension, stubs and
+  `Requires-Python`, license files, `abi3` tag, native extension, stubs and
   `py.typed` before install smokes run.
 - CI now gates Rust documentation with `RUSTDOCFLAGS="-D warnings" cargo doc`
   and runs a workspace package dry-run so publishability regressions fail
@@ -187,5 +191,6 @@ Initial active core scaffold. Executable Rust crates with:
   references.
 - Direct Python/YAML DSL frontends (JSON-only parser today).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.1.0-alpha.0...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/GBeurier/dag-ml/releases/tag/v0.2.0
 [0.1.0-alpha.0]: https://github.com/GBeurier/dag-ml/releases/tag/v0.1.0-alpha.0

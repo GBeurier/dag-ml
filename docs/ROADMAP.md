@@ -1,5 +1,13 @@
 # Roadmap
 
+## 0.2.0 Release Closure
+
+The 0.2.0 release surface is closed around the Rust coordinator core, scoped
+host-adapter conformance, C ABI/Python/WASM JSON-contract bindings, cross-repo
+`dag-ml-data` fixtures and release gates documented in `docs/SUPPORTED.md`.
+Remaining items in this roadmap are post-0.2.0 hardening/backlog unless a later
+section explicitly says otherwise.
+
 ## Phase 0: Contracts Frozen
 
 Definition of done:

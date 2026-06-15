@@ -89,6 +89,24 @@ jobs:
       - name: Example graph
         run: cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
 
+  sanitizer:
+    name: AddressSanitizer (capi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      # Exercise the C-ABI crate's raw-pointer marshaling and host-vtable
+      # lifecycle tests under AddressSanitizer. Leak detection is disabled:
+      # several tests intentionally hand allocations across the C boundary, and
+      # this lane is for use-after-free / out-of-bounds / UB regressions.
+      - name: capi unit tests under AddressSanitizer
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          ASAN_OPTIONS: "detect_leaks=0"
+        run: cargo test -p dag-ml-capi --lib -Zbuild-std --target x86_64-unknown-linux-gnu
+
   docs-site:
     name: Documentation site
     runs-on: ubuntu-latest

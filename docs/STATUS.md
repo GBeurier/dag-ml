@@ -1,6 +1,14 @@
 # Status
 
-Current state: OOF/data-contract foundation plus first coordinator core.
+Current state: 0.2.0 release surface for the Rust coordinator core.
+
+The release scope is intentionally bounded: graph/campaign/plan contracts,
+OOF/leakage safety, deterministic selection, replay bundles, provenance export,
+C ABI JSON-contract helpers, CLI validation, Python/WASM JSON-contract bindings,
+the process-adapter protocol and cross-repo `dag-ml-data` fixtures are shipped
+and gated. Direct Python/YAML object frontends, SpectroChemPy and
+Orange-Spectroscopy adapters, selected stateful R operators and host-filtered
+branch-view provider backends remain explicit post-0.2.0 backlog.
 
 Implemented:
 
@@ -695,7 +703,7 @@ Not implemented yet:
   natively execute (`by_metadata`, `by_tag`, `by_filter` — the by_source
   contract is now pinned by C ABI conformance tests).
 
-Next recommended task:
+Post-0.2.0 backlog:
 
 Items #1 (sklearn production), #2 (R prospectr), #3 (R mdatools
 pls/pca/plsda), and #6 (YAML controller registry) are all shipped,

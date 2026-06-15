@@ -201,7 +201,7 @@ def crate_version_exists(name: str, version: str) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--tag", help="release tag to validate, for example v0.1.0-alpha.1")
+    parser.add_argument("--tag", help="release tag to validate, for example v0.2.0")
     parser.add_argument("--no-verify", action="store_true", help="pass --no-verify to cargo publish")
     parser.add_argument("--plan-only", action="store_true", help="print the publish order and exit")
     parser.add_argument(

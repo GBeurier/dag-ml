@@ -19,6 +19,10 @@ wire nirs4all directly.
 | Check shipped vs pending scope | [Status](STATUS.md) |
 | Run the documented gates | [Test plan](TEST_PLAN.md) |
 | Review roadmap and release gates | [Roadmap](ROADMAP.md) |
+| Check the supported release surface | [Supported surface](SUPPORTED.md) |
+| Map aggregation across `dag-ml-data` | [Aggregation interop](AGGREGATION_INTEROP.md) |
+| Run release performance probes | [Performance probes](PERFORMANCE.md) |
+| Audit final release readiness | [Final release audit](FINAL_RELEASE_AUDIT.md) |
 | Map nirs4all parity capabilities | [Capability matrix](CAPABILITY_MATRIX.md) |
 | Inspect shared contracts | [Contract manifests](contracts/README.md) |
 | Review accepted decisions | [Architecture decisions](adr/README.md) |
@@ -103,5 +107,9 @@ OBSERVABILITY
 
 STATUS
 TEST_PLAN
+SUPPORTED
+AGGREGATION_INTEROP
+PERFORMANCE
+FINAL_RELEASE_AUDIT
 design/README
 ```

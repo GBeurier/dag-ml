@@ -24,7 +24,7 @@ The release train is a fixed five-step sequence, scripted and CI-gated:
 ### CI gates
 
 - Each release tag triggers `release-crates.yml` in the repo being released. The workflow validates release metadata, validates the Cargo publish plan, checks that the `v*` tag matches the workspace version and publishes crates in dependency order.
-- `release-crates.yml` accepts prerelease SemVer tags such as `v0.1.0-alpha.1`; this is required while `dag-ml` and `dag-ml-data` are still in alpha.
+- `release-crates.yml` accepts final SemVer tags such as `v0.2.0` and still supports prerelease SemVer tags for future alpha/beta/rc trains when explicitly needed.
 - `cargo publish --dry-run` runs in CI through `scripts/release/check_publish_plan.py --dry-run`.
 - A "release ready" PR check verifies CHANGELOG, ADR delta, and ABI snapshot are present.
 

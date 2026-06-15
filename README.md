@@ -6,12 +6,12 @@ Rust-first execution core for leakage-safe, in-process ML pipelines.
 cache and deterministic control RNG. It does not own source storage or feature
 buffers; those contracts live in the companion `dag-ml-data` repository.
 
-> Status: active core scaffold. The project has executable Rust crates, C ABI
-> graph/selection/bundle validation, CLI validation, coordinator
-> planning/runtime contracts, data-plan fingerprints, OOF leakage checks,
-> deterministic selection, ADR-11 structured error descriptors and first
-> versioned refit/replay bundle contracts with CLI build/validate commands.
-> Host controller adapters are still pending.
+> Status: 0.2.0 release hardening complete. The core contracts, C ABI validation helpers, CLI
+> workflows, OOF/leakage checks, deterministic selection, replay bundles,
+> process-adapter protocol and cross-repo `dag-ml-data` fixtures are executable
+> and gated. Production support is intentionally scoped; see
+> [`docs/SUPPORTED.md`](docs/SUPPORTED.md) before treating an adapter or binding
+> as release-supported.
 
 ## Repository Layout
 
@@ -30,6 +30,7 @@ docs/
   RATIONALE.md      # why Rust/C ABI, why the data split, non-goals
   ROADMAP.md        # phase plan and delivery gates
   STATUS.md         # current state and next tasks
+  SUPPORTED.md      # release support matrix and public-signature policy
   TEST_PLAN.md      # invariant and conformance test strategy
   design/source/    # moved source design markdowns from nirs4all
 examples/
@@ -75,9 +76,9 @@ node scripts/smoke_wasm_tarball_metadata.mjs "$data_web_out_dir"
 node scripts/smoke_wasm_integration.mjs "$web_out_dir" "$data_web_out_dir" ../dag-ml-data
 ```
 
-## First Implementation Target
+## 0.2.0 Release Scope
 
-The current useful milestone is a sequential Rust core that can:
+The supported 0.2.0 scope is a Rust-first control core that can:
 
 1. parse a canonical `GraphSpec`;
 2. validate edge contracts and acyclicity;
@@ -88,10 +89,10 @@ The current useful milestone is a sequential Rust core that can:
 7. build a refit/replay bundle that locks plan, controller, data and artifact
    fingerprints.
 
-That milestone is intentionally smaller than full pipeline execution. The next
-gate is to expose selection/bundle/replay through CLI/C ABI and replace the
-Python-side orchestration in the sklearn demonstrator with host controller
-adapters driven by the Rust scheduler.
+That scope is intentionally smaller than arbitrary host-pipeline execution.
+Adapter support is bounded in [`docs/SUPPORTED.md`](docs/SUPPORTED.md) and
+the remaining adapter backlog is tracked in
+[`docs/HOST_ADAPTER_BACKLOG.md`](docs/HOST_ADAPTER_BACKLOG.md).
 
 ## License
 

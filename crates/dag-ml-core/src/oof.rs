@@ -473,6 +473,8 @@ fn normalized_targets(block: &PredictionBlock, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use super::*;
 
     fn sid(value: &str) -> SampleId {
@@ -640,5 +642,60 @@ mod tests {
         assert!(err
             .to_string()
             .contains("do not match fold validation samples"));
+    }
+
+    #[test]
+    #[ignore = "perf sanity probe; run with --release --ignored --nocapture"]
+    fn oof_join_large_campaign_under_1500ms() {
+        let sample_count = 12_000usize;
+        let producer_count = 4usize;
+        let fold_count = 6usize;
+        let required_samples = (0..sample_count)
+            .map(|sample_idx| sid(&format!("s{sample_idx:05}")))
+            .collect::<Vec<_>>();
+        let mut blocks = Vec::new();
+
+        for producer_idx in 0..producer_count {
+            for fold_idx in 0..fold_count {
+                let sample_ids = (fold_idx..sample_count)
+                    .step_by(fold_count)
+                    .map(|sample_idx| sid(&format!("s{sample_idx:05}")))
+                    .collect::<Vec<_>>();
+                let values = (fold_idx..sample_count)
+                    .step_by(fold_count)
+                    .map(|sample_idx| vec![producer_idx as f64, sample_idx as f64])
+                    .collect::<Vec<_>>();
+                blocks.push(PredictionBlock {
+                    prediction_id: None,
+                    producer_node: NodeId::new(format!("model:p{producer_idx}")).unwrap(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(FoldId::new(format!("fold:{fold_idx}")).unwrap()),
+                    sample_ids,
+                    values,
+                    target_names: vec!["score".to_string(), "rank".to_string()],
+                });
+            }
+        }
+
+        let started = Instant::now();
+        let joined = join_oof_campaign_features(
+            &PredictionJoinPolicy {
+                node_id: NodeId::new("merge:perf").unwrap(),
+                join_on: PredictionJoinKey::SampleId,
+                allow_train_predictions_as_features: false,
+                include_partitions: vec![PredictionPartition::Validation],
+            },
+            &blocks,
+            &required_samples,
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(joined.sample_ids.len(), sample_count);
+        assert_eq!(joined.columns.len(), producer_count * 2);
+        assert!(
+            elapsed <= Duration::from_millis(1_500),
+            "large OOF join took {elapsed:?}"
+        );
     }
 }

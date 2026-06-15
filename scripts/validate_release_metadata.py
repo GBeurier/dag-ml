@@ -278,6 +278,11 @@ def validate_ci(repo: Path) -> None:
     )
     require('RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps' in workflow, "CI must gate rustdoc warnings")
     require("wasm-pack pack --pkg-dir pkg-web ." in workflow, "CI must pack web WASM packages")
+    require('RUSTFLAGS: "-Zsanitizer=address"' in workflow, "CI must run a C ABI AddressSanitizer lane")
+    require(
+        "cargo test -p dag-ml-capi --lib -Zbuild-std --target x86_64-unknown-linux-gnu" in workflow,
+        "CI must exercise dag-ml-capi unit tests under AddressSanitizer",
+    )
 
 
 def validate_governance(repo: Path, repo_name: str) -> None:
