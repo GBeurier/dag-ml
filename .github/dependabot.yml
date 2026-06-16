@@ -9,6 +9,15 @@ updates:
       rust-runtime:
         patterns:
           - "*"
+    ignore:
+      # clap and pyo3 are intentionally pinned (scripts/validate_release_metadata.py);
+      # any bump off the pin fails the Release metadata gate.
+      - dependency-name: "clap"
+      - dependency-name: "pyo3"
+      # cpufeatures >=0.3 needs the edition2024 cargo feature (Cargo >=1.85),
+      # which breaks the 1.83 MSRV gate.
+      - dependency-name: "cpufeatures"
+        versions: [">=0.3.0"]
 
   # The PyO3 wheel crate is excluded from the cargo workspace, so the root
   # cargo watcher above does not see its Rust dependencies (pyo3, serde).
@@ -22,6 +31,15 @@ updates:
       rust-runtime:
         patterns:
           - "*"
+    ignore:
+      # clap and pyo3 are intentionally pinned (scripts/validate_release_metadata.py);
+      # any bump off the pin fails the Release metadata gate.
+      - dependency-name: "clap"
+      - dependency-name: "pyo3"
+      # cpufeatures >=0.3 needs the edition2024 cargo feature (Cargo >=1.85),
+      # which breaks the 1.83 MSRV gate.
+      - dependency-name: "cpufeatures"
+        versions: [">=0.3.0"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
