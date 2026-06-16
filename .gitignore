@@ -19,3 +19,14 @@ coverage.xml
 
 # personal backlog (local only)
 GB_backlog.txt
+
+# --- untracked build/process docs (kept locally, 2026-06-16) ---
+docs/FINAL_RELEASE_AUDIT.md
+docs/HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md
+docs/HOST_ADAPTER_BACKLOG.md
+docs/MVP_ACCEPTANCE.md
+docs/ROADMAP.md
+docs/STATUS.md
+docs/STUDIO_LITE_WASM_GAPS.md
+docs/TEST_PLAN.md
+docs/TOC.md
