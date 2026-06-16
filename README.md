@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/horizontal-dark.svg">
+    <img alt="dag-ml" src="assets/brand/horizontal.svg" width="440">
+  </picture>
+</p>
+
 # dag-ml
 
 Rust-first execution core for leakage-safe, in-process ML pipelines.
