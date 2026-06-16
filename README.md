@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/horizontal-dark.svg">
-    <img alt="dag-ml" src="assets/brand/horizontal.svg" width="440">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
+    <img alt="dag-ml" src="assets/brand/logo.svg" width="440">
   </picture>
 </p>
 
