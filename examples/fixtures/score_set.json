@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan:demo.cv.refit",
+  "selection_metric": "rmse",
+  "reports": [
+    {
+      "producer_node": "model:compat.0",
+      "partition": "validation",
+      "fold_id": "avg",
+      "level": "sample",
+      "row_count": 130,
+      "target_width": 1,
+      "target_names": ["y"],
+      "metrics": { "rmse": 18.7557, "r2": 0.541 }
+    },
+    {
+      "producer_node": "model:compat.0",
+      "partition": "test",
+      "fold_id": "final",
+      "level": "sample",
+      "row_count": 59,
+      "target_width": 1,
+      "target_names": ["y"],
+      "metrics": { "rmse": 13.2864, "r2": 0.5426 }
+    }
+  ]
+}

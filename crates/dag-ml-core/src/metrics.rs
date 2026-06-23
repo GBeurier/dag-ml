@@ -257,6 +257,67 @@ pub fn score_regression_aggregated_block(
     )
 }
 
+/// Current on-disk schema version for [`ScoreSet`].
+pub const SCORE_SET_SCHEMA_VERSION: u32 = 1;
+
+fn default_score_set_schema_version() -> u32 {
+    SCORE_SET_SCHEMA_VERSION
+}
+
+/// A persisted collection of per-block regression metric reports — the native, cross-language
+/// score record produced by a run (one report per `(producer_node, partition, fold_id, level)`).
+///
+/// Unlike the prediction-*value* cache (which is Validation-only and leakage-gated), scores are
+/// scalars derived from `y_true` and carry no feature data, so they are safe to persist for
+/// every partition (train / validation / test / final). This is the score half of "dag-ml owns
+/// prediction/score persistence natively" — the Python (or any host) `RunResult` reads these
+/// scalars by identity, with no recomputation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScoreSet {
+    #[serde(default = "default_score_set_schema_version")]
+    pub schema_version: u32,
+    pub plan_id: String,
+    /// The metric SELECT optimized for this run (e.g. `"rmse"`), if a selection ran. Metadata only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_metric: Option<String>,
+    pub reports: Vec<RegressionMetricReport>,
+}
+
+impl ScoreSet {
+    /// Validate the version, plan id, every report, and report-key uniqueness.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version == 0 || self.schema_version > SCORE_SET_SCHEMA_VERSION {
+            return Err(DagMlError::OofValidation(format!(
+                "score set schema version {} is unsupported (current {SCORE_SET_SCHEMA_VERSION})",
+                self.schema_version
+            )));
+        }
+        if self.plan_id.trim().is_empty() {
+            return Err(DagMlError::OofValidation(
+                "score set has an empty plan_id".to_string(),
+            ));
+        }
+        let mut seen: BTreeSet<(NodeId, PredictionPartition, Option<FoldId>, PredictionLevel)> =
+            BTreeSet::new();
+        for report in &self.reports {
+            report.validate()?;
+            let key = (
+                report.producer_node.clone(),
+                report.partition.clone(),
+                report.fold_id.clone(),
+                report.level,
+            );
+            if !seen.insert(key) {
+                return Err(DagMlError::OofValidation(format!(
+                    "score set has a duplicate report for node `{}` partition {:?} fold {:?} level {:?}",
+                    report.producer_node, report.partition, report.fold_id, report.level
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PredictionReportOrigin {
     prediction_id: Option<String>,
@@ -491,7 +552,7 @@ fn prediction_level_name(level: PredictionLevel) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{GroupId, NodeId, SampleId, TargetId};
+    use crate::ids::{FoldId, GroupId, NodeId, SampleId, TargetId};
     use crate::oof::PredictionPartition;
 
     fn sid(value: &str) -> SampleId {
@@ -769,5 +830,65 @@ mod tests {
         )
         .unwrap();
         assert_close(off_report.metrics["r2"], 0.0);
+    }
+
+    fn score_report(
+        partition: PredictionPartition,
+        fold: Option<&str>,
+        rmse: f64,
+    ) -> RegressionMetricReport {
+        RegressionMetricReport {
+            prediction_id: None,
+            producer_node: NodeId::new("model:compat.0").unwrap(),
+            partition,
+            fold_id: fold.map(|value| FoldId::new(value).unwrap()),
+            level: PredictionLevel::Sample,
+            row_count: 10,
+            target_width: 1,
+            target_names: vec!["y".to_string()],
+            metrics: BTreeMap::from([("rmse".to_string(), rmse), ("r2".to_string(), 0.5)]),
+        }
+    }
+
+    #[test]
+    fn score_set_round_trips_validates_and_rejects_duplicates() {
+        let set = ScoreSet {
+            schema_version: SCORE_SET_SCHEMA_VERSION,
+            plan_id: "plan:demo".to_string(),
+            selection_metric: Some("rmse".to_string()),
+            reports: vec![
+                score_report(PredictionPartition::Validation, Some("avg"), 18.75),
+                score_report(PredictionPartition::Test, Some("final"), 13.28),
+            ],
+        };
+        set.validate().unwrap();
+
+        // JSON round-trip is lossless.
+        let json = serde_json::to_string(&set).unwrap();
+        let back: ScoreSet = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, set);
+
+        // schema_version defaults when omitted (forward-compatible read).
+        let parsed: ScoreSet =
+            serde_json::from_value(serde_json::json!({"plan_id": "p", "reports": []})).unwrap();
+        assert_eq!(parsed.schema_version, SCORE_SET_SCHEMA_VERSION);
+
+        // Duplicate (producer_node, partition, fold_id, level) is rejected.
+        let dup = ScoreSet {
+            reports: vec![
+                score_report(PredictionPartition::Test, Some("final"), 1.0),
+                score_report(PredictionPartition::Test, Some("final"), 2.0),
+            ],
+            ..set.clone()
+        };
+        assert!(dup.validate().is_err());
+
+        // Empty plan_id is rejected.
+        let blank = ScoreSet {
+            plan_id: "  ".to_string(),
+            reports: vec![score_report(PredictionPartition::Test, Some("final"), 1.0)],
+            ..set
+        };
+        assert!(blank.validate().is_err());
     }
 }

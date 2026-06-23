@@ -54,6 +54,8 @@ DATA_OUTPUT_PROVENANCE_SCHEMA_REL = Path(
 )
 NODE_TASK_SCHEMA_REL = Path("docs/contracts/node_task.schema.json")
 NODE_RESULT_SCHEMA_REL = Path("docs/contracts/node_result.schema.json")
+SCORE_SET_SCHEMA_REL = Path("docs/contracts/score_set.schema.json")
+SCORE_SET_FIXTURE_REL = Path("examples/fixtures/score_set.json")
 PROCESS_ADAPTER_DESCRIPTION_SCHEMA_REL = Path(
     "docs/contracts/process_adapter_description.schema.json"
 )
@@ -306,6 +308,7 @@ DATA_OUTPUT_PROVENANCE_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "data_output_provenance.v1.schema.json"
 )
+SCORE_SET_SCHEMA_ID = "https://github.com/GBeurier/dag-ml/schemas/score_set.v1.schema.json"
 NODE_TASK_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "node_task.v1.schema.json"
@@ -2054,6 +2057,49 @@ def validate_aggregation_controller_result_schema(schema: Any, label: str) -> No
         == ["physical_sample", "source_sample", "observation", "combo"],
         f"{label} aggregation-controller result entity unit levels are not aligned",
     )
+
+
+def validate_score_set_schema(schema: Any, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} score-set schema must be an object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} score-set schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == SCORE_SET_SCHEMA_ID,
+        f"{label} score-set schema has unexpected $id",
+    )
+    require(schema.get("type") == "object", f"{label} score-set root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} score-set root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} score-set required list is missing")
+    for field in ("schema_version", "plan_id", "reports"):
+        require(field in required, f"{label} score-set schema must require `{field}`")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} score-set properties missing")
+    require("reports" in properties, f"{label} score-set schema must define `reports`")
+
+
+def validate_score_set_fixture(value: Any, label: str) -> None:
+    require(isinstance(value, dict), f"{label} score-set fixture must be an object")
+    for field in ("schema_version", "plan_id", "reports"):
+        require(field in value, f"{label} score-set fixture missing `{field}`")
+    reports = value.get("reports")
+    require(
+        isinstance(reports, list) and bool(reports),
+        f"{label} score-set fixture must have a non-empty reports list",
+    )
+    for report in reports:
+        require(isinstance(report, dict), f"{label} score-set report must be an object")
+        for field in ("producer_node", "partition", "level", "row_count", "target_width", "metrics"):
+            require(field in report, f"{label} score-set report missing `{field}`")
+        require(
+            isinstance(report.get("metrics"), dict) and bool(report["metrics"]),
+            f"{label} score-set report metrics must be a non-empty object",
+        )
 
 
 def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
@@ -5146,6 +5192,8 @@ def main() -> int:
         )
         local_node_task_schema = load_json(ROOT / NODE_TASK_SCHEMA_REL)
         local_node_result_schema = load_json(ROOT / NODE_RESULT_SCHEMA_REL)
+        local_score_set_schema = load_json(ROOT / SCORE_SET_SCHEMA_REL)
+        local_score_set_fixture = load_json(ROOT / SCORE_SET_FIXTURE_REL)
         local_process_adapter_description_schema = load_json(
             ROOT / PROCESS_ADAPTER_DESCRIPTION_SCHEMA_REL
         )
@@ -5234,6 +5282,8 @@ def main() -> int:
         )
         validate_node_task_schema(local_node_task_schema, "dag-ml")
         validate_node_result_schema(local_node_result_schema, "dag-ml")
+        validate_score_set_schema(local_score_set_schema, "dag-ml")
+        validate_score_set_fixture(local_score_set_fixture, "dag-ml")
         validate_process_adapter_description_schema(
             local_process_adapter_description_schema,
             "dag-ml",
