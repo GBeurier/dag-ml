@@ -4827,11 +4827,26 @@ const SCORE_METRICS: &[RegressionMetricKind] = &[
     RegressionMetricKind::R2,
 ];
 
+/// True when a Sample-level target block covers EXACTLY the prediction block's samples — the pairing
+/// dag-ml's scoring requires (target units == prediction units). Lets one result carry several
+/// sample-level blocks (e.g. refit's final-train + final-test), each with its own y_true.
+fn sample_targets_match_block(block: &PredictionBlock, targets: &RegressionTargetBlock) -> bool {
+    if targets.level != PredictionLevel::Sample || targets.unit_ids.len() != block.sample_ids.len()
+    {
+        return false;
+    }
+    let predicted: BTreeSet<&SampleId> = block.sample_ids.iter().collect();
+    targets.unit_ids.iter().all(|unit| match unit {
+        PredictionUnitId::Sample(sample_id) => predicted.contains(sample_id),
+        _ => false,
+    })
+}
+
 /// Score a result's prediction blocks against the host-supplied `regression_targets` and push the
 /// reports into the collector. Native scoring is gated purely on the host emitting targets: a run
 /// that emits no `regression_targets` (every existing run) collects nothing, so behavior is
-/// unchanged and the campaign fingerprint is untouched. Targets are matched to predictions by level
-/// (identity-keyed unit join is done inside the scoring functions); unmatched blocks are unscored.
+/// unchanged and the campaign fingerprint is untouched. Each Sample prediction block is paired with
+/// the target block covering exactly its samples; unmatched blocks are unscored.
 fn apply_result_scoring(
     result: &NodeResult,
     collector: &mut Vec<RegressionMetricReport>,
@@ -4844,7 +4859,7 @@ fn apply_result_scoring(
         if let Some(targets) = result
             .regression_targets
             .iter()
-            .find(|targets| targets.level == PredictionLevel::Sample)
+            .find(|targets| sample_targets_match_block(block, targets))
         {
             collector.push(score_regression_prediction_block(
                 block,
