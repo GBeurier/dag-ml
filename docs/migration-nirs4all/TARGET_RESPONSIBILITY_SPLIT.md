@@ -6,8 +6,16 @@
 > **sélection**, et la **persistance prédictions/scores**. Parité **exacte et native** (ne PAS
 > ré-implémenter l'agrégation côté host Python). État final : **nirs4all entièrement
 > cross-language ; seuls les operators/controllers restent par-langage.** Persistance
-> prédictions/scores : projet natif léger envisagé **entre `nirs4all-io` et `dag-ml-data`**
-> (rapport d'impact/bien-fondé en cours — `NATIVE_PERSISTENCE_LAYER_REPORT.md`).
+> prédictions/scores : pas de nouveau projet → **étendre le prediction-cache dag-ml en store
+> prédictions+scores** (`NATIVE_PERSISTENCE_LAYER_REPORT.md`).
+>
+> **Objectif réel :** un **squelette nirs4all cross-language** = `dag-ml` + `nirs4all-io` +
+> `nirs4all-methods`, identique dans **tous les langages** ; chaque langage ajoute ses
+> controllers/operators. **Le langage target possède ses binaires de modèles** (format natif) ;
+> **dag-ml sauve tout le reste** (orchestration, prédictions, scores, agrégation, lineage) →
+> reproductible cross-language. Les modèles **nirs4all-methods** = même binaire partout (C-ABI)
+> → reproductibilité totale. **nirs4all = "nirs4all-lite + controllers Python"** ; Python =
+> vaisseau amiral (SHAP, controllers ML/DL, Studio) ; « torch depuis R » ≡ « torch depuis Python ».
 
 
 > **État *final* visé** du chantier core→dag-ml. À la fin : `nirs4all` ne garde que ce qui

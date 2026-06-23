@@ -4802,6 +4802,7 @@ impl RuntimeController for CapiMockController {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{}:{}",
@@ -5060,6 +5061,7 @@ mod tests {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:cabi.replay:{}",
@@ -5353,6 +5355,7 @@ mod tests {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new("lineage:cabi.controller").unwrap(),
                 run_id: task.run_id.clone(),

@@ -6173,3 +6173,80 @@ fn fit_cv_node_with_inner_cv_carries_inner_fold_set_subset_of_outer_train() {
             .is_none()
     );
 }
+
+#[test]
+fn native_scoring_collects_reports_and_builds_score_set() {
+    use crate::aggregation::PredictionUnitId;
+    use crate::ids::SampleId;
+    use crate::metrics::RegressionTargetBlock;
+    use crate::policy::PredictionLevel;
+
+    let node = NodeId::new("model:pls").unwrap();
+    let predictions = PredictionBlock {
+        prediction_id: None,
+        producer_node: node.clone(),
+        partition: PredictionPartition::Validation,
+        fold_id: None,
+        sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
+        values: vec![vec![2.0], vec![4.0]],
+        target_names: vec!["y".to_string()],
+    };
+    let targets = RegressionTargetBlock {
+        level: PredictionLevel::Sample,
+        unit_ids: vec![
+            PredictionUnitId::Sample(SampleId::new("s1").unwrap()),
+            PredictionUnitId::Sample(SampleId::new("s2").unwrap()),
+        ],
+        values: vec![vec![2.0], vec![4.0]],
+        target_names: vec!["y".to_string()],
+    };
+    let make = |regression_targets: Vec<RegressionTargetBlock>| NodeResult {
+        node_id: node.clone(),
+        outputs: BTreeMap::new(),
+        predictions: vec![predictions.clone()],
+        observation_predictions: Vec::new(),
+        aggregated_predictions: Vec::new(),
+        explanations: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
+        regression_targets,
+        lineage: LineageRecord {
+            record_id: LineageId::new("lineage:t").unwrap(),
+            run_id: RunId::new("run:t").unwrap(),
+            node_id: node.clone(),
+            phase: Phase::FitCv,
+            controller_id: ControllerId::new("controller:pls").unwrap(),
+            controller_version: "1".to_string(),
+            variant_id: None,
+            fold_id: None,
+            branch_path: Vec::new(),
+            input_lineage: Vec::new(),
+            artifact_refs: Vec::new(),
+            params_fingerprint: "fp".to_string(),
+            data_model_shape_fingerprint: None,
+            aggregation_policy_fingerprint: None,
+            seed: None,
+            unsafe_flags: BTreeSet::new(),
+            metrics: BTreeMap::new(),
+        },
+    };
+
+    // Targets present -> the result is scored natively and collectable into a ScoreSet.
+    let mut ctx = RunContext::new(RunId::new("run:t").unwrap(), None);
+    apply_result_scoring(&make(vec![targets]), &mut ctx.score_collector).unwrap();
+    assert_eq!(ctx.score_collector.len(), 1);
+    assert!(ctx.score_collector[0].metrics.contains_key("rmse"));
+    let set = ctx
+        .build_score_set("plan:t", Some("rmse".to_string()))
+        .unwrap();
+    assert_eq!(set.reports.len(), 1);
+    set.validate().unwrap();
+
+    // No targets -> nothing collected, no ScoreSet (existing runs are unaffected).
+    let mut empty = RunContext::new(RunId::new("run:t").unwrap(), None);
+    apply_result_scoring(&make(Vec::new()), &mut empty.score_collector).unwrap();
+    assert!(empty.score_collector.is_empty());
+    assert!(empty.build_score_set("plan:t", None).is_none());
+}

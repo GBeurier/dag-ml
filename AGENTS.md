@@ -22,8 +22,27 @@ re-implement aggregation/scoring in the Python host; implement it in the core so
 
 This does NOT relax the "no NIRS-specific logic" boundary below: aggregation, scoring and
 persistence are *generic ML coordination* concerns. NIRS specifics (spectra transforms, model
-families) remain host operators. Persistence of predictions/scores is being scoped as a
-**native, light-dependency layer between `nirs4all-io` and `dag-ml-data`** (report pending).
+families) remain host operators.
+
+### The real objective (2026-06-23, maintainer)
+
+A **cross-language nirs4all skeleton** = `dag-ml` + `nirs4all-io` + `nirs4all-methods` (+ formats),
+identical in **every language**, on top of which each language adds its own **controllers/operators**.
+
+- **The target language owns its model BINARIES** (the fitted-model artifacts, in that language's
+  native format — Python joblib, R rds, …). **dag-ml saves everything else** (orchestration,
+  predictions, scores, aggregation, lineage) natively → that part is reproducible across languages
+  by construction.
+- **`nirs4all-methods` models are the SAME binary across languages** (portable C-ABI), so methods
+  built on it get **full cross-language reproducibility** (binary + results).
+- **`nirs4all` becomes "nirs4all-lite + Python controllers"**: the lite skeleton plus Python
+  operators/controllers. Python is the flagship (SHAP, ML/DL controllers, Studio), but the skeleton
+  is universal — **"torch from R" must behave like "torch from Python"** (same skeleton, same dag-ml
+  core, same persistence; only the host controller differs).
+
+Predictions/score persistence was scoped (`docs/migration-nirs4all/NATIVE_PERSISTENCE_LAYER_REPORT.md`):
+**no new project** — extend dag-ml's existing prediction-cache into a predictions+**scores** store
+(the real gap is score persistence; dag-ml already persists prediction tables light-dep).
 
 ## Hard Boundaries
 

@@ -3965,6 +3965,7 @@ impl RuntimeController for CliMockController {
             fit_influence_diagnostics: Vec::new(),
             artifacts: artifacts.clone(),
             artifact_handles,
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{}:{}",

@@ -33,7 +33,10 @@ use crate::ids::{
     ArtifactId, BranchId, BundleId, ControllerId, FoldId, LineageId, NodeId, RunId, SampleId,
     VariantId,
 };
-use crate::metrics::RegressionTargetBlock;
+use crate::metrics::{
+    score_regression_aggregated_block, score_regression_prediction_block, RegressionMetricKind,
+    RegressionMetricReport, RegressionTargetBlock, ScoreSet, SCORE_SET_SCHEMA_VERSION,
+};
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::{CampaignSpec, ExecutionPlan, NodePlan};
@@ -3703,6 +3706,8 @@ pub struct RunContext {
     pub prediction_store: InMemoryPredictionStore,
     pub aggregated_prediction_store: InMemoryAggregatedPredictionStore,
     pub lineage: InMemoryLineageRecorder,
+    /// Native score reports collected during the run (when `aggregation_policy.store_scores`).
+    pub score_collector: Vec<RegressionMetricReport>,
 }
 
 impl RunContext {
@@ -3714,7 +3719,26 @@ impl RunContext {
             prediction_store: InMemoryPredictionStore::new(),
             aggregated_prediction_store: InMemoryAggregatedPredictionStore::new(),
             lineage: InMemoryLineageRecorder::new(),
+            score_collector: Vec::new(),
         }
+    }
+
+    /// Build a [`ScoreSet`] from the collected reports (or `None` if scoring was off / produced
+    /// nothing), e.g. to attach to the [`ExecutionBundle`](crate::bundle::ExecutionBundle).
+    pub fn build_score_set(
+        &self,
+        plan_id: impl Into<String>,
+        selection_metric: Option<String>,
+    ) -> Option<ScoreSet> {
+        if self.score_collector.is_empty() {
+            return None;
+        }
+        Some(ScoreSet {
+            schema_version: SCORE_SET_SCHEMA_VERSION,
+            plan_id: plan_id.into(),
+            selection_metric,
+            reports: self.score_collector.clone(),
+        })
     }
 }
 
@@ -4211,6 +4235,7 @@ impl SequentialScheduler {
                 for prediction in &result.aggregated_predictions {
                     ctx.aggregated_prediction_store.append(prediction.clone())?;
                 }
+                apply_result_scoring(&result, &mut ctx.score_collector)?;
                 ctx.lineage.record(result.lineage.clone())?;
                 let data_views = derive_output_data_views(plan, &task, &result)?;
                 output_handles.insert(node_id.clone(), result.outputs.clone());
@@ -4700,6 +4725,7 @@ impl ParallelScheduler {
                     for prediction in &result.aggregated_predictions {
                         ctx.aggregated_prediction_store.append(prediction.clone())?;
                     }
+                    apply_result_scoring(&result, &mut ctx.score_collector)?;
                     ctx.lineage.record(result.lineage.clone())?;
                     let data_views = derive_output_data_views(plan, &prepared_task.task, &result)?;
                     output_handles.insert(prepared_task.node_id.clone(), result.outputs.clone());
@@ -4766,6 +4792,54 @@ fn inferred_input_lineage_for_node(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+const SCORE_METRICS: &[RegressionMetricKind] = &[
+    RegressionMetricKind::Mse,
+    RegressionMetricKind::Rmse,
+    RegressionMetricKind::Mae,
+    RegressionMetricKind::R2,
+];
+
+/// Score a result's prediction blocks against the host-supplied `regression_targets` and push the
+/// reports into the collector. Native scoring is gated purely on the host emitting targets: a run
+/// that emits no `regression_targets` (every existing run) collects nothing, so behavior is
+/// unchanged and the campaign fingerprint is untouched. Targets are matched to predictions by level
+/// (identity-keyed unit join is done inside the scoring functions); unmatched blocks are unscored.
+fn apply_result_scoring(
+    result: &NodeResult,
+    collector: &mut Vec<RegressionMetricReport>,
+) -> Result<()> {
+    if result.regression_targets.is_empty() {
+        return Ok(());
+    }
+    for block in &result.predictions {
+        if let Some(targets) = result
+            .regression_targets
+            .iter()
+            .find(|targets| targets.level == PredictionLevel::Sample)
+        {
+            collector.push(score_regression_prediction_block(
+                block,
+                targets,
+                SCORE_METRICS,
+            )?);
+        }
+    }
+    for block in &result.aggregated_predictions {
+        if let Some(targets) = result
+            .regression_targets
+            .iter()
+            .find(|targets| targets.level == block.level)
+        {
+            collector.push(score_regression_aggregated_block(
+                block,
+                targets,
+                SCORE_METRICS,
+            )?);
+        }
+    }
+    Ok(())
 }
 
 fn apply_result_prediction_aggregation(
