@@ -2692,6 +2692,9 @@ fn build_bundle_from_cv_then_captured_refit(
         prediction_caches,
     )
     .with_context(|| "failed to build execution bundle from CV+refit artifacts")?;
+    // Native scores collected during FIT_CV + REFIT (present only when the controller emitted
+    // regression_targets) — persist them in the bundle for cross-language read-back.
+    bundle.scores = ctx.build_score_set(input.plan.id.clone(), None);
     bundle.metadata.insert(
         "fit_cv_result_count".to_string(),
         serde_json::json!(fit_cv_results.len()),
