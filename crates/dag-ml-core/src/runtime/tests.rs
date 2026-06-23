@@ -87,6 +87,7 @@ impl RuntimeController for VariantProbeController {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{variant_label}",
@@ -159,6 +160,7 @@ impl RuntimeController for ShapeDataController {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{}:shape",
@@ -240,6 +242,7 @@ impl RuntimeController for DataViewProbeController {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{}:probe",
@@ -367,6 +370,7 @@ impl RuntimeController for MockController {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:{}:{:?}:{variant_label}:{fold_label}",
@@ -533,6 +537,7 @@ impl RuntimeController for ReplayMockController {
             artifacts: artifacts.clone(),
             artifact_handles,
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:replay:{}:{:?}",
@@ -688,6 +693,7 @@ impl RuntimeController for OofEdgeController {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:oof:{}:{}",
@@ -794,6 +800,7 @@ impl RuntimeController for ExpectedRefitOofController {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:grouped-oof:{}:{:?}",
@@ -899,6 +906,7 @@ impl RuntimeController for GroupAggregatedOofController {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:group-oof:{}:{}:{:?}",
@@ -1189,6 +1197,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
             artifacts: Vec::new(),
             artifact_handles: BTreeMap::new(),
             fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:obs-runtime:{}:{}",
@@ -2331,6 +2340,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
                 fit_influence_diagnostics: Vec::new(),
+                regression_targets: Vec::new(),
                 lineage: LineageRecord {
                     record_id: LineageId::new(format!(
                         "lineage:parallel:{}",
@@ -2480,6 +2490,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
                 artifacts: Vec::new(),
                 artifact_handles: BTreeMap::new(),
                 fit_influence_diagnostics: Vec::new(),
+                regression_targets: Vec::new(),
                 lineage: LineageRecord {
                     record_id: LineageId::new(format!(
                         "lineage:stress:{}:{}:{}",
@@ -5860,6 +5871,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
         artifacts: Vec::new(),
         artifact_handles: BTreeMap::new(),
         fit_influence_diagnostics: Vec::new(),
+        regression_targets: Vec::new(),
         lineage: LineageRecord {
             record_id: LineageId::new("lineage:bad.sample").unwrap(),
             run_id: task.run_id.clone(),

@@ -33,6 +33,7 @@ use crate::ids::{
     ArtifactId, BranchId, BundleId, ControllerId, FoldId, LineageId, NodeId, RunId, SampleId,
     VariantId,
 };
+use crate::metrics::RegressionTargetBlock;
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::{CampaignSpec, ExecutionPlan, NodePlan};
@@ -2610,6 +2611,11 @@ pub struct NodeResult {
     pub artifact_handles: BTreeMap<ArtifactId, HandleRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fit_influence_diagnostics: Vec<FitInfluenceDiagnostic>,
+    /// Optional ground-truth targets the host controller emits alongside predictions so the core
+    /// can score natively (the runtime never sees feature matrices; `y_true` is data-tier and may
+    /// cross the ABI per the ownership table). Each block is identity-keyed by `unit_ids`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regression_targets: Vec<RegressionTargetBlock>,
     pub lineage: LineageRecord,
 }
 
@@ -2838,6 +2844,9 @@ impl NodeResult {
                 )));
             }
             validate_shape_delta_for_task(delta, task)?;
+        }
+        for target in &self.regression_targets {
+            target.validate_shape()?;
         }
         self.lineage.validate()
     }

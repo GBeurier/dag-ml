@@ -63,6 +63,12 @@
         "$ref": "#/$defs/fit_influence_diagnostic"
       }
     },
+    "regression_targets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/regression_target_block"
+      }
+    },
     "lineage": {
       "$ref": "#/$defs/lineage_record"
     }
@@ -273,6 +279,26 @@
           "items": {
             "$ref": "#/$defs/non_empty_string"
           }
+        }
+      }
+    },
+    "regression_target_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "unit_ids", "values"],
+      "properties": {
+        "level": { "$ref": "#/$defs/prediction_level" },
+        "unit_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/prediction_unit_id" }
+        },
+        "values": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "number" } }
+        },
+        "target_names": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/non_empty_string" }
         }
       }
     },
