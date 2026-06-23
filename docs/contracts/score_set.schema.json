@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/score_set.v1.schema.json",
+  "title": "DAG-ML ScoreSet v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "plan_id", "reports"],
+  "properties": {
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "plan_id": { "type": "string", "minLength": 1 },
+    "selection_metric": { "type": ["string", "null"] },
+    "reports": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/regression_metric_report" }
+    }
+  },
+  "$defs": {
+    "regression_metric_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_node", "partition", "level", "row_count", "target_width", "metrics"],
+      "properties": {
+        "prediction_id": { "type": ["string", "null"] },
+        "producer_node": { "type": "string", "minLength": 1 },
+        "partition": { "enum": ["train", "validation", "test", "final"] },
+        "fold_id": { "type": ["string", "null"] },
+        "level": { "enum": ["observation", "sample", "target", "group"] },
+        "row_count": { "type": "integer", "minimum": 0 },
+        "target_width": { "type": "integer", "minimum": 0 },
+        "target_names": { "type": "array", "items": { "type": "string" } },
+        "metrics": { "type": "object", "additionalProperties": { "type": "number" } }
+      }
+    }
+  }
+}
