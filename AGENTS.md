@@ -9,6 +9,22 @@ validation, phase planning, fold identity, OOF joins, lineage/cache metadata,
 scheduler decisions and deterministic control RNG. Heavy data buffers and
 operator objects stay host-owned behind handles.
 
+## Migration Mandate (2026-06-23, maintainer directive)
+
+`dag-ml` is the **native (Rust / C-ABI) core that replaces the nirs4all core** and must
+provide **all of nirs4all's generic functionality** natively — not just compile/plan/OOF, but
+also **CV prediction aggregation** (per-fold + `avg` / `w_avg` ensemble + `final` refit rows),
+**scoring/metrics**, **selection**, and **prediction/score persistence**. The end state:
+**nirs4all becomes fully cross-language; only the operators/controllers stay per-language**
+(host bindings). Parity with the legacy nirs4all engine is **exact and native** — do NOT
+re-implement aggregation/scoring in the Python host; implement it in the core so every binding
+(Python/R/MATLAB/WASM) gets it for free.
+
+This does NOT relax the "no NIRS-specific logic" boundary below: aggregation, scoring and
+persistence are *generic ML coordination* concerns. NIRS specifics (spectra transforms, model
+families) remain host operators. Persistence of predictions/scores is being scoped as a
+**native, light-dependency layer between `nirs4all-io` and `dag-ml-data`** (report pending).
+
 ## Hard Boundaries
 
 - Do not add NIRS-specific logic.
