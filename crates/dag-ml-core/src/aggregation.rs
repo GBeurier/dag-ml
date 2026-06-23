@@ -1242,6 +1242,95 @@ fn default_aggregation_controller_result_schema_version() -> u32 {
     AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION
 }
 
+/// Reduce per-fold prediction blocks (same producer + partition) into one block, keyed by
+/// `sample_id` — the native cross-fold ensemble dag-ml previously lacked. A sample that appears in
+/// exactly one fold (the disjoint OOF/validation case) passes through unchanged (mean-of-one); a
+/// sample predicted by several folds (the shared train/test case) is (weighted) averaged. `avg` =
+/// no weights; `w_avg` = per-fold weights (e.g. `1/shifted_val_rmse`). First-seen sample order is
+/// preserved; the join is identity-keyed, never positional.
+pub fn reduce_predictions_across_folds(
+    blocks: &[PredictionBlock],
+    weights: Option<&[f64]>,
+    fold_label: &str,
+) -> Result<PredictionBlock> {
+    let first = blocks.first().ok_or_else(|| {
+        DagMlError::OofValidation("cross-fold reduction needs at least one block".to_string())
+    })?;
+    if let Some(weights) = weights {
+        if weights.len() != blocks.len() {
+            return Err(DagMlError::OofValidation(format!(
+                "cross-fold weights ({}) must match block count ({})",
+                weights.len(),
+                blocks.len()
+            )));
+        }
+    }
+    let width = first.values.first().map_or(0, Vec::len);
+    if width == 0 {
+        return Err(DagMlError::OofValidation(
+            "cross-fold reduction: first block has empty prediction rows".to_string(),
+        ));
+    }
+    let mut order: Vec<SampleId> = Vec::new();
+    let mut index: BTreeMap<SampleId, usize> = BTreeMap::new();
+    let mut weighted_sums: Vec<Vec<f64>> = Vec::new();
+    let mut weight_totals: Vec<f64> = Vec::new();
+    for (position, block) in blocks.iter().enumerate() {
+        if block.producer_node != first.producer_node || block.partition != first.partition {
+            return Err(DagMlError::OofValidation(
+                "cross-fold reduction: blocks differ in producer or partition".to_string(),
+            ));
+        }
+        if block.sample_ids.len() != block.values.len() {
+            return Err(DagMlError::OofValidation(
+                "cross-fold reduction: block sample/value length mismatch".to_string(),
+            ));
+        }
+        let weight = weights.map_or(1.0, |weights| weights[position]);
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(DagMlError::OofValidation(
+                "cross-fold reduction: weights must be finite and non-negative".to_string(),
+            ));
+        }
+        for (sample_id, row) in block.sample_ids.iter().zip(&block.values) {
+            if row.len() != width {
+                return Err(DagMlError::OofValidation(
+                    "cross-fold reduction: ragged prediction width".to_string(),
+                ));
+            }
+            let slot = *index.entry(sample_id.clone()).or_insert_with(|| {
+                order.push(sample_id.clone());
+                weighted_sums.push(vec![0.0; width]);
+                weight_totals.push(0.0);
+                order.len() - 1
+            });
+            for (acc, value) in weighted_sums[slot].iter_mut().zip(row) {
+                *acc += value * weight;
+            }
+            weight_totals[slot] += weight;
+        }
+    }
+    let mut values = Vec::with_capacity(order.len());
+    for slot in 0..order.len() {
+        let total = weight_totals[slot];
+        if total <= 0.0 {
+            return Err(DagMlError::OofValidation(
+                "cross-fold reduction: a sample had zero total weight".to_string(),
+            ));
+        }
+        values.push(weighted_sums[slot].iter().map(|sum| sum / total).collect());
+    }
+    Ok(PredictionBlock {
+        prediction_id: None,
+        producer_node: first.producer_node.clone(),
+        partition: first.partition.clone(),
+        fold_id: Some(FoldId::new(fold_label)?),
+        sample_ids: order,
+        values,
+        target_names: first.target_names.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1903,6 +1992,55 @@ mod tests {
             &SampleRelationSet::default(),
             &AggregationPolicy::default(),
             &[sid("sample:1")]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cross_fold_reduction_concats_disjoint_and_averages_shared() {
+        let node = NodeId::new("model:pls").unwrap();
+        let block = |fold: &str, rows: &[(&str, f64)]| PredictionBlock {
+            prediction_id: None,
+            producer_node: node.clone(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new(fold).unwrap()),
+            sample_ids: rows.iter().map(|(s, _)| sid(s)).collect(),
+            values: rows.iter().map(|(_, v)| vec![*v]).collect(),
+            target_names: vec!["y".to_string()],
+        };
+
+        // Disjoint folds (the OOF/validation case) -> concat, each sample once, value unchanged.
+        let oof = reduce_predictions_across_folds(
+            &[
+                block("fold0", &[("s1", 1.0), ("s2", 2.0)]),
+                block("fold1", &[("s3", 3.0), ("s4", 4.0)]),
+            ],
+            None,
+            "avg",
+        )
+        .unwrap();
+        assert_eq!(oof.sample_ids.len(), 4);
+        assert_eq!(oof.fold_id, Some(FoldId::new("avg").unwrap()));
+        assert_eq!(oof.values, vec![vec![1.0], vec![2.0], vec![3.0], vec![4.0]]);
+
+        // Shared folds (the test case, each fold predicts the same samples) -> mean per sample.
+        let shared = [
+            block("fold0", &[("t1", 0.0), ("t2", 10.0)]),
+            block("fold1", &[("t1", 4.0), ("t2", 20.0)]),
+        ];
+        let avg = reduce_predictions_across_folds(&shared, None, "avg").unwrap();
+        assert_eq!(avg.values, vec![vec![2.0], vec![15.0]]);
+
+        // w_avg with fold weights [1, 3]: (0*1+4*3)/4=3 ; (10*1+20*3)/4=17.5.
+        let wavg = reduce_predictions_across_folds(&shared, Some(&[1.0, 3.0]), "w_avg").unwrap();
+        assert_eq!(wavg.values, vec![vec![3.0], vec![17.5]]);
+        assert_eq!(wavg.fold_id, Some(FoldId::new("w_avg").unwrap()));
+
+        // Mismatched weights are rejected.
+        assert!(reduce_predictions_across_folds(
+            &[block("f0", &[("a", 1.0)])],
+            Some(&[1.0, 2.0]),
+            "avg"
         )
         .is_err());
     }
