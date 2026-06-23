@@ -34,8 +34,9 @@ use crate::ids::{
     VariantId,
 };
 use crate::metrics::{
-    score_regression_aggregated_block, score_regression_prediction_block, RegressionMetricKind,
-    RegressionMetricReport, RegressionTargetBlock, ScoreSet, SCORE_SET_SCHEMA_VERSION,
+    cross_fold_validation_reports, score_regression_aggregated_block,
+    score_regression_prediction_block, RegressionMetricKind, RegressionMetricReport,
+    RegressionTargetBlock, RegressionTargetRecord, ScoreSet, SCORE_SET_SCHEMA_VERSION,
 };
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
@@ -3706,8 +3707,11 @@ pub struct RunContext {
     pub prediction_store: InMemoryPredictionStore,
     pub aggregated_prediction_store: InMemoryAggregatedPredictionStore,
     pub lineage: InMemoryLineageRecorder,
-    /// Native score reports collected during the run (when `aggregation_policy.store_scores`).
+    /// Native per-fold/per-partition score reports collected during the run (when the host emits
+    /// `regression_targets`).
     pub score_collector: Vec<RegressionMetricReport>,
+    /// Per-fold `y_true` records, kept so cross-fold ensembles (the OOF average) can be scored.
+    pub regression_target_records: Vec<RegressionTargetRecord>,
 }
 
 impl RunContext {
@@ -3720,7 +3724,21 @@ impl RunContext {
             aggregated_prediction_store: InMemoryAggregatedPredictionStore::new(),
             lineage: InMemoryLineageRecorder::new(),
             score_collector: Vec::new(),
+            regression_target_records: Vec::new(),
         }
+    }
+
+    /// Score the cross-fold OOF average from the collected per-fold validation predictions + targets
+    /// and append the reports (one per producer, `fold_id = "avg"`) to the score collector. Call
+    /// after FIT_CV; a no-op when nothing was scored or no producer has more than one fold.
+    pub fn collect_cross_fold_validation_scores(&mut self) -> Result<()> {
+        let reports = cross_fold_validation_reports(
+            self.prediction_store.blocks(),
+            &self.regression_target_records,
+            SCORE_METRICS,
+        )?;
+        self.score_collector.extend(reports);
+        Ok(())
     }
 
     /// Build a [`ScoreSet`] from the collected reports (or `None` if scoring was off / produced
@@ -4235,7 +4253,11 @@ impl SequentialScheduler {
                 for prediction in &result.aggregated_predictions {
                     ctx.aggregated_prediction_store.append(prediction.clone())?;
                 }
-                apply_result_scoring(&result, &mut ctx.score_collector)?;
+                apply_result_scoring(
+                    &result,
+                    &mut ctx.score_collector,
+                    &mut ctx.regression_target_records,
+                )?;
                 ctx.lineage.record(result.lineage.clone())?;
                 let data_views = derive_output_data_views(plan, &task, &result)?;
                 output_handles.insert(node_id.clone(), result.outputs.clone());
@@ -4725,7 +4747,11 @@ impl ParallelScheduler {
                     for prediction in &result.aggregated_predictions {
                         ctx.aggregated_prediction_store.append(prediction.clone())?;
                     }
-                    apply_result_scoring(&result, &mut ctx.score_collector)?;
+                    apply_result_scoring(
+                        &result,
+                        &mut ctx.score_collector,
+                        &mut ctx.regression_target_records,
+                    )?;
                     ctx.lineage.record(result.lineage.clone())?;
                     let data_views = derive_output_data_views(plan, &prepared_task.task, &result)?;
                     output_handles.insert(prepared_task.node_id.clone(), result.outputs.clone());
@@ -4809,6 +4835,7 @@ const SCORE_METRICS: &[RegressionMetricKind] = &[
 fn apply_result_scoring(
     result: &NodeResult,
     collector: &mut Vec<RegressionMetricReport>,
+    target_records: &mut Vec<RegressionTargetRecord>,
 ) -> Result<()> {
     if result.regression_targets.is_empty() {
         return Ok(());
@@ -4824,6 +4851,13 @@ fn apply_result_scoring(
                 targets,
                 SCORE_METRICS,
             )?);
+            // Retain y_true (tagged with its fold/partition) so the OOF average can be scored later.
+            target_records.push(RegressionTargetRecord {
+                producer_node: block.producer_node.clone(),
+                partition: block.partition.clone(),
+                fold_id: block.fold_id.clone(),
+                block: targets.clone(),
+            });
         }
     }
     for block in &result.aggregated_predictions {

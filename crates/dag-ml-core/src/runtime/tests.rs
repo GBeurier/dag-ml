@@ -6235,8 +6235,14 @@ fn native_scoring_collects_reports_and_builds_score_set() {
 
     // Targets present -> the result is scored natively and collectable into a ScoreSet.
     let mut ctx = RunContext::new(RunId::new("run:t").unwrap(), None);
-    apply_result_scoring(&make(vec![targets]), &mut ctx.score_collector).unwrap();
+    apply_result_scoring(
+        &make(vec![targets]),
+        &mut ctx.score_collector,
+        &mut ctx.regression_target_records,
+    )
+    .unwrap();
     assert_eq!(ctx.score_collector.len(), 1);
+    assert_eq!(ctx.regression_target_records.len(), 1);
     assert!(ctx.score_collector[0].metrics.contains_key("rmse"));
     let set = ctx
         .build_score_set("plan:t", Some("rmse".to_string()))
@@ -6246,7 +6252,66 @@ fn native_scoring_collects_reports_and_builds_score_set() {
 
     // No targets -> nothing collected, no ScoreSet (existing runs are unaffected).
     let mut empty = RunContext::new(RunId::new("run:t").unwrap(), None);
-    apply_result_scoring(&make(Vec::new()), &mut empty.score_collector).unwrap();
+    apply_result_scoring(
+        &make(Vec::new()),
+        &mut empty.score_collector,
+        &mut empty.regression_target_records,
+    )
+    .unwrap();
     assert!(empty.score_collector.is_empty());
     assert!(empty.build_score_set("plan:t", None).is_none());
+}
+
+#[test]
+fn cross_fold_validation_reports_scores_the_oof_average() {
+    use crate::aggregation::PredictionUnitId;
+    use crate::ids::SampleId;
+    use crate::metrics::{
+        cross_fold_validation_reports, RegressionTargetBlock, RegressionTargetRecord,
+    };
+    use crate::policy::PredictionLevel;
+
+    let node = NodeId::new("model:pls").unwrap();
+    let pred = |fold: &str, rows: &[(&str, f64)]| PredictionBlock {
+        prediction_id: None,
+        producer_node: node.clone(),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new(fold).unwrap()),
+        sample_ids: rows
+            .iter()
+            .map(|(s, _)| SampleId::new(*s).unwrap())
+            .collect(),
+        values: rows.iter().map(|(_, v)| vec![*v]).collect(),
+        target_names: vec!["y".to_string()],
+    };
+    let record = |fold: &str, rows: &[(&str, f64)]| RegressionTargetRecord {
+        producer_node: node.clone(),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new(fold).unwrap()),
+        block: RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: rows
+                .iter()
+                .map(|(s, _)| PredictionUnitId::Sample(SampleId::new(*s).unwrap()))
+                .collect(),
+            values: rows.iter().map(|(_, v)| vec![*v]).collect(),
+            target_names: vec!["y".to_string()],
+        },
+    };
+
+    // Two disjoint folds -> OOF concat scored over all 4 samples; residual only on s4 (5 vs 4).
+    let blocks = [
+        pred("fold0", &[("s1", 1.0), ("s2", 2.0)]),
+        pred("fold1", &[("s3", 3.0), ("s4", 5.0)]),
+    ];
+    let records = [
+        record("fold0", &[("s1", 1.0), ("s2", 2.0)]),
+        record("fold1", &[("s3", 3.0), ("s4", 4.0)]),
+    ];
+    let reports = cross_fold_validation_reports(&blocks, &records, SCORE_METRICS).unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].fold_id, Some(FoldId::new("avg").unwrap()));
+    assert_eq!(reports[0].partition, PredictionPartition::Validation);
+    assert_eq!(reports[0].row_count, 4);
+    assert!((reports[0].metrics["rmse"] - 0.5).abs() < 1e-9); // sqrt((0+0+0+1)/4)
 }
