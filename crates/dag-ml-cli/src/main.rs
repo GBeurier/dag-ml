@@ -792,6 +792,9 @@ enum Command {
         scheduler: CliScheduler,
         #[arg(long, default_value_t = 1)]
         scheduler_workers: usize,
+        /// Write the native ScoreSet (e.g. the final-test score from a PREDICT replay) to this path.
+        #[arg(long)]
+        score_output: Option<PathBuf>,
     },
 }
 
@@ -2094,6 +2097,7 @@ fn main() -> Result<()> {
             root_seed,
             scheduler,
             scheduler_workers,
+            score_output,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
@@ -2165,6 +2169,16 @@ fn main() -> Result<()> {
                 configured_persistent_process_workers(persistent, process_workers),
                 observed_persistent_process_worker_count(persistent, &ctx)
             );
+            // Persist the native scores collected during replay (e.g. the final-test score from a
+            // PREDICT replay) when the host requested it.
+            if let Some(score_path) = score_output {
+                if let Some(scores) = ctx.build_score_set(plan.id.clone(), None) {
+                    std::fs::write(&score_path, serde_json::to_string_pretty(&scores)?)
+                        .with_context(|| {
+                            format!("failed to write score output to {}", score_path.display())
+                        })?;
+                }
+            }
         }
     }
 
