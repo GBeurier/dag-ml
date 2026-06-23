@@ -9,6 +9,7 @@ use crate::data::{
 };
 use crate::error::{DagMlError, Result};
 use crate::ids::{BundleId, ControllerId, FoldId, NodeId, SampleId, VariantId};
+use crate::metrics::ScoreSet;
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::ExecutionPlan;
@@ -929,6 +930,11 @@ pub struct ExecutionBundle {
     pub prediction_requirements: Vec<BundlePredictionRequirement>,
     #[serde(default)]
     pub prediction_caches: Vec<BundlePredictionCacheRecord>,
+    /// Native, cross-language score record for this run (per (node, partition, fold, level)).
+    /// Scores are scalars derived from `y_true`, safe for every partition — distinct from the
+    /// Validation-only `prediction_caches`. Optional + additive (legacy bundles have `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scores: Option<ScoreSet>,
     #[serde(default)]
     pub data_requirements: Vec<BundleDataRequirement>,
     #[serde(default)]
@@ -950,6 +956,9 @@ impl ExecutionBundle {
         validate_fingerprint("graph", &self.graph_fingerprint)?;
         validate_fingerprint("campaign", &self.campaign_fingerprint)?;
         validate_fingerprint("controller", &self.controller_fingerprint)?;
+        if let Some(scores) = &self.scores {
+            scores.validate()?;
+        }
         for (key, decision) in &self.selections {
             if key.trim().is_empty() {
                 return Err(DagMlError::RuntimeValidation(format!(
@@ -1513,6 +1522,7 @@ pub fn build_execution_bundle_with_prediction_contracts(
         refit_artifacts,
         prediction_requirements,
         prediction_caches,
+        scores: None,
         data_requirements: collect_data_requirements(plan)?,
         unsafe_flags: BTreeSet::new(),
         metadata: BTreeMap::new(),

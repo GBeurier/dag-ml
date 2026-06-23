@@ -2394,6 +2394,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
         artifacts: Vec::new(),
         artifact_handles: BTreeMap::new(),
         fit_influence_diagnostics: Vec::new(),
+        regression_targets: Vec::new(),
         lineage: LineageRecord {
             record_id: LineageId::new("lineage:c.conformance.node-result").unwrap(),
             run_id: task.run_id.clone(),
