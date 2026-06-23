@@ -2693,7 +2693,9 @@ fn build_bundle_from_cv_then_captured_refit(
     )
     .with_context(|| "failed to build execution bundle from CV+refit artifacts")?;
     // Native scores collected during FIT_CV + REFIT (present only when the controller emitted
-    // regression_targets) — persist them in the bundle for cross-language read-back.
+    // regression_targets) — plus the cross-fold OOF average (cv_best_score) — persisted in the
+    // bundle for cross-language read-back.
+    ctx.collect_cross_fold_validation_scores()?;
     bundle.scores = ctx.build_score_set(input.plan.id.clone(), None);
     bundle.metadata.insert(
         "fit_cv_result_count".to_string(),

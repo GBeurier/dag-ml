@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::aggregation::{AggregatedPredictionBlock, PredictionUnitId};
+use crate::aggregation::{
+    reduce_predictions_across_folds, AggregatedPredictionBlock, PredictionUnitId,
+};
 use crate::error::{DagMlError, Result};
 use crate::ids::{FoldId, NodeId};
 use crate::oof::{PredictionBlock, PredictionPartition};
@@ -547,6 +549,91 @@ fn prediction_level_name(level: PredictionLevel) -> &'static str {
         PredictionLevel::Target => "target",
         PredictionLevel::Group => "group",
     }
+}
+
+/// A host-emitted `y_true` block tagged with the prediction it scores (producer/partition/fold), so
+/// the runtime can aggregate ground truth across folds to score cross-fold ensembles natively.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegressionTargetRecord {
+    pub producer_node: NodeId,
+    pub partition: PredictionPartition,
+    pub fold_id: Option<FoldId>,
+    pub block: RegressionTargetBlock,
+}
+
+/// Combine a producer's per-fold VALIDATION `y_true` into one block (dedup by unit id — a sample's
+/// ground truth is fold-independent), aligned to the producer's OOF samples.
+fn combine_validation_targets(
+    producer: &NodeId,
+    records: &[RegressionTargetRecord],
+) -> RegressionTargetBlock {
+    let mut seen: BTreeSet<PredictionUnitId> = BTreeSet::new();
+    let mut unit_ids = Vec::new();
+    let mut values = Vec::new();
+    let mut target_names = Vec::new();
+    for record in records {
+        if &record.producer_node != producer || record.partition != PredictionPartition::Validation
+        {
+            continue;
+        }
+        if target_names.is_empty() {
+            target_names = record.block.target_names.clone();
+        }
+        for (unit_id, row) in record.block.unit_ids.iter().zip(&record.block.values) {
+            if seen.insert(unit_id.clone()) {
+                unit_ids.push(unit_id.clone());
+                values.push(row.clone());
+            }
+        }
+    }
+    RegressionTargetBlock {
+        level: PredictionLevel::Sample,
+        unit_ids,
+        values,
+        target_names,
+    }
+}
+
+/// Score the cross-fold OOF average per producer: concatenate each producer's per-fold VALIDATION
+/// predictions (disjoint OOF samples) into one block and score it against the combined `y_true`.
+/// Yields one report per producer with `fold_id = "avg"` — nirs4all's `cv_best_score` row. The
+/// per-fold join is identity-keyed; producers with a single fold are skipped (nothing to ensemble).
+pub fn cross_fold_validation_reports(
+    prediction_blocks: &[PredictionBlock],
+    target_records: &[RegressionTargetRecord],
+    metrics: &[RegressionMetricKind],
+) -> Result<Vec<RegressionMetricReport>> {
+    let mut producers: Vec<NodeId> = Vec::new();
+    let mut by_producer: BTreeMap<NodeId, Vec<PredictionBlock>> = BTreeMap::new();
+    for block in prediction_blocks {
+        if block.partition != PredictionPartition::Validation {
+            continue;
+        }
+        if !by_producer.contains_key(&block.producer_node) {
+            producers.push(block.producer_node.clone());
+        }
+        by_producer
+            .entry(block.producer_node.clone())
+            .or_default()
+            .push(block.clone());
+    }
+    let mut reports = Vec::new();
+    for producer in &producers {
+        let blocks = &by_producer[producer];
+        if blocks.len() < 2 {
+            continue;
+        }
+        let targets = combine_validation_targets(producer, target_records);
+        if targets.unit_ids.is_empty() {
+            // No y_true was emitted for this producer (e.g. mock controllers) — nothing to score.
+            continue;
+        }
+        let average = reduce_predictions_across_folds(blocks, None, "avg")?;
+        reports.push(score_regression_prediction_block(
+            &average, &targets, metrics,
+        )?);
+    }
+    Ok(reports)
 }
 
 #[cfg(test)]
