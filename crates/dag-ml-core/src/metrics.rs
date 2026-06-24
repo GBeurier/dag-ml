@@ -18,6 +18,10 @@ pub enum RegressionMetricKind {
     Rmse,
     Mae,
     R2,
+    /// Classification accuracy: fraction of predictions whose label matches the target (integer
+    /// label encoding, matched within 0.5). Meaningless on continuous regression targets (≈0) but
+    /// always emitted so the host can score classification natively without a separate code path.
+    Accuracy,
 }
 
 impl RegressionMetricKind {
@@ -27,13 +31,14 @@ impl RegressionMetricKind {
             Self::Rmse => "rmse",
             Self::Mae => "mae",
             Self::R2 => "r2",
+            Self::Accuracy => "accuracy",
         }
     }
 
     pub fn objective(self) -> MetricObjective {
         match self {
             Self::Mse | Self::Rmse | Self::Mae => MetricObjective::Minimize,
-            Self::R2 => MetricObjective::Maximize,
+            Self::R2 | Self::Accuracy => MetricObjective::Maximize,
         }
     }
 }
@@ -498,6 +503,16 @@ fn compute_metric_per_target(
                     / predictions.len() as f64
             }
             RegressionMetricKind::R2 => r2_for_target(target_idx, predictions, targets),
+            RegressionMetricKind::Accuracy => {
+                predictions
+                    .iter()
+                    .zip(targets.iter())
+                    .filter(|(prediction, target)| {
+                        (prediction[target_idx] - target[target_idx]).abs() < 0.5
+                    })
+                    .count() as f64
+                    / predictions.len() as f64
+            }
         })
         .collect()
 }

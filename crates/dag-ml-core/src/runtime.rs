@@ -4825,6 +4825,7 @@ const SCORE_METRICS: &[RegressionMetricKind] = &[
     RegressionMetricKind::Rmse,
     RegressionMetricKind::Mae,
     RegressionMetricKind::R2,
+    RegressionMetricKind::Accuracy,
 ];
 
 /// True when a Sample-level target block covers EXACTLY the prediction block's samples — the pairing
