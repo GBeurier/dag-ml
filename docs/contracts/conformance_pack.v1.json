@@ -5,7 +5,7 @@
     "coordinator_data_plan_envelope.v1": {
       "kind": "json_schema",
       "schema_version": 1,
-      "normalized_sha256": "336306fe191b67cb12886b6ad2d5a55fcdd9f28843a0b26979807b41847fef96"
+      "normalized_sha256": "99ad51d1535cb847d1e139362a5fb54f6d94cf4c943f4e0a1aeba47a39a71559"
     },
     "feature_fusion_selector.v1": {
       "kind": "json_schema",

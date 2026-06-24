@@ -53,6 +53,12 @@ pub struct SampleRelation {
     pub quality_flag: Option<String>,
     #[serde(default)]
     pub is_augmented: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub excluded: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl SampleRelation {
@@ -72,6 +78,7 @@ impl SampleRelation {
             sample_influence_weight: None,
             quality_flag: None,
             is_augmented: false,
+            excluded: false,
         }
     }
 
@@ -170,6 +177,12 @@ struct CanonicalRelationRecord {
     sample_influence_weight: Option<f64>,
     quality_flag: Option<String>,
     is_augmented: bool,
+    // Skipped when false so `excluded=false` relation sets keep byte-identical
+    // fingerprints (and existing fixtures/contracts stay unaffected); an
+    // `excluded=true` row correctly changes the replay fingerprint because it
+    // changes the training set.
+    #[serde(default, skip_serializing_if = "is_false")]
+    excluded: bool,
 }
 
 impl SampleRelationSet {
@@ -251,6 +264,7 @@ impl SampleRelationSet {
                     sample_influence_weight: record.sample_influence_weight,
                     quality_flag: record.quality_flag.clone(),
                     is_augmented: record.is_augmented,
+                    excluded: record.excluded,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -390,6 +404,18 @@ impl SampleRelationSet {
             .iter()
             .filter(|record| &record.sample_id == sample_id)
             .count()
+    }
+
+    /// Samples excluded from training. Exclusion is sample-local: a sample is
+    /// excluded if ANY of its relation rows carries `excluded == true`, so a
+    /// multi-source / repetition sample can never train through a sibling
+    /// non-excluded row. These samples are still validated and predicted.
+    pub fn excluded_sample_ids(&self) -> BTreeSet<SampleId> {
+        self.records
+            .iter()
+            .filter(|record| record.excluded)
+            .map(|record| record.sample_id.clone())
+            .collect()
     }
 
     pub fn sample_targets(&self) -> BTreeMap<SampleId, TargetId> {
@@ -724,6 +750,32 @@ mod tests {
         let mut changed = left.clone();
         changed.records[0].rep_id = Some("rep:1".to_string());
         assert_ne!(left.fingerprint().unwrap(), changed.fingerprint().unwrap());
+    }
+
+    #[test]
+    fn excluded_bit_changes_fingerprint_but_only_when_true() {
+        let base = SampleRelationSet {
+            records: vec![
+                source_relation("obs:s1.A.0", "s1", "A", "rep:0"),
+                source_relation("obs:s2.A.0", "s2", "A", "rep:0"),
+            ],
+        };
+
+        // excluded=false is byte-identical to the default (skip_serializing_if):
+        // existing fixtures and contracts stay unaffected.
+        let mut explicit_false = base.clone();
+        explicit_false.records[0].excluded = false;
+        assert_eq!(
+            base.fingerprint().unwrap(),
+            explicit_false.fingerprint().unwrap()
+        );
+
+        // excluded=true changes the training set, so it MUST change the
+        // replay fingerprint (else a different exclusion mask could false-hit a
+        // cached bundle).
+        let mut excluded = base.clone();
+        excluded.records[0].excluded = true;
+        assert_ne!(base.fingerprint().unwrap(), excluded.fingerprint().unwrap());
     }
 
     #[test]
