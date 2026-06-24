@@ -6,7 +6,7 @@ use crate::aggregation::{
     reduce_predictions_across_folds, AggregatedPredictionBlock, PredictionUnitId,
 };
 use crate::error::{DagMlError, Result};
-use crate::ids::{FoldId, NodeId};
+use crate::ids::{FoldId, NodeId, VariantId};
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::policy::PredictionLevel;
 use crate::selection::{CandidateScore, MetricObjective};
@@ -109,6 +109,11 @@ pub struct RegressionMetricReport {
     #[serde(default)]
     pub prediction_id: Option<String>,
     pub producer_node: NodeId,
+    /// Variant this score belongs to — distinguishes per-variant candidates when a generated
+    /// campaign scores several variants, so native SELECT can pick the best. Skipped (None) for
+    /// single-variant runs, so existing fixtures/fingerprints are byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant_id: Option<VariantId>,
     pub partition: PredictionPartition,
     pub fold_id: Option<FoldId>,
     pub level: PredictionLevel,
@@ -184,6 +189,9 @@ impl RegressionMetricReport {
         }
         if let Some(fold_id) = self.fold_id {
             metadata.insert("fold_id".to_string(), serde_json::json!(fold_id));
+        }
+        if let Some(variant_id) = self.variant_id {
+            metadata.insert("variant_id".to_string(), serde_json::json!(variant_id));
         }
         if !self.target_names.is_empty() {
             metadata.insert(
@@ -279,6 +287,15 @@ fn default_score_set_schema_version() -> u32 {
 /// every partition (train / validation / test / final). This is the score half of "dag-ml owns
 /// prediction/score persistence natively" — the Python (or any host) `RunResult` reads these
 /// scalars by identity, with no recomputation.
+/// Identity of a score report within a [`ScoreSet`] — unique per variant, partition, fold and level.
+type ScoreReportKey = (
+    NodeId,
+    Option<VariantId>,
+    PredictionPartition,
+    Option<FoldId>,
+    PredictionLevel,
+);
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ScoreSet {
     #[serde(default = "default_score_set_schema_version")]
@@ -304,12 +321,12 @@ impl ScoreSet {
                 "score set has an empty plan_id".to_string(),
             ));
         }
-        let mut seen: BTreeSet<(NodeId, PredictionPartition, Option<FoldId>, PredictionLevel)> =
-            BTreeSet::new();
+        let mut seen: BTreeSet<ScoreReportKey> = BTreeSet::new();
         for report in &self.reports {
             report.validate()?;
             let key = (
                 report.producer_node.clone(),
+                report.variant_id.clone(),
                 report.partition.clone(),
                 report.fold_id.clone(),
                 report.level,
@@ -430,6 +447,7 @@ fn score_regression_rows(
     let report = RegressionMetricReport {
         prediction_id: predictions.origin.prediction_id,
         producer_node: predictions.origin.producer_node,
+        variant_id: None,
         partition: predictions.origin.partition,
         fold_id: predictions.origin.fold_id,
         level: predictions.level,
@@ -942,6 +960,7 @@ mod tests {
         RegressionMetricReport {
             prediction_id: None,
             producer_node: NodeId::new("model:compat.0").unwrap(),
+            variant_id: None,
             partition,
             fold_id: fold.map(|value| FoldId::new(value).unwrap()),
             level: PredictionLevel::Sample,
