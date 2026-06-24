@@ -557,7 +557,7 @@ fn validate_unit_partitions<Unit: Ord + std::fmt::Display>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fold::FoldAssignment;
+    use crate::fold::{FoldAssignment, FoldPartitionMode};
 
     fn sid(value: &str) -> SampleId {
         SampleId::new(value).unwrap()
@@ -594,6 +594,7 @@ mod tests {
                 },
             ],
             sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
         }
     }
 
