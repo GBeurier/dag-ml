@@ -4862,11 +4862,9 @@ fn apply_result_scoring(
             .iter()
             .find(|targets| sample_targets_match_block(block, targets))
         {
-            collector.push(score_regression_prediction_block(
-                block,
-                targets,
-                SCORE_METRICS,
-            )?);
+            let mut report = score_regression_prediction_block(block, targets, SCORE_METRICS)?;
+            report.variant_id = result.lineage.variant_id.clone();
+            collector.push(report);
             // Retain y_true (tagged with its fold/partition) so the OOF average can be scored later.
             target_records.push(RegressionTargetRecord {
                 producer_node: block.producer_node.clone(),
@@ -4882,11 +4880,9 @@ fn apply_result_scoring(
             .iter()
             .find(|targets| targets.level == block.level)
         {
-            collector.push(score_regression_aggregated_block(
-                block,
-                targets,
-                SCORE_METRICS,
-            )?);
+            let mut report = score_regression_aggregated_block(block, targets, SCORE_METRICS)?;
+            report.variant_id = result.lineage.variant_id.clone();
+            collector.push(report);
         }
     }
     Ok(())
