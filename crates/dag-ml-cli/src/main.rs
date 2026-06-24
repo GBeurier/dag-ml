@@ -18,21 +18,21 @@ use dag_ml_core::{
     compile_pipeline_dsl_with_controller_registry, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, oof_campaign_fingerprint,
     parse_pipeline_dsl_json, regression_report_to_candidate_score,
-    score_regression_aggregated_block, score_regression_prediction_block, select_candidate,
-    select_candidate_groups, validate_oof_campaign, validate_research_provenance_package_files,
-    AggregatedPredictionBlock, ArtifactId, BundleId, BundlePredictionCachePayload,
-    BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
-    BundleReplayExecution, CampaignSpec, CandidateScore, ColumnarPredictionCacheStore,
-    ControllerId, ControllerManifest, ControllerRegistry, DagMlError, DataRequestPartition,
-    ExecutionBundle, ExplanationBlock, ExternalDataPlanEnvelope, FileArtifactManifestStore,
-    FileArtifactPayloadStore, FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef,
-    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId,
-    NodeResult, NodeTask, OofCampaign, ParallelScheduler, Phase, PipelineDslSpec, PredictionBlock,
-    PredictionLevel, PredictionPartition, PredictionUnitId, RefitArtifactRecord,
-    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
-    ResearchProvenancePackage, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
-    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
-    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
+    score_regression_aggregated_block, score_regression_prediction_block,
+    select_best_variant_by_cv, select_candidate, select_candidate_groups, validate_oof_campaign,
+    validate_research_provenance_package_files, AggregatedPredictionBlock, ArtifactId, BundleId,
+    BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
+    BundlePredictionRequirement, BundleReplayExecution, CampaignSpec, CandidateScore,
+    ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
+    DataRequestPartition, ExecutionBundle, ExplanationBlock, ExternalDataPlanEnvelope,
+    FileArtifactManifestStore, FileArtifactPayloadStore, FilePredictionCacheStore, GraphSpec,
+    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
+    MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, ParallelScheduler, Phase,
+    PipelineDslSpec, PredictionBlock, PredictionLevel, PredictionPartition, PredictionUnitId,
+    RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
+    ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId, RuntimeArtifactStore,
+    RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
+    SampleId, SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +85,23 @@ impl From<CliRegressionMetricKind> for RegressionMetricKind {
             CliRegressionMetricKind::Rmse => Self::Rmse,
             CliRegressionMetricKind::Mae => Self::Mae,
             CliRegressionMetricKind::R2 => Self::R2,
+        }
+    }
+}
+
+/// Metric that native variant SELECT optimizes when the caller does not pin a variant. `rmse`
+/// (minimized) is the default for regression; `accuracy` (maximized) is for classification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliVariantSelectionMetric {
+    Rmse,
+    Accuracy,
+}
+
+impl From<CliVariantSelectionMetric> for RegressionMetricKind {
+    fn from(value: CliVariantSelectionMetric) -> Self {
+        match value {
+            CliVariantSelectionMetric::Rmse => Self::Rmse,
+            CliVariantSelectionMetric::Accuracy => Self::Accuracy,
         }
     }
 }
@@ -470,6 +487,8 @@ enum Command {
         bundle_id: String,
         #[arg(long)]
         variant_id: Option<String>,
+        #[arg(long, value_enum, default_value = "rmse")]
+        selection_metric: CliVariantSelectionMetric,
         #[arg(long)]
         selections: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.process.cv.refit")]
@@ -504,6 +523,8 @@ enum Command {
         bundle_id: String,
         #[arg(long)]
         variant_id: Option<String>,
+        #[arg(long, value_enum, default_value = "rmse")]
+        selection_metric: CliVariantSelectionMetric,
         #[arg(long)]
         selections: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.process.cv.refit.replay")]
@@ -544,6 +565,8 @@ enum Command {
         bundle_id: String,
         #[arg(long)]
         variant_id: Option<String>,
+        #[arg(long, value_enum, default_value = "rmse")]
+        selection_metric: CliVariantSelectionMetric,
         #[arg(long)]
         selections: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.process.dsl.cv.refit")]
@@ -576,6 +599,8 @@ enum Command {
         bundle_id: String,
         #[arg(long)]
         variant_id: Option<String>,
+        #[arg(long, value_enum, default_value = "rmse")]
+        selection_metric: CliVariantSelectionMetric,
         #[arg(long)]
         selections: Option<PathBuf>,
         #[arg(long, default_value = "plan:cli.process.dsl.cv.refit.replay")]
@@ -1265,6 +1290,7 @@ fn main() -> Result<()> {
                 run_id,
                 root_seed,
                 scheduler,
+                selection_metric: RegressionMetricKind::Rmse,
             })
             .with_context(|| "mock refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
@@ -1321,6 +1347,7 @@ fn main() -> Result<()> {
                 run_id,
                 root_seed,
                 scheduler,
+                selection_metric: RegressionMetricKind::Rmse,
             })
             .with_context(|| "process refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
@@ -1345,6 +1372,7 @@ fn main() -> Result<()> {
             prediction_cache_output,
             bundle_id,
             variant_id,
+            selection_metric,
             selections,
             plan_id,
             run_id,
@@ -1380,6 +1408,7 @@ fn main() -> Result<()> {
                 run_id,
                 root_seed,
                 scheduler,
+                selection_metric: selection_metric.into(),
             })
             .with_context(|| "process CV+refit bundle capture failed")?;
             println!(
@@ -1427,6 +1456,7 @@ fn main() -> Result<()> {
             process_retries,
             bundle_id,
             variant_id,
+            selection_metric,
             selections,
             plan_id,
             run_id,
@@ -1457,6 +1487,7 @@ fn main() -> Result<()> {
                 run_id: run_id.clone(),
                 root_seed,
                 scheduler,
+                selection_metric: selection_metric.into(),
             })
             .with_context(|| "process CV+refit capture before replay failed")?;
             let envelope_map = replay_envelope_map_for_bundle(&captured.bundle, &envelope);
@@ -1512,6 +1543,7 @@ fn main() -> Result<()> {
             prediction_cache_output,
             bundle_id,
             variant_id,
+            selection_metric,
             selections,
             plan_id,
             run_id,
@@ -1547,6 +1579,7 @@ fn main() -> Result<()> {
                 run_id,
                 root_seed,
                 scheduler,
+                selection_metric: selection_metric.into(),
             })
             .with_context(|| "process DSL CV+refit bundle capture failed")?;
             println!(
@@ -1593,6 +1626,7 @@ fn main() -> Result<()> {
             process_retries,
             bundle_id,
             variant_id,
+            selection_metric,
             selections,
             plan_id,
             run_id,
@@ -1623,6 +1657,7 @@ fn main() -> Result<()> {
                 run_id: run_id.clone(),
                 root_seed,
                 scheduler,
+                selection_metric: selection_metric.into(),
             })
             .with_context(|| "process DSL CV+refit capture before replay failed")?;
             let envelope_map = replay_envelope_map_for_bundle(&captured.bundle, &envelope);
@@ -1703,6 +1738,7 @@ fn main() -> Result<()> {
                 run_id: run_id.clone(),
                 root_seed,
                 scheduler,
+                selection_metric: RegressionMetricKind::Rmse,
             })
             .with_context(|| "process refit capture before replay failed")?;
             let envelope_map = replay_envelope_map_for_bundle(&captured.bundle, &envelope);
@@ -2532,6 +2568,9 @@ struct CapturedRefitBundleInput<'a> {
     run_id: String,
     root_seed: u64,
     scheduler: SchedulerConfig,
+    /// Metric native variant SELECT optimizes when `variant_id` is None and the plan is multi-variant
+    /// (cv-refit path only). Defaults to `Rmse`; the non-CV refit path leaves it unused.
+    selection_metric: RegressionMetricKind,
 }
 
 struct CapturedRefitBundle {
@@ -2621,10 +2660,49 @@ fn build_bundle_from_captured_refit(
     })
 }
 
+/// Decide which variant REFIT targets. An explicitly pinned `variant_id` (or a single-variant plan)
+/// behaves exactly as before via [`selected_refit_variant`]. When the caller did NOT pin a variant
+/// and the plan has multiple variants, dag-ml picks the best variant natively by its cross-fold OOF
+/// score for `input.selection_metric` (Option A: one single-variant FIT_CV per variant), before the
+/// real CV+refit run.
+fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<VariantId> {
+    if input.variant_id.is_none() && input.plan.variants.len() > 1 {
+        let selected = select_best_variant_by_cv(
+            input.plan,
+            &RunId::new(input.run_id.clone())?,
+            Some(input.root_seed),
+            input.selection_metric,
+            |variant_plan, ctx| {
+                execute_campaign_phase_with_scheduler(
+                    input.scheduler,
+                    variant_plan,
+                    input.runtime_controllers,
+                    input.data_provider,
+                    ctx,
+                    Phase::FitCv,
+                )
+                .map(|_results| ())
+                .map_err(|error| {
+                    DagMlError::RuntimeValidation(format!(
+                        "per-variant FIT_CV for native variant selection failed: {error:#}"
+                    ))
+                })
+            },
+        )
+        .with_context(|| "native variant selection failed")?;
+        // `None` means scoring was off (no host targets) — fall back to the default variant, which is
+        // exactly today's behavior for unscored multi-variant runs.
+        if let Some(variant_id) = selected {
+            return Ok(variant_id);
+        }
+    }
+    selected_refit_variant(input.plan, input.variant_id.clone())
+}
+
 fn build_bundle_from_cv_then_captured_refit(
     input: CapturedRefitBundleInput<'_>,
 ) -> Result<CapturedRefitBundle> {
-    let selected_variant_id = selected_refit_variant(input.plan, input.variant_id)?;
+    let selected_variant_id = resolve_refit_variant(&input)?;
 
     let mut artifact_store = InMemoryArtifactStore::new();
     let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));

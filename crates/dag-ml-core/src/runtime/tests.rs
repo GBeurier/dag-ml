@@ -6291,6 +6291,7 @@ fn cross_fold_validation_reports_scores_the_oof_average() {
     };
     let record = |fold: &str, rows: &[(&str, f64)]| RegressionTargetRecord {
         producer_node: node.clone(),
+        variant_id: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new(fold).unwrap()),
         block: RegressionTargetBlock {
@@ -6319,4 +6320,532 @@ fn cross_fold_validation_reports_scores_the_oof_average() {
     assert_eq!(reports[0].partition, PredictionPartition::Validation);
     assert_eq!(reports[0].row_count, 4);
     assert!((reports[0].metrics["rmse"] - 0.5).abs() < 1e-9); // sqrt((0+0+0+1)/4)
+}
+
+/// Model controller for the native-variant-SELECT test. For each FIT_CV fold it emits one VALIDATION
+/// prediction plus the matching `y_true`, keyed by `fold_id` (fold:0 -> s1, fold:1 -> s2). The
+/// predicted value is `y_true + offset`, where `offset` is read from the variant's `n_components`
+/// param override — so different variants yield different OOF residuals (hence different OOF RMSE).
+struct VariantScoringController {
+    id: ControllerId,
+    handle: u64,
+}
+
+impl VariantScoringController {
+    fn fold_sample(task: &NodeTask) -> Option<(SampleId, f64)> {
+        // (validation sample, its y_true) per fold of `two_fold_set`.
+        match task.fold_id.as_ref()?.as_str() {
+            "fold:0" => Some((SampleId::new("s1").unwrap(), 1.0)),
+            "fold:1" => Some((SampleId::new("s2").unwrap(), 2.0)),
+            _ => None,
+        }
+    }
+}
+
+impl RuntimeController for VariantScoringController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Data,
+            owner_controller: self.id.clone(),
+        };
+        let mut predictions = Vec::new();
+        let mut regression_targets = Vec::new();
+        if let Some((sample_id, y_true)) = Self::fold_sample(task) {
+            // Prediction = y_true + offset(variant). offset is the variant's `n_components` override.
+            let offset = task
+                .node_plan
+                .params
+                .get("n_components")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+            predictions.push(PredictionBlock {
+                prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: task.fold_id.clone(),
+                sample_ids: vec![sample_id.clone()],
+                values: vec![vec![y_true + offset]],
+                target_names: vec!["y".to_string()],
+            });
+            regression_targets.push(crate::metrics::RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: vec![crate::aggregation::PredictionUnitId::Sample(sample_id)],
+                values: vec![vec![y_true]],
+                target_names: vec!["y".to_string()],
+            });
+        }
+        let variant_label = task
+            .variant_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "base".to_string());
+        let fold_label = task
+            .fold_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string());
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([("pred".to_string(), output)]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets,
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{:?}:{variant_label}:{fold_label}",
+                    task.node_plan.node_id, task.phase
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
+fn variant_scoring_campaign(offsets: Vec<(&str, f64)>) -> CampaignSpec {
+    let choices = offsets
+        .into_iter()
+        .map(|(label, offset)| GenerationChoice {
+            label: label.to_string(),
+            value: json!(label),
+            param_overrides: vec![crate::generation::GenerationParamOverride {
+                node_id: NodeId::new("model:pls").unwrap(),
+                params: BTreeMap::from([("n_components".to_string(), json!(offset))]),
+            }],
+        })
+        .collect::<Vec<_>>();
+    let max_variants = Some(choices.len());
+    CampaignSpec {
+        inner_cv: None,
+        id: "campaign:variant.select".to_string(),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: "split:outer".to_string(),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(two_fold_set()),
+        }),
+        generation: GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: vec![GenerationDimension {
+                name: "model_offset".to_string(),
+                choices,
+            }],
+            max_variants,
+        },
+        shape_plans: BTreeMap::new(),
+        data_bindings: BTreeMap::new(),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    }
+}
+
+fn variant_scoring_controllers() -> RuntimeControllerRegistry {
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(VariantScoringController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 2,
+        }))
+        .unwrap();
+    controllers
+}
+
+fn one_fold_set() -> FoldSet {
+    // Single fold, train/validation disjoint (s2 trains, s1 validates). `Resampled` mode drops the
+    // OOF-completeness requirement (s2 never validated) while keeping per-fold disjointness.
+    FoldSet {
+        id: "outer.single".to_string(),
+        sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
+        folds: vec![FoldAssignment {
+            fold_id: FoldId::new("fold:0").unwrap(),
+            train_sample_ids: vec![SampleId::new("s2").unwrap()],
+            validation_sample_ids: vec![SampleId::new("s1").unwrap()],
+            metadata: BTreeMap::new(),
+        }],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Resampled,
+    }
+}
+
+fn single_fold_variant_scoring_campaign(offsets: Vec<(&str, f64)>) -> CampaignSpec {
+    let mut campaign = variant_scoring_campaign(offsets);
+    campaign.id = "campaign:variant.select.single.fold".to_string();
+    if let Some(split) = campaign.split_invocation.as_mut() {
+        split.fold_set = Some(one_fold_set());
+    }
+    campaign
+}
+
+// --- Multi-producer (two independent model nodes) fixtures for the >1-OOF-average refusal. ---
+
+fn two_model_graph() -> GraphSpec {
+    let data_edge = |target: &str| EdgeSpec {
+        source: PortRef {
+            node_id: NodeId::new("transform:snv").unwrap(),
+            port_name: "x".to_string(),
+        },
+        target: PortRef {
+            node_id: NodeId::new(target).unwrap(),
+            port_name: "x".to_string(),
+        },
+        contract: EdgeContract {
+            requires_oof: false,
+            requires_fold_alignment: false,
+            ..EdgeContract::new(PortKind::Data, None)
+        },
+    };
+    GraphSpec {
+        id: "g:two.model".to_string(),
+        interface: GraphInterface::default(),
+        nodes: vec![
+            node(
+                "transform:snv",
+                NodeKind::Transform,
+                vec![],
+                vec![port("x", PortKind::Data)],
+            ),
+            node(
+                "model:a",
+                NodeKind::Model,
+                vec![port("x", PortKind::Data)],
+                vec![port("pred", PortKind::Prediction)],
+            ),
+            node(
+                "model:b",
+                NodeKind::Model,
+                vec![port("x", PortKind::Data)],
+                vec![port("pred", PortKind::Prediction)],
+            ),
+        ],
+        edges: vec![data_edge("model:a"), data_edge("model:b")],
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    }
+}
+
+fn two_model_manifests() -> crate::controller::ControllerRegistry {
+    let mut manifests = crate::controller::ControllerRegistry::new();
+    manifests
+        .register(controller_manifest(
+            "controller:transform",
+            NodeKind::Transform,
+        ))
+        .unwrap();
+    manifests
+        .register(controller_manifest("controller:model", NodeKind::Model))
+        .unwrap();
+    manifests
+}
+
+fn two_model_variant_scoring_campaign(offsets: Vec<(&str, f64)>) -> CampaignSpec {
+    let choices = offsets
+        .into_iter()
+        .map(|(label, offset)| GenerationChoice {
+            label: label.to_string(),
+            value: json!(label),
+            param_overrides: vec![crate::generation::GenerationParamOverride {
+                node_id: NodeId::new("model:a").unwrap(),
+                params: BTreeMap::from([("n_components".to_string(), json!(offset))]),
+            }],
+        })
+        .collect::<Vec<_>>();
+    let max_variants = Some(choices.len());
+    CampaignSpec {
+        inner_cv: None,
+        id: "campaign:variant.select.multi.producer".to_string(),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: "split:outer".to_string(),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(two_fold_set()),
+        }),
+        generation: GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: vec![GenerationDimension {
+                name: "model_offset".to_string(),
+                choices,
+            }],
+            max_variants,
+        },
+        shape_plans: BTreeMap::new(),
+        data_bindings: BTreeMap::new(),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    }
+}
+
+fn two_model_variant_scoring_controllers() -> RuntimeControllerRegistry {
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(VariantScoringController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 2,
+        }))
+        .unwrap();
+    controllers
+}
+
+#[test]
+fn select_best_variant_by_cv_picks_lowest_oof_rmse_variant() {
+    use crate::metrics::RegressionMetricKind;
+
+    // Two variants over a 2-fold OOF CV: variant `accurate` predicts y_true exactly (offset 0 ->
+    // RMSE 0); variant `biased` predicts y_true + 1 (offset 1 -> RMSE 1). Native SELECT must pick the
+    // accurate one by its cross-fold OOF average RMSE.
+    let plan = build_execution_plan(
+        "plan:variant.select",
+        simple_graph(),
+        variant_scoring_campaign(vec![("accurate", 0.0), ("biased", 1.0)]),
+        &manifests(),
+    )
+    .unwrap();
+    assert_eq!(plan.variants.len(), 2);
+    let controllers = variant_scoring_controllers();
+    let run_id = RunId::new("run:variant.select").unwrap();
+
+    let selected = select_best_variant_by_cv(
+        &plan,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |variant_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase(variant_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())
+        },
+    )
+    .unwrap();
+
+    let accurate_variant = plan
+        .variants
+        .iter()
+        .find(|variant| variant.choices["model_offset"].label == "accurate")
+        .unwrap();
+    assert_eq!(selected, Some(accurate_variant.variant_id.clone()));
+}
+
+#[test]
+fn select_best_variant_by_cv_single_variant_returns_that_variant() {
+    use crate::metrics::RegressionMetricKind;
+
+    let plan = build_execution_plan(
+        "plan:variant.select.single",
+        simple_graph(),
+        variant_scoring_campaign(vec![("only", 1.0)]),
+        &manifests(),
+    )
+    .unwrap();
+    assert_eq!(plan.variants.len(), 1);
+    let controllers = variant_scoring_controllers();
+    let run_id = RunId::new("run:variant.select.single").unwrap();
+
+    let selected = select_best_variant_by_cv(
+        &plan,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |variant_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase(variant_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(selected, Some(plan.variants[0].variant_id.clone()));
+}
+
+#[test]
+fn select_best_variant_by_cv_picks_highest_accuracy_variant() {
+    use crate::metrics::RegressionMetricKind;
+
+    // Accuracy maximizes (metrics.rs objective): the `accurate` variant matches the integer label
+    // exactly (accuracy 1.0), `biased` is off by 1 (accuracy 0.0). Native SELECT with Accuracy must
+    // pick `accurate` — proving the metric (not just RMSE) drives direction.
+    let plan = build_execution_plan(
+        "plan:variant.select.accuracy",
+        simple_graph(),
+        variant_scoring_campaign(vec![("accurate", 0.0), ("biased", 1.0)]),
+        &manifests(),
+    )
+    .unwrap();
+    assert_eq!(plan.variants.len(), 2);
+    let controllers = variant_scoring_controllers();
+    let run_id = RunId::new("run:variant.select.accuracy").unwrap();
+
+    let selected = select_best_variant_by_cv(
+        &plan,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Accuracy,
+        |variant_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase(variant_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())
+        },
+    )
+    .unwrap();
+
+    let accurate_variant = plan
+        .variants
+        .iter()
+        .find(|variant| variant.choices["model_offset"].label == "accurate")
+        .unwrap();
+    assert_eq!(selected, Some(accurate_variant.variant_id.clone()));
+}
+
+#[test]
+fn select_best_variant_by_cv_no_targets_returns_none() {
+    use crate::metrics::RegressionMetricKind;
+
+    // `runtime_controllers`' model emits validation predictions but NO regression_targets, so native
+    // scoring is genuinely off. The function returns Ok(None) so the caller keeps its default variant.
+    let plan = build_execution_plan(
+        "plan:variant.select.no.targets",
+        simple_graph(),
+        variant_scoring_campaign(vec![("a", 0.0), ("b", 1.0)]),
+        &manifests(),
+    )
+    .unwrap();
+    assert_eq!(plan.variants.len(), 2);
+    let controllers = runtime_controllers();
+    let run_id = RunId::new("run:variant.select.no.targets").unwrap();
+
+    let selected = select_best_variant_by_cv(
+        &plan,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |variant_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase(variant_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(selected, None);
+}
+
+#[test]
+fn select_best_variant_by_cv_single_fold_scores_but_no_average_errors() {
+    use crate::metrics::RegressionMetricKind;
+
+    // Scoring IS on (targets emitted) but the fold set has a single fold, so `cross_fold_validation
+    // _reports` skips the OOF average. Per-fold scores exist (any_scores_seen) yet no average can rank
+    // the variants -> an error, distinct from the no-targets Ok(None) case.
+    let plan = build_execution_plan(
+        "plan:variant.select.single.fold",
+        simple_graph(),
+        single_fold_variant_scoring_campaign(vec![("a", 0.0), ("b", 1.0)]),
+        &manifests(),
+    )
+    .unwrap();
+    assert_eq!(plan.variants.len(), 2);
+    let controllers = variant_scoring_controllers();
+    let run_id = RunId::new("run:variant.select.single.fold").unwrap();
+
+    let error = select_best_variant_by_cv(
+        &plan,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |variant_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase(variant_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())
+        },
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("no cross-fold OOF average"),
+        "unexpected single-fold error: {error}"
+    );
+}
+
+#[test]
+fn select_best_variant_by_cv_rejects_multiple_prediction_producers() {
+    use crate::metrics::RegressionMetricKind;
+
+    // Two model producers each emit a cross-fold OOF average per variant, so a variant has >1 average.
+    // Native SELECT needs a single score target -> it refuses to silently rank on one producer.
+    let plan = build_execution_plan(
+        "plan:variant.select.multi.producer",
+        two_model_graph(),
+        two_model_variant_scoring_campaign(vec![("a", 0.0), ("b", 1.0)]),
+        &two_model_manifests(),
+    )
+    .unwrap();
+    assert_eq!(plan.variants.len(), 2);
+    let controllers = two_model_variant_scoring_controllers();
+    let run_id = RunId::new("run:variant.select.multi.producer").unwrap();
+
+    let error = select_best_variant_by_cv(
+        &plan,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |variant_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase(variant_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())
+        },
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("multiple prediction producers"),
+        "unexpected multi-producer error: {error}"
+    );
 }
