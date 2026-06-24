@@ -715,6 +715,7 @@ mod tests {
     use crate::controller::{
         ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest, RngPolicy,
     };
+    use crate::fold::FoldPartitionMode;
 
     #[test]
     fn inner_cv_is_declarable_at_campaign_and_node_level() {
@@ -1276,6 +1277,7 @@ mod tests {
                         },
                     ],
                     sample_groups: BTreeMap::new(),
+                    partition_mode: FoldPartitionMode::Partition,
                 }),
             }),
             generation: Default::default(),

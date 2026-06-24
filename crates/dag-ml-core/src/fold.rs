@@ -16,6 +16,23 @@ pub struct FoldAssignment {
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
+/// How validation membership is distributed across a fold set.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoldPartitionMode {
+    /// Each sample is validated EXACTLY once — a clean out-of-fold partition (KFold-style). Default.
+    #[default]
+    Partition,
+    /// Validation sets may overlap or omit samples (resampling CV: ShuffleSplit, repeated KFold,
+    /// bootstrap). The per-fold `train ∩ validation = ∅` leakage guard still holds; only OOF
+    /// *completeness* is relaxed. Predictions for a multiply-validated sample are aggregated.
+    Resampled,
+}
+
+fn is_partition_mode_default(mode: &FoldPartitionMode) -> bool {
+    *mode == FoldPartitionMode::Partition
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FoldSet {
     pub id: String,
@@ -23,6 +40,10 @@ pub struct FoldSet {
     pub folds: Vec<FoldAssignment>,
     #[serde(default)]
     pub sample_groups: BTreeMap<SampleId, GroupId>,
+    /// Validation-distribution mode. Skipped when `Partition` (the default), so existing OOF fold
+    /// sets serialize byte-identically — no fingerprint or fixture churn.
+    #[serde(default, skip_serializing_if = "is_partition_mode_default")]
+    pub partition_mode: FoldPartitionMode,
 }
 
 impl FoldSet {
@@ -111,12 +132,18 @@ impl FoldSet {
             self.validate_group_boundary(fold, &train)?;
         }
 
-        for (sample_id, count) in validation_counts {
-            if count != 1 {
-                return Err(DagMlError::OofValidation(format!(
-                    "sample `{}` appears in validation {} time(s), expected exactly once",
-                    sample_id, count
-                )));
+        // OOF completeness: a clean Partition requires every sample validated exactly once. The
+        // Resampled mode (ShuffleSplit/repeated CV) drops this — a sample may be validated any
+        // number of times — while the per-fold train/validation disjointness (the leakage guard,
+        // enforced above) still holds for every fold.
+        if self.partition_mode == FoldPartitionMode::Partition {
+            for (sample_id, count) in validation_counts {
+                if count != 1 {
+                    return Err(DagMlError::OofValidation(format!(
+                        "sample `{}` appears in validation {} time(s), expected exactly once",
+                        sample_id, count
+                    )));
+                }
             }
         }
 
@@ -250,6 +277,7 @@ impl KFoldSpec {
             sample_ids: ordered_samples(samples, false, 0),
             folds,
             sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
         };
         fold_set.validate()?;
         Ok(fold_set)
@@ -340,6 +368,7 @@ impl StratifiedKFoldSpec {
             sample_ids: ordered_samples(samples, false, 0),
             folds,
             sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
         };
         fold_set.validate()?;
         Ok(fold_set)
@@ -433,6 +462,7 @@ impl GroupKFoldSpec {
             sample_ids,
             folds,
             sample_groups: sample_groups.clone(),
+            partition_mode: FoldPartitionMode::Partition,
         };
         fold_set.validate()?;
         Ok(fold_set)
@@ -632,6 +662,7 @@ mod tests {
                 metadata: BTreeMap::new(),
             }],
             sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
         };
 
         assert!(fold_set.validate().is_err());
@@ -649,6 +680,7 @@ mod tests {
                 metadata: BTreeMap::new(),
             }],
             sample_groups: BTreeMap::from([(sid("s1"), gid("g1"))]),
+            partition_mode: FoldPartitionMode::Partition,
         };
 
         assert!(fold_set.validate().is_err());
@@ -674,6 +706,7 @@ mod tests {
                 },
             ],
             sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
         };
         let mut right = left.clone();
         right.sample_ids.reverse();
@@ -872,6 +905,7 @@ mod tests {
                 },
             ],
             sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
         };
         inner
             .validate()
@@ -905,6 +939,7 @@ mod tests {
                 metadata: BTreeMap::new(),
             }],
             sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
         };
         assert!(validate_inner_fold_set_within_outer(&inner, outer_fold).is_err());
     }
@@ -946,5 +981,55 @@ mod tests {
         assert_eq!(resolve_inner_cv(None, Some(&campaign)), Some(&campaign));
         assert_eq!(resolve_inner_cv(Some(&node), None), Some(&node));
         assert_eq!(resolve_inner_cv(None, None), None);
+    }
+
+    #[test]
+    fn resampled_mode_allows_non_oof_validation_but_still_blocks_leakage() {
+        let fold = |id: &str, train: &[&str], val: &[&str]| FoldAssignment {
+            fold_id: FoldId::new(id).unwrap(),
+            train_sample_ids: train.iter().map(|s| sid(s)).collect(),
+            validation_sample_ids: val.iter().map(|s| sid(s)).collect(),
+            metadata: BTreeMap::new(),
+        };
+        let samples = vec![sid("s1"), sid("s2"), sid("s3"), sid("s4")];
+        // s1 is validated twice and s4 never — not an OOF partition (ShuffleSplit-like).
+        let folds = vec![
+            fold("f0", &["s3", "s4"], &["s1", "s2"]),
+            fold("f1", &["s2", "s4"], &["s1", "s3"]),
+        ];
+
+        let partition = FoldSet {
+            id: "partition".to_string(),
+            sample_ids: samples.clone(),
+            folds: folds.clone(),
+            sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
+        };
+        assert!(
+            partition.validate().is_err(),
+            "Partition mode must reject non-OOF validation"
+        );
+
+        let resampled = FoldSet {
+            id: "resampled".to_string(),
+            sample_ids: samples,
+            folds,
+            sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Resampled,
+        };
+        resampled.validate().unwrap(); // overlapping / incomplete validation is allowed
+
+        // The leakage guard (train ∩ validation per fold) still holds in Resampled mode.
+        let leaky = FoldSet {
+            id: "leaky".to_string(),
+            sample_ids: vec![sid("s1"), sid("s2")],
+            folds: vec![fold("f", &["s1"], &["s1"])],
+            sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Resampled,
+        };
+        assert!(
+            leaky.validate().is_err(),
+            "Resampled must still reject train/validation overlap"
+        );
     }
 }

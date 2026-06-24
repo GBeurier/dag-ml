@@ -22,7 +22,7 @@ use crate::controller::{
     ControllerRegistry, RngPolicy,
 };
 use crate::data::{DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider};
-use crate::fold::{FoldAssignment, FoldSet};
+use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
 use crate::generation::{
     GenerationChoice, GenerationDimension, GenerationSpec, GenerationStrategy,
 };
@@ -1429,6 +1429,7 @@ fn observation_prediction_runtime_plan() -> ExecutionPlan {
                     },
                 ],
                 sample_groups: BTreeMap::new(),
+                partition_mode: FoldPartitionMode::Partition,
             }),
         }),
         generation: Default::default(),
@@ -1558,6 +1559,7 @@ fn live_group_oof_runtime_plan() -> ExecutionPlan {
                         GroupId::new("plant.B").unwrap(),
                     ),
                 ]),
+                partition_mode: FoldPartitionMode::Partition,
             }),
         }),
         generation: Default::default(),
@@ -1849,6 +1851,7 @@ fn two_fold_set() -> FoldSet {
             },
         ],
         sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
     }
 }
 
@@ -1881,6 +1884,7 @@ fn three_fold_stress_set() -> FoldSet {
         sample_ids: samples,
         folds,
         sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
     }
 }
 
@@ -1918,6 +1922,7 @@ fn grouped_repetition_fold_set() -> FoldSet {
             (s2, GroupId::new("group:product2").unwrap()),
             (s3, GroupId::new("group:product3").unwrap()),
         ]),
+        partition_mode: FoldPartitionMode::Partition,
     }
 }
 
