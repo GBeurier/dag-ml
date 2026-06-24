@@ -6849,3 +6849,240 @@ fn select_best_variant_by_cv_rejects_multiple_prediction_producers() {
         "unexpected multi-producer error: {error}"
     );
 }
+
+#[test]
+fn fit_view_spec_drops_excluded_samples_while_validation_keeps_them() {
+    // `exclude` drops outlier samples from the TRAINING view spec (not just the
+    // materialized view) but keeps them in validation/predict so OOF/test
+    // coverage stays complete. three_fold_stress_set: s0..s5; fold:0
+    // validation=[s0,s3], train=[s1,s2,s4,s5]. Exclude s2.
+    let node_id = NodeId::new("node:model").unwrap();
+    let binding = data_binding(&node_id);
+    assert!(
+        !binding.view_policy.include_excluded,
+        "default policy must not include excluded rows"
+    );
+    let fold_set = three_fold_stress_set();
+    let fold_id = fold_set.folds[0].fold_id.clone();
+    let excluded: BTreeSet<SampleId> = [SampleId::new("s2").unwrap()].into_iter().collect();
+    let empty: BTreeSet<SampleId> = BTreeSet::new();
+
+    let fold_scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: None,
+        variant: None,
+        fold_id: Some(fold_id),
+        seed_root: None,
+    };
+
+    // (a) Excluded sample is ABSENT from the TRAINING view spec sample_ids,
+    // while the other train samples remain.
+    let train_view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &fold_scope,
+        DataRequestPartition::FoldTrain,
+        None,
+        DataViewRole::Fit,
+        &excluded,
+    )
+    .unwrap();
+    assert!(
+        !train_view.include_excluded,
+        "fit view must not include excluded rows"
+    );
+    let train_ids = train_view.sample_ids.as_ref().unwrap();
+    assert!(
+        !train_ids.contains(&SampleId::new("s2").unwrap()),
+        "excluded s2 must be dropped from the training spec sample_ids"
+    );
+    assert!(
+        train_ids.contains(&SampleId::new("s1").unwrap())
+            && train_ids.contains(&SampleId::new("s4").unwrap())
+            && train_ids.contains(&SampleId::new("s5").unwrap()),
+        "non-excluded train samples must remain"
+    );
+
+    // Validation read keeps every validation sample and flags include_excluded.
+    let validation_view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &fold_scope,
+        DataRequestPartition::FoldValidation,
+        None,
+        DataViewRole::NonFit,
+        &excluded,
+    )
+    .unwrap();
+    assert!(
+        validation_view.include_excluded,
+        "validation read must keep excluded rows so they are still validated"
+    );
+    assert_eq!(
+        validation_view.sample_ids,
+        Some(vec![
+            SampleId::new("s0").unwrap(),
+            SampleId::new("s3").unwrap()
+        ]),
+        "validation spec is unfiltered by exclusion"
+    );
+
+    // FullTrain (refit) is a fit read: drops the excluded sample from the
+    // full-train spec.
+    let full_scope = PhaseScope {
+        phase: Phase::Refit,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    let full_train_view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &full_scope,
+        DataRequestPartition::FullTrain,
+        None,
+        DataViewRole::Fit,
+        &excluded,
+    )
+    .unwrap();
+    assert!(!full_train_view.include_excluded);
+    assert!(
+        !full_train_view
+            .sample_ids
+            .as_ref()
+            .unwrap()
+            .contains(&SampleId::new("s2").unwrap()),
+        "refit training spec drops excluded s2"
+    );
+
+    // Predict read keeps excluded; sample_ids stays None (whole dataset).
+    let predict_scope = PhaseScope {
+        phase: Phase::Predict,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    let predict_view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &predict_scope,
+        DataRequestPartition::Predict,
+        None,
+        DataViewRole::NonFit,
+        &empty,
+    )
+    .unwrap();
+    assert!(
+        predict_view.include_excluded,
+        "predict read must keep excluded rows so they are still predicted"
+    );
+}
+
+#[test]
+fn fit_influence_row_weights_match_post_exclusion_training_spec() {
+    // (b) equal_sample_influence_weights row_weights length must equal the
+    // post-exclusion training view, not the pre-exclusion fold train set.
+    let node_id = NodeId::new("node:model").unwrap();
+    let binding = data_binding(&node_id);
+    let fold_set = three_fold_stress_set(); // s0..s5
+    let fold_id = fold_set.folds[0].fold_id.clone();
+    let train_len = fold_set.folds[0].train_sample_ids.len();
+    assert!(train_len >= 2, "need a multi-sample train fold");
+    let dropped = fold_set.folds[0].train_sample_ids[0].clone();
+    let excluded: BTreeSet<SampleId> = [dropped.clone()].into_iter().collect();
+
+    let scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: None,
+        variant: None,
+        fold_id: Some(fold_id),
+        seed_root: None,
+    };
+    let train_view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &scope,
+        DataRequestPartition::FoldTrain,
+        None,
+        DataViewRole::Fit,
+        &excluded,
+    )
+    .unwrap();
+    let spec_len = train_view.sample_ids.as_ref().unwrap().len();
+    assert_eq!(
+        spec_len,
+        train_len - 1,
+        "training spec must drop exactly the one excluded sample"
+    );
+    assert!(!train_view.sample_ids.as_ref().unwrap().contains(&dropped));
+
+    let mut data_views = BTreeMap::new();
+    data_views.insert("x".to_string(), train_view);
+    let weights = equal_sample_influence_weights(&data_views).expect("weights derived");
+    assert_eq!(
+        weights.len(),
+        spec_len,
+        "row_weights length must equal the post-exclusion training spec"
+    );
+}
+
+#[test]
+fn exclusion_is_sample_local_across_relation_rows() {
+    // (c) A sample with one excluded relation row and one non-excluded row is
+    // fully dropped from training (sample-local exclusion).
+    let mut base = SampleRelation::new(
+        ObservationId::new("obs.s2.base").unwrap(),
+        SampleId::new("s2").unwrap(),
+    );
+    base.excluded = false;
+    let mut rep = SampleRelation::new(
+        ObservationId::new("obs.s2.rep1").unwrap(),
+        SampleId::new("s2").unwrap(),
+    );
+    rep.excluded = true; // only the second row is excluded
+    let kept = SampleRelation::new(
+        ObservationId::new("obs.s1.base").unwrap(),
+        SampleId::new("s1").unwrap(),
+    );
+    let relations = SampleRelationSet {
+        records: vec![base, rep, kept],
+    };
+    let excluded = relations.excluded_sample_ids();
+    assert!(
+        excluded.contains(&SampleId::new("s2").unwrap()),
+        "a sample with ANY excluded row is excluded sample-locally"
+    );
+    assert!(!excluded.contains(&SampleId::new("s1").unwrap()));
+
+    let node_id = NodeId::new("node:model").unwrap();
+    let binding = data_binding(&node_id);
+    let fold_set = three_fold_stress_set();
+    let fold_id = fold_set.folds[0].fold_id.clone(); // train=[s1,s2,s4,s5]
+    let scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: None,
+        variant: None,
+        fold_id: Some(fold_id),
+        seed_root: None,
+    };
+    let train_view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &scope,
+        DataRequestPartition::FoldTrain,
+        None,
+        DataViewRole::Fit,
+        &excluded,
+    )
+    .unwrap();
+    assert!(
+        !train_view
+            .sample_ids
+            .as_ref()
+            .unwrap()
+            .contains(&SampleId::new("s2").unwrap()),
+        "s2 must be fully dropped from training even though one of its rows is not excluded"
+    );
+}

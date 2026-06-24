@@ -5418,6 +5418,12 @@ fn collect_input_handles(
         )));
     }
     if let Some(data_provider) = resources.data_provider {
+        // Samples excluded from training (sample-local) for this node, derived
+        // from its coordinator relations. Used to filter FIT view specs so the
+        // spec, the materialized view, and fit-influence row_weights agree.
+        let excluded_samples = coordinator_relations_for_node(node_plan, resources)?
+            .map(|relations| relations.excluded_sample_ids())
+            .unwrap_or_default();
         for binding in &node_plan.data_bindings {
             let materialized = data_provider.materialize(&DataMaterializationRequest {
                 run_id: ctx.run_id.clone(),
@@ -5434,6 +5440,7 @@ fn collect_input_handles(
                 plan.fold_set.as_ref(),
                 scope,
                 branch_view_for_node.as_ref(),
+                &excluded_samples,
             )?;
             let key = data_view_key(&binding.input_name);
             let view_handle = make_data_view_handle(
@@ -5463,6 +5470,7 @@ fn collect_input_handles(
                 plan.fold_set.as_ref(),
                 scope,
                 branch_view_for_node.as_ref(),
+                &excluded_samples,
             )? {
                 let validation_key = format!("{key}:validation");
                 let validation_handle = make_data_view_handle(
@@ -6647,9 +6655,24 @@ fn data_view_for_scope(
     fold_set: Option<&FoldSet>,
     scope: &PhaseScope,
     branch_view: Option<&crate::data::BranchViewPlan>,
+    excluded_samples: &BTreeSet<SampleId>,
 ) -> Result<DataProviderViewSpec> {
     let partition = data_partition_for_scope(binding, scope);
-    data_view_for_partition(binding, fold_set, scope, partition, branch_view)
+    // During FIT_CV and REFIT this primary view IS the training input; during
+    // PREDICT/EXPLAIN (and the planning phases) it is a non-fit read.
+    let role = match scope.phase {
+        Phase::FitCv | Phase::Refit => DataViewRole::Fit,
+        _ => DataViewRole::NonFit,
+    };
+    data_view_for_partition(
+        binding,
+        fold_set,
+        scope,
+        partition,
+        branch_view,
+        role,
+        excluded_samples,
+    )
 }
 
 fn validation_data_view_for_scope(
@@ -6657,6 +6680,7 @@ fn validation_data_view_for_scope(
     fold_set: Option<&FoldSet>,
     scope: &PhaseScope,
     branch_view: Option<&crate::data::BranchViewPlan>,
+    excluded_samples: &BTreeSet<SampleId>,
 ) -> Result<Option<DataProviderViewSpec>> {
     if scope.phase != Phase::FitCv || scope.fold_id.is_none() {
         return Ok(None);
@@ -6665,7 +6689,17 @@ fn validation_data_view_for_scope(
     if partition == data_partition_for_scope(binding, scope) {
         return Ok(None);
     }
-    data_view_for_partition(binding, fold_set, scope, partition, branch_view).map(Some)
+    // This is the validation companion read, never the training input.
+    data_view_for_partition(
+        binding,
+        fold_set,
+        scope,
+        partition,
+        branch_view,
+        DataViewRole::NonFit,
+        excluded_samples,
+    )
+    .map(Some)
 }
 
 /// Extract the `BranchViewPlan` that the DSL compiler stashed in the graph
@@ -6702,15 +6736,43 @@ fn branch_view_from_node_metadata(
     Ok(Some(plan))
 }
 
+/// Whether a data view is the FIT (training) input for its scope, or a
+/// non-fit (validation / predict / explain) read.
+///
+/// Exclusion is keyed off this role, not the partition name: `exclude` drops
+/// outlier samples from any TRAINING read (even an unsafe
+/// `fit_partition=fold_validation` one), while genuine validation/predict reads
+/// keep excluded samples so OOF/test coverage stays complete.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DataViewRole {
+    Fit,
+    NonFit,
+}
+
 fn data_view_for_partition(
     binding: &DataBinding,
     fold_set: Option<&FoldSet>,
     scope: &PhaseScope,
     partition: DataRequestPartition,
     branch_view: Option<&crate::data::BranchViewPlan>,
+    role: DataViewRole,
+    excluded_samples: &BTreeSet<SampleId>,
 ) -> Result<DataProviderViewSpec> {
     let fold = fold_for_scope(fold_set, scope.fold_id.as_ref())?;
-    let sample_ids = sample_ids_for_partition(partition, fold_set, fold);
+    let mut sample_ids = sample_ids_for_partition(partition, fold_set, fold);
+    // FIT role: enforce exclusion at the SPEC level (sample-local), so the
+    // spec, the materialized view, and `equal_sample_influence_weights`
+    // row_weights all agree on the same training rows. The policy escape hatch
+    // `include_excluded` (+ `allow_excluded_rows`) keeps excluded rows when a
+    // user explicitly opts in.
+    if role == DataViewRole::Fit
+        && !binding.view_policy.include_excluded
+        && !excluded_samples.is_empty()
+    {
+        if let Some(ids) = sample_ids.as_mut() {
+            ids.retain(|sample_id| !excluded_samples.contains(sample_id));
+        }
+    }
     if binding.view_policy.require_sample_ids
         && matches!(
             partition,
@@ -6731,6 +6793,16 @@ fn data_view_for_partition(
         DataRequestPartition::FoldValidation | DataRequestPartition::Predict => {
             binding.view_policy.include_augmented_validation
         }
+    };
+    // Exclusion is keyed off the FIT role, not the partition name. A fit
+    // (training) read drops excluded rows by default (the policy escape hatch
+    // `include_excluded` + `allow_excluded_rows` can keep them); a genuine
+    // validation/predict read always retains them so they are still validated
+    // and predicted. `filter_relations` honors this `include_excluded` flag as
+    // defense-in-depth, but the filtered spec sample_ids above are authoritative.
+    let include_excluded = match role {
+        DataViewRole::Fit => binding.view_policy.include_excluded,
+        DataViewRole::NonFit => true,
     };
     let mut extra = BTreeMap::new();
     extra.insert(
@@ -6763,7 +6835,7 @@ fn data_view_for_partition(
         source_ids: (!binding.source_ids.is_empty()).then(|| binding.source_ids.clone()),
         columns: None,
         include_augmented,
-        include_excluded: binding.view_policy.include_excluded,
+        include_excluded,
         branch_view: branch_view.cloned(),
         extra,
     };

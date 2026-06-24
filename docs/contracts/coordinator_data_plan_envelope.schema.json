@@ -145,6 +145,10 @@
         "is_augmented": {
           "type": "boolean",
           "default": false
+        },
+        "excluded": {
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false
