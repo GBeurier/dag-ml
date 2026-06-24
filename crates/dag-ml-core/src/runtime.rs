@@ -46,6 +46,7 @@ use crate::policy::{
 };
 use crate::relation::SampleRelationSet;
 use crate::rng::SeedContext;
+use crate::selection::{select_candidate, CandidateScore, SelectionMetric, SelectionPolicy};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -3760,6 +3761,131 @@ impl RunContext {
     }
 }
 
+/// Pick the best variant of a multi-variant plan by its cross-validation score, natively.
+///
+/// "Option A": each variant is scored with its OWN single-variant FIT_CV — the plan is cloned with
+/// `variants = vec![variant]` so the existing per-producer cross-fold OOF averaging
+/// ([`RunContext::collect_cross_fold_validation_scores`]) is unambiguous (one variant in scope, so a
+/// validation `PredictionBlock` belongs to exactly one variant). The OOF-average report per variant
+/// becomes a [`CandidateScore`], and [`select_candidate`] ranks them by `selection_metric` (the
+/// metric's [`objective`](RegressionMetricKind::objective) drives the direction — RMSE minimizes,
+/// accuracy maximizes). The winning candidate id maps back to its [`VariantId`].
+///
+/// Native scoring is opt-in: it only happens when the host emits `regression_targets`. So this
+/// returns `Ok(None)` when NO variant produced a cross-fold OOF average (scoring is off, the normal
+/// case today) — the caller should then fall back to its default variant, behaving exactly as before.
+/// When EVERY variant scored, it returns `Ok(Some(best))`. A partially-scored set (some variants
+/// scored, others not) is an inconsistent host and is rejected so variants are never ranked unfairly.
+///
+/// `run_single_variant_fit_cv` runs FIT_CV for the single-variant plan into the supplied context
+/// (the caller supplies the scheduler/data-provider wiring); this keeps the selection logic free of
+/// host runtime details and unit-testable with mock controllers. Cloning a one-variant plan is
+/// valid: `node_plans`/`fold_set` are plan-level (not keyed per variant) and variant params are
+/// applied per-node at task build time, so the per-variant CV is isolated.
+pub fn select_best_variant_by_cv<F>(
+    plan: &ExecutionPlan,
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    selection_metric: RegressionMetricKind,
+    mut run_single_variant_fit_cv: F,
+) -> Result<Option<VariantId>>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
+    plan.validate()?;
+    if plan.variants.is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "cannot select a variant for a plan with no variants".to_string(),
+        ));
+    }
+
+    let mut candidates: Vec<CandidateScore> = Vec::with_capacity(plan.variants.len());
+    // Tracks whether ANY variant emitted scores at all (host targets present), so an empty candidate
+    // set can be told apart from "scoring genuinely off" (no targets) — see the post-loop branch.
+    let mut any_scores_seen = false;
+    for variant in &plan.variants {
+        let single_variant_plan = ExecutionPlan {
+            variants: vec![variant.clone()],
+            ..plan.clone()
+        };
+        let mut ctx = RunContext::new(run_id.clone(), root_seed);
+        ctx.variant_id = Some(variant.variant_id.clone());
+        run_single_variant_fit_cv(&single_variant_plan, &mut ctx)?;
+        ctx.collect_cross_fold_validation_scores()?;
+        if !ctx.score_collector.is_empty() {
+            any_scores_seen = true;
+        }
+        // `cross_fold_validation_reports` emits one cross-fold OOF average PER producer. Native SELECT
+        // ranks a variant by a single score, so a multi-producer DAG is ambiguous and refused rather
+        // than silently ranked on whichever producer happened to be first (an explicit score-target
+        // producer is a future extension).
+        let avg_reports = ctx
+            .score_collector
+            .iter()
+            .filter(|report| {
+                report.partition == PredictionPartition::Validation
+                    && report
+                        .fold_id
+                        .as_ref()
+                        .is_some_and(|fold| fold.as_str() == "avg")
+            })
+            .collect::<Vec<_>>();
+        match avg_reports.as_slice() {
+            [] => {}
+            [report] => candidates.push(
+                (*report)
+                    .clone()
+                    .into_candidate_score(variant.variant_id.as_str())?,
+            ),
+            _ => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "variant `{}` produced {} cross-fold OOF averages (multiple prediction producers); native SELECT needs a single score target",
+                    variant.variant_id,
+                    avg_reports.len()
+                )));
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        if any_scores_seen {
+            // Targets WERE emitted, but no producer yielded a cross-fold average (e.g. a single fold,
+            // where the average is skipped). We cannot rank — surface it instead of falling back.
+            return Err(DagMlError::RuntimeValidation(
+                "variants produced scores but no cross-fold OOF average; cannot rank — need >=2 folds or an explicit score target".to_string(),
+            ));
+        }
+        // Native scoring is genuinely off (no host targets) — let the caller keep its default variant.
+        return Ok(None);
+    }
+    if candidates.len() != plan.variants.len() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "native variant SELECT scored only {} of {} variants; cannot rank variants fairly",
+            candidates.len(),
+            plan.variants.len()
+        )));
+    }
+
+    let policy = SelectionPolicy {
+        id: format!("select:variant:{}", selection_metric.name()),
+        metric: SelectionMetric {
+            name: selection_metric.name().to_string(),
+            objective: selection_metric.objective(),
+        },
+        required_metric_level: None,
+        require_finite: true,
+        evaluation_scope: None,
+        refit_slot_plan: None,
+        stacking_fit_contract: None,
+        reduction_id: None,
+    };
+    let decision = select_candidate(&policy, &candidates)?;
+    let selected = VariantId::new(decision.selected_candidate_id).map_err(|error| {
+        DagMlError::RuntimeValidation(format!("selected variant id is invalid: {error}"))
+    })?;
+    Ok(Some(selected))
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SequentialScheduler;
 
@@ -4865,9 +4991,11 @@ fn apply_result_scoring(
             let mut report = score_regression_prediction_block(block, targets, SCORE_METRICS)?;
             report.variant_id = result.lineage.variant_id.clone();
             collector.push(report);
-            // Retain y_true (tagged with its fold/partition) so the OOF average can be scored later.
+            // Retain y_true (tagged with its variant/fold/partition) so the OOF average can be
+            // scored later, per-variant.
             target_records.push(RegressionTargetRecord {
                 producer_node: block.producer_node.clone(),
+                variant_id: result.lineage.variant_id.clone(),
                 partition: block.partition.clone(),
                 fold_id: block.fold_id.clone(),
                 block: targets.clone(),

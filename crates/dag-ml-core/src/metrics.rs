@@ -589,6 +589,9 @@ fn prediction_level_name(level: PredictionLevel) -> &'static str {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegressionTargetRecord {
     pub producer_node: NodeId,
+    /// Variant that produced the scored block — lets the cross-fold OOF average be computed
+    /// per-variant (for native SELECT) without tagging every PredictionBlock with a variant.
+    pub variant_id: Option<VariantId>,
     pub partition: PredictionPartition,
     pub fold_id: Option<FoldId>,
     pub block: RegressionTargetBlock,
