@@ -25,6 +25,7 @@ from ._dag_ml import (
     compile_pipeline_dsl_artifact_json,
     compile_pipeline_dsl_artifact_with_controllers_json,
     compile_pipeline_dsl_graph_json,
+    fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
     validate_campaign_json,
     validate_controller_manifest_json,
@@ -57,6 +58,7 @@ _FACADE_EXPORTS = [
     "compile_pipeline_dsl_graph",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_with_controllers",
+    "fan_out_data_aware_branches",
     "build_execution_plan",
 ]
 
@@ -240,6 +242,20 @@ def compile_pipeline_dsl_artifact_with_controllers(
     )
 
 
+def fan_out_data_aware_branches(dsl: Any, envelope: Any) -> PipelineDslSpec:
+    """Expand an ``auto_separate`` separation-branch template into one branch per partition.
+
+    Calls dag-ml-core's native data-aware fan-out: a branch step marked
+    ``metadata.auto_separate=true`` with one template branch is expanded into N explicit
+    branches — one per sorted distinct value of the criterion column discovered from the
+    envelope's coordinator relations. The native fan-out owns the per-partition node-id
+    suffixing and selector assignment, so the host never replicates that logic.
+    """
+    return PipelineDslSpec(
+        fan_out_data_aware_branches_json(_coerce_json(dsl), _coerce_json(envelope))
+    )
+
+
 def build_execution_plan(
     plan_id: str,
     graph: Any,
@@ -289,6 +305,8 @@ __all__ = [
     "compile_pipeline_dsl_artifact_with_controllers_json",
     "compile_pipeline_dsl_graph",
     "compile_pipeline_dsl_graph_json",
+    "fan_out_data_aware_branches",
+    "fan_out_data_aware_branches_json",
     "fold_set_fingerprint_json",
     "validate_campaign_json",
     "validate_controller_manifest_json",

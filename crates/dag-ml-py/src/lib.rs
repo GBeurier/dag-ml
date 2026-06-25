@@ -12,9 +12,10 @@ use serde::de::DeserializeOwned;
 
 use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
-    compile_pipeline_dsl_with_generation_and_controller_registry, fold_set_fingerprint,
-    parse_pipeline_dsl_json, CampaignSpec, ControllerManifest, ControllerRegistry,
-    DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec,
+    compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
+    fold_set_fingerprint, parse_pipeline_dsl_json, CampaignSpec, ControllerManifest,
+    ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan,
+    ExternalDataPlanEnvelope, FoldSet, GraphSpec,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -139,6 +140,15 @@ fn compile_pipeline_dsl_artifact_with_controllers_json(
 }
 
 #[pyfunction]
+fn fan_out_data_aware_branches_json(dsl_json: &str, envelope_json: &str) -> PyResult<String> {
+    let spec = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
+    let envelope: ExternalDataPlanEnvelope =
+        serde_json::from_str(envelope_json).map_err(py_serde_error)?;
+    let expanded = fan_out_data_aware_branches(&spec, &envelope).map_err(py_core_error)?;
+    serde_json::to_string(&expanded).map_err(py_serde_error)
+}
+
+#[pyfunction]
 fn build_execution_plan_json(
     plan_id: &str,
     graph_json: &str,
@@ -196,6 +206,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_function(wrap_pyfunction!(
         compile_pipeline_dsl_artifact_with_controllers_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        fan_out_data_aware_branches_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(build_execution_plan_json, module)?)?;
