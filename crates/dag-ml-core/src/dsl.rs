@@ -5961,7 +5961,35 @@ fn json_number(value: f64, node_id: &NodeId, param: &str) -> Result<serde_json::
             "pipeline DSL numeric generator for `{node_id}.{param}` produced a non-finite value"
         ))
     })?;
-    Ok(serde_json::Value::Number(number))
+    Ok(serde_json::Value::Number(canonical_generator_number(
+        number,
+    )))
+}
+
+/// Normalize a generated numeric value to its JSON round-trip *fixpoint*.
+///
+/// `serde_json`'s shortest-decimal float formatting is not always a round-trip
+/// fixpoint: a value such as `0.010000000000000005` renders to that text, but
+/// re-parsing the text and re-rendering yields `0.010000000000000004`. Generator
+/// choices store the value (fingerprinted by the campaign generation spec, which
+/// is re-parsed from JSON at plan time) and derive the choice label from the same
+/// value at compile time (kept verbatim as a string in the graph that backs the
+/// `search_space_fingerprint`). Without normalization the value drifts by one ULP
+/// of decimal text across the compile→serialize→plan JSON round-trip while the
+/// label string does not, so the two fingerprints disagree and planning rejects
+/// the plan (`search_space_fingerprint does not match campaign generation spec`).
+///
+/// One parse→reserialize→parse pass reaches the fixpoint (verified: a second pass
+/// is a no-op for every value), so canonicalizing here — at the single point that
+/// produces every numeric generator value — makes the value its own round-trip
+/// fixpoint. Both the stored value and the derived label then render identically
+/// no matter how many JSON round-trips the artifact takes, so the graph-side and
+/// campaign-side fingerprints agree. Integer-valued and already-stable decimals
+/// (every `range`/`grid` value in practice) are fixpoints already, so this is a
+/// no-op for them.
+fn canonical_generator_number(number: serde_json::Number) -> serde_json::Number {
+    let rendered = number.to_string();
+    serde_json::from_str::<serde_json::Number>(&rendered).unwrap_or(number)
 }
 
 fn generator_dimension_name(
@@ -8288,6 +8316,131 @@ mod tests {
             serde_json::json!(["pca", "snv"])
         );
         assert!(compiled.generation_fingerprint.is_some());
+    }
+
+    fn log_range_repro_spec() -> PipelineDslSpec {
+        serde_json::from_str(
+            r#"{
+  "id": "dsl-log-range-fingerprint",
+  "steps": [
+    {
+      "kind": "model",
+      "id": "model:tuned",
+      "operator": {"type": "TunedModel"},
+      "generators": [
+        {"kind": "log_range", "param": "lambda", "start": 0.001, "stop": 1.0, "count": 4, "base": 10.0}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap()
+    }
+
+    /// Regression for the native `log_range` generator: the generated value text
+    /// must be a JSON round-trip fixpoint so the graph `search_space_fingerprint`
+    /// and the campaign generation spec stay in agreement through the
+    /// compile -> serialize -> plan boundary, and the four base-10 points expand
+    /// to 0.001 / 0.01 / 0.1 / 1.0.
+    #[test]
+    fn log_range_generator_compiles_and_plans_through_json_roundtrip() {
+        let compiled = compile_pipeline_dsl_with_generation(&log_range_repro_spec()).unwrap();
+
+        // The expanded points are the four base-10 log-range positions
+        // (0.001 / 0.01 / 0.1 / 1.0, up to floating-point interpolation error).
+        let dimension = &compiled.generation.dimensions[0];
+        assert_eq!(dimension.name, "model:tuned.lambda.log_range");
+        let values = dimension
+            .choices
+            .iter()
+            .map(|choice| choice.value["lambda"].as_f64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 4);
+        for (got, want) in values.iter().zip([0.001, 0.01, 0.1, 1.0]) {
+            assert!(
+                (got - want).abs() <= want * 1e-12,
+                "log_range point {got} not close to {want}"
+            );
+        }
+
+        // In-memory the two fingerprints already agree.
+        assert_eq!(
+            compiled.graph.search_space_fingerprint,
+            compiled.generation_fingerprint
+        );
+
+        // JSON round-trip the artifact exactly like the CLI / Python (C-ABI)
+        // boundary does, then recompute the campaign-side fingerprint: it must
+        // still equal the graph-side fingerprint stored at compile time.
+        let graph: GraphSpec =
+            serde_json::from_str(&serde_json::to_string(&compiled.graph).unwrap()).unwrap();
+        let campaign: crate::plan::CampaignSpec =
+            serde_json::from_str(&serde_json::to_string(&compiled.campaign_template).unwrap())
+                .unwrap();
+        let expected = graph.search_space_fingerprint.clone().unwrap();
+        let actual = generation_spec_fingerprint(&campaign.generation).unwrap();
+        assert_eq!(
+            expected, actual,
+            "log_range search_space_fingerprint must survive the JSON round-trip"
+        );
+
+        // And it actually plans (this is the call that previously raised
+        // `search_space_fingerprint does not match campaign generation spec`).
+        let mut registry = ControllerRegistry::new();
+        registry
+            .register(registry_manifest(
+                "controller:model",
+                NodeKind::Model,
+                &["TunedModel"],
+            ))
+            .unwrap();
+        let plan = crate::plan::build_execution_plan("plan:log-range", graph, campaign, &registry)
+            .unwrap();
+        assert_eq!(plan.variants.len(), 4);
+    }
+
+    /// The compiled log_range plan must be byte-identical for the same spec
+    /// (deterministic generation + fingerprints), while `range` and `grid`
+    /// generators are unaffected by the canonicalization.
+    #[test]
+    fn log_range_generation_is_deterministic_and_range_grid_unaffected() {
+        let a = compile_pipeline_dsl_with_generation(&log_range_repro_spec()).unwrap();
+        let b = compile_pipeline_dsl_with_generation(&log_range_repro_spec()).unwrap();
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap(),
+        );
+        assert_eq!(a.generation_fingerprint, b.generation_fingerprint);
+
+        // range + grid still compile to matching graph/campaign fingerprints
+        // (canonicalization is a no-op for their round-trip-stable values).
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-range-grid-fingerprint",
+  "steps": [
+    {
+      "kind": "model",
+      "id": "model:tuned",
+      "operator": {"type": "TunedModel"},
+      "generators": [
+        {"kind": "range", "param": "alpha", "start": 0.1, "stop": 0.9, "step": 0.4},
+        {"kind": "grid", "name": "tree_grid", "params": {"max_depth": [3, 5]}}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+        let graph: GraphSpec =
+            serde_json::from_str(&serde_json::to_string(&compiled.graph).unwrap()).unwrap();
+        let campaign: crate::plan::CampaignSpec =
+            serde_json::from_str(&serde_json::to_string(&compiled.campaign_template).unwrap())
+                .unwrap();
+        assert_eq!(
+            graph.search_space_fingerprint.unwrap(),
+            generation_spec_fingerprint(&campaign.generation).unwrap()
+        );
     }
 
     #[test]
