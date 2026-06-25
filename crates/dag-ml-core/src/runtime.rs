@@ -2242,6 +2242,11 @@ pub struct PredictionInputSpec {
     pub unit_ids: Vec<PredictionUnitId>,
     #[serde(default)]
     pub sample_ids: Vec<SampleId>,
+    /// Per-sample OOF prediction rows, aligned 1:1 with `sample_ids`
+    /// (width == `prediction_width`). Sourced only from Validation OOF blocks
+    /// so a host can build a stacking meta-feature matrix during FIT_CV/REFIT.
+    #[serde(default)]
+    pub values: Vec<Vec<f64>>,
     pub prediction_width: usize,
     #[serde(default)]
     pub target_names: Vec<String>,
@@ -5938,10 +5943,18 @@ fn prediction_input_spec(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
+    // Validation OOF rows keyed by sample, so the meta-node host can build a
+    // stacking feature matrix in FIT_CV/REFIT. Blocks are Validation-only (the
+    // leakage guards in `validate_fit_cv_oof_edge` / `validate_refit_oof_edge`
+    // and `collect_unique_oof_samples` already refused any Train partition).
+    let mut rows_by_sample: BTreeMap<&SampleId, &[f64]> = BTreeMap::new();
     let mut prediction_width = None;
     let mut target_names = None;
     for block in blocks {
         let width = block.validate_shape()?;
+        for (sample_id, row) in block.sample_ids.iter().zip(block.values.iter()) {
+            rows_by_sample.insert(sample_id, row.as_slice());
+        }
         let block_target_names = if block.target_names.is_empty() {
             (0..width)
                 .map(|index| format!("p{index}"))
@@ -5973,6 +5986,23 @@ fn prediction_input_spec(
         prediction_width = Some(width);
         target_names = Some(block_target_names);
     }
+    let values = sample_ids
+        .iter()
+        .map(|sample_id| {
+            rows_by_sample
+                .get(sample_id)
+                .map(|row| row.to_vec())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "edge `{}.{}` -> `{}.{}` has no OOF prediction row for sample `{sample_id}`",
+                        edge.source.node_id,
+                        edge.source.port_name,
+                        edge.target.node_id,
+                        edge.target.port_name
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(PredictionInputSpec {
         producer_node: edge.source.node_id.clone(),
         source_port: edge.source.port_name.clone(),
@@ -5987,6 +6017,7 @@ fn prediction_input_spec(
             .map(PredictionUnitId::Sample)
             .collect(),
         sample_ids,
+        values,
         prediction_width: prediction_width.unwrap_or_default(),
         target_names: target_names.unwrap_or_default(),
     })
@@ -6052,6 +6083,8 @@ fn aggregated_prediction_input_spec(
         fold_ids,
         unit_ids,
         sample_ids: Vec::new(),
+        // Aggregated (unit-level) OOF crosses as opaque handle, not per-sample rows.
+        values: Vec::new(),
         prediction_width: prediction_width.unwrap_or_default(),
         target_names: target_names.unwrap_or_default(),
     })
@@ -6072,6 +6105,9 @@ fn prediction_input_spec_from_requirement(
         fold_ids: requirement.fold_ids.clone(),
         unit_ids: requirement.unit_ids.clone(),
         sample_ids: requirement.sample_ids.clone(),
+        // Replay-cache requirement: OOF rows are materialized by the host via the
+        // prediction-cache handle, not carried inline in the spec.
+        values: Vec::new(),
         prediction_width: requirement.prediction_width,
         target_names: requirement.target_names.clone(),
     })

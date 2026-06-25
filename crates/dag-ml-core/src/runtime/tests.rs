@@ -725,6 +725,121 @@ impl RuntimeController for OofEdgeController {
     }
 }
 
+/// Captured `(sample_ids, values, prediction_width)` from a FIT_CV `PredictionInputSpec`.
+type CapturedOofSpec = (Vec<SampleId>, Vec<Vec<f64>>, usize);
+
+/// Emits a Validation OOF block at `model:base` and, at `model:meta`, records the
+/// `(sample_ids, values, width)` carried by the FIT_CV `PredictionInputSpec` so a
+/// test can assert the host can build a stacking matrix from spec values alone.
+struct CaptureOofValuesController {
+    id: ControllerId,
+    captured: Arc<Mutex<Vec<CapturedOofSpec>>>,
+}
+
+impl RuntimeController for CaptureOofValuesController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        if task.node_plan.node_id.as_str() == "model:meta" && task.phase == Phase::FitCv {
+            let spec = task
+                .prediction_inputs
+                .get("model:base.pred")
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "meta node did not receive OOF prediction input spec".to_string(),
+                    )
+                })?;
+            self.captured.lock().unwrap().push((
+                spec.sample_ids.clone(),
+                spec.values.clone(),
+                spec.prediction_width,
+            ));
+        }
+
+        let predictions = if task.node_plan.node_id.as_str() == "model:base" {
+            let sample_ids = aligned_validation_samples(task);
+            // Per-sample value carries the sample ordinal, so the test can assert
+            // the spec rows stay aligned 1:1 with `sample_ids`.
+            let values = sample_ids
+                .iter()
+                .map(|sample_id| {
+                    vec![if sample_id.as_str() == "s1" {
+                        0.25
+                    } else {
+                        0.75
+                    }]
+                })
+                .collect::<Vec<_>>();
+            vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: task.fold_id.clone(),
+                sample_ids,
+                values,
+                target_names: vec!["y".to_string()],
+            }]
+        } else {
+            Vec::new()
+        };
+
+        let handle_id = if task.node_plan.node_id.as_str() == "model:base" {
+            505
+        } else {
+            606
+        };
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([(
+                "pred".to_string(),
+                HandleRef {
+                    handle: handle_id,
+                    kind: HandleKind::Data,
+                    owner_controller: self.id.clone(),
+                },
+            )]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:oof.values:{}:{}",
+                    task.node_plan.node_id,
+                    task.fold_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "nofold".to_string())
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
 struct ExpectedRefitOofController {
     id: ControllerId,
     expected_fold_ids: Vec<FoldId>,
@@ -2975,6 +3090,49 @@ fn requires_oof_prediction_edge_rejects_train_predictions_as_features() {
         .to_string();
 
     assert!(error.contains("requires OOF validation predictions"));
+}
+
+#[test]
+fn requires_oof_prediction_edge_carries_validation_oof_values_in_fit_cv() {
+    // Option A: the meta-node `PredictionInputSpec` carries the Validation OOF
+    // value rows so a host can build the stacking matrix during FIT_CV.
+    let plan = build_execution_plan(
+        "plan:oof.edge.values",
+        oof_edge_graph(),
+        oof_edge_campaign(),
+        &manifests(),
+    )
+    .unwrap();
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(CaptureOofValuesController {
+            id: ControllerId::new("controller:model").unwrap(),
+            captured: Arc::clone(&captured),
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:oof.edge.values").unwrap(), Some(11));
+
+    SequentialScheduler
+        .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+        .unwrap();
+
+    let observed = captured.lock().unwrap();
+    // One meta-node invocation per fold (fold:0 -> s1, fold:1 -> s2).
+    assert_eq!(observed.len(), 2);
+    let by_sample = observed
+        .iter()
+        .map(|(sample_ids, values, width)| {
+            // Values stay aligned 1:1 with sample_ids at the declared width.
+            assert_eq!(values.len(), sample_ids.len());
+            assert_eq!(*width, 1);
+            assert!(values.iter().all(|row| row.len() == *width));
+            (sample_ids[0].to_string(), values[0][0])
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(by_sample.get("s1"), Some(&0.25));
+    assert_eq!(by_sample.get("s2"), Some(&0.75));
 }
 
 #[test]
