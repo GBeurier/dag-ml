@@ -8952,6 +8952,610 @@ fn empty_partition_intersection_can_raise_a_clear_error() {
     );
 }
 
+/// A `PredictionJoin` *fusion* (late-fusion averaging) merge node over N
+/// duplication branches. `merge_mode="fusion"` marks it for the native fusion
+/// reassembly that averages each sample's branch predictions (vs concat's
+/// disjoint reassembly).
+fn fusion_merge_node(node_id: &str, branch_ids: &[&str], merge_mode: &str) -> NodeSpec {
+    let mut node = node(
+        node_id,
+        NodeKind::PredictionJoin,
+        branch_ids
+            .iter()
+            .map(|branch| port(&format!("oof_{branch}"), PortKind::Prediction))
+            .collect(),
+        vec![port("oof", PortKind::Prediction)],
+    );
+    node.metadata.insert(
+        "merge_mode".to_string(),
+        serde_json::Value::String(merge_mode.to_string()),
+    );
+    node
+}
+
+/// A duplication-branch model node: a plain Model node (no branch_view, so it
+/// covers the FULL fold validation set — the duplication shape `[[A],[B]]`).
+fn duplication_model_node(node_id: &str) -> NodeSpec {
+    node(
+        node_id,
+        NodeKind::Model,
+        vec![port("x", PortKind::Data)],
+        vec![port("oof", PortKind::Prediction)],
+    )
+}
+
+/// A duplication-branch controller for the fusion tests: it emits ONE full-fold
+/// `Validation` OOF block over the fold's validation set (read from the
+/// validation data view — duplication branches see the whole fold), with a
+/// per-node constant value `offsets[node_id]`, plus matching per-sample `y_true`.
+/// `skip` names (node_id, sample) pairs that the branch does NOT predict, used to
+/// drive asymmetric coverage — that sample is then averaged over the remaining
+/// branch(es) only.
+struct FusionBranchController {
+    id: ControllerId,
+    handle: u64,
+    /// node_id -> the constant prediction value this branch emits per sample.
+    offsets: BTreeMap<String, f64>,
+    /// (node_id, sample_id) pairs the branch deliberately does not cover.
+    skip: BTreeSet<(String, String)>,
+}
+
+impl RuntimeController for FusionBranchController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let node_id = task.node_plan.node_id.to_string();
+        let fold_label = task
+            .fold_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string());
+        let validation_view = task
+            .data_views
+            .iter()
+            .find(|(_, view)| view.partition == DataRequestPartition::FoldValidation)
+            .map(|(_, view)| view);
+        // Duplication branch: cover the FULL fold validation set (minus any skips).
+        let fold_validation_ids: Vec<String> = validation_view
+            .and_then(|view| view.sample_ids.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(ToString::to_string)
+            .filter(|sample| !self.skip.contains(&(node_id.clone(), sample.clone())))
+            .collect();
+        let value = *self.offsets.get(&node_id).unwrap_or(&0.0);
+
+        let prediction_output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Prediction,
+            owner_controller: self.id.clone(),
+        };
+        let data_output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Data,
+            owner_controller: self.id.clone(),
+        };
+        let (predictions, regression_targets) =
+            if task.phase == Phase::FitCv && !fold_validation_ids.is_empty() {
+                let preds = vec![PredictionBlock {
+                    prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                    producer_node: task.node_plan.node_id.clone(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: task.fold_id.clone(),
+                    sample_ids: fold_validation_ids
+                        .iter()
+                        .map(|s| SampleId::new(s).unwrap())
+                        .collect(),
+                    values: fold_validation_ids.iter().map(|_| vec![value]).collect(),
+                    target_names: vec!["y".to_string()],
+                }];
+                // Ground truth is the sample's numeric suffix — identical across
+                // branches (a sample's y_true is fold/branch-independent).
+                let targets = vec![crate::metrics::RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids: fold_validation_ids
+                        .iter()
+                        .map(|s| {
+                            crate::aggregation::PredictionUnitId::Sample(SampleId::new(s).unwrap())
+                        })
+                        .collect(),
+                    values: fold_validation_ids
+                        .iter()
+                        .map(|s| vec![ScoringBranchController::y_true(s)])
+                        .collect(),
+                    target_names: vec!["y".to_string()],
+                }];
+                (preds, targets)
+            } else {
+                (Vec::new(), Vec::new())
+            };
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([
+                ("pred".to_string(), prediction_output.clone()),
+                ("oof".to_string(), prediction_output),
+                ("x".to_string(), data_output),
+            ]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets,
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!("lineage:{node_id}:{fold_label}")).unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
+/// A 2-branch duplication + fusion-merge plan over a 2-fold KFold (4 samples),
+/// both branches on the FULL data. Returns plan + provider; the caller registers
+/// the runtime controllers.
+fn fusion_merge_plan_and_provider(plan_id: &str) -> (ExecutionPlan, InMemoryDataProvider) {
+    let node_a = duplication_model_node("model:dup__A");
+    let node_b = duplication_model_node("model:dup__B");
+    let merge = fusion_merge_node("merge:dup", &["model:dup__A", "model:dup__B"], "fusion");
+    let graph = GraphSpec {
+        id: format!("graph:{plan_id}"),
+        interface: GraphInterface::default(),
+        nodes: vec![node_a, node_b, merge],
+        edges: vec![
+            branch_to_merge_edge("model:dup__A", "merge:dup"),
+            branch_to_merge_edge("model:dup__B", "merge:dup"),
+        ],
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+    let id_a = NodeId::new("model:dup__A").unwrap();
+    let id_b = NodeId::new("model:dup__B").unwrap();
+    let samples: Vec<SampleId> = ["sample:1", "sample:2", "sample:3", "sample:4"]
+        .iter()
+        .map(|s| SampleId::new(*s).unwrap())
+        .collect();
+    let fold_set = FoldSet {
+        id: format!("folds:{plan_id}"),
+        sample_ids: samples.clone(),
+        folds: vec![
+            FoldAssignment {
+                fold_id: FoldId::new("fold:0").unwrap(),
+                train_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                validation_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                metadata: BTreeMap::new(),
+            },
+            FoldAssignment {
+                fold_id: FoldId::new("fold:1").unwrap(),
+                train_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                validation_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                metadata: BTreeMap::new(),
+            },
+        ],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
+    };
+    let campaign = CampaignSpec {
+        inner_cv: None,
+        id: format!("campaign:{plan_id}"),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: format!("split:{plan_id}"),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(fold_set),
+        }),
+        generation: Default::default(),
+        shape_plans: BTreeMap::new(),
+        data_bindings: BTreeMap::from([
+            (id_a.clone(), vec![data_binding(&id_a)]),
+            (id_b.clone(), vec![data_binding(&id_b)]),
+        ]),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    };
+    let mut registry = ControllerRegistry::new();
+    registry
+        .register(controller_manifest("controller:model", NodeKind::Model))
+        .unwrap();
+    registry
+        .register(merge_controller_manifest("controller:merge"))
+        .unwrap();
+    let plan = build_execution_plan(plan_id, graph, campaign, &registry).unwrap();
+    let envelope = sample_relations_envelope(&[
+        ("sample:1", "A"),
+        ("sample:2", "B"),
+        ("sample:3", "A"),
+        ("sample:4", "B"),
+    ]);
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data").unwrap(),
+        envelope,
+    )
+    .unwrap();
+    (plan, provider)
+}
+
+#[test]
+fn fusion_merge_averages_duplication_branch_oof_including_asymmetric_coverage() {
+    // A 2-branch DUPLICATION ([[A],[B]]) + late-fusion merge: both models fit on
+    // the FULL data and emit full-fold OOF; the merge AVERAGES their held-out
+    // predictions per sample (distinct from concat's disjoint reassembly). Branch
+    // A always predicts 10.0; branch B predicts 20.0 but DELIBERATELY SKIPS
+    // sample:1 (asymmetric coverage). So sample:1 averages over A only (=10.0)
+    // while every other sample averages A+B (=15.0).
+    let (plan, provider) = fusion_merge_plan_and_provider("plan:fusion.avg");
+    let merge_id = NodeId::new("merge:dup").unwrap();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(FusionBranchController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 1,
+            offsets: BTreeMap::from([
+                ("model:dup__A".to_string(), 10.0),
+                ("model:dup__B".to_string(), 20.0),
+            ]),
+            skip: BTreeSet::from([("model:dup__B".to_string(), "sample:1".to_string())]),
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:fusion.avg").unwrap(), Some(7));
+
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+
+    // The merge emits one fused OOF block per fold, each covering the full fold
+    // validation set (the union of branch coverage), each sample exactly once.
+    let merge_blocks: Vec<&PredictionBlock> = ctx
+        .prediction_store
+        .blocks()
+        .iter()
+        .filter(|block| block.producer_node == merge_id)
+        .collect();
+    assert_eq!(
+        merge_blocks.len(),
+        2,
+        "fusion merge emits one fused OOF block per fold"
+    );
+
+    // Collect every fused (sample -> value) across folds.
+    let fused: BTreeMap<String, f64> = merge_blocks
+        .iter()
+        .flat_map(|block| {
+            block
+                .sample_ids
+                .iter()
+                .zip(&block.values)
+                .map(|(sample, row)| (sample.to_string(), row[0]))
+        })
+        .collect();
+    // sample:1 was predicted by A only (B skipped it) -> average over A: 10.0.
+    assert!(
+        (fused["sample:1"] - 10.0).abs() < 1e-9,
+        "asymmetric: sample:1 averages over the covering branch (A) only"
+    );
+    // Every other sample was predicted by both A (10) and B (20) -> mean 15.0.
+    for sample in ["sample:2", "sample:3", "sample:4"] {
+        assert!(
+            (fused[sample] - 15.0).abs() < 1e-9,
+            "{sample} averages both branches: (10+20)/2 = 15"
+        );
+    }
+
+    // The fused output covers the full sample universe exactly once across folds
+    // and passes the normal full-fold OOF completeness validation.
+    let mut covered: Vec<String> = fused.keys().cloned().collect();
+    covered.sort();
+    assert_eq!(
+        covered,
+        vec![
+            "sample:1".to_string(),
+            "sample:2".to_string(),
+            "sample:3".to_string(),
+            "sample:4".to_string()
+        ],
+        "the fused OOF covers every sample exactly once"
+    );
+    let fold_set = plan.fold_set.as_ref().unwrap();
+    crate::oof::validate_prediction_blocks_against_folds(fold_set, &[(*merge_blocks[0]).clone()])
+        .expect("fused OOF block passes full-fold completeness");
+    crate::oof::validate_prediction_blocks_against_folds(fold_set, &[(*merge_blocks[1]).clone()])
+        .expect("fused OOF block passes full-fold completeness");
+
+    // LEAKAGE: the fused block is a Validation (held-out) producer for the merge.
+    for block in &merge_blocks {
+        assert_eq!(
+            block.partition,
+            PredictionPartition::Validation,
+            "fusion averages held-out OOF, never train predictions"
+        );
+    }
+
+    // The merge is SCORED both per-fold and cross-fold (branches emit matching
+    // y_true, reassembled onto the merge producer).
+    ctx.collect_cross_fold_validation_scores().unwrap();
+    let avg: Vec<&crate::metrics::RegressionMetricReport> = ctx
+        .score_collector
+        .iter()
+        .filter(|report| {
+            report.producer_node == merge_id
+                && report
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold| fold.as_str() == "avg")
+        })
+        .collect();
+    assert_eq!(
+        avg.len(),
+        1,
+        "fusion merge producer has one cross-fold OOF average"
+    );
+    assert_eq!(
+        avg[0].row_count, 4,
+        "the merge OOF average covers the full universe"
+    );
+
+    // The merge lineage links both contributing branches per fold.
+    let merge_lineage = ctx
+        .lineage
+        .records()
+        .find(|record| {
+            record.node_id == merge_id && record.fold_id.as_ref().unwrap().as_str() == "fold:0"
+        })
+        .expect("fusion merge recorded lineage");
+    assert_eq!(
+        merge_lineage.input_lineage.len(),
+        2,
+        "fusion merge lineage references both branch producers for the fold"
+    );
+}
+
+#[test]
+fn fusion_proba_mean_merge_averages_and_renormalizes_class_probabilities() {
+    // The classification analogue: merge_mode="fusion_proba_mean" averages each
+    // sample's per-class probability rows across duplication branches and
+    // renormalizes to a valid distribution. Branch A emits [0.8, 0.2]; branch B
+    // emits [0.4, 0.6]; the fused row is [0.6, 0.4] (mean, already summing to 1).
+    let node_a = duplication_model_node("model:dup__A");
+    let node_b = duplication_model_node("model:dup__B");
+    let merge = fusion_merge_node(
+        "merge:dup",
+        &["model:dup__A", "model:dup__B"],
+        "fusion_proba_mean",
+    );
+    let graph = GraphSpec {
+        id: "graph:fusion.proba".to_string(),
+        interface: GraphInterface::default(),
+        nodes: vec![node_a, node_b, merge],
+        edges: vec![
+            branch_to_merge_edge("model:dup__A", "merge:dup"),
+            branch_to_merge_edge("model:dup__B", "merge:dup"),
+        ],
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+    let id_a = NodeId::new("model:dup__A").unwrap();
+    let id_b = NodeId::new("model:dup__B").unwrap();
+    let samples: Vec<SampleId> = ["sample:1", "sample:2"]
+        .iter()
+        .map(|s| SampleId::new(*s).unwrap())
+        .collect();
+    // Two disjoint folds (LOO over the 2 samples); each branch emits a proba row
+    // for the fold's validated sample, and the merge fuses per fold.
+    let fold_set = FoldSet {
+        id: "folds:fusion.proba".to_string(),
+        sample_ids: samples.clone(),
+        folds: vec![
+            FoldAssignment {
+                fold_id: FoldId::new("fold:0").unwrap(),
+                train_sample_ids: vec![samples[1].clone()],
+                validation_sample_ids: vec![samples[0].clone()],
+                metadata: BTreeMap::new(),
+            },
+            FoldAssignment {
+                fold_id: FoldId::new("fold:1").unwrap(),
+                train_sample_ids: vec![samples[0].clone()],
+                validation_sample_ids: vec![samples[1].clone()],
+                metadata: BTreeMap::new(),
+            },
+        ],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
+    };
+    let campaign = CampaignSpec {
+        inner_cv: None,
+        id: "campaign:fusion.proba".to_string(),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: "split:fusion.proba".to_string(),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(fold_set),
+        }),
+        generation: Default::default(),
+        shape_plans: BTreeMap::new(),
+        data_bindings: BTreeMap::from([
+            (id_a.clone(), vec![data_binding(&id_a)]),
+            (id_b.clone(), vec![data_binding(&id_b)]),
+        ]),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    };
+    let mut registry = ControllerRegistry::new();
+    registry
+        .register(controller_manifest("controller:model", NodeKind::Model))
+        .unwrap();
+    registry
+        .register(merge_controller_manifest("controller:merge"))
+        .unwrap();
+    let plan = build_execution_plan("plan:fusion.proba", graph, campaign, &registry).unwrap();
+    let envelope = sample_relations_envelope(&[("sample:1", "A"), ("sample:2", "B")]);
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data").unwrap(),
+        envelope,
+    )
+    .unwrap();
+
+    let merge_id = NodeId::new("merge:dup").unwrap();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(ProbaBranchController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 1,
+            rows: BTreeMap::from([
+                ("model:dup__A".to_string(), vec![0.8, 0.2]),
+                ("model:dup__B".to_string(), vec![0.4, 0.6]),
+            ]),
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:fusion.proba").unwrap(), Some(7));
+
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+
+    let merge_blocks: Vec<&PredictionBlock> = ctx
+        .prediction_store
+        .blocks()
+        .iter()
+        .filter(|block| block.producer_node == merge_id)
+        .collect();
+    assert_eq!(merge_blocks.len(), 2, "one fused proba block per fold");
+    for block in &merge_blocks {
+        for row in &block.values {
+            assert!(
+                (row[0] - 0.6).abs() < 1e-9 && (row[1] - 0.4).abs() < 1e-9,
+                "fused proba row is the renormalized mean [0.6, 0.4], got {row:?}"
+            );
+            assert!(
+                (row.iter().sum::<f64>() - 1.0).abs() < 1e-9,
+                "fused proba row is a valid distribution (sums to 1)"
+            );
+        }
+    }
+}
+
+/// A duplication-branch controller emitting a full-fold `Validation` block whose
+/// rows are a per-node per-class probability vector (`rows[node_id]`), for the
+/// proba-mean fusion test.
+struct ProbaBranchController {
+    id: ControllerId,
+    handle: u64,
+    rows: BTreeMap<String, Vec<f64>>,
+}
+
+impl RuntimeController for ProbaBranchController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let node_id = task.node_plan.node_id.to_string();
+        let fold_label = task
+            .fold_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string());
+        let fold_validation_ids: Vec<SampleId> = task
+            .data_views
+            .iter()
+            .find(|(_, view)| view.partition == DataRequestPartition::FoldValidation)
+            .and_then(|(_, view)| view.sample_ids.clone())
+            .unwrap_or_default();
+        let row = self.rows.get(&node_id).cloned().unwrap_or_default();
+        let prediction_output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Prediction,
+            owner_controller: self.id.clone(),
+        };
+        let predictions = if task.phase == Phase::FitCv && !fold_validation_ids.is_empty() {
+            vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: task.fold_id.clone(),
+                sample_ids: fold_validation_ids.clone(),
+                values: fold_validation_ids.iter().map(|_| row.clone()).collect(),
+                target_names: vec!["c0".to_string(), "c1".to_string()],
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([
+                ("pred".to_string(), prediction_output.clone()),
+                ("oof".to_string(), prediction_output),
+            ]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!("lineage:{node_id}:{fold_label}")).unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
 fn sample_relations_envelope(rows: &[(&str, &str)]) -> ExternalDataPlanEnvelope {
     let records = rows
         .iter()

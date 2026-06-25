@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::aggregation::{
     aggregate_observation_predictions, aggregate_sample_predictions_by_unit,
+    reduce_predictions_across_branches, reduce_proba_mean_across_branches,
     AggregatedPredictionBlock, AggregationControllerInput, AggregationControllerOutput,
     AggregationControllerResult, AggregationControllerTask, ObservationPredictionBlock,
     PredictionUnitId,
@@ -4274,14 +4275,15 @@ impl SequentialScheduler {
                     .node_plans
                     .get(node_id)
                     .expect("execution plan was validated");
-                // Concat-merge reassembly is a scheduler/runtime handler, not a
-                // controller call: it reads the upstream branch OOF blocks from
-                // the prediction store and emits one merged per-sample OOF block.
-                // Intercept it before the controller path (and before the
-                // `requires_oof` edge collection, which is a stacking contract
-                // the partition-covering branch inputs do not satisfy).
-                if is_concat_merge_node(plan, node_plan) {
-                    if let Some(result) = reassemble_separation_merge(plan, node_plan, ctx, &scope)?
+                // Cross-branch merge reassembly (concat or late-fusion) is a
+                // scheduler/runtime handler, not a controller call: it reads the
+                // upstream branch OOF blocks from the prediction store and emits
+                // one merged per-sample OOF block. Intercept it before the
+                // controller path (and before the `requires_oof` edge collection,
+                // which is a stacking contract the branch inputs do not satisfy).
+                if let Some(reduction) = merge_reduction_mode(plan, node_plan) {
+                    if let Some(result) =
+                        reassemble_branch_merge(plan, node_plan, ctx, &scope, reduction)?
                     {
                         for prediction in &result.predictions {
                             ctx.prediction_store.append(prediction.clone())?;
@@ -4756,20 +4758,20 @@ impl ParallelScheduler {
 
         for level in plan.node_parallel_levels_for_phase(scope.phase)? {
             let mut prepared = Vec::<PreparedNodeTask>::new();
-            // Concat-merge nodes are not controller tasks: they read the upstream
-            // branch OOF blocks from the prediction store and reassemble them on
-            // the scheduler thread (no worker), AFTER this level's worker tasks
-            // have populated the store. They are in a later level than their
-            // branches, so the store already holds the branch OOF by the time we
-            // reassemble — see `reassemble_separation_merge`.
-            let mut merge_nodes = Vec::<NodeId>::new();
+            // Cross-branch merge nodes (concat or late-fusion) are not controller
+            // tasks: they read the upstream branch OOF blocks from the prediction
+            // store and reassemble them on the scheduler thread (no worker), AFTER
+            // this level's worker tasks have populated the store. They are in a
+            // later level than their branches, so the store already holds the
+            // branch OOF by the time we reassemble — see `reassemble_branch_merge`.
+            let mut merge_nodes = Vec::<(NodeId, MergeReduction)>::new();
             for node_id in &level {
                 let node_plan = plan
                     .node_plans
                     .get(node_id)
                     .expect("execution plan was validated");
-                if is_concat_merge_node(plan, node_plan) {
-                    merge_nodes.push(node_id.clone());
+                if let Some(reduction) = merge_reduction_mode(plan, node_plan) {
+                    merge_nodes.push((node_id.clone(), reduction));
                     continue;
                 }
                 let collected_inputs = collect_input_handles(
@@ -4930,16 +4932,18 @@ impl ParallelScheduler {
                 }
             }
 
-            // Reassemble any concat-merge nodes in this level now that the level's
-            // worker tasks have populated the prediction store. Merge nodes sit in
-            // a later level than the branches they consume, so the upstream branch
-            // OOF is already present.
-            for node_id in &merge_nodes {
+            // Reassemble any cross-branch merge nodes in this level now that the
+            // level's worker tasks have populated the prediction store. Merge nodes
+            // sit in a later level than the branches they consume, so the upstream
+            // branch OOF is already present.
+            for (node_id, reduction) in &merge_nodes {
                 let node_plan = plan
                     .node_plans
                     .get(node_id)
                     .expect("execution plan was validated");
-                if let Some(result) = reassemble_separation_merge(plan, node_plan, ctx, &scope)? {
+                if let Some(result) =
+                    reassemble_branch_merge(plan, node_plan, ctx, &scope, *reduction)?
+                {
                     for prediction in &result.predictions {
                         ctx.prediction_store.append(prediction.clone())?;
                     }
@@ -6798,27 +6802,73 @@ fn validation_data_view_for_scope(
     .map(Some)
 }
 
-/// Whether `node_plan` is a separation-branch *concat reassembly* merge node —
-/// the merge kind this slice handles natively in the scheduler. It is a
-/// `PredictionJoin` graph node whose DSL `merge_mode` metadata is `"concat"`.
-///
-/// A `PredictionJoin` whose `merge_mode` is anything else (e.g. the default
-/// stacking semantics) is NOT a concat reassembly: it stays an ordinary
-/// controller node, joined through the existing `requires_oof` edge path. So
-/// stacking (predictions-as-meta-features) is explicitly out of scope here and
-/// is left for a follow-up slice — see the module-level merge notes.
-fn is_concat_merge_node(plan: &ExecutionPlan, node_plan: &NodePlan) -> bool {
+/// The native cross-branch reduction a `PredictionJoin` merge node performs in
+/// the scheduler, decoded from its DSL `merge_mode` metadata. These are the
+/// merge kinds the scheduler reassembles itself (no controller call); any other
+/// `merge_mode` (e.g. the default stacking semantics) is NOT a native reduction:
+/// it stays an ordinary controller node joined through the `requires_oof` edge
+/// path. So stacking (predictions-as-meta-features, a meta-model node) is out of
+/// scope here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MergeReduction {
+    /// Separation-branch *concat* reassembly: N branches each cover a DISJOINT
+    /// partition of the fold validation set; the merge concatenates them by
+    /// `sample_id` into one full-fold OOF block (overlap is an error). DSL
+    /// `merge_mode == "concat"`.
+    Concat,
+    /// Duplication-branch *late-fusion* averaging (regression / value mean): N
+    /// models on the FULL data; the merge averages each sample's branch
+    /// predictions over the branches that covered it (asymmetric-coverage safe).
+    /// DSL `merge_mode == "fusion"`.
+    Fusion,
+    /// Duplication-branch *probability-mean* fusion (classification): like
+    /// [`MergeReduction::Fusion`] but each branch row is a per-class probability
+    /// vector, averaged and renormalized to a valid distribution. DSL
+    /// `merge_mode == "fusion_proba_mean"`.
+    FusionProbaMean,
+}
+
+/// Decode the native cross-branch reduction `node_plan` performs, if any. A node
+/// is a native reduction merge iff it is a `PredictionJoin` whose graph
+/// `merge_mode` metadata names one of the reductions above; otherwise `None`
+/// (the node takes the ordinary controller / `requires_oof` path).
+fn merge_reduction_mode(plan: &ExecutionPlan, node_plan: &NodePlan) -> Option<MergeReduction> {
     if node_plan.kind != crate::graph::NodeKind::PredictionJoin {
-        return false;
+        return None;
     }
-    plan.graph_plan
+    match plan
+        .graph_plan
         .graph
         .nodes
         .iter()
         .find(|node| node.id == node_plan.node_id)
         .and_then(|node| node.metadata.get("merge_mode"))
         .and_then(serde_json::Value::as_str)
-        == Some("concat")
+    {
+        Some("concat") => Some(MergeReduction::Concat),
+        Some("fusion") => Some(MergeReduction::Fusion),
+        Some("fusion_proba_mean") => Some(MergeReduction::FusionProbaMean),
+        _ => None,
+    }
+}
+
+/// Reassemble the native cross-branch reduction `node_plan` performs (concat or
+/// late-fusion averaging), dispatching on the decoded [`MergeReduction`]. Both
+/// schedulers call this for any node `merge_reduction_mode` matched, so the
+/// scheduler dispatch stays a single branch.
+fn reassemble_branch_merge(
+    plan: &ExecutionPlan,
+    node_plan: &NodePlan,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+    reduction: MergeReduction,
+) -> Result<Option<NodeResult>> {
+    match reduction {
+        MergeReduction::Concat => reassemble_separation_merge(plan, node_plan, ctx, scope),
+        MergeReduction::Fusion | MergeReduction::FusionProbaMean => {
+            reassemble_fusion_merge(plan, node_plan, ctx, scope, reduction)
+        }
+    }
 }
 
 /// Reassemble the per-partition OOF blocks of a separation branch into ONE
@@ -7066,6 +7116,265 @@ fn reassemble_separation_merge(
     // Variant-distinguish the emitted id + lineage id so per-variant merges in
     // one context never collide (an empty suffix for the common single-variant
     // case keeps ids stable).
+    let variant_suffix = variant_id
+        .as_ref()
+        .map(|variant| format!(":{variant}"))
+        .unwrap_or_default();
+    let merged = PredictionBlock {
+        prediction_id: Some(format!(
+            "merge:{}:{fold_id}{variant_suffix}",
+            node_plan.node_id
+        )),
+        producer_node: node_plan.node_id.clone(),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(fold_id.clone()),
+        sample_ids,
+        values,
+        target_names,
+    };
+    merged.validate_shape()?;
+
+    let lineage = LineageRecord {
+        record_id: LineageId::new(format!(
+            "lineage:{}:{fold_id}{variant_suffix}",
+            node_plan.node_id
+        ))?,
+        run_id: ctx.run_id.clone(),
+        node_id: node_plan.node_id.clone(),
+        phase: scope.phase,
+        controller_id: node_plan.controller_id.clone(),
+        controller_version: node_plan.controller_version.clone(),
+        variant_id,
+        fold_id: Some(fold_id),
+        branch_path: Vec::new(),
+        input_lineage,
+        artifact_refs: Vec::new(),
+        params_fingerprint: node_plan.params_fingerprint.clone(),
+        data_model_shape_fingerprint: None,
+        aggregation_policy_fingerprint: None,
+        seed: None,
+        unsafe_flags: BTreeSet::new(),
+        metrics: BTreeMap::new(),
+    };
+
+    Ok(Some(NodeResult {
+        node_id: node_plan.node_id.clone(),
+        outputs: BTreeMap::new(),
+        predictions: vec![merged],
+        observation_predictions: Vec::new(),
+        aggregated_predictions: Vec::new(),
+        explanations: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
+        regression_targets,
+        lineage,
+    }))
+}
+
+/// Average (fuse) the per-branch OOF blocks of a *duplication* branch into ONE
+/// per-sample OOF block (and its targets) for a late-fusion merge node.
+///
+/// The cross-branch analogue of [`reassemble_separation_merge`] for the
+/// duplication shape (`[[A], [B]]`, the default branch mode): instead of N
+/// branches each covering a DISJOINT partition (concat), N models are fit on the
+/// FULL data and the merge AVERAGES their held-out predictions per sample. This
+/// is distinct from concat (disjoint reassembly) and from stacking (a meta-model
+/// node). [`MergeReduction::Fusion`] averages raw values
+/// ([`reduce_predictions_across_branches`]); [`MergeReduction::FusionProbaMean`]
+/// averages per-class probability rows and renormalizes
+/// ([`reduce_proba_mean_across_branches`]).
+///
+/// LEAKAGE INVARIANT: fusion averages each branch's HELD-OUT predictions — the
+/// `Validation` OOF block of the *current fold* (per fold, never train). It reads
+/// exactly the same partition/fold-scoped `Validation` blocks the concat handler
+/// reads and emits a `Validation` block under the merge producer, so the
+/// CV-scored output is built from out-of-fold predictions only; train
+/// predictions never enter the average.
+///
+/// Asymmetric coverage: a branch that did not predict a sample (a modelless or
+/// sparse branch emits no row for it) simply does not contribute — the reducers
+/// average each sample over exactly the branches that covered it, never a fixed
+/// denominator. The union of branch coverage must still equal the fold
+/// validation set (full-fold output completeness); a non-empty fold with missing
+/// samples is a hard error, exactly as in concat.
+///
+/// Targets, variant scoping, lineage and emitted ids mirror
+/// [`reassemble_separation_merge`]; the only difference is the value reduction
+/// (average vs concatenate) and that branches legitimately OVERLAP on samples
+/// (the whole point of fusion) rather than being rejected for overlap.
+fn reassemble_fusion_merge(
+    plan: &ExecutionPlan,
+    node_plan: &NodePlan,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+    reduction: MergeReduction,
+) -> Result<Option<NodeResult>> {
+    // Fusion averaging is an OOF (validation) operation; it only runs inside a
+    // FIT_CV fold scope. Other phases have no per-fold OOF to fuse.
+    let Some(fold_id) = scope.fold_id.clone() else {
+        return Ok(None);
+    };
+    let fold = plan
+        .fold_set
+        .as_ref()
+        .and_then(|fold_set| fold_set.folds.iter().find(|fold| fold.fold_id == fold_id))
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "fusion merge node `{}` references unknown fold `{fold_id}`",
+                node_plan.node_id
+            ))
+        })?;
+    let expected: BTreeSet<&SampleId> = fold.validation_sample_ids.iter().collect();
+
+    // A genuinely empty fold (no validation samples) has nothing to fuse.
+    if expected.is_empty() {
+        return Ok(None);
+    }
+
+    // Gather each branch's Validation OOF block for this fold, scoped to the
+    // active variant (one block per (branch, fold); >1 means several variants are
+    // mixed in this context). Branches legitimately overlap on samples — that is
+    // what fusion averages — so unlike concat we collect, not deduplicate.
+    let variant_id = scope.variant_id.clone();
+    let mut branch_blocks: Vec<PredictionBlock> = Vec::new();
+    let mut by_sample_target: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
+    let mut target_block_names: Option<Vec<String>> = None;
+
+    for branch_id in &node_plan.input_nodes {
+        let blocks = ctx.prediction_store.find(
+            Some(branch_id),
+            Some(&PredictionPartition::Validation),
+            Some(&fold_id),
+        );
+        if blocks.is_empty() {
+            // Modelless / sparse branch: no OOF block this fold. Coverage is
+            // rechecked against the full fold validation set below.
+            continue;
+        }
+        if blocks.len() > 1 {
+            return Err(DagMlError::OofValidation(format!(
+                "fusion merge node `{}` found {} validation blocks for branch `{branch_id}` in fold `{fold_id}`: the run context mixes several variants — reassemble each variant in its own context (native SELECT does this)",
+                node_plan.node_id,
+                blocks.len()
+            )));
+        }
+        let block = blocks[0];
+        block.validate_shape()?;
+        for sample_id in &block.sample_ids {
+            if !expected.contains(sample_id) {
+                return Err(DagMlError::OofValidation(format!(
+                    "fusion merge node `{}` branch `{branch_id}` emitted sample `{sample_id}` outside fold `{fold_id}` validation set",
+                    node_plan.node_id
+                )));
+            }
+        }
+        branch_blocks.push(block.clone());
+
+        // Reassemble this branch's per-sample y_true (scoped to the active
+        // variant). Each branch predicts the SAME samples, so its targets are the
+        // sample's fold-independent ground truth — identical across branches, so a
+        // plain per-sample insert (last write wins) is correct.
+        for record in &ctx.regression_target_records {
+            if &record.producer_node != branch_id
+                || record.partition != PredictionPartition::Validation
+                || record.fold_id.as_ref() != Some(&fold_id)
+                || record.variant_id != variant_id
+            {
+                continue;
+            }
+            if target_block_names.is_none() && !record.block.target_names.is_empty() {
+                target_block_names = Some(record.block.target_names.clone());
+            }
+            for (unit_id, row) in record.block.unit_ids.iter().zip(&record.block.values) {
+                let PredictionUnitId::Sample(sample_id) = unit_id else {
+                    continue;
+                };
+                by_sample_target.insert(sample_id.clone(), row.clone());
+            }
+        }
+    }
+
+    // Average the branch blocks per sample (over covering branches only). The
+    // reducer keys by sample_id, validates uniform width/target-names/partition,
+    // and produces the merge producer's fused block.
+    let fused = match reduction {
+        MergeReduction::Fusion => {
+            reduce_predictions_across_branches(&branch_blocks, None, &node_plan.node_id)?
+        }
+        MergeReduction::FusionProbaMean => {
+            reduce_proba_mean_across_branches(&branch_blocks, &node_plan.node_id)?
+        }
+        MergeReduction::Concat => unreachable!("concat is handled by reassemble_separation_merge"),
+    };
+
+    // Full-fold output completeness: the union of branch coverage must be exactly
+    // the fold validation set — no missing sample, none extra.
+    let covered: BTreeSet<&SampleId> = fused.sample_ids.iter().collect();
+    if covered != expected {
+        let missing: Vec<String> = expected
+            .difference(&covered)
+            .map(|sample| sample.to_string())
+            .collect();
+        return Err(DagMlError::OofValidation(format!(
+            "fusion merge node `{}` fused OOF does not cover fold `{fold_id}` validation set (missing {} sample(s): {})",
+            node_plan.node_id,
+            missing.len(),
+            missing.join(", ")
+        )));
+    }
+
+    // Deterministic order: emit samples in the fold's declared validation order,
+    // carrying the fused values for each.
+    let fused_by_sample: BTreeMap<&SampleId, &Vec<f64>> =
+        fused.sample_ids.iter().zip(&fused.values).collect();
+    let sample_ids: Vec<SampleId> = fold.validation_sample_ids.clone();
+    let values: Vec<Vec<f64>> = sample_ids
+        .iter()
+        .map(|sample_id| fused_by_sample[sample_id].clone())
+        .collect();
+    let target_names = fused.target_names.clone();
+
+    // Reassembled targets: only emit when EVERY merged sample has a target row, so
+    // `apply_result_scoring` pairs the block 1:1 with its targets. Partial targets
+    // are dropped — the merge is then simply unscored.
+    let regression_targets = if !by_sample_target.is_empty()
+        && sample_ids
+            .iter()
+            .all(|sample_id| by_sample_target.contains_key(sample_id))
+    {
+        let target_values: Vec<Vec<f64>> = sample_ids
+            .iter()
+            .map(|sample_id| by_sample_target.remove(sample_id).expect("target covered"))
+            .collect();
+        vec![RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: sample_ids
+                .iter()
+                .cloned()
+                .map(PredictionUnitId::Sample)
+                .collect(),
+            values: target_values,
+            target_names: target_block_names.unwrap_or_default(),
+        }]
+    } else {
+        Vec::new()
+    };
+
+    // Lineage links every contributing branch (for this variant + fold).
+    let branch_inputs: BTreeSet<&NodeId> = node_plan.input_nodes.iter().collect();
+    let mut input_lineage: Vec<LineageId> = Vec::new();
+    for record in ctx.lineage.records() {
+        if branch_inputs.contains(&record.node_id)
+            && record.phase == scope.phase
+            && record.fold_id.as_ref() == Some(&fold_id)
+            && record.variant_id == variant_id
+        {
+            input_lineage.push(record.record_id.clone());
+        }
+    }
+
     let variant_suffix = variant_id
         .as_ref()
         .map(|variant| format!(":{variant}"))
