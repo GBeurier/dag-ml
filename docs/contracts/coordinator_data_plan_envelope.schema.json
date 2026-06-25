@@ -149,6 +149,16 @@
         "excluded": {
           "type": "boolean",
           "default": false
+        },
+        "metadata": {
+          "type": "object",
+          "default": {}
+        },
+        "tags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "default": [],
+          "uniqueItems": true
         }
       },
       "additionalProperties": false
