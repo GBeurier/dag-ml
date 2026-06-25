@@ -19,6 +19,13 @@ pub const AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION: u32 = 1;
 pub const AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_result.v1.schema.json";
 const DEFAULT_ROBUST_TRIM_FRACTION: f64 = 0.1;
+/// Default Hotelling-T2 cutoff (in units of the T2 statistic) used by the native
+/// `exclude_outliers` reducer when no explicit threshold is supplied. A repeated
+/// prediction whose squared Mahalanobis distance from the per-unit centroid
+/// exceeds this value is dropped before the surviving rows are averaged. The
+/// value is the 0.975 quantile of a chi-square distribution with one degree of
+/// freedom (~5.0239), a conventional single-target outlier gate.
+const DEFAULT_HOTELLING_T2_THRESHOLD: f64 = 5.023_886;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ObservationPredictionBlock {
@@ -715,7 +722,10 @@ pub fn aggregate_observation_predictions(
 
     let store_rows = matches!(
         policy.method,
-        AggregationMethod::Median | AggregationMethod::Vote | AggregationMethod::RobustMean
+        AggregationMethod::Median
+            | AggregationMethod::Vote
+            | AggregationMethod::RobustMean
+            | AggregationMethod::ExcludeOutliers
     );
     let mut accumulators = requested_sample_order
         .iter()
@@ -767,10 +777,9 @@ pub fn aggregate_observation_predictions(
                 AggregationMethod::RobustMean => {
                     Ok(accumulator.robust_mean(DEFAULT_ROBUST_TRIM_FRACTION))
                 }
-                AggregationMethod::ExcludeOutliers => Err(DagMlError::OofValidation(
-                    "exclude_outliers aggregation requires a custom aggregation controller"
-                        .to_string(),
-                )),
+                AggregationMethod::ExcludeOutliers => {
+                    accumulator.hotelling_t2_exclude_mean(DEFAULT_HOTELLING_T2_THRESHOLD)
+                }
                 AggregationMethod::None => {
                     if accumulator.count == 1 {
                         Ok(accumulator
@@ -897,7 +906,10 @@ pub fn aggregate_sample_predictions_by_unit(
 
     let store_rows = matches!(
         policy.method,
-        AggregationMethod::Median | AggregationMethod::Vote | AggregationMethod::RobustMean
+        AggregationMethod::Median
+            | AggregationMethod::Vote
+            | AggregationMethod::RobustMean
+            | AggregationMethod::ExcludeOutliers
     );
     let mut accumulators = requested_unit_order
         .iter()
@@ -938,10 +950,9 @@ pub fn aggregate_sample_predictions_by_unit(
                 AggregationMethod::RobustMean => {
                     Ok(accumulator.robust_mean(DEFAULT_ROBUST_TRIM_FRACTION))
                 }
-                AggregationMethod::ExcludeOutliers => Err(DagMlError::OofValidation(
-                    "exclude_outliers aggregation requires a custom aggregation controller"
-                        .to_string(),
-                )),
+                AggregationMethod::ExcludeOutliers => {
+                    accumulator.hotelling_t2_exclude_mean(DEFAULT_HOTELLING_T2_THRESHOLD)
+                }
                 AggregationMethod::None => {
                     if accumulator.count == 1 {
                         Ok(accumulator
@@ -1182,6 +1193,70 @@ impl SampleAccumulator {
             })
             .collect()
     }
+
+    /// Hotelling-T2 robust mean: drop each stored row whose squared Mahalanobis
+    /// distance from the per-unit centroid exceeds `threshold`, then average the
+    /// survivors. To avoid an outlier masking itself by inflating the spread it
+    /// is measured against, each row's T2 is computed leave-one-out: against the
+    /// centroid and (population) variance of every *other* row —
+    /// `T2_i = sum_c (x_ic - mean_{-i,c})^2 / var_{-i,c}`. A column whose
+    /// leave-one-out variance is (near) zero contributes nothing, so a constant
+    /// target never spuriously flags rows. With fewer than three rows there is
+    /// no robust spread to gate on, so all rows are kept (mean-of-rows). If
+    /// every row is flagged, the unfiltered mean is returned rather than
+    /// producing an empty aggregate.
+    fn hotelling_t2_exclude_mean(&self, threshold: f64) -> Result<Vec<f64>> {
+        let width = self.sum.len();
+        if self.count == 0 {
+            return Err(DagMlError::OofValidation(
+                "exclude_outliers aggregation requires at least one prediction".to_string(),
+            ));
+        }
+        let plain_mean = self.mean();
+        if self.count < 3 {
+            return Ok(plain_mean);
+        }
+        let others = (self.count - 1) as f64;
+        let kept = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(skip_idx, _)| {
+                let t2 = (0..width)
+                    .map(|column_idx| {
+                        let mean_others =
+                            (self.sum[column_idx] - self.rows[*skip_idx][column_idx]) / others;
+                        let var_others = self
+                            .rows
+                            .iter()
+                            .enumerate()
+                            .filter(|(other_idx, _)| other_idx != skip_idx)
+                            .map(|(_, other)| {
+                                let delta = other[column_idx] - mean_others;
+                                delta * delta
+                            })
+                            .sum::<f64>()
+                            / others;
+                        if var_others <= f64::EPSILON {
+                            0.0
+                        } else {
+                            let delta = self.rows[*skip_idx][column_idx] - mean_others;
+                            delta * delta / var_others
+                        }
+                    })
+                    .sum::<f64>();
+                t2 <= threshold
+            })
+            .map(|(_, row)| row)
+            .collect::<Vec<_>>();
+        if kept.is_empty() {
+            return Ok(plain_mean);
+        }
+        let kept_count = kept.len() as f64;
+        Ok((0..width)
+            .map(|column_idx| kept.iter().map(|row| row[column_idx]).sum::<f64>() / kept_count)
+            .collect())
+    }
 }
 
 fn observation_weight(
@@ -1330,6 +1405,160 @@ pub fn reduce_predictions_across_folds(
         target_names: first.target_names.clone(),
     })
 }
+
+/// Reduce one prediction block per branch (each from a *different* producer/model) into a single
+/// fused block under `merge_node`, keyed by `sample_id`. This is the cross-*branch* analogue of
+/// [`reduce_predictions_across_folds`]: where that joins folds of one producer, this joins branches
+/// of one merge point. Asymmetric-branch fusion is intrinsic — a *modelless* branch simply emits no
+/// `PredictionBlock`, so it is absent from `branch_blocks` and contributes nothing. A sample is
+/// averaged over exactly the model-bearing branches that predicted it (its branch coverage), never
+/// over a fixed denominator, so partial coverage does not silently down-weight a sample. The join is
+/// identity-keyed and the union sample order is first-seen; positional joins are never used.
+///
+/// `weights` (when present) are per-branch ensemble weights aligned to `branch_blocks` and applied
+/// only to the branches that cover each sample. All blocks must share `partition`, prediction width
+/// and `target_names`; differing producers are expected and preserved only through `merge_node`.
+pub fn reduce_predictions_across_branches(
+    branch_blocks: &[PredictionBlock],
+    weights: Option<&[f64]>,
+    merge_node: &NodeId,
+) -> Result<PredictionBlock> {
+    let first = branch_blocks.first().ok_or_else(|| {
+        DagMlError::OofValidation(
+            "cross-branch reduction needs at least one model-bearing branch".to_string(),
+        )
+    })?;
+    if let Some(weights) = weights {
+        if weights.len() != branch_blocks.len() {
+            return Err(DagMlError::OofValidation(format!(
+                "cross-branch weights ({}) must match model-bearing branch count ({})",
+                weights.len(),
+                branch_blocks.len()
+            )));
+        }
+    }
+    let width = first.validate_shape()?;
+    let mut order: Vec<SampleId> = Vec::new();
+    let mut index: BTreeMap<SampleId, usize> = BTreeMap::new();
+    let mut weighted_sums: Vec<Vec<f64>> = Vec::new();
+    let mut weight_totals: Vec<f64> = Vec::new();
+    for (position, block) in branch_blocks.iter().enumerate() {
+        if block.partition != first.partition {
+            return Err(DagMlError::OofValidation(
+                "cross-branch reduction: branches differ in partition".to_string(),
+            ));
+        }
+        if block.target_names != first.target_names {
+            return Err(DagMlError::OofValidation(
+                "cross-branch reduction: branches differ in target names".to_string(),
+            ));
+        }
+        block.validate_shape()?;
+        let weight = weights.map_or(1.0, |weights| weights[position]);
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(DagMlError::OofValidation(
+                "cross-branch reduction: weights must be finite and non-negative".to_string(),
+            ));
+        }
+        for (sample_id, row) in block.sample_ids.iter().zip(&block.values) {
+            if row.len() != width {
+                return Err(DagMlError::OofValidation(
+                    "cross-branch reduction: branches differ in prediction width".to_string(),
+                ));
+            }
+            let slot = *index.entry(sample_id.clone()).or_insert_with(|| {
+                order.push(sample_id.clone());
+                weighted_sums.push(vec![0.0; width]);
+                weight_totals.push(0.0);
+                order.len() - 1
+            });
+            for (acc, value) in weighted_sums[slot].iter_mut().zip(row) {
+                *acc += value * weight;
+            }
+            weight_totals[slot] += weight;
+        }
+    }
+    let mut values = Vec::with_capacity(order.len());
+    for slot in 0..order.len() {
+        let total = weight_totals[slot];
+        if total <= 0.0 {
+            return Err(DagMlError::OofValidation(
+                "cross-branch reduction: a sample had zero total branch weight".to_string(),
+            ));
+        }
+        values.push(weighted_sums[slot].iter().map(|sum| sum / total).collect());
+    }
+    Ok(PredictionBlock {
+        prediction_id: None,
+        producer_node: merge_node.clone(),
+        partition: first.partition.clone(),
+        fold_id: first.fold_id.clone(),
+        sample_ids: order,
+        values,
+        target_names: first.target_names.clone(),
+    })
+}
+
+/// Probability-mean fusion for classification: average per-class probability rows across branches,
+/// keyed by `sample_id`, under `merge_node`. Each row of every branch block is treated as a
+/// probability vector over the same `width` classes; rows must be finite, non-negative and sum to
+/// 1 (within `PROBA_SUM_TOLERANCE`). Like [`reduce_predictions_across_branches`] this is
+/// asymmetric-branch safe — modelless branches contribute no block — and each sample is averaged
+/// only over the branches that predicted it. The fused rows are renormalized so each output row is
+/// itself a valid probability distribution (it already sums to 1 under equal per-branch weight, but
+/// renormalization keeps the contract exact under floating-point and partial coverage).
+pub fn reduce_proba_mean_across_branches(
+    branch_blocks: &[PredictionBlock],
+    merge_node: &NodeId,
+) -> Result<PredictionBlock> {
+    if branch_blocks.is_empty() {
+        return Err(DagMlError::OofValidation(
+            "proba-mean fusion needs at least one model-bearing branch".to_string(),
+        ));
+    }
+    for block in branch_blocks {
+        let width = block.validate_shape()?;
+        if width < 2 {
+            return Err(DagMlError::OofValidation(format!(
+                "proba-mean fusion: branch `{}` has width {width}, classification probabilities need at least 2 classes",
+                block.producer_node
+            )));
+        }
+        for (sample_id, row) in block.sample_ids.iter().zip(&block.values) {
+            if row.iter().any(|value| *value < 0.0) {
+                return Err(DagMlError::OofValidation(format!(
+                    "proba-mean fusion: branch `{}` sample `{sample_id}` has a negative class probability",
+                    block.producer_node
+                )));
+            }
+            let sum = row.iter().sum::<f64>();
+            if (sum - 1.0).abs() > PROBA_SUM_TOLERANCE {
+                return Err(DagMlError::OofValidation(format!(
+                    "proba-mean fusion: branch `{}` sample `{sample_id}` probabilities sum to {sum}, not 1",
+                    block.producer_node
+                )));
+            }
+        }
+    }
+    let fused = reduce_predictions_across_branches(branch_blocks, None, merge_node)?;
+    let values = fused
+        .values
+        .into_iter()
+        .map(|row| {
+            let sum = row.iter().sum::<f64>();
+            if sum <= 0.0 {
+                return Err(DagMlError::OofValidation(
+                    "proba-mean fusion: a fused sample has zero total probability".to_string(),
+                ));
+            }
+            Ok(row.iter().map(|value| value / sum).collect::<Vec<f64>>())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(PredictionBlock { values, ..fused })
+}
+
+/// Tolerance on the per-row probability-sum check in [`reduce_proba_mean_across_branches`].
+const PROBA_SUM_TOLERANCE: f64 = 1e-6;
 
 #[cfg(test)]
 mod tests {
@@ -1725,7 +1954,8 @@ mod tests {
     }
 
     #[test]
-    fn exclude_outliers_requires_custom_controller_path() {
+    fn exclude_outliers_passes_through_single_repetition() {
+        // A sample with one observation has nothing to gate on: mean-of-one.
         let relations = SampleRelationSet {
             records: vec![relation("obs:1", "sample:1")],
         };
@@ -1740,7 +1970,7 @@ mod tests {
             target_names: vec!["y".to_string()],
         };
 
-        let error = aggregate_observation_predictions(
+        let aggregated = aggregate_observation_predictions(
             &block,
             &relations,
             &AggregationPolicy {
@@ -1749,10 +1979,9 @@ mod tests {
             },
             &[sid("sample:1")],
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap();
 
-        assert!(error.contains("custom aggregation controller"));
+        assert_eq!(aggregated.values, vec![vec![1.0]]);
     }
 
     #[test]
@@ -2043,5 +2272,293 @@ mod tests {
             "avg"
         )
         .is_err());
+    }
+
+    #[test]
+    fn exclude_outliers_drops_hotelling_t2_extreme_repetition() {
+        // 6 repetitions of one sample; the 100.0 row is a gross outlier and must be
+        // excluded before the mean. Survivors {1,2,3,4,5} -> mean 3.0.
+        let observations = (0..6)
+            .map(|idx| format!("obs:s1.{idx}"))
+            .collect::<Vec<_>>();
+        let relations = SampleRelationSet {
+            records: observations
+                .iter()
+                .map(|observation| relation(observation, "sample:1"))
+                .collect(),
+        };
+        let block = ObservationPredictionBlock {
+            prediction_id: Some("pred:t2".to_string()),
+            producer_node: NodeId::new("model:pls").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            observation_ids: observations
+                .iter()
+                .map(|observation| oid(observation))
+                .collect(),
+            values: vec![
+                vec![1.0],
+                vec![2.0],
+                vec![3.0],
+                vec![4.0],
+                vec![5.0],
+                vec![100.0],
+            ],
+            weights: Vec::new(),
+            target_names: vec!["y".to_string()],
+        };
+
+        let aggregated = aggregate_observation_predictions(
+            &block,
+            &relations,
+            &AggregationPolicy {
+                method: AggregationMethod::ExcludeOutliers,
+                ..AggregationPolicy::default()
+            },
+            &[sid("sample:1")],
+        )
+        .unwrap();
+
+        assert_eq!(aggregated.values, vec![vec![3.0]]);
+    }
+
+    #[test]
+    fn exclude_outliers_keeps_small_or_constant_repetition_sets() {
+        // Two repetitions: too few rows to gate on robust spread -> plain mean.
+        let small_relations = SampleRelationSet {
+            records: vec![
+                relation("obs:1a", "sample:1"),
+                relation("obs:1b", "sample:1"),
+            ],
+        };
+        let small_block = ObservationPredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new("model:pls").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: None,
+            observation_ids: vec![oid("obs:1a"), oid("obs:1b")],
+            values: vec![vec![1.0], vec![9.0]],
+            weights: Vec::new(),
+            target_names: vec!["y".to_string()],
+        };
+        let small = aggregate_observation_predictions(
+            &small_block,
+            &small_relations,
+            &AggregationPolicy {
+                method: AggregationMethod::ExcludeOutliers,
+                ..AggregationPolicy::default()
+            },
+            &[sid("sample:1")],
+        )
+        .unwrap();
+        assert_eq!(small.values, vec![vec![5.0]]);
+
+        // Constant target across many repetitions: zero variance, nothing flagged.
+        let observations = (0..5).map(|idx| format!("obs:c.{idx}")).collect::<Vec<_>>();
+        let constant_relations = SampleRelationSet {
+            records: observations
+                .iter()
+                .map(|observation| relation(observation, "sample:1"))
+                .collect(),
+        };
+        let constant_block = ObservationPredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new("model:pls").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: None,
+            observation_ids: observations
+                .iter()
+                .map(|observation| oid(observation))
+                .collect(),
+            values: vec![vec![7.0]; 5],
+            weights: Vec::new(),
+            target_names: vec!["y".to_string()],
+        };
+        let constant = aggregate_observation_predictions(
+            &constant_block,
+            &constant_relations,
+            &AggregationPolicy {
+                method: AggregationMethod::ExcludeOutliers,
+                ..AggregationPolicy::default()
+            },
+            &[sid("sample:1")],
+        )
+        .unwrap();
+        assert_eq!(constant.values, vec![vec![7.0]]);
+    }
+
+    #[test]
+    fn exclude_outliers_aggregates_sample_predictions_to_unit() {
+        // Sample-to-group path: group:left has a gross outlier sample to exclude.
+        let relations = SampleRelationSet {
+            records: vec![
+                relation_with_units("o:1", "sample:1", "t:a", "group:left"),
+                relation_with_units("o:2", "sample:2", "t:a", "group:left"),
+                relation_with_units("o:3", "sample:3", "t:a", "group:left"),
+                relation_with_units("o:4", "sample:4", "t:a", "group:left"),
+                relation_with_units("o:5", "sample:5", "t:b", "group:right"),
+            ],
+        };
+        let block = PredictionBlock {
+            prediction_id: Some("pred:sample".to_string()),
+            producer_node: NodeId::new("model:pls").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: vec![
+                sid("sample:1"),
+                sid("sample:2"),
+                sid("sample:3"),
+                sid("sample:4"),
+                sid("sample:5"),
+            ],
+            values: vec![vec![1.0], vec![2.0], vec![3.0], vec![100.0], vec![42.0]],
+            target_names: vec!["y".to_string()],
+        };
+
+        let aggregated = aggregate_sample_predictions_by_unit(
+            &block,
+            &relations,
+            &AggregationPolicy {
+                aggregation_level: PredictionLevel::Group,
+                method: AggregationMethod::ExcludeOutliers,
+                ..AggregationPolicy::default()
+            },
+            &[
+                PredictionUnitId::Group(GroupId::new("group:left").unwrap()),
+                PredictionUnitId::Group(GroupId::new("group:right").unwrap()),
+            ],
+        )
+        .unwrap();
+        // group:left survivors {1,2,3} -> 2.0 ; group:right single sample -> 42.0.
+        assert_eq!(aggregated.values, vec![vec![2.0], vec![42.0]]);
+    }
+
+    #[test]
+    fn cross_branch_reduction_averages_only_covering_branches() {
+        let merge = NodeId::new("merge:branch.fusion").unwrap();
+        let branch = |producer: &str, rows: &[(&str, f64)]| PredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new(producer).unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: rows.iter().map(|(s, _)| sid(s)).collect(),
+            values: rows.iter().map(|(_, v)| vec![*v]).collect(),
+            target_names: vec!["y".to_string()],
+        };
+
+        // Two model-bearing branches with DIFFERENT producers; b1 does not cover s3
+        // (asymmetric coverage). s1 covered by both -> mean; s3 only by b0 -> b0 value.
+        let fused = reduce_predictions_across_branches(
+            &[
+                branch(
+                    "branch:b0.model:ridge",
+                    &[("s1", 10.0), ("s2", 4.0), ("s3", 6.0)],
+                ),
+                branch("branch:b1.model:rf", &[("s1", 20.0), ("s2", 8.0)]),
+            ],
+            None,
+            &merge,
+        )
+        .unwrap();
+        assert_eq!(fused.producer_node, merge);
+        assert_eq!(fused.sample_ids, vec![sid("s1"), sid("s2"), sid("s3")]);
+        assert_eq!(fused.values, vec![vec![15.0], vec![6.0], vec![6.0]]);
+
+        // Per-branch ensemble weights [1, 3]: s1 -> (10*1 + 20*3)/4 = 17.5.
+        let weighted = reduce_predictions_across_branches(
+            &[
+                branch("branch:b0.model:ridge", &[("s1", 10.0)]),
+                branch("branch:b1.model:rf", &[("s1", 20.0)]),
+            ],
+            Some(&[1.0, 3.0]),
+            &merge,
+        )
+        .unwrap();
+        assert_eq!(weighted.values, vec![vec![17.5]]);
+
+        // Empty branch set (every branch modelless) is rejected.
+        assert!(reduce_predictions_across_branches(&[], None, &merge).is_err());
+        // Mismatched per-branch weights are rejected.
+        assert!(reduce_predictions_across_branches(
+            &[branch("branch:b0", &[("s1", 1.0)])],
+            Some(&[1.0, 2.0]),
+            &merge
+        )
+        .is_err());
+        // Branches with mismatched target names are rejected.
+        let mut other_targets = branch("branch:b1", &[("s1", 1.0)]);
+        other_targets.target_names = vec!["z".to_string()];
+        assert!(reduce_predictions_across_branches(
+            &[branch("branch:b0", &[("s1", 1.0)]), other_targets],
+            None,
+            &merge
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn proba_mean_fusion_averages_and_renormalizes_class_probabilities() {
+        let merge = NodeId::new("merge:proba.fusion").unwrap();
+        let branch = |producer: &str, rows: &[(&str, [f64; 2])]| PredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new(producer).unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: None,
+            sample_ids: rows.iter().map(|(s, _)| sid(s)).collect(),
+            values: rows.iter().map(|(_, p)| p.to_vec()).collect(),
+            target_names: vec!["neg".to_string(), "pos".to_string()],
+        };
+
+        let fused = reduce_proba_mean_across_branches(
+            &[
+                branch(
+                    "branch:b0.model:lr",
+                    &[("s1", [0.8, 0.2]), ("s2", [0.4, 0.6])],
+                ),
+                branch(
+                    "branch:b1.model:svc",
+                    &[("s1", [0.6, 0.4]), ("s2", [0.2, 0.8])],
+                ),
+            ],
+            &merge,
+        )
+        .unwrap();
+        assert_eq!(fused.producer_node, merge);
+        // s1 -> [(0.8+0.6)/2, (0.2+0.4)/2] = [0.7, 0.3] ; s2 -> [0.3, 0.7].
+        for (row, expected) in fused.values.iter().zip([[0.7, 0.3], [0.3, 0.7]]) {
+            for (value, want) in row.iter().zip(expected) {
+                assert!((value - want).abs() < 1e-12, "got {value}, want {want}");
+            }
+            assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        }
+
+        // Asymmetric coverage: only b0 predicts s2 -> its row passes through.
+        let asymmetric = reduce_proba_mean_across_branches(
+            &[
+                branch(
+                    "branch:b0.model:lr",
+                    &[("s1", [0.9, 0.1]), ("s2", [0.3, 0.7])],
+                ),
+                branch("branch:b1.model:svc", &[("s1", [0.5, 0.5])]),
+            ],
+            &merge,
+        )
+        .unwrap();
+        assert_eq!(asymmetric.sample_ids, vec![sid("s1"), sid("s2")]);
+        assert!((asymmetric.values[1][1] - 0.7).abs() < 1e-12);
+
+        // Rows that are not probability vectors are rejected.
+        assert!(reduce_proba_mean_across_branches(
+            &[branch("branch:b0", &[("s1", [0.8, 0.4])])],
+            &merge
+        )
+        .is_err());
+        assert!(reduce_proba_mean_across_branches(
+            &[branch("branch:b0", &[("s1", [1.2, -0.2])])],
+            &merge
+        )
+        .is_err());
+        // Empty branch set is rejected.
+        assert!(reduce_proba_mean_across_branches(&[], &merge).is_err());
     }
 }
