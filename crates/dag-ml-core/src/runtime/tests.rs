@@ -7173,3 +7173,564 @@ fn by_metadata_and_by_tag_branch_selectors_reach_the_provider_view_spec() {
     metadata_view.validate().unwrap();
     tag_view.validate().unwrap();
 }
+
+// ----- Slice 2: data-aware fan-out per-branch FIT_CV scoping -----
+
+/// One recorded FIT_CV task observation:
+/// `(node_id, fold_id, branch-view "site" value, validation sample ids)`.
+type BranchScopeObservation = (String, String, Option<serde_json::Value>, Vec<String>);
+
+/// Records, per (node_id, fold_id), the branch-view selector value and the
+/// validation-view sample ids the runtime hands to the controller, then emits a
+/// validation OOF block scoped to ITS PARTITION. A real branch model node only
+/// sees the samples the data provider returns after applying the branch_view
+/// metadata filter (the partition ∩ fold-validation intersection), so this mock
+/// reproduces that by intersecting the fold-validation ids with the samples whose
+/// recorded site equals the node's branch_view selector value — and detects the
+/// empty intersection explicitly rather than silently emitting nothing.
+struct BranchScopeRecordingController {
+    id: ControllerId,
+    handle: u64,
+    /// sample id -> site value, the membership the data provider would filter by.
+    sample_sites: BTreeMap<String, String>,
+    /// When true, an empty partition ∩ fold is a hard error (mirrors the
+    /// dag-ml-data provider's "data view selected no coordinator relations").
+    /// When false, the branch+fold is skipped with no OOF block (the alternative
+    /// explicit handling: never silently duplicate/mis-cover).
+    error_on_empty_intersection: bool,
+    seen: Arc<Mutex<Vec<BranchScopeObservation>>>,
+}
+
+impl RuntimeController for BranchScopeRecordingController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let node_id = task.node_plan.node_id.to_string();
+        let fold_label = task
+            .fold_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string());
+        // The validation companion view carries this node's branch_view selector.
+        let validation_view = task
+            .data_views
+            .iter()
+            .find(|(_, view)| view.partition == DataRequestPartition::FoldValidation)
+            .map(|(_, view)| view);
+        let branch_value = validation_view
+            .and_then(|view| view.branch_view.as_ref())
+            .and_then(|branch| branch.selector.metadata.get("site").cloned());
+        let branch_site = branch_value.as_ref().and_then(|value| value.as_str());
+        // The fold's full validation sample ids carried by the spec.
+        let fold_validation_ids: Vec<String> = validation_view
+            .and_then(|view| view.sample_ids.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        // Partition ∩ fold-validation: only the fold-validation samples whose site
+        // matches this branch's selector (what the data provider would return).
+        let partition_ids: Vec<String> = match branch_site {
+            Some(site) => fold_validation_ids
+                .iter()
+                .filter(|sample| {
+                    self.sample_sites
+                        .get(*sample)
+                        .map(|s| s == site)
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect(),
+            None => fold_validation_ids.clone(),
+        };
+        self.seen.lock().unwrap().push((
+            node_id,
+            fold_label.clone(),
+            branch_value.clone(),
+            partition_ids.clone(),
+        ));
+
+        let prediction_output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Prediction,
+            owner_controller: self.id.clone(),
+        };
+        let data_output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Data,
+            owner_controller: self.id.clone(),
+        };
+        // Explicit empty partition ∩ fold handling: error or skip, never emit a
+        // silently-empty OOF block that would mis-cover the partition. When not
+        // erroring, the empty (branch, fold) is simply skipped below (no block).
+        if task.phase == Phase::FitCv
+            && task.fold_id.is_some()
+            && partition_ids.is_empty()
+            && self.error_on_empty_intersection
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "branch node `{}` has no samples in fold {} for its partition (empty \
+                 partition ∩ fold)",
+                task.node_plan.node_id, fold_label
+            )));
+        }
+        let predictions = if task.phase == Phase::FitCv && !partition_ids.is_empty() {
+            vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: task.fold_id.clone(),
+                sample_ids: partition_ids
+                    .iter()
+                    .map(|s| SampleId::new(s).unwrap())
+                    .collect(),
+                values: vec![vec![1.0]; partition_ids.len()],
+                target_names: vec!["y".to_string()],
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([
+                ("pred".to_string(), prediction_output.clone()),
+                ("oof".to_string(), prediction_output),
+                ("x".to_string(), data_output),
+            ]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{fold_label}",
+                    task.node_plan.node_id
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
+/// A model node carrying a `dsl_branch_view_plan` by_metadata selector for one
+/// site value — exactly the shape `fan_out_data_aware_branches` + compile emit.
+fn branch_model_node(node_id: &str, site: &str) -> NodeSpec {
+    use crate::data::{BranchViewMode, BranchViewPlan, DataViewSelector};
+    let plan = BranchViewPlan {
+        view_id: format!("branch_view:per_site__{site}"),
+        branch_id: format!("per_site__{site}"),
+        mode: BranchViewMode::ByMetadata,
+        selector: DataViewSelector {
+            metadata: BTreeMap::from([("site".to_string(), serde_json::json!(site))]),
+            ..Default::default()
+        },
+        allow_overlap: false,
+        metadata: BTreeMap::new(),
+    };
+    let mut node = node(
+        node_id,
+        NodeKind::Model,
+        vec![port("x", PortKind::Data)],
+        vec![port("oof", PortKind::Prediction)],
+    );
+    node.metadata.insert(
+        "dsl_branch_view_plan".to_string(),
+        serde_json::to_value(&plan).unwrap(),
+    );
+    node
+}
+
+#[test]
+fn fanned_out_branches_each_fit_cv_only_their_partition() {
+    // Two fanned-out branch model nodes (one per discovered site A/B), each
+    // scoped to its partition by a dsl_branch_view_plan in node metadata — the
+    // shape the data-aware fan-out + compile produce. A 2-fold KFold over four
+    // samples drives FIT_CV; we assert each branch node, across both folds,
+    // receives a validation view carrying ITS OWN branch_view selector and the
+    // fold's validation samples (the intersection that yields per-partition OOF).
+    let node_a = branch_model_node("model:site__A", "A");
+    let node_b = branch_model_node("model:site__B", "B");
+    let graph = GraphSpec {
+        id: "graph:fanout.scope".to_string(),
+        interface: GraphInterface::default(),
+        nodes: vec![node_a, node_b],
+        edges: Vec::new(),
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+
+    let id_a = NodeId::new("model:site__A").unwrap();
+    let id_b = NodeId::new("model:site__B").unwrap();
+    let samples: Vec<SampleId> = ["sample:1", "sample:2", "sample:3", "sample:4"]
+        .iter()
+        .map(|s| SampleId::new(*s).unwrap())
+        .collect();
+    let fold_set = FoldSet {
+        id: "folds:fanout.scope".to_string(),
+        sample_ids: samples.clone(),
+        folds: vec![
+            FoldAssignment {
+                fold_id: FoldId::new("fold:0").unwrap(),
+                train_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                validation_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                metadata: BTreeMap::new(),
+            },
+            FoldAssignment {
+                fold_id: FoldId::new("fold:1").unwrap(),
+                train_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                validation_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                metadata: BTreeMap::new(),
+            },
+        ],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
+    };
+    let campaign = CampaignSpec {
+        inner_cv: None,
+        id: "campaign:fanout.scope".to_string(),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: "split:fanout.scope".to_string(),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(fold_set),
+        }),
+        generation: Default::default(),
+        shape_plans: BTreeMap::new(),
+        data_bindings: BTreeMap::from([
+            (id_a.clone(), vec![data_binding(&id_a)]),
+            (id_b.clone(), vec![data_binding(&id_b)]),
+        ]),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    };
+    let mut registry = ControllerRegistry::new();
+    registry
+        .register(controller_manifest("controller:model", NodeKind::Model))
+        .unwrap();
+    let plan = build_execution_plan("plan:fanout.scope", graph, campaign, &registry).unwrap();
+
+    // The envelope carries 4 samples across two sites; require_relations is set,
+    // so registering it is enough for the InMemoryDataProvider to materialize.
+    let envelope = sample_relations_envelope(&[
+        ("sample:1", "A"),
+        ("sample:2", "B"),
+        ("sample:3", "A"),
+        ("sample:4", "B"),
+    ]);
+    let data_provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data").unwrap(),
+        envelope,
+    )
+    .unwrap();
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(BranchScopeRecordingController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 1,
+            sample_sites: BTreeMap::from([
+                ("sample:1".to_string(), "A".to_string()),
+                ("sample:2".to_string(), "B".to_string()),
+                ("sample:3".to_string(), "A".to_string()),
+                ("sample:4".to_string(), "B".to_string()),
+            ]),
+            error_on_empty_intersection: false,
+            seen: Arc::clone(&seen),
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:fanout.scope").unwrap(), Some(7));
+
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &data_provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+
+    let seen = seen.lock().unwrap().clone();
+    // Two branch nodes x two folds = four FIT_CV tasks.
+    assert_eq!(seen.len(), 4, "expected one task per (branch, fold)");
+    // Every branch-A task is scoped to site A; every branch-B task to site B.
+    for (node_id, _fold, branch_value, _val_ids) in &seen {
+        let expected = if node_id.ends_with("__A") { "A" } else { "B" };
+        assert_eq!(
+            branch_value.as_ref(),
+            Some(&serde_json::json!(expected)),
+            "node `{node_id}` must be scoped to its own partition `{expected}`"
+        );
+    }
+    // Realistic per-partition OOF: each branch validates ONLY its partition's
+    // samples (partition ∩ fold-validation), never the full universe. Site A owns
+    // {sample:1, sample:3}; site B owns {sample:2, sample:4}.
+    let oof_blocks = ctx.prediction_store.blocks();
+    assert_eq!(oof_blocks.len(), 4, "one OOF block per (branch, fold)");
+    for block in oof_blocks {
+        assert_eq!(block.partition, PredictionPartition::Validation);
+        assert!(
+            !block.sample_ids.is_empty(),
+            "a non-empty partition ∩ fold must produce a non-empty OOF block"
+        );
+    }
+    let expected_partition = BTreeMap::from([
+        (
+            "model:site__A",
+            vec!["sample:1".to_string(), "sample:3".to_string()],
+        ),
+        (
+            "model:site__B",
+            vec!["sample:2".to_string(), "sample:4".to_string()],
+        ),
+    ]);
+    for (node, expected) in &expected_partition {
+        let mut ids: Vec<String> = oof_blocks
+            .iter()
+            .filter(|block| block.producer_node.as_str() == *node)
+            .flat_map(|block| block.sample_ids.iter().map(ToString::to_string))
+            .collect();
+        ids.sort();
+        assert_eq!(
+            &ids, expected,
+            "branch `{node}` must validate ONLY its own partition's samples across folds"
+        );
+    }
+}
+
+/// Build the 3-site plan + provider used by the empty-intersection tests. Site C
+/// has a single sample (sample:4) so one fold's validation set contains no C
+/// samples → an empty partition ∩ fold for branch C in that fold.
+fn empty_intersection_plan_and_provider() -> (ExecutionPlan, InMemoryDataProvider) {
+    let nodes = vec![
+        branch_model_node("model:site__A", "A"),
+        branch_model_node("model:site__B", "B"),
+        branch_model_node("model:site__C", "C"),
+    ];
+    let graph = GraphSpec {
+        id: "graph:fanout.empty".to_string(),
+        interface: GraphInterface::default(),
+        nodes,
+        edges: Vec::new(),
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+    let samples: Vec<SampleId> = ["sample:1", "sample:2", "sample:3", "sample:4"]
+        .iter()
+        .map(|s| SampleId::new(*s).unwrap())
+        .collect();
+    let fold_set = FoldSet {
+        id: "folds:fanout.empty".to_string(),
+        sample_ids: samples.clone(),
+        folds: vec![
+            FoldAssignment {
+                fold_id: FoldId::new("fold:0").unwrap(),
+                train_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                // val = {sample:1 (A), sample:2 (B)} -> NO C samples here.
+                validation_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                metadata: BTreeMap::new(),
+            },
+            FoldAssignment {
+                fold_id: FoldId::new("fold:1").unwrap(),
+                train_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                // val = {sample:3 (A), sample:4 (C)}.
+                validation_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                metadata: BTreeMap::new(),
+            },
+        ],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
+    };
+    let bindings = ["model:site__A", "model:site__B", "model:site__C"]
+        .iter()
+        .map(|id| {
+            let node_id = NodeId::new(*id).unwrap();
+            (node_id.clone(), vec![data_binding(&node_id)])
+        })
+        .collect::<BTreeMap<_, _>>();
+    let campaign = CampaignSpec {
+        inner_cv: None,
+        id: "campaign:fanout.empty".to_string(),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: "split:fanout.empty".to_string(),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(fold_set),
+        }),
+        generation: Default::default(),
+        shape_plans: BTreeMap::new(),
+        data_bindings: bindings,
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    };
+    let mut registry = ControllerRegistry::new();
+    registry
+        .register(controller_manifest("controller:model", NodeKind::Model))
+        .unwrap();
+    let plan = build_execution_plan("plan:fanout.empty", graph, campaign, &registry).unwrap();
+    let envelope = sample_relations_envelope(&[
+        ("sample:1", "A"),
+        ("sample:2", "B"),
+        ("sample:3", "A"),
+        ("sample:4", "C"),
+    ]);
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data").unwrap(),
+        envelope,
+    )
+    .unwrap();
+    (plan, provider)
+}
+
+fn empty_intersection_sample_sites() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("sample:1".to_string(), "A".to_string()),
+        ("sample:2".to_string(), "B".to_string()),
+        ("sample:3".to_string(), "A".to_string()),
+        ("sample:4".to_string(), "C".to_string()),
+    ])
+}
+
+#[test]
+fn empty_partition_intersection_is_skipped_with_no_silent_miscoverage() {
+    // Skip mode: branch C has NO samples in fold:0 (its partition ∩ fold is
+    // empty). The (C, fold:0) OOF is skipped — never a silently-empty block — and
+    // C still validates its sample in fold:1, so coverage is correct, not dropped.
+    let (plan, provider) = empty_intersection_plan_and_provider();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(BranchScopeRecordingController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 1,
+            sample_sites: empty_intersection_sample_sites(),
+            error_on_empty_intersection: false,
+            seen: Arc::clone(&seen),
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:fanout.empty.skip").unwrap(), Some(7));
+
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+
+    let oof_blocks = ctx.prediction_store.blocks();
+    // Branch C produced exactly one OOF block (fold:1, sample:4); fold:0 skipped.
+    let c_ids: Vec<String> = oof_blocks
+        .iter()
+        .filter(|block| block.producer_node.as_str() == "model:site__C")
+        .flat_map(|block| block.sample_ids.iter().map(ToString::to_string))
+        .collect();
+    assert_eq!(
+        c_ids,
+        vec!["sample:4".to_string()],
+        "branch C must cover only its present sample, with the empty fold skipped"
+    );
+    // No empty OOF blocks were emitted anywhere.
+    assert!(
+        oof_blocks.iter().all(|block| !block.sample_ids.is_empty()),
+        "no silently-empty OOF block may be emitted for an empty partition ∩ fold"
+    );
+}
+
+#[test]
+fn empty_partition_intersection_can_raise_a_clear_error() {
+    // Error mode: the empty partition ∩ fold for branch C in fold:0 raises a
+    // clear, explicit error rather than silently mis-covering.
+    let (plan, provider) = empty_intersection_plan_and_provider();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(BranchScopeRecordingController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 1,
+            sample_sites: empty_intersection_sample_sites(),
+            error_on_empty_intersection: true,
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:fanout.empty.error").unwrap(), Some(7));
+
+    let error = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("empty partition ∩ fold"),
+        "empty intersection must surface a clear error: {error}"
+    );
+}
+
+fn sample_relations_envelope(rows: &[(&str, &str)]) -> ExternalDataPlanEnvelope {
+    let records = rows
+        .iter()
+        .map(|(sample, site)| {
+            let mut relation = SampleRelation::new(
+                ObservationId::new(format!("obs:{}", sample.replace(':', "."))).unwrap(),
+                SampleId::new(*sample).unwrap(),
+            );
+            relation
+                .metadata
+                .insert("site".to_string(), serde_json::json!(site));
+            relation
+        })
+        .collect::<Vec<_>>();
+    let relations = SampleRelationSet { records };
+    relations.validate().unwrap();
+    // Match the data_binding() helper's fingerprints so the provider accepts the
+    // binding; require_relations is satisfied by coordinator_relations presence.
+    ExternalDataPlanEnvelope {
+        schema_version: crate::data::EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION,
+        schema_fingerprint: "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b"
+            .to_string(),
+        plan_fingerprint: "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d"
+            .to_string(),
+        relation_fingerprint: Some(
+            "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10".to_string(),
+        ),
+        coordinator_relations: Some(relations),
+    }
+}

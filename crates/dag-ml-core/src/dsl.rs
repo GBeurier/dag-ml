@@ -691,6 +691,545 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
     })
 }
 
+/// Metadata key under which [`fan_out_data_aware_branches`] records the
+/// deterministic fingerprint of the discovered partition set, so identical
+/// data always expands to a byte-identical spec (and therefore a byte-identical
+/// graph/campaign fingerprint downstream).
+pub const DSL_DATA_AWARE_FANOUT_METADATA_KEY: &str = "dsl_data_aware_fanout";
+
+/// Branch-step metadata flag that opts a single-template branch step into
+/// plan-time, data-aware fan-out. Without it a one-branch step is treated as an
+/// ordinary explicit branch and left untouched.
+const DSL_AUTO_SEPARATE_METADATA_KEY: &str = "auto_separate";
+
+/// Plan-time, data-aware branch fan-out (the keystone of native branch
+/// support). Given a parsed pipeline DSL spec and the coordinator data-plan
+/// envelope, this turns each *auto-separation* branch step — a single-template
+/// branch over a `by_metadata` key or `by_tag` criterion, marked
+/// `metadata.auto_separate=true` — into an explicit branch step with **one
+/// concrete branch per discovered partition value**, retaining ALL of them.
+///
+/// This is fan-out, NOT variant generation: variants SELECT one; branches keep
+/// every partition. The expansion mirrors the shape of an author-written
+/// explicit branch step ([`PipelineDslBranch`] with a per-branch `selector`),
+/// so the normal compile path ([`compile_pipeline_dsl_with_generation`]) lowers
+/// each branch into its own model node + `BranchViewPlan` with no special
+/// handling — the same machinery that backs explicit branches.
+///
+/// Discovery reads the SORTED distinct values of the criterion from
+/// `envelope.coordinator_relations`; the branches are generated in that sorted
+/// order so the result is deterministic. The discovered set is fingerprinted
+/// (criterion + sorted values + `relation_fingerprint`) into the spec metadata
+/// under [`DSL_DATA_AWARE_FANOUT_METADATA_KEY`], so identical data yields a
+/// byte-identical expanded spec.
+///
+/// Specs without any auto-separation branch step are returned unchanged.
+///
+/// The host calls this AFTER reading the envelope and BEFORE compiling: the
+/// envelope (which carries the metadata/tag VALUES) is not available at compile
+/// or plan-build time — only at the data-provider boundary — so the fan-out is
+/// plan-time-adjacent rather than inside `build_execution_plan`.
+pub fn fan_out_data_aware_branches(
+    spec: &PipelineDslSpec,
+    envelope: &crate::data::ExternalDataPlanEnvelope,
+) -> Result<PipelineDslSpec> {
+    envelope.validate()?;
+    let mut expanded = spec.clone();
+    let mut fanouts: Vec<DataAwareFanoutRecord> = Vec::new();
+    // old template node id -> the per-clone suffixed ids it expanded into. Every
+    // place a template node id can appear (top-level data_bindings, generation
+    // param_overrides) is rewritten/validated against this map so no reference
+    // dangles or collides after fan-out.
+    let mut id_map: NodeIdRewriteMap = BTreeMap::new();
+    expanded.steps = fan_out_steps(&spec.steps, envelope, &mut fanouts, &mut id_map)?;
+    if fanouts.is_empty() {
+        return Ok(expanded);
+    }
+    // Top-level data bindings (the executable DSL keys these by node id) must be
+    // cloned + rewritten per discovered branch, or they dangle/collide at compile.
+    expanded.data_bindings = rewrite_top_level_data_bindings(&spec.data_bindings, &id_map)?;
+    // Generation param_overrides referencing a fanned template node are NOT
+    // supported in a fanned template this slice — reject rather than dangle.
+    reject_generation_overrides_for_fanned_nodes(&spec.generation_dimensions, &id_map)?;
+    // Deterministic provenance: record the discovered partition sets so identical
+    // data expands identically and the change is traceable in the spec metadata.
+    // The relation_fingerprint is folded into the canonical fingerprint string so
+    // the same partition values from a different relation set still fingerprint
+    // distinctly.
+    let canonical = serde_json::json!({
+        "branches": fanouts,
+        "relation_fingerprint": envelope.relation_fingerprint,
+    });
+    let fingerprint = crate::campaign::stable_json_fingerprint(&canonical)?;
+    expanded.metadata.insert(
+        DSL_DATA_AWARE_FANOUT_METADATA_KEY.to_string(),
+        serde_json::json!({
+            "fingerprint": fingerprint,
+            "relation_fingerprint": envelope.relation_fingerprint,
+            "branches": fanouts,
+        }),
+    );
+    Ok(expanded)
+}
+
+/// Maps each original template node id to the list of suffixed ids it expanded
+/// into across the discovered branches (one per partition value).
+type NodeIdRewriteMap = BTreeMap<NodeId, Vec<NodeId>>;
+
+/// Clone + rewrite the top-level data bindings so that, for every template node
+/// id that fan-out replaced with N suffixed ids, there is one binding per
+/// suffixed id (same payload, retargeted node id). Bindings for nodes untouched
+/// by fan-out are carried through unchanged.
+fn rewrite_top_level_data_bindings(
+    bindings: &[DataBinding],
+    id_map: &NodeIdRewriteMap,
+) -> Result<Vec<DataBinding>> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        match id_map.get(&binding.node_id) {
+            Some(new_ids) => {
+                for new_id in new_ids {
+                    let mut clone = binding.clone();
+                    clone.node_id = new_id.clone();
+                    out.push(clone);
+                }
+            }
+            None => out.push(binding.clone()),
+        }
+    }
+    Ok(out)
+}
+
+/// A generation `param_override` targeting a node that fan-out multiplied has no
+/// single destination after expansion (it would silently dangle), so reject it
+/// with a clear error. Generation × data-aware fan-out is out of scope this slice.
+fn reject_generation_overrides_for_fanned_nodes(
+    dimensions: &[PipelineDslGenerationDimension],
+    id_map: &NodeIdRewriteMap,
+) -> Result<()> {
+    for dimension in dimensions {
+        for choice in &dimension.choices {
+            for override_spec in &choice.param_overrides {
+                if id_map.contains_key(&override_spec.node_id) {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "data-aware fan-out cannot rewrite generation param_override targeting \
+                         node `{}` (generation overrides on a fanned-out template node are not \
+                         supported in this slice)",
+                        override_spec.node_id
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Canonical, serialized record of one fan-out expansion. Sorted values keep it
+/// deterministic; it feeds both the spec-metadata provenance and the fan-out
+/// fingerprint.
+#[derive(Clone, Debug, Serialize)]
+struct DataAwareFanoutRecord {
+    branch_step_id: String,
+    mode: PipelineDslBranchMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata_key: Option<String>,
+    /// Sorted distinct partition values discovered from the relations.
+    values: Vec<serde_json::Value>,
+}
+
+fn fan_out_steps(
+    steps: &[PipelineDslStep],
+    envelope: &crate::data::ExternalDataPlanEnvelope,
+    fanouts: &mut Vec<DataAwareFanoutRecord>,
+    id_map: &mut NodeIdRewriteMap,
+) -> Result<Vec<PipelineDslStep>> {
+    let mut out = Vec::with_capacity(steps.len());
+    for step in steps {
+        out.push(fan_out_step(step, envelope, fanouts, id_map)?);
+    }
+    Ok(out)
+}
+
+fn fan_out_step(
+    step: &PipelineDslStep,
+    envelope: &crate::data::ExternalDataPlanEnvelope,
+    fanouts: &mut Vec<DataAwareFanoutRecord>,
+    id_map: &mut NodeIdRewriteMap,
+) -> Result<PipelineDslStep> {
+    match step {
+        PipelineDslStep::Branch(branch_step) => {
+            if is_auto_separation_branch(branch_step) {
+                return Ok(PipelineDslStep::Branch(expand_auto_separation_branch(
+                    branch_step,
+                    envelope,
+                    fanouts,
+                    id_map,
+                )?));
+            }
+            // Explicit branch: recurse into each branch's nested steps so a
+            // nested auto-separation branch still expands, but leave the
+            // explicit branches themselves untouched.
+            let mut expanded = branch_step.clone();
+            for branch in &mut expanded.branches {
+                branch.steps = fan_out_steps(&branch.steps, envelope, fanouts, id_map)?;
+            }
+            Ok(PipelineDslStep::Branch(expanded))
+        }
+        PipelineDslStep::Sequential(sequence) => {
+            let mut expanded = sequence.clone();
+            expanded.steps = fan_out_steps(&sequence.steps, envelope, fanouts, id_map)?;
+            Ok(PipelineDslStep::Sequential(expanded))
+        }
+        other => Ok(other.clone()),
+    }
+}
+
+/// A branch step is an auto-separation template iff it is explicitly marked
+/// `metadata.auto_separate=true`, is a `by_metadata`/`by_tag`/`separation`
+/// criterion, and carries exactly one template branch with no per-branch
+/// selector (the body to replicate per discovered value). The explicit marker
+/// keeps a one-branch *explicit* branch from being misread as a template.
+fn is_auto_separation_branch(step: &PipelineDslBranchStep) -> bool {
+    let marked = step
+        .metadata
+        .get(DSL_AUTO_SEPARATE_METADATA_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    marked
+        && matches!(
+            step.mode,
+            PipelineDslBranchMode::ByMetadata
+                | PipelineDslBranchMode::ByTag
+                | PipelineDslBranchMode::Separation
+        )
+        && step.branches.len() == 1
+        && step.branches[0].selector.is_none()
+}
+
+fn expand_auto_separation_branch(
+    step: &PipelineDslBranchStep,
+    envelope: &crate::data::ExternalDataPlanEnvelope,
+    fanouts: &mut Vec<DataAwareFanoutRecord>,
+    id_map: &mut NodeIdRewriteMap,
+) -> Result<PipelineDslBranchStep> {
+    let template = &step.branches[0];
+    // Reject template bodies that carry node-id CROSS-references this slice does
+    // not fully rewrite (merge selector `model` refs, concat inner operator ids),
+    // rather than silently leaving them dangling after the per-branch rename.
+    reject_unsupported_template_constructs(&template.id, &template.steps)?;
+    let relations = envelope.coordinator_relations.as_ref().ok_or_else(|| {
+        DagMlError::GraphValidation(format!(
+            "data-aware fan-out of branch `{}` requires coordinator relations in the envelope",
+            template.id
+        ))
+    })?;
+    let (mode, metadata_key, values) = discover_partition_values(step, template, relations)?;
+    if values.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "data-aware fan-out of branch `{}` discovered no partition values in the relations",
+            template.id
+        )));
+    }
+
+    let mut branches = Vec::with_capacity(values.len());
+    let mut seen_ids = BTreeSet::new();
+    for value in &values {
+        let mut branch = template.clone();
+        let suffix = fanout_value_suffix(value);
+        branch.id = format!("{}__{suffix}", template.id);
+        if !seen_ids.insert(branch.id.clone()) {
+            return Err(DagMlError::GraphValidation(format!(
+                "data-aware fan-out of branch `{}` produced duplicate branch id `{}` \
+                 (distinct partition values render to the same id)",
+                template.id, branch.id
+            )));
+        }
+        branch.selector = Some(branch_selector_for_value(
+            mode,
+            metadata_key.as_deref(),
+            value,
+        ));
+        // Each cloned branch needs unique node ids — the template body is reused
+        // verbatim, so suffix every node id. The collected old->new ids feed the
+        // top-level data_bindings/param_override rewrite + validation.
+        rewrite_branch_step_ids(&mut branch.steps, &suffix, id_map)?;
+        branches.push(branch);
+    }
+
+    fanouts.push(DataAwareFanoutRecord {
+        branch_step_id: template.id.clone(),
+        mode: step.mode,
+        metadata_key: metadata_key.clone(),
+        values,
+    });
+
+    let mut expanded = step.clone();
+    // Drop the auto_separate marker from the now-explicit step so the compiler
+    // sees an ordinary enumerated branch step and re-running fan-out is a no-op.
+    expanded.metadata.remove(DSL_AUTO_SEPARATE_METADATA_KEY);
+    expanded.branches = branches;
+    Ok(expanded)
+}
+
+/// Discover the SORTED distinct values of the branch criterion from the
+/// coordinator relations. Returns `(resolved_mode, metadata_key, values)`.
+fn discover_partition_values(
+    step: &PipelineDslBranchStep,
+    template: &PipelineDslBranch,
+    relations: &crate::relation::SampleRelationSet,
+) -> Result<(BranchViewMode, Option<String>, Vec<serde_json::Value>)> {
+    // For Separation (auto) we resolve to by_metadata when a key is present,
+    // else by_tag.
+    let metadata_key = step
+        .selector
+        .as_ref()
+        .and_then(selector_metadata_key)
+        .or_else(|| template.selector.as_ref().and_then(selector_metadata_key));
+    let resolved_mode = match step.mode {
+        PipelineDslBranchMode::ByMetadata => BranchViewMode::ByMetadata,
+        PipelineDslBranchMode::ByTag => BranchViewMode::ByTag,
+        PipelineDslBranchMode::Separation => {
+            if metadata_key.is_some() {
+                BranchViewMode::ByMetadata
+            } else {
+                BranchViewMode::ByTag
+            }
+        }
+        // Only by_metadata / by_tag / separation reach here (is_auto_separation_branch).
+        other => {
+            return Err(DagMlError::GraphValidation(format!(
+                "data-aware fan-out of branch `{}` does not support mode {other:?}",
+                template.id
+            )));
+        }
+    };
+
+    match resolved_mode {
+        BranchViewMode::ByMetadata => {
+            let key = metadata_key.ok_or_else(|| {
+                DagMlError::GraphValidation(format!(
+                    "data-aware by_metadata fan-out of branch `{}` requires a metadata key on the \
+                     branch step or template selector",
+                    template.id
+                ))
+            })?;
+            let mut values: Vec<serde_json::Value> = relations
+                .records
+                .iter()
+                .filter_map(|record| record.metadata.get(&key).cloned())
+                .collect();
+            sort_dedup_json_values(&mut values);
+            Ok((resolved_mode, Some(key), values))
+        }
+        BranchViewMode::ByTag => {
+            let mut tags: Vec<String> = relations
+                .records
+                .iter()
+                .flat_map(|record| record.tags.iter().cloned())
+                .collect();
+            tags.sort();
+            tags.dedup();
+            let values = tags.into_iter().map(serde_json::Value::String).collect();
+            Ok((resolved_mode, None, values))
+        }
+        other => Err(DagMlError::GraphValidation(format!(
+            "data-aware fan-out of branch `{}` does not support resolved mode {other:?}",
+            template.id
+        ))),
+    }
+}
+
+/// Per-branch selector targeting exactly one discovered value, in the shape the
+/// explicit-branch selector lowering already understands
+/// (`branch_view_selector_by_metadata` / `_by_tag`).
+fn branch_selector_for_value(
+    mode: BranchViewMode,
+    metadata_key: Option<&str>,
+    value: &serde_json::Value,
+) -> serde_json::Value {
+    match mode {
+        BranchViewMode::ByMetadata => {
+            let key = metadata_key.unwrap_or_default();
+            serde_json::json!({ "metadata": { key: value.clone() } })
+        }
+        // by_tag values are always strings (discovered from `tags`).
+        _ => serde_json::json!({ "tags": [value.clone()] }),
+    }
+}
+
+/// Deterministic, identifier-safe suffix for a discovered partition value, used
+/// for both the branch id and the per-branch node-id rewrites.
+fn fanout_value_suffix(value: &serde_json::Value) -> String {
+    let rendered = match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    let sanitized = rendered
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim_matches('_');
+    if sanitized.is_empty() {
+        "empty".to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
+/// Reject template bodies that contain node-id cross-referencing constructs
+/// (merge / merge_model / concat_transform) which this slice does not fully
+/// rewrite. Leaving their internal refs (merge selector `model`, concat inner
+/// operator ids) unrewritten after the per-branch rename would dangle, so fail
+/// loud instead. Plain operator/model/transform bodies, nested sequences,
+/// generators and nested branches are supported (their ids carry no sibling
+/// cross-references).
+fn reject_unsupported_template_constructs(
+    template_id: &str,
+    steps: &[PipelineDslStep],
+) -> Result<()> {
+    for step in steps {
+        let unsupported = match step {
+            PipelineDslStep::Merge(_) => Some("merge"),
+            PipelineDslStep::MergeModel(_) => Some("merge_model"),
+            PipelineDslStep::ConcatTransform(_) => Some("concat_transform"),
+            _ => None,
+        };
+        if let Some(kind) = unsupported {
+            return Err(DagMlError::GraphValidation(format!(
+                "data-aware fan-out of branch `{template_id}` does not support a `{kind}` step \
+                 inside the auto-separation template (its node-id cross-references cannot be \
+                 safely cloned per partition in this slice)"
+            )));
+        }
+        // Recurse into containers so a deeply-nested merge/concat is also caught.
+        match step {
+            PipelineDslStep::Sequential(sequence) => {
+                reject_unsupported_template_constructs(template_id, &sequence.steps)?;
+            }
+            PipelineDslStep::Branch(branch) => {
+                for nested in &branch.branches {
+                    reject_unsupported_template_constructs(template_id, &nested.steps)?;
+                }
+            }
+            PipelineDslStep::Generator(generator) => {
+                for nested in &generator.branches {
+                    reject_unsupported_template_constructs(template_id, &nested.steps)?;
+                }
+                for stage in &generator.stages {
+                    for nested in &stage.branches {
+                        reject_unsupported_template_constructs(template_id, &nested.steps)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Suffix every node id inside a cloned template branch so the per-partition
+/// copies have unique node ids, recording each old->new mapping into `id_map`
+/// so the caller can rewrite top-level references (data_bindings) and reject
+/// unrewritable ones (generation param_overrides). DSL steps connect by
+/// sequential data flow, not by id cross-reference, so suffixing the node ids is
+/// sufficient for the supported template constructs.
+fn rewrite_branch_step_ids(
+    steps: &mut [PipelineDslStep],
+    suffix: &str,
+    id_map: &mut NodeIdRewriteMap,
+) -> Result<()> {
+    for step in steps.iter_mut() {
+        rewrite_step_id(step, suffix, id_map)?;
+    }
+    Ok(())
+}
+
+fn record_rewrite(id_map: &mut NodeIdRewriteMap, old_id: &NodeId, new_id: &NodeId) {
+    id_map
+        .entry(old_id.clone())
+        .or_default()
+        .push(new_id.clone());
+}
+
+fn suffix_and_record(id: &NodeId, suffix: &str, id_map: &mut NodeIdRewriteMap) -> Result<NodeId> {
+    let new_id = NodeId::new(format!("{}__{suffix}", id.as_str()))?;
+    record_rewrite(id_map, id, &new_id);
+    Ok(new_id)
+}
+
+fn rewrite_step_id(
+    step: &mut PipelineDslStep,
+    suffix: &str,
+    id_map: &mut NodeIdRewriteMap,
+) -> Result<()> {
+    match step {
+        PipelineDslStep::Transform(op)
+        | PipelineDslStep::YTransform(op)
+        | PipelineDslStep::Tag(op)
+        | PipelineDslStep::Exclude(op)
+        | PipelineDslStep::Filter(op)
+        | PipelineDslStep::SampleFilter(op)
+        | PipelineDslStep::Augmentation(op)
+        | PipelineDslStep::FeatureAugmentation(op)
+        | PipelineDslStep::SampleAugmentation(op)
+        | PipelineDslStep::DataGeneration(op)
+        | PipelineDslStep::Model(op)
+        | PipelineDslStep::Tuner(op)
+        | PipelineDslStep::Chart(op) => {
+            op.id = suffix_and_record(&op.id, suffix, id_map)?;
+        }
+        // merge / merge_model / concat are rejected upstream by
+        // reject_unsupported_template_constructs; keep their id rewrite for
+        // completeness if that gate ever relaxes.
+        PipelineDslStep::ConcatTransform(concat) => {
+            concat.id = suffix_and_record(&concat.id, suffix, id_map)?;
+        }
+        PipelineDslStep::Merge(merge) => {
+            merge.id = suffix_and_record(&merge.id, suffix, id_map)?;
+        }
+        PipelineDslStep::MergeModel(merge) => {
+            merge.id = suffix_and_record(&merge.id, suffix, id_map)?;
+        }
+        PipelineDslStep::Sequential(sequence) => {
+            if let Some(id) = sequence.id.as_ref() {
+                sequence.id = Some(suffix_and_record(id, suffix, id_map)?);
+            }
+            rewrite_branch_step_ids(&mut sequence.steps, suffix, id_map)?;
+        }
+        PipelineDslStep::Branch(branch) => {
+            for nested in branch.branches.iter_mut() {
+                rewrite_branch_step_ids(&mut nested.steps, suffix, id_map)?;
+            }
+        }
+        PipelineDslStep::Generator(generator) => {
+            generator.id = suffix_and_record(&generator.id, suffix, id_map)?;
+            for nested in generator.branches.iter_mut() {
+                rewrite_branch_step_ids(&mut nested.steps, suffix, id_map)?;
+            }
+            for stage in generator.stages.iter_mut() {
+                for nested in stage.branches.iter_mut() {
+                    rewrite_branch_step_ids(&mut nested.steps, suffix, id_map)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Sort + dedup JSON values deterministically by their canonical string form
+/// (relations carry heterogeneous JSON; a stable string key gives a total,
+/// reproducible order without imposing a numeric/string type assumption).
+fn sort_dedup_json_values(values: &mut Vec<serde_json::Value>) {
+    values.sort_by_key(|value| value.to_string());
+    values.dedup_by_key(|value| value.to_string());
+}
+
 fn resolve_step_minimal_aliases(
     step: &mut PipelineDslStep,
     registry: &ControllerRegistry,
@@ -9134,5 +9673,364 @@ mod tests {
             crate::fold::NestedCvSpec::KFold(ref k) => assert_eq!(k.n_splits, 4),
             other => panic!("expected merge-model KFold inner_cv, got {other:?}"),
         }
+    }
+
+    // ----- plan-time data-aware branch fan-out (Slice 2 keystone) -----
+
+    const FANOUT_FP: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+    /// Build an envelope whose coordinator relations carry the given
+    /// `(metadata_value, tags)` per sample so a by_metadata/by_tag fan-out has
+    /// distinct values to discover.
+    fn fanout_envelope(rows: &[(&str, &str, &[&str])]) -> crate::data::ExternalDataPlanEnvelope {
+        use crate::ids::{ObservationId, SampleId};
+        use crate::relation::{SampleRelation, SampleRelationSet};
+        let records = rows
+            .iter()
+            .map(|(sample, site, tags)| {
+                let mut relation = SampleRelation::new(
+                    ObservationId::new(format!("obs:{sample}")).unwrap(),
+                    SampleId::new(format!("sample:{sample}")).unwrap(),
+                );
+                relation
+                    .metadata
+                    .insert("site".to_string(), serde_json::json!(site));
+                relation.tags = tags.iter().map(|tag| (*tag).to_string()).collect();
+                relation
+            })
+            .collect::<Vec<_>>();
+        let relations = SampleRelationSet { records };
+        relations.validate().unwrap();
+        crate::data::ExternalDataPlanEnvelope {
+            schema_version: crate::data::EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION,
+            schema_fingerprint: FANOUT_FP.to_string(),
+            plan_fingerprint: FANOUT_FP.to_string(),
+            relation_fingerprint: Some(relations.fingerprint().unwrap()),
+            coordinator_relations: Some(relations),
+        }
+    }
+
+    fn auto_separation_by_metadata_spec() -> PipelineDslSpec {
+        serde_json::from_str(
+            r#"{
+  "id": "dsl-fanout-by-metadata",
+  "steps": [
+    {
+      "kind": "branch",
+      "mode": "by_metadata",
+      "selector": {"metadata_key": "site"},
+      "metadata": {"auto_separate": true},
+      "branches": [
+        {
+          "id": "per_site",
+          "steps": [
+            {"kind": "transform", "id": "transform:snv", "operator": {"type": "StandardNormalVariate"}},
+            {"kind": "model", "id": "model:site", "operator": {"type": "PLSRegression"}}
+          ]
+        }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fans_out_by_metadata_into_one_branch_per_sorted_value() {
+        let spec = auto_separation_by_metadata_spec();
+        // Insertion order C, A, B — fan-out must sort to A, B, C.
+        let envelope = fanout_envelope(&[
+            ("s1", "C", &[]),
+            ("s2", "A", &[]),
+            ("s3", "B", &[]),
+            ("s4", "A", &[]),
+        ]);
+
+        let expanded = fan_out_data_aware_branches(&spec, &envelope).unwrap();
+
+        let PipelineDslStep::Branch(branch_step) = &expanded.steps[0] else {
+            panic!("expected a branch step");
+        };
+        // Three distinct sites -> three branches, sorted A,B,C.
+        let ids: Vec<&str> = branch_step.branches.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, vec!["per_site__A", "per_site__B", "per_site__C"]);
+        // The auto_separate marker is consumed so a re-run is a no-op.
+        assert!(!branch_step.metadata.contains_key("auto_separate"));
+        // Each branch targets exactly its own metadata value.
+        assert_eq!(
+            branch_step.branches[0].selector.as_ref().unwrap()["metadata"]["site"],
+            "A"
+        );
+        assert_eq!(
+            branch_step.branches[2].selector.as_ref().unwrap()["metadata"]["site"],
+            "C"
+        );
+
+        // The expanded spec compiles into N concrete branch model nodes, one per
+        // partition, each scoped by its own BranchViewPlan — RETAIN ALL.
+        let compiled = compile_pipeline_dsl_with_generation(&expanded).unwrap();
+        assert_eq!(compiled.branch_view_plans.len(), 3);
+        let mut sites: Vec<String> = compiled
+            .branch_view_plans
+            .iter()
+            .map(|plan| plan.selector.metadata["site"].as_str().unwrap().to_string())
+            .collect();
+        sites.sort();
+        assert_eq!(sites, vec!["A", "B", "C"]);
+        // One model node per partition, each carrying its own branch view.
+        for site in ["A", "B", "C"] {
+            let node = compiled
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id.as_str() == format!("model:site__{site}"))
+                .unwrap_or_else(|| panic!("missing per-partition model node for site {site}"));
+            assert_eq!(
+                node.metadata["dsl_branch_view_plan"]["selector"]["metadata"]["site"],
+                site
+            );
+        }
+        compiled.graph.validate().unwrap();
+    }
+
+    #[test]
+    fn fans_out_by_tag_into_one_branch_per_sorted_tag() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-fanout-by-tag",
+  "steps": [
+    {
+      "kind": "branch",
+      "mode": "by_tag",
+      "metadata": {"auto_separate": true},
+      "branches": [
+        {
+          "id": "per_tag",
+          "steps": [
+            {"kind": "model", "id": "model:tag", "operator": {"type": "Ridge"}}
+          ]
+        }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let envelope = fanout_envelope(&[
+            ("s1", "x", &["red", "blue"]),
+            ("s2", "y", &["blue"]),
+            ("s3", "z", &["green"]),
+        ]);
+
+        let expanded = fan_out_data_aware_branches(&spec, &envelope).unwrap();
+        let PipelineDslStep::Branch(branch_step) = &expanded.steps[0] else {
+            panic!("expected a branch step");
+        };
+        let ids: Vec<&str> = branch_step.branches.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, vec!["per_tag__blue", "per_tag__green", "per_tag__red"]);
+        assert_eq!(
+            branch_step.branches[0].selector.as_ref().unwrap()["tags"][0],
+            "blue"
+        );
+
+        let compiled = compile_pipeline_dsl_with_generation(&expanded).unwrap();
+        assert_eq!(compiled.branch_view_plans.len(), 3);
+        assert_eq!(compiled.branch_view_plans[0].mode, BranchViewMode::ByTag);
+    }
+
+    #[test]
+    fn fan_out_is_deterministic_byte_identical() {
+        let spec = auto_separation_by_metadata_spec();
+        let envelope = fanout_envelope(&[("s1", "B", &[]), ("s2", "A", &[])]);
+
+        let first = fan_out_data_aware_branches(&spec, &envelope).unwrap();
+        let second = fan_out_data_aware_branches(&spec, &envelope).unwrap();
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&second).unwrap(),
+            "identical data must expand to a byte-identical spec"
+        );
+        // The fan-out fingerprint is recorded and stable across runs.
+        let fp = first.metadata[DSL_DATA_AWARE_FANOUT_METADATA_KEY]["fingerprint"].clone();
+        assert_eq!(
+            fp,
+            second.metadata[DSL_DATA_AWARE_FANOUT_METADATA_KEY]["fingerprint"]
+        );
+        assert!(fp.as_str().unwrap().len() == 64);
+    }
+
+    #[test]
+    fn leaves_explicit_and_unmarked_branches_untouched() {
+        // Same shape as the auto-separation spec but WITHOUT the auto_separate
+        // marker -> must be left exactly as written (compiles as a plain
+        // single-branch explicit step would, here it errors for lacking a
+        // selector, proving fan-out did not touch it).
+        let mut spec = auto_separation_by_metadata_spec();
+        if let PipelineDslStep::Branch(step) = &mut spec.steps[0] {
+            step.metadata.remove("auto_separate");
+        }
+        let envelope = fanout_envelope(&[("s1", "A", &[]), ("s2", "B", &[])]);
+        let expanded = fan_out_data_aware_branches(&spec, &envelope).unwrap();
+        // Unchanged: still one branch, no fan-out metadata recorded.
+        let PipelineDslStep::Branch(branch_step) = &expanded.steps[0] else {
+            panic!("expected a branch step");
+        };
+        assert_eq!(branch_step.branches.len(), 1);
+        assert_eq!(branch_step.branches[0].id, "per_site");
+        assert!(!expanded
+            .metadata
+            .contains_key(DSL_DATA_AWARE_FANOUT_METADATA_KEY));
+    }
+
+    #[test]
+    fn fan_out_requires_relations_in_envelope() {
+        let spec = auto_separation_by_metadata_spec();
+        let envelope = crate::data::ExternalDataPlanEnvelope {
+            schema_version: crate::data::EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION,
+            schema_fingerprint: FANOUT_FP.to_string(),
+            plan_fingerprint: FANOUT_FP.to_string(),
+            relation_fingerprint: None,
+            coordinator_relations: None,
+        };
+        let error = fan_out_data_aware_branches(&spec, &envelope)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("requires coordinator relations"), "{error}");
+    }
+
+    #[test]
+    fn fan_out_errors_when_no_partition_values_discovered() {
+        let spec = auto_separation_by_metadata_spec();
+        // Relations carry NO "site" metadata key -> nothing to discover.
+        use crate::ids::{ObservationId, SampleId};
+        use crate::relation::{SampleRelation, SampleRelationSet};
+        let relations = SampleRelationSet {
+            records: vec![SampleRelation::new(
+                ObservationId::new("obs:s1").unwrap(),
+                SampleId::new("sample:s1").unwrap(),
+            )],
+        };
+        let envelope = crate::data::ExternalDataPlanEnvelope {
+            schema_version: crate::data::EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION,
+            schema_fingerprint: FANOUT_FP.to_string(),
+            plan_fingerprint: FANOUT_FP.to_string(),
+            relation_fingerprint: Some(relations.fingerprint().unwrap()),
+            coordinator_relations: Some(relations),
+        };
+        let error = fan_out_data_aware_branches(&spec, &envelope)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("discovered no partition values"), "{error}");
+    }
+
+    #[test]
+    fn fan_out_clones_top_level_data_bindings_per_branch() {
+        // The executable DSL (from run_backend) carries top-level data_bindings
+        // keyed by node id. Fan-out must clone+rewrite them per discovered
+        // partition so each per-branch model node has its binding (no dangle, no
+        // collision), and the original template-id binding must be gone.
+        let mut spec = auto_separation_by_metadata_spec();
+        spec.data_bindings = vec![crate::data::DataBinding {
+            node_id: NodeId::new("model:site").unwrap(),
+            input_name: "x".to_string(),
+            request_id: "req".to_string(),
+            schema_fingerprint: FANOUT_FP.to_string(),
+            plan_fingerprint: FANOUT_FP.to_string(),
+            relation_fingerprint: Some(FANOUT_FP.to_string()),
+            output_representation: "tabular_numeric".to_string(),
+            feature_set_id: Some("x".to_string()),
+            source_ids: Vec::new(),
+            require_relations: false,
+            view_policy: Default::default(),
+            metadata: BTreeMap::new(),
+        }];
+        let envelope = fanout_envelope(&[("s1", "A", &[]), ("s2", "B", &[])]);
+
+        let expanded = fan_out_data_aware_branches(&spec, &envelope).unwrap();
+
+        let bound_nodes: Vec<&str> = expanded
+            .data_bindings
+            .iter()
+            .map(|binding| binding.node_id.as_str())
+            .collect();
+        assert_eq!(bound_nodes, vec!["model:site__A", "model:site__B"]);
+        // The dangling original-id binding is gone.
+        assert!(!expanded
+            .data_bindings
+            .iter()
+            .any(|binding| binding.node_id.as_str() == "model:site"));
+        // The rewritten bindings still target real per-branch nodes after compile.
+        let compiled = compile_pipeline_dsl_with_generation(&expanded).unwrap();
+        for site in ["A", "B"] {
+            let node_id = format!("model:site__{site}");
+            assert!(
+                compiled
+                    .data_bindings
+                    .contains_key(&NodeId::new(&node_id).unwrap()),
+                "binding missing for fanned node {node_id}"
+            );
+        }
+        compiled.graph.validate().unwrap();
+    }
+
+    #[test]
+    fn fan_out_rejects_merge_inside_auto_separation_template() {
+        let spec: PipelineDslSpec = serde_json::from_str(
+            r#"{
+  "id": "dsl-fanout-merge-template",
+  "steps": [
+    {
+      "kind": "branch",
+      "mode": "by_metadata",
+      "selector": {"metadata_key": "site"},
+      "metadata": {"auto_separate": true},
+      "branches": [
+        {
+          "id": "per_site",
+          "steps": [
+            {"kind": "model", "id": "model:a", "operator": {"type": "Ridge"}},
+            {"kind": "merge_model", "id": "model:meta", "operator": {"type": "Ridge"}}
+          ]
+        }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let envelope = fanout_envelope(&[("s1", "A", &[]), ("s2", "B", &[])]);
+        let error = fan_out_data_aware_branches(&spec, &envelope)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("does not support a `merge_model` step"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn fan_out_rejects_generation_override_on_fanned_node() {
+        let mut spec = auto_separation_by_metadata_spec();
+        spec.generation_dimensions = vec![PipelineDslGenerationDimension {
+            name: "dim".to_string(),
+            choices: vec![PipelineDslGenerationChoice {
+                label: "c0".to_string(),
+                value: None,
+                param_overrides: vec![PipelineDslGenerationParamOverride {
+                    // Targets the template model node that fan-out multiplies.
+                    node_id: NodeId::new("model:site").unwrap(),
+                    params: BTreeMap::from([("alpha".to_string(), serde_json::json!(0.1))]),
+                }],
+            }],
+        }];
+        let envelope = fanout_envelope(&[("s1", "A", &[]), ("s2", "B", &[])]);
+        let error = fan_out_data_aware_branches(&spec, &envelope)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("generation param_override targeting node `model:site`"),
+            "{error}"
+        );
     }
 }

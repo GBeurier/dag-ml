@@ -1551,9 +1551,13 @@ fn main() -> Result<()> {
             scheduler,
             scheduler_workers,
         } => {
-            let plan = build_plan_from_dsl_path(&dsl, &controllers, plan_id)?;
+            // Read the envelope first so plan-time data-aware branch fan-out can
+            // discover partition values from its coordinator relations before the
+            // plan is built.
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
+            let plan =
+                build_plan_from_dsl_path_with_envelope(&dsl, &controllers, &envelope, plan_id)?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
             let process_config = process_adapter_runtime_config(
                 process_workers,
@@ -4517,6 +4521,43 @@ fn build_plan_from_dsl_path(
     plan_id: String,
 ) -> Result<dag_ml_core::ExecutionPlan> {
     let spec = read_pipeline_dsl_json(dsl)?;
+    let registry = controller_registry_from_path(controllers)?;
+    let compiled =
+        compile_pipeline_dsl_with_generation_and_controller_registry(&spec, &registry)
+            .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
+    build_execution_plan(
+        plan_id,
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )
+    .with_context(|| {
+        format!(
+            "failed to build execution plan from pipeline DSL at {}",
+            dsl.display()
+        )
+    })
+}
+
+/// Build a plan from a pipeline DSL, first applying plan-time data-aware branch
+/// fan-out against the training envelope. Any auto-separation branch step in the
+/// DSL is expanded into one concrete branch per discovered partition value
+/// BEFORE compile/plan, since the envelope (which carries the metadata/tag
+/// values) is not visible at compile or `build_execution_plan` time. Specs with
+/// no auto-separation branch compile identically to `build_plan_from_dsl_path`.
+fn build_plan_from_dsl_path_with_envelope(
+    dsl: &PathBuf,
+    controllers: &PathBuf,
+    envelope: &ExternalDataPlanEnvelope,
+    plan_id: String,
+) -> Result<dag_ml_core::ExecutionPlan> {
+    let spec = read_pipeline_dsl_json(dsl)?;
+    let spec = dag_ml_core::fan_out_data_aware_branches(&spec, envelope).with_context(|| {
+        format!(
+            "failed to fan out data-aware branches for pipeline DSL at {}",
+            dsl.display()
+        )
+    })?;
     let registry = controller_registry_from_path(controllers)?;
     let compiled =
         compile_pipeline_dsl_with_generation_and_controller_registry(&spec, &registry)
