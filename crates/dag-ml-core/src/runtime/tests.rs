@@ -7335,6 +7335,100 @@ impl RuntimeController for BranchScopeRecordingController {
     }
 }
 
+/// A branch model controller that emits a validation OOF block over the WHOLE
+/// fold validation set (ignoring any partition filter). Two such branches feeding
+/// one concat-merge therefore overlap on every sample — the non-disjoint input
+/// the merge handler must refuse. Used by the overlap-guard test.
+struct OverlapEmittingController {
+    id: ControllerId,
+    handle: u64,
+}
+
+impl RuntimeController for OverlapEmittingController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let fold_label = task
+            .fold_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string());
+        let validation_view = task
+            .data_views
+            .iter()
+            .find(|(_, view)| view.partition == DataRequestPartition::FoldValidation)
+            .map(|(_, view)| view);
+        let fold_validation_ids: Vec<SampleId> = validation_view
+            .and_then(|view| view.sample_ids.clone())
+            .unwrap_or_default();
+        let prediction_output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Prediction,
+            owner_controller: self.id.clone(),
+        };
+        let data_output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Data,
+            owner_controller: self.id.clone(),
+        };
+        let predictions = if task.phase == Phase::FitCv && !fold_validation_ids.is_empty() {
+            vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: task.fold_id.clone(),
+                sample_ids: fold_validation_ids.clone(),
+                values: vec![vec![1.0]; fold_validation_ids.len()],
+                target_names: vec!["y".to_string()],
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([
+                ("pred".to_string(), prediction_output.clone()),
+                ("oof".to_string(), prediction_output),
+                ("x".to_string(), data_output),
+            ]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{fold_label}",
+                    task.node_plan.node_id
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
 /// A model node carrying a `dsl_branch_view_plan` by_metadata selector for one
 /// site value — exactly the shape `fan_out_data_aware_branches` + compile emit.
 fn branch_model_node(node_id: &str, site: &str) -> NodeSpec {
@@ -7524,6 +7618,1002 @@ fn fanned_out_branches_each_fit_cv_only_their_partition() {
             "branch `{node}` must validate ONLY its own partition's samples across folds"
         );
     }
+}
+
+/// A `PredictionJoin` concat-merge node reassembling N branch OOF blocks — the
+/// shape Slice 3 (native merge) handles. `merge_mode="concat"` in node metadata
+/// marks it as a separation-branch reassembly (vs the default stacking merge),
+/// and one prediction input port per upstream branch carries an OOF edge.
+fn concat_merge_node(node_id: &str, branch_ids: &[&str]) -> NodeSpec {
+    let mut node = node(
+        node_id,
+        NodeKind::PredictionJoin,
+        branch_ids
+            .iter()
+            .map(|branch| port(&format!("oof_{branch}"), PortKind::Prediction))
+            .collect(),
+        vec![port("oof", PortKind::Prediction)],
+    );
+    node.metadata.insert(
+        "merge_mode".to_string(),
+        serde_json::Value::String("concat".to_string()),
+    );
+    node
+}
+
+/// Branch OOF edge: `branch.oof -> merge.oof_<branch>`, carrying the
+/// `requires_oof` and `requires_fold_alignment` contract the real merge DSL
+/// emits. The native merge handler intercepts the node BEFORE this edge is
+/// resolved, so it never trips the full-fold OOF validation that the
+/// partition-covering branch inputs would fail.
+fn branch_to_merge_edge(branch_id: &str, merge_id: &str) -> EdgeSpec {
+    EdgeSpec {
+        source: PortRef {
+            node_id: NodeId::new(branch_id).unwrap(),
+            port_name: "oof".to_string(),
+        },
+        target: PortRef {
+            node_id: NodeId::new(merge_id).unwrap(),
+            port_name: format!("oof_{branch_id}"),
+        },
+        contract: EdgeContract {
+            requires_oof: true,
+            requires_fold_alignment: true,
+            ..EdgeContract::new(PortKind::Prediction, None)
+        },
+    }
+}
+
+/// A controller manifest for the concat-merge node so `build_execution_plan`
+/// resolves a `controller_id` for it. The merge node never actually runs through
+/// this controller — the native scheduler handler reassembles it — but the plan
+/// still needs a manifest (and thread/process safety for the parallel scheduler).
+fn merge_controller_manifest(id: &str) -> ControllerManifest {
+    let mut manifest = controller_manifest(id, NodeKind::PredictionJoin);
+    manifest.supported_phases = BTreeSet::from([Phase::FitCv, Phase::Refit, Phase::Predict]);
+    manifest
+        .capabilities
+        .insert(ControllerCapability::ConsumesOofPredictions);
+    manifest
+        .capabilities
+        .insert(ControllerCapability::EmitsPredictions);
+    manifest
+}
+
+#[test]
+fn concat_merge_reassembles_disjoint_branch_oof_into_full_universe() {
+    // A fanned-out (Slice 2) + merged separation campaign: two branch model nodes
+    // (sites A/B, each scoped to its partition) feed one concat-merge node. A
+    // 2-fold KFold over four samples drives FIT_CV; each branch emits per-partition
+    // OOF (its partition ∩ fold validation), and the merge node must reassemble the
+    // disjoint per-partition blocks into ONE per-sample OOF block covering the full
+    // validation universe exactly once.
+    let node_a = branch_model_node("model:site__A", "A");
+    let node_b = branch_model_node("model:site__B", "B");
+    let merge = concat_merge_node("merge:sites", &["model:site__A", "model:site__B"]);
+    let graph = GraphSpec {
+        id: "graph:merge.scope".to_string(),
+        interface: GraphInterface::default(),
+        nodes: vec![node_a, node_b, merge],
+        edges: vec![
+            branch_to_merge_edge("model:site__A", "merge:sites"),
+            branch_to_merge_edge("model:site__B", "merge:sites"),
+        ],
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+
+    let id_a = NodeId::new("model:site__A").unwrap();
+    let id_b = NodeId::new("model:site__B").unwrap();
+    let merge_id = NodeId::new("merge:sites").unwrap();
+    let samples: Vec<SampleId> = ["sample:1", "sample:2", "sample:3", "sample:4"]
+        .iter()
+        .map(|s| SampleId::new(*s).unwrap())
+        .collect();
+    let fold_set = FoldSet {
+        id: "folds:merge.scope".to_string(),
+        sample_ids: samples.clone(),
+        folds: vec![
+            FoldAssignment {
+                fold_id: FoldId::new("fold:0").unwrap(),
+                train_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                validation_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                metadata: BTreeMap::new(),
+            },
+            FoldAssignment {
+                fold_id: FoldId::new("fold:1").unwrap(),
+                train_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                validation_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                metadata: BTreeMap::new(),
+            },
+        ],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
+    };
+    let campaign = CampaignSpec {
+        inner_cv: None,
+        id: "campaign:merge.scope".to_string(),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: "split:merge.scope".to_string(),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(fold_set),
+        }),
+        generation: Default::default(),
+        shape_plans: BTreeMap::new(),
+        data_bindings: BTreeMap::from([
+            (id_a.clone(), vec![data_binding(&id_a)]),
+            (id_b.clone(), vec![data_binding(&id_b)]),
+        ]),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    };
+    let mut registry = ControllerRegistry::new();
+    registry
+        .register(controller_manifest("controller:model", NodeKind::Model))
+        .unwrap();
+    registry
+        .register(merge_controller_manifest("controller:merge"))
+        .unwrap();
+    let plan = build_execution_plan("plan:merge.scope", graph, campaign, &registry).unwrap();
+
+    let envelope = sample_relations_envelope(&[
+        ("sample:1", "A"),
+        ("sample:2", "B"),
+        ("sample:3", "A"),
+        ("sample:4", "B"),
+    ]);
+    let data_provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data").unwrap(),
+        envelope,
+    )
+    .unwrap();
+
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(BranchScopeRecordingController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 1,
+            sample_sites: BTreeMap::from([
+                ("sample:1".to_string(), "A".to_string()),
+                ("sample:2".to_string(), "B".to_string()),
+                ("sample:3".to_string(), "A".to_string()),
+                ("sample:4".to_string(), "B".to_string()),
+            ]),
+            error_on_empty_intersection: false,
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }))
+        .unwrap();
+    // No merge controller is registered in the RUNTIME registry on purpose: the
+    // native handler must reassemble without invoking any controller.
+    let mut ctx = RunContext::new(RunId::new("run:merge.scope").unwrap(), Some(7));
+
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &data_provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+
+    // The merge node emits exactly ONE OOF block per fold (two folds), each
+    // covering the full fold validation set — not per-partition like the branches.
+    let merge_blocks: Vec<&PredictionBlock> = ctx
+        .prediction_store
+        .blocks()
+        .iter()
+        .filter(|block| block.producer_node == merge_id)
+        .collect();
+    assert_eq!(
+        merge_blocks.len(),
+        2,
+        "merge node must emit one reassembled OOF block per fold"
+    );
+
+    // Per-fold reassembly covers the fold's full validation set, each sample once.
+    let mut fold0: Vec<String> = merge_blocks
+        .iter()
+        .find(|block| block.fold_id.as_ref().unwrap().as_str() == "fold:0")
+        .unwrap()
+        .sample_ids
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    fold0.sort();
+    assert_eq!(
+        fold0,
+        vec!["sample:1".to_string(), "sample:2".to_string()],
+        "fold:0 merge covers its full validation set (A:sample:1 + B:sample:2)"
+    );
+    let mut fold1: Vec<String> = merge_blocks
+        .iter()
+        .find(|block| block.fold_id.as_ref().unwrap().as_str() == "fold:1")
+        .unwrap()
+        .sample_ids
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    fold1.sort();
+    assert_eq!(
+        fold1,
+        vec!["sample:3".to_string(), "sample:4".to_string()],
+        "fold:1 merge covers its full validation set (A:sample:3 + B:sample:4)"
+    );
+
+    // Across folds, the merge's OOF covers the FULL sample universe exactly once.
+    let mut all_merged: Vec<String> = merge_blocks
+        .iter()
+        .flat_map(|block| block.sample_ids.iter().map(ToString::to_string))
+        .collect();
+    all_merged.sort();
+    assert_eq!(
+        all_merged,
+        vec![
+            "sample:1".to_string(),
+            "sample:2".to_string(),
+            "sample:3".to_string(),
+            "sample:4".to_string()
+        ],
+        "the merged OOF must cover every sample exactly once across folds"
+    );
+
+    // Each merged block passes the normal full-fold OOF completeness validation
+    // (the per-branch partition inputs would fail it; the reassembly does not).
+    let fold_set = plan.fold_set.as_ref().unwrap();
+    crate::oof::validate_prediction_blocks_against_folds(fold_set, &[(*merge_blocks[0]).clone()])
+        .expect("reassembled OOF block passes full-fold completeness");
+    crate::oof::validate_prediction_blocks_against_folds(fold_set, &[(*merge_blocks[1]).clone()])
+        .expect("reassembled OOF block passes full-fold completeness");
+
+    // The merge lineage links its contributing branches (full traceability).
+    let merge_lineage = ctx
+        .lineage
+        .records()
+        .find(|record| {
+            record.node_id == merge_id && record.fold_id.as_ref().unwrap().as_str() == "fold:0"
+        })
+        .expect("merge node recorded lineage");
+    assert_eq!(
+        merge_lineage.input_lineage.len(),
+        2,
+        "merge lineage references both branch producers for the fold"
+    );
+}
+
+#[test]
+fn concat_merge_rejects_overlapping_branch_predictions() {
+    // Guard: if two branches both claim the same sample (a non-disjoint partition,
+    // which separation must never produce), the reassembly is a hard error rather
+    // than silently double-covering. Here BOTH branch controllers claim every
+    // fold-validation sample (site filter disabled), so their OOF blocks overlap.
+    let node_a = branch_model_node("model:site__A", "A");
+    let node_b = branch_model_node("model:site__B", "B");
+    let merge = concat_merge_node("merge:sites", &["model:site__A", "model:site__B"]);
+    let graph = GraphSpec {
+        id: "graph:merge.overlap".to_string(),
+        interface: GraphInterface::default(),
+        nodes: vec![node_a, node_b, merge],
+        edges: vec![
+            branch_to_merge_edge("model:site__A", "merge:sites"),
+            branch_to_merge_edge("model:site__B", "merge:sites"),
+        ],
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+    let id_a = NodeId::new("model:site__A").unwrap();
+    let id_b = NodeId::new("model:site__B").unwrap();
+    let samples: Vec<SampleId> = ["sample:1", "sample:2", "sample:3", "sample:4"]
+        .iter()
+        .map(|s| SampleId::new(*s).unwrap())
+        .collect();
+    let fold_set = FoldSet {
+        id: "folds:merge.overlap".to_string(),
+        sample_ids: samples.clone(),
+        folds: vec![
+            FoldAssignment {
+                fold_id: FoldId::new("fold:0").unwrap(),
+                train_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                validation_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                metadata: BTreeMap::new(),
+            },
+            FoldAssignment {
+                fold_id: FoldId::new("fold:1").unwrap(),
+                train_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                validation_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                metadata: BTreeMap::new(),
+            },
+        ],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
+    };
+    let campaign = CampaignSpec {
+        inner_cv: None,
+        id: "campaign:merge.overlap".to_string(),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: "split:merge.overlap".to_string(),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(fold_set),
+        }),
+        generation: Default::default(),
+        shape_plans: BTreeMap::new(),
+        data_bindings: BTreeMap::from([
+            (id_a.clone(), vec![data_binding(&id_a)]),
+            (id_b.clone(), vec![data_binding(&id_b)]),
+        ]),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    };
+    let mut registry = ControllerRegistry::new();
+    registry
+        .register(controller_manifest("controller:model", NodeKind::Model))
+        .unwrap();
+    registry
+        .register(merge_controller_manifest("controller:merge"))
+        .unwrap();
+    let plan = build_execution_plan("plan:merge.overlap", graph, campaign, &registry).unwrap();
+    let envelope = sample_relations_envelope(&[
+        ("sample:1", "A"),
+        ("sample:2", "B"),
+        ("sample:3", "A"),
+        ("sample:4", "B"),
+    ]);
+    let data_provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data").unwrap(),
+        envelope,
+    )
+    .unwrap();
+    let mut controllers = RuntimeControllerRegistry::new();
+    // EMPTY sample_sites => the branch controller's site filter matches nothing by
+    // membership, so it falls back to emitting the FULL fold-validation set for
+    // BOTH branches (overlap on every sample).
+    controllers
+        .register(Box::new(OverlapEmittingController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 1,
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:merge.overlap").unwrap(), Some(7));
+
+    let error = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &data_provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("overlapping branch predictions"),
+        "overlapping branch inputs must surface a clear error: {error}"
+    );
+}
+
+/// A branch model controller that emits NO predictions/targets for any fold —
+/// used to drive the "non-empty fold, no branch inputs" merge error path.
+struct SilentBranchController {
+    id: ControllerId,
+    handle: u64,
+}
+
+impl RuntimeController for SilentBranchController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let fold_label = task
+            .fold_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string());
+        let output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Data,
+            owner_controller: self.id.clone(),
+        };
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([
+                ("oof".to_string(), output.clone()),
+                ("x".to_string(), output),
+            ]),
+            predictions: Vec::new(),
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{fold_label}",
+                    task.node_plan.node_id
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
+/// A branch model controller that, like `BranchScopeRecordingController`, scopes
+/// its OOF to its partition (fold-validation ∩ its site), but ALSO emits the
+/// matching per-sample `y_true` so the merge can be scored. Prediction =
+/// `y_true + offset`, where `offset` comes from the variant's `n_components`
+/// param override — so different variants give the merge different OOF residuals.
+/// `y_true(sample) = trailing integer of the sample id`.
+struct ScoringBranchController {
+    id: ControllerId,
+    handle: u64,
+    sample_sites: BTreeMap<String, String>,
+}
+
+impl ScoringBranchController {
+    fn y_true(sample: &str) -> f64 {
+        sample
+            .rsplit(|c: char| !c.is_ascii_digit())
+            .find(|piece| !piece.is_empty())
+            .and_then(|digits| digits.parse::<f64>().ok())
+            .unwrap_or(0.0)
+    }
+}
+
+impl RuntimeController for ScoringBranchController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let fold_label = task
+            .fold_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string());
+        let validation_view = task
+            .data_views
+            .iter()
+            .find(|(_, view)| view.partition == DataRequestPartition::FoldValidation)
+            .map(|(_, view)| view);
+        let branch_site = validation_view
+            .and_then(|view| view.branch_view.as_ref())
+            .and_then(|branch| branch.selector.metadata.get("site"))
+            .and_then(serde_json::Value::as_str);
+        let fold_validation_ids: Vec<String> = validation_view
+            .and_then(|view| view.sample_ids.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let partition_ids: Vec<String> = match branch_site {
+            Some(site) => fold_validation_ids
+                .iter()
+                .filter(|sample| {
+                    self.sample_sites
+                        .get(*sample)
+                        .map(|s| s == site)
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect(),
+            None => fold_validation_ids.clone(),
+        };
+        let offset = task
+            .node_plan
+            .params
+            .get("n_components")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+
+        let prediction_output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Prediction,
+            owner_controller: self.id.clone(),
+        };
+        let data_output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Data,
+            owner_controller: self.id.clone(),
+        };
+        let (predictions, regression_targets) =
+            if task.phase == Phase::FitCv && !partition_ids.is_empty() {
+                let preds = vec![PredictionBlock {
+                    prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                    producer_node: task.node_plan.node_id.clone(),
+                    partition: PredictionPartition::Validation,
+                    fold_id: task.fold_id.clone(),
+                    sample_ids: partition_ids
+                        .iter()
+                        .map(|s| SampleId::new(s).unwrap())
+                        .collect(),
+                    values: partition_ids
+                        .iter()
+                        .map(|s| vec![Self::y_true(s) + offset])
+                        .collect(),
+                    target_names: vec!["y".to_string()],
+                }];
+                let targets = vec![crate::metrics::RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids: partition_ids
+                        .iter()
+                        .map(|s| {
+                            crate::aggregation::PredictionUnitId::Sample(SampleId::new(s).unwrap())
+                        })
+                        .collect(),
+                    values: partition_ids
+                        .iter()
+                        .map(|s| vec![Self::y_true(s)])
+                        .collect(),
+                    target_names: vec!["y".to_string()],
+                }];
+                (preds, targets)
+            } else {
+                (Vec::new(), Vec::new())
+            };
+        let variant_label = task
+            .variant_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "base".to_string());
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([
+                ("pred".to_string(), prediction_output.clone()),
+                ("oof".to_string(), prediction_output),
+                ("x".to_string(), data_output),
+            ]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets,
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{variant_label}:{fold_label}",
+                    task.node_plan.node_id
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
+/// Two-site sample→site membership shared by the scoring merge tests.
+fn merge_sample_sites() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("sample:1".to_string(), "A".to_string()),
+        ("sample:2".to_string(), "B".to_string()),
+        ("sample:3".to_string(), "A".to_string()),
+        ("sample:4".to_string(), "B".to_string()),
+    ])
+}
+
+/// 2-site (A/B) merge plan + provider over a 2-fold KFold, optionally with a
+/// per-variant `n_components` offset sweep on BOTH branch nodes. Returns the plan
+/// and the data provider; the caller supplies the runtime controllers.
+fn scoring_merge_plan_and_provider(
+    plan_id: &str,
+    offsets: Vec<(&str, f64)>,
+) -> (ExecutionPlan, InMemoryDataProvider) {
+    let node_a = branch_model_node("model:site__A", "A");
+    let node_b = branch_model_node("model:site__B", "B");
+    let merge = concat_merge_node("merge:sites", &["model:site__A", "model:site__B"]);
+    let graph = GraphSpec {
+        id: format!("graph:{plan_id}"),
+        interface: GraphInterface::default(),
+        nodes: vec![node_a, node_b, merge],
+        edges: vec![
+            branch_to_merge_edge("model:site__A", "merge:sites"),
+            branch_to_merge_edge("model:site__B", "merge:sites"),
+        ],
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+    let id_a = NodeId::new("model:site__A").unwrap();
+    let id_b = NodeId::new("model:site__B").unwrap();
+    let samples: Vec<SampleId> = ["sample:1", "sample:2", "sample:3", "sample:4"]
+        .iter()
+        .map(|s| SampleId::new(*s).unwrap())
+        .collect();
+    let fold_set = FoldSet {
+        id: format!("folds:{plan_id}"),
+        sample_ids: samples.clone(),
+        folds: vec![
+            FoldAssignment {
+                fold_id: FoldId::new("fold:0").unwrap(),
+                train_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                validation_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                metadata: BTreeMap::new(),
+            },
+            FoldAssignment {
+                fold_id: FoldId::new("fold:1").unwrap(),
+                train_sample_ids: vec![samples[0].clone(), samples[1].clone()],
+                validation_sample_ids: vec![samples[2].clone(), samples[3].clone()],
+                metadata: BTreeMap::new(),
+            },
+        ],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
+    };
+    // A per-variant offset sweep applied to BOTH branch model nodes.
+    let generation = if offsets.is_empty() {
+        Default::default()
+    } else {
+        let choices = offsets
+            .into_iter()
+            .map(|(label, offset)| GenerationChoice {
+                label: label.to_string(),
+                value: json!(label),
+                param_overrides: vec![
+                    crate::generation::GenerationParamOverride {
+                        node_id: id_a.clone(),
+                        params: BTreeMap::from([("n_components".to_string(), json!(offset))]),
+                    },
+                    crate::generation::GenerationParamOverride {
+                        node_id: id_b.clone(),
+                        params: BTreeMap::from([("n_components".to_string(), json!(offset))]),
+                    },
+                ],
+            })
+            .collect::<Vec<_>>();
+        let max_variants = Some(choices.len());
+        GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: vec![GenerationDimension {
+                name: "branch_offset".to_string(),
+                choices,
+            }],
+            max_variants,
+        }
+    };
+    let campaign = CampaignSpec {
+        inner_cv: None,
+        id: format!("campaign:{plan_id}"),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: format!("split:{plan_id}"),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(fold_set),
+        }),
+        generation,
+        shape_plans: BTreeMap::new(),
+        data_bindings: BTreeMap::from([
+            (id_a.clone(), vec![data_binding(&id_a)]),
+            (id_b.clone(), vec![data_binding(&id_b)]),
+        ]),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    };
+    let mut registry = ControllerRegistry::new();
+    registry
+        .register(controller_manifest("controller:model", NodeKind::Model))
+        .unwrap();
+    registry
+        .register(merge_controller_manifest("controller:merge"))
+        .unwrap();
+    let plan = build_execution_plan(plan_id, graph, campaign, &registry).unwrap();
+    let envelope = sample_relations_envelope(&[
+        ("sample:1", "A"),
+        ("sample:2", "B"),
+        ("sample:3", "A"),
+        ("sample:4", "B"),
+    ]);
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data").unwrap(),
+        envelope,
+    )
+    .unwrap();
+    (plan, provider)
+}
+
+#[test]
+fn concat_merge_producer_is_scored_per_fold_and_cross_fold() {
+    // Fix 1: the merge must be SCORED, not just stored. Branch controllers emit
+    // per-partition OOF + matching y_true; the merge reassembles BOTH, so the
+    // merge producer gets per-fold reports AND a cross-fold OOF average
+    // (cv_best_score). Predictions equal y_true (offset 0) -> RMSE 0 everywhere.
+    let (plan, provider) = scoring_merge_plan_and_provider("plan:merge.scored", Vec::new());
+    let merge_id = NodeId::new("merge:sites").unwrap();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(ScoringBranchController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 1,
+            sample_sites: merge_sample_sites(),
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:merge.scored").unwrap(), Some(7));
+
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+    // Cross-fold OOF average must be computed for the merge producer.
+    ctx.collect_cross_fold_validation_scores().unwrap();
+
+    // Per-fold scoring: the merge producer has a Validation report per fold.
+    let per_fold: Vec<&crate::metrics::RegressionMetricReport> = ctx
+        .score_collector
+        .iter()
+        .filter(|report| {
+            report.producer_node == merge_id
+                && report.partition == PredictionPartition::Validation
+                && report
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold| fold.as_str() != "avg")
+        })
+        .collect();
+    assert_eq!(
+        per_fold.len(),
+        2,
+        "merge producer must be scored once per fold"
+    );
+    for report in &per_fold {
+        assert_eq!(
+            report.row_count, 2,
+            "each per-fold merge report covers the full fold"
+        );
+        assert!(report.metrics["rmse"].abs() < 1e-9, "offset 0 -> RMSE 0");
+    }
+
+    // Cross-fold scoring: the merge producer has a cv_best_score (fold_id="avg")
+    // over the full sample universe — exactly what makes a separation branch yield
+    // a scored full-universe result.
+    let avg: Vec<&crate::metrics::RegressionMetricReport> = ctx
+        .score_collector
+        .iter()
+        .filter(|report| {
+            report.producer_node == merge_id
+                && report
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold| fold.as_str() == "avg")
+        })
+        .collect();
+    assert_eq!(
+        avg.len(),
+        1,
+        "merge producer must have one cross-fold OOF average"
+    );
+    assert_eq!(
+        avg[0].row_count, 4,
+        "the merge OOF average covers the full universe"
+    );
+    assert!(
+        avg[0].metrics["rmse"].abs() < 1e-9,
+        "offset 0 -> OOF-average RMSE 0"
+    );
+}
+
+#[test]
+fn concat_merge_errors_when_a_nonempty_fold_has_no_branch_inputs() {
+    // Fix 2: a NON-EMPTY fold whose branches produced no OOF must ERROR (report
+    // the missing samples), never silently drop the merge output. The branch
+    // controllers here emit NOTHING (skip every fold), so the merge sees a
+    // non-empty fold with zero inputs.
+    let (plan, provider) = scoring_merge_plan_and_provider("plan:merge.noinputs", Vec::new());
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(SilentBranchController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 1,
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:merge.noinputs").unwrap(), Some(7));
+
+    let error = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("does not cover fold") && error.contains("missing"),
+        "a non-empty fold with no branch inputs must report missing samples: {error}"
+    );
+}
+
+#[test]
+fn concat_merge_isolates_per_variant_blocks() {
+    // Fix 3: a 2-variant branch+merge campaign. Each variant runs in its OWN run
+    // context (exactly how native SELECT scores variants), so each variant's merge
+    // reassembles from ONLY its own branch blocks — no cross-variant overlap — and
+    // each variant's cross-fold OOF average reflects ITS offset.
+    let (plan, provider) = scoring_merge_plan_and_provider(
+        "plan:merge.variants",
+        vec![("accurate", 0.0), ("biased", 10.0)],
+    );
+    assert_eq!(plan.variants.len(), 2);
+    let merge_id = NodeId::new("merge:sites").unwrap();
+
+    let mut avg_rmse_by_variant: BTreeMap<String, f64> = BTreeMap::new();
+    for variant in &plan.variants {
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(ScoringBranchController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 1,
+                sample_sites: merge_sample_sites(),
+            }))
+            .unwrap();
+        // A fresh, variant-pinned context per variant (the per-variant isolation
+        // the CLI / select_best_variant_by_cv rely on).
+        let mut ctx = RunContext::new(
+            RunId::new(format!("run:merge.variants:{}", variant.variant_id)).unwrap(),
+            Some(7),
+        );
+        ctx.variant_id = Some(variant.variant_id.clone());
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+        ctx.collect_cross_fold_validation_scores().unwrap();
+
+        // Each variant's merge covers the full universe exactly once, with the
+        // variant-distinguished id, and no overlap error.
+        let merge_blocks: Vec<&PredictionBlock> = ctx
+            .prediction_store
+            .blocks()
+            .iter()
+            .filter(|block| block.producer_node == merge_id)
+            .collect();
+        assert_eq!(
+            merge_blocks.len(),
+            2,
+            "one merge block per fold for this variant"
+        );
+        let mut all: Vec<String> = merge_blocks
+            .iter()
+            .flat_map(|block| block.sample_ids.iter().map(ToString::to_string))
+            .collect();
+        all.sort();
+        assert_eq!(
+            all,
+            vec![
+                "sample:1".to_string(),
+                "sample:2".to_string(),
+                "sample:3".to_string(),
+                "sample:4".to_string()
+            ],
+            "variant `{}` merge must cover the full universe exactly once",
+            variant.variant_id
+        );
+        for block in &merge_blocks {
+            assert!(
+                block
+                    .prediction_id
+                    .as_ref()
+                    .is_some_and(|id| id.contains(variant.variant_id.as_str())),
+                "merge block id must be variant-distinguished"
+            );
+        }
+        let avg = ctx
+            .score_collector
+            .iter()
+            .find(|report| {
+                report.producer_node == merge_id
+                    && report
+                        .fold_id
+                        .as_ref()
+                        .is_some_and(|fold| fold.as_str() == "avg")
+            })
+            .expect("variant merge has a cross-fold OOF average");
+        avg_rmse_by_variant.insert(variant.variant_id.to_string(), avg.metrics["rmse"]);
+    }
+
+    // The two variants score differently (offset 0 -> RMSE 0; offset 10 -> RMSE 10),
+    // proving each merge was reassembled from ONLY its own variant's blocks.
+    let rmses: Vec<f64> = avg_rmse_by_variant.values().copied().collect();
+    assert!(
+        rmses.iter().any(|r| r.abs() < 1e-9) && rmses.iter().any(|r| (r - 10.0).abs() < 1e-9),
+        "per-variant merge OOF averages must differ by offset (0 and 10): {avg_rmse_by_variant:?}"
+    );
+}
+
+#[test]
+fn concat_merge_rejects_mixed_variant_blocks_in_one_context() {
+    // Fix 3 guard: running BOTH variants in ONE context (variant_id unset) lets
+    // two variants' branch blocks accumulate for the same (branch, fold). Blocks
+    // carry no variant tag, so the merge cannot attribute them and must ERROR
+    // rather than silently mix variants. (Real multi-variant runs isolate each
+    // variant in its own context — this is the unsupported direct path.)
+    let (plan, provider) = scoring_merge_plan_and_provider(
+        "plan:merge.mixed",
+        vec![("accurate", 0.0), ("biased", 10.0)],
+    );
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(ScoringBranchController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 1,
+            sample_sites: merge_sample_sites(),
+        }))
+        .unwrap();
+    // No variant pinned -> execute_campaign_phase runs BOTH variants in one ctx.
+    let mut ctx = RunContext::new(RunId::new("run:merge.mixed").unwrap(), Some(7));
+
+    let error = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("mixes several variants"),
+        "mixed-variant branch blocks in one context must error: {error}"
+    );
 }
 
 /// Build the 3-site plan + provider used by the empty-intersection tests. Site C

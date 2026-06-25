@@ -4269,6 +4269,30 @@ impl SequentialScheduler {
                     .node_plans
                     .get(node_id)
                     .expect("execution plan was validated");
+                // Concat-merge reassembly is a scheduler/runtime handler, not a
+                // controller call: it reads the upstream branch OOF blocks from
+                // the prediction store and emits one merged per-sample OOF block.
+                // Intercept it before the controller path (and before the
+                // `requires_oof` edge collection, which is a stacking contract
+                // the partition-covering branch inputs do not satisfy).
+                if is_concat_merge_node(plan, node_plan) {
+                    if let Some(result) = reassemble_separation_merge(plan, node_plan, ctx, &scope)?
+                    {
+                        for prediction in &result.predictions {
+                            ctx.prediction_store.append(prediction.clone())?;
+                        }
+                        apply_result_scoring(
+                            &result,
+                            &mut ctx.score_collector,
+                            &mut ctx.regression_target_records,
+                        )?;
+                        ctx.lineage.record(result.lineage.clone())?;
+                        output_handles.insert(node_id.clone(), result.outputs.clone());
+                        input_lineage.insert(node_id.clone(), result.lineage.record_id.clone());
+                        results.push(result);
+                    }
+                    continue;
+                }
                 let controller = controllers.get(&node_plan.controller_id).ok_or_else(|| {
                     DagMlError::RuntimeValidation(format!(
                         "runtime controller `{}` is not registered",
@@ -4727,11 +4751,22 @@ impl ParallelScheduler {
 
         for level in plan.node_parallel_levels_for_phase(scope.phase)? {
             let mut prepared = Vec::<PreparedNodeTask>::new();
+            // Concat-merge nodes are not controller tasks: they read the upstream
+            // branch OOF blocks from the prediction store and reassemble them on
+            // the scheduler thread (no worker), AFTER this level's worker tasks
+            // have populated the store. They are in a later level than their
+            // branches, so the store already holds the branch OOF by the time we
+            // reassemble — see `reassemble_separation_merge`.
+            let mut merge_nodes = Vec::<NodeId>::new();
             for node_id in &level {
                 let node_plan = plan
                     .node_plans
                     .get(node_id)
                     .expect("execution plan was validated");
+                if is_concat_merge_node(plan, node_plan) {
+                    merge_nodes.push(node_id.clone());
+                    continue;
+                }
                 let collected_inputs = collect_input_handles(
                     plan,
                     node_plan,
@@ -4886,6 +4921,31 @@ impl ParallelScheduler {
                         prepared_task.node_id.clone(),
                         result.lineage.record_id.clone(),
                     );
+                    results.push(result);
+                }
+            }
+
+            // Reassemble any concat-merge nodes in this level now that the level's
+            // worker tasks have populated the prediction store. Merge nodes sit in
+            // a later level than the branches they consume, so the upstream branch
+            // OOF is already present.
+            for node_id in &merge_nodes {
+                let node_plan = plan
+                    .node_plans
+                    .get(node_id)
+                    .expect("execution plan was validated");
+                if let Some(result) = reassemble_separation_merge(plan, node_plan, ctx, &scope)? {
+                    for prediction in &result.predictions {
+                        ctx.prediction_store.append(prediction.clone())?;
+                    }
+                    apply_result_scoring(
+                        &result,
+                        &mut ctx.score_collector,
+                        &mut ctx.regression_target_records,
+                    )?;
+                    ctx.lineage.record(result.lineage.clone())?;
+                    output_handles.insert(node_id.clone(), result.outputs.clone());
+                    input_lineage.insert(node_id.clone(), result.lineage.record_id.clone());
                     results.push(result);
                 }
             }
@@ -6700,6 +6760,331 @@ fn validation_data_view_for_scope(
         excluded_samples,
     )
     .map(Some)
+}
+
+/// Whether `node_plan` is a separation-branch *concat reassembly* merge node —
+/// the merge kind this slice handles natively in the scheduler. It is a
+/// `PredictionJoin` graph node whose DSL `merge_mode` metadata is `"concat"`.
+///
+/// A `PredictionJoin` whose `merge_mode` is anything else (e.g. the default
+/// stacking semantics) is NOT a concat reassembly: it stays an ordinary
+/// controller node, joined through the existing `requires_oof` edge path. So
+/// stacking (predictions-as-meta-features) is explicitly out of scope here and
+/// is left for a follow-up slice — see the module-level merge notes.
+fn is_concat_merge_node(plan: &ExecutionPlan, node_plan: &NodePlan) -> bool {
+    if node_plan.kind != crate::graph::NodeKind::PredictionJoin {
+        return false;
+    }
+    plan.graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == node_plan.node_id)
+        .and_then(|node| node.metadata.get("merge_mode"))
+        .and_then(serde_json::Value::as_str)
+        == Some("concat")
+}
+
+/// Reassemble the per-partition OOF blocks of a separation branch into ONE
+/// per-sample OOF block (and its targets) for a concat merge node.
+///
+/// Slice 3 of native branch support. The fan-out (Slice 2) turns one separation
+/// criterion into N branch model nodes; each branch's FIT_CV emits a `Validation`
+/// `PredictionBlock` covering ONLY its partition's slice of the current fold's
+/// validation set. Nothing reassembled them, so a separation branch could not
+/// produce a scored full-universe result. This handler is the reassembly: it
+/// reads the merge node's upstream branch OOF blocks (and the per-partition
+/// `y_true` the branch models emitted) from the run context, validates them,
+/// concatenates by `sample_id`, and emits one merged `Validation` block — with
+/// its reassembled targets — whose producer is the merge node.
+///
+/// Validation is *partition-aware on the inputs* but *full-fold on the output*:
+///   - each branch input legitimately covers a SUBSET (its partition) of the
+///     fold validation set — never the full set (that is the stacking contract,
+///     not concat), so the normal full-fold OOF edge validation does not apply
+///     to the inputs;
+///   - the inputs must be DISJOINT by sample (separation partitions never share
+///     a sample) — an overlap is a hard error;
+///   - the reassembled OUTPUT must cover the fold's full validation set, each
+///     sample present exactly once (the union of the partitions). This is the
+///     completeness the rest of the OOF machinery expects of a producer.
+///
+/// Scoring (so a separation branch yields a scored full-universe result):
+///   - the merged `NodeResult.regression_targets` are reassembled from each
+///     branch's per-partition `y_true` (the records `apply_result_scoring`
+///     collected from the branch FIT_CV results). This makes the per-fold
+///     `apply_result_scoring` score the MERGE producer, AND attributes target
+///     records to the merge node so the cross-fold OOF average
+///     (`cross_fold_validation_reports`) scores the merge like a normal model.
+///     When the branches emit NO targets (mock controllers), the merge emits no
+///     targets and stays unscored — exactly as an unscored model node would.
+///
+/// Variant scoping: a branch model that ALSO carries a generator/sweep produces
+/// one block per variant in the same run context. Blocks carry no variant tag,
+/// so reads are scoped to the active variant via `scope.variant_id`: a branch's
+/// per-fold target records are filtered by variant, and more than one
+/// `Validation` block for a (branch, fold) — which only arises when several
+/// variants accumulate in one context (the unsupported direct multi-variant
+/// path; SELECT isolates each variant in its own context) — is a hard error
+/// rather than a silent cross-variant mix. The emitted block id and lineage
+/// record id are variant-distinguished so per-variant merges never collide.
+///
+/// Runs once per fold scope (the campaign phase loops folds, so the handler
+/// reassembles within the current fold's validation universe). An empty fold
+/// scope (`scope.fold_id == None`) yields no merged block.
+fn reassemble_separation_merge(
+    plan: &ExecutionPlan,
+    node_plan: &NodePlan,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+) -> Result<Option<NodeResult>> {
+    // Concat reassembly is an OOF (validation) operation; it only runs inside a
+    // FIT_CV fold scope. Other phases have no per-fold OOF to reassemble.
+    let Some(fold_id) = scope.fold_id.clone() else {
+        return Ok(None);
+    };
+    let fold = plan
+        .fold_set
+        .as_ref()
+        .and_then(|fold_set| fold_set.folds.iter().find(|fold| fold.fold_id == fold_id))
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "merge node `{}` references unknown fold `{fold_id}`",
+                node_plan.node_id
+            ))
+        })?;
+    let expected: BTreeSet<&SampleId> = fold.validation_sample_ids.iter().collect();
+
+    // A genuinely empty fold (no validation samples) has nothing to reassemble.
+    // This is the ONLY skip: any NON-empty fold always runs the union/coverage
+    // check below, so an all-empty or partial set of branch inputs surfaces the
+    // missing samples as an error instead of silently dropping the merge output.
+    if expected.is_empty() {
+        return Ok(None);
+    }
+
+    // Concatenate every branch's validation OOF block for this fold, keyed by
+    // sample id, refusing any sample that two branches both claim. Each branch
+    // contributes at most one block per fold (per-variant isolation); two blocks
+    // for one (branch, fold) means several variants are mixed in this context.
+    let variant_id = scope.variant_id.clone();
+    let mut by_sample: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
+    let mut by_sample_target: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
+    let mut target_names: Option<Vec<String>> = None;
+    let mut target_block_names: Option<Vec<String>> = None;
+    let mut width: Option<usize> = None;
+
+    for branch_id in &node_plan.input_nodes {
+        let blocks = ctx.prediction_store.find(
+            Some(branch_id),
+            Some(&PredictionPartition::Validation),
+            Some(&fold_id),
+        );
+        if blocks.is_empty() {
+            // The branch had an empty partition ∩ fold (skipped, no OOF block).
+            // That is legitimate for a sparse partition; coverage is rechecked
+            // against the full fold validation set below.
+            continue;
+        }
+        if blocks.len() > 1 {
+            return Err(DagMlError::OofValidation(format!(
+                "merge node `{}` found {} validation blocks for branch `{branch_id}` in fold `{fold_id}`: the run context mixes several variants — reassemble each variant in its own context (native SELECT does this)",
+                node_plan.node_id,
+                blocks.len()
+            )));
+        }
+        let block = blocks[0];
+        let block_width = block.validate_shape()?;
+        match width {
+            None => width = Some(block_width),
+            Some(existing) if existing != block_width => {
+                return Err(DagMlError::OofValidation(format!(
+                    "merge node `{}` received mismatched prediction widths ({existing} vs {block_width}) from branch `{branch_id}`",
+                    node_plan.node_id
+                )));
+            }
+            _ => {}
+        }
+        let block_targets = if block.target_names.is_empty() {
+            (0..block_width).map(|idx| format!("p{idx}")).collect()
+        } else {
+            block.target_names.clone()
+        };
+        match &target_names {
+            None => target_names = Some(block_targets),
+            Some(existing) if existing != &block_targets => {
+                return Err(DagMlError::OofValidation(format!(
+                    "merge node `{}` received inconsistent target names across branches",
+                    node_plan.node_id
+                )));
+            }
+            _ => {}
+        }
+        for (sample_id, values) in block.sample_ids.iter().zip(block.values.iter()) {
+            if !expected.contains(sample_id) {
+                return Err(DagMlError::OofValidation(format!(
+                    "merge node `{}` branch `{branch_id}` emitted sample `{sample_id}` outside fold `{fold_id}` validation set",
+                    node_plan.node_id
+                )));
+            }
+            if by_sample
+                .insert(sample_id.clone(), values.clone())
+                .is_some()
+            {
+                return Err(DagMlError::OofValidation(format!(
+                    "merge node `{}` received overlapping branch predictions: sample `{sample_id}` is covered by more than one partition",
+                    node_plan.node_id
+                )));
+            }
+        }
+
+        // Reassemble this branch's per-partition y_true (the records collected
+        // from the branch FIT_CV result), scoped to the active variant, so the
+        // merge producer can be scored per-fold and cross-fold.
+        for record in &ctx.regression_target_records {
+            if &record.producer_node != branch_id
+                || record.partition != PredictionPartition::Validation
+                || record.fold_id.as_ref() != Some(&fold_id)
+                || record.variant_id != variant_id
+            {
+                continue;
+            }
+            if target_block_names.is_none() && !record.block.target_names.is_empty() {
+                target_block_names = Some(record.block.target_names.clone());
+            }
+            for (unit_id, row) in record.block.unit_ids.iter().zip(&record.block.values) {
+                let PredictionUnitId::Sample(sample_id) = unit_id else {
+                    continue;
+                };
+                by_sample_target.insert(sample_id.clone(), row.clone());
+            }
+        }
+    }
+
+    // Full-fold output completeness: the union of partitions must be exactly the
+    // fold validation set — no missing sample, none extra. A NON-empty fold with
+    // no (or partial) branch inputs lands here and reports the missing samples.
+    let covered: BTreeSet<&SampleId> = by_sample.keys().collect();
+    if covered != expected {
+        let missing: Vec<String> = expected
+            .difference(&covered)
+            .map(|sample| sample.to_string())
+            .collect();
+        return Err(DagMlError::OofValidation(format!(
+            "merge node `{}` reassembled OOF does not cover fold `{fold_id}` validation set (missing {} sample(s): {})",
+            node_plan.node_id,
+            missing.len(),
+            missing.join(", ")
+        )));
+    }
+
+    // Deterministic order: emit samples in the fold's declared validation order.
+    let sample_ids: Vec<SampleId> = fold.validation_sample_ids.clone();
+    let values: Vec<Vec<f64>> = sample_ids
+        .iter()
+        .map(|sample_id| by_sample.remove(sample_id).expect("sample covered"))
+        .collect();
+    let target_names = target_names.unwrap_or_default();
+
+    // Reassembled targets: only emit when EVERY merged sample has a target row
+    // (full-fold coverage), so `apply_result_scoring` pairs the block 1:1 with
+    // its targets. Partial targets (some branches emitted y_true, others not)
+    // would mis-score, so they are dropped — the merge is then simply unscored.
+    let regression_targets = if !by_sample_target.is_empty()
+        && sample_ids
+            .iter()
+            .all(|sample_id| by_sample_target.contains_key(sample_id))
+    {
+        let target_values: Vec<Vec<f64>> = sample_ids
+            .iter()
+            .map(|sample_id| by_sample_target.remove(sample_id).expect("target covered"))
+            .collect();
+        vec![RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: sample_ids
+                .iter()
+                .cloned()
+                .map(PredictionUnitId::Sample)
+                .collect(),
+            values: target_values,
+            target_names: target_block_names.unwrap_or_default(),
+        }]
+    } else {
+        Vec::new()
+    };
+
+    // Lineage links every contributing branch (for this variant + fold), so the
+    // merge is fully traceable.
+    let branch_inputs: BTreeSet<&NodeId> = node_plan.input_nodes.iter().collect();
+    let mut input_lineage: Vec<LineageId> = Vec::new();
+    for record in ctx.lineage.records() {
+        if branch_inputs.contains(&record.node_id)
+            && record.phase == scope.phase
+            && record.fold_id.as_ref() == Some(&fold_id)
+            && record.variant_id == variant_id
+        {
+            input_lineage.push(record.record_id.clone());
+        }
+    }
+
+    // Variant-distinguish the emitted id + lineage id so per-variant merges in
+    // one context never collide (an empty suffix for the common single-variant
+    // case keeps ids stable).
+    let variant_suffix = variant_id
+        .as_ref()
+        .map(|variant| format!(":{variant}"))
+        .unwrap_or_default();
+    let merged = PredictionBlock {
+        prediction_id: Some(format!(
+            "merge:{}:{fold_id}{variant_suffix}",
+            node_plan.node_id
+        )),
+        producer_node: node_plan.node_id.clone(),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(fold_id.clone()),
+        sample_ids,
+        values,
+        target_names,
+    };
+    merged.validate_shape()?;
+
+    let lineage = LineageRecord {
+        record_id: LineageId::new(format!(
+            "lineage:{}:{fold_id}{variant_suffix}",
+            node_plan.node_id
+        ))?,
+        run_id: ctx.run_id.clone(),
+        node_id: node_plan.node_id.clone(),
+        phase: scope.phase,
+        controller_id: node_plan.controller_id.clone(),
+        controller_version: node_plan.controller_version.clone(),
+        variant_id,
+        fold_id: Some(fold_id),
+        branch_path: Vec::new(),
+        input_lineage,
+        artifact_refs: Vec::new(),
+        params_fingerprint: node_plan.params_fingerprint.clone(),
+        data_model_shape_fingerprint: None,
+        aggregation_policy_fingerprint: None,
+        seed: None,
+        unsafe_flags: BTreeSet::new(),
+        metrics: BTreeMap::new(),
+    };
+
+    Ok(Some(NodeResult {
+        node_id: node_plan.node_id.clone(),
+        outputs: BTreeMap::new(),
+        predictions: vec![merged],
+        observation_predictions: Vec::new(),
+        aggregated_predictions: Vec::new(),
+        explanations: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
+        regression_targets,
+        lineage,
+    }))
 }
 
 /// Extract the `BranchViewPlan` that the DSL compiler stashed in the graph
