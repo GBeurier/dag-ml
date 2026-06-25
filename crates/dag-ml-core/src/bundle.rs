@@ -1171,6 +1171,36 @@ impl ExecutionBundle {
                 .find(|cache| cache.requirement_key == requirement.key());
             validate_prediction_requirement_against_plan(self, plan, edge, requirement, cache)?;
         }
+        // GROUP check for separation-branch concat-merge nodes: the per-input
+        // validation above relaxes the strict full-fold OOF check for each branch
+        // input (a partition covers only a subset); the completeness/leakage
+        // guarantee is restored here by requiring each concat-merge node's branch
+        // inputs to be disjoint and cover the full fold universe exactly once —
+        // the same invariant the runtime merge handler enforces.
+        let cache_by_key = self
+            .prediction_caches
+            .iter()
+            .map(|cache| (cache.requirement_key.clone(), cache))
+            .collect::<BTreeMap<_, _>>();
+        let mut concat_merge_groups: BTreeMap<NodeId, Vec<&BundlePredictionRequirement>> =
+            BTreeMap::new();
+        for requirement in &self.prediction_requirements {
+            if is_concat_merge_consumer(plan, &requirement.consumer_node) {
+                concat_merge_groups
+                    .entry(requirement.consumer_node.clone())
+                    .or_default()
+                    .push(requirement);
+            }
+        }
+        for (consumer_node, requirements) in &concat_merge_groups {
+            validate_concat_merge_requirement_group(
+                self,
+                plan,
+                consumer_node,
+                requirements,
+                &cache_by_key,
+            )?;
+        }
         Ok(())
     }
 
@@ -1268,6 +1298,31 @@ fn expected_refit_artifact_params_fingerprint(
     stable_json_fingerprint(&effective_params)
 }
 
+/// Whether `consumer_node` is a separation-branch *concat reassembly* merge node:
+/// a `PredictionJoin` graph node whose DSL `merge_mode` metadata is `"concat"`.
+///
+/// This is the exact same marker the runtime uses (`runtime::is_concat_merge_node`)
+/// to intercept the node before the controller path and reassemble the disjoint
+/// per-partition OOF blocks. The bundle validation mirrors that marker so the
+/// requirement validation stays consistent with the runtime: the partition-aware
+/// relaxation applies *only* to input edges whose consumer is such a node.
+fn is_concat_merge_consumer(plan: &ExecutionPlan, consumer_node: &NodeId) -> bool {
+    let Some(node_plan) = plan.node_plans.get(consumer_node) else {
+        return false;
+    };
+    if node_plan.kind != crate::graph::NodeKind::PredictionJoin {
+        return false;
+    }
+    plan.graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| &node.id == consumer_node)
+        .and_then(|node| node.metadata.get("merge_mode"))
+        .and_then(serde_json::Value::as_str)
+        == Some("concat")
+}
+
 fn validate_prediction_requirement_against_plan(
     bundle: &ExecutionBundle,
     plan: &ExecutionPlan,
@@ -1277,6 +1332,17 @@ fn validate_prediction_requirement_against_plan(
 ) -> Result<()> {
     if !edge.contract.requires_fold_alignment {
         return Ok(());
+    }
+    // A separation-branch concat-merge input edge covers only ITS partition of the
+    // fold universe, never the full universe. Validate it as a partition-covering
+    // input here (subset of universe, well-formed per-fold cache blocks); the
+    // GROUP of all such sibling inputs is validated together (disjoint + their
+    // union == the full fold set, exactly the runtime merge handler's invariant)
+    // by `validate_concat_merge_requirement_group` after the per-requirement loop.
+    // Every other `requires_fold_alignment` edge keeps the strict per-input
+    // full-fold OOF completeness check below — the general leakage guard is intact.
+    if is_concat_merge_consumer(plan, &requirement.consumer_node) {
+        return validate_concat_merge_branch_input_requirement(bundle, plan, requirement, cache);
     }
     let fold_set = plan.fold_set.as_ref().ok_or_else(|| {
         DagMlError::RuntimeValidation(format!(
@@ -1328,6 +1394,269 @@ fn validate_prediction_requirement_against_plan(
     }
     if let Some(cache) = cache {
         validate_prediction_cache_blocks_match_fold_set(bundle, requirement, cache, fold_set)?;
+    }
+    Ok(())
+}
+
+/// Validate a SINGLE separation-branch input edge into a concat-merge node.
+///
+/// A branch's OOF covers only its partition ∩ fold (a strict subset of the fold
+/// universe), so the strict per-input `sample_ids == full fold_set` check does
+/// NOT apply. Here we validate only that the input is well-formed *within* the
+/// universe: its sample ids are a subset of the fold set, its fold ids are a
+/// subset of the plan fold set, and (when present) each per-fold cache block's
+/// samples are a subset of that fold's validation set with no intra-block
+/// duplicate. The cross-input completeness (disjoint + union == full fold set)
+/// — the actual OOF/leakage guarantee — is enforced by
+/// `validate_concat_merge_requirement_group`, mirroring the runtime merge handler.
+fn validate_concat_merge_branch_input_requirement(
+    bundle: &ExecutionBundle,
+    plan: &ExecutionPlan,
+    requirement: &BundlePredictionRequirement,
+    cache: Option<&BundlePredictionCacheRecord>,
+) -> Result<()> {
+    let fold_set = plan.fold_set.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "bundle `{}` prediction requirement `{}` needs fold alignment but plan `{}` has no fold set",
+            bundle.bundle_id,
+            requirement.key(),
+            plan.id
+        ))
+    })?;
+    let universe_fold_ids = fold_set
+        .folds
+        .iter()
+        .map(|fold| fold.fold_id.clone())
+        .collect::<BTreeSet<_>>();
+    let requirement_fold_ids = requirement
+        .fold_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !requirement_fold_ids.is_subset(&universe_fold_ids) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` concat-merge prediction requirement `{}` has fold ids outside the plan fold set",
+            bundle.bundle_id,
+            requirement.key()
+        )));
+    }
+    // Concat reassembly is a sample-level OOF operation; aggregated (target/group)
+    // levels never feed a separation concat-merge.
+    if requirement.prediction_level != PredictionLevel::Sample {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` concat-merge prediction requirement `{}` must be sample-level (got {:?})",
+            bundle.bundle_id,
+            requirement.key(),
+            requirement.prediction_level
+        )));
+    }
+    let universe_sample_ids = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let requirement_sample_ids = requirement
+        .sample_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !requirement_sample_ids.is_subset(&universe_sample_ids) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` concat-merge prediction requirement `{}` covers samples outside the plan fold set",
+            bundle.bundle_id,
+            requirement.key()
+        )));
+    }
+    if let Some(cache) = cache {
+        let folds = fold_set
+            .folds
+            .iter()
+            .map(|fold| (&fold.fold_id, fold))
+            .collect::<BTreeMap<_, _>>();
+        for block in &cache.blocks {
+            let fold_id = block.fold_id.as_ref().ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` prediction cache `{}` has an OOF block without a fold id",
+                    bundle.bundle_id, cache.cache_id
+                ))
+            })?;
+            let fold = folds.get(fold_id).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` prediction cache `{}` references unknown fold `{fold_id}`",
+                    bundle.bundle_id, cache.cache_id
+                ))
+            })?;
+            let block_samples = block.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+            if block_samples.len() != block.sample_ids.len() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` prediction cache `{}` block for fold `{fold_id}` has a duplicate sample for requirement `{}`",
+                    bundle.bundle_id,
+                    cache.cache_id,
+                    requirement.key()
+                )));
+            }
+            let validation_samples = fold
+                .validation_sample_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            if !block_samples.is_subset(&validation_samples) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` prediction cache `{}` block for fold `{fold_id}` covers samples outside the fold validation set for requirement `{}`",
+                    bundle.bundle_id,
+                    cache.cache_id,
+                    requirement.key()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate the GROUP of separation-branch input requirements feeding ONE
+/// concat-merge node, mirroring the runtime merge handler's invariant
+/// (`runtime::reassemble_separation_merge`): the branch inputs must be pairwise
+/// DISJOINT and their UNION must equal the full fold set sample universe exactly
+/// — each sample covered once. This is the OOF completeness the strict per-input
+/// check guarantees for an ordinary model; for a separation branch the
+/// completeness is a property of the partition-covering inputs *as a group*, not
+/// of any single input.
+///
+/// When per-fold caches are present, the same disjoint+complete property is also
+/// enforced per fold against each fold's validation set, so a partition that is
+/// missing samples in some fold (a real OOF gap) still errors clearly.
+fn validate_concat_merge_requirement_group(
+    bundle: &ExecutionBundle,
+    plan: &ExecutionPlan,
+    consumer_node: &NodeId,
+    requirements: &[&BundlePredictionRequirement],
+    caches: &BTreeMap<String, &BundlePredictionCacheRecord>,
+) -> Result<()> {
+    let fold_set = plan.fold_set.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "bundle `{}` concat-merge node `{consumer_node}` needs fold alignment but plan `{}` has no fold set",
+            bundle.bundle_id, plan.id
+        ))
+    })?;
+
+    // EXPECTED-vs-SUPPLIED: the group's completeness must be judged against the
+    // graph's incoming OOF/fold-aligned edges to the concat-merge node, NOT just
+    // the requirements the bundle happened to supply. Otherwise a bundle could
+    // OMIT one branch->merge edge entirely and let the remaining branches' union
+    // still equal the full fold universe — a missing branch masked by the others.
+    // Derive the expected branch-input requirement keys from the plan graph and
+    // require an EXACT match (no missing, no extra) before the disjoint+union
+    // check; a dropped (or stray) branch edge then surfaces as a clear error.
+    let expected_keys = plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            &edge.target.node_id == consumer_node
+                && edge.contract.requires_oof
+                && edge.contract.requires_fold_alignment
+        })
+        .map(|edge| {
+            bundle_prediction_requirement_key(
+                &edge.source.node_id,
+                &edge.source.port_name,
+                &edge.target.node_id,
+                &edge.target.port_name,
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let supplied_keys = requirements
+        .iter()
+        .map(|req| req.key())
+        .collect::<BTreeSet<_>>();
+    if supplied_keys != expected_keys {
+        let missing: Vec<&str> = expected_keys
+            .difference(&supplied_keys)
+            .map(String::as_str)
+            .collect();
+        let extra: Vec<&str> = supplied_keys
+            .difference(&expected_keys)
+            .map(String::as_str)
+            .collect();
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` concat-merge node `{consumer_node}` branch inputs do not match the plan's incoming OOF edges (missing: [{}]; extra: [{}])",
+            bundle.bundle_id,
+            missing.join(", "),
+            extra.join(", ")
+        )));
+    }
+
+    // Union over all branch inputs must equal the full fold universe, disjointly.
+    let expected_universe = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let mut covered_universe = BTreeSet::new();
+    for requirement in requirements {
+        for sample_id in &requirement.sample_ids {
+            if !covered_universe.insert(sample_id.clone()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` concat-merge node `{consumer_node}` received overlapping branch predictions: sample `{sample_id}` is covered by more than one partition",
+                    bundle.bundle_id
+                )));
+            }
+        }
+    }
+    if covered_universe != expected_universe {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` concat-merge node `{consumer_node}` branch inputs do not cover the full fold set sample universe (each sample exactly once)",
+            bundle.bundle_id
+        )));
+    }
+
+    // Per-fold disjoint+complete coverage against each fold's validation set, using
+    // the per-branch caches when present (the CLI cv-refit path always attaches
+    // them). A partition that drops samples in a fold surfaces as a missing-sample
+    // error rather than a silently incomplete OOF.
+    //
+    // All-or-nothing caches: persisted per-fold OOF is validated complete or not
+    // relied on at all. If ANY branch input carries a cache, ALL must — otherwise
+    // a no-cache branch would satisfy global coverage via its self-declared
+    // `requirement.sample_ids` while its actual persisted per-fold OOF is missing,
+    // hiding an incomplete-coverage gap. A partial-cache concat group is rejected.
+    let cached_count = requirements
+        .iter()
+        .filter(|req| caches.contains_key(&req.key()))
+        .count();
+    if cached_count != 0 && cached_count != requirements.len() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "bundle `{}` concat-merge node `{consumer_node}` has partial prediction-cache coverage ({cached_count} of {} branch inputs cached): all branch inputs must carry a per-fold OOF cache or none",
+            bundle.bundle_id,
+            requirements.len()
+        )));
+    }
+    if cached_count == requirements.len() {
+        let mut covered_by_fold: BTreeMap<FoldId, BTreeSet<SampleId>> = BTreeMap::new();
+        for requirement in requirements {
+            let cache = caches.get(&requirement.key()).expect("checked above");
+            for block in &cache.blocks {
+                let Some(fold_id) = block.fold_id.as_ref() else {
+                    continue;
+                };
+                let covered = covered_by_fold.entry(fold_id.clone()).or_default();
+                for sample_id in &block.sample_ids {
+                    if !covered.insert(sample_id.clone()) {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "bundle `{}` concat-merge node `{consumer_node}` has overlapping branch predictions in fold `{fold_id}`: sample `{sample_id}` is covered by more than one partition",
+                            bundle.bundle_id
+                        )));
+                    }
+                }
+            }
+        }
+        for fold in &fold_set.folds {
+            let expected = fold
+                .validation_sample_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let covered = covered_by_fold.remove(&fold.fold_id).unwrap_or_default();
+            if covered != expected {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` concat-merge node `{consumer_node}` branch inputs do not cover fold `{}` validation set (each sample exactly once)",
+                    bundle.bundle_id, fold.fold_id
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -2172,6 +2501,97 @@ mod tests {
         build_execution_plan("plan:branch.merge.bundle", graph, campaign, &registry).unwrap()
     }
 
+    /// A separation-branch + concat-merge plan: two model branches, each scoped to
+    /// a disjoint partition of the sample universe, feeding one `prediction_join`
+    /// concat-merge node. The branch OOF edges are `requires_oof +
+    /// requires_fold_alignment`, but each branch's OOF covers only its partition
+    /// (a strict subset of the fold universe). This is the Slice 3.5 bundle-assembly
+    /// shape the partition-aware requirement validation must accept.
+    fn separation_concat_merge_plan() -> ExecutionPlan {
+        let graph: GraphSpec = serde_json::from_str(include_str!(
+            "../../../examples/separation_branch_concat_merge_oof_graph.json"
+        ))
+        .unwrap();
+        let campaign: CampaignSpec = serde_json::from_str(include_str!(
+            "../../../examples/campaign_separation_branch_concat_merge_oof.json"
+        ))
+        .unwrap();
+        let manifests: Vec<ControllerManifest> =
+            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
+                .unwrap();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        build_execution_plan(
+            "plan:separation.concat.merge.bundle",
+            graph,
+            campaign,
+            &registry,
+        )
+        .unwrap()
+    }
+
+    /// Per-partition branch OOF requirement into the concat-merge node. Each branch
+    /// covers ONLY its partition's two samples (one per fold), never the full
+    /// 4-sample universe — the partition-covering input shape.
+    fn separation_branch_requirement(
+        producer_node: &str,
+        partition_samples: &[&str],
+        partition_folds: &[&str],
+    ) -> BundlePredictionRequirement {
+        BundlePredictionRequirement {
+            producer_node: NodeId::new(producer_node).unwrap(),
+            source_port: "oof".to_string(),
+            consumer_node: NodeId::new("merge:sites").unwrap(),
+            target_port: format!("oof_{producer_node}"),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
+            fold_ids: partition_folds
+                .iter()
+                .map(|f| FoldId::new(*f).unwrap())
+                .collect(),
+            unit_ids: Vec::new(),
+            sample_ids: partition_samples
+                .iter()
+                .map(|s| SampleId::new(*s).unwrap())
+                .collect(),
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        }
+    }
+
+    /// Per-fold validation OOF blocks for a separation branch: one block per fold,
+    /// each carrying only the branch's partition ∩ fold validation sample.
+    fn separation_branch_blocks(
+        producer_node: &str,
+        fold0_sample: &str,
+        fold1_sample: &str,
+        offset: f64,
+    ) -> Vec<PredictionBlock> {
+        let producer_node = NodeId::new(producer_node).unwrap();
+        vec![
+            PredictionBlock {
+                prediction_id: Some(format!("prediction:{producer_node}:fold0")),
+                producer_node: producer_node.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                sample_ids: vec![SampleId::new(fold0_sample).unwrap()],
+                values: vec![vec![offset + 0.1]],
+                target_names: vec!["y".to_string()],
+            },
+            PredictionBlock {
+                prediction_id: Some(format!("prediction:{producer_node}:fold1")),
+                producer_node,
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:1").unwrap()),
+                sample_ids: vec![SampleId::new(fold1_sample).unwrap()],
+                values: vec![vec![offset + 0.2]],
+                target_names: vec!["y".to_string()],
+            },
+        ]
+    }
+
     fn executable_dsl_plan() -> ExecutionPlan {
         let spec: PipelineDslSpec = serde_json::from_str(include_str!(
             "../../../examples/pipeline_dsl_branch_merge_executable.json"
@@ -2708,6 +3128,324 @@ mod tests {
         assert!(
             error.contains("does not match validation samples"),
             "unexpected fold-alignment error: {error}"
+        );
+    }
+
+    /// Slice 3.5: a separation-branch + concat-merge plan whose branch OOF inputs
+    /// cover disjoint partitions of the fold universe must ASSEMBLE (the strict
+    /// `sample ids do not match plan fold set` check no longer aborts) AND the
+    /// bundle scores carry a cv_best_score for the merge producer.
+    #[test]
+    fn separation_concat_merge_bundle_assembles_and_is_scored() {
+        let plan = separation_concat_merge_plan();
+        // Branch A owns partition {sample:1, sample:3}; branch B owns
+        // {sample:2, sample:4}. Each is a strict subset of the 4-sample universe.
+        let a_requirement = separation_branch_requirement(
+            "branch:site__A.model:pls",
+            &["sample:1", "sample:3"],
+            &["fold:0", "fold:1"],
+        );
+        let b_requirement = separation_branch_requirement(
+            "branch:site__B.model:pls",
+            &["sample:2", "sample:4"],
+            &["fold:0", "fold:1"],
+        );
+        let a_cache = build_prediction_cache_record(
+            &a_requirement,
+            &separation_branch_blocks("branch:site__A.model:pls", "sample:1", "sample:3", 0.0),
+        )
+        .unwrap();
+        let b_cache = build_prediction_cache_record(
+            &b_requirement,
+            &separation_branch_blocks("branch:site__B.model:pls", "sample:2", "sample:4", 1.0),
+        )
+        .unwrap();
+        let a_artifact = refit_artifact(
+            &plan,
+            "branch:site__A.model:pls",
+            vec!["branch:site__A.model:pls.x".to_string()],
+            Vec::new(),
+        );
+        let b_artifact = refit_artifact(
+            &plan,
+            "branch:site__B.model:pls",
+            vec!["branch:site__B.model:pls.x".to_string()],
+            Vec::new(),
+        );
+
+        let mut bundle = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:separation.concat.merge").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            vec![a_artifact, b_artifact],
+            vec![a_requirement, b_requirement],
+            vec![a_cache, b_cache],
+        )
+        .expect("separation-branch concat-merge bundle must assemble");
+
+        // The bundle now validates against the plan: the partition-covering branch
+        // inputs (each a strict subset) are accepted because their union covers the
+        // full fold set disjointly — no "sample ids do not match plan fold set".
+        bundle
+            .validate_against_plan(&plan)
+            .expect("partition-covering branch inputs must validate as a group");
+        assert_eq!(bundle.prediction_requirements.len(), 2);
+
+        // The merge producer is scored: a cv_best_score (cross-fold OOF average)
+        // for the concat-merge node lands in bundle.scores, proving a separation
+        // branch produces a SCORED bundle.
+        let scores = ScoreSet {
+            schema_version: crate::metrics::SCORE_SET_SCHEMA_VERSION,
+            plan_id: plan.id.clone(),
+            selection_metric: Some("rmse".to_string()),
+            reports: vec![crate::metrics::RegressionMetricReport {
+                prediction_id: Some("prediction:merge:sites:avg".to_string()),
+                producer_node: NodeId::new("merge:sites").unwrap(),
+                variant_id: Some(plan.variants[0].variant_id.clone()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("avg").unwrap()),
+                level: PredictionLevel::Sample,
+                row_count: 4,
+                target_width: 1,
+                target_names: vec!["y".to_string()],
+                metrics: BTreeMap::from([("rmse".to_string(), 1.5)]),
+            }],
+        };
+        bundle.scores = Some(scores);
+        bundle
+            .validate_against_plan(&plan)
+            .expect("bundle with merge-producer scores must validate");
+        let cv_best = bundle
+            .scores
+            .as_ref()
+            .unwrap()
+            .reports
+            .iter()
+            .find(|report| {
+                report.producer_node.as_str() == "merge:sites"
+                    && report.fold_id.as_ref().map(FoldId::as_str) == Some("avg")
+            })
+            .expect("merge producer must have a cross-fold (avg) score");
+        assert_eq!(cv_best.metrics.get("rmse"), Some(&1.5));
+    }
+
+    /// Slice 3.5 negative: the partition-aware relaxation must NOT blind the OOF
+    /// completeness check. If the branch inputs are NOT disjoint (a sample covered
+    /// by two partitions), bundle assembly still errors clearly.
+    #[test]
+    fn separation_concat_merge_rejects_overlapping_partitions() {
+        let plan = separation_concat_merge_plan();
+        // Branch A correctly owns {sample:1, sample:3}; branch B WRONGLY also claims
+        // sample:3 (overlap) and drops sample:4.
+        let a_requirement = separation_branch_requirement(
+            "branch:site__A.model:pls",
+            &["sample:1", "sample:3"],
+            &["fold:0", "fold:1"],
+        );
+        let b_requirement = separation_branch_requirement(
+            "branch:site__B.model:pls",
+            &["sample:2", "sample:3"],
+            &["fold:0", "fold:1"],
+        );
+        let a_cache = build_prediction_cache_record(
+            &a_requirement,
+            &separation_branch_blocks("branch:site__A.model:pls", "sample:1", "sample:3", 0.0),
+        )
+        .unwrap();
+        let b_cache = build_prediction_cache_record(
+            &b_requirement,
+            &separation_branch_blocks("branch:site__B.model:pls", "sample:2", "sample:3", 1.0),
+        )
+        .unwrap();
+        let a_artifact = refit_artifact(
+            &plan,
+            "branch:site__A.model:pls",
+            vec!["branch:site__A.model:pls.x".to_string()],
+            Vec::new(),
+        );
+        let b_artifact = refit_artifact(
+            &plan,
+            "branch:site__B.model:pls",
+            vec!["branch:site__B.model:pls.x".to_string()],
+            Vec::new(),
+        );
+
+        let error = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:separation.concat.merge.overlap").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            vec![a_artifact, b_artifact],
+            vec![a_requirement, b_requirement],
+            vec![a_cache, b_cache],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("overlapping branch predictions"),
+            "overlap must be rejected, got: {error}"
+        );
+    }
+
+    /// Slice 3.5 negative: a real OOF gap (the union of branch partitions does NOT
+    /// cover the full fold universe) must still error — the relaxation validates
+    /// completeness as a group, it does not skip it.
+    #[test]
+    fn separation_concat_merge_rejects_incomplete_coverage() {
+        let plan = separation_concat_merge_plan();
+        // Branch A owns {sample:1}; branch B owns {sample:2, sample:4}. sample:3 is
+        // covered by NO branch — a genuine OOF gap.
+        let a_requirement =
+            separation_branch_requirement("branch:site__A.model:pls", &["sample:1"], &["fold:0"]);
+        let b_requirement = separation_branch_requirement(
+            "branch:site__B.model:pls",
+            &["sample:2", "sample:4"],
+            &["fold:0", "fold:1"],
+        );
+        let a_cache = build_prediction_cache_record(
+            &a_requirement,
+            &[PredictionBlock {
+                prediction_id: Some("prediction:a:fold0".to_string()),
+                producer_node: NodeId::new("branch:site__A.model:pls").unwrap(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                sample_ids: vec![SampleId::new("sample:1").unwrap()],
+                values: vec![vec![0.1]],
+                target_names: vec!["y".to_string()],
+            }],
+        )
+        .unwrap();
+        let b_cache = build_prediction_cache_record(
+            &b_requirement,
+            &separation_branch_blocks("branch:site__B.model:pls", "sample:2", "sample:4", 1.0),
+        )
+        .unwrap();
+        let a_artifact = refit_artifact(
+            &plan,
+            "branch:site__A.model:pls",
+            vec!["branch:site__A.model:pls.x".to_string()],
+            Vec::new(),
+        );
+        let b_artifact = refit_artifact(
+            &plan,
+            "branch:site__B.model:pls",
+            vec!["branch:site__B.model:pls.x".to_string()],
+            Vec::new(),
+        );
+
+        let error = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:separation.concat.merge.gap").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            vec![a_artifact, b_artifact],
+            vec![a_requirement, b_requirement],
+            vec![a_cache, b_cache],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("do not cover"),
+            "an OOF gap must be rejected, got: {error}"
+        );
+    }
+
+    /// Slice 3.5 negative (Fix 1): the group is validated against the graph's
+    /// EXPECTED incoming OOF edges, not just the supplied requirements. A bundle
+    /// that OMITS one branch->merge edge cannot be masked even if the remaining
+    /// branch's self-declared sample_ids alone cover the full fold universe.
+    #[test]
+    fn separation_concat_merge_rejects_missing_branch_edge() {
+        let plan = separation_concat_merge_plan();
+        // Branch B's edge exists in the graph, but the bundle supplies ONLY branch
+        // A — and branch A here wrongly claims the FULL universe, so the union check
+        // alone would pass. The expected-vs-supplied edge check must still reject.
+        let a_requirement = separation_branch_requirement(
+            "branch:site__A.model:pls",
+            &["sample:1", "sample:2", "sample:3", "sample:4"],
+            &["fold:0", "fold:1"],
+        );
+        let a_artifact = refit_artifact(
+            &plan,
+            "branch:site__A.model:pls",
+            vec!["branch:site__A.model:pls.x".to_string()],
+            Vec::new(),
+        );
+        let b_artifact = refit_artifact(
+            &plan,
+            "branch:site__B.model:pls",
+            vec!["branch:site__B.model:pls.x".to_string()],
+            Vec::new(),
+        );
+
+        let error = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:separation.concat.merge.missing.branch").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            vec![a_artifact, b_artifact],
+            vec![a_requirement],
+            Vec::new(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("do not match the plan's incoming OOF edges"),
+            "a missing branch edge must be rejected, got: {error}"
+        );
+    }
+
+    /// Slice 3.5 negative (Fix 2): all-or-nothing caches. If ANY branch input of a
+    /// concat group carries a per-fold cache, ALL must — a mixed (partial) cache
+    /// group is rejected, so a no-cache branch cannot satisfy global coverage via
+    /// its self-declared sample_ids while its persisted per-fold OOF is incomplete.
+    #[test]
+    fn separation_concat_merge_rejects_partial_cache_coverage() {
+        let plan = separation_concat_merge_plan();
+        let a_requirement = separation_branch_requirement(
+            "branch:site__A.model:pls",
+            &["sample:1", "sample:3"],
+            &["fold:0", "fold:1"],
+        );
+        let b_requirement = separation_branch_requirement(
+            "branch:site__B.model:pls",
+            &["sample:2", "sample:4"],
+            &["fold:0", "fold:1"],
+        );
+        // Only branch A is persisted; branch B carries NO cache.
+        let a_cache = build_prediction_cache_record(
+            &a_requirement,
+            &separation_branch_blocks("branch:site__A.model:pls", "sample:1", "sample:3", 0.0),
+        )
+        .unwrap();
+        let a_artifact = refit_artifact(
+            &plan,
+            "branch:site__A.model:pls",
+            vec!["branch:site__A.model:pls.x".to_string()],
+            Vec::new(),
+        );
+        let b_artifact = refit_artifact(
+            &plan,
+            "branch:site__B.model:pls",
+            vec!["branch:site__B.model:pls.x".to_string()],
+            Vec::new(),
+        );
+
+        let error = build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:separation.concat.merge.partial.cache").unwrap(),
+            &plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            vec![a_artifact, b_artifact],
+            vec![a_requirement, b_requirement],
+            vec![a_cache],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("partial prediction-cache coverage"),
+            "a partial-cache concat group must be rejected, got: {error}"
         );
     }
 
