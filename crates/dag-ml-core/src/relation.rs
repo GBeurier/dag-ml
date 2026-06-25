@@ -55,6 +55,15 @@ pub struct SampleRelation {
     pub is_augmented: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub excluded: bool,
+    // Metadata + tags carried so a `by_metadata` / `by_tag` branch view selector
+    // can match natively in the data provider. Skipped when empty so relation
+    // sets without them keep byte-identical fingerprints (existing fixtures and
+    // contracts stay unaffected). A non-empty value changes the replay
+    // fingerprint because it changes which samples a branch view selects.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -79,6 +88,8 @@ impl SampleRelation {
             quality_flag: None,
             is_augmented: false,
             excluded: false,
+            metadata: BTreeMap::new(),
+            tags: Vec::new(),
         }
     }
 
@@ -183,6 +194,14 @@ struct CanonicalRelationRecord {
     // changes the training set.
     #[serde(default, skip_serializing_if = "is_false")]
     excluded: bool,
+    // Skipped when empty so relations without metadata/tags keep byte-identical
+    // fingerprints; a non-empty value correctly changes the replay fingerprint
+    // because it changes which samples a `by_metadata` / `by_tag` branch view
+    // selects.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
 }
 
 impl SampleRelationSet {
@@ -265,6 +284,8 @@ impl SampleRelationSet {
                     quality_flag: record.quality_flag.clone(),
                     is_augmented: record.is_augmented,
                     excluded: record.excluded,
+                    metadata: record.metadata.clone(),
+                    tags: record.tags.clone(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -776,6 +797,45 @@ mod tests {
         let mut excluded = base.clone();
         excluded.records[0].excluded = true;
         assert_ne!(base.fingerprint().unwrap(), excluded.fingerprint().unwrap());
+    }
+
+    #[test]
+    fn metadata_and_tags_change_fingerprint_but_only_when_non_empty() {
+        let base = SampleRelationSet {
+            records: vec![
+                source_relation("obs:s1.A.0", "s1", "A", "rep:0"),
+                source_relation("obs:s2.A.0", "s2", "A", "rep:0"),
+            ],
+        };
+
+        // Empty metadata/tags are skip-serialized, so an explicit empty value is
+        // byte-identical to the default: existing fixtures/contracts unaffected.
+        let mut explicit_empty = base.clone();
+        explicit_empty.records[0].metadata = BTreeMap::new();
+        explicit_empty.records[0].tags = Vec::new();
+        assert_eq!(
+            base.fingerprint().unwrap(),
+            explicit_empty.fingerprint().unwrap()
+        );
+
+        // Metadata changes which samples a `by_metadata` view selects, so it
+        // MUST change the replay fingerprint.
+        let mut with_metadata = base.clone();
+        with_metadata.records[0]
+            .metadata
+            .insert("group".to_string(), serde_json::json!("A"));
+        assert_ne!(
+            base.fingerprint().unwrap(),
+            with_metadata.fingerprint().unwrap()
+        );
+
+        // Same for tags (used by `by_tag` views).
+        let mut with_tags = base.clone();
+        with_tags.records[0].tags = vec!["clean".to_string()];
+        assert_ne!(
+            base.fingerprint().unwrap(),
+            with_tags.fingerprint().unwrap()
+        );
     }
 
     #[test]

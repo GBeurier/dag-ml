@@ -7086,3 +7086,90 @@ fn exclusion_is_sample_local_across_relation_rows() {
         "s2 must be fully dropped from training even though one of its rows is not excluded"
     );
 }
+
+#[test]
+fn by_metadata_and_by_tag_branch_selectors_reach_the_provider_view_spec() {
+    // The metadata/tag branch selector must survive the scheduler's
+    // `data_view_for_partition` path and arrive intact on the
+    // `DataProviderViewSpec.branch_view` that is handed to the provider's
+    // `make_view` (where dag-ml-data's `filter_relations` matches it natively).
+    use crate::data::{BranchViewMode, BranchViewPlan, DataViewSelector};
+
+    let node_id = NodeId::new("node:model").unwrap();
+    let binding = data_binding(&node_id);
+    let empty: BTreeSet<SampleId> = BTreeSet::new();
+    let scope = PhaseScope {
+        phase: Phase::Predict,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+
+    let metadata_branch = BranchViewPlan {
+        view_id: "branch_view:group_a".to_string(),
+        branch_id: "branch:group_a".to_string(),
+        mode: BranchViewMode::ByMetadata,
+        selector: DataViewSelector {
+            metadata: BTreeMap::from([("group".to_string(), serde_json::json!("A"))]),
+            ..Default::default()
+        },
+        allow_overlap: false,
+        metadata: BTreeMap::new(),
+    };
+    let metadata_view = data_view_for_partition(
+        &binding,
+        None,
+        &scope,
+        DataRequestPartition::Predict,
+        Some(&metadata_branch),
+        DataViewRole::NonFit,
+        &empty,
+    )
+    .unwrap();
+    let carried = metadata_view
+        .branch_view
+        .as_ref()
+        .expect("by_metadata selector must reach the provider view spec");
+    assert_eq!(carried.mode, BranchViewMode::ByMetadata);
+    assert_eq!(
+        carried.selector.metadata.get("group"),
+        Some(&serde_json::json!("A")),
+        "by_metadata selector value must reach the provider unchanged"
+    );
+
+    let tag_branch = BranchViewPlan {
+        view_id: "branch_view:clean".to_string(),
+        branch_id: "branch:clean".to_string(),
+        mode: BranchViewMode::ByTag,
+        selector: DataViewSelector {
+            tags: vec!["clean".to_string()],
+            ..Default::default()
+        },
+        allow_overlap: false,
+        metadata: BTreeMap::new(),
+    };
+    let tag_view = data_view_for_partition(
+        &binding,
+        None,
+        &scope,
+        DataRequestPartition::Predict,
+        Some(&tag_branch),
+        DataViewRole::NonFit,
+        &empty,
+    )
+    .unwrap();
+    let carried_tags = tag_view
+        .branch_view
+        .as_ref()
+        .expect("by_tag selector must reach the provider view spec");
+    assert_eq!(carried_tags.mode, BranchViewMode::ByTag);
+    assert_eq!(
+        carried_tags.selector.tags,
+        vec!["clean".to_string()],
+        "by_tag selector must reach the provider unchanged"
+    );
+    // The spec itself must validate (the branch view validation runs here too).
+    metadata_view.validate().unwrap();
+    tag_view.validate().unwrap();
+}
