@@ -48,6 +48,13 @@ const PROCESS_ADAPTER_CAP_PARALLEL_INVOCATION: &str = "parallel_invocation_v1";
 const PROCESS_ADAPTER_CAP_PERSISTENT_WORKERS: &str = "persistent_workers";
 const PROCESS_ADAPTER_CAP_WORKER_ENV: &str = "worker_env";
 const PROCESS_ADAPTER_FRAME_SCHEMA_VERSION: u32 = 1;
+/// Bounded retry budget for adapter `spawn`/`output` calls that transiently
+/// fail with `ENOENT`/`EACCES` because the host just wrote+chmod'd the shim
+/// (a fork/exec race that self-heals on the next attempt).
+const PROCESS_ADAPTER_SPAWN_MAX_ATTEMPTS: usize = 5;
+/// Base backoff between transient spawn retries; the delay escalates linearly
+/// per attempt (10ms, 20ms, 30ms, ...), capped by the attempt budget.
+const PROCESS_ADAPTER_SPAWN_RETRY_BASE: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliScheduler {
@@ -3376,9 +3383,9 @@ impl PersistentProcessSession {
         command.env("DAG_ML_CONTROLLER_ID", controller_id.as_str());
         command.env("DAG_ML_PROCESS_WORKER_INDEX", worker_index.to_string());
         command.env("DAG_ML_PROCESS_WORKER_COUNT", worker_count.to_string());
-        let mut child = command.spawn().map_err(|err| {
+        let mut child = spawn_adapter_with_retry(|| command.spawn()).map_err(|err| {
             DagMlError::RuntimeValidation(format!(
-                "controller `{controller_id}` failed to spawn persistent adapter `{}` worker {worker_index}/{worker_count}: {err}",
+                "controller `{controller_id}` failed to spawn persistent adapter `{}` worker {worker_index}/{worker_count} after {PROCESS_ADAPTER_SPAWN_MAX_ATTEMPTS} attempt(s): {err}",
                 adapter.display()
             ))
         })?;
@@ -3765,9 +3772,9 @@ impl RuntimeController for ProcessRuntimeController {
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
 
-        let mut child = command.spawn().map_err(|err| {
+        let mut child = spawn_adapter_with_retry(|| command.spawn()).map_err(|err| {
             DagMlError::RuntimeValidation(format!(
-                "controller `{}` failed to spawn adapter `{}`: {err}",
+                "controller `{}` failed to spawn adapter `{}` after {PROCESS_ADAPTER_SPAWN_MAX_ATTEMPTS} attempt(s): {err}",
                 self.id,
                 self.adapter.display()
             ))
@@ -4267,16 +4274,14 @@ fn validate_process_adapter_description(
     adapter: &Path,
     mode: ProcessAdapterMode,
 ) -> Result<ProcessAdapterDescription> {
-    let output = process_adapter_command(adapter, ProcessAdapterMode::Describe)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .with_context(|| {
-            format!(
-                "failed to run adapter `{}` describe handshake",
-                adapter.display()
-            )
-        })?;
+    let mut command = process_adapter_command(adapter, ProcessAdapterMode::Describe);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let output = spawn_adapter_with_retry(|| command.output()).with_context(|| {
+        format!(
+            "failed to run adapter `{}` describe handshake after {PROCESS_ADAPTER_SPAWN_MAX_ATTEMPTS} attempt(s)",
+            adapter.display()
+        )
+    })?;
     if !output.status.success() {
         bail!(
             "adapter `{}` describe handshake exited with status {}: {}",
@@ -4425,6 +4430,43 @@ fn process_adapter_command(adapter: &Path, mode: ProcessAdapterMode) -> ProcessC
         }
     }
     command
+}
+
+/// Whether an adapter spawn error is the transient fork/exec race we retry.
+///
+/// A freshly written+chmod'd shim can transiently surface `ENOENT`
+/// (`NotFound`) or `EACCES` (`PermissionDenied`) on `execve`; both self-heal
+/// once the host's write+chmod is fully visible to the kernel.
+fn is_transient_spawn_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+    )
+}
+
+/// Run an adapter spawn-like operation with a bounded retry on the transient
+/// fork/exec ENOENT/EACCES race, escalating the backoff per attempt.
+///
+/// Non-transient errors fail immediately. If every attempt raises a transient
+/// error the final error is returned to the caller, which wraps it in a
+/// structured `RuntimeValidation` message — never a bare panic.
+fn spawn_adapter_with_retry<T>(
+    mut operation: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if attempt >= PROCESS_ADAPTER_SPAWN_MAX_ATTEMPTS || !is_transient_spawn_error(&err)
+                {
+                    return Err(err);
+                }
+                std::thread::sleep(PROCESS_ADAPTER_SPAWN_RETRY_BASE * attempt as u32);
+            }
+        }
+    }
 }
 
 fn mock_artifact_store(
@@ -5207,5 +5249,84 @@ mod tests {
         assert_eq!(summary.len(), 1);
         assert_eq!(summary[0]["prediction_level"], "group");
         assert_eq!(summary[0]["block_count"], 2);
+    }
+
+    use std::cell::Cell;
+    use std::io::{Error as IoError, ErrorKind};
+
+    #[test]
+    fn transient_spawn_error_kinds_are_retried() {
+        assert!(is_transient_spawn_error(&IoError::from(
+            ErrorKind::NotFound
+        )));
+        assert!(is_transient_spawn_error(&IoError::from(
+            ErrorKind::PermissionDenied
+        )));
+        assert!(!is_transient_spawn_error(&IoError::from(
+            ErrorKind::BrokenPipe
+        )));
+        assert!(!is_transient_spawn_error(&IoError::from(
+            ErrorKind::TimedOut
+        )));
+    }
+
+    #[test]
+    fn spawn_retry_recovers_after_transient_enoent_then_succeeds() {
+        // Fail ENOENT for the first (MAX - 1) attempts, then succeed: the
+        // bounded retry must self-heal exactly like the fork/exec race does.
+        let calls = Cell::new(0usize);
+        let result = spawn_adapter_with_retry(|| {
+            let attempt = calls.get() + 1;
+            calls.set(attempt);
+            if attempt < PROCESS_ADAPTER_SPAWN_MAX_ATTEMPTS {
+                Err(IoError::from(ErrorKind::NotFound))
+            } else {
+                Ok("spawned")
+            }
+        });
+        assert_eq!(result.unwrap(), "spawned");
+        assert_eq!(calls.get(), PROCESS_ADAPTER_SPAWN_MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn spawn_retry_recovers_after_transient_eacces_then_succeeds() {
+        let calls = Cell::new(0usize);
+        let result = spawn_adapter_with_retry(|| {
+            let attempt = calls.get() + 1;
+            calls.set(attempt);
+            if attempt < 2 {
+                Err(IoError::from(ErrorKind::PermissionDenied))
+            } else {
+                Ok(7u8)
+            }
+        });
+        assert_eq!(result.unwrap(), 7u8);
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn spawn_retry_exhausts_and_returns_transient_error() {
+        // Every attempt fails transiently: the budget is exhausted and the
+        // last error is returned so the call site wraps it structurally
+        // (RuntimeValidation), never panicking.
+        let calls = Cell::new(0usize);
+        let result: std::io::Result<()> = spawn_adapter_with_retry(|| {
+            calls.set(calls.get() + 1);
+            Err(IoError::from(ErrorKind::NotFound))
+        });
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+        assert_eq!(calls.get(), PROCESS_ADAPTER_SPAWN_MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn spawn_retry_does_not_retry_non_transient_error() {
+        let calls = Cell::new(0usize);
+        let result: std::io::Result<()> = spawn_adapter_with_retry(|| {
+            calls.set(calls.get() + 1);
+            Err(IoError::from(ErrorKind::BrokenPipe))
+        });
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::BrokenPipe);
+        assert_eq!(calls.get(), 1, "non-transient errors must not be retried");
     }
 }
