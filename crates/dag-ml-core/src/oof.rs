@@ -102,6 +102,59 @@ impl PredictionBlock {
     }
 }
 
+/// Mandatory, central OOF *coverage* invariant — the single gate every path that *concatenates a
+/// producer's per-fold validation predictions into one out-of-fold set* must pass through. Spec
+/// [`COORDINATOR_SPEC.md`] §"OOF And Leakage Rules" rule 3: every producer must provide **exactly one
+/// validation prediction per requested sample** unless an explicit aggregation policy says otherwise.
+///
+/// It enforces, across the supplied set of `Validation` blocks for ONE producer:
+/// 1. every block passes [`PredictionBlock::validate_content`] (shape, finite, no within-block dup);
+/// 2. **uniqueness** — no `sample_id` appears in more than one block (a cross-fold duplicate; the
+///    signature of either a duplicated fold or, since [`PredictionBlock`] carries no variant tag, a
+///    run context that mixed several variants — see audit R-P0-1). This is the central analogue of the
+///    runtime merge handler's "the run context mixes several variants" guard, on the *scoring* path.
+///
+/// The "unless an explicit aggregation policy says otherwise" carve-out (the branch-merge concat
+/// partition case, where each branch legitimately covers only its partition of samples) is handled by
+/// the dedicated separation-merge runtime handler and partition-aware bundle group validators, which
+/// never route a producer's raw cross-fold blocks through this gate — so this validator does not
+/// over-reject those legitimate partial-partition merges.
+///
+/// `requested_samples`, when `Some`, additionally pins **completeness**: the covered samples must be
+/// EXACTLY the requested set (no missing, no extra). When `None`, only uniqueness over whatever OOF
+/// the producer emitted is enforced (the cross-fold scoring path, which scores over the producer's own
+/// OOF union and has no externally-fixed universe).
+pub fn validate_producer_oof_coverage(
+    producer_node: &NodeId,
+    blocks: &[&PredictionBlock],
+    requested_samples: Option<&BTreeSet<SampleId>>,
+) -> Result<()> {
+    let mut covered: BTreeSet<SampleId> = BTreeSet::new();
+    for block in blocks {
+        if block.partition != PredictionPartition::Validation {
+            continue;
+        }
+        block.validate_content()?;
+        for sample_id in &block.sample_ids {
+            if !covered.insert(sample_id.clone()) {
+                return Err(DagMlError::OofValidation(format!(
+                    "producer `{producer_node}` emitted more than one validation prediction for sample `{sample_id}` — the OOF set is not unique (a duplicated fold, or a run context that mixed several variants); concatenate exactly one validation prediction per sample"
+                )));
+            }
+        }
+    }
+    if let Some(requested) = requested_samples {
+        if &covered != requested {
+            let missing = requested.difference(&covered).count();
+            let extra = covered.difference(requested).count();
+            return Err(DagMlError::OofValidation(format!(
+                "producer `{producer_node}` OOF coverage is not exact: {missing} requested sample(s) missing, {extra} unexpected sample(s) present — exactly one validation prediction per requested sample is required"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OofMatrix {
     pub sample_ids: Vec<SampleId>,
@@ -617,6 +670,57 @@ mod tests {
             err.to_string().contains("duplicate prediction"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn producer_oof_coverage_accepts_disjoint_folds() {
+        // Two folds of one producer, disjoint OOF samples — exactly one validation prediction per
+        // sample. This is the well-formed single-variant case and must pass unchanged.
+        let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
+        let f1 = campaign_block("model:pls", "fold1", &["s3", "s4"]);
+        let producer = NodeId::new("model:pls").unwrap();
+        validate_producer_oof_coverage(&producer, &[&f0, &f1], None).unwrap();
+        // With the requested universe pinned, exact coverage also passes.
+        let requested = ["s1", "s2", "s3", "s4"].iter().map(|s| sid(s)).collect();
+        validate_producer_oof_coverage(&producer, &[&f0, &f1], Some(&requested)).unwrap();
+    }
+
+    #[test]
+    fn producer_oof_coverage_rejects_cross_fold_duplicate_sample() {
+        // The SAME sample `s1` appears in two of this producer's blocks — the signature of a
+        // duplicated fold or a context that mixed several variants (PredictionBlock carries no variant
+        // tag). The central gate must refuse this rather than let it be silently double-counted.
+        let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
+        let f1 = campaign_block("model:pls", "fold1", &["s1", "s3"]);
+        let producer = NodeId::new("model:pls").unwrap();
+        let err = validate_producer_oof_coverage(&producer, &[&f0, &f1], None).unwrap_err();
+        assert!(
+            err.to_string().contains("not unique")
+                && err.to_string().contains("mixed several variants"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn producer_oof_coverage_requested_universe_is_exact() {
+        // Coverage must equal the requested universe exactly: a missing or extra sample is refused.
+        let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
+        let producer = NodeId::new("model:pls").unwrap();
+        let missing: BTreeSet<SampleId> = ["s1", "s2", "s3"].iter().map(|s| sid(s)).collect();
+        let err = validate_producer_oof_coverage(&producer, &[&f0], Some(&missing)).unwrap_err();
+        assert!(err.to_string().contains("not exact"), "got: {err}");
+    }
+
+    #[test]
+    fn producer_oof_coverage_ignores_non_validation_blocks() {
+        // Train/Test/Final blocks are not OOF validation predictions and are skipped by the gate.
+        let mut train = campaign_block("model:pls", "fold0", &["s1"]);
+        train.partition = PredictionPartition::Train;
+        let val = campaign_block("model:pls", "fold1", &["s1"]);
+        let producer = NodeId::new("model:pls").unwrap();
+        // s1 appears in a train block AND a validation block — only the validation one counts, so this
+        // is unique and accepted.
+        validate_producer_oof_coverage(&producer, &[&train, &val], None).unwrap();
     }
 
     #[test]

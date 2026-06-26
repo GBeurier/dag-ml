@@ -7,7 +7,7 @@ use crate::aggregation::{
 };
 use crate::error::{DagMlError, Result};
 use crate::ids::{FoldId, NodeId, VariantId};
-use crate::oof::{PredictionBlock, PredictionPartition};
+use crate::oof::{validate_producer_oof_coverage, PredictionBlock, PredictionPartition};
 use crate::policy::PredictionLevel;
 use crate::selection::{CandidateScore, MetricObjective};
 
@@ -580,11 +580,17 @@ pub struct RegressionTargetRecord {
 
 /// Combine a producer's per-fold VALIDATION `y_true` into one block (dedup by unit id — a sample's
 /// ground truth is fold-independent), aligned to the producer's OOF samples.
+///
+/// Defense-in-depth (audit R-P0-1): records are grouped only by `producer_node`, but each carries a
+/// `variant_id`. A sample's ground truth is variant-independent, so the same unit seen again must
+/// carry the SAME `y_true`. If two records (e.g. from two variants sharing one context) disagree on a
+/// unit's target, the ground truth has been mixed and the combined block would silently score against
+/// a corrupted reference — that is refused rather than keeping whichever value happened to be first.
 fn combine_validation_targets(
     producer: &NodeId,
     records: &[RegressionTargetRecord],
-) -> RegressionTargetBlock {
-    let mut seen: BTreeSet<PredictionUnitId> = BTreeSet::new();
+) -> Result<RegressionTargetBlock> {
+    let mut seen: BTreeMap<PredictionUnitId, Vec<f64>> = BTreeMap::new();
     let mut unit_ids = Vec::new();
     let mut values = Vec::new();
     let mut target_names = Vec::new();
@@ -597,18 +603,27 @@ fn combine_validation_targets(
             target_names = record.block.target_names.clone();
         }
         for (unit_id, row) in record.block.unit_ids.iter().zip(&record.block.values) {
-            if seen.insert(unit_id.clone()) {
-                unit_ids.push(unit_id.clone());
-                values.push(row.clone());
+            match seen.get(unit_id) {
+                None => {
+                    seen.insert(unit_id.clone(), row.clone());
+                    unit_ids.push(unit_id.clone());
+                    values.push(row.clone());
+                }
+                Some(existing) if existing != row => {
+                    return Err(DagMlError::OofValidation(format!(
+                        "producer `{producer}` has conflicting ground truth for unit `{unit_id:?}` across validation records — the y_true reference is mixed (e.g. several variants in one context); refusing to score against a corrupted reference"
+                    )));
+                }
+                Some(_) => {}
             }
         }
     }
-    RegressionTargetBlock {
+    Ok(RegressionTargetBlock {
         level: PredictionLevel::Sample,
         unit_ids,
         values,
         target_names,
-    }
+    })
 }
 
 /// Score the cross-fold OOF average per producer: concatenate each producer's per-fold VALIDATION
@@ -640,7 +655,15 @@ pub fn cross_fold_validation_reports(
         if blocks.len() < 2 {
             continue;
         }
-        let targets = combine_validation_targets(producer, target_records);
+        // Mandatory OOF coverage gate (spec rule 3): the producer's per-fold validation blocks must
+        // be UNIQUE — exactly one validation prediction per sample. A sample appearing in two of this
+        // producer's blocks would otherwise be silently averaged twice by `reduce_predictions_across_folds`,
+        // mixing a duplicated fold or — since `PredictionBlock` carries no variant tag — two variants'
+        // OOF in a shared context (audit R-P0-1). This is the scoring-path analogue of the runtime merge
+        // handler's "mixes several variants" guard, so cross-variant CV scores can NEVER mix here.
+        let block_refs = blocks.iter().collect::<Vec<_>>();
+        validate_producer_oof_coverage(producer, &block_refs, None)?;
+        let targets = combine_validation_targets(producer, target_records)?;
         if targets.unit_ids.is_empty() {
             // No y_true was emitted for this producer (e.g. mock controllers) — nothing to score.
             continue;

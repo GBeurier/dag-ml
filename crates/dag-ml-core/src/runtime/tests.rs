@@ -3159,6 +3159,41 @@ fn requires_oof_prediction_edge_rejects_fold_misalignment() {
 }
 
 #[test]
+fn requires_oof_edge_exact_coverage_is_mandatory_even_without_fold_alignment_flag() {
+    // R-P0-2: exact OOF coverage used to be gated by `requires_fold_alignment`, making completeness
+    // CONDITIONAL — a `requires_oof` edge that left the flag unset admitted blocks that merely exist.
+    // The check is now mandatory for every `requires_oof` stacking edge reaching the runtime, so a
+    // fold-misaligned OOF block is rejected even with `requires_fold_alignment: false`.
+    let mut graph = oof_edge_graph();
+    graph.id = "g:oof.edge.no.align".to_string();
+    graph.edges[0].contract.requires_fold_alignment = false;
+    assert!(graph.edges[0].contract.requires_oof);
+
+    let plan = build_execution_plan(
+        "plan:oof.edge.no.align",
+        graph,
+        oof_edge_campaign(),
+        &manifests(),
+    )
+    .unwrap();
+    let controllers = oof_edge_runtime_controllers(
+        Some(PredictionPartition::Validation),
+        OofSampleMode::Swapped,
+    );
+    let mut ctx = RunContext::new(RunId::new("run:oof.edge.no.align").unwrap(), Some(11));
+
+    let error = SequentialScheduler
+        .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("do not match validation samples"),
+        "exact OOF coverage must fire without the fold-alignment flag: {error}"
+    );
+}
+
+#[test]
 fn requires_oof_prediction_edge_refit_uses_cv_oof_coverage() {
     let plan = build_execution_plan(
         "plan:oof.edge.refit",
@@ -6480,13 +6515,101 @@ fn cross_fold_validation_reports_scores_the_oof_average() {
     assert!((reports[0].metrics["rmse"] - 0.5).abs() < 1e-9); // sqrt((0+0+0+1)/4)
 }
 
+#[test]
+fn cross_fold_validation_reports_rejects_cross_variant_mixed_oof() {
+    // R-P0-1 scoring-path guard: a producer whose two "fold" blocks both claim sample s1 (the
+    // signature of two variants accumulated in one context, since PredictionBlock has no variant tag)
+    // must be REFUSED rather than silently averaged into one cv score. Without the guard,
+    // `reduce_predictions_across_folds` would average the two s1 rows and mix the variants.
+    use crate::ids::SampleId;
+
+    let node = NodeId::new("model:pls").unwrap();
+    let pred = |fold: &str, rows: &[(&str, f64)]| PredictionBlock {
+        prediction_id: None,
+        producer_node: node.clone(),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new(fold).unwrap()),
+        sample_ids: rows
+            .iter()
+            .map(|(s, _)| SampleId::new(*s).unwrap())
+            .collect(),
+        values: rows.iter().map(|(_, v)| vec![*v]).collect(),
+        target_names: vec!["y".to_string()],
+    };
+    // Both blocks claim s1 -> non-unique OOF for this producer.
+    let blocks = [
+        pred("fold0", &[("s1", 1.0), ("s2", 2.0)]),
+        pred("fold1", &[("s1", 9.0), ("s3", 3.0)]),
+    ];
+    let err = cross_fold_validation_reports(&blocks, &[], SCORE_METRICS).unwrap_err();
+    assert!(
+        err.to_string().contains("not unique")
+            && err.to_string().contains("mixed several variants"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn combine_validation_targets_rejects_conflicting_ground_truth() {
+    // R-P0-1 target-recombination guard: two validation records for the same producer disagree on
+    // s1's y_true (4.0 vs 5.0) — the ground-truth reference was mixed (e.g. two variants in one
+    // context). Scoring against a corrupted reference is refused. (Exercised through the public
+    // `cross_fold_validation_reports`, which calls `combine_validation_targets`.)
+    use crate::aggregation::PredictionUnitId;
+    use crate::ids::SampleId;
+    use crate::metrics::{RegressionTargetBlock, RegressionTargetRecord};
+
+    let node = NodeId::new("model:pls").unwrap();
+    let pred = |fold: &str, rows: &[(&str, f64)]| PredictionBlock {
+        prediction_id: None,
+        producer_node: node.clone(),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new(fold).unwrap()),
+        sample_ids: rows
+            .iter()
+            .map(|(s, _)| SampleId::new(*s).unwrap())
+            .collect(),
+        values: rows.iter().map(|(_, v)| vec![*v]).collect(),
+        target_names: vec!["y".to_string()],
+    };
+    let record = |fold: &str, rows: &[(&str, f64)]| RegressionTargetRecord {
+        producer_node: node.clone(),
+        variant_id: None,
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new(fold).unwrap()),
+        block: RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: rows
+                .iter()
+                .map(|(s, _)| PredictionUnitId::Sample(SampleId::new(*s).unwrap()))
+                .collect(),
+            values: rows.iter().map(|(_, v)| vec![*v]).collect(),
+            target_names: vec!["y".to_string()],
+        },
+    };
+    // Predictions are unique (s1, s2) so they pass the coverage gate; the y_true records conflict.
+    let blocks = [pred("fold0", &[("s1", 1.0)]), pred("fold1", &[("s2", 2.0)])];
+    let records = [
+        record("fold0", &[("s1", 4.0)]),
+        record("fold1", &[("s1", 5.0), ("s2", 2.0)]),
+    ];
+    let err = cross_fold_validation_reports(&blocks, &records, SCORE_METRICS).unwrap_err();
+    assert!(
+        err.to_string().contains("conflicting ground truth"),
+        "got: {err}"
+    );
+}
+
 /// Model controller for the native-variant-SELECT test. For each FIT_CV fold it emits one VALIDATION
-/// prediction plus the matching `y_true`, keyed by `fold_id` (fold:0 -> s1, fold:1 -> s2). The
-/// predicted value is `y_true + offset`, where `offset` is read from the variant's `n_components`
-/// param override — so different variants yield different OOF residuals (hence different OOF RMSE).
+/// prediction plus (when `emit_targets`) the matching `y_true`, keyed by `fold_id` (fold:0 -> s1,
+/// fold:1 -> s2). The predicted value is `y_true + offset`, where `offset` is read from the variant's
+/// `n_components` param override — so different variants yield different OOF residuals (hence different
+/// OOF RMSE). With `emit_targets = false` the OOF predictions are still well-formed and disjoint across
+/// folds, but no ground truth is emitted, so native scoring is genuinely off.
 struct VariantScoringController {
     id: ControllerId,
     handle: u64,
+    emit_targets: bool,
 }
 
 impl VariantScoringController {
@@ -6530,12 +6653,14 @@ impl RuntimeController for VariantScoringController {
                 values: vec![vec![y_true + offset]],
                 target_names: vec!["y".to_string()],
             });
-            regression_targets.push(crate::metrics::RegressionTargetBlock {
-                level: PredictionLevel::Sample,
-                unit_ids: vec![crate::aggregation::PredictionUnitId::Sample(sample_id)],
-                values: vec![vec![y_true]],
-                target_names: vec!["y".to_string()],
-            });
+            if self.emit_targets {
+                regression_targets.push(crate::metrics::RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids: vec![crate::aggregation::PredictionUnitId::Sample(sample_id)],
+                    values: vec![vec![y_true]],
+                    target_names: vec!["y".to_string()],
+                });
+            }
         }
         let variant_label = task
             .variant_id
@@ -6640,6 +6765,7 @@ fn variant_scoring_controllers() -> RuntimeControllerRegistry {
         .register(Box::new(VariantScoringController {
             id: ControllerId::new("controller:model").unwrap(),
             handle: 2,
+            emit_targets: true,
         }))
         .unwrap();
     controllers
@@ -6786,6 +6912,7 @@ fn two_model_variant_scoring_controllers() -> RuntimeControllerRegistry {
         .register(Box::new(VariantScoringController {
             id: ControllerId::new("controller:model").unwrap(),
             handle: 2,
+            emit_targets: true,
         }))
         .unwrap();
     controllers
@@ -6904,8 +7031,11 @@ fn select_best_variant_by_cv_picks_highest_accuracy_variant() {
 fn select_best_variant_by_cv_no_targets_returns_none() {
     use crate::metrics::RegressionMetricKind;
 
-    // `runtime_controllers`' model emits validation predictions but NO regression_targets, so native
-    // scoring is genuinely off. The function returns Ok(None) so the caller keeps its default variant.
+    // The model emits well-formed, fold-disjoint validation OOF (s1 for fold:0, s2 for fold:1) but NO
+    // regression_targets, so native scoring is genuinely off. The function returns Ok(None) so the
+    // caller keeps its default variant. (A dedicated `emit_targets = false` controller is used rather
+    // than the generic mock, whose binding-less fallback would emit the same sample in both folds — a
+    // non-unique OOF set the mandatory coverage gate now rejects.)
     let plan = build_execution_plan(
         "plan:variant.select.no.targets",
         simple_graph(),
@@ -6914,7 +7044,21 @@ fn select_best_variant_by_cv_no_targets_returns_none() {
     )
     .unwrap();
     assert_eq!(plan.variants.len(), 2);
-    let controllers = runtime_controllers();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(VariantScoringController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 2,
+            emit_targets: false,
+        }))
+        .unwrap();
     let run_id = RunId::new("run:variant.select.no.targets").unwrap();
 
     let selected = select_best_variant_by_cv(
