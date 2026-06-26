@@ -2982,6 +2982,27 @@ fn validate_aggregated_prediction_scope(
             task.node_plan.node_id, prediction.fold_id, task.fold_id
         )));
     }
+    // Sample-level aggregated validation units must stay inside this fold's
+    // validation view, mirroring `validate_prediction_scope`. Target / group
+    // units are checked against their relation set in the aggregation path.
+    if prediction.level == PredictionLevel::Sample
+        && task.phase == Phase::FitCv
+        && task.fold_id.is_some()
+        && (!task.node_plan.data_bindings.is_empty() || !task.data_views.is_empty())
+    {
+        if let Some(validation_sample_ids) = validation_view_sample_ids(task) {
+            for unit_id in &prediction.unit_ids {
+                if let PredictionUnitId::Sample(sample_id) = unit_id {
+                    if !validation_sample_ids.contains(sample_id) {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "node `{}` emitted aggregated validation prediction for sample `{}` outside its validation view",
+                            task.node_plan.node_id, sample_id
+                        )));
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -5166,6 +5187,18 @@ fn apply_result_prediction_aggregation(
     }
 
     if !result.aggregated_predictions.is_empty() {
+        // The controller emitted aggregated blocks itself, bypassing native
+        // aggregation. They must still MATCH the node's aggregation policy
+        // level — otherwise a block aggregated at the wrong unit level would be
+        // accepted and scored against a mismatched policy.
+        for block in &result.aggregated_predictions {
+            if block.level != policy.aggregation_level {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted aggregated predictions at level {:?} but its aggregation policy is {:?}",
+                    task.node_plan.node_id, block.level, policy.aggregation_level
+                )));
+            }
+        }
         result.validate_for_task(task)?;
         return Ok(());
     }
@@ -5266,17 +5299,29 @@ fn coordinator_relations_for_node(
         }
         let relations = if let Some(envelopes) = resources.data_envelopes {
             let key = format!("{}.{}", binding.node_id, binding.input_name);
-            let Some(envelope) = envelopes.get(&key) else {
-                continue;
-            };
-            binding.validate_envelope(envelope)?;
-            envelope.coordinator_relations.clone()
+            match envelopes.get(&key) {
+                Some(envelope) => {
+                    binding.validate_envelope(envelope)?;
+                    envelope.coordinator_relations.clone()
+                }
+                None => None,
+            }
         } else if let Some(data_provider) = resources.data_provider {
             data_provider.coordinator_relations(binding)?
         } else {
             None
         };
         let Some(relations) = relations else {
+            // A binding that REQUIRES relations must resolve them. Silently
+            // defaulting to empty exclusions (no excluded samples) would let a
+            // leakage / branch / exclusion / aggregation policy run without the
+            // relation set it depends on, so refuse instead of degrading.
+            if binding.require_relations {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` binding `{}` requires coordinator relations but none were resolved",
+                    node_plan.node_id, binding.input_name
+                )));
+            }
             continue;
         };
         if let Some(previous) = &selected {
@@ -5412,12 +5457,26 @@ fn collect_input_handles(
         .iter()
         .map(|binding| binding.input_name.clone())
         .collect::<BTreeSet<_>>();
+    // Only forward upstream handles for ports this node DECLARES an edge to.
+    // A controller must never see a handle outside its declared port contract,
+    // so a sibling consumer of the same producer cannot expose extra ports here.
+    let declared_source_ports = plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == node_plan.node_id)
+        .map(|edge| (edge.source.node_id.clone(), edge.source.port_name.clone()))
+        .collect::<BTreeSet<_>>();
     for upstream in &node_plan.input_nodes {
         if training_oof_sources.contains(upstream) {
             continue;
         }
         if let Some(handles) = output_handles.get(upstream) {
             for (port, handle) in handles {
+                if !declared_source_ports.contains(&(upstream.clone(), port.clone())) {
+                    continue;
+                }
                 inputs.insert(format!("{upstream}.{port}"), handle.clone());
             }
         }
@@ -6869,7 +6928,7 @@ fn make_data_view_handle(
     view: &DataProviderViewSpec,
 ) -> Result<HandleRef> {
     view.validate()?;
-    data_provider.make_view(&DataViewRequest {
+    let view_handle = data_provider.make_view(&DataViewRequest {
         run_id: ctx.run_id.clone(),
         node_id: node_plan.node_id.clone(),
         input_name: binding.input_name.clone(),
@@ -6879,7 +6938,17 @@ fn make_data_view_handle(
         binding: binding.clone(),
         data_handle: data_handle.clone(),
         view: view.clone(),
-    })
+    })?;
+    // A data view is delivered to the controller as a data input, so the
+    // provider must return a data-bearing handle. Refuse a model / artifact /
+    // prediction / relation handle masquerading as a view across the ABI.
+    if !matches!(view_handle.kind, HandleKind::Data | HandleKind::DataView) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "node `{}` data view `{}` resolved to a non-data/data-view handle kind {:?}",
+            node_plan.node_id, binding.input_name, view_handle.kind
+        )));
+    }
+    Ok(view_handle)
 }
 
 fn data_view_for_scope(
