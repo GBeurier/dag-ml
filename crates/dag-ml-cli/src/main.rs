@@ -17,7 +17,7 @@ use dag_ml_core::{
     build_prediction_cache_record, build_research_provenance_package, compile_pipeline_dsl,
     compile_pipeline_dsl_with_controller_registry, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, oof_campaign_fingerprint,
-    parse_pipeline_dsl_json, regression_report_to_candidate_score,
+    parse_pipeline_dsl_json, plan_oof_partition_mode, regression_report_to_candidate_score,
     score_regression_aggregated_block, score_regression_prediction_block,
     select_best_variant_by_cv, select_candidate, select_candidate_groups, validate_oof_campaign,
     validate_research_provenance_package_files, AggregatedPredictionBlock, ArtifactId, BundleId,
@@ -2798,7 +2798,7 @@ fn build_bundle_from_cv_then_captured_refit(
     // Native scores collected during FIT_CV + REFIT (present only when the controller emitted
     // regression_targets) — plus the cross-fold OOF average (cv_best_score) — persisted in the
     // bundle for cross-language read-back.
-    ctx.collect_cross_fold_validation_scores()?;
+    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(input.plan))?;
     bundle.scores = ctx.build_score_set(input.plan.id.clone(), None);
     bundle.metadata.insert(
         "fit_cv_result_count".to_string(),

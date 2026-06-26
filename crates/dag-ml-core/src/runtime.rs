@@ -27,7 +27,7 @@ use crate::data::{
     RepresentationPlan, RepresentationReplayManifest,
 };
 use crate::error::{DagMlError, Result};
-use crate::fold::{FoldAssignment, FoldSet};
+use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
 use crate::generation::{GenerationChoice, VariantPlan};
 use crate::graph::{EdgeSpec, PortKind};
 use crate::ids::{
@@ -3766,11 +3766,20 @@ impl RunContext {
     /// Score the cross-fold OOF average from the collected per-fold validation predictions + targets
     /// and append the reports (one per producer, `fold_id = "avg"`) to the score collector. Call
     /// after FIT_CV; a no-op when nothing was scored or no producer has more than one fold.
-    pub fn collect_cross_fold_validation_scores(&mut self) -> Result<()> {
+    ///
+    /// `partition_mode` is the campaign's [`FoldPartitionMode`]: `Partition` (KFold) requires a unique
+    /// per-producer OOF set, while `Resampled` (ShuffleSplit / repeated CV) permits a sample to be
+    /// validated in multiple folds (averaged when scored). Pass the plan's
+    /// [`fold_set`](ExecutionPlan::fold_set) mode (default `Partition` when there is no fold set).
+    pub fn collect_cross_fold_validation_scores(
+        &mut self,
+        partition_mode: FoldPartitionMode,
+    ) -> Result<()> {
         let reports = cross_fold_validation_reports(
             self.prediction_store.blocks(),
             &self.regression_target_records,
             SCORE_METRICS,
+            partition_mode,
         )?;
         self.score_collector.extend(reports);
         Ok(())
@@ -3845,7 +3854,7 @@ where
         let mut ctx = RunContext::new(run_id.clone(), root_seed);
         ctx.variant_id = Some(variant.variant_id.clone());
         run_single_variant_fit_cv(&single_variant_plan, &mut ctx)?;
-        ctx.collect_cross_fold_validation_scores()?;
+        ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
         if !ctx.score_collector.is_empty() {
             any_scores_seen = true;
         }
@@ -6322,6 +6331,17 @@ fn missing_oof_edge_error(edge: &EdgeSpec, fold_id: Option<&FoldId>) -> DagMlErr
     ))
 }
 
+/// The OOF [`FoldPartitionMode`] for a plan: its fold set's mode, or `Partition` (the clean-OOF
+/// default) when the plan carries no fold set. Used to make the cross-fold scoring gate mode-aware so
+/// `Resampled` (ShuffleSplit / repeated CV) campaigns, where a sample is validated in several folds,
+/// are not rejected by the `Partition` exactly-once uniqueness rule.
+pub fn plan_oof_partition_mode(plan: &ExecutionPlan) -> FoldPartitionMode {
+    plan.fold_set
+        .as_ref()
+        .map(|fold_set| fold_set.partition_mode)
+        .unwrap_or_default()
+}
+
 fn required_fold_set_for_oof<'a>(plan: &'a ExecutionPlan, edge: &EdgeSpec) -> Result<&'a FoldSet> {
     plan.fold_set.as_ref().ok_or_else(|| {
         DagMlError::RuntimeValidation(format!(
@@ -6417,7 +6437,15 @@ fn validate_oof_blocks_cover_fold_set(
             )));
         }
         for sample_id in block_samples {
-            if !all_samples.insert(sample_id.clone()) {
+            // Partition is a clean OOF set: a sample covered by two folds is a duplicated fold or a
+            // mixed-variant context. Resampled (ShuffleSplit / repeated CV) legitimately validates a
+            // sample in several folds and averages its predictions, so the across-fold duplicate is
+            // expected; the per-fold match above + per-block uniqueness (`collect_unique_oof_samples`)
+            // still hold, and the universe-coverage check below still requires every sample at least
+            // once.
+            if !all_samples.insert(sample_id.clone())
+                && fold_set.partition_mode == FoldPartitionMode::Partition
+            {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "edge `{}.{}` -> `{}.{}` has duplicate OOF prediction for sample `{sample_id}`",
                     edge.source.node_id,
@@ -6562,7 +6590,13 @@ fn validate_aggregated_oof_blocks_cover_fold_set(
             )));
         }
         for unit_id in fold_units {
-            if !all_units.insert(unit_id.clone()) {
+            // See `validate_oof_blocks_cover_fold_set`: Partition forbids a unit covered by two folds;
+            // Resampled (ShuffleSplit / repeated CV) validates a unit in several folds and averages it,
+            // so the across-fold duplicate is allowed while the universe-coverage check below still
+            // requires every unit at least once.
+            if !all_units.insert(unit_id.clone())
+                && fold_set.partition_mode == FoldPartitionMode::Partition
+            {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "edge `{}.{}` -> `{}.{}` has duplicate aggregated OOF prediction for unit `{unit_id}`",
                     edge.source.node_id,

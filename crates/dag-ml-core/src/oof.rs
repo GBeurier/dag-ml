@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::campaign::stable_json_fingerprint;
 use crate::error::{DagMlError, OofLeakageReport, OofLeakageViolation, Result};
-use crate::fold::FoldSet;
+use crate::fold::{FoldPartitionMode, FoldSet};
 use crate::ids::{FoldId, NodeId, SampleId};
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -107,12 +107,22 @@ impl PredictionBlock {
 /// [`COORDINATOR_SPEC.md`] §"OOF And Leakage Rules" rule 3: every producer must provide **exactly one
 /// validation prediction per requested sample** unless an explicit aggregation policy says otherwise.
 ///
-/// It enforces, across the supplied set of `Validation` blocks for ONE producer:
-/// 1. every block passes [`PredictionBlock::validate_content`] (shape, finite, no within-block dup);
-/// 2. **uniqueness** — no `sample_id` appears in more than one block (a cross-fold duplicate; the
-///    signature of either a duplicated fold or, since [`PredictionBlock`] carries no variant tag, a
-///    run context that mixed several variants — see audit R-P0-1). This is the central analogue of the
-///    runtime merge handler's "the run context mixes several variants" guard, on the *scoring* path.
+/// The gate is [`FoldPartitionMode`]-aware, matching the same Partition/Resampled split that
+/// [`FoldSet::validate`](crate::fold::FoldSet::validate) already enforces on the fold layout:
+///
+/// - **Partition** (KFold-style, the default): a clean out-of-fold partition. Every block passes
+///   [`PredictionBlock::validate_content`] (shape, finite, no within-block dup) AND **uniqueness** —
+///   no `sample_id` appears in more than one block (a cross-fold duplicate; the signature of either a
+///   duplicated fold or, since [`PredictionBlock`] carries no variant tag, a run context that mixed
+///   several variants — see audit R-P0-1). This is the central analogue of the runtime merge handler's
+///   "the run context mixes several variants" guard, on the *scoring* path.
+/// - **Resampled** (ShuffleSplit / repeated KFold / bootstrap): a sample may legitimately be validated
+///   in several folds, so its OOF predictions are *aggregated* (averaged by
+///   [`reduce_predictions_across_folds`](crate::aggregation::reduce_predictions_across_folds)). The
+///   across-fold uniqueness check is therefore relaxed: a sample appearing in multiple blocks is
+///   allowed. The per-block content gate (including within-block uniqueness via `validate_content`)
+///   still runs, so a duplicate *within one fold's block* is still refused — only the cross-fold
+///   multiplicity is permitted.
 ///
 /// The "unless an explicit aggregation policy says otherwise" carve-out (the branch-merge concat
 /// partition case, where each branch legitimately covers only its partition of samples) is handled by
@@ -120,13 +130,16 @@ impl PredictionBlock {
 /// never route a producer's raw cross-fold blocks through this gate — so this validator does not
 /// over-reject those legitimate partial-partition merges.
 ///
-/// `requested_samples`, when `Some`, additionally pins **completeness**: the covered samples must be
-/// EXACTLY the requested set (no missing, no extra). When `None`, only uniqueness over whatever OOF
-/// the producer emitted is enforced (the cross-fold scoring path, which scores over the producer's own
-/// OOF union and has no externally-fixed universe).
+/// `requested_samples`, when `Some`, additionally pins **completeness**: every requested sample must
+/// have at least one validation prediction and no unexpected sample may be present. Under `Partition`,
+/// combined with the uniqueness check above, this is exactly-once coverage; under `Resampled`, it is
+/// at-least-once coverage (each requested sample covered, possibly several times). When `None`, only
+/// the mode-appropriate uniqueness is enforced over whatever OOF the producer emitted (the cross-fold
+/// scoring path, which scores over the producer's own OOF union and has no externally-fixed universe).
 pub fn validate_producer_oof_coverage(
     producer_node: &NodeId,
     blocks: &[&PredictionBlock],
+    partition_mode: FoldPartitionMode,
     requested_samples: Option<&BTreeSet<SampleId>>,
 ) -> Result<()> {
     let mut covered: BTreeSet<SampleId> = BTreeSet::new();
@@ -136,7 +149,12 @@ pub fn validate_producer_oof_coverage(
         }
         block.validate_content()?;
         for sample_id in &block.sample_ids {
-            if !covered.insert(sample_id.clone()) {
+            let first_time = covered.insert(sample_id.clone());
+            // Partition is a clean OOF set: a sample seen twice across blocks is a duplicated fold or a
+            // mixed-variant context, and is refused. Resampled aggregates a multiply-validated sample,
+            // so a repeat across blocks is expected and allowed (within-block dups are still caught by
+            // `validate_content` above).
+            if !first_time && partition_mode == FoldPartitionMode::Partition {
                 return Err(DagMlError::OofValidation(format!(
                     "producer `{producer_node}` emitted more than one validation prediction for sample `{sample_id}` — the OOF set is not unique (a duplicated fold, or a run context that mixed several variants); concatenate exactly one validation prediction per sample"
                 )));
@@ -147,8 +165,16 @@ pub fn validate_producer_oof_coverage(
         if &covered != requested {
             let missing = requested.difference(&covered).count();
             let extra = covered.difference(requested).count();
+            let expectation = match partition_mode {
+                FoldPartitionMode::Partition => {
+                    "exactly one validation prediction per requested sample is required"
+                }
+                FoldPartitionMode::Resampled => {
+                    "every requested sample needs at least one validation prediction and no extra sample may appear"
+                }
+            };
             return Err(DagMlError::OofValidation(format!(
-                "producer `{producer_node}` OOF coverage is not exact: {missing} requested sample(s) missing, {extra} unexpected sample(s) present — exactly one validation prediction per requested sample is required"
+                "producer `{producer_node}` OOF coverage is not exact: {missing} requested sample(s) missing, {extra} unexpected sample(s) present — {expectation}"
             )));
         }
     }
@@ -679,10 +705,71 @@ mod tests {
         let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
         let f1 = campaign_block("model:pls", "fold1", &["s3", "s4"]);
         let producer = NodeId::new("model:pls").unwrap();
-        validate_producer_oof_coverage(&producer, &[&f0, &f1], None).unwrap();
+        validate_producer_oof_coverage(&producer, &[&f0, &f1], FoldPartitionMode::Partition, None)
+            .unwrap();
         // With the requested universe pinned, exact coverage also passes.
         let requested = ["s1", "s2", "s3", "s4"].iter().map(|s| sid(s)).collect();
-        validate_producer_oof_coverage(&producer, &[&f0, &f1], Some(&requested)).unwrap();
+        validate_producer_oof_coverage(
+            &producer,
+            &[&f0, &f1],
+            FoldPartitionMode::Partition,
+            Some(&requested),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn producer_oof_coverage_resampled_allows_multiply_validated_sample() {
+        // ShuffleSplit / repeated CV (Resampled): the SAME sample `s1` is legitimately validated in
+        // two folds — its OOF predictions are aggregated (averaged) downstream. The Partition uniqueness
+        // gate would reject this; the Resampled mode must accept it. Coverage stays exact over the
+        // requested universe (at-least-once for every requested sample, no extras).
+        let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
+        let f1 = campaign_block("model:pls", "fold1", &["s1", "s3"]);
+        let producer = NodeId::new("model:pls").unwrap();
+        validate_producer_oof_coverage(&producer, &[&f0, &f1], FoldPartitionMode::Resampled, None)
+            .unwrap();
+        let requested = ["s1", "s2", "s3"].iter().map(|s| sid(s)).collect();
+        validate_producer_oof_coverage(
+            &producer,
+            &[&f0, &f1],
+            FoldPartitionMode::Resampled,
+            Some(&requested),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn producer_oof_coverage_resampled_still_rejects_within_block_duplicate() {
+        // Even in Resampled mode, a duplicate WITHIN one fold's block is a double-count and stays
+        // refused by the per-block content gate (only ACROSS-fold multiplicity is relaxed).
+        let mut f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
+        f0.sample_ids = vec![sid("s1"), sid("s1")];
+        let producer = NodeId::new("model:pls").unwrap();
+        let err =
+            validate_producer_oof_coverage(&producer, &[&f0], FoldPartitionMode::Resampled, None)
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate prediction"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn producer_oof_coverage_resampled_requires_at_least_once_coverage() {
+        // Resampled relaxes uniqueness but still demands completeness: a requested sample with NO
+        // validation prediction is refused.
+        let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
+        let producer = NodeId::new("model:pls").unwrap();
+        let missing: BTreeSet<SampleId> = ["s1", "s2", "s3"].iter().map(|s| sid(s)).collect();
+        let err = validate_producer_oof_coverage(
+            &producer,
+            &[&f0],
+            FoldPartitionMode::Resampled,
+            Some(&missing),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not exact"), "got: {err}");
     }
 
     #[test]
@@ -693,7 +780,13 @@ mod tests {
         let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
         let f1 = campaign_block("model:pls", "fold1", &["s1", "s3"]);
         let producer = NodeId::new("model:pls").unwrap();
-        let err = validate_producer_oof_coverage(&producer, &[&f0, &f1], None).unwrap_err();
+        let err = validate_producer_oof_coverage(
+            &producer,
+            &[&f0, &f1],
+            FoldPartitionMode::Partition,
+            None,
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("not unique")
                 && err.to_string().contains("mixed several variants"),
@@ -707,7 +800,13 @@ mod tests {
         let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
         let producer = NodeId::new("model:pls").unwrap();
         let missing: BTreeSet<SampleId> = ["s1", "s2", "s3"].iter().map(|s| sid(s)).collect();
-        let err = validate_producer_oof_coverage(&producer, &[&f0], Some(&missing)).unwrap_err();
+        let err = validate_producer_oof_coverage(
+            &producer,
+            &[&f0],
+            FoldPartitionMode::Partition,
+            Some(&missing),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("not exact"), "got: {err}");
     }
 
@@ -720,7 +819,13 @@ mod tests {
         let producer = NodeId::new("model:pls").unwrap();
         // s1 appears in a train block AND a validation block — only the validation one counts, so this
         // is unique and accepted.
-        validate_producer_oof_coverage(&producer, &[&train, &val], None).unwrap();
+        validate_producer_oof_coverage(
+            &producer,
+            &[&train, &val],
+            FoldPartitionMode::Partition,
+            None,
+        )
+        .unwrap();
     }
 
     #[test]
