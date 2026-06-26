@@ -998,26 +998,7 @@ pub fn aggregate_sample_predictions_by_unit(
 }
 
 fn validate_sample_prediction_block(block: &PredictionBlock) -> Result<usize> {
-    let width = block.validate_shape()?;
-    if block
-        .values
-        .iter()
-        .flatten()
-        .any(|value| !value.is_finite())
-    {
-        return Err(DagMlError::OofValidation(format!(
-            "producer `{}` emitted non-finite sample prediction values",
-            block.producer_node
-        )));
-    }
-    let unique = block.sample_ids.iter().collect::<BTreeSet<_>>();
-    if unique.len() != block.sample_ids.len() {
-        return Err(DagMlError::OofValidation(format!(
-            "producer `{}` emitted duplicate sample predictions",
-            block.producer_node
-        )));
-    }
-    Ok(width)
+    block.validate_content()
 }
 
 fn unit_for_sample(
@@ -1356,11 +1337,10 @@ pub fn reduce_predictions_across_folds(
                 "cross-fold reduction: blocks differ in producer or partition".to_string(),
             ));
         }
-        if block.sample_ids.len() != block.values.len() {
-            return Err(DagMlError::OofValidation(
-                "cross-fold reduction: block sample/value length mismatch".to_string(),
-            ));
-        }
+        // Mandatory content gate: finite values + no within-block (within-fold) duplicate
+        // sample. Accumulation below is per (sample, fold); a within-fold duplicate would be
+        // averaged in twice (a double-count) and a NaN/Inf would poison the fused mean.
+        block.validate_content()?;
         let weight = weights.map_or(1.0, |weights| weights[position]);
         if !weight.is_finite() || weight < 0.0 {
             return Err(DagMlError::OofValidation(
@@ -1453,20 +1433,11 @@ pub fn reduce_predictions_across_branches(
                 "cross-branch reduction: branches differ in target names".to_string(),
             ));
         }
-        block.validate_shape()?;
-        // A branch block must cover each sample at most once: fusion accumulates
-        // per (sample, branch), so a within-branch duplicate would be averaged in
-        // twice (a double-count) and skew the mean. Reject it (the cross-branch
-        // analogue of concat's overlap rejection).
-        let mut branch_seen: BTreeSet<&SampleId> = BTreeSet::new();
-        for sample_id in &block.sample_ids {
-            if !branch_seen.insert(sample_id) {
-                return Err(DagMlError::OofValidation(format!(
-                    "cross-branch reduction: branch `{}` emitted duplicate prediction for sample `{sample_id}`",
-                    block.producer_node
-                )));
-            }
-        }
+        // Mandatory content gate: finite values + no within-branch duplicate sample. Fusion
+        // accumulates per (sample, branch), so a within-branch duplicate would be averaged in
+        // twice (a double-count) and skew the mean — the cross-branch analogue of concat's
+        // overlap rejection — and a NaN/Inf would poison the fused mean.
+        block.validate_content()?;
         let weight = weights.map_or(1.0, |weights| weights[position]);
         if !weight.is_finite() || weight < 0.0 {
             return Err(DagMlError::OofValidation(
@@ -1530,7 +1501,10 @@ pub fn reduce_proba_mean_across_branches(
         ));
     }
     for block in branch_blocks {
-        let width = block.validate_shape()?;
+        // Mandatory content gate before the probability checks below: a NaN/Inf would pass the
+        // `< 0.0` and `sum != 1` comparisons silently (NaN compares false), so the per-row
+        // probability validation alone cannot reject it — `validate_content` rejects it here.
+        let width = block.validate_content()?;
         if width < 2 {
             return Err(DagMlError::OofValidation(format!(
                 "proba-mean fusion: branch `{}` has width {width}, classification probabilities need at least 2 classes",
@@ -2573,5 +2547,40 @@ mod tests {
         .is_err());
         // Empty branch set is rejected.
         assert!(reduce_proba_mean_across_branches(&[], &merge).is_err());
+
+        // A NaN class probability must be rejected — it would slip past the `< 0.0` and
+        // `sum != 1` checks (NaN compares false) but is caught by the content gate.
+        assert!(reduce_proba_mean_across_branches(
+            &[branch("branch:b0", &[("s1", [f64::NAN, 0.5])])],
+            &merge
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cross_fold_reduction_rejects_within_fold_duplicate_and_non_finite() {
+        let node = NodeId::new("model:pls").unwrap();
+        let block = |fold: &str, rows: &[(&str, f64)]| PredictionBlock {
+            prediction_id: None,
+            producer_node: node.clone(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new(fold).unwrap()),
+            sample_ids: rows.iter().map(|(s, _)| sid(s)).collect(),
+            values: rows.iter().map(|(_, v)| vec![*v]).collect(),
+            target_names: vec!["y".to_string()],
+        };
+
+        // A within-fold duplicate sample would be averaged in twice (double-count) — rejected.
+        let dup = block("fold0", &[("s1", 1.0), ("s1", 3.0)]);
+        let err = reduce_predictions_across_folds(&[dup], None, "avg").unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate prediction"),
+            "got: {err}"
+        );
+
+        // A non-finite value would poison the fused mean — rejected.
+        let poisoned = block("fold0", &[("s1", f64::NAN), ("s2", 2.0)]);
+        let err = reduce_predictions_across_folds(&[poisoned], None, "avg").unwrap_err();
+        assert!(err.to_string().contains("non-finite"), "got: {err}");
     }
 }
