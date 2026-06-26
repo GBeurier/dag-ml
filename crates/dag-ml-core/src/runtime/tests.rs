@@ -6094,6 +6094,529 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
     assert!(result.validate_for_task(&task).is_err());
 }
 
+// R-P1-5: a Sample-level aggregated validation block must stay inside its
+// fold's validation view, mirroring the raw-prediction scope check. A unit
+// outside the view is rejected; an in-view unit is accepted unchanged.
+#[test]
+fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
+    let model_id = NodeId::new("model:pls").unwrap();
+    let plan = build_execution_plan(
+        "plan:result.validation.aggregated",
+        simple_graph(),
+        CampaignSpec {
+            inner_cv: None,
+            id: "campaign:result.validation.aggregated".to_string(),
+            root_seed: Some(11),
+            leakage_policy: Default::default(),
+            aggregation_policy: Default::default(),
+            split_invocation: Some(SplitInvocation {
+                id: "split:outer".to_string(),
+                controller_id: None,
+                leakage_policy: Default::default(),
+                params: BTreeMap::new(),
+                fold_set: Some(two_fold_set()),
+            }),
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        },
+        &manifests(),
+    )
+    .unwrap();
+    let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
+    let task = NodeTask {
+        inner_fold_set: None,
+        run_id: RunId::new("run:result.validation.aggregated").unwrap(),
+        node_plan: node_plan.clone(),
+        phase: Phase::FitCv,
+        variant_id: Some(VariantId::new("variant:base").unwrap()),
+        variant: None,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        branch_path: Vec::new(),
+        input_handles: BTreeMap::new(),
+        data_views: BTreeMap::from([(
+            "data:x:validation".to_string(),
+            DataProviderViewSpec {
+                sample_ids: Some(vec![SampleId::new("s1").unwrap()]),
+                partition: DataRequestPartition::FoldValidation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                source_ids: None,
+                columns: None,
+                include_augmented: false,
+                include_excluded: false,
+                branch_view: None,
+                extra: BTreeMap::new(),
+            },
+        )]),
+        prediction_inputs: BTreeMap::new(),
+        artifact_inputs: BTreeMap::new(),
+        fit_influence: FitInfluenceTask::default(),
+        seed: Some(99),
+    };
+    let aggregated_block = |sample: &str| AggregatedPredictionBlock {
+        prediction_id: Some("pred:agg".to_string()),
+        producer_node: model_id.clone(),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        level: PredictionLevel::Sample,
+        unit_ids: vec![PredictionUnitId::Sample(SampleId::new(sample).unwrap())],
+        values: vec![vec![1.0]],
+        target_names: vec!["y".to_string()],
+    };
+    let mut result = NodeResult {
+        node_id: model_id.clone(),
+        outputs: BTreeMap::from([(
+            "out".to_string(),
+            HandleRef {
+                handle: 7,
+                kind: HandleKind::Data,
+                owner_controller: node_plan.controller_id.clone(),
+            },
+        )]),
+        predictions: Vec::new(),
+        observation_predictions: Vec::new(),
+        aggregated_predictions: vec![aggregated_block("s2")],
+        explanations: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
+        regression_targets: Vec::new(),
+        lineage: LineageRecord {
+            record_id: LineageId::new("lineage:agg.scope").unwrap(),
+            run_id: task.run_id.clone(),
+            node_id: task.node_plan.node_id.clone(),
+            phase: task.phase,
+            controller_id: task.node_plan.controller_id.clone(),
+            controller_version: task.node_plan.controller_version.clone(),
+            variant_id: task.variant_id.clone(),
+            fold_id: task.fold_id.clone(),
+            branch_path: task.branch_path.clone(),
+            input_lineage: Vec::new(),
+            artifact_refs: Vec::new(),
+            params_fingerprint: task.node_plan.params_fingerprint.clone(),
+            data_model_shape_fingerprint: None,
+            aggregation_policy_fingerprint: None,
+            seed: task.seed,
+            unsafe_flags: BTreeSet::new(),
+            metrics: BTreeMap::new(),
+        },
+    };
+
+    // Malformed: aggregated sample unit `s2` is outside fold:0's validation view {s1}.
+    let error = result.validate_for_task(&task).unwrap_err().to_string();
+    assert!(
+        error.contains("outside its validation view"),
+        "unexpected aggregated scope error: {error}"
+    );
+
+    // Valid: aggregated sample unit inside the validation view passes unchanged.
+    result.aggregated_predictions = vec![aggregated_block("s1")];
+    result.validate_for_task(&task).unwrap();
+}
+
+// R-P1-6: a controller that emits aggregated predictions itself (bypassing
+// native aggregation) must emit them at the node's policy level. A block at a
+// different level is rejected before it can be scored against a mismatched
+// policy; a matching-level block is accepted.
+#[test]
+fn controller_emitted_aggregated_block_must_match_policy_level() {
+    let model_id = NodeId::new("model:obs").unwrap();
+    let graph = GraphSpec {
+        id: "graph:agg.policy.level".to_string(),
+        interface: GraphInterface::default(),
+        nodes: vec![node(
+            model_id.as_str(),
+            NodeKind::Model,
+            vec![port("x", PortKind::Data)],
+            vec![port("pred", PortKind::Prediction)],
+        )],
+        edges: Vec::new(),
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+    let mut shape_plans = BTreeMap::new();
+    shape_plans.insert(
+        model_id.clone(),
+        DataModelShapePlan {
+            node_id: model_id.clone(),
+            input_granularity: Granularity::Sample,
+            target_granularity: Granularity::Sample,
+            fit_rows: FitBoundary::FoldTrain,
+            predict_rows: FitBoundary::FoldValidation,
+            feature_namespace: Some("nir".to_string()),
+            feature_schema_fingerprint: None,
+            target_space: "regression:y".to_string(),
+            // Native policy aggregates to GROUP level.
+            aggregation_policy: custom_aggregation_policy(PredictionLevel::Group),
+            augmentation_policy: Default::default(),
+            selection_policy: Default::default(),
+        },
+    );
+    let campaign = CampaignSpec {
+        inner_cv: None,
+        id: "campaign:agg.policy.level".to_string(),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: None,
+        generation: Default::default(),
+        shape_plans,
+        data_bindings: BTreeMap::new(),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    };
+    let plan =
+        build_execution_plan("plan:agg.policy.level", graph, campaign, &manifests()).unwrap();
+    let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
+    let task = NodeTask {
+        inner_fold_set: None,
+        run_id: RunId::new("run:agg.policy.level").unwrap(),
+        node_plan: node_plan.clone(),
+        phase: Phase::FitCv,
+        variant_id: Some(VariantId::new("variant:base").unwrap()),
+        variant: None,
+        fold_id: None,
+        branch_path: Vec::new(),
+        input_handles: BTreeMap::new(),
+        data_views: BTreeMap::new(),
+        prediction_inputs: BTreeMap::new(),
+        artifact_inputs: BTreeMap::new(),
+        fit_influence: FitInfluenceTask::default(),
+        seed: Some(99),
+    };
+    let controllers = RuntimeControllerRegistry::new();
+    let resources = PhaseScopeResources {
+        data_provider: None,
+        replay_artifact_handles: None,
+        replay_artifact_inputs: None,
+        replay_bundle_id: None,
+        data_envelopes: None,
+        prediction_cache_store: None,
+        prediction_cache_contracts: None,
+        artifact_store: None,
+    };
+    let aggregated_block =
+        |level: PredictionLevel, unit: PredictionUnitId| AggregatedPredictionBlock {
+            prediction_id: Some("pred:agg".to_string()),
+            producer_node: model_id.clone(),
+            partition: PredictionPartition::Final,
+            fold_id: None,
+            level,
+            unit_ids: vec![unit],
+            values: vec![vec![1.0]],
+            target_names: vec!["y".to_string()],
+        };
+    let lineage = LineageRecord {
+        record_id: LineageId::new("lineage:agg.policy.level").unwrap(),
+        run_id: task.run_id.clone(),
+        node_id: task.node_plan.node_id.clone(),
+        phase: task.phase,
+        controller_id: task.node_plan.controller_id.clone(),
+        controller_version: task.node_plan.controller_version.clone(),
+        variant_id: task.variant_id.clone(),
+        fold_id: task.fold_id.clone(),
+        branch_path: task.branch_path.clone(),
+        input_lineage: Vec::new(),
+        artifact_refs: Vec::new(),
+        params_fingerprint: task.node_plan.params_fingerprint.clone(),
+        data_model_shape_fingerprint: None,
+        aggregation_policy_fingerprint: None,
+        seed: task.seed,
+        unsafe_flags: BTreeSet::new(),
+        metrics: BTreeMap::new(),
+    };
+    let base_result = |level: PredictionLevel, unit: PredictionUnitId| NodeResult {
+        node_id: model_id.clone(),
+        outputs: BTreeMap::new(),
+        predictions: vec![PredictionBlock {
+            prediction_id: Some("pred:sample".to_string()),
+            producer_node: model_id.clone(),
+            partition: PredictionPartition::Final,
+            fold_id: None,
+            sample_ids: vec![SampleId::new("s1").unwrap()],
+            values: vec![vec![1.0]],
+            target_names: vec!["y".to_string()],
+        }],
+        observation_predictions: Vec::new(),
+        aggregated_predictions: vec![aggregated_block(level, unit)],
+        explanations: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
+        regression_targets: Vec::new(),
+        lineage: lineage.clone(),
+    };
+
+    // Malformed: block aggregated at TARGET level but the node policy is GROUP.
+    let mut bad = base_result(
+        PredictionLevel::Target,
+        PredictionUnitId::Target(TargetId::new("target:a").unwrap()),
+    );
+    let error =
+        apply_result_prediction_aggregation(&plan, &controllers, &task, &mut bad, &resources)
+            .unwrap_err()
+            .to_string();
+    assert!(
+        error.contains("aggregation policy is")
+            && error.contains("Group")
+            && error.contains("Target"),
+        "unexpected policy-level error: {error}"
+    );
+
+    // Valid: block aggregated at the policy GROUP level passes the level gate.
+    let mut good = base_result(
+        PredictionLevel::Group,
+        PredictionUnitId::Group(GroupId::new("group:a").unwrap()),
+    );
+    apply_result_prediction_aggregation(&plan, &controllers, &task, &mut good, &resources).unwrap();
+}
+
+// R-P1-8: a binding that REQUIRES coordinator relations must resolve them. With
+// no envelope and no provider the relations are unresolvable, which must be a
+// hard error (not a silent empty exclusion set); a provider that supplies the
+// relations resolves them unchanged.
+#[test]
+fn coordinator_relations_required_but_unresolved_is_refused() {
+    let model_id = NodeId::new("model:pls").unwrap();
+    let mut campaign = oof_edge_campaign();
+    campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]);
+    let plan = build_execution_plan(
+        "plan:relations.required",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
+    assert!(node_plan.data_bindings.iter().any(|b| b.require_relations));
+
+    // Malformed: relations are required but neither envelope nor provider supplies them.
+    let empty_resources = PhaseScopeResources {
+        data_provider: None,
+        replay_artifact_handles: None,
+        replay_artifact_inputs: None,
+        replay_bundle_id: None,
+        data_envelopes: None,
+        prediction_cache_store: None,
+        prediction_cache_contracts: None,
+        artifact_store: None,
+    };
+    let error = coordinator_relations_for_node(&node_plan, &empty_resources)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("requires coordinator relations but none were resolved"),
+        "unexpected unresolved-relations error: {error}"
+    );
+
+    // Valid: a provider carrying the binding's relations resolves them.
+    let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+        "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+    ))
+    .unwrap();
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data.provider").unwrap(),
+        envelope,
+    )
+    .unwrap();
+    let provider_resources = PhaseScopeResources {
+        data_provider: Some(&provider),
+        replay_artifact_handles: None,
+        replay_artifact_inputs: None,
+        replay_bundle_id: None,
+        data_envelopes: None,
+        prediction_cache_store: None,
+        prediction_cache_contracts: None,
+        artifact_store: None,
+    };
+    let relations = coordinator_relations_for_node(&node_plan, &provider_resources).unwrap();
+    assert!(
+        relations.is_some(),
+        "expected the provider to supply relations"
+    );
+}
+
+// R-P1-8: a data view handle is delivered to the controller as a data input, so
+// a provider that returns a non-data/data-view handle (e.g. a model handle)
+// across the ABI must be refused.
+#[test]
+fn make_data_view_handle_refuses_non_data_handle_kind() {
+    struct WrongKindViewProvider {
+        owner: ControllerId,
+    }
+    impl RuntimeDataProvider for WrongKindViewProvider {
+        fn materialize(&self, _request: &DataMaterializationRequest) -> Result<HandleRef> {
+            Ok(HandleRef {
+                handle: 1,
+                kind: HandleKind::Data,
+                owner_controller: self.owner.clone(),
+            })
+        }
+        fn make_view(&self, _request: &DataViewRequest) -> Result<HandleRef> {
+            // A misbehaving provider hands back a MODEL handle as if it were a view.
+            Ok(HandleRef {
+                handle: 2,
+                kind: HandleKind::Model,
+                owner_controller: self.owner.clone(),
+            })
+        }
+    }
+
+    let owner = ControllerId::new("controller:data.provider").unwrap();
+    let provider = WrongKindViewProvider {
+        owner: owner.clone(),
+    };
+    let model_id = NodeId::new("model:pls").unwrap();
+    let mut campaign = oof_edge_campaign();
+    campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]);
+    let plan = build_execution_plan(
+        "plan:view.handle.kind",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
+    let binding = node_plan.data_bindings[0].clone();
+    let ctx = RunContext::new(RunId::new("run:view.handle.kind").unwrap(), Some(11));
+    let scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: Some(VariantId::new("variant:base").unwrap()),
+        variant: None,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        seed_root: Some(11),
+    };
+    let data_handle = HandleRef {
+        handle: 1,
+        kind: HandleKind::Data,
+        owner_controller: owner.clone(),
+    };
+    let view = DataProviderViewSpec {
+        sample_ids: Some(vec![SampleId::new("s1").unwrap()]),
+        partition: DataRequestPartition::FoldTrain,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        source_ids: None,
+        columns: None,
+        include_augmented: false,
+        include_excluded: false,
+        branch_view: None,
+        extra: BTreeMap::new(),
+    };
+    let error = make_data_view_handle(
+        &provider,
+        &ctx,
+        &node_plan,
+        &scope,
+        &binding,
+        &data_handle,
+        &view,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("non-data/data-view handle kind"),
+        "unexpected handle-kind error: {error}"
+    );
+}
+
+// R-P1-7: a node only sees upstream handles for ports it DECLARES an edge to.
+// An extra handle a producer emitted on an undeclared port (which a sibling
+// consumer might use) must not leak into this node's input contract; the
+// declared port still arrives.
+#[test]
+fn collect_input_handles_forwards_only_declared_source_ports() {
+    let producer = NodeId::new("transform:snv").unwrap();
+    let consumer = NodeId::new("model:pls").unwrap();
+    let plan = build_execution_plan(
+        "plan:declared.ports",
+        simple_graph(),
+        CampaignSpec {
+            inner_cv: None,
+            id: "campaign:declared.ports".to_string(),
+            root_seed: Some(11),
+            leakage_policy: Default::default(),
+            aggregation_policy: Default::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        },
+        &manifests(),
+    )
+    .unwrap();
+    let node_plan = plan.node_plans.get(&consumer).unwrap().clone();
+    let owner = node_plan.controller_id.clone();
+    // The producer emitted TWO output handles: the declared `x` (edge to
+    // `model:pls.x`) and an undeclared `extra` port no edge references.
+    let output_handles = BTreeMap::from([(
+        producer.clone(),
+        BTreeMap::from([
+            (
+                "x".to_string(),
+                HandleRef {
+                    handle: 1,
+                    kind: HandleKind::Data,
+                    owner_controller: owner.clone(),
+                },
+            ),
+            (
+                "extra".to_string(),
+                HandleRef {
+                    handle: 2,
+                    kind: HandleKind::Data,
+                    owner_controller: owner.clone(),
+                },
+            ),
+        ]),
+    )]);
+    let ctx = RunContext::new(RunId::new("run:declared.ports").unwrap(), Some(11));
+    let scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: Some(VariantId::new("variant:base").unwrap()),
+        variant: None,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        seed_root: Some(11),
+    };
+    let resources = PhaseScopeResources {
+        data_provider: None,
+        replay_artifact_handles: None,
+        replay_artifact_inputs: None,
+        replay_bundle_id: None,
+        data_envelopes: None,
+        prediction_cache_store: None,
+        prediction_cache_contracts: None,
+        artifact_store: None,
+    };
+    let collected = collect_input_handles(
+        &plan,
+        &node_plan,
+        &output_handles,
+        &BTreeMap::new(),
+        &resources,
+        &ctx,
+        &scope,
+    )
+    .unwrap();
+
+    // The declared source port arrives; the undeclared one is filtered out.
+    assert!(
+        collected.handles.contains_key("transform:snv.x"),
+        "declared source port handle missing: {:?}",
+        collected.handles.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !collected.handles.contains_key("transform:snv.extra"),
+        "undeclared source port handle leaked: {:?}",
+        collected.handles.keys().collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn in_memory_artifact_store_resolves_bundle_artifacts() {
     let plan = fixture_plan("plan:replay.artifacts");
