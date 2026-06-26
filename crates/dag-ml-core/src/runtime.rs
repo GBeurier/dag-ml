@@ -849,7 +849,7 @@ impl InMemoryPredictionStore {
     }
 
     pub fn append(&mut self, block: PredictionBlock) -> Result<()> {
-        block.validate_shape()?;
+        block.validate_content()?;
         self.blocks.push(block);
         Ok(())
     }

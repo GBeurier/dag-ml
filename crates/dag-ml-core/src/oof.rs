@@ -72,6 +72,34 @@ impl PredictionBlock {
         }
         Ok(width)
     }
+
+    /// Mandatory, central content invariant for a prediction block — the single gate every
+    /// path that *stores* or *scores* a `PredictionBlock` must pass through. It is a strict
+    /// superset of [`validate_shape`](Self::validate_shape): it first checks dimensions/width,
+    /// then enforces the two content invariants `validate_shape` does not — every prediction
+    /// value must be finite (no `NaN`/`Inf`) and no `sample_id` may repeat within the block
+    /// (a within-block duplicate double-counts in every identity-keyed reducer). A block that
+    /// is already valid passes unchanged and returns the same `width`; only malformed or
+    /// adversarial blocks are rejected.
+    pub fn validate_content(&self) -> Result<usize> {
+        let width = self.validate_shape()?;
+        if self.values.iter().flatten().any(|value| !value.is_finite()) {
+            return Err(DagMlError::OofValidation(format!(
+                "producer `{}` emitted non-finite prediction values",
+                self.producer_node
+            )));
+        }
+        let mut seen = BTreeSet::new();
+        for sample_id in &self.sample_ids {
+            if !seen.insert(sample_id) {
+                return Err(DagMlError::OofValidation(format!(
+                    "producer `{}` emitted duplicate prediction for sample `{sample_id}`",
+                    self.producer_node
+                )));
+            }
+        }
+        Ok(width)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -554,6 +582,41 @@ mod tests {
         duplicate.sample_ids = vec![sid("s1"), sid("s1")];
 
         assert!(join_oof_features(&[duplicate], &[sid("s1")]).is_err());
+    }
+
+    #[test]
+    fn validate_content_passes_valid_block_unchanged() {
+        let valid = block(PredictionPartition::Validation);
+        // A valid block passes both gates with the same width — behavior is unchanged.
+        assert_eq!(
+            valid.validate_content().unwrap(),
+            valid.validate_shape().unwrap()
+        );
+    }
+
+    #[test]
+    fn validate_content_rejects_non_finite_values() {
+        for poison in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut tainted = block(PredictionPartition::Validation);
+            tainted.values = vec![vec![poison], vec![10.0]];
+            // validate_shape still accepts it (dimensions only); validate_content must reject it.
+            assert!(tainted.validate_shape().is_ok());
+            let err = tainted.validate_content().unwrap_err();
+            assert!(err.to_string().contains("non-finite"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn validate_content_rejects_duplicate_sample_id() {
+        let mut dup = block(PredictionPartition::Validation);
+        dup.sample_ids = vec![sid("s1"), sid("s1")];
+        // Dimensions match, so validate_shape accepts; validate_content must reject the duplicate.
+        assert!(dup.validate_shape().is_ok());
+        let err = dup.validate_content().unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate prediction"),
+            "got: {err}"
+        );
     }
 
     #[test]

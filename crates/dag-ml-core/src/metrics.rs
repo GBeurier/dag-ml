@@ -461,26 +461,7 @@ fn score_regression_rows(
 }
 
 fn validate_sample_prediction_block(block: &PredictionBlock) -> Result<usize> {
-    let width = block.validate_shape()?;
-    if block
-        .values
-        .iter()
-        .flatten()
-        .any(|value| !value.is_finite())
-    {
-        return Err(DagMlError::OofValidation(format!(
-            "producer `{}` emitted non-finite sample prediction values",
-            block.producer_node
-        )));
-    }
-    let unique = block.sample_ids.iter().collect::<BTreeSet<_>>();
-    if unique.len() != block.sample_ids.len() {
-        return Err(DagMlError::OofValidation(format!(
-            "producer `{}` emitted duplicate sample predictions",
-            block.producer_node
-        )));
-    }
-    Ok(width)
+    block.validate_content()
 }
 
 fn compute_metric_per_target(
