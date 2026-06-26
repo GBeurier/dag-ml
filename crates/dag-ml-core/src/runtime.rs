@@ -5932,10 +5932,15 @@ fn validate_fit_cv_oof_edge<'a>(
     if blocks.is_empty() {
         return Err(missing_oof_edge_error(edge, Some(fold_id)));
     }
-    if edge.contract.requires_fold_alignment {
-        let fold_set = required_fold_set_for_oof(plan, edge)?;
-        validate_oof_blocks_match_fold(edge, fold_set, fold_id, &blocks)?;
-    }
+    // MANDATORY exact OOF coverage (spec rule 3 + audit R-P0-2): a `requires_oof` stacking edge that
+    // reaches here must have exactly one validation prediction per fold-validation sample, exact and
+    // unique. This was previously gated by `requires_fold_alignment` — making completeness conditional,
+    // so an edge that left the flag unset (a future builder or adversarial JSON) admitted blocks that
+    // merely *exist*. The branch-merge concat partition exception ("unless an explicit aggregation
+    // policy says otherwise"), where a branch legitimately covers only its partition, is intercepted
+    // before this code path (the separation-merge handler) and so is never over-rejected here.
+    let fold_set = required_fold_set_for_oof(plan, edge)?;
+    validate_oof_blocks_match_fold(edge, fold_set, fold_id, &blocks)?;
     Ok(blocks)
 }
 
@@ -5952,10 +5957,10 @@ fn validate_refit_oof_edge<'a>(
     if blocks.is_empty() {
         return Err(missing_oof_edge_error(edge, None));
     }
-    if edge.contract.requires_fold_alignment {
-        let fold_set = required_fold_set_for_oof(plan, edge)?;
-        validate_oof_blocks_cover_fold_set(edge, fold_set, &blocks)?;
-    }
+    // MANDATORY exact OOF coverage — see `validate_fit_cv_oof_edge`. The branch-merge concat partition
+    // exception is handled by the separation-merge handler, which never reaches this stacking path.
+    let fold_set = required_fold_set_for_oof(plan, edge)?;
+    validate_oof_blocks_cover_fold_set(edge, fold_set, &blocks)?;
     Ok(blocks)
 }
 
@@ -5983,18 +5988,18 @@ fn validate_fit_cv_aggregated_oof_edge<'a>(
         return Err(missing_oof_edge_error(edge, Some(fold_id)));
     }
     validate_aggregated_blocks_basic(edge, prediction_level, &blocks)?;
-    if edge.contract.requires_fold_alignment {
-        let fold_set = required_fold_set_for_oof(plan, edge)?;
-        let relations = coordinator_relations_for_edge(plan, edge, resources)?;
-        validate_aggregated_oof_blocks_match_fold(
-            edge,
-            fold_set,
-            &relations,
-            prediction_level,
-            fold_id,
-            &blocks,
-        )?;
-    }
+    // MANDATORY exact aggregated-OOF coverage — see `validate_fit_cv_oof_edge` (audit R-P0-2). The
+    // concat-merge partition exception is intercepted by the separation-merge handler upstream.
+    let fold_set = required_fold_set_for_oof(plan, edge)?;
+    let relations = coordinator_relations_for_edge(plan, edge, resources)?;
+    validate_aggregated_oof_blocks_match_fold(
+        edge,
+        fold_set,
+        &relations,
+        prediction_level,
+        fold_id,
+        &blocks,
+    )?;
     Ok(blocks)
 }
 
@@ -6015,17 +6020,17 @@ fn validate_refit_aggregated_oof_edge<'a>(
         return Err(missing_oof_edge_error(edge, None));
     }
     validate_aggregated_blocks_basic(edge, prediction_level, &blocks)?;
-    if edge.contract.requires_fold_alignment {
-        let fold_set = required_fold_set_for_oof(plan, edge)?;
-        let relations = coordinator_relations_for_edge(plan, edge, resources)?;
-        validate_aggregated_oof_blocks_cover_fold_set(
-            edge,
-            fold_set,
-            &relations,
-            prediction_level,
-            &blocks,
-        )?;
-    }
+    // MANDATORY exact aggregated-OOF coverage — see `validate_fit_cv_oof_edge` (audit R-P0-2). The
+    // concat-merge partition exception is intercepted by the separation-merge handler upstream.
+    let fold_set = required_fold_set_for_oof(plan, edge)?;
+    let relations = coordinator_relations_for_edge(plan, edge, resources)?;
+    validate_aggregated_oof_blocks_cover_fold_set(
+        edge,
+        fold_set,
+        &relations,
+        prediction_level,
+        &blocks,
+    )?;
     Ok(blocks)
 }
 
