@@ -1454,6 +1454,19 @@ pub fn reduce_predictions_across_branches(
             ));
         }
         block.validate_shape()?;
+        // A branch block must cover each sample at most once: fusion accumulates
+        // per (sample, branch), so a within-branch duplicate would be averaged in
+        // twice (a double-count) and skew the mean. Reject it (the cross-branch
+        // analogue of concat's overlap rejection).
+        let mut branch_seen: BTreeSet<&SampleId> = BTreeSet::new();
+        for sample_id in &block.sample_ids {
+            if !branch_seen.insert(sample_id) {
+                return Err(DagMlError::OofValidation(format!(
+                    "cross-branch reduction: branch `{}` emitted duplicate prediction for sample `{sample_id}`",
+                    block.producer_node
+                )));
+            }
+        }
         let weight = weights.map_or(1.0, |weights| weights[position]);
         if !weight.is_finite() || weight < 0.0 {
             return Err(DagMlError::OofValidation(

@@ -278,9 +278,16 @@ impl InMemoryArtifactStore {
                     .iter()
                     .map(|binding| format!("{}.{}", binding.node_id, binding.input_name))
                     .collect(),
+                // Only the Validation-OOF meta-feature inputs become replay
+                // prediction-cache requirements. The off-fold (REFIT/PREDICT)
+                // test/predict base predictions are recomputed each phase, not
+                // replayed from cache, and they share the same producer/port as the
+                // Validation OOF input — so including them would duplicate the
+                // requirement key. They are excluded here (partition != Validation).
                 prediction_requirement_keys: task
                     .prediction_inputs
                     .values()
+                    .filter(|spec| spec.partition == PredictionPartition::Validation)
                     .map(|spec| {
                         bundle_prediction_requirement_key(
                             &spec.producer_node,
@@ -5479,6 +5486,36 @@ fn collect_input_handles(
             )));
         }
     }
+    // REFIT / PREDICT: deliver each base producer's off-fold (test / predict)
+    // predictions to the stacking meta-node as a SEPARATE prediction input (suffixed
+    // `:test` / `:predict`) so the host meta-model predicts from them. The FIT_CV
+    // Validation-OOF input above is the meta-features the meta-model trains on; this
+    // off-fold input is used ONLY for REFIT/PREDICT scoring/prediction, never FIT_CV
+    // training — keeping the leakage invariant intact.
+    if matches!(scope.phase, Phase::Refit | Phase::Predict) {
+        let off_fold_suffix = scope.phase.as_str().to_ascii_lowercase();
+        for edge in incoming_oof_edges(plan, node_plan)? {
+            let Some(input) = collect_off_fold_prediction_input(plan, edge, ctx, scope)? else {
+                continue;
+            };
+            let key = format!(
+                "{}.{}:{off_fold_suffix}",
+                edge.source.node_id, edge.source.port_name
+            );
+            if inputs.insert(key.clone(), input.handle).is_some() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` received duplicate off-fold prediction input `{key}`",
+                    node_plan.node_id
+                )));
+            }
+            if prediction_inputs.insert(key.clone(), input.spec).is_some() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` received duplicate off-fold prediction spec `{key}`",
+                    node_plan.node_id
+                )));
+            }
+        }
+    }
     if !node_plan.data_bindings.is_empty() && resources.data_provider.is_none() {
         return Err(DagMlError::RuntimeValidation(format!(
             "node `{}` requires {} data binding(s) but no runtime data provider is registered",
@@ -5593,14 +5630,10 @@ fn effective_node_plan_for_scope(node_plan: &NodePlan, scope: &PhaseScope) -> Re
     Ok(node_plan)
 }
 
-fn incoming_training_oof_edges<'a>(
+fn incoming_oof_edges<'a>(
     plan: &'a ExecutionPlan,
     node_plan: &NodePlan,
-    scope: &PhaseScope,
 ) -> Result<Vec<&'a EdgeSpec>> {
-    if !scope.phase.is_training() {
-        return Ok(Vec::new());
-    }
     plan.graph_plan
         .graph
         .edges
@@ -5619,6 +5652,100 @@ fn incoming_training_oof_edges<'a>(
             Ok(edge)
         })
         .collect()
+}
+
+fn incoming_training_oof_edges<'a>(
+    plan: &'a ExecutionPlan,
+    node_plan: &NodePlan,
+    scope: &PhaseScope,
+) -> Result<Vec<&'a EdgeSpec>> {
+    if !scope.phase.is_training() {
+        return Ok(Vec::new());
+    }
+    incoming_oof_edges(plan, node_plan)
+}
+
+/// The base producer's off-fold (test / predict) predictions delivered to a
+/// stacking meta-node as a SEPARATE prediction input in REFIT / PREDICT, so the
+/// host meta-model can predict from them. This is the prediction-stacking analogue
+/// of the concat/fusion off-fold reassembly: the FIT_CV `requires_oof` path stays
+/// Validation-OOF-only (the meta-features the meta-model trains on), and these
+/// test/predict base predictions are a distinct input used ONLY in REFIT/PREDICT
+/// scoring — never in FIT_CV training.
+///
+/// Reads the base producer's `fold_id == None` block in the phase-expected
+/// partition (`Test` in REFIT / `Final` in PREDICT) scoped to the active variant,
+/// and builds a [`CollectedPredictionInput`] (a prediction handle + a
+/// [`PredictionInputSpec`] carrying its per-sample `values`), mirroring the
+/// FIT_CV OOF input so the host adapter sees a handle alongside the spec. Returns
+/// `None` when the base produced no such block (a phase with no base prediction).
+///
+/// LEAKAGE INVARIANT: never reads a `Validation` block, so the Validation-OOF
+/// meta-features are untouched. Only runs in REFIT/PREDICT (the caller guards it),
+/// and the phase-expected-partition filter keeps a stale `Final`/`Train` block
+/// from a prior phase in the same context out of the meta-features.
+fn collect_off_fold_prediction_input(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+) -> Result<Option<CollectedPredictionInput>> {
+    let expected_partition = expected_off_fold_partition(scope.phase);
+    let blocks: Vec<&PredictionBlock> = ctx
+        .prediction_store
+        .find(Some(&edge.source.node_id), Some(&expected_partition), None)
+        .into_iter()
+        .filter(|block| block.fold_id.is_none())
+        .collect();
+    if blocks.is_empty() {
+        return Ok(None);
+    }
+    if blocks.len() > 1 {
+        return Err(DagMlError::OofValidation(format!(
+            "meta node `{}` found {} off-fold ({expected_partition:?}) blocks for base `{}`: the run context mixes several variants — predict each variant in its own context (native SELECT does this)",
+            edge.target.node_id,
+            blocks.len(),
+            edge.source.node_id,
+        )));
+    }
+    let block = blocks[0];
+    let width = block.validate_shape()?;
+    let target_names = if block.target_names.is_empty() {
+        (0..width).map(|index| format!("p{index}")).collect()
+    } else {
+        block.target_names.clone()
+    };
+    let source_plan = plan
+        .node_plans
+        .get(&edge.source.node_id)
+        .expect("edge source has a node plan");
+    let handle = HandleRef {
+        handle: deterministic_oof_handle(plan, edge, ctx, scope)?,
+        kind: HandleKind::Prediction,
+        owner_controller: source_plan.controller_id.clone(),
+    };
+    Ok(Some(CollectedPredictionInput {
+        handle,
+        spec: PredictionInputSpec {
+            producer_node: edge.source.node_id.clone(),
+            source_port: edge.source.port_name.clone(),
+            target_port: edge.target.port_name.clone(),
+            partition: block.partition.clone(),
+            prediction_level: PredictionLevel::Sample,
+            fold_id: None,
+            fold_ids: Vec::new(),
+            unit_ids: block
+                .sample_ids
+                .iter()
+                .cloned()
+                .map(PredictionUnitId::Sample)
+                .collect(),
+            sample_ids: block.sample_ids.clone(),
+            values: block.values.clone(),
+            prediction_width: width,
+            target_names,
+        },
+    }))
 }
 
 struct CollectedPredictionInput {
@@ -6863,12 +6990,323 @@ fn reassemble_branch_merge(
     scope: &PhaseScope,
     reduction: MergeReduction,
 ) -> Result<Option<NodeResult>> {
+    // FIT_CV is the OOF (Validation, per-fold) reassembly the merge handlers were
+    // built for. REFIT and PREDICT have no fold scope: the base branches predicted
+    // the held-out test set (REFIT) / new data (PREDICT) into the prediction store
+    // under a non-Validation partition (`Test` / `Final`) with `fold_id == None`,
+    // and `reassemble_branch_merge_off_fold` reassembles THOSE into one scored
+    // test/predict block under the merge producer. The Validation OOF path is left
+    // untouched, so the FIT_CV meta-features stay Validation-only (the leakage
+    // invariant): the test/predict reassembly only ever reads non-fold blocks.
+    if scope.phase != Phase::FitCv {
+        return reassemble_branch_merge_off_fold(node_plan, ctx, scope, reduction);
+    }
     match reduction {
         MergeReduction::Concat => reassemble_separation_merge(plan, node_plan, ctx, scope),
         MergeReduction::Fusion | MergeReduction::FusionProbaMean => {
             reassemble_fusion_merge(plan, node_plan, ctx, scope, reduction)
         }
     }
+}
+
+/// The off-fold prediction partition a given non-FIT_CV phase consumes / produces:
+/// REFIT predicts the held-out test set (`Test`); PREDICT new data (`Final`). Any
+/// other phase that reaches the off-fold path defaults to `Test`. This pins the
+/// off-fold reads (merge reassembly + stacking meta-feature delivery) to exactly
+/// one partition so a stale block from a prior phase in the same `RunContext` is
+/// never consumed. FIT_CV never uses this (it is Validation/per-fold).
+fn expected_off_fold_partition(phase: Phase) -> PredictionPartition {
+    match phase {
+        Phase::Predict => PredictionPartition::Final,
+        _ => PredictionPartition::Test,
+    }
+}
+
+/// The non-FIT_CV (REFIT / PREDICT) analogue of [`reassemble_branch_merge`]:
+/// reassemble the base branches' off-fold (test / predict) predictions into one
+/// scored block under the merge producer, so concat/fusion merges produce a
+/// `best_rmse` and can predict — not just FIT_CV Validation OOF.
+///
+/// In REFIT each base branch predicts the held-out TEST set; in PREDICT, new
+/// data. Those base blocks are stored with `fold_id == None` and a non-Validation
+/// partition (`Test` for REFIT, `Final` for PREDICT). This handler reads exactly
+/// those `fold_id == None`, non-`Validation` branch blocks (scoped to the active
+/// variant), reassembles them — concat keeps disjoint partitions (overlap is an
+/// error), fusion averages each sample over the branches that covered it — and
+/// emits a block carrying the SAME partition the branches used, with reassembled
+/// `y_true` so `apply_result_scoring` scores it. The universe is the UNION of
+/// branch coverage (there is no fold validation set to define it off-fold).
+///
+/// LEAKAGE INVARIANT: this path is a NO-OP in FIT_CV (the caller routes FIT_CV to
+/// the Validation OOF handlers) and only ever reads `fold_id == None`,
+/// non-`Validation` blocks. The FIT_CV Validation-OOF meta-features are never
+/// touched, and a Validation block (whether OOF or accidentally off-fold) is
+/// never reassembled here.
+fn reassemble_branch_merge_off_fold(
+    node_plan: &NodePlan,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+    reduction: MergeReduction,
+) -> Result<Option<NodeResult>> {
+    let variant_id = scope.variant_id.clone();
+    // The phase pins EXACTLY which off-fold partition to consume: REFIT predicts
+    // the held-out test set (`Test`), PREDICT new data (`Final`). Filtering by the
+    // phase-expected partition (not just "non-Validation") keeps a stale `Final`
+    // (from a prior REFIT/PREDICT in the same context) or any `Train` block out of
+    // a REFIT merge, and lets a PREDICT-after-REFIT in one context pick `Final`
+    // cleanly without tripping the multi-block "mixes variants" guard.
+    let expected_partition = expected_off_fold_partition(scope.phase);
+
+    // Gather each branch's off-fold (test / predict) block: `fold_id == None`,
+    // partition == the phase-expected partition, scoped to the active variant. A
+    // branch may emit none (a modelless / sparse branch); coverage is the union of
+    // what is present.
+    let mut branch_blocks: Vec<PredictionBlock> = Vec::new();
+    let mut partition: Option<PredictionPartition> = None;
+    let mut by_sample_target: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
+    let mut target_block_names: Option<Vec<String>> = None;
+
+    for branch_id in &node_plan.input_nodes {
+        let blocks: Vec<&PredictionBlock> = ctx
+            .prediction_store
+            .find(Some(branch_id), Some(&expected_partition), None)
+            .into_iter()
+            .filter(|block| block.fold_id.is_none())
+            .collect();
+        if blocks.is_empty() {
+            continue;
+        }
+        if blocks.len() > 1 {
+            return Err(DagMlError::OofValidation(format!(
+                "merge node `{}` found {} off-fold ({expected_partition:?}) blocks for branch `{branch_id}`: the run context mixes several variants — reassemble each variant in its own context (native SELECT does this)",
+                node_plan.node_id,
+                blocks.len(),
+            )));
+        }
+        let block = blocks[0];
+        block.validate_shape()?;
+        match &partition {
+            None => partition = Some(block.partition.clone()),
+            Some(existing) if existing != &block.partition => {
+                return Err(DagMlError::OofValidation(format!(
+                    "merge node `{}` received mismatched off-fold partitions ({existing:?} vs {:?}) from branch `{branch_id}`",
+                    node_plan.node_id, block.partition
+                )));
+            }
+            _ => {}
+        }
+        branch_blocks.push(block.clone());
+
+        // Reassemble this branch's off-fold y_true (same phase-expected partition /
+        // variant, no fold). The branches predict the SAME samples, so a per-sample
+        // insert is correct (concat partitions are disjoint; fusion targets are
+        // identical).
+        for record in &ctx.regression_target_records {
+            if &record.producer_node != branch_id
+                || record.fold_id.is_some()
+                || record.partition != expected_partition
+                || record.variant_id != variant_id
+            {
+                continue;
+            }
+            if target_block_names.is_none() && !record.block.target_names.is_empty() {
+                target_block_names = Some(record.block.target_names.clone());
+            }
+            for (unit_id, row) in record.block.unit_ids.iter().zip(&record.block.values) {
+                let PredictionUnitId::Sample(sample_id) = unit_id else {
+                    continue;
+                };
+                by_sample_target.insert(sample_id.clone(), row.clone());
+            }
+        }
+    }
+
+    // No branch produced an off-fold block: nothing to reassemble (a modelless
+    // merge, or a phase where the branches do not predict).
+    if branch_blocks.is_empty() {
+        return Ok(None);
+    }
+    let partition = partition.expect("at least one branch block present");
+
+    let reassembled = match reduction {
+        MergeReduction::Concat => reassemble_off_fold_concat(&branch_blocks, &node_plan.node_id)?,
+        MergeReduction::Fusion => {
+            reduce_predictions_across_branches(&branch_blocks, None, &node_plan.node_id)?
+        }
+        MergeReduction::FusionProbaMean => {
+            reduce_proba_mean_across_branches(&branch_blocks, &node_plan.node_id)?
+        }
+    };
+
+    // Deterministic order: emit samples sorted by id (no fold order to follow
+    // off-fold). Targets are emitted only when EVERY merged sample has a y_true
+    // row, so `apply_result_scoring` pairs the block 1:1 with its targets.
+    let mut sample_ids: Vec<SampleId> = reassembled.sample_ids.clone();
+    sample_ids.sort();
+    let by_sample: BTreeMap<&SampleId, &Vec<f64>> = reassembled
+        .sample_ids
+        .iter()
+        .zip(&reassembled.values)
+        .collect();
+    let values: Vec<Vec<f64>> = sample_ids
+        .iter()
+        .map(|sample_id| by_sample[sample_id].clone())
+        .collect();
+
+    let regression_targets = if !by_sample_target.is_empty()
+        && sample_ids
+            .iter()
+            .all(|sample_id| by_sample_target.contains_key(sample_id))
+    {
+        let target_values: Vec<Vec<f64>> = sample_ids
+            .iter()
+            .map(|sample_id| by_sample_target.remove(sample_id).expect("target covered"))
+            .collect();
+        vec![RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: sample_ids
+                .iter()
+                .cloned()
+                .map(PredictionUnitId::Sample)
+                .collect(),
+            values: target_values,
+            target_names: target_block_names.unwrap_or_default(),
+        }]
+    } else {
+        Vec::new()
+    };
+
+    // Lineage links every contributing branch (for this variant, off-fold).
+    let branch_inputs: BTreeSet<&NodeId> = node_plan.input_nodes.iter().collect();
+    let mut input_lineage: Vec<LineageId> = Vec::new();
+    for record in ctx.lineage.records() {
+        if branch_inputs.contains(&record.node_id)
+            && record.phase == scope.phase
+            && record.fold_id.is_none()
+            && record.variant_id == variant_id
+        {
+            input_lineage.push(record.record_id.clone());
+        }
+    }
+
+    let variant_suffix = variant_id
+        .as_ref()
+        .map(|variant| format!(":{variant}"))
+        .unwrap_or_default();
+    let phase_label = scope.phase.as_str();
+    let merged = PredictionBlock {
+        prediction_id: Some(format!(
+            "merge:{}:{phase_label}{variant_suffix}",
+            node_plan.node_id
+        )),
+        producer_node: node_plan.node_id.clone(),
+        partition,
+        fold_id: None,
+        sample_ids,
+        values,
+        target_names: reassembled.target_names.clone(),
+    };
+    merged.validate_shape()?;
+
+    let lineage = LineageRecord {
+        record_id: LineageId::new(format!(
+            "lineage:{}:{phase_label}{variant_suffix}",
+            node_plan.node_id
+        ))?,
+        run_id: ctx.run_id.clone(),
+        node_id: node_plan.node_id.clone(),
+        phase: scope.phase,
+        controller_id: node_plan.controller_id.clone(),
+        controller_version: node_plan.controller_version.clone(),
+        variant_id,
+        fold_id: None,
+        branch_path: Vec::new(),
+        input_lineage,
+        artifact_refs: Vec::new(),
+        params_fingerprint: node_plan.params_fingerprint.clone(),
+        data_model_shape_fingerprint: None,
+        aggregation_policy_fingerprint: None,
+        seed: None,
+        unsafe_flags: BTreeSet::new(),
+        metrics: BTreeMap::new(),
+    };
+
+    Ok(Some(NodeResult {
+        node_id: node_plan.node_id.clone(),
+        outputs: BTreeMap::new(),
+        predictions: vec![merged],
+        observation_predictions: Vec::new(),
+        aggregated_predictions: Vec::new(),
+        explanations: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
+        regression_targets,
+        lineage,
+    }))
+}
+
+/// Concatenate disjoint off-fold (test / predict) branch blocks by `sample_id`
+/// into one block under `merge_node`. The off-fold analogue of the concat half of
+/// [`reassemble_separation_merge`]: branches cover DISJOINT partitions of the
+/// universe (separation never shares a sample), so an overlapping sample is a hard
+/// error. Width, target names and partition must agree across branches. Unlike the
+/// FIT_CV concat there is no fold validation set to check completeness against —
+/// the universe is simply the disjoint union of the branch coverage.
+fn reassemble_off_fold_concat(
+    branch_blocks: &[PredictionBlock],
+    merge_node: &NodeId,
+) -> Result<PredictionBlock> {
+    let first = branch_blocks
+        .first()
+        .expect("at least one branch block present");
+    let width = first.validate_shape()?;
+    let target_names = if first.target_names.is_empty() {
+        (0..width).map(|idx| format!("p{idx}")).collect::<Vec<_>>()
+    } else {
+        first.target_names.clone()
+    };
+    let mut by_sample: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
+    for block in branch_blocks {
+        let block_width = block.validate_shape()?;
+        if block_width != width {
+            return Err(DagMlError::OofValidation(format!(
+                "merge node `{merge_node}` received mismatched off-fold prediction widths ({width} vs {block_width})"
+            )));
+        }
+        let block_targets = if block.target_names.is_empty() {
+            (0..block_width).map(|idx| format!("p{idx}")).collect()
+        } else {
+            block.target_names.clone()
+        };
+        if block_targets != target_names {
+            return Err(DagMlError::OofValidation(format!(
+                "merge node `{merge_node}` received inconsistent off-fold target names across branches"
+            )));
+        }
+        for (sample_id, row) in block.sample_ids.iter().zip(&block.values) {
+            if by_sample.insert(sample_id.clone(), row.clone()).is_some() {
+                return Err(DagMlError::OofValidation(format!(
+                    "merge node `{merge_node}` received overlapping off-fold branch predictions: sample `{sample_id}` is covered by more than one partition"
+                )));
+            }
+        }
+    }
+    let sample_ids: Vec<SampleId> = by_sample.keys().cloned().collect();
+    let values: Vec<Vec<f64>> = sample_ids
+        .iter()
+        .map(|sample_id| by_sample[sample_id].clone())
+        .collect();
+    Ok(PredictionBlock {
+        prediction_id: None,
+        producer_node: merge_node.clone(),
+        partition: first.partition.clone(),
+        fold_id: None,
+        sample_ids,
+        values,
+        target_names,
+    })
 }
 
 /// Reassemble the per-partition OOF blocks of a separation branch into ONE

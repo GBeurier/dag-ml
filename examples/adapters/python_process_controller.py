@@ -188,7 +188,17 @@ def require_prediction_inputs(task: dict[str, Any]) -> None:
             fail(f"node `{node_plan['node_id']}` received non-prediction handle `{key}`")
         if spec.get("producer_node") not in key:
             fail(f"node `{node_plan['node_id']}` received mismatched prediction spec `{key}`")
-        if spec.get("partition") != "validation":
+        # Off-fold (REFIT/PREDICT) base test/predict predictions arrive under a
+        # `:refit` / `:predict`-suffixed key with a non-validation partition,
+        # carrying values for the meta-model to predict from — a SEPARATE input
+        # from the Validation-OOF meta-features (the leakage invariant).
+        is_off_fold = key.endswith(":refit") or key.endswith(":predict")
+        if is_off_fold:
+            if spec.get("partition") not in ("test", "final"):
+                fail(f"node `{node_plan['node_id']}` received non-test/final off-fold prediction spec `{key}`")
+            if spec.get("fold_id") is not None:
+                fail(f"node `{node_plan['node_id']}` received fold-scoped off-fold prediction spec `{key}`")
+        elif spec.get("partition") != "validation":
             fail(f"node `{node_plan['node_id']}` received non-validation prediction spec `{key}`")
         if spec.get("prediction_level", "sample") != "sample":
             fail(f"node `{node_plan['node_id']}` received non-sample prediction spec `{key}`")
@@ -205,7 +215,7 @@ def require_prediction_inputs(task: dict[str, Any]) -> None:
                     validation_samples.update(view.get("sample_ids") or [])
             if validation_samples and set(spec.get("sample_ids") or []) != validation_samples:
                 fail(f"node `{node_plan['node_id']}` received prediction spec for wrong samples `{key}`")
-        if task.get("phase") == "REFIT" and spec.get("fold_id") is not None:
+        if task.get("phase") == "REFIT" and not is_off_fold and spec.get("fold_id") is not None:
             fail(f"node `{node_plan['node_id']}` received fold-scoped prediction spec during REFIT `{key}`")
 
 
