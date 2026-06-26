@@ -6,7 +6,7 @@ use crate::aggregation::{
     reduce_predictions_across_folds, AggregatedPredictionBlock, PredictionUnitId,
 };
 use crate::error::{DagMlError, Result};
-use crate::ids::{FoldId, NodeId, VariantId};
+use crate::ids::{FoldId, NodeId, SampleId, VariantId};
 use crate::oof::{validate_producer_oof_coverage, PredictionBlock, PredictionPartition};
 use crate::policy::PredictionLevel;
 use crate::selection::{CandidateScore, MetricObjective};
@@ -102,6 +102,71 @@ impl RegressionTargetBlock {
         }
         Ok(width)
     }
+}
+
+/// Mandatory, central *merge target-coverage* invariant — the single gate every merge reassembly
+/// handler (separation/concat, fusion, off-fold) must pass through before emitting (or declining to
+/// emit) a producer-level [`RegressionTargetBlock`] for a reassembled merge prediction. It closes
+/// audit R-P1-9: a merge that *should* be scored must never silently produce **no** score.
+///
+/// A merge reassembles its output's `y_true` by collecting the per-branch validation/off-fold target
+/// records into `by_sample_target`. The scoring path ([`super::runtime`]'s `apply_result_scoring`)
+/// pairs a prediction block 1:1 with a target block that covers *exactly* its samples — so a partial
+/// target block cannot be scored. There are exactly three legitimate outcomes:
+///
+/// 1. **No contributing branch emitted targets** (`by_sample_target` empty) — the merge is simply
+///    unscored. Returns `Ok(None)`; the caller emits no [`RegressionTargetBlock`]. This is the common
+///    "host never emitted `regression_targets`" case and stays a no-op (unchanged behavior).
+/// 2. **Every merged sample is covered** — emit the 1:1 target block. Returns `Ok(Some(block))` in the
+///    merge's declared `sample_id` order, ready to score.
+/// 3. **At least one branch emitted targets but coverage is INCOMPLETE** — previously the partial
+///    targets were silently dropped (`Vec::new()` → no score), so a merge that should have been scored
+///    silently vanished from selection. This is now a hard validation **ERROR**: once ANY branch
+///    contributes targets, the merge universe must be covered completely or the run fails loudly.
+///
+/// `merge_sample_ids` is the merge output's sample order (the universe to cover); `target_names` is the
+/// reassembled target name vector (already unified across branches by the caller). The map is consumed
+/// by `remove` on the success path so the caller need not clone it.
+pub fn reassemble_merge_targets(
+    producer_node: &NodeId,
+    merge_sample_ids: &[SampleId],
+    by_sample_target: &mut BTreeMap<SampleId, Vec<f64>>,
+    target_names: Vec<String>,
+) -> Result<Option<RegressionTargetBlock>> {
+    if by_sample_target.is_empty() {
+        return Ok(None);
+    }
+    let missing: Vec<String> = merge_sample_ids
+        .iter()
+        .filter(|sample_id| !by_sample_target.contains_key(*sample_id))
+        .map(ToString::to_string)
+        .collect();
+    if !missing.is_empty() {
+        return Err(DagMlError::OofValidation(format!(
+            "merge node `{producer_node}` has partial target coverage: {} of {} merged sample(s) lack a y_true row ({}) while other contributing branch(es) emitted targets — a merge that some branch scores must have COMPLETE target coverage across the merge universe, never a silent no-score",
+            missing.len(),
+            merge_sample_ids.len(),
+            missing.join(", ")
+        )));
+    }
+    let values: Vec<Vec<f64>> = merge_sample_ids
+        .iter()
+        .map(|sample_id| {
+            by_sample_target
+                .remove(sample_id)
+                .expect("target coverage was just verified complete")
+        })
+        .collect();
+    Ok(Some(RegressionTargetBlock {
+        level: PredictionLevel::Sample,
+        unit_ids: merge_sample_ids
+            .iter()
+            .cloned()
+            .map(PredictionUnitId::Sample)
+            .collect(),
+        values,
+        target_names,
+    }))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -719,6 +784,71 @@ mod tests {
         assert_eq!(
             RegressionMetricKind::R2.objective(),
             MetricObjective::Maximize
+        );
+    }
+
+    #[test]
+    fn reassemble_merge_targets_empty_map_is_unscored_none() {
+        // No contributing branch emitted targets: the merge is legitimately unscored.
+        let producer = NodeId::new("merge:m").unwrap();
+        let mut by_sample: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
+        let block = reassemble_merge_targets(
+            &producer,
+            &[sid("s1"), sid("s2")],
+            &mut by_sample,
+            vec!["y".to_string()],
+        )
+        .unwrap();
+        assert!(
+            block.is_none(),
+            "empty targets -> unscored None, not an error"
+        );
+    }
+
+    #[test]
+    fn reassemble_merge_targets_complete_coverage_emits_ordered_block() {
+        let producer = NodeId::new("merge:m").unwrap();
+        let mut by_sample: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
+        by_sample.insert(sid("s2"), vec![20.0]);
+        by_sample.insert(sid("s1"), vec![10.0]);
+        let block = reassemble_merge_targets(
+            &producer,
+            &[sid("s1"), sid("s2")],
+            &mut by_sample,
+            vec!["y".to_string()],
+        )
+        .unwrap()
+        .expect("complete coverage -> a target block");
+        // Emitted in the merge's declared sample order, not map order.
+        assert_eq!(
+            block.unit_ids,
+            vec![sample_unit("s1"), sample_unit("s2")],
+            "targets follow the merge sample order"
+        );
+        assert_eq!(block.values, vec![vec![10.0], vec![20.0]]);
+        assert_eq!(block.level, PredictionLevel::Sample);
+        block.validate_shape().unwrap();
+    }
+
+    #[test]
+    fn reassemble_merge_targets_partial_coverage_is_validation_error() {
+        // R-P1-9: one branch contributed a target (s1) but the merge universe also
+        // covers s2, which has no y_true row. Previously this silently dropped the
+        // targets (no score); it must now be a hard validation error.
+        let producer = NodeId::new("merge:m").unwrap();
+        let mut by_sample: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
+        by_sample.insert(sid("s1"), vec![10.0]);
+        let err = reassemble_merge_targets(
+            &producer,
+            &[sid("s1"), sid("s2")],
+            &mut by_sample,
+            vec!["y".to_string()],
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("partial target coverage") && msg.contains("s2"),
+            "partial coverage names the missing sample: {msg}"
         );
     }
 

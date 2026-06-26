@@ -35,7 +35,7 @@ use crate::ids::{
     VariantId,
 };
 use crate::metrics::{
-    cross_fold_validation_reports, score_regression_aggregated_block,
+    cross_fold_validation_reports, reassemble_merge_targets, score_regression_aggregated_block,
     score_regression_prediction_block, RegressionMetricKind, RegressionMetricReport,
     RegressionTargetBlock, RegressionTargetRecord, ScoreSet, SCORE_SET_SCHEMA_VERSION,
 };
@@ -7158,28 +7158,14 @@ fn reassemble_branch_merge_off_fold(
         .map(|sample_id| by_sample[sample_id].clone())
         .collect();
 
-    let regression_targets = if !by_sample_target.is_empty()
-        && sample_ids
-            .iter()
-            .all(|sample_id| by_sample_target.contains_key(sample_id))
-    {
-        let target_values: Vec<Vec<f64>> = sample_ids
-            .iter()
-            .map(|sample_id| by_sample_target.remove(sample_id).expect("target covered"))
-            .collect();
-        vec![RegressionTargetBlock {
-            level: PredictionLevel::Sample,
-            unit_ids: sample_ids
-                .iter()
-                .cloned()
-                .map(PredictionUnitId::Sample)
-                .collect(),
-            values: target_values,
-            target_names: target_block_names.unwrap_or_default(),
-        }]
-    } else {
-        Vec::new()
-    };
+    let regression_targets = reassemble_merge_targets(
+        &node_plan.node_id,
+        &sample_ids,
+        &mut by_sample_target,
+        target_block_names.unwrap_or_default(),
+    )?
+    .into_iter()
+    .collect();
 
     // Lineage links every contributing branch (for this variant, off-fold).
     let branch_inputs: BTreeSet<&NodeId> = node_plan.input_nodes.iter().collect();
@@ -7515,32 +7501,19 @@ fn reassemble_separation_merge(
         .collect();
     let target_names = target_names.unwrap_or_default();
 
-    // Reassembled targets: only emit when EVERY merged sample has a target row
-    // (full-fold coverage), so `apply_result_scoring` pairs the block 1:1 with
-    // its targets. Partial targets (some branches emitted y_true, others not)
-    // would mis-score, so they are dropped — the merge is then simply unscored.
-    let regression_targets = if !by_sample_target.is_empty()
-        && sample_ids
-            .iter()
-            .all(|sample_id| by_sample_target.contains_key(sample_id))
-    {
-        let target_values: Vec<Vec<f64>> = sample_ids
-            .iter()
-            .map(|sample_id| by_sample_target.remove(sample_id).expect("target covered"))
-            .collect();
-        vec![RegressionTargetBlock {
-            level: PredictionLevel::Sample,
-            unit_ids: sample_ids
-                .iter()
-                .cloned()
-                .map(PredictionUnitId::Sample)
-                .collect(),
-            values: target_values,
-            target_names: target_block_names.unwrap_or_default(),
-        }]
-    } else {
-        Vec::new()
-    };
+    // Reassembled targets: emit a 1:1 target block only when EVERY merged sample
+    // has a target row (so `apply_result_scoring` pairs block↔targets exactly). The
+    // central R-P1-9 gate makes PARTIAL coverage (some branches emitted y_true,
+    // others not) a hard error instead of a silent no-score; no branch emitting
+    // targets stays the legitimate unscored case.
+    let regression_targets = reassemble_merge_targets(
+        &node_plan.node_id,
+        &sample_ids,
+        &mut by_sample_target,
+        target_block_names.unwrap_or_default(),
+    )?
+    .into_iter()
+    .collect();
 
     // Lineage links every contributing branch (for this variant + fold), so the
     // merge is fully traceable.
@@ -7779,31 +7752,18 @@ fn reassemble_fusion_merge(
         .collect();
     let target_names = fused.target_names.clone();
 
-    // Reassembled targets: only emit when EVERY merged sample has a target row, so
-    // `apply_result_scoring` pairs the block 1:1 with its targets. Partial targets
-    // are dropped — the merge is then simply unscored.
-    let regression_targets = if !by_sample_target.is_empty()
-        && sample_ids
-            .iter()
-            .all(|sample_id| by_sample_target.contains_key(sample_id))
-    {
-        let target_values: Vec<Vec<f64>> = sample_ids
-            .iter()
-            .map(|sample_id| by_sample_target.remove(sample_id).expect("target covered"))
-            .collect();
-        vec![RegressionTargetBlock {
-            level: PredictionLevel::Sample,
-            unit_ids: sample_ids
-                .iter()
-                .cloned()
-                .map(PredictionUnitId::Sample)
-                .collect(),
-            values: target_values,
-            target_names: target_block_names.unwrap_or_default(),
-        }]
-    } else {
-        Vec::new()
-    };
+    // Reassembled targets: emit a 1:1 target block only when EVERY merged sample
+    // has a target row. The central R-P1-9 gate turns PARTIAL coverage into a hard
+    // error (never a silent no-score); no branch emitting targets is the legitimate
+    // unscored case.
+    let regression_targets = reassemble_merge_targets(
+        &node_plan.node_id,
+        &sample_ids,
+        &mut by_sample_target,
+        target_block_names.unwrap_or_default(),
+    )?
+    .into_iter()
+    .collect();
 
     // Lineage links every contributing branch (for this variant + fold).
     let branch_inputs: BTreeSet<&NodeId> = node_plan.input_nodes.iter().collect();
@@ -8090,7 +8050,38 @@ fn sample_ids_for_partition(
     match partition {
         DataRequestPartition::FoldTrain => fold.map(|fold| fold.train_sample_ids.clone()),
         DataRequestPartition::FoldValidation => fold.map(|fold| fold.validation_sample_ids.clone()),
-        DataRequestPartition::FullTrain => fold_set.map(|fold_set| fold_set.sample_ids.clone()),
+        DataRequestPartition::FullTrain => fold_set.map(|fold_set| {
+            // R-P2-22 invariant (REFIT-EXCLUDES-TEST): the REFIT final-fit boundary
+            // (COORDINATOR_SPEC §REFIT.1) is the selected *training universe*, EXCLUDING
+            // held-out test samples. REFIT resolves to `FullTrain`, whose universe is
+            // exactly `fold_set.sample_ids` — the pool the splitter partitioned into
+            // train/validation folds. The held-out TEST partition is never passed to the
+            // splitter: it is a SEPARATE, host-resolved request (`DataRequestPartition::Predict`,
+            // sample_ids `None`) and so cannot appear in `fold_set.sample_ids` by construction.
+            // This defense-in-depth assertion names that invariant: every FullTrain sample must
+            // be accounted for by some fold's train∪validation set (`FoldSet::validate()` only
+            // guarantees the ⊆ direction), so an out-of-fold (test/leakage) sample can never
+            // silently enter the refit universe.
+            debug_assert!(
+                {
+                    let in_a_fold: BTreeSet<&SampleId> = fold_set
+                        .folds
+                        .iter()
+                        .flat_map(|fold| {
+                            fold.train_sample_ids
+                                .iter()
+                                .chain(fold.validation_sample_ids.iter())
+                        })
+                        .collect();
+                    fold_set
+                        .sample_ids
+                        .iter()
+                        .all(|sample_id| in_a_fold.contains(sample_id))
+                },
+                "REFIT FullTrain universe must be fully fold-accounted (train∪validation); a sample outside every fold would be a held-out/test leakage into the refit training set"
+            );
+            fold_set.sample_ids.clone()
+        }),
         DataRequestPartition::Predict => None,
     }
 }

@@ -11001,3 +11001,61 @@ fn sample_relations_envelope(rows: &[(&str, &str)]) -> ExternalDataPlanEnvelope 
         coordinator_relations: Some(relations),
     }
 }
+
+/// R-P2-22 (REFIT-EXCLUDES-TEST): the REFIT final-fit universe (`DataRequestPartition::FullTrain`)
+/// is exactly the fold set's train pool (`fold_set.sample_ids`), which the splitter partitioned into
+/// train/validation folds. A held-out TEST sample is never passed to the splitter — it is requested
+/// separately via `DataRequestPartition::Predict` (host-resolved, `sample_ids == None`) — so it can
+/// never appear in the refit universe. This pins both halves of that invariant.
+#[test]
+fn refit_full_train_universe_excludes_held_out_test_partition() {
+    let train: Vec<SampleId> = ["sample:1", "sample:2", "sample:3", "sample:4"]
+        .iter()
+        .map(|s| SampleId::new(*s).unwrap())
+        .collect();
+    let fold_set = FoldSet {
+        id: "folds:refit.universe".to_string(),
+        sample_ids: train.clone(),
+        folds: vec![
+            FoldAssignment {
+                fold_id: FoldId::new("fold:0").unwrap(),
+                train_sample_ids: vec![train[2].clone(), train[3].clone()],
+                validation_sample_ids: vec![train[0].clone(), train[1].clone()],
+                metadata: BTreeMap::new(),
+            },
+            FoldAssignment {
+                fold_id: FoldId::new("fold:1").unwrap(),
+                train_sample_ids: vec![train[0].clone(), train[1].clone()],
+                validation_sample_ids: vec![train[2].clone(), train[3].clone()],
+                metadata: BTreeMap::new(),
+            },
+        ],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
+    };
+    fold_set.validate().unwrap();
+
+    // REFIT resolves to FullTrain; its universe is exactly the fold (train) pool.
+    let refit_universe =
+        sample_ids_for_partition(DataRequestPartition::FullTrain, Some(&fold_set), None)
+            .expect("FullTrain yields the fold-set universe");
+    assert_eq!(
+        refit_universe, train,
+        "REFIT FullTrain universe is exactly the splitter's train pool"
+    );
+
+    // A held-out test sample — present in NEITHER fold and NOT in fold_set.sample_ids — is
+    // structurally absent from the refit universe (the splitter never saw it).
+    let held_out_test = SampleId::new("sample:test_only").unwrap();
+    assert!(
+        !refit_universe.contains(&held_out_test),
+        "the held-out test partition can never enter the refit training universe"
+    );
+
+    // The TEST/PREDICT partition is host-resolved: the core enumerates no sample ids for it,
+    // so it cannot be conflated with the fold universe.
+    assert!(
+        sample_ids_for_partition(DataRequestPartition::Predict, Some(&fold_set), None).is_none(),
+        "Predict (test/final) is host-resolved, never enumerated from the fold set"
+    );
+}
