@@ -1375,6 +1375,7 @@ fn validate_prediction_requirement_against_plan(
                 bundle,
                 requirement,
                 cache,
+                fold_set.partition_mode,
             )?;
         }
         return Ok(());
@@ -1708,7 +1709,13 @@ fn validate_prediction_cache_blocks_match_fold_set(
             )));
         }
         for sample_id in block_samples {
-            if !covered_sample_ids.insert(sample_id.clone()) {
+            // Partition is a clean OOF set: a sample cached for two folds is a duplicated fold or a
+            // mixed-variant context. Resampled (ShuffleSplit / repeated CV) validates a sample in
+            // several folds and averages it, so the across-fold duplicate is allowed; the per-fold
+            // match above and the universe-coverage check below still hold.
+            if !covered_sample_ids.insert(sample_id.clone())
+                && fold_set.partition_mode == crate::fold::FoldPartitionMode::Partition
+            {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "bundle `{}` prediction cache `{}` has duplicate OOF sample `{sample_id}`",
                     bundle.bundle_id, cache.cache_id
@@ -1740,6 +1747,7 @@ fn validate_aggregated_prediction_cache_blocks_match_requirement(
     bundle: &ExecutionBundle,
     requirement: &BundlePredictionRequirement,
     cache: &BundlePredictionCacheRecord,
+    partition_mode: crate::fold::FoldPartitionMode,
 ) -> Result<()> {
     let mut covered_fold_ids = BTreeSet::new();
     let mut covered_unit_ids = BTreeSet::new();
@@ -1756,7 +1764,12 @@ fn validate_aggregated_prediction_cache_blocks_match_requirement(
             covered_fold_ids.insert(fold_id.clone());
         }
         for unit_id in &block.unit_ids {
-            if !covered_unit_ids.insert(unit_id.clone()) {
+            // Partition forbids a unit cached for two folds; Resampled (ShuffleSplit / repeated CV)
+            // validates a unit in several folds and averages it, so the across-fold duplicate is
+            // allowed (the unit-universe coverage check below still requires every unit at least once).
+            if !covered_unit_ids.insert(unit_id.clone())
+                && partition_mode == crate::fold::FoldPartitionMode::Partition
+            {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "bundle `{}` prediction cache `{}` has duplicate aggregated unit `{unit_id}`",
                     bundle.bundle_id, cache.cache_id

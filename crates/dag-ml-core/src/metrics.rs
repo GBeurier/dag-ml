@@ -6,6 +6,7 @@ use crate::aggregation::{
     reduce_predictions_across_folds, AggregatedPredictionBlock, PredictionUnitId,
 };
 use crate::error::{DagMlError, Result};
+use crate::fold::FoldPartitionMode;
 use crate::ids::{FoldId, NodeId, SampleId, VariantId};
 use crate::oof::{validate_producer_oof_coverage, PredictionBlock, PredictionPartition};
 use crate::policy::PredictionLevel;
@@ -692,13 +693,20 @@ fn combine_validation_targets(
 }
 
 /// Score the cross-fold OOF average per producer: concatenate each producer's per-fold VALIDATION
-/// predictions (disjoint OOF samples) into one block and score it against the combined `y_true`.
-/// Yields one report per producer with `fold_id = "avg"` — nirs4all's `cv_best_score` row. The
-/// per-fold join is identity-keyed; producers with a single fold are skipped (nothing to ensemble).
+/// predictions into one block and score it against the combined `y_true`. Yields one report per
+/// producer with `fold_id = "avg"` — nirs4all's `cv_best_score` row. The per-fold join is
+/// identity-keyed; producers with a single fold are skipped (nothing to ensemble).
+///
+/// `partition_mode` mirrors the campaign [`FoldPartitionMode`](crate::fold::FoldPartitionMode):
+/// under `Partition` (KFold) the per-producer OOF must be unique (each sample scored exactly once);
+/// under `Resampled` (ShuffleSplit / repeated CV) a sample may appear in several folds — those
+/// predictions are averaged by [`reduce_predictions_across_folds`] — so the across-fold uniqueness
+/// gate is relaxed accordingly.
 pub fn cross_fold_validation_reports(
     prediction_blocks: &[PredictionBlock],
     target_records: &[RegressionTargetRecord],
     metrics: &[RegressionMetricKind],
+    partition_mode: FoldPartitionMode,
 ) -> Result<Vec<RegressionMetricReport>> {
     let mut producers: Vec<NodeId> = Vec::new();
     let mut by_producer: BTreeMap<NodeId, Vec<PredictionBlock>> = BTreeMap::new();
@@ -720,14 +728,17 @@ pub fn cross_fold_validation_reports(
         if blocks.len() < 2 {
             continue;
         }
-        // Mandatory OOF coverage gate (spec rule 3): the producer's per-fold validation blocks must
-        // be UNIQUE — exactly one validation prediction per sample. A sample appearing in two of this
-        // producer's blocks would otherwise be silently averaged twice by `reduce_predictions_across_folds`,
-        // mixing a duplicated fold or — since `PredictionBlock` carries no variant tag — two variants'
-        // OOF in a shared context (audit R-P0-1). This is the scoring-path analogue of the runtime merge
-        // handler's "mixes several variants" guard, so cross-variant CV scores can NEVER mix here.
+        // Mandatory OOF coverage gate (spec rule 3), mode-aware. Under `Partition` the producer's
+        // per-fold validation blocks must be UNIQUE — exactly one validation prediction per sample; a
+        // sample appearing in two blocks would be a duplicated fold or — since `PredictionBlock` carries
+        // no variant tag — two variants' OOF in a shared context (audit R-P0-1), and is refused (the
+        // scoring-path analogue of the runtime merge handler's "mixes several variants" guard, so
+        // cross-variant CV scores can NEVER mix here). Under `Resampled` (ShuffleSplit / repeated CV) a
+        // sample is legitimately validated in several folds and its predictions are averaged by
+        // `reduce_predictions_across_folds` below, so across-fold multiplicity is allowed; the per-block
+        // within-fold uniqueness still holds via `validate_content`.
         let block_refs = blocks.iter().collect::<Vec<_>>();
-        validate_producer_oof_coverage(producer, &block_refs, None)?;
+        validate_producer_oof_coverage(producer, &block_refs, partition_mode, None)?;
         let targets = combine_validation_targets(producer, target_records)?;
         if targets.unit_ids.is_empty() {
             // No y_true was emitted for this producer (e.g. mock controllers) — nothing to score.

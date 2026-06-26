@@ -4577,6 +4577,92 @@ fn requires_oof_prediction_edge_refit_rejects_incomplete_oof_coverage() {
 }
 
 #[test]
+fn refit_oof_cover_is_partition_mode_aware() {
+    // REGRESSION (8dd4c6e over-rejected ShuffleSplit): the refit OOF-coverage edge validator must be
+    // FoldPartitionMode-aware. Under Partition (KFold) a sample covered by two folds is a duplicated
+    // fold and stays REJECTED; under Resampled (ShuffleSplit / repeated CV) a sample is legitimately
+    // validated in several folds (its predictions are averaged), so the across-fold multiplicity PASSES.
+    let edge = EdgeSpec {
+        source: PortRef {
+            node_id: NodeId::new("model:base").unwrap(),
+            port_name: "pred".to_string(),
+        },
+        target: PortRef {
+            node_id: NodeId::new("model:meta").unwrap(),
+            port_name: "pred".to_string(),
+        },
+        contract: EdgeContract {
+            requires_oof: true,
+            requires_fold_alignment: true,
+            ..EdgeContract::new(PortKind::Prediction, None)
+        },
+    };
+    let val_block = |fold: &str, samples: &[&str]| PredictionBlock {
+        prediction_id: None,
+        producer_node: NodeId::new("model:base").unwrap(),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new(fold).unwrap()),
+        sample_ids: samples.iter().map(|s| SampleId::new(*s).unwrap()).collect(),
+        values: samples.iter().map(|_| vec![0.5]).collect(),
+        target_names: vec!["y".to_string()],
+    };
+
+    // Resampled fold set: two ShuffleSplit folds both validate s1 (legitimate cross-fold overlap), and
+    // together cover the universe {s1, s2, s3}.
+    let resampled = FoldSet {
+        id: "resampled".to_string(),
+        sample_ids: ["s1", "s2", "s3"]
+            .iter()
+            .map(|s| SampleId::new(*s).unwrap())
+            .collect(),
+        folds: vec![
+            FoldAssignment {
+                fold_id: FoldId::new("fold:0").unwrap(),
+                train_sample_ids: vec![SampleId::new("s3").unwrap()],
+                validation_sample_ids: ["s1", "s2"]
+                    .iter()
+                    .map(|s| SampleId::new(*s).unwrap())
+                    .collect(),
+                metadata: BTreeMap::new(),
+            },
+            FoldAssignment {
+                fold_id: FoldId::new("fold:1").unwrap(),
+                train_sample_ids: vec![SampleId::new("s2").unwrap()],
+                validation_sample_ids: ["s1", "s3"]
+                    .iter()
+                    .map(|s| SampleId::new(*s).unwrap())
+                    .collect(),
+                metadata: BTreeMap::new(),
+            },
+        ],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Resampled,
+    };
+    resampled
+        .validate()
+        .expect("resampled fold set is well-formed");
+    let resampled_blocks = [
+        val_block("fold:0", &["s1", "s2"]),
+        val_block("fold:1", &["s1", "s3"]),
+    ];
+    let resampled_refs = resampled_blocks.iter().collect::<Vec<_>>();
+    validate_oof_blocks_cover_fold_set(&edge, &resampled, &resampled_refs)
+        .expect("Resampled multiply-validated sample must pass refit OOF coverage");
+
+    // Partition fold set with the SAME cross-fold duplicate (s1 in both folds): still rejected.
+    let partition = FoldSet {
+        partition_mode: FoldPartitionMode::Partition,
+        ..resampled.clone()
+    };
+    let err = validate_oof_blocks_cover_fold_set(&edge, &partition, &resampled_refs).unwrap_err();
+    assert!(
+        err.to_string().contains("duplicate OOF prediction")
+            || err.to_string().contains("do not match validation samples"),
+        "Partition cross-fold duplicate must still be rejected: {err}"
+    );
+}
+
+#[test]
 fn data_bindings_require_runtime_provider_and_materialize_handles() {
     let model_id = NodeId::new("model:pls").unwrap();
     let plan = build_execution_plan(
@@ -7030,7 +7116,13 @@ fn cross_fold_validation_reports_scores_the_oof_average() {
         record("fold0", &[("s1", 1.0), ("s2", 2.0)]),
         record("fold1", &[("s3", 3.0), ("s4", 4.0)]),
     ];
-    let reports = cross_fold_validation_reports(&blocks, &records, SCORE_METRICS).unwrap();
+    let reports = cross_fold_validation_reports(
+        &blocks,
+        &records,
+        SCORE_METRICS,
+        FoldPartitionMode::Partition,
+    )
+    .unwrap();
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].fold_id, Some(FoldId::new("avg").unwrap()));
     assert_eq!(reports[0].partition, PredictionPartition::Validation);
@@ -7064,7 +7156,9 @@ fn cross_fold_validation_reports_rejects_cross_variant_mixed_oof() {
         pred("fold0", &[("s1", 1.0), ("s2", 2.0)]),
         pred("fold1", &[("s1", 9.0), ("s3", 3.0)]),
     ];
-    let err = cross_fold_validation_reports(&blocks, &[], SCORE_METRICS).unwrap_err();
+    let err =
+        cross_fold_validation_reports(&blocks, &[], SCORE_METRICS, FoldPartitionMode::Partition)
+            .unwrap_err();
     assert!(
         err.to_string().contains("not unique")
             && err.to_string().contains("mixed several variants"),
@@ -7116,7 +7210,13 @@ fn combine_validation_targets_rejects_conflicting_ground_truth() {
         record("fold0", &[("s1", 4.0)]),
         record("fold1", &[("s1", 5.0), ("s2", 2.0)]),
     ];
-    let err = cross_fold_validation_reports(&blocks, &records, SCORE_METRICS).unwrap_err();
+    let err = cross_fold_validation_reports(
+        &blocks,
+        &records,
+        SCORE_METRICS,
+        FoldPartitionMode::Partition,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("conflicting ground truth"),
         "got: {err}"
@@ -9212,7 +9312,8 @@ fn concat_merge_producer_is_scored_per_fold_and_cross_fold() {
         )
         .unwrap();
     // Cross-fold OOF average must be computed for the merge producer.
-    ctx.collect_cross_fold_validation_scores().unwrap();
+    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(&plan))
+        .unwrap();
 
     // Per-fold scoring: the merge producer has a Validation report per fold.
     let per_fold: Vec<&crate::metrics::RegressionMetricReport> = ctx
@@ -9340,7 +9441,8 @@ fn concat_merge_isolates_per_variant_blocks() {
                 Phase::FitCv,
             )
             .unwrap();
-        ctx.collect_cross_fold_validation_scores().unwrap();
+        ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(&plan))
+            .unwrap();
 
         // Each variant's merge covers the full universe exactly once, with the
         // variant-distinguished id, and no overlap error.
@@ -9968,7 +10070,8 @@ fn fusion_merge_averages_duplication_branch_oof_including_asymmetric_coverage() 
 
     // The merge is SCORED both per-fold and cross-fold (branches emit matching
     // y_true, reassembled onto the merge producer).
-    ctx.collect_cross_fold_validation_scores().unwrap();
+    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(&plan))
+        .unwrap();
     let avg: Vec<&crate::metrics::RegressionMetricReport> = ctx
         .score_collector
         .iter()
