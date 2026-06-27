@@ -2,16 +2,18 @@
 //!
 //! Unlike the rest of this crate (control-plane only: validate / compile / plan
 //! JSON in, JSON out), this module *executes* a campaign through the existing
-//! `dag-ml-core` runtime while calling BACK into Python for operator execution
-//! and data materialization — no subprocess. The host wires two Python
-//! callbacks:
+//! `dag-ml-core` runtime while calling BACK into Python for operator execution —
+//! no subprocess. The data path is **identical** to the subprocess CLI
+//! (`dag-ml-cli run-process-dsl-cv-refit-bundle`): the same envelope-based
+//! [`InMemoryDataProvider`] produces the per-fold / per-partition `data_views`
+//! (the `sample_ids`), so the host adapter's `run_node` self-fetches the same
+//! X / y and the scores cannot diverge. Only the OPERATOR execution crosses to
+//! Python — there is no Python data callback.
+//!
+//! The host wires ONE Python callback:
 //!
 //! * `op_callback(task_dict) -> result_dict` runs one [`NodeTask`] and returns a
 //!   [`NodeResult`] (the same JSON contract the JSONL subprocess adapter uses).
-//! * `data_callback(request_dict) -> handle_dict` materializes data / builds a
-//!   view and returns an opaque [`HandleRef`]. The actual feature buffers stay
-//!   on the Python side keyed by `handle.handle`; Rust only ever holds the
-//!   opaque handle, never touches Arrow.
 //!
 //! Every bridge crossing is a JSON round-trip (Rust value -> `serde_json`
 //! string -> `json.loads` -> Python dict; and back). A Python callback panic is
@@ -19,6 +21,13 @@
 //! [`DagMlError`] instead of unwinding across the FFI boundary; a Python
 //! *exception* is propagated as [`DagMlError::RuntimeValidation`] carrying the
 //! message text.
+//!
+//! The phase sequence mirrors the CLI's `build_bundle_from_cv_then_captured_refit`
+//! exactly: native variant SELECT (when the plan is multi-variant and unpinned)
+//! -> FIT_CV -> REFIT in ONE [`RunContext`] -> cross-fold OOF scoring -> the
+//! native [`ScoreSet`]. That is what the host maps into a `RunResult`, so the
+//! returned `scores` is byte-identical to the bundle's `scores` the subprocess
+//! path reads back.
 
 use std::panic::AssertUnwindSafe;
 
@@ -27,11 +36,12 @@ use pyo3::types::PyAnyMethods;
 
 use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl_with_generation_and_controller_registry,
-    parse_pipeline_dsl_json, AggregationControllerResult, AggregationControllerTask, CampaignSpec,
-    ControllerId, ControllerRegistry, DagMlError as CoreDagMlError, DataBinding,
-    DataMaterializationRequest, DataViewRequest, HandleRef, NodeResult, NodeTask, Phase,
-    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
-    SampleRelationSet, SequentialScheduler,
+    fan_out_data_aware_branches, parse_pipeline_dsl_json, plan_oof_partition_mode,
+    select_best_variant_by_cv, AggregationControllerResult, AggregationControllerTask,
+    ControllerId, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan,
+    ExternalDataPlanEnvelope, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
+    Phase, RegressionMetricKind, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
+    SequentialScheduler, VariantId,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -151,76 +161,116 @@ impl RuntimeController for PyOperatorController {
     }
 }
 
-/// A [`RuntimeDataProvider`] backed by a Python callback. `materialize` and
-/// `make_view` round-trip their request to the host resolver and expect an
-/// opaque [`HandleRef`] back; the feature buffers stay Python-side keyed by the
-/// returned handle, so Rust never inspects them.
-struct PyDataProvider {
-    data_callback: Py<PyAny>,
-}
-
-impl RuntimeDataProvider for PyDataProvider {
-    fn materialize(
-        &self,
-        request: &DataMaterializationRequest,
-    ) -> Result<HandleRef, CoreDagMlError> {
-        call_py_bridge::<DataMaterializationRequest, HandleRef>(
-            &self.data_callback,
-            request,
-            "data-materialize",
-        )
-    }
-
-    fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef, CoreDagMlError> {
-        call_py_bridge::<DataViewRequest, HandleRef>(&self.data_callback, request, "data-view")
-    }
-
-    fn coordinator_relations(
-        &self,
-        binding: &DataBinding,
-    ) -> Result<Option<SampleRelationSet>, CoreDagMlError> {
-        call_py_bridge::<DataBinding, Option<SampleRelationSet>>(
-            &self.data_callback,
-            binding,
-            "coordinator-relations",
-        )
+/// Map the host's selection-metric string to the core metric kind. Mirrors the
+/// CLI's `--selection-metric` (`rmse` | `accuracy`); anything else defaults to
+/// RMSE, exactly like the CLI's clap default.
+fn parse_selection_metric(metric: &str) -> RegressionMetricKind {
+    match metric {
+        "accuracy" => RegressionMetricKind::Accuracy,
+        _ => RegressionMetricKind::Rmse,
     }
 }
 
-/// Parse the scope phase identifier the host requests.
-fn parse_scope(scope: &str) -> Result<Phase, CoreDagMlError> {
-    match scope {
-        "fit_cv" => Ok(Phase::FitCv),
-        "refit" => Ok(Phase::Refit),
-        "predict" => Ok(Phase::Predict),
-        other => Err(CoreDagMlError::RuntimeValidation(format!(
-            "unsupported in-process scope `{other}`; expected one of fit_cv, refit, predict"
-        ))),
+/// Build the in-process runtime controller registry: one [`PyOperatorController`]
+/// per controller the plan references, all backed by the SAME host `op_callback`
+/// (the host dispatches by node kind inside `run_node`, exactly as the subprocess
+/// adapter does).
+fn build_runtime_controllers(
+    py: Python<'_>,
+    plan: &ExecutionPlan,
+    op_callback: &Py<PyAny>,
+) -> Result<RuntimeControllerRegistry, CoreDagMlError> {
+    let mut runtime_controllers = RuntimeControllerRegistry::new();
+    for controller_id in plan.controller_manifests.keys() {
+        runtime_controllers.register(Box::new(PyOperatorController {
+            controller_id: controller_id.clone(),
+            op_callback: op_callback.clone_ref(py),
+        }))?;
     }
+    Ok(runtime_controllers)
 }
 
-/// Run a CV / refit / predict campaign IN-PROCESS through the existing runtime,
-/// dispatching operator execution and data materialization back to Python.
+/// Resolve the variant REFIT targets, mirroring the CLI's `resolve_refit_variant`:
+/// a single-variant plan refits that variant; a multi-variant plan runs one
+/// single-variant FIT_CV per variant and refits the best by `selection_metric`
+/// (or the default variant when native scoring is off — no host targets).
+fn resolve_refit_variant(
+    plan: &ExecutionPlan,
+    run_id: &RunId,
+    root_seed: u64,
+    selection_metric: RegressionMetricKind,
+    runtime_controllers: &RuntimeControllerRegistry,
+    data_provider: &InMemoryDataProvider,
+) -> Result<VariantId, CoreDagMlError> {
+    if plan.variants.len() > 1 {
+        let selected = select_best_variant_by_cv(
+            plan,
+            run_id,
+            Some(root_seed),
+            selection_metric,
+            |variant_plan, ctx| {
+                SequentialScheduler
+                    .execute_campaign_phase_with_data_provider(
+                        variant_plan,
+                        runtime_controllers,
+                        data_provider,
+                        ctx,
+                        Phase::FitCv,
+                    )
+                    .map(|_results| ())
+            },
+        )?;
+        if let Some(variant_id) = selected {
+            return Ok(variant_id);
+        }
+    }
+    plan.variants
+        .first()
+        .map(|variant| variant.variant_id.clone())
+        .ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation("execution plan has no variants to refit".to_string())
+        })
+}
+
+/// Run a CV + refit campaign IN-PROCESS through the existing runtime, dispatching
+/// operator execution back to Python while the data path stays entirely in Rust
+/// via the SAME envelope-based [`InMemoryDataProvider`] the subprocess CLI uses.
 ///
-/// `dsl_json` is the pipeline DSL (compiled to a graph with the supplied
-/// controller manifests), `campaign_json` the campaign spec, and
-/// `controller_manifests_json` the controller manifest list. `op_callback` and
-/// `data_callback` are the host bridges. `scope` selects the phase to run
-/// (`fit_cv` / `refit` / `predict`). Returns a JSON object with the per-node
-/// `node_results` and the native `scores` (or `null` when scoring is off).
+/// * `dsl_json` — the executable compat DSL (carries the embedded `fold_set` in
+///   `split_invocation` and the model `data_bindings`, exactly as the host
+///   `assemble_cv_refit_dsl` builds for the subprocess path).
+/// * `envelope_json` — the [`ExternalDataPlanEnvelope`]; its coordinator
+///   relations + the DSL fold set drive `data_views` production.
+/// * `controller_manifests_json` — the controller manifest list.
+/// * `op_callback` — the host bridge running one [`NodeTask`] (`run_node`).
+/// * `selection_metric` — `rmse` | `accuracy`, used only for native multi-variant
+///   SELECT (ignored for single-variant plans).
+///
+/// Returns a JSON object `{ "node_results": [...], "scores": <ScoreSet|null> }`.
+/// `scores` is byte-identical to the subprocess bundle's `scores`, so the host
+/// maps it into the same `RunResult`.
 #[pyfunction]
 pub fn run_cv_refit_in_process(
     py: Python<'_>,
     dsl_json: &str,
-    campaign_json: &str,
+    envelope_json: &str,
     controller_manifests_json: &str,
     op_callback: Py<PyAny>,
-    data_callback: Py<PyAny>,
-    scope: &str,
+    selection_metric: &str,
 ) -> PyResult<String> {
-    let phase = parse_scope(scope).map_err(py_core_error)?;
+    let metric = parse_selection_metric(selection_metric);
 
+    // 1. Read the envelope first (the CLI reads it before the plan so data-aware
+    //    branch fan-out can discover partition values from coordinator relations).
+    let envelope: ExternalDataPlanEnvelope =
+        serde_json::from_str(envelope_json).map_err(py_serde_error)?;
+
+    // 2. Build the plan exactly as `build_plan_from_dsl_path_with_envelope`:
+    //    fan out data-aware branches against the envelope, compile with the
+    //    controller registry, then build the execution plan from the compiled
+    //    graph + campaign template.
     let dsl_spec = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
+    let dsl_spec = fan_out_data_aware_branches(&dsl_spec, &envelope).map_err(py_core_error)?;
     let manifests =
         serde_json::from_str::<Vec<dag_ml_core::ControllerManifest>>(controller_manifests_json)
             .map_err(py_serde_error)?;
@@ -235,76 +285,82 @@ pub fn run_cv_refit_in_process(
         &controller_registry,
     )
     .map_err(py_core_error)?;
-    let campaign: CampaignSpec = serde_json::from_str(campaign_json).map_err(py_serde_error)?;
-
     let plan = build_execution_plan(
         format!("plan:{}", dsl_spec.id),
         compiled.graph,
-        campaign,
+        compiled.campaign_template,
         &controller_registry,
     )
     .map_err(py_core_error)?;
 
-    let mut runtime_controllers = RuntimeControllerRegistry::new();
-    for controller_id in plan.controller_manifests.keys() {
-        runtime_controllers
-            .register(Box::new(PyOperatorController {
-                controller_id: controller_id.clone(),
-                op_callback: op_callback.clone_ref(py),
-            }))
-            .map_err(py_core_error)?;
-    }
-    let data_provider = PyDataProvider {
-        data_callback: data_callback.clone_ref(py),
-    };
+    // 3. Build the SAME Rust data provider the CLI uses
+    //    (`data_provider_for_training_envelope`): validate the envelope relations
+    //    against the campaign folds, then register the envelope. data_views /
+    //    sample_ids are produced identically to the subprocess path.
+    plan.campaign
+        .validate_data_envelope_relations(&envelope)
+        .map_err(py_core_error)?;
+    let data_provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+        envelope,
+    )
+    .map_err(py_core_error)?;
 
-    let mut ctx = RunContext::new(
-        RunId::new(format!("run:{}:{scope}", dsl_spec.id)).map_err(py_core_error)?,
-        Some(0),
-    );
+    let runtime_controllers =
+        build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
 
-    let results = match phase {
-        Phase::FitCv => SequentialScheduler
-            .execute_campaign_phase_with_data_provider(
-                &plan,
-                &runtime_controllers,
-                &data_provider,
-                &mut ctx,
-                Phase::FitCv,
-            )
-            .map_err(py_core_error)?,
-        Phase::Refit => {
-            let mut artifact_store = dag_ml_core::InMemoryArtifactStore::new();
-            SequentialScheduler
-                .execute_campaign_phase_with_data_provider_and_artifact_store(
-                    &plan,
-                    &runtime_controllers,
-                    &data_provider,
-                    &mut artifact_store,
-                    &mut ctx,
-                    Phase::Refit,
-                )
-                .map_err(py_core_error)?
-        }
-        phase => SequentialScheduler
-            .execute_campaign_phase_with_data_provider(
-                &plan,
-                &runtime_controllers,
-                &data_provider,
-                &mut ctx,
-                phase,
-            )
-            .map_err(py_core_error)?,
-    };
+    let run_id = RunId::new(format!("run:{}:in-process", dsl_spec.id)).map_err(py_core_error)?;
+    let root_seed: u64 = 0;
 
-    if phase == Phase::FitCv {
-        ctx.collect_cross_fold_validation_scores(dag_ml_core::plan_oof_partition_mode(&plan))
-            .map_err(py_core_error)?;
-    }
+    // 4. Mirror `build_bundle_from_cv_then_captured_refit`: native variant SELECT
+    //    (when multi-variant), then FIT_CV + REFIT in ONE RunContext, then score.
+    let selected_variant_id = resolve_refit_variant(
+        &plan,
+        &run_id,
+        root_seed,
+        metric,
+        &runtime_controllers,
+        &data_provider,
+    )
+    .map_err(py_core_error)?;
+
+    let mut artifact_store = InMemoryArtifactStore::new();
+    let mut ctx = RunContext::new(run_id, Some(root_seed));
+    ctx.variant_id = Some(selected_variant_id);
+
+    let fit_cv_results = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &runtime_controllers,
+            &data_provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .map_err(py_core_error)?;
+
+    let refit_results = SequentialScheduler
+        .execute_campaign_phase_with_data_provider_and_artifact_store(
+            &plan,
+            &runtime_controllers,
+            &data_provider,
+            &mut artifact_store,
+            &mut ctx,
+            Phase::Refit,
+        )
+        .map_err(py_core_error)?;
+
+    // 5. Score: collect the cross-fold OOF average (cv_best_score) + the REFIT
+    //    final/test reports, then build the native ScoreSet the host maps to a
+    //    RunResult — identical to the CLI's `bundle.scores`.
+    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(&plan))
+        .map_err(py_core_error)?;
     let scores = ctx.build_score_set(plan.id.clone(), None);
 
+    let mut node_results = fit_cv_results;
+    node_results.extend(refit_results);
+
     let payload = serde_json::json!({
-        "node_results": results,
+        "node_results": node_results,
         "scores": scores,
     });
     serde_json::to_string(&payload).map_err(py_serde_error)
