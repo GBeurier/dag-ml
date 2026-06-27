@@ -10,6 +10,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyType};
 use serde::de::DeserializeOwned;
 
+mod in_process;
+
 use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
@@ -208,11 +210,12 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         compile_pipeline_dsl_artifact_with_controllers_json,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(fan_out_data_aware_branches_json, module)?)?;
+    module.add_function(wrap_pyfunction!(build_execution_plan_json, module)?)?;
     module.add_function(wrap_pyfunction!(
-        fan_out_data_aware_branches_json,
+        in_process::run_cv_refit_in_process,
         module
     )?)?;
-    module.add_function(wrap_pyfunction!(build_execution_plan_json, module)?)?;
     Ok(())
 }
 
