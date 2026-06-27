@@ -15,12 +15,16 @@
 //! * `op_callback(task_dict) -> result_dict` runs one [`NodeTask`] and returns a
 //!   [`NodeResult`] (the same JSON contract the JSONL subprocess adapter uses).
 //!
-//! Every bridge crossing is a JSON round-trip (Rust value -> `serde_json`
-//! string -> `json.loads` -> Python dict; and back). A Python callback panic is
-//! contained with [`std::panic::catch_unwind`] so it surfaces as a structured
-//! [`DagMlError`] instead of unwinding across the FFI boundary; a Python
-//! *exception* is propagated as [`DagMlError::RuntimeValidation`] carrying the
-//! message text.
+//! Every bridge crossing is a DIRECT serde<->`PyObject` conversion via the
+//! `pythonize` crate (Rust value -> `pythonize` -> Python dict; and the returned
+//! dict -> `depythonize` -> Rust value) — no intermediate JSON *string* step
+//! (`json.dumps` / `json.loads`). `pythonize` walks the same serde data model as
+//! `serde_json`, so the dict the callback receives is structurally identical to
+//! the JSONL frame the subprocess adapter would see; only the per-NodeTask string
+//! serialization overhead is removed. A Python callback panic is contained with
+//! [`std::panic::catch_unwind`] so it surfaces as a structured [`DagMlError`]
+//! instead of unwinding across the FFI boundary; a Python *exception* is
+//! propagated as [`DagMlError::RuntimeValidation`] carrying the message text.
 //!
 //! The phase sequence mirrors the CLI's `build_bundle_from_cv_then_captured_refit`
 //! exactly: native variant SELECT (when the plan is multi-variant and unpinned)
@@ -33,6 +37,7 @@ use std::panic::AssertUnwindSafe;
 
 use pyo3::prelude::*;
 use pyo3::types::PyAnyMethods;
+use pythonize::{depythonize, pythonize};
 
 use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl_with_generation_and_controller_registry,
@@ -46,37 +51,32 @@ use dag_ml_core::{
 
 use crate::{py_core_error, py_serde_error};
 
-/// Serialize a `dag-ml-core` value to a Python object via a JSON round-trip
-/// (`serde_json` -> `json.loads`). The dict the callback receives is therefore
-/// byte-identical to the JSONL frame the subprocess adapter would see.
+/// Serialize a `dag-ml-core` value directly to a Python object with `pythonize`
+/// (serde data model -> `PyObject`), skipping any JSON *string* step. The dict
+/// the callback receives is structurally identical to `json.loads` of the value's
+/// JSON, so the host `op_callback` (`node_runner.run_node`) sees the same shape it
+/// always did.
 fn to_py_object<T: serde::Serialize>(
     py: Python<'_>,
     value: &T,
 ) -> Result<Py<PyAny>, CoreDagMlError> {
-    let json = serde_json::to_string(value).map_err(CoreDagMlError::Serialization)?;
-    let loads = py
-        .import("json")
-        .and_then(|module| module.getattr("loads"))
-        .map_err(core_error_from_py)?;
-    let obj = loads.call1((json,)).map_err(core_error_from_py)?;
-    Ok(obj.unbind())
+    pythonize(py, value)
+        .map(|bound| bound.unbind())
+        .map_err(pythonize_error)
 }
 
-/// Deserialize a Python object returned by a callback into a `dag-ml-core` value
-/// via a JSON round-trip (`json.dumps` -> `serde_json`).
+/// Deserialize a Python object returned by a callback directly into a
+/// `dag-ml-core` value with `depythonize` (`PyObject` -> serde data model),
+/// skipping any JSON *string* step.
 fn from_py_object<T: serde::de::DeserializeOwned>(
-    py: Python<'_>,
     obj: &Bound<'_, PyAny>,
 ) -> Result<T, CoreDagMlError> {
-    let dumps = py
-        .import("json")
-        .and_then(|module| module.getattr("dumps"))
-        .map_err(core_error_from_py)?;
-    let json: String = dumps
-        .call1((obj,))
-        .and_then(|value| value.extract())
-        .map_err(core_error_from_py)?;
-    serde_json::from_str(&json).map_err(CoreDagMlError::Serialization)
+    depythonize(obj).map_err(pythonize_error)
+}
+
+/// Map a `pythonize`/`depythonize` conversion failure to a structured core error.
+fn pythonize_error(err: pythonize::PythonizeError) -> CoreDagMlError {
+    CoreDagMlError::RuntimeValidation(format!("in-process bridge conversion failed: {err}"))
 }
 
 /// Convert a Python exception into a structured core error carrying its message.
@@ -120,7 +120,7 @@ where
                 .bind(py)
                 .call1((payload,))
                 .map_err(core_error_from_py)?;
-            from_py_object::<Resp>(py, &returned)
+            from_py_object::<Resp>(&returned)
         })
     }));
     match result {
