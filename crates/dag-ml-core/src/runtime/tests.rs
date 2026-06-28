@@ -7577,7 +7577,51 @@ fn select_best_variant_by_cv_picks_lowest_oof_rmse_variant() {
         .iter()
         .find(|variant| variant.choices["model_offset"].label == "accurate")
         .unwrap();
-    assert_eq!(selected, Some(accurate_variant.variant_id.clone()));
+    let selection = selected.unwrap();
+    assert_eq!(selection.selected_variant_id, accurate_variant.variant_id);
+
+    // ADDITIVE per-variant reports: the bundle-bound `validation_reports` carry EVERY variant's CV
+    // (the loser `biased` too), each tagged its own variant_id — not just the winner's. This is the
+    // dag-ml-side surfacing that lets a generated sweep's num_predictions match legacy.
+    let scored_variants: BTreeSet<VariantId> = selection
+        .validation_reports
+        .iter()
+        .filter_map(|report| report.variant_id.clone())
+        .collect();
+    let expected_variants: BTreeSet<VariantId> = plan
+        .variants
+        .iter()
+        .map(|variant| variant.variant_id.clone())
+        .collect();
+    assert_eq!(
+        scored_variants, expected_variants,
+        "validation reports must cover ALL variants, not just the winner"
+    );
+    // Every report is a Validation (OOF) report — never Final/Test — preserving the report-only,
+    // OOF-safe guarantee for the non-selected variants.
+    assert!(
+        selection
+            .validation_reports
+            .iter()
+            .all(|report| report.partition == PredictionPartition::Validation),
+        "selection must only retain Validation (OOF) reports"
+    );
+    // The cross-fold OOF average per variant is present and tagged with the variant id (its native
+    // form has variant_id = None), so each loser's headline CV score is recoverable.
+    for variant in &plan.variants {
+        let has_avg = selection.validation_reports.iter().any(|report| {
+            report.variant_id.as_ref() == Some(&variant.variant_id)
+                && report
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold| fold.as_str() == "avg")
+        });
+        assert!(
+            has_avg,
+            "variant `{}` is missing its cross-fold OOF average report",
+            variant.variant_id
+        );
+    }
 }
 
 #[test]
@@ -7608,7 +7652,13 @@ fn select_best_variant_by_cv_single_variant_returns_that_variant() {
     )
     .unwrap();
 
-    assert_eq!(selected, Some(plan.variants[0].variant_id.clone()));
+    let selection = selected.unwrap();
+    assert_eq!(selection.selected_variant_id, plan.variants[0].variant_id);
+    // The single variant's own CV reports are still surfaced (tagged with its id).
+    assert!(selection
+        .validation_reports
+        .iter()
+        .all(|report| report.variant_id.as_ref() == Some(&plan.variants[0].variant_id)));
 }
 
 #[test]
@@ -7647,7 +7697,10 @@ fn select_best_variant_by_cv_picks_highest_accuracy_variant() {
         .iter()
         .find(|variant| variant.choices["model_offset"].label == "accurate")
         .unwrap();
-    assert_eq!(selected, Some(accurate_variant.variant_id.clone()));
+    assert_eq!(
+        selected.unwrap().selected_variant_id,
+        accurate_variant.variant_id
+    );
 }
 
 #[test]
@@ -7697,7 +7750,7 @@ fn select_best_variant_by_cv_no_targets_returns_none() {
     )
     .unwrap();
 
-    assert_eq!(selected, None);
+    assert!(selected.is_none());
 }
 
 #[test]

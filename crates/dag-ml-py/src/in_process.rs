@@ -45,8 +45,9 @@ use dag_ml_core::{
     select_best_variant_by_cv, AggregationControllerResult, AggregationControllerTask,
     ControllerId, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan,
     ExternalDataPlanEnvelope, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
-    Phase, RegressionMetricKind, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    SequentialScheduler, VariantId,
+    Phase, RegressionMetricKind, RegressionMetricReport, RunContext, RunId, RuntimeController,
+    RuntimeControllerRegistry, ScoreSet, SequentialScheduler, VariantId,
+    SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -190,6 +191,15 @@ fn build_runtime_controllers(
     Ok(runtime_controllers)
 }
 
+/// The resolved REFIT target plus the non-selected variants' VALIDATION (OOF) reports, so the host
+/// bundle can surface ALL variants' CV scores — not just the winner's. The winner's validation
+/// reports come fresh from the real FIT_CV run, so only the LOSER variants' reports are carried here
+/// (avoiding a duplicate `(node, variant, partition, fold, level)` key in the final `ScoreSet`).
+struct ResolvedRefitVariant {
+    variant_id: VariantId,
+    loser_validation_reports: Vec<RegressionMetricReport>,
+}
+
 /// Resolve the variant REFIT targets, mirroring the CLI's `resolve_refit_variant`:
 /// a single-variant plan refits that variant; a multi-variant plan runs one
 /// single-variant FIT_CV per variant and refits the best by `selection_metric`
@@ -201,7 +211,7 @@ fn resolve_refit_variant(
     selection_metric: RegressionMetricKind,
     runtime_controllers: &RuntimeControllerRegistry,
     data_provider: &InMemoryDataProvider,
-) -> Result<VariantId, CoreDagMlError> {
+) -> Result<ResolvedRefitVariant, CoreDagMlError> {
     if plan.variants.len() > 1 {
         let selected = select_best_variant_by_cv(
             plan,
@@ -220,16 +230,58 @@ fn resolve_refit_variant(
                     .map(|_results| ())
             },
         )?;
-        if let Some(variant_id) = selected {
-            return Ok(variant_id);
+        if let Some(selection) = selected {
+            let variant_id = selection.selected_variant_id.clone();
+            // Keep only the LOSER variants' reports — the winner's come from the real FIT_CV run.
+            let loser_validation_reports = selection
+                .validation_reports
+                .into_iter()
+                .filter(|report| report.variant_id.as_ref() != Some(&variant_id))
+                .collect();
+            return Ok(ResolvedRefitVariant {
+                variant_id,
+                loser_validation_reports,
+            });
         }
     }
-    plan.variants
+    let variant_id = plan
+        .variants
         .first()
         .map(|variant| variant.variant_id.clone())
         .ok_or_else(|| {
             CoreDagMlError::RuntimeValidation("execution plan has no variants to refit".to_string())
-        })
+        })?;
+    Ok(ResolvedRefitVariant {
+        variant_id,
+        loser_validation_reports: Vec::new(),
+    })
+}
+
+/// Merge the non-selected variants' VALIDATION (OOF) reports into the run's `ScoreSet` so the bundle
+/// carries every variant's CV score, not just the winner's. ADDITIVE only: each loser report is
+/// already tagged with its own `variant_id`, so it cannot collide with the winner's reports on the
+/// `(node, variant, partition, fold, level)` key. A no-op when there are no losers (single-variant
+/// runs, or native scoring off). If scoring produced no winner `ScoreSet` but losers exist, a new
+/// `ScoreSet` is created to hold them.
+fn merge_loser_validation_reports(
+    scores: &mut Option<ScoreSet>,
+    plan_id: &str,
+    loser_validation_reports: Vec<RegressionMetricReport>,
+) {
+    if loser_validation_reports.is_empty() {
+        return;
+    }
+    match scores {
+        Some(score_set) => score_set.reports.extend(loser_validation_reports),
+        None => {
+            *scores = Some(ScoreSet {
+                schema_version: SCORE_SET_SCHEMA_VERSION,
+                plan_id: plan_id.to_string(),
+                selection_metric: None,
+                reports: loser_validation_reports,
+            });
+        }
+    }
 }
 
 /// Run a CV + refit campaign IN-PROCESS through the existing runtime, dispatching
@@ -314,7 +366,7 @@ pub fn run_cv_refit_in_process(
 
     // 4. Mirror `build_bundle_from_cv_then_captured_refit`: native variant SELECT
     //    (when multi-variant), then FIT_CV + REFIT in ONE RunContext, then score.
-    let selected_variant_id = resolve_refit_variant(
+    let resolved = resolve_refit_variant(
         &plan,
         &run_id,
         root_seed,
@@ -323,6 +375,8 @@ pub fn run_cv_refit_in_process(
         &data_provider,
     )
     .map_err(py_core_error)?;
+    let selected_variant_id = resolved.variant_id;
+    let loser_validation_reports = resolved.loser_validation_reports;
 
     let mut artifact_store = InMemoryArtifactStore::new();
     let mut ctx = RunContext::new(run_id, Some(root_seed));
@@ -350,11 +404,16 @@ pub fn run_cv_refit_in_process(
         .map_err(py_core_error)?;
 
     // 5. Score: collect the cross-fold OOF average (cv_best_score) + the REFIT
-    //    final/test reports, then build the native ScoreSet the host maps to a
-    //    RunResult — identical to the CLI's `bundle.scores`.
+    //    final/test reports. The loser variants' VALIDATION (OOF) reports captured
+    //    during native SELECT are merged in FIRST (each tagged its own variant_id,
+    //    REPORT-ONLY — they carry no predictions/handles), so the bundle surfaces
+    //    every variant's CV score, not just the winner's. Then build the native
+    //    ScoreSet the host maps to a RunResult — identical to the CLI's
+    //    `bundle.scores`.
     ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(&plan))
         .map_err(py_core_error)?;
-    let scores = ctx.build_score_set(plan.id.clone(), None);
+    let mut scores = ctx.build_score_set(plan.id.clone(), None);
+    merge_loser_validation_reports(&mut scores, &plan.id, loser_validation_reports);
 
     let mut node_results = fit_cv_results;
     node_results.extend(refit_results);
