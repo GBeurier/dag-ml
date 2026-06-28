@@ -22,6 +22,17 @@
       "target_width": 1,
       "target_names": ["y"],
       "metrics": { "rmse": 13.2864, "r2": 0.5426 }
+    },
+    {
+      "producer_node": "model:compat.0",
+      "variant_id": "variant:loser0",
+      "partition": "validation",
+      "fold_id": "avg",
+      "level": "sample",
+      "row_count": 130,
+      "target_width": 1,
+      "target_names": ["y"],
+      "metrics": { "rmse": 19.8123, "r2": 0.488 }
     }
   ]
 }
