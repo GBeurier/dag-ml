@@ -303,6 +303,26 @@ impl RunContext {
     }
 }
 
+/// Outcome of native variant selection: the winning variant plus EVERY scored variant's
+/// cross-validation reports, each tagged with its own `variant_id`.
+///
+/// The reports are the per-fold + cross-fold-OOF-average VALIDATION (OOF) reports collected while
+/// ranking. They are emitted so a generated sweep can surface every variant's CV score — not only
+/// the winner's — to match the legacy per-variant `num_predictions`. These are REPORT-ONLY
+/// validation scores of non-selected models: they never feed any downstream training/feature path
+/// (no prediction blocks, no `RegressionTargetRecord`s, no handles leave selection — see
+/// [`select_best_variant_by_cv`]), so the OOF/leakage invariants are unaffected.
+#[derive(Clone, Debug)]
+pub struct VariantSelection {
+    /// The winning variant, ranked by `selection_metric`. The SELECT DECISION is identical to the
+    /// pre-existing behavior; `validation_reports` is purely additive context.
+    pub selected_variant_id: VariantId,
+    /// Per-variant VALIDATION (OOF) reports for ALL ranked variants (winner included), each tagged
+    /// with its `variant_id`. The cross-fold OOF average per producer is re-tagged with the variant
+    /// id (its native form has `variant_id = None`); the per-fold reports already carry it.
+    pub validation_reports: Vec<RegressionMetricReport>,
+}
+
 /// Pick the best variant of a multi-variant plan by its cross-validation score, natively.
 ///
 /// "Option A": each variant is scored with its OWN single-variant FIT_CV — the plan is cloned with
@@ -312,6 +332,14 @@ impl RunContext {
 /// becomes a [`CandidateScore`], and [`select_candidate`] ranks them by `selection_metric` (the
 /// metric's [`objective`](RegressionMetricKind::objective) drives the direction — RMSE minimizes,
 /// accuracy maximizes). The winning candidate id maps back to its [`VariantId`].
+///
+/// Beyond ranking, every scored variant's VALIDATION (OOF) reports — the per-fold reports and the
+/// cross-fold OOF average, each tagged with its `variant_id` — are accumulated and returned in
+/// [`VariantSelection::validation_reports`] so the caller can surface ALL variants' CV scores (not
+/// just the winner's) in the final bundle. This is OOF-safe: the per-variant CV runs happen in
+/// transient `RunContext`s whose prediction stores and `RegressionTargetRecord`s are dropped here;
+/// only the scalar score reports (derived from `y_true`) survive, so a non-selected variant's OOF
+/// predictions can NEVER reach any downstream training/feature path.
 ///
 /// Native scoring is opt-in: it only happens when the host emits `regression_targets`. So this
 /// returns `Ok(None)` when NO variant produced a cross-fold OOF average (scoring is off, the normal
@@ -330,7 +358,7 @@ pub fn select_best_variant_by_cv<F>(
     root_seed: Option<u64>,
     selection_metric: RegressionMetricKind,
     mut run_single_variant_fit_cv: F,
-) -> Result<Option<VariantId>>
+) -> Result<Option<VariantSelection>>
 where
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
 {
@@ -342,6 +370,9 @@ where
     }
 
     let mut candidates: Vec<CandidateScore> = Vec::with_capacity(plan.variants.len());
+    // Every ranked variant's VALIDATION (OOF) reports, each tagged with its variant_id, accumulated
+    // so the caller can emit ALL variants' CV scores (not just the winner's) in the bundle.
+    let mut variant_validation_reports: Vec<RegressionMetricReport> = Vec::new();
     // Tracks whether ANY variant emitted scores at all (host targets present), so an empty candidate
     // set can be told apart from "scoring genuinely off" (no targets) — see the post-loop branch.
     let mut any_scores_seen = false;
@@ -387,6 +418,18 @@ where
                 )));
             }
         }
+        // Retain this variant's VALIDATION reports (per-fold + cross-fold avg) tagged with its own
+        // variant_id. The avg report's native form has `variant_id = None`, so stamp it here; the
+        // per-fold reports already carry it from `apply_result_scoring`. Only Validation reports are
+        // kept — the transient CV runs FIT_CV only (no Final/Test), so this is OOF-only by
+        // construction, but the filter makes the report-only guarantee explicit.
+        for mut report in ctx.score_collector {
+            if report.partition != PredictionPartition::Validation {
+                continue;
+            }
+            report.variant_id = Some(variant.variant_id.clone());
+            variant_validation_reports.push(report);
+        }
     }
 
     if candidates.is_empty() {
@@ -422,10 +465,13 @@ where
         reduction_id: None,
     };
     let decision = select_candidate(&policy, &candidates)?;
-    let selected = VariantId::new(decision.selected_candidate_id).map_err(|error| {
+    let selected_variant_id = VariantId::new(decision.selected_candidate_id).map_err(|error| {
         DagMlError::RuntimeValidation(format!("selected variant id is invalid: {error}"))
     })?;
-    Ok(Some(selected))
+    Ok(Some(VariantSelection {
+        selected_variant_id,
+        validation_reports: variant_validation_reports,
+    }))
 }
 
 #[cfg(test)]
