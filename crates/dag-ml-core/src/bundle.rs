@@ -958,6 +958,12 @@ impl ExecutionBundle {
         validate_fingerprint("controller", &self.controller_fingerprint)?;
         if let Some(scores) = &self.scores {
             scores.validate()?;
+            if scores.plan_id != self.plan_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` plan_id `{}` does not match its embedded scores plan_id `{}`",
+                    self.bundle_id, self.plan_id, scores.plan_id
+                )));
+            }
         }
         for (key, decision) in &self.selections {
             if key.trim().is_empty() {
@@ -3762,6 +3768,42 @@ mod tests {
 
         bundle.schema_version = 0;
         assert!(bundle.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_bundle_with_scores_plan_id_mismatch() {
+        let plan = plan();
+        let mut bundle = build_execution_bundle(
+            BundleId::new("bundle:demo").unwrap(),
+            &plan,
+            None,
+            BTreeMap::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        bundle.scores = Some(ScoreSet {
+            schema_version: crate::metrics::SCORE_SET_SCHEMA_VERSION,
+            plan_id: bundle.plan_id.clone(),
+            selection_metric: Some("rmse".to_string()),
+            reports: vec![crate::metrics::RegressionMetricReport {
+                prediction_id: None,
+                producer_node: NodeId::new("model:compat.0").unwrap(),
+                variant_id: None,
+                partition: PredictionPartition::Test,
+                fold_id: Some(FoldId::new("final").unwrap()),
+                level: PredictionLevel::Sample,
+                row_count: 4,
+                target_width: 1,
+                target_names: vec!["y".to_string()],
+                metrics: BTreeMap::from([("rmse".to_string(), 1.0)]),
+            }],
+        });
+        // Matching plan_ids: the bundle (with embedded scores) validates.
+        bundle.validate().unwrap();
+        // A bundle whose embedded scores.plan_id disagrees with the bundle plan_id is rejected.
+        bundle.scores.as_mut().unwrap().plan_id = "plan:wrong".to_string();
+        let err = bundle.validate().unwrap_err().to_string();
+        assert!(err.contains("does not match its embedded scores plan_id"), "{err}");
     }
 
     #[test]
