@@ -14,11 +14,13 @@ use dag_ml_core::{
     build_aggregated_prediction_cache_payload, build_aggregated_prediction_cache_record,
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
     build_openlineage_run_event_from_package_files, build_prediction_cache_payload,
-    build_prediction_cache_record, build_research_provenance_package, compile_pipeline_dsl,
+    build_prediction_cache_record, build_research_provenance_package,
+    compile_operator_variant_models, compile_pipeline_dsl,
     compile_pipeline_dsl_with_controller_registry, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, oof_campaign_fingerprint,
-    parse_pipeline_dsl_json, plan_oof_partition_mode, regression_report_to_candidate_score,
-    score_regression_aggregated_block, score_regression_prediction_block,
+    parse_pipeline_dsl_json, plan_oof_partition_mode, prune_plan_to_active,
+    regression_report_to_candidate_score, score_regression_aggregated_block,
+    score_regression_prediction_block, select_best_operator_variant_from_models,
     select_best_variant_by_cv, select_candidate, select_candidate_groups, validate_oof_campaign,
     validate_research_provenance_package_files, AggregatedPredictionBlock, ArtifactId, BundleId,
     BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
@@ -27,13 +29,13 @@ use dag_ml_core::{
     DataRequestPartition, ExecutionBundle, ExplanationBlock, ExternalDataPlanEnvelope,
     FileArtifactManifestStore, FileArtifactPayloadStore, FilePredictionCacheStore, GraphSpec,
     HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
-    MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, ParallelScheduler, Phase,
-    PipelineDslSpec, PredictionBlock, PredictionLevel, PredictionPartition, PredictionUnitId,
-    RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
-    ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId, RuntimeArtifactStore,
-    RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
-    SampleId, ScoreSet, SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler,
-    VariantId, SCORE_SET_SCHEMA_VERSION,
+    MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, OperatorVariantModel,
+    ParallelScheduler, Phase, PipelineDslSpec, PredictionBlock, PredictionLevel,
+    PredictionPartition, PredictionUnitId, RefitArtifactRecord, RegressionMetricKind,
+    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage,
+    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
+    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, ScoreSet, SelectionDecision,
+    SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId, SCORE_SET_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1305,6 +1307,7 @@ fn main() -> Result<()> {
                 root_seed,
                 scheduler,
                 selection_metric: RegressionMetricKind::Rmse,
+                operator_variant_models: Vec::new(),
             })
             .with_context(|| "mock refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
@@ -1362,6 +1365,7 @@ fn main() -> Result<()> {
                 root_seed,
                 scheduler,
                 selection_metric: RegressionMetricKind::Rmse,
+                operator_variant_models: Vec::new(),
             })
             .with_context(|| "process refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
@@ -1423,6 +1427,7 @@ fn main() -> Result<()> {
                 root_seed,
                 scheduler,
                 selection_metric: selection_metric.into(),
+                operator_variant_models: Vec::new(),
             })
             .with_context(|| "process CV+refit bundle capture failed")?;
             println!(
@@ -1502,8 +1507,13 @@ fn main() -> Result<()> {
                 root_seed,
                 scheduler,
                 selection_metric: selection_metric.into(),
+                operator_variant_models: Vec::new(),
             })
             .with_context(|| "process CV+refit capture before replay failed")?;
+            // This graph/campaign path carries no operator models, so `effective_plan` is always
+            // `None` and the replay binds to the union `plan` (unchanged). The `unwrap_or` keeps the
+            // binding consistent with the DSL path should that ever change.
+            let replay_plan = captured.effective_plan.as_ref().unwrap_or(&plan);
             let envelope_map = replay_envelope_map_for_bundle(&captured.bundle, &envelope);
             let replay_request = ReplayPhaseRequest {
                 bundle_id: captured.bundle.bundle_id.clone(),
@@ -1515,7 +1525,7 @@ fn main() -> Result<()> {
             let replay_results = execute_bundle_replay_with_scheduler(
                 scheduler,
                 BundleReplayExecution {
-                    plan: &plan,
+                    plan: replay_plan,
                     bundle: &captured.bundle,
                     replay_request: &replay_request,
                     prediction_cache_store: None,
@@ -1570,8 +1580,13 @@ fn main() -> Result<()> {
             // plan is built.
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
-            let plan =
-                build_plan_from_dsl_path_with_envelope(&dsl, &controllers, &envelope, plan_id)?;
+            let (plan, operator_variant_models) =
+                build_plan_and_operator_models_from_dsl_path_with_envelope(
+                    &dsl,
+                    &controllers,
+                    &envelope,
+                    plan_id,
+                )?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope)?;
             let process_config = process_adapter_runtime_config(
                 process_workers,
@@ -1598,6 +1613,7 @@ fn main() -> Result<()> {
                 root_seed,
                 scheduler,
                 selection_metric: selection_metric.into(),
+                operator_variant_models,
             })
             .with_context(|| "process DSL CV+refit bundle capture failed")?;
             println!(
@@ -1652,7 +1668,8 @@ fn main() -> Result<()> {
             scheduler,
             scheduler_workers,
         } => {
-            let plan = build_plan_from_dsl_path(&dsl, &controllers, plan_id)?;
+            let (plan, operator_variant_models) =
+                build_plan_and_operator_models_from_dsl_path(&dsl, &controllers, plan_id)?;
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
             let data_provider = data_provider_for_training_envelope(&plan, envelope.clone())?;
@@ -1676,8 +1693,13 @@ fn main() -> Result<()> {
                 root_seed,
                 scheduler,
                 selection_metric: selection_metric.into(),
+                operator_variant_models,
             })
             .with_context(|| "process DSL CV+refit capture before replay failed")?;
+            // For operator-SELECT the captured bundle carries the pruned winner graph + the selected
+            // operator variant, so the replay MUST bind to that pruned plan (it is what capture used);
+            // otherwise it replays against the union `plan`, unchanged.
+            let replay_plan = captured.effective_plan.as_ref().unwrap_or(&plan);
             let envelope_map = replay_envelope_map_for_bundle(&captured.bundle, &envelope);
             let replay_request = ReplayPhaseRequest {
                 bundle_id: captured.bundle.bundle_id.clone(),
@@ -1689,7 +1711,7 @@ fn main() -> Result<()> {
             let replay_results = execute_bundle_replay_with_scheduler(
                 scheduler,
                 BundleReplayExecution {
-                    plan: &plan,
+                    plan: replay_plan,
                     bundle: &captured.bundle,
                     replay_request: &replay_request,
                     prediction_cache_store: None,
@@ -1757,6 +1779,7 @@ fn main() -> Result<()> {
                 root_seed,
                 scheduler,
                 selection_metric: RegressionMetricKind::Rmse,
+                operator_variant_models: Vec::new(),
             })
             .with_context(|| "process refit capture before replay failed")?;
             let envelope_map = replay_envelope_map_for_bundle(&captured.bundle, &envelope);
@@ -2589,6 +2612,12 @@ struct CapturedRefitBundleInput<'a> {
     /// Metric native variant SELECT optimizes when `variant_id` is None and the plan is multi-variant
     /// (cv-refit path only). Defaults to `Rmse`; the non-CV refit path leaves it unused.
     selection_metric: RegressionMetricKind,
+    /// Operator-level variant models lowered from the pipeline DSL's (flat, single) operator
+    /// generator, when the run originated from a DSL spec. Empty for graph/campaign-driven runs (no
+    /// DSL is available). When present and no `variant_id` is pinned, the cv-refit path runs native
+    /// OPERATOR-SELECT: each choice is scored on its PRUNED plan and the winner FIT_CV+REFITs on its
+    /// pruned plan — NOT the Mechanism-B stacking union. More than one operator generator is rejected.
+    operator_variant_models: Vec<OperatorVariantModel>,
 }
 
 struct CapturedRefitBundle {
@@ -2600,6 +2629,13 @@ struct CapturedRefitBundle {
     fit_cv_oof_prediction_block_count: usize,
     refit_result_count: usize,
     observed_process_worker_count: usize,
+    /// The WINNER's PRUNED plan when operator-SELECT was applied (FIT_CV/REFIT/bundle-build ran on
+    /// it), else `None` (the union `input.plan` was used). A replay MUST validate + execute the
+    /// captured bundle against THIS plan, not the union — the captured bundle carries the pruned
+    /// graph fingerprint + the selected operator variant id, which the union plan does not have.
+    /// Only `build_bundle_from_cv_then_captured_refit` ever sets it; the non-CV capture leaves it
+    /// `None`.
+    effective_plan: Option<dag_ml_core::ExecutionPlan>,
 }
 
 fn selected_refit_variant(
@@ -2675,6 +2711,8 @@ fn build_bundle_from_captured_refit(
         fit_cv_oof_prediction_block_count: 0,
         refit_result_count: results.len(),
         observed_process_worker_count: observed_process_worker_count(&ctx),
+        // The non-CV refit path never prunes (no operator-SELECT) — the bundle matches input.plan.
+        effective_plan: None,
     })
 }
 
@@ -2682,17 +2720,126 @@ fn build_bundle_from_captured_refit(
 /// bundle can surface ALL variants' CV scores — not just the winner's. The winner's validation
 /// reports come fresh from the real FIT_CV run, so only the LOSER variants' reports are carried here
 /// (avoiding a duplicate `(node, variant, partition, fold, level)` key in the final `ScoreSet`).
+///
+/// `pruned_plan` is `Some` only for operator-SELECT: it is the union plan PRUNED to the winning
+/// operator choice (merge + meta-model + inactive choices elided), on which the downstream
+/// FIT_CV + REFIT + bundle capture must run instead of the stacking union. For param-variant SELECT
+/// (Mechanism A) and pinned/single-variant runs it is `None` (the union plan is the refit plan).
 struct ResolvedRefitVariant {
     variant_id: VariantId,
     loser_validation_reports: Vec<RegressionMetricReport>,
+    pruned_plan: Option<dag_ml_core::ExecutionPlan>,
+}
+
+/// Run native OPERATOR-SELECT off the input's operator-variant models: score each choice on its
+/// PRUNED plan, return the winner together with its pruned plan and the losers' OOF reports. Returns
+/// `Ok(None)` when scoring is off (no host targets) so the caller falls back to the default. The
+/// closure scores each choice's pruned plan with a fresh, variant-pinned context.
+fn resolve_operator_select(
+    input: &CapturedRefitBundleInput<'_>,
+) -> Result<Option<ResolvedRefitVariant>> {
+    let selected = select_best_operator_variant_from_models(
+        input.plan,
+        &input.operator_variant_models,
+        &RunId::new(input.run_id.clone())?,
+        Some(input.root_seed),
+        input.selection_metric,
+        |pruned_plan, ctx| {
+            execute_campaign_phase_with_scheduler(
+                input.scheduler,
+                pruned_plan,
+                input.runtime_controllers,
+                input.data_provider,
+                ctx,
+                Phase::FitCv,
+            )
+            .map(|_results| ())
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "per-variant FIT_CV for native operator selection failed: {error:#}"
+                ))
+            })
+        },
+    )
+    .with_context(|| "native operator-variant selection failed")?;
+    let Some(selection) = selected else {
+        return Ok(None);
+    };
+    let variant_id = selection.selected_variant_id.clone();
+    let loser_validation_reports = selection
+        .validation_reports
+        .into_iter()
+        .filter(|report| report.variant_id.as_ref() != Some(&variant_id))
+        .collect();
+    // Recompute the WINNER's pruned plan so FIT_CV + REFIT + bundle run on it (not the union). The
+    // single operator model has been guarded to exactly one by `select_best_operator_variant_from_models`.
+    let model = &input.operator_variant_models[0];
+    let pruned_plan =
+        pruned_plan_for_operator_variant(input.plan, model, &variant_id, input.root_seed)?;
+    Ok(Some(ResolvedRefitVariant {
+        variant_id,
+        loser_validation_reports,
+        pruned_plan: Some(pruned_plan),
+    }))
+}
+
+/// Rebuild the PRUNED plan for a chosen operator variant id by re-enumerating the model's variants
+/// (deterministic), matching the winner, and pruning the union to its active choice. Used to recover
+/// the winner's pruned plan after operator-SELECT picks it, so the real FIT_CV + REFIT run on the
+/// pruned candidate rather than the stacking union.
+fn pruned_plan_for_operator_variant(
+    union_plan: &dag_ml_core::ExecutionPlan,
+    model: &OperatorVariantModel,
+    variant_id: &VariantId,
+    root_seed: u64,
+) -> Result<dag_ml_core::ExecutionPlan> {
+    let variants = dag_ml_core::enumerate_variants(&model.generation_spec(), Some(root_seed))
+        .with_context(|| "failed to enumerate operator variants for winner prune")?;
+    let variant = variants
+        .iter()
+        .find(|variant| &variant.variant_id == variant_id)
+        .with_context(|| {
+            format!("operator-SELECT winner `{variant_id}` not found in enumerated variants")
+        })?;
+    let choice = variant
+        .choices
+        .get(&model.dimension.name)
+        .with_context(|| format!("operator winner `{variant_id}` missing operator dimension"))?;
+    let active_subsequence = choice.active_subsequence.as_ref().with_context(|| {
+        format!("operator winner `{variant_id}` choice has no active_subsequence")
+    })?;
+    let active_nodes = model
+        .active_nodes
+        .get(active_subsequence)
+        .with_context(|| {
+            format!("operator model has no active-node set for `{active_subsequence}`")
+        })?;
+    let all_choice_nodes = model
+        .active_nodes
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    prune_plan_to_active(union_plan, active_nodes, &all_choice_nodes, variant)
+        .with_context(|| "failed to prune union plan to operator-SELECT winner")
 }
 
 /// Decide which variant REFIT targets. An explicitly pinned `variant_id` (or a single-variant plan)
-/// behaves exactly as before via [`selected_refit_variant`]. When the caller did NOT pin a variant
-/// and the plan has multiple variants, dag-ml picks the best variant natively by its cross-fold OOF
-/// score for `input.selection_metric` (Option A: one single-variant FIT_CV per variant), before the
-/// real CV+refit run.
+/// behaves exactly as before via [`selected_refit_variant`]. When the caller did NOT pin a variant:
+///
+/// * if the input carries operator-variant models (a DSL operator generator), dag-ml runs native
+///   OPERATOR-SELECT (each choice scored on its PRUNED plan; the winner FIT_CV+REFITs on its pruned
+///   plan), or
+/// * otherwise, if the union plan has multiple param variants (Mechanism A), it picks the best by
+///   cross-fold OOF for `input.selection_metric` (one single-variant FIT_CV per variant).
 fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<ResolvedRefitVariant> {
+    if input.variant_id.is_none() && !input.operator_variant_models.is_empty() {
+        if let Some(resolved) = resolve_operator_select(input)? {
+            return Ok(resolved);
+        }
+        // Operator scoring was off (no host targets): fall back to the union plan's default variant,
+        // exactly today's behavior for unscored runs.
+    }
     if input.variant_id.is_none() && input.plan.variants.len() > 1 {
         let selected = select_best_variant_by_cv(
             input.plan,
@@ -2730,12 +2877,14 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
             return Ok(ResolvedRefitVariant {
                 variant_id,
                 loser_validation_reports,
+                pruned_plan: None,
             });
         }
     }
     Ok(ResolvedRefitVariant {
         variant_id: selected_refit_variant(input.plan, input.variant_id.clone())?,
         loser_validation_reports: Vec::new(),
+        pruned_plan: None,
     })
 }
 
@@ -2772,6 +2921,13 @@ fn build_bundle_from_cv_then_captured_refit(
     let resolved = resolve_refit_variant(&input)?;
     let selected_variant_id = resolved.variant_id;
     let loser_validation_reports = resolved.loser_validation_reports;
+    // For operator-SELECT the winner FIT_CV + REFIT + bundle capture run on the WINNER's PRUNED plan
+    // (merge + meta-model + inactive choices elided), NOT the Mechanism-B stacking union. For all
+    // other paths the union plan IS the refit plan. The pruned plan is moved into an owned local so
+    // the SAME instance threads out as `CapturedRefitBundle::effective_plan` for the replay path —
+    // no fresh reconstruction.
+    let pruned_plan = resolved.pruned_plan;
+    let plan: &dag_ml_core::ExecutionPlan = pruned_plan.as_ref().unwrap_or(input.plan);
 
     let mut artifact_store = InMemoryArtifactStore::new();
     let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
@@ -2779,7 +2935,7 @@ fn build_bundle_from_cv_then_captured_refit(
 
     let fit_cv_results = execute_campaign_phase_with_scheduler(
         input.scheduler,
-        input.plan,
+        plan,
         input.runtime_controllers,
         input.data_provider,
         &mut ctx,
@@ -2803,7 +2959,7 @@ fn build_bundle_from_cv_then_captured_refit(
         bail!("FIT_CV did not produce any validation OOF prediction blocks before refit");
     }
     let prediction_requirements = oof_prediction_requirements(
-        input.plan,
+        plan,
         ctx.prediction_store.blocks(),
         ctx.aggregated_prediction_store.blocks(),
     )?;
@@ -2824,7 +2980,7 @@ fn build_bundle_from_cv_then_captured_refit(
 
     let refit_results = execute_campaign_phase_with_artifact_store_and_scheduler(
         input.scheduler,
-        input.plan,
+        plan,
         input.runtime_controllers,
         input.data_provider,
         &mut artifact_store,
@@ -2845,7 +3001,7 @@ fn build_bundle_from_cv_then_captured_refit(
 
     let mut bundle = build_execution_bundle_with_prediction_contracts(
         BundleId::new(input.bundle_id)?,
-        input.plan,
+        plan,
         Some(selected_variant_id),
         input.selections,
         artifact_store.refit_artifacts(),
@@ -2859,9 +3015,9 @@ fn build_bundle_from_cv_then_captured_refit(
     // captured during native SELECT are merged in (each tagged its own variant_id, REPORT-ONLY —
     // no predictions/handles ride along), so the bundle surfaces every variant's CV score, not
     // just the winner's.
-    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(input.plan))?;
-    let mut scores = ctx.build_score_set(input.plan.id.clone(), None);
-    merge_loser_validation_reports(&mut scores, &input.plan.id, loser_validation_reports);
+    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
+    let mut scores = ctx.build_score_set(plan.id.clone(), None);
+    merge_loser_validation_reports(&mut scores, &plan.id, loser_validation_reports);
     bundle.scores = scores;
     bundle.metadata.insert(
         "fit_cv_result_count".to_string(),
@@ -2895,7 +3051,7 @@ fn build_bundle_from_cv_then_captured_refit(
         "total_lineage_count".to_string(),
         serde_json::json!(ctx.lineage.len()),
     );
-    bundle.validate_against_plan(input.plan)?;
+    bundle.validate_against_plan(plan)?;
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
@@ -2905,6 +3061,9 @@ fn build_bundle_from_cv_then_captured_refit(
         fit_cv_oof_prediction_block_count,
         refit_result_count: refit_results.len(),
         observed_process_worker_count: observed_process_worker_count(&ctx),
+        // Thread the SAME pruned winner plan out (operator-SELECT) — or `None` (union/param/no-variant)
+        // — so the replay validates + executes the captured bundle against exactly what capture used.
+        effective_plan: pruned_plan,
     })
 }
 
@@ -4625,12 +4784,29 @@ fn build_plan_from_dsl_path(
     controllers: &PathBuf,
     plan_id: String,
 ) -> Result<dag_ml_core::ExecutionPlan> {
+    Ok(build_plan_and_operator_models_from_dsl_path(dsl, controllers, plan_id)?.0)
+}
+
+/// Build a plan from a pipeline DSL AND lower its (flat, single) operator generator into operator
+/// variant models, off the SAME spec the plan is compiled from. The models are empty when the spec
+/// has no operator generator; the cv-refit path uses them to route native operator-SELECT.
+fn build_plan_and_operator_models_from_dsl_path(
+    dsl: &PathBuf,
+    controllers: &PathBuf,
+    plan_id: String,
+) -> Result<(dag_ml_core::ExecutionPlan, Vec<OperatorVariantModel>)> {
     let spec = read_pipeline_dsl_json(dsl)?;
     let registry = controller_registry_from_path(controllers)?;
+    let operator_variant_models = compile_operator_variant_models(&spec).with_context(|| {
+        format!(
+            "failed to lower operator variant models at {}",
+            dsl.display()
+        )
+    })?;
     let compiled =
         compile_pipeline_dsl_with_generation_and_controller_registry(&spec, &registry)
             .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
-    build_execution_plan(
+    let plan = build_execution_plan(
         plan_id,
         compiled.graph,
         compiled.campaign_template,
@@ -4641,7 +4817,8 @@ fn build_plan_from_dsl_path(
             "failed to build execution plan from pipeline DSL at {}",
             dsl.display()
         )
-    })
+    })?;
+    Ok((plan, operator_variant_models))
 }
 
 /// Build a plan from a pipeline DSL, first applying plan-time data-aware branch
@@ -4650,12 +4827,16 @@ fn build_plan_from_dsl_path(
 /// BEFORE compile/plan, since the envelope (which carries the metadata/tag
 /// values) is not visible at compile or `build_execution_plan` time. Specs with
 /// no auto-separation branch compile identically to `build_plan_from_dsl_path`.
-fn build_plan_from_dsl_path_with_envelope(
+///
+/// Also lowers the (flat, single) operator generator into operator variant models off the SAME
+/// (fanned-out) spec — so the active node ids match the compiled graph — for native operator-SELECT
+/// routing; the models are empty when the spec has no operator generator.
+fn build_plan_and_operator_models_from_dsl_path_with_envelope(
     dsl: &PathBuf,
     controllers: &PathBuf,
     envelope: &ExternalDataPlanEnvelope,
     plan_id: String,
-) -> Result<dag_ml_core::ExecutionPlan> {
+) -> Result<(dag_ml_core::ExecutionPlan, Vec<OperatorVariantModel>)> {
     let spec = read_pipeline_dsl_json(dsl)?;
     let spec = dag_ml_core::fan_out_data_aware_branches(&spec, envelope).with_context(|| {
         format!(
@@ -4664,10 +4845,16 @@ fn build_plan_from_dsl_path_with_envelope(
         )
     })?;
     let registry = controller_registry_from_path(controllers)?;
+    let operator_variant_models = compile_operator_variant_models(&spec).with_context(|| {
+        format!(
+            "failed to lower operator variant models at {}",
+            dsl.display()
+        )
+    })?;
     let compiled =
         compile_pipeline_dsl_with_generation_and_controller_registry(&spec, &registry)
             .with_context(|| format!("failed to compile pipeline DSL at {}", dsl.display()))?;
-    build_execution_plan(
+    let plan = build_execution_plan(
         plan_id,
         compiled.graph,
         compiled.campaign_template,
@@ -4678,7 +4865,8 @@ fn build_plan_from_dsl_path_with_envelope(
             "failed to build execution plan from pipeline DSL at {}",
             dsl.display()
         )
-    })
+    })?;
+    Ok((plan, operator_variant_models))
 }
 
 fn data_provider_for_training_envelope(
@@ -5391,5 +5579,640 @@ mod tests {
         });
         assert_eq!(result.unwrap_err().kind(), ErrorKind::BrokenPipe);
         assert_eq!(calls.get(), 1, "non-transient errors must not be retried");
+    }
+
+    // =======================================================================================
+    // C Phase 4 — operator-SELECT capture -> replay plan-binding (the replay MUST validate +
+    // execute the captured PRUNED-winner bundle against the pruned winner plan, not the union).
+    // =======================================================================================
+
+    /// A CLI test controller for the operator-SELECT fixture. Model nodes emit a fold-keyed
+    /// validation prediction (fold:0 -> s1, fold:1 -> s2) plus the matching `regression_targets`
+    /// (so native scoring fires) during FIT_CV; the prediction is offset per model node so the two
+    /// operator choices score differently. During REFIT it emits a refit artifact + a Final
+    /// prediction; during PREDICT (replay) it requires the materialized replay artifact handle (like
+    /// `CliMockController`) and emits a Final prediction. Non-model nodes (the filter + transforms)
+    /// just forward a data handle.
+    struct OperatorScoringCliController {
+        id: ControllerId,
+        offsets: BTreeMap<NodeId, f64>,
+    }
+
+    impl OperatorScoringCliController {
+        fn fold_sample(task: &NodeTask) -> Option<(SampleId, f64)> {
+            match task.fold_id.as_ref()?.as_str() {
+                "fold:0" => Some((SampleId::new("s1").unwrap(), 1.0)),
+                "fold:1" => Some((SampleId::new("s2").unwrap(), 2.0)),
+                _ => None,
+            }
+        }
+    }
+
+    impl RuntimeController for OperatorScoringCliController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
+            let is_model = matches!(task.node_plan.kind, dag_ml_core::NodeKind::Model);
+            // PREDICT/EXPLAIN replay: a model must receive its materialized refit artifact handle.
+            if matches!(task.phase, Phase::Predict | Phase::Explain) && is_model {
+                let has_artifact = task
+                    .input_handles
+                    .keys()
+                    .any(|key| key.starts_with("artifact:"));
+                if !has_artifact {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` did not receive a replay artifact handle",
+                        task.node_plan.node_id
+                    )));
+                }
+            }
+            let data_output = HandleRef {
+                handle: stable_handle(task.node_plan.node_id.as_str()),
+                kind: HandleKind::Data,
+                owner_controller: self.id.clone(),
+            };
+            let prediction_output = HandleRef {
+                handle: stable_handle(task.node_plan.node_id.as_str()),
+                kind: HandleKind::Prediction,
+                owner_controller: self.id.clone(),
+            };
+
+            let mut predictions = Vec::new();
+            let mut regression_targets = Vec::new();
+            if is_model {
+                if task.phase == Phase::FitCv {
+                    if let Some((sample_id, y_true)) = Self::fold_sample(task) {
+                        let offset = self
+                            .offsets
+                            .get(&task.node_plan.node_id)
+                            .copied()
+                            .unwrap_or(0.0);
+                        predictions.push(PredictionBlock {
+                            prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                            producer_node: task.node_plan.node_id.clone(),
+                            partition: PredictionPartition::Validation,
+                            fold_id: task.fold_id.clone(),
+                            sample_ids: vec![sample_id.clone()],
+                            values: vec![vec![y_true + offset]],
+                            target_names: vec!["y".to_string()],
+                        });
+                        regression_targets.push(RegressionTargetBlock {
+                            level: PredictionLevel::Sample,
+                            unit_ids: vec![PredictionUnitId::Sample(sample_id)],
+                            values: vec![vec![y_true]],
+                            target_names: vec!["y".to_string()],
+                        });
+                    }
+                } else {
+                    predictions.push(PredictionBlock {
+                        prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                        producer_node: task.node_plan.node_id.clone(),
+                        partition: prediction_partition_for_phase(task.phase),
+                        fold_id: None,
+                        sample_ids: vec![SampleId::new("s1").unwrap()],
+                        values: vec![vec![1.0]],
+                        target_names: vec!["y".to_string()],
+                    });
+                }
+            }
+
+            let artifacts = if task.phase == Phase::Refit && is_model {
+                vec![dag_ml_core::ArtifactRef {
+                    id: ArtifactId::new(format!("artifact:{}:refit", task.node_plan.node_id))?,
+                    kind: "mock_model".to_string(),
+                    controller_id: self.id.clone(),
+                    backend: None,
+                    uri: None,
+                    content_fingerprint: None,
+                    size_bytes: Some(128),
+                    plugin: None,
+                    plugin_version: None,
+                }]
+            } else {
+                Vec::new()
+            };
+            let artifact_handles = artifacts
+                .iter()
+                .map(|artifact| {
+                    (
+                        artifact.id.clone(),
+                        HandleRef {
+                            handle: stable_handle(artifact.id.as_str()),
+                            kind: HandleKind::Model,
+                            owner_controller: self.id.clone(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+
+            Ok(NodeResult {
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([
+                    ("x".to_string(), data_output.clone()),
+                    ("out".to_string(), data_output),
+                    ("oof".to_string(), prediction_output),
+                ]),
+                predictions,
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
+                explanations: Vec::new(),
+                shape_deltas: Vec::new(),
+                fit_influence_diagnostics: Vec::new(),
+                artifacts: artifacts.clone(),
+                artifact_handles,
+                regression_targets,
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:{}:{:?}:{}:{}",
+                        task.node_plan.node_id,
+                        task.phase,
+                        task.variant_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "base".to_string()),
+                        task.fold_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "nofold".to_string())
+                    ))?,
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: artifacts,
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
+    /// The operator-SELECT UNION plan (a hand-built STACKING graph mirroring the parity DSL:
+    /// `filter -> choice_i(transform -> model) -> merge:gen (oof) -> model:meta`).
+    fn operator_select_union_plan() -> dag_ml_core::ExecutionPlan {
+        let graph: GraphSpec = serde_json::from_str(
+            r#"
+            {
+              "id": "graph:cli.operator.select",
+              "interface": {"inputs": [], "outputs": []},
+              "nodes": [
+                {"id": "filter:y_outlier", "kind": "exclude", "operator": null, "params": {},
+                 "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+                           "outputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}]},
+                 "metadata": {}, "seed_label": null},
+                {"id": "transform:choice0__snv", "kind": "transform", "operator": null, "params": {},
+                 "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+                           "outputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}]},
+                 "metadata": {}, "seed_label": null},
+                {"id": "model:choice0__pls", "kind": "model", "operator": null, "params": {},
+                 "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+                           "outputs": [{"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}]},
+                 "metadata": {}, "seed_label": null},
+                {"id": "transform:choice1__msc", "kind": "transform", "operator": null, "params": {},
+                 "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+                           "outputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}]},
+                 "metadata": {}, "seed_label": null},
+                {"id": "model:choice1__ridge", "kind": "model", "operator": null, "params": {},
+                 "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+                           "outputs": [{"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}]},
+                 "metadata": {}, "seed_label": null},
+                {"id": "merge:gen", "kind": "prediction_join", "operator": null, "params": {},
+                 "ports": {"inputs": [{"name": "c0", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""},
+                                       {"name": "c1", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}],
+                           "outputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}]},
+                 "metadata": {}, "seed_label": null},
+                {"id": "model:meta", "kind": "model", "operator": null, "params": {},
+                 "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+                           "outputs": [{"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}]},
+                 "metadata": {}, "seed_label": null}
+              ],
+              "edges": [
+                {"source": {"node_id": "filter:y_outlier", "port_name": "x"}, "target": {"node_id": "transform:choice0__snv", "port_name": "x"},
+                 "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}},
+                {"source": {"node_id": "transform:choice0__snv", "port_name": "x"}, "target": {"node_id": "model:choice0__pls", "port_name": "x"},
+                 "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}},
+                {"source": {"node_id": "filter:y_outlier", "port_name": "x"}, "target": {"node_id": "transform:choice1__msc", "port_name": "x"},
+                 "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}},
+                {"source": {"node_id": "transform:choice1__msc", "port_name": "x"}, "target": {"node_id": "model:choice1__ridge", "port_name": "x"},
+                 "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}},
+                {"source": {"node_id": "model:choice0__pls", "port_name": "oof"}, "target": {"node_id": "merge:gen", "port_name": "c0"},
+                 "contract": {"kind": "prediction", "representation": null, "requires_oof": true, "requires_fold_alignment": false, "propagates_lineage": true}},
+                {"source": {"node_id": "model:choice1__ridge", "port_name": "oof"}, "target": {"node_id": "merge:gen", "port_name": "c1"},
+                 "contract": {"kind": "prediction", "representation": null, "requires_oof": true, "requires_fold_alignment": false, "propagates_lineage": true}},
+                {"source": {"node_id": "merge:gen", "port_name": "x"}, "target": {"node_id": "model:meta", "port_name": "x"},
+                 "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}}
+              ],
+              "search_space_fingerprint": null,
+              "metadata": {}
+            }
+            "#,
+        )
+        .unwrap();
+        let campaign: CampaignSpec = serde_json::from_str(
+            r#"
+            {
+              "id": "campaign:cli.operator.select",
+              "root_seed": 7,
+              "leakage_policy": {"split_unit": "sample", "forbid_origin_cross_fold": true,
+                "allow_observation_split_with_shared_target": false, "require_group_ids": false, "unsafe_flags": []},
+              "aggregation_policy": {"aggregation_level": "sample", "method": "mean", "weights": "none",
+                "emit_parallel_metrics": true, "selection_metric_level": "sample",
+                "store_raw_predictions": true, "store_aggregated_predictions": true},
+              "split_invocation": {
+                "id": "split:cli.operator.select", "controller_id": null,
+                "leakage_policy": {"split_unit": "sample", "forbid_origin_cross_fold": true,
+                  "allow_observation_split_with_shared_target": false, "require_group_ids": false, "unsafe_flags": []},
+                "params": {},
+                "fold_set": {
+                  "id": "folds:cli.operator.select",
+                  "sample_ids": ["s1", "s2"],
+                  "folds": [
+                    {"fold_id": "fold:0", "train_sample_ids": ["s2"], "validation_sample_ids": ["s1"], "metadata": {}},
+                    {"fold_id": "fold:1", "train_sample_ids": ["s1"], "validation_sample_ids": ["s2"], "metadata": {}}
+                  ],
+                  "sample_groups": {}
+                }
+              },
+              "generation": {"strategy": "none", "dimensions": [], "max_variants": 1},
+              "shape_plans": {},
+              "data_bindings": {},
+              "metadata": {}
+            }
+            "#,
+        )
+        .unwrap();
+        let manifests: Vec<ControllerManifest> = serde_json::from_str(
+            r#"
+            [
+              {"controller_id": "controller:filter", "controller_version": "0.1.0", "operator_kind": "exclude",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"},
+              {"controller_id": "controller:transform", "controller_version": "0.1.0", "operator_kind": "transform",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"},
+              {"controller_id": "controller:model", "controller_version": "0.1.0", "operator_kind": "model",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe", "emits_predictions", "consumes_oof_predictions", "emits_artifacts", "stateful"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"},
+              {"controller_id": "controller:merge", "controller_version": "0.1.0", "operator_kind": "prediction_join",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe", "emits_predictions", "consumes_oof_predictions"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"}
+            ]
+            "#,
+        )
+        .unwrap();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        build_execution_plan("plan:cli.operator.select", graph, campaign, &registry).unwrap()
+    }
+
+    /// The operator variant model for the union: one `active_subsequence`-only choice per
+    /// sub-sequence, active_nodes naming exactly each choice's `{transform, model}`.
+    fn operator_select_model() -> OperatorVariantModel {
+        serde_json::from_str(
+            r#"
+            {
+              "generator_id": "generator:preproc_model",
+              "dimension": {
+                "name": "generator:preproc_model.operators",
+                "choices": [
+                  {"label": "choice0", "value": "choice0", "active_subsequence": "choice0"},
+                  {"label": "choice1", "value": "choice1", "active_subsequence": "choice1"}
+                ]
+              },
+              "active_nodes": {
+                "choice0": ["transform:choice0__snv", "model:choice0__pls"],
+                "choice1": ["transform:choice1__msc", "model:choice1__ridge"]
+              }
+            }
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn operator_select_cli_controllers() -> RuntimeControllerRegistry {
+        let mut registry = RuntimeControllerRegistry::new();
+        registry
+            .register(Box::new(CliMockController {
+                id: ControllerId::new("controller:filter").unwrap(),
+                emit_refit_artifact: false,
+            }))
+            .unwrap();
+        registry
+            .register(Box::new(CliMockController {
+                id: ControllerId::new("controller:transform").unwrap(),
+                emit_refit_artifact: false,
+            }))
+            .unwrap();
+        registry
+            .register(Box::new(OperatorScoringCliController {
+                id: ControllerId::new("controller:model").unwrap(),
+                offsets: BTreeMap::from([
+                    (NodeId::new("model:choice0__pls").unwrap(), 0.0),
+                    (NodeId::new("model:choice1__ridge").unwrap(), 1.0),
+                ]),
+            }))
+            .unwrap();
+        registry
+            .register(Box::new(CliMockController {
+                id: ControllerId::new("controller:merge").unwrap(),
+                emit_refit_artifact: false,
+            }))
+            .unwrap();
+        registry
+    }
+
+    #[test]
+    fn operator_select_capture_replays_against_pruned_winner_not_union() {
+        // MUST-FIX coverage: an operator-SELECT capture prunes to the winning choice, so the captured
+        // bundle carries the PRUNED graph fingerprint + the selected operator variant. The replay
+        // path MUST bind to `captured.effective_plan` (the pruned winner), not the union — otherwise
+        // `execute_bundle_replay`'s `validate_against_plan` fails on fingerprint/variant mismatch.
+        let union_plan = operator_select_union_plan();
+        let model = operator_select_model();
+        let data_provider =
+            InMemoryDataProvider::new(ControllerId::new("controller:data.provider").unwrap());
+        let controllers = operator_select_cli_controllers();
+        let scheduler = SchedulerConfig::new(CliScheduler::Sequential, 1).unwrap();
+
+        let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
+            plan: &union_plan,
+            data_provider: &data_provider,
+            runtime_controllers: &controllers,
+            bundle_id: "bundle:cli.operator.select".to_string(),
+            variant_id: None,
+            selections: BTreeMap::new(),
+            run_id: "run:cli.operator.select".to_string(),
+            root_seed: 7,
+            scheduler,
+            selection_metric: RegressionMetricKind::Rmse,
+            operator_variant_models: vec![model.clone()],
+        })
+        .expect("operator-SELECT CV+refit capture must succeed");
+
+        // The capture threaded out the PRUNED winner plan (operator-SELECT fired because the model
+        // controller emitted regression_targets).
+        let effective_plan = captured
+            .effective_plan
+            .as_ref()
+            .expect("operator-SELECT must thread out the pruned winner plan");
+        // The pruned winner is choice0 (offset 0 -> RMSE 0); merge + meta + the sibling are elided.
+        assert!(effective_plan
+            .node_plans
+            .contains_key(&NodeId::new("model:choice0__pls").unwrap()));
+        for elided in ["merge:gen", "model:meta", "model:choice1__ridge"] {
+            assert!(
+                !effective_plan
+                    .node_plans
+                    .contains_key(&NodeId::new(elided).unwrap()),
+                "`{elided}` must be elided from the captured pruned plan"
+            );
+        }
+        // The captured bundle's fingerprint differs from the union (it was built on the pruned plan).
+        assert_ne!(
+            effective_plan.graph_fingerprint, union_plan.graph_fingerprint,
+            "the pruned winner graph fingerprint must differ from the union"
+        );
+
+        // The captured bundle validates against the PRUNED plan but NOT the union — this is exactly
+        // the first step `execute_bundle_replay` performs, so it proves the replay must use the
+        // pruned plan.
+        captured
+            .bundle
+            .validate_against_plan(effective_plan)
+            .expect("captured operator-SELECT bundle must validate against the pruned winner plan");
+        assert!(
+            captured.bundle.validate_against_plan(&union_plan).is_err(),
+            "the captured operator-SELECT bundle must NOT validate against the union plan"
+        );
+
+        // End-to-end: the replay (validate + execute) succeeds against the EFFECTIVE pruned plan and
+        // FAILS against the union — exactly the binding the CLI replay command now uses.
+        let replay_request = ReplayPhaseRequest {
+            bundle_id: captured.bundle.bundle_id.clone(),
+            phase: Phase::Predict,
+            data_envelope_keys: Vec::new(),
+        };
+        let envelopes = BTreeMap::new();
+        let mut replay_ctx = RunContext::new(
+            RunId::new("run:cli.operator.select:predict").unwrap(),
+            Some(7),
+        );
+        let replay_results = execute_bundle_replay_with_scheduler(
+            scheduler,
+            BundleReplayExecution {
+                plan: effective_plan,
+                bundle: &captured.bundle,
+                replay_request: &replay_request,
+                prediction_cache_store: None,
+                controllers: &controllers,
+                data_provider: &data_provider,
+                artifact_store: &captured.artifact_store,
+                data_envelopes: &envelopes,
+            },
+            &mut replay_ctx,
+        )
+        .expect("replay against the pruned winner plan must succeed");
+        assert!(
+            !replay_results.is_empty(),
+            "replay must produce results for the pruned winner"
+        );
+
+        // Replaying the SAME captured bundle against the UNION plan fails (the bug this fix closes).
+        let mut union_replay_ctx = RunContext::new(
+            RunId::new("run:cli.operator.select:predict:union").unwrap(),
+            Some(7),
+        );
+        let union_replay = execute_bundle_replay_with_scheduler(
+            scheduler,
+            BundleReplayExecution {
+                plan: &union_plan,
+                bundle: &captured.bundle,
+                replay_request: &replay_request,
+                prediction_cache_store: None,
+                controllers: &controllers,
+                data_provider: &data_provider,
+                artifact_store: &captured.artifact_store,
+                data_envelopes: &envelopes,
+            },
+            &mut union_replay_ctx,
+        );
+        assert!(
+            union_replay.is_err(),
+            "replaying a pruned operator-SELECT bundle against the union plan must fail"
+        );
+    }
+
+    /// A minimal NO-operator-generator, single-variant union plan: `filter -> transform -> model`,
+    /// sample-level (no aggregation/relations), reusing the operator fixture's manifests/folds.
+    fn simple_no_variant_plan() -> dag_ml_core::ExecutionPlan {
+        let graph: GraphSpec = serde_json::from_str(
+            r#"
+            {
+              "id": "graph:cli.no.variant",
+              "interface": {"inputs": [], "outputs": []},
+              "nodes": [
+                {"id": "filter:y_outlier", "kind": "exclude", "operator": null, "params": {},
+                 "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+                           "outputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}]},
+                 "metadata": {}, "seed_label": null},
+                {"id": "transform:choice0__snv", "kind": "transform", "operator": null, "params": {},
+                 "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+                           "outputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}]},
+                 "metadata": {}, "seed_label": null},
+                {"id": "model:choice0__pls", "kind": "model", "operator": null, "params": {},
+                 "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+                           "outputs": [{"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}]},
+                 "metadata": {}, "seed_label": null}
+              ],
+              "edges": [
+                {"source": {"node_id": "filter:y_outlier", "port_name": "x"}, "target": {"node_id": "transform:choice0__snv", "port_name": "x"},
+                 "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}},
+                {"source": {"node_id": "transform:choice0__snv", "port_name": "x"}, "target": {"node_id": "model:choice0__pls", "port_name": "x"},
+                 "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}}
+              ],
+              "search_space_fingerprint": null,
+              "metadata": {}
+            }
+            "#,
+        )
+        .unwrap();
+        let campaign: CampaignSpec = serde_json::from_str(
+            r#"
+            {
+              "id": "campaign:cli.no.variant",
+              "root_seed": 7,
+              "leakage_policy": {"split_unit": "sample", "forbid_origin_cross_fold": true,
+                "allow_observation_split_with_shared_target": false, "require_group_ids": false, "unsafe_flags": []},
+              "aggregation_policy": {"aggregation_level": "sample", "method": "mean", "weights": "none",
+                "emit_parallel_metrics": true, "selection_metric_level": "sample",
+                "store_raw_predictions": true, "store_aggregated_predictions": true},
+              "split_invocation": {
+                "id": "split:cli.no.variant", "controller_id": null,
+                "leakage_policy": {"split_unit": "sample", "forbid_origin_cross_fold": true,
+                  "allow_observation_split_with_shared_target": false, "require_group_ids": false, "unsafe_flags": []},
+                "params": {},
+                "fold_set": {
+                  "id": "folds:cli.no.variant",
+                  "sample_ids": ["s1", "s2"],
+                  "folds": [
+                    {"fold_id": "fold:0", "train_sample_ids": ["s2"], "validation_sample_ids": ["s1"], "metadata": {}},
+                    {"fold_id": "fold:1", "train_sample_ids": ["s1"], "validation_sample_ids": ["s2"], "metadata": {}}
+                  ],
+                  "sample_groups": {}
+                }
+              },
+              "generation": {"strategy": "none", "dimensions": [], "max_variants": 1},
+              "shape_plans": {},
+              "data_bindings": {},
+              "metadata": {}
+            }
+            "#,
+        )
+        .unwrap();
+        let manifests: Vec<ControllerManifest> = serde_json::from_str(
+            r#"
+            [
+              {"controller_id": "controller:filter", "controller_version": "0.1.0", "operator_kind": "exclude",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"},
+              {"controller_id": "controller:transform", "controller_version": "0.1.0", "operator_kind": "transform",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"},
+              {"controller_id": "controller:model", "controller_version": "0.1.0", "operator_kind": "model",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe", "emits_predictions", "consumes_oof_predictions", "emits_artifacts", "stateful"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"}
+            ]
+            "#,
+        )
+        .unwrap();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        build_execution_plan("plan:cli.no.variant", graph, campaign, &registry).unwrap()
+    }
+
+    #[test]
+    fn no_variant_capture_replays_against_union_plan_unchanged() {
+        // A no-operator-generator / single-variant capture must leave `effective_plan` None, so the
+        // replay binds to the union (input) plan exactly as before — operator-SELECT routing changes
+        // nothing for the non-operator path.
+        let plan = simple_no_variant_plan();
+        let data_provider =
+            InMemoryDataProvider::new(ControllerId::new("controller:data.provider").unwrap());
+        let controllers = operator_select_cli_controllers();
+        let scheduler = SchedulerConfig::new(CliScheduler::Sequential, 1).unwrap();
+
+        let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
+            plan: &plan,
+            data_provider: &data_provider,
+            runtime_controllers: &controllers,
+            bundle_id: "bundle:cli.no.variant".to_string(),
+            variant_id: None,
+            selections: BTreeMap::new(),
+            run_id: "run:cli.no.variant".to_string(),
+            root_seed: 7,
+            scheduler,
+            selection_metric: RegressionMetricKind::Rmse,
+            operator_variant_models: Vec::new(),
+        })
+        .expect("no-variant CV+refit capture must succeed");
+
+        assert!(
+            captured.effective_plan.is_none(),
+            "a non-operator-SELECT capture must NOT thread out a pruned plan (union is the refit plan)"
+        );
+        // The captured bundle validates against the union (input) plan — the unchanged path.
+        captured
+            .bundle
+            .validate_against_plan(&plan)
+            .expect("non-operator bundle must validate against the union plan");
+
+        // The replay binds to the union plan (effective_plan is None) and succeeds — unchanged.
+        let replay_request = ReplayPhaseRequest {
+            bundle_id: captured.bundle.bundle_id.clone(),
+            phase: Phase::Predict,
+            data_envelope_keys: Vec::new(),
+        };
+        let envelopes = BTreeMap::new();
+        let replay_plan = captured.effective_plan.as_ref().unwrap_or(&plan);
+        let mut replay_ctx =
+            RunContext::new(RunId::new("run:cli.no.variant:predict").unwrap(), Some(7));
+        let replay_results = execute_bundle_replay_with_scheduler(
+            scheduler,
+            BundleReplayExecution {
+                plan: replay_plan,
+                bundle: &captured.bundle,
+                replay_request: &replay_request,
+                prediction_cache_store: None,
+                controllers: &controllers,
+                data_provider: &data_provider,
+                artifact_store: &captured.artifact_store,
+                data_envelopes: &envelopes,
+            },
+            &mut replay_ctx,
+        )
+        .expect("no-variant replay against the union plan must succeed");
+        assert!(!replay_results.is_empty());
     }
 }

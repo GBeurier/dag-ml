@@ -11757,3 +11757,617 @@ fn refit_full_train_universe_excludes_held_out_test_partition() {
         "Predict (test/final) is host-resolved, never enumerated from the fold set"
     );
 }
+
+// ===========================================================================================
+// C Phase 4 (EXECUTION) — native operator-level generators: prune_plan_to_active +
+// select_best_operator_variant_by_cv. The union is a STACKING graph
+// (`filter -> choice_i(transform -> model) -> merge:gen (oof) -> model:meta`); operator `_or_` is
+// SELECT, so each candidate is the union PRUNED to one choice (merge + meta + sibling choices
+// elided) and scored on its own pruned plan. The winner = the lower-RMSE choice.
+// ===========================================================================================
+
+/// Scores a model node by `node_id` -> RMSE offset: `model:choice0__pls` predicts y_true exactly
+/// (offset 0 -> RMSE 0, the winner), `model:choice1__ridge` predicts y_true + 1 (offset 1). Mirrors
+/// `VariantScoringController` but keys the offset off the operator-choice's model NODE rather than a
+/// param override, which is how operator `_or_` distinguishes choices.
+struct OperatorScoringController {
+    id: ControllerId,
+    handle: u64,
+    offsets: BTreeMap<NodeId, f64>,
+}
+
+impl OperatorScoringController {
+    fn fold_sample(task: &NodeTask) -> Option<(SampleId, f64)> {
+        match task.fold_id.as_ref()?.as_str() {
+            "fold:0" => Some((SampleId::new("s1").unwrap(), 1.0)),
+            "fold:1" => Some((SampleId::new("s2").unwrap(), 2.0)),
+            _ => None,
+        }
+    }
+}
+
+impl RuntimeController for OperatorScoringController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Prediction,
+            owner_controller: self.id.clone(),
+        };
+        let mut predictions = Vec::new();
+        let mut regression_targets = Vec::new();
+        if let Some((sample_id, y_true)) = Self::fold_sample(task) {
+            let offset = self
+                .offsets
+                .get(&task.node_plan.node_id)
+                .copied()
+                .unwrap_or(0.0);
+            predictions.push(PredictionBlock {
+                prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: task.fold_id.clone(),
+                sample_ids: vec![sample_id.clone()],
+                values: vec![vec![y_true + offset]],
+                target_names: vec!["y".to_string()],
+            });
+            regression_targets.push(crate::metrics::RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: vec![crate::aggregation::PredictionUnitId::Sample(sample_id)],
+                values: vec![vec![y_true]],
+                target_names: vec!["y".to_string()],
+            });
+        }
+        let variant_label = task
+            .variant_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "base".to_string());
+        let fold_label = task
+            .fold_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string());
+        Ok(NodeResult {
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([("oof".to_string(), output)]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets,
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{:?}:{variant_label}:{fold_label}",
+                    task.node_plan.node_id, task.phase
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
+/// Build the operator-SELECT UNION fixture: a hand-built STACKING graph mirroring the parity DSL —
+/// `filter:y_outlier` (shared prefix) feeds two operator choices, each `transform -> model`, whose
+/// models fan into `merge:gen` (OOF) -> `model:meta` — plus the matching `OperatorVariantModel`
+/// (one `active_subsequence`-only choice per sub-sequence). The plan validates as a full union; the
+/// model's active_nodes name exactly each choice's `{transform, model}`.
+fn operator_select_union() -> (ExecutionPlan, OperatorVariantModel) {
+    let filter = "filter:y_outlier";
+    let (t0, m0) = ("transform:choice0__snv", "model:choice0__pls");
+    let (t1, m1) = ("transform:choice1__msc", "model:choice1__ridge");
+    let merge = "merge:gen";
+    let meta = "model:meta";
+
+    let data_edge = |source: &str, sport: &str, target: &str| EdgeSpec {
+        source: PortRef {
+            node_id: NodeId::new(source).unwrap(),
+            port_name: sport.to_string(),
+        },
+        target: PortRef {
+            node_id: NodeId::new(target).unwrap(),
+            port_name: "x".to_string(),
+        },
+        contract: EdgeContract {
+            requires_oof: false,
+            requires_fold_alignment: false,
+            ..EdgeContract::new(PortKind::Data, None)
+        },
+    };
+    let oof_edge = |source: &str, target_port: &str| EdgeSpec {
+        source: PortRef {
+            node_id: NodeId::new(source).unwrap(),
+            port_name: "oof".to_string(),
+        },
+        target: PortRef {
+            node_id: NodeId::new(merge).unwrap(),
+            port_name: target_port.to_string(),
+        },
+        contract: EdgeContract {
+            requires_oof: true,
+            requires_fold_alignment: false,
+            ..EdgeContract::new(PortKind::Prediction, None)
+        },
+    };
+
+    let graph = GraphSpec {
+        id: "g:operator.select".to_string(),
+        interface: GraphInterface::default(),
+        nodes: vec![
+            node(
+                filter,
+                NodeKind::Exclude,
+                vec![port("x", PortKind::Data)],
+                vec![port("x", PortKind::Data)],
+            ),
+            node(
+                t0,
+                NodeKind::Transform,
+                vec![port("x", PortKind::Data)],
+                vec![port("x", PortKind::Data)],
+            ),
+            node(
+                m0,
+                NodeKind::Model,
+                vec![port("x", PortKind::Data)],
+                vec![port("oof", PortKind::Prediction)],
+            ),
+            node(
+                t1,
+                NodeKind::Transform,
+                vec![port("x", PortKind::Data)],
+                vec![port("x", PortKind::Data)],
+            ),
+            node(
+                m1,
+                NodeKind::Model,
+                vec![port("x", PortKind::Data)],
+                vec![port("oof", PortKind::Prediction)],
+            ),
+            node(
+                merge,
+                NodeKind::PredictionJoin,
+                vec![
+                    port("c0", PortKind::Prediction),
+                    port("c1", PortKind::Prediction),
+                ],
+                vec![port("x", PortKind::Data)],
+            ),
+            node(
+                meta,
+                NodeKind::Model,
+                vec![port("x", PortKind::Data)],
+                vec![port("oof", PortKind::Prediction)],
+            ),
+        ],
+        edges: vec![
+            data_edge(filter, "x", t0),
+            data_edge(t0, "x", m0),
+            data_edge(filter, "x", t1),
+            data_edge(t1, "x", m1),
+            oof_edge(m0, "c0"),
+            oof_edge(m1, "c1"),
+            data_edge(merge, "x", meta),
+        ],
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+
+    let campaign = CampaignSpec {
+        inner_cv: None,
+        id: "campaign:operator.select".to_string(),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: "split:outer".to_string(),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(two_fold_set()),
+        }),
+        generation: Default::default(),
+        shape_plans: BTreeMap::new(),
+        data_bindings: BTreeMap::new(),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    };
+
+    let plan = build_execution_plan(
+        "plan:operator.select",
+        graph,
+        campaign,
+        &operator_select_manifests(),
+    )
+    .unwrap();
+
+    let active_nodes = BTreeMap::from([
+        (
+            "choice0".to_string(),
+            BTreeSet::from([NodeId::new(t0).unwrap(), NodeId::new(m0).unwrap()]),
+        ),
+        (
+            "choice1".to_string(),
+            BTreeSet::from([NodeId::new(t1).unwrap(), NodeId::new(m1).unwrap()]),
+        ),
+    ]);
+    let model = OperatorVariantModel {
+        generator_id: NodeId::new("generator:preproc_model").unwrap(),
+        dimension: GenerationDimension {
+            name: "generator:preproc_model.operators".to_string(),
+            choices: vec![
+                GenerationChoice {
+                    label: "choice0".to_string(),
+                    value: json!("choice0"),
+                    param_overrides: Vec::new(),
+                    active_subsequence: Some("choice0".to_string()),
+                },
+                GenerationChoice {
+                    label: "choice1".to_string(),
+                    value: json!("choice1"),
+                    param_overrides: Vec::new(),
+                    active_subsequence: Some("choice1".to_string()),
+                },
+            ],
+        },
+        active_nodes,
+    };
+    model.validate().unwrap();
+    (plan, model)
+}
+
+fn operator_select_manifests() -> crate::controller::ControllerRegistry {
+    let mut manifests = crate::controller::ControllerRegistry::new();
+    manifests
+        .register(controller_manifest(
+            "controller:transform",
+            NodeKind::Transform,
+        ))
+        .unwrap();
+    manifests
+        .register(controller_manifest("controller:model", NodeKind::Model))
+        .unwrap();
+    // The shared-prefix filter and the stacking merge get their own manifests so the union plan
+    // validates (the OOF edge target must declare consumes_oof_predictions).
+    let mut filter_manifest = controller_manifest("controller:filter", NodeKind::Exclude);
+    filter_manifest.supported_phases = BTreeSet::from([Phase::FitCv, Phase::Refit, Phase::Predict]);
+    manifests.register(filter_manifest).unwrap();
+    let mut merge_manifest = controller_manifest("controller:merge", NodeKind::PredictionJoin);
+    merge_manifest
+        .capabilities
+        .insert(ControllerCapability::EmitsPredictions);
+    merge_manifest
+        .capabilities
+        .insert(ControllerCapability::ConsumesOofPredictions);
+    merge_manifest.supported_phases = BTreeSet::from([Phase::FitCv, Phase::Refit, Phase::Predict]);
+    manifests.register(merge_manifest).unwrap();
+    manifests
+}
+
+fn operator_select_controllers() -> RuntimeControllerRegistry {
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:filter").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 2,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(OperatorScoringController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 3,
+            offsets: BTreeMap::from([
+                (NodeId::new("model:choice0__pls").unwrap(), 0.0),
+                (NodeId::new("model:choice1__ridge").unwrap(), 1.0),
+            ]),
+        }))
+        .unwrap();
+    controllers
+}
+
+/// Re-enumerate the model's variants and return `(variant, active_nodes, all_choice_nodes)` for the
+/// choice whose `active_subsequence` matches `choice_key`.
+fn operator_variant_for_choice<'a>(
+    model: &'a OperatorVariantModel,
+    choice_key: &str,
+) -> (VariantPlan, &'a BTreeSet<NodeId>, BTreeSet<NodeId>) {
+    let variants = enumerate_variants(&model.generation_spec(), Some(7)).unwrap();
+    let variant = variants
+        .into_iter()
+        .find(|variant| {
+            variant
+                .choices
+                .get(&model.dimension.name)
+                .and_then(|choice| choice.active_subsequence.as_deref())
+                == Some(choice_key)
+        })
+        .unwrap();
+    let active_nodes = model.active_nodes.get(choice_key).unwrap();
+    let all_choice_nodes = model
+        .active_nodes
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    (variant, active_nodes, all_choice_nodes)
+}
+
+#[test]
+fn prune_plan_to_active_elides_merge_meta_and_sibling_choices() {
+    // Pruning correctness: each pruned candidate's node_plans keys == shared_prefix ∪
+    // active_nodes[choice]; merge:gen + model:meta + the sibling choice are ELIDED (absent); every
+    // surviving edge has both endpoints in keep.
+    let (plan, model) = operator_select_union();
+    let (variant, active_nodes, all_choice_nodes) = operator_variant_for_choice(&model, "choice0");
+
+    let pruned = prune_plan_to_active(&plan, active_nodes, &all_choice_nodes, &variant).unwrap();
+
+    let filter = NodeId::new("filter:y_outlier").unwrap();
+    let t0 = NodeId::new("transform:choice0__snv").unwrap();
+    let m0 = NodeId::new("model:choice0__pls").unwrap();
+    let expected_keep: BTreeSet<NodeId> = BTreeSet::from([filter.clone(), t0.clone(), m0.clone()]);
+
+    let keep: BTreeSet<NodeId> = pruned.node_plans.keys().cloned().collect();
+    assert_eq!(
+        keep, expected_keep,
+        "kept set must be shared_prefix (filter) ∪ active_nodes[choice0] (transform+model)"
+    );
+    // The graph nodes mirror the node_plans exactly.
+    let graph_nodes: BTreeSet<NodeId> = pruned
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect();
+    assert_eq!(graph_nodes, expected_keep);
+
+    // The stacking merge + meta-model + the sibling choice are ELIDED.
+    for elided in [
+        "merge:gen",
+        "model:meta",
+        "transform:choice1__msc",
+        "model:choice1__ridge",
+    ] {
+        let id = NodeId::new(elided).unwrap();
+        assert!(
+            !pruned.node_plans.contains_key(&id),
+            "`{elided}` must be elided from the pruned SELECT candidate"
+        );
+    }
+
+    // Surviving edges only within keep — no dangling edge into the elided merge.
+    for edge in &pruned.graph_plan.graph.edges {
+        assert!(
+            keep.contains(&edge.source.node_id) && keep.contains(&edge.target.node_id),
+            "edge {} -> {} escapes the kept set",
+            edge.source.node_id,
+            edge.target.node_id
+        );
+    }
+    // No surviving edge targets the elided merge.
+    assert!(
+        !pruned
+            .graph_plan
+            .graph
+            .edges
+            .iter()
+            .any(|edge| edge.target.node_id.as_str() == "merge:gen"),
+        "no OOF edge into the elided merge may survive"
+    );
+    // The chosen model's rebuilt input_nodes point at the chosen transform only (the scheduler reads
+    // this; a stale union entry would reintroduce an inactive edge).
+    assert_eq!(pruned.node_plans[&m0].input_nodes, vec![t0.clone()]);
+    assert_eq!(pruned.node_plans[&t0].input_nodes, vec![filter.clone()]);
+    assert_eq!(pruned.variants, vec![variant]);
+    pruned.validate().unwrap();
+}
+
+#[test]
+fn prune_plan_to_active_is_deterministic() {
+    // Determinism: two prunes of the same choice are byte-identical.
+    let (plan, model) = operator_select_union();
+    let (variant, active_nodes, all_choice_nodes) = operator_variant_for_choice(&model, "choice1");
+    let left = prune_plan_to_active(&plan, active_nodes, &all_choice_nodes, &variant).unwrap();
+    let right = prune_plan_to_active(&plan, active_nodes, &all_choice_nodes, &variant).unwrap();
+    assert_eq!(
+        serde_json::to_string(&left).unwrap(),
+        serde_json::to_string(&right).unwrap(),
+        "two prunes of the same choice must be byte-identical"
+    );
+}
+
+#[test]
+fn validate_active_inputs_rejects_a_dangling_prune() {
+    // A deliberately-dangling prune: keep the model but DROP its feeding transform from the active
+    // set, so the model's required `x` input port has zero surviving sources. P4-1 must reject it.
+    let (plan, model) = operator_select_union();
+    let (variant, _active_nodes, all_choice_nodes) = operator_variant_for_choice(&model, "choice0");
+    // active = model only (transform omitted) -> model:choice0__pls.x dangles.
+    let dangling_active = BTreeSet::from([NodeId::new("model:choice0__pls").unwrap()]);
+    let error = prune_plan_to_active(&plan, &dangling_active, &all_choice_nodes, &variant)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("dangling") || error.contains("zero surviving sources"),
+        "P4-1 must reject a dangling prune: {error}"
+    );
+}
+
+#[test]
+fn select_best_operator_variant_runs_both_pruned_candidates_and_picks_winner() {
+    use crate::metrics::RegressionMetricKind;
+
+    // (1) A 2-variant operator `_or_` runs BOTH pruned SELECT candidates; the winner is the
+    // lower-RMSE choice (choice0, offset 0); both Validation reports are present and variant-tagged;
+    // and the winner refits on its pruned plan (see the dedicated pruning/CLI tests for refit).
+    let (plan, model) = operator_select_union();
+    let controllers = operator_select_controllers();
+    let run_id = RunId::new("run:operator.select").unwrap();
+
+    let selected = select_best_operator_variant_by_cv(
+        &plan,
+        &model,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |pruned_plan, ctx| {
+            // The candidate is the PRUNED plan, not the union: the merge + meta + sibling choice are
+            // gone, so exactly one terminal producer remains.
+            assert!(
+                !pruned_plan
+                    .node_plans
+                    .contains_key(&NodeId::new("merge:gen").unwrap()),
+                "the scored plan must be the pruned candidate, not the stacking union"
+            );
+            SequentialScheduler
+                .execute_campaign_phase(pruned_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())
+        },
+    )
+    .unwrap();
+
+    let selection = selected.expect("operator scoring is on (targets emitted)");
+    // The winner is choice0 (RMSE 0) — recover its variant id from the model's enumeration.
+    let (winner_variant, _, _) = operator_variant_for_choice(&model, "choice0");
+    assert_eq!(selection.selected_variant_id, winner_variant.variant_id);
+
+    // Both choices' Validation reports are present and tagged with their own variant ids.
+    let scored: BTreeSet<VariantId> = selection
+        .validation_reports
+        .iter()
+        .filter_map(|report| report.variant_id.clone())
+        .collect();
+    let expected: BTreeSet<VariantId> = enumerate_variants(&model.generation_spec(), Some(7))
+        .unwrap()
+        .into_iter()
+        .map(|variant| variant.variant_id)
+        .collect();
+    assert_eq!(
+        scored, expected,
+        "every operator choice must be scored+tagged"
+    );
+    assert!(
+        selection
+            .validation_reports
+            .iter()
+            .all(|report| report.partition == PredictionPartition::Validation),
+        "operator-SELECT retains only Validation (OOF) reports"
+    );
+}
+
+#[test]
+fn select_best_operator_variant_is_leakage_safe_inactive_choice_writes_no_validation() {
+    use crate::metrics::RegressionMetricKind;
+
+    // (5) Leakage: when scoring choice0, the inactive choice1's model is ABSENT from the pruned
+    // graph, so it is never fit and writes NO Validation block into that context. We assert this by
+    // inspecting each per-variant context's prediction store from inside the scoring closure.
+    let (plan, model) = operator_select_union();
+    let controllers = operator_select_controllers();
+    let run_id = RunId::new("run:operator.leakage").unwrap();
+
+    let c0_model = NodeId::new("model:choice0__pls").unwrap();
+    let c1_model = NodeId::new("model:choice1__ridge").unwrap();
+
+    select_best_operator_variant_by_cv(
+        &plan,
+        &model,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |pruned_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase(pruned_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())?;
+            // Exactly ONE of the two choice models produced blocks in this context; the other is
+            // physically absent from the pruned graph, so no inactive choice's OOF can leak.
+            let producers: BTreeSet<NodeId> = ctx
+                .prediction_store
+                .blocks()
+                .iter()
+                .map(|block| block.producer_node.clone())
+                .collect();
+            let has_c0 = producers.contains(&c0_model);
+            let has_c1 = producers.contains(&c1_model);
+            assert!(
+                has_c0 ^ has_c1,
+                "exactly one choice model may write Validation blocks in a pruned context (c0={has_c0}, c1={has_c1})"
+            );
+            Ok(())
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn select_best_operator_variant_from_models_rejects_multiple_generators() {
+    use crate::metrics::RegressionMetricKind;
+
+    // (6) Multiple operator generators are rejected for this phase (flat single operator generator
+    // scope), consistent with the Phase-3 nested rejection.
+    let (plan, model) = operator_select_union();
+    let mut second = model.clone();
+    second.generator_id = NodeId::new("generator:other").unwrap();
+    second.dimension.name = "generator:other.operators".to_string();
+    let models = vec![model, second];
+    let run_id = RunId::new("run:operator.multi").unwrap();
+
+    let error = select_best_operator_variant_from_models(
+        &plan,
+        &models,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |_plan, _ctx| Ok(()),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("does not support 2 operator generators"),
+        "multiple operator generators must be rejected: {error}"
+    );
+
+    // An empty model slice is a no-op (no operator generator to SELECT): returns Ok(None).
+    let none = select_best_operator_variant_from_models(
+        &plan,
+        &[],
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |_plan, _ctx| Ok(()),
+    )
+    .unwrap();
+    assert!(none.is_none());
+}

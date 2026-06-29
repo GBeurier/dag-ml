@@ -36,7 +36,9 @@ pub(crate) use crate::data::{
 };
 pub(crate) use crate::error::{DagMlError, Result};
 pub(crate) use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
-pub(crate) use crate::generation::{GenerationChoice, VariantPlan};
+pub(crate) use crate::generation::{
+    enumerate_variants, GenerationChoice, OperatorVariantModel, VariantPlan,
+};
 pub(crate) use crate::graph::{EdgeSpec, PortKind};
 pub(crate) use crate::ids::{
     ArtifactId, BranchId, BundleId, ControllerId, FoldId, LineageId, NodeId, RunId, SampleId,
@@ -50,7 +52,7 @@ pub(crate) use crate::metrics::{
 };
 pub(crate) use crate::oof::{PredictionBlock, PredictionPartition};
 pub(crate) use crate::phase::Phase;
-pub(crate) use crate::plan::{CampaignSpec, ExecutionPlan, NodePlan};
+pub(crate) use crate::plan::{prune_plan_to_active, CampaignSpec, ExecutionPlan, NodePlan};
 pub(crate) use crate::policy::{
     AggregationPolicy, FitInfluencePolicy, PredictionLevel, ShapeDelta, ShapeDeltaKind,
 };
@@ -378,30 +380,197 @@ where
             "cannot select a variant for a plan with no variants".to_string(),
         ));
     }
+    // Mechanism A: each variant is the FULL union plan narrowed to that single variant — params are
+    // applied per-node at task-build time, so cloning a one-variant plan is the per-variant scope.
+    score_and_rank_variants_by_cv(
+        &plan.variants,
+        run_id,
+        root_seed,
+        selection_metric,
+        plan_oof_partition_mode(plan),
+        |variant| {
+            Ok(ExecutionPlan {
+                variants: vec![variant.clone()],
+                ..plan.clone()
+            })
+        },
+        &mut run_single_variant_fit_cv,
+    )
+}
 
-    let mut candidates: Vec<CandidateScore> = Vec::with_capacity(plan.variants.len());
+/// Pick the best OPERATOR variant of an operator-generator UNION plan by its cross-validation score.
+///
+/// Where [`select_best_variant_by_cv`] narrows the SAME union plan to one variant (Mechanism A: param
+/// variants), operator-SELECT scores each candidate on its PRUNED plan: the Mechanism-B union
+/// compiles an operator generator as a STACKING graph (`choice -> merge:generator_predictions ->
+/// model:meta`), but operator `_or_` is SELECT, not stacking — so each candidate is the union pruned
+/// down to one choice's sub-sequence + the shared prefix, with the generator merge + meta-model +
+/// every inactive choice ELIDED (see [`prune_plan_to_active`]). The pruned candidate has exactly ONE
+/// terminal producer, so the single-producer guard in the shared ranking loop is satisfied.
+///
+/// `model` is the [`OperatorVariantModel`] lowered from the (single, flat) operator generator;
+/// `union_plan` is the compiled UNION plan; `selection_metric` drives the ranking direction
+/// (`RegressionMetricKind::objective`). MULTIPLE operator generators are REJECTED here (consistent
+/// with the Phase-3 nested-rejection: this phase scopes to a flat single operator generator).
+///
+/// LEAKAGE: each variant runs in a fresh, variant-pinned [`RunContext`] over its PRUNED graph — the
+/// inactive choices' models are physically absent, so they are never fit and no `requires_oof` edge
+/// can pull an inactive variant's OOF. The non-selected variants' OOF predictions never leave their
+/// transient contexts (only their scalar VALIDATION reports survive), exactly as in
+/// [`select_best_variant_by_cv`].
+///
+/// Returns `Ok(None)` when scoring is off (no host targets) — the caller keeps its default — and
+/// `Ok(Some(best))` when every variant scored.
+pub fn select_best_operator_variant_by_cv<F>(
+    union_plan: &ExecutionPlan,
+    model: &OperatorVariantModel,
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    selection_metric: RegressionMetricKind,
+    mut run_single_variant_fit_cv: F,
+) -> Result<Option<VariantSelection>>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
+    union_plan.validate()?;
+    model.validate()?;
+    let variants = enumerate_variants(&model.generation_spec(), root_seed)?;
+    if variants.is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "operator variant model `{}` produced no variants",
+            model.generator_id
+        )));
+    }
+    // The union of every choice's active set: subtracted from each candidate's ancestors so a prune
+    // never pulls in a sibling choice (or the elided merge/meta).
+    let all_choice_nodes = model
+        .active_nodes
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<NodeId>>();
+    // Map each enumerated variant back to its operator choice (the choice's `active_subsequence`
+    // keys `active_nodes`). The model is a single operator dimension, so each variant carries exactly
+    // one choice.
+    let dimension_name = &model.dimension.name;
+    score_and_rank_variants_by_cv(
+        &variants,
+        run_id,
+        root_seed,
+        selection_metric,
+        plan_oof_partition_mode(union_plan),
+        |variant| {
+            let choice = variant.choices.get(dimension_name).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "operator variant `{}` is missing the operator dimension `{dimension_name}`",
+                    variant.variant_id
+                ))
+            })?;
+            let active_subsequence = choice.active_subsequence.as_ref().ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "operator variant `{}` choice `{}` has no active_subsequence",
+                    variant.variant_id, choice.label
+                ))
+            })?;
+            let active_nodes = model.active_nodes.get(active_subsequence).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "operator variant model `{}` has no active-node set for `{active_subsequence}`",
+                    model.generator_id
+                ))
+            })?;
+            prune_plan_to_active(union_plan, active_nodes, &all_choice_nodes, variant)
+        },
+        &mut run_single_variant_fit_cv,
+    )
+}
+
+/// Route operator-SELECT from the operator-variant models lowered off a pipeline DSL
+/// ([`compile_operator_variant_models`](crate::compile_operator_variant_models)).
+///
+/// This phase scopes to a FLAT, SINGLE operator generator (consistent with the Phase-3
+/// nested-generator rejection), so MORE THAN ONE operator generator is rejected with a clear error.
+/// An empty slice means the spec has no operator generator at all — there is nothing to operator-SELECT,
+/// so it returns `Ok(None)` (the caller keeps its default variant). Exactly one model delegates to
+/// [`select_best_operator_variant_by_cv`].
+pub fn select_best_operator_variant_from_models<F>(
+    union_plan: &ExecutionPlan,
+    models: &[OperatorVariantModel],
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    selection_metric: RegressionMetricKind,
+    run_single_variant_fit_cv: F,
+) -> Result<Option<VariantSelection>>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
+    match models {
+        [] => Ok(None),
+        [model] => select_best_operator_variant_by_cv(
+            union_plan,
+            model,
+            run_id,
+            root_seed,
+            selection_metric,
+            run_single_variant_fit_cv,
+        ),
+        _ => Err(DagMlError::RuntimeValidation(format!(
+            "operator-SELECT does not support {} operator generators in one pipeline; this phase scopes to a flat single operator generator (generators: {})",
+            models.len(),
+            models
+                .iter()
+                .map(|model| model.generator_id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// The shared scoring + ranking loop behind [`select_best_variant_by_cv`] and
+/// [`select_best_operator_variant_by_cv`]: per variant, build its per-variant plan (`make_variant_plan`),
+/// run FIT_CV into a fresh variant-pinned [`RunContext`], collect the cross-fold OOF average, and
+/// rank by `selection_metric`. The two callers differ ONLY in `make_variant_plan` (clone-the-union
+/// vs. prune-to-active); everything below — the single-producer guard, the all-or-nothing scoring
+/// gate, the loser-report retention, and [`select_candidate`] ranking — is identical and lives here.
+fn score_and_rank_variants_by_cv<M, F>(
+    variants: &[VariantPlan],
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    selection_metric: RegressionMetricKind,
+    partition_mode: FoldPartitionMode,
+    mut make_variant_plan: M,
+    run_single_variant_fit_cv: &mut F,
+) -> Result<Option<VariantSelection>>
+where
+    M: FnMut(&VariantPlan) -> Result<ExecutionPlan>,
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
+    if variants.is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "cannot select a variant for a plan with no variants".to_string(),
+        ));
+    }
+
+    let mut candidates: Vec<CandidateScore> = Vec::with_capacity(variants.len());
     // Every ranked variant's VALIDATION (OOF) reports, each tagged with its variant_id, accumulated
     // so the caller can emit ALL variants' CV scores (not just the winner's) in the bundle.
     let mut variant_validation_reports: Vec<RegressionMetricReport> = Vec::new();
     // Tracks whether ANY variant emitted scores at all (host targets present), so an empty candidate
     // set can be told apart from "scoring genuinely off" (no targets) — see the post-loop branch.
     let mut any_scores_seen = false;
-    for variant in &plan.variants {
-        let single_variant_plan = ExecutionPlan {
-            variants: vec![variant.clone()],
-            ..plan.clone()
-        };
+    for variant in variants {
+        let variant_plan = make_variant_plan(variant)?;
         let mut ctx = RunContext::new(run_id.clone(), root_seed);
         ctx.variant_id = Some(variant.variant_id.clone());
-        run_single_variant_fit_cv(&single_variant_plan, &mut ctx)?;
-        ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
+        run_single_variant_fit_cv(&variant_plan, &mut ctx)?;
+        ctx.collect_cross_fold_validation_scores(partition_mode)?;
         if !ctx.score_collector.is_empty() {
             any_scores_seen = true;
         }
         // `cross_fold_validation_reports` emits one cross-fold OOF average PER producer. Native SELECT
         // ranks a variant by a single score, so a multi-producer DAG is ambiguous and refused rather
         // than silently ranked on whichever producer happened to be first (an explicit score-target
-        // producer is a future extension).
+        // producer is a future extension). For operator-SELECT the pruned candidate has exactly one
+        // terminal producer, so this guard is satisfied by construction.
         let avg_reports = ctx
             .score_collector
             .iter()
@@ -453,11 +622,11 @@ where
         // Native scoring is genuinely off (no host targets) — let the caller keep its default variant.
         return Ok(None);
     }
-    if candidates.len() != plan.variants.len() {
+    if candidates.len() != variants.len() {
         return Err(DagMlError::RuntimeValidation(format!(
             "native variant SELECT scored only {} of {} variants; cannot rank variants fairly",
             candidates.len(),
-            plan.variants.len()
+            variants.len()
         )));
     }
 
