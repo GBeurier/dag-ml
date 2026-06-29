@@ -7,6 +7,7 @@ pub(crate) const SCORE_METRICS: &[RegressionMetricKind] = &[
     RegressionMetricKind::Mae,
     RegressionMetricKind::R2,
     RegressionMetricKind::Accuracy,
+    RegressionMetricKind::BalancedAccuracy,
 ];
 
 /// True when a Sample-level target block covers EXACTLY the prediction block's samples — the pairing

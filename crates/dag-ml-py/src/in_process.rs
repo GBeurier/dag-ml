@@ -163,11 +163,13 @@ impl RuntimeController for PyOperatorController {
 }
 
 /// Map the host's selection-metric string to the core metric kind. Mirrors the
-/// CLI's `--selection-metric` (`rmse` | `accuracy`); anything else defaults to
-/// RMSE, exactly like the CLI's clap default.
+/// CLI's `--selection-metric` (`rmse` | `accuracy` | `balanced_accuracy`); anything
+/// else defaults to RMSE, exactly like the CLI's clap default. `balanced_accuracy`
+/// matches nirs4all's default classification ranking metric.
 fn parse_selection_metric(metric: &str) -> RegressionMetricKind {
     match metric {
         "accuracy" => RegressionMetricKind::Accuracy,
+        "balanced_accuracy" => RegressionMetricKind::BalancedAccuracy,
         _ => RegressionMetricKind::Rmse,
     }
 }

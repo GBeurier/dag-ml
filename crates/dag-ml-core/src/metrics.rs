@@ -23,6 +23,14 @@ pub enum RegressionMetricKind {
     /// label encoding, matched within 0.5). Meaningless on continuous regression targets (≈0) but
     /// always emitted so the host can score classification natively without a separate code path.
     Accuracy,
+    /// Balanced classification accuracy: the macro-average of per-class recall (mean over the
+    /// classes *present in `y_true`* of `correct_in_class / count_in_class`), matching scikit-learn's
+    /// `balanced_accuracy_score`. This is nirs4all's DEFAULT classification ranking metric (its
+    /// `_resolve_effective_metric` returns `balanced_accuracy` for a classification candidate), so it
+    /// must be emitted natively for the dag-ml engine to reproduce the legacy classification
+    /// `cv_best_score`. On a class-collapsed predictor it can be far below plain `accuracy`; on a
+    /// continuous regression target it is meaningless (≈ chance) but always emitted, like `accuracy`.
+    BalancedAccuracy,
 }
 
 impl RegressionMetricKind {
@@ -33,13 +41,14 @@ impl RegressionMetricKind {
             Self::Mae => "mae",
             Self::R2 => "r2",
             Self::Accuracy => "accuracy",
+            Self::BalancedAccuracy => "balanced_accuracy",
         }
     }
 
     pub fn objective(self) -> MetricObjective {
         match self {
             Self::Mse | Self::Rmse | Self::Mae => MetricObjective::Minimize,
-            Self::R2 | Self::Accuracy => MetricObjective::Maximize,
+            Self::R2 | Self::Accuracy | Self::BalancedAccuracy => MetricObjective::Maximize,
         }
     }
 }
@@ -578,8 +587,43 @@ fn compute_metric_per_target(
                     .count() as f64
                     / predictions.len() as f64
             }
+            RegressionMetricKind::BalancedAccuracy => {
+                balanced_accuracy_for_target(target_idx, predictions, targets)
+            }
         })
         .collect()
+}
+
+/// Balanced classification accuracy for one target column: the macro-average of per-class recall over
+/// the integer labels present in `y_true`, matching scikit-learn's `balanced_accuracy_score`. Labels
+/// are matched the same way as [`RegressionMetricKind::Accuracy`] — a prediction counts for true class
+/// `c` when `|pred - c| < 0.5` — so the two metrics share one label-encoding convention. Returns the
+/// unweighted mean of `correct_in_class / count_in_class`; an empty target set yields `0.0` (the rows
+/// are non-empty here because the scoring path rejects zero-row blocks before this is reached).
+fn balanced_accuracy_for_target(
+    target_idx: usize,
+    predictions: &[&[f64]],
+    targets: &[&[f64]],
+) -> f64 {
+    // Group sample rows by their (rounded) true class label, preserving determinism via BTreeMap.
+    let mut per_class: BTreeMap<i64, (usize, usize)> = BTreeMap::new();
+    for (prediction, target) in predictions.iter().zip(targets.iter()) {
+        let true_value = target[target_idx];
+        let class = true_value.round() as i64;
+        let entry = per_class.entry(class).or_insert((0, 0));
+        entry.1 += 1;
+        if (prediction[target_idx] - true_value).abs() < 0.5 {
+            entry.0 += 1;
+        }
+    }
+    if per_class.is_empty() {
+        return 0.0;
+    }
+    let recall_sum: f64 = per_class
+        .values()
+        .map(|(correct, count)| *correct as f64 / *count as f64)
+        .sum();
+    recall_sum / per_class.len() as f64
 }
 
 fn r2_for_target(target_idx: usize, predictions: &[&[f64]], targets: &[&[f64]]) -> f64 {
@@ -1159,5 +1203,140 @@ mod tests {
             ..set
         };
         assert!(blank.validate().is_err());
+    }
+
+    #[test]
+    fn accuracy_and_balanced_accuracy_match_sklearn_on_imbalanced_classification() {
+        // #60 root-cause lock: dag-ml emits BOTH plain `accuracy` and `balanced_accuracy`. nirs4all's
+        // DEFAULT classification ranking metric is balanced_accuracy (its `_resolve_effective_metric`),
+        // so the legacy `cv_best_score` for a classification sweep is balanced_accuracy — NOT plain
+        // accuracy. A class-collapsed predictor on imbalanced data makes the two diverge sharply (the
+        // 0.32-vs-0.16 STOP report). Ground truth here is scikit-learn on the same labels:
+        //   y    = [0,0,0,0,0,0, 1,1, 2,2]  (majority class 0)
+        //   pred = [0,0,0,0,0,0, 1,0, 0,0]  (collapses wrong rows to class 0)
+        //   accuracy_score          = 7/10 = 0.70
+        //   balanced_accuracy_score = mean(recall(c0)=6/6, recall(c1)=1/2, recall(c2)=0/2) = 0.50
+        let predictions = PredictionBlock {
+            prediction_id: Some("pred:classif".to_string()),
+            producer_node: NodeId::new("model:rf").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: None,
+            sample_ids: (0..10).map(|i| sid(&format!("s{i}"))).collect(),
+            values: vec![
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![1.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+            ],
+            target_names: vec!["y".to_string()],
+        };
+        let targets = RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: (0..10).map(|i| sample_unit(&format!("s{i}"))).collect(),
+            values: vec![
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![1.0],
+                vec![1.0],
+                vec![2.0],
+                vec![2.0],
+            ],
+            target_names: vec!["y".to_string()],
+        };
+
+        let report = score_regression_prediction_block(
+            &predictions,
+            &targets,
+            &[
+                RegressionMetricKind::Accuracy,
+                RegressionMetricKind::BalancedAccuracy,
+            ],
+        )
+        .unwrap();
+
+        assert_close(report.metrics["accuracy"], 0.70);
+        assert_close(report.metrics["balanced_accuracy"], 0.50);
+        // Both maximize — the host SELECT ranks them in the same direction.
+        assert_eq!(
+            RegressionMetricKind::BalancedAccuracy.objective(),
+            MetricObjective::Maximize
+        );
+    }
+
+    #[test]
+    fn cross_fold_balanced_accuracy_pools_oof_and_matches_sklearn() {
+        // The real #60 path: per-fold VALIDATION OOF blocks pooled into the `avg` report (nirs4all's
+        // `cv_best_score` row), scored against the combined y_true. Two disjoint KFold folds carry the
+        // same imbalanced class-collapse as the per-block lock above, so the POOLED OOF accuracy is
+        // 0.70 and pooled balanced_accuracy is 0.50 — proving the cross-fold reduction + metric agree
+        // with scikit-learn's `accuracy_score` / `balanced_accuracy_score` on the same labels, and that
+        // dag-ml's `accuracy` (0.70) was never wrong: it is simply a DIFFERENT metric from the legacy's
+        // default `balanced_accuracy` (0.50).
+        let model = NodeId::new("model:rf").unwrap();
+        let fold_block = |fold: &str, ids: &[usize], preds: &[f64]| PredictionBlock {
+            prediction_id: Some(format!("pred:{fold}")),
+            producer_node: model.clone(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new(fold).unwrap()),
+            sample_ids: ids.iter().map(|i| sid(&format!("s{i}"))).collect(),
+            values: preds.iter().map(|p| vec![*p]).collect(),
+            target_names: vec!["y".to_string()],
+        };
+        let target_record = |fold: &str, ids: &[usize], trues: &[f64]| RegressionTargetRecord {
+            producer_node: model.clone(),
+            variant_id: None,
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new(fold).unwrap()),
+            block: RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: ids.iter().map(|i| sample_unit(&format!("s{i}"))).collect(),
+                values: trues.iter().map(|t| vec![*t]).collect(),
+                target_names: vec!["y".to_string()],
+            },
+        };
+
+        // Fold 0 (samples 0..5): preds [0,0,0,1,0] vs true [0,0,0,1,2]
+        // Fold 1 (samples 5..10): preds [0,0,0,0,0] vs true [0,0,0,1,2]
+        // Pooled: true=[0,0,0,1,2,0,0,0,1,2], pred=[0,0,0,1,0,0,0,0,0,0]
+        //   accuracy          = 7/10 = 0.70
+        //   balanced_accuracy = mean(recall0=6/6, recall1=1/2, recall2=0/2) = 0.50
+        let f0 = (0..5).collect::<Vec<_>>();
+        let f1 = (5..10).collect::<Vec<_>>();
+        let blocks = vec![
+            fold_block("0", &f0, &[0.0, 0.0, 0.0, 1.0, 0.0]),
+            fold_block("1", &f1, &[0.0, 0.0, 0.0, 0.0, 0.0]),
+        ];
+        let targets = vec![
+            target_record("0", &f0, &[0.0, 0.0, 0.0, 1.0, 2.0]),
+            target_record("1", &f1, &[0.0, 0.0, 0.0, 1.0, 2.0]),
+        ];
+
+        let reports = cross_fold_validation_reports(
+            &blocks,
+            &targets,
+            &[
+                RegressionMetricKind::Accuracy,
+                RegressionMetricKind::BalancedAccuracy,
+            ],
+            FoldPartitionMode::Partition,
+        )
+        .unwrap();
+
+        assert_eq!(reports.len(), 1, "one pooled `avg` report for the producer");
+        let avg = &reports[0];
+        assert_eq!(avg.fold_id, Some(FoldId::new("avg").unwrap()));
+        assert_eq!(avg.row_count, 10, "all OOF samples pooled exactly once");
+        assert_close(avg.metrics["accuracy"], 0.70);
+        assert_close(avg.metrics["balanced_accuracy"], 0.50);
     }
 }
