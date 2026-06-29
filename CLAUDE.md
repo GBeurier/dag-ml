@@ -51,6 +51,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
+python3 scripts/check_so_freshness.py        # fail if the tracked _dag_ml.abi3.so predates its Rust sources
 python3 scripts/validate_contracts.py        # add DAG_ML_DATA_REPO=../dag-ml-data for cross-repo schema/fixture parity
 ```
 

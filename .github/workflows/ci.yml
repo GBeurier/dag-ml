@@ -41,6 +41,12 @@ jobs:
       DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history so scripts/check_so_freshness.py can compare the
+          # committed .so's last-commit time against its Rust sources; a
+          # shallow checkout reports the checkout commit for all paths and
+          # would make the guard false-negative.
+          fetch-depth: 0
       - name: Checkout dag-ml-data contract peer
         uses: actions/checkout@v6
         with:
@@ -80,6 +86,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Committed extension freshness
+        run: python scripts/check_so_freshness.py
       - name: Docs
         run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
       - name: Package dry run
