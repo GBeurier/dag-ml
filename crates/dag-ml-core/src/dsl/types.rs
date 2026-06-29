@@ -262,6 +262,8 @@ pub struct PipelineDslGenerationChoice {
     pub value: Option<serde_json::Value>,
     #[serde(default)]
     pub param_overrides: Vec<PipelineDslGenerationParamOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_subsequence: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PipelineDslGenerationParamOverride {

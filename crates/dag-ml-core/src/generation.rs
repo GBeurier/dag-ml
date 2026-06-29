@@ -22,6 +22,12 @@ pub struct GenerationChoice {
     pub value: serde_json::Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_overrides: Vec<GenerationParamOverride>,
+    /// Operator-level variant: names the alternative sub-sequence this choice selects, distinct
+    /// from a parameter variant (`param_overrides`). A choice with neither field is a value-only
+    /// dimension; a choice may carry param_overrides XOR active_subsequence, never both. Skipped
+    /// (None) when absent, so existing specs/fixtures stay byte-identical (Phase 2: no behavior).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_subsequence: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -37,6 +43,20 @@ impl GenerationChoice {
             return Err(DagMlError::CampaignValidation(format!(
                 "generation dimension `{dimension_name}` has an empty choice label"
             )));
+        }
+        if !self.param_overrides.is_empty() && self.active_subsequence.is_some() {
+            return Err(DagMlError::CampaignValidation(format!(
+                "generation choice `{}` in dimension `{dimension_name}` cannot set both param_overrides and active_subsequence",
+                self.label
+            )));
+        }
+        if let Some(active_subsequence) = &self.active_subsequence {
+            if active_subsequence.trim().is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "generation choice `{}` in dimension `{dimension_name}` has an empty active_subsequence",
+                    self.label
+                )));
+            }
         }
         for override_spec in &self.param_overrides {
             override_spec.validate(dimension_name, &self.label)?;
@@ -340,6 +360,7 @@ mod tests {
             label: label.to_string(),
             value,
             param_overrides: Vec::new(),
+            active_subsequence: None,
         }
     }
 
@@ -355,6 +376,7 @@ mod tests {
                 node_id: NodeId::new(node_id).unwrap(),
                 params,
             }],
+            active_subsequence: None,
         }
     }
 
@@ -401,6 +423,105 @@ mod tests {
         assert_ne!(left[0].variant_id, left[1].variant_id);
         assert_eq!(left[0].choices["model"].label, "pls");
         assert_eq!(left[0].choices["window"].label, "short");
+    }
+
+    /// Phase 2 byte-identity gate for the additive `active_subsequence` / `variant_label` fields.
+    ///
+    /// The committed example specs/fixtures carry NEITHER new field, so `skip_serializing_if =
+    /// "Option::is_none"` must keep them invisible: the structs round-trip to byte-identical JSON
+    /// and produce byte-identical fingerprints (`generation_spec_fingerprint` /
+    /// `stable_json_fingerprint`) as before the struct change. The fingerprints are pinned to the
+    /// values produced before the fields existed, proving pure additivity / zero behavior change.
+    #[test]
+    fn additive_variant_fields_are_invisible_when_absent() {
+        // `examples/campaign_oof_generation.json` — a CampaignSpec whose `generation` block is a
+        // value-only cartesian search (no param_overrides, no active_subsequence on any choice).
+        let campaign: crate::plan::CampaignSpec = serde_json::from_str(include_str!(
+            "../../../examples/campaign_oof_generation.json"
+        ))
+        .unwrap();
+        let generation_serialized = serde_json::to_string(&campaign.generation).unwrap();
+        assert!(
+            !generation_serialized.contains("active_subsequence"),
+            "absent active_subsequence must not serialize: {generation_serialized}"
+        );
+        // Fingerprint pinned to the pre-field value: unchanged proves the new field is invisible.
+        assert_eq!(
+            generation_spec_fingerprint(&campaign.generation).unwrap(),
+            "8d10bce07876d936ab6a62f13063a8d241c967a1578b6d2295a43c26275edf47"
+        );
+
+        // `examples/fixtures/score_set.json` — a ScoreSet whose reports carry no variant_label
+        // (one report carries a variant_id, none carry variant_label).
+        let score_set: crate::metrics::ScoreSet =
+            serde_json::from_str(include_str!("../../../examples/fixtures/score_set.json"))
+                .unwrap();
+        let score_set_serialized = serde_json::to_string(&score_set).unwrap();
+        assert!(
+            !score_set_serialized.contains("variant_label"),
+            "absent variant_label must not serialize: {score_set_serialized}"
+        );
+        assert_eq!(
+            stable_json_fingerprint(&score_set).unwrap(),
+            "e99fa78d79ef2a2b99927276cfaf4c265210abf3cf8b3575477355264fda4a9d"
+        );
+    }
+
+    #[test]
+    fn choice_cannot_set_both_param_overrides_and_active_subsequence() {
+        let choice = GenerationChoice {
+            label: "both".to_string(),
+            value: json!("both"),
+            param_overrides: vec![GenerationParamOverride {
+                node_id: NodeId::new("model:base").unwrap(),
+                params: BTreeMap::from([("n_components".to_string(), json!(4))]),
+            }],
+            active_subsequence: Some("alt".to_string()),
+        };
+        let error = choice.validate("dim").unwrap_err().to_string();
+        assert!(
+            error.contains("cannot set both param_overrides and active_subsequence"),
+            "{error}"
+        );
+
+        // Only-param_overrides (existing param variant) stays legal.
+        let param_only = GenerationChoice {
+            active_subsequence: None,
+            ..choice.clone()
+        };
+        param_only.validate("dim").unwrap();
+
+        // Only-active_subsequence (operator variant) stays legal.
+        let operator_only = GenerationChoice {
+            param_overrides: Vec::new(),
+            ..choice.clone()
+        };
+        operator_only.validate("dim").unwrap();
+
+        // Neither (value-only) stays legal.
+        let value_only = GenerationChoice {
+            param_overrides: Vec::new(),
+            active_subsequence: None,
+            ..choice
+        };
+        value_only.validate("dim").unwrap();
+    }
+
+    #[test]
+    fn choice_rejects_empty_active_subsequence() {
+        // The schema (minLength:1) and both Python validator paths require a non-empty
+        // active_subsequence; the Rust validate must reject empty/whitespace identically so
+        // CampaignSpec/ExecutionPlan validation does not accept a contract shape they reject.
+        for blank in ["", "   "] {
+            let choice = GenerationChoice {
+                label: "op".to_string(),
+                value: json!("op"),
+                param_overrides: Vec::new(),
+                active_subsequence: Some(blank.to_string()),
+            };
+            let error = choice.validate("dim").unwrap_err().to_string();
+            assert!(error.contains("has an empty active_subsequence"), "{error}");
+        }
     }
 
     #[test]

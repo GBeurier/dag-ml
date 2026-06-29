@@ -47,9 +47,9 @@ pub(crate) fn compile_explicit_generation_choice(
     choice: &PipelineDslGenerationChoice,
     node_ids: &BTreeSet<NodeId>,
 ) -> Result<GenerationChoice> {
-    if choice.param_overrides.is_empty() {
+    if choice.param_overrides.is_empty() && choice.active_subsequence.is_none() {
         return Err(DagMlError::GraphValidation(format!(
-            "pipeline DSL generation choice `{}` in dimension `{dimension_name}` has no param_overrides",
+            "pipeline DSL generation choice `{}` in dimension `{dimension_name}` has neither param_overrides nor active_subsequence",
             choice.label
         )));
     }
@@ -69,14 +69,16 @@ pub(crate) fn compile_explicit_generation_choice(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let value = match &choice.value {
-        Some(value) => value.clone(),
-        None => explicit_generation_choice_value(&param_overrides)?,
+    let value = match (&choice.value, choice.active_subsequence.as_ref()) {
+        (Some(value), _) => value.clone(),
+        (None, Some(active_subsequence)) => serde_json::Value::String(active_subsequence.clone()),
+        (None, None) => explicit_generation_choice_value(&param_overrides)?,
     };
     Ok(GenerationChoice {
         label: choice.label.clone(),
         value,
         param_overrides,
+        active_subsequence: choice.active_subsequence.clone(),
     })
 }
 pub(crate) fn explicit_generation_choice_value(
@@ -125,6 +127,7 @@ pub(crate) fn compile_variant_choice_dimension(
                         node_id: node_id.clone(),
                         params: choice.params.clone(),
                     }],
+                    active_subsequence: None,
                 })
             })
             .collect::<Result<Vec<_>>>()?,
@@ -484,6 +487,7 @@ pub(crate) fn compile_pick_arrange_generator(
                     node_id: node_id.clone(),
                     params,
                 }],
+                active_subsequence: None,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -524,6 +528,7 @@ pub(crate) fn single_param_generation_choice(
             node_id: node_id.clone(),
             params,
         }],
+        active_subsequence: None,
     })
 }
 pub(crate) fn multi_param_generation_choice(
@@ -552,6 +557,7 @@ pub(crate) fn multi_param_generation_choice(
             node_id: node_id.clone(),
             params,
         }],
+        active_subsequence: None,
     })
 }
 pub(crate) fn build_grid_rows(

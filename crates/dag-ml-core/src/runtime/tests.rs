@@ -2231,6 +2231,7 @@ fn parallel_stress_campaign() -> CampaignSpec {
                                 ]),
                             })
                             .collect(),
+                        active_subsequence: None,
                     })
                     .collect(),
             }],
@@ -2875,11 +2876,13 @@ fn campaign_scheduler_expands_variants_and_cv_folds() {
                             label: "pls".to_string(),
                             value: json!("pls"),
                             param_overrides: Vec::new(),
+                            active_subsequence: None,
                         },
                         GenerationChoice {
                             label: "rf".to_string(),
                             value: json!("rf"),
                             param_overrides: Vec::new(),
+                            active_subsequence: None,
                         },
                     ],
                 }],
@@ -2941,6 +2944,7 @@ fn node_tasks_expose_generation_variant_context() {
                                 node_id: NodeId::new("model:pls").unwrap(),
                                 params: BTreeMap::from([("n_components".to_string(), json!(4))]),
                             }],
+                            active_subsequence: None,
                         },
                         GenerationChoice {
                             label: "rf".to_string(),
@@ -2949,6 +2953,7 @@ fn node_tasks_expose_generation_variant_context() {
                                 node_id: NodeId::new("model:pls").unwrap(),
                                 params: BTreeMap::from([("trees".to_string(), json!(64))]),
                             }],
+                            active_subsequence: None,
                         },
                     ],
                 }],
@@ -7355,6 +7360,7 @@ fn variant_scoring_campaign(offsets: Vec<(&str, f64)>) -> CampaignSpec {
                 node_id: NodeId::new("model:pls").unwrap(),
                 params: BTreeMap::from([("n_components".to_string(), json!(offset))]),
             }],
+            active_subsequence: None,
         })
         .collect::<Vec<_>>();
     let max_variants = Some(choices.len());
@@ -7502,6 +7508,7 @@ fn two_model_variant_scoring_campaign(offsets: Vec<(&str, f64)>) -> CampaignSpec
                 node_id: NodeId::new("model:a").unwrap(),
                 params: BTreeMap::from([("n_components".to_string(), json!(offset))]),
             }],
+            active_subsequence: None,
         })
         .collect::<Vec<_>>();
     let max_variants = Some(choices.len());
@@ -9292,6 +9299,7 @@ fn scoring_merge_plan_and_provider(
                         params: BTreeMap::from([("n_components".to_string(), json!(offset))]),
                     },
                 ],
+                active_subsequence: None,
             })
             .collect::<Vec<_>>();
         let max_variants = Some(choices.len());

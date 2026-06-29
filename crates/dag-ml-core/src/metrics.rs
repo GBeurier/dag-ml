@@ -189,6 +189,11 @@ pub struct RegressionMetricReport {
     /// single-variant runs, so existing fixtures/fingerprints are byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_id: Option<VariantId>,
+    /// Human-readable label of the variant this score belongs to (operator/param dimension choice
+    /// label), the display counterpart to `variant_id`. Skipped (None) when absent, so existing
+    /// fixtures/fingerprints stay byte-identical (Phase 2: additive, no behavioral wiring).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant_label: Option<String>,
     pub partition: PredictionPartition,
     pub fold_id: Option<FoldId>,
     pub level: PredictionLevel,
@@ -523,6 +528,7 @@ fn score_regression_rows(
         prediction_id: predictions.origin.prediction_id,
         producer_node: predictions.origin.producer_node,
         variant_id: None,
+        variant_label: None,
         partition: predictions.origin.partition,
         fold_id: predictions.origin.fold_id,
         level: predictions.level,
@@ -1231,6 +1237,7 @@ mod tests {
             prediction_id: None,
             producer_node: NodeId::new("model:compat.0").unwrap(),
             variant_id: None,
+            variant_label: None,
             partition,
             fold_id: fold.map(|value| FoldId::new(value).unwrap()),
             level: PredictionLevel::Sample,

@@ -1193,6 +1193,38 @@ fn compiles_coordinated_generation_dimensions() {
 }
 
 #[test]
+fn compiles_active_subsequence_only_generation_choice() {
+    // An operator-level variant: the DSL choice carries ONLY active_subsequence (no
+    // param_overrides). It must compile to a GenerationChoice that preserves the
+    // active_subsequence and has empty param_overrides, with the value defaulting to the
+    // active_subsequence string when no explicit value is supplied.
+    let choice = PipelineDslGenerationChoice {
+        label: "snv_branch".to_string(),
+        value: None,
+        param_overrides: Vec::new(),
+        active_subsequence: Some("seq:snv".to_string()),
+    };
+    let node_ids = BTreeSet::from([NodeId::new("model:base").unwrap()]);
+
+    let compiled = compile_explicit_generation_choice("preprocessing", &choice, &node_ids).unwrap();
+
+    assert_eq!(compiled.label, "snv_branch");
+    assert_eq!(compiled.active_subsequence.as_deref(), Some("seq:snv"));
+    assert!(compiled.param_overrides.is_empty());
+    assert_eq!(compiled.value, serde_json::json!("seq:snv"));
+
+    // A choice with NEITHER param_overrides nor active_subsequence is rejected.
+    let empty = PipelineDslGenerationChoice {
+        label: "nothing".to_string(),
+        value: None,
+        param_overrides: Vec::new(),
+        active_subsequence: None,
+    };
+    let error = compile_explicit_generation_choice("preprocessing", &empty, &node_ids).unwrap_err();
+    assert!(format!("{error}").contains("has neither param_overrides nor active_subsequence"));
+}
+
+#[test]
 fn refuses_coordinated_generation_for_unknown_node() {
     let spec: PipelineDslSpec = serde_json::from_str(
         r#"{
@@ -2801,6 +2833,7 @@ fn fan_out_rejects_generation_override_on_fanned_node() {
                 node_id: NodeId::new("model:site").unwrap(),
                 params: BTreeMap::from([("alpha".to_string(), serde_json::json!(0.1))]),
             }],
+            active_subsequence: None,
         }],
     }];
     let envelope = fanout_envelope(&[("s1", "A", &[]), ("s2", "B", &[])]);
