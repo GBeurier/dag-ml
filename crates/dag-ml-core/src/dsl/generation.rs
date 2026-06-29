@@ -39,6 +39,7 @@ pub(crate) fn lower_operator_variant_model(
     }
     let mut dimension_choices = Vec::with_capacity(choices.len());
     let mut active_nodes = BTreeMap::<String, BTreeSet<NodeId>>::new();
+    let mut variant_labels = BTreeMap::<String, String>::new();
     for (choice_index, choice) in choices.into_iter().enumerate() {
         let (choice, minted) = namespace_generated_sequence(step, choice, choice_index)?;
         validate_branch_id(&choice.id)?;
@@ -54,6 +55,12 @@ pub(crate) fn lower_operator_variant_model(
                 step.id, choice.id
             )));
         }
+        // Phase 5: the cross-language content fingerprint of this choice's LOWERED operator
+        // sub-sequence. Computed from `choice.steps` AFTER namespacing — but the canonical form
+        // names operators by `kind`/`class`/`params` CONTENT (not by the minted node ids), so it is
+        // namespace-independent and the nirs4all host can recompute the SAME bytes from its own
+        // operator-choice config (see `operator_variant_label`).
+        variant_labels.insert(choice.id.clone(), operator_variant_label(&choice.steps)?);
         dimension_choices.push(GenerationChoice {
             label: choice.id.clone(),
             value: serde_json::Value::String(choice.id.clone()),
@@ -69,9 +76,205 @@ pub(crate) fn lower_operator_variant_model(
             choices: dimension_choices,
         },
         active_nodes,
+        variant_labels,
     };
     model.validate()?;
     Ok(model)
+}
+
+/// Compute a choice's `variant_label`: the cross-language content fingerprint (hex sha256) of a
+/// LOWERED operator sub-sequence (Phase 5).
+///
+/// CANONICAL FORM (a strict cross-language CONTRACT — the nirs4all host recomputes the SAME bytes
+/// to map a per-variant report back to its operator-choice config): the sub-sequence is rendered as
+/// a JSON array of steps in step order, each step the object
+/// `{"kind": <step-kind str>, "class": <operator FQN str>, "params": {<sorted JSON-safe params>}}`.
+/// Object keys are sorted everywhere (the value is built from a `serde_json::Map`, which is
+/// BTreeMap-backed in this build, and params are carried in a `BTreeMap`); numbers are finite-only
+/// (no NaN/Inf — rejected defensively, though JSON-sourced params can never carry them); a bool is
+/// NOT a number; and the param value forms are preserved exactly as the DSL carries them (`1` is not
+/// coerced to `1.0`). `variant_label` is the hex sha256 of `serde_json::to_vec` over that canonical
+/// array — the SAME `sha256(serde_json::to_vec(..))` primitive
+/// [`stable_json_fingerprint`](crate::campaign::stable_json_fingerprint) uses, applied to the
+/// explicitly-built canonical value (never a struct's field order).
+///
+/// `class` is the step's operator FQN as a string: a bare-string operator (`"SNV"`) renders to
+/// itself; an object operator (`{"class": "sklearn...", ...}`) renders to its compact canonical JSON
+/// text (sorted keys, no whitespace), so any operator shape yields a deterministic string both sides
+/// reproduce identically. Structural steps that carry no operator (`merge`, `sequential`, `branch`,
+/// `generator`, `concat_transform`) render `class` as the empty string and `params` as `{}`; a
+/// `merge_model` step carries its operator like a model step.
+pub fn operator_variant_label(steps: &[PipelineDslStep]) -> Result<String> {
+    crate::campaign::stable_json_fingerprint(&operator_variant_canonical_value(steps)?)
+}
+
+/// Build the canonical `serde_json::Value` (the JSON array of `{"kind", "class", "params"}` steps)
+/// for a lowered operator sub-sequence — the exact value [`operator_variant_label`] hashes. Exposed
+/// so a host binding can render the SAME canonical text (and so callers can inspect it in tests).
+pub fn operator_variant_canonical_value(steps: &[PipelineDslStep]) -> Result<serde_json::Value> {
+    let mut canonical = Vec::with_capacity(steps.len());
+    for step in steps {
+        canonical.push(canonical_operator_step(step)?);
+    }
+    Ok(serde_json::Value::Array(canonical))
+}
+
+/// Cross-language entry point: compute the `variant_label` (hex sha256) of a lowered operator
+/// sub-sequence supplied as JSON (`steps_json` — a JSON array of `PipelineDslStep`s, the same shape
+/// each generator branch carries). The nirs4all host calls THIS through the dag-ml-py binding so it
+/// computes the fingerprint over the EXACT SAME canonicalization + `serde_json::to_vec` (ryu)
+/// codepath dag-ml uses to stamp reports — instead of re-deriving it in pure Python, whose
+/// `json.dumps` float formatting diverges from Rust's for common params (`1e-05`, `1e-7`, 1-ULP
+/// shortest decimals). Sharing this one function makes the host label byte-identical to the report
+/// label by construction.
+pub fn operator_variant_label_from_steps_json(steps_json: &str) -> Result<String> {
+    let steps: Vec<PipelineDslStep> = serde_json::from_str(steps_json).map_err(|error| {
+        DagMlError::GraphValidation(format!(
+            "failed to parse operator sub-sequence steps for variant_label: {error}"
+        ))
+    })?;
+    operator_variant_label(&steps)
+}
+
+/// Render one lowered step into its canonical `{"kind", "class", "params"}` object (see
+/// [`operator_variant_label`]).
+fn canonical_operator_step(step: &PipelineDslStep) -> Result<serde_json::Value> {
+    let (kind, class, params): (&str, String, &BTreeMap<String, serde_json::Value>) = match step {
+        PipelineDslStep::Transform(step) => {
+            ("transform", operator_class(&step.operator)?, &step.params)
+        }
+        PipelineDslStep::YTransform(step) => {
+            ("y_transform", operator_class(&step.operator)?, &step.params)
+        }
+        PipelineDslStep::Tag(step) => ("tag", operator_class(&step.operator)?, &step.params),
+        PipelineDslStep::Exclude(step) => {
+            ("exclude", operator_class(&step.operator)?, &step.params)
+        }
+        PipelineDslStep::Filter(step) => ("filter", operator_class(&step.operator)?, &step.params),
+        PipelineDslStep::SampleFilter(step) => (
+            "sample_filter",
+            operator_class(&step.operator)?,
+            &step.params,
+        ),
+        PipelineDslStep::Augmentation(step) => (
+            "augmentation",
+            operator_class(&step.operator)?,
+            &step.params,
+        ),
+        PipelineDslStep::FeatureAugmentation(step) => (
+            "feature_augmentation",
+            operator_class(&step.operator)?,
+            &step.params,
+        ),
+        PipelineDslStep::SampleAugmentation(step) => (
+            "sample_augmentation",
+            operator_class(&step.operator)?,
+            &step.params,
+        ),
+        PipelineDslStep::DataGeneration(step) => (
+            "data_generation",
+            operator_class(&step.operator)?,
+            &step.params,
+        ),
+        PipelineDslStep::Model(step) => ("model", operator_class(&step.operator)?, &step.params),
+        PipelineDslStep::Tuner(step) => ("tuner", operator_class(&step.operator)?, &step.params),
+        PipelineDslStep::Chart(step) => ("chart", operator_class(&step.operator)?, &step.params),
+        PipelineDslStep::MergeModel(step) => {
+            ("merge_model", operator_class(&step.operator)?, &step.params)
+        }
+        PipelineDslStep::ConcatTransform(_) => (
+            "concat_transform",
+            String::new(),
+            EMPTY_CANONICAL_PARAMS.get_or_init(BTreeMap::new),
+        ),
+        PipelineDslStep::Merge(_) => (
+            "merge",
+            String::new(),
+            EMPTY_CANONICAL_PARAMS.get_or_init(BTreeMap::new),
+        ),
+        PipelineDslStep::Branch(_) => (
+            "branch",
+            String::new(),
+            EMPTY_CANONICAL_PARAMS.get_or_init(BTreeMap::new),
+        ),
+        PipelineDslStep::Generator(_) => (
+            "generator",
+            String::new(),
+            EMPTY_CANONICAL_PARAMS.get_or_init(BTreeMap::new),
+        ),
+        PipelineDslStep::Sequential(_) => (
+            "sequential",
+            String::new(),
+            EMPTY_CANONICAL_PARAMS.get_or_init(BTreeMap::new),
+        ),
+    };
+    let mut params_map = serde_json::Map::new();
+    for (key, value) in params {
+        reject_non_finite(value, key)?;
+        params_map.insert(key.clone(), value.clone());
+    }
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "kind".to_string(),
+        serde_json::Value::String(kind.to_string()),
+    );
+    object.insert("class".to_string(), serde_json::Value::String(class));
+    object.insert("params".to_string(), serde_json::Value::Object(params_map));
+    Ok(serde_json::Value::Object(object))
+}
+
+/// A shared empty params map for structural steps, so `canonical_operator_step` can return a
+/// `&BTreeMap` reference uniformly without allocating one per call.
+static EMPTY_CANONICAL_PARAMS: std::sync::OnceLock<BTreeMap<String, serde_json::Value>> =
+    std::sync::OnceLock::new();
+
+/// The canonical `class` string for an operator value: a bare-string operator renders to itself; any
+/// other shape (an object like `{"class": "...", ...}`) renders to its COMPACT CANONICAL JSON text
+/// (sorted keys, no whitespace), which the host reproduces with `json.dumps(op, sort_keys=True,
+/// separators=(",", ":"))`.
+fn operator_class(operator: &serde_json::Value) -> Result<String> {
+    reject_non_finite(operator, "operator")?;
+    match operator {
+        serde_json::Value::String(value) => Ok(value.clone()),
+        other => serde_json::to_string(other).map_err(|error| {
+            DagMlError::GraphValidation(format!(
+                "failed to canonicalize operator value for variant_label: {error}"
+            ))
+        }),
+    }
+}
+
+/// Reject any non-finite number anywhere in `value` (defensive: JSON-sourced params/operators can
+/// never carry NaN/Inf because `serde_json::Number::from_f64` refuses them, but the canonical form
+/// is a hard cross-language contract so the guard is explicit). A bool is NOT a number.
+fn reject_non_finite(value: &serde_json::Value, label: &str) -> Result<()> {
+    match value {
+        serde_json::Value::Number(number) => {
+            if let Some(float) = number.as_f64() {
+                if !float.is_finite() {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "operator-variant canonical form rejects non-finite number at `{label}`"
+                    )));
+                }
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                reject_non_finite(item, &format!("{label}[{index}]"))?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(map) => {
+            for (key, item) in map {
+                reject_non_finite(item, &format!("{label}.{key}"))?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::String(_) => {
+            Ok(())
+        }
+    }
 }
 
 /// Collect every FLAT operator-level generator step in the spec's step tree (top-level plus any

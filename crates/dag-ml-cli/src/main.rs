@@ -2729,6 +2729,12 @@ struct ResolvedRefitVariant {
     variant_id: VariantId,
     loser_validation_reports: Vec<RegressionMetricReport>,
     pruned_plan: Option<dag_ml_core::ExecutionPlan>,
+    /// The WINNER's operator-variant content fingerprint (Phase 5): `Some(<sha256>)` for an
+    /// operator-SELECT winner, `None` for param-variant / pinned / single-variant refit. The winner
+    /// reports come fresh from the real FIT_CV/REFIT pass (NOT the transient selection loop), so this
+    /// is stamped onto them after scoring so the winner report carries `variant_label`, not just the
+    /// losers.
+    winner_variant_label: Option<String>,
 }
 
 /// Run native OPERATOR-SELECT off the input's operator-variant models: score each choice on its
@@ -2766,6 +2772,14 @@ fn resolve_operator_select(
         return Ok(None);
     };
     let variant_id = selection.selected_variant_id.clone();
+    // The winner's operator-variant content fingerprint (Phase 5) — recovered from its OWN report in
+    // the selection loop (already stamped there), so the fresh winner FIT_CV/REFIT reports get the
+    // SAME label stamped downstream.
+    let winner_variant_label = selection
+        .validation_reports
+        .iter()
+        .find(|report| report.variant_id.as_ref() == Some(&variant_id))
+        .and_then(|report| report.variant_label.clone());
     let loser_validation_reports = selection
         .validation_reports
         .into_iter()
@@ -2780,6 +2794,7 @@ fn resolve_operator_select(
         variant_id,
         loser_validation_reports,
         pruned_plan: Some(pruned_plan),
+        winner_variant_label,
     }))
 }
 
@@ -2878,6 +2893,7 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
                 variant_id,
                 loser_validation_reports,
                 pruned_plan: None,
+                winner_variant_label: None,
             });
         }
     }
@@ -2885,6 +2901,7 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
         variant_id: selected_refit_variant(input.plan, input.variant_id.clone())?,
         loser_validation_reports: Vec::new(),
         pruned_plan: None,
+        winner_variant_label: None,
     })
 }
 
@@ -2915,12 +2932,29 @@ fn merge_loser_validation_reports(
     }
 }
 
+/// Stamp the operator-SELECT winner's content fingerprint (Phase 5 `variant_label`) onto EVERY report
+/// in the winner's freshly-scored `ScoreSet`. Called BEFORE the loser reports (which already carry
+/// their own labels) are merged in, so it only ever touches the winner's reports. A no-op for
+/// param-variant / pinned / single-variant refit (`label` is `None`), keeping those paths
+/// byte-identical.
+fn stamp_winner_variant_label(scores: &mut Option<ScoreSet>, label: Option<String>) {
+    let Some(label) = label else {
+        return;
+    };
+    if let Some(score_set) = scores {
+        for report in &mut score_set.reports {
+            report.variant_label = Some(label.clone());
+        }
+    }
+}
+
 fn build_bundle_from_cv_then_captured_refit(
     input: CapturedRefitBundleInput<'_>,
 ) -> Result<CapturedRefitBundle> {
     let resolved = resolve_refit_variant(&input)?;
     let selected_variant_id = resolved.variant_id;
     let loser_validation_reports = resolved.loser_validation_reports;
+    let winner_variant_label = resolved.winner_variant_label;
     // For operator-SELECT the winner FIT_CV + REFIT + bundle capture run on the WINNER's PRUNED plan
     // (merge + meta-model + inactive choices elided), NOT the Mechanism-B stacking union. For all
     // other paths the union plan IS the refit plan. The pruned plan is moved into an owned local so
@@ -3017,6 +3051,11 @@ fn build_bundle_from_cv_then_captured_refit(
     // just the winner's.
     ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
     let mut scores = ctx.build_score_set(plan.id.clone(), None);
+    // Phase 5: the winner reports come from the REAL winner FIT_CV/REFIT pass above (not the
+    // transient selection loop), so stamp the winner's operator-variant content fingerprint on them
+    // BEFORE merging the (already-labeled) loser reports — so the WINNER report carries
+    // `variant_label`, not just the losers.
+    stamp_winner_variant_label(&mut scores, winner_variant_label);
     merge_loser_validation_reports(&mut scores, &plan.id, loser_validation_reports);
     bundle.scores = scores;
     bundle.metadata.insert(

@@ -56,6 +56,10 @@ NODE_TASK_SCHEMA_REL = Path("docs/contracts/node_task.schema.json")
 NODE_RESULT_SCHEMA_REL = Path("docs/contracts/node_result.schema.json")
 SCORE_SET_SCHEMA_REL = Path("docs/contracts/score_set.schema.json")
 SCORE_SET_FIXTURE_REL = Path("examples/fixtures/score_set.json")
+OPERATOR_VARIANT_LABEL_FIXTURE_REL = Path(
+    "docs/contracts/operator_variant_label.v1.json"
+)
+OPERATOR_VARIANT_LABEL_FIXTURE_ID = "dag-ml.operator_variant_label.v1"
 PROCESS_ADAPTER_DESCRIPTION_SCHEMA_REL = Path(
     "docs/contracts/process_adapter_description.schema.json"
 )
@@ -2106,6 +2110,56 @@ def validate_score_set_fixture(value: Any, label: str) -> None:
                 require_non_empty_string(
                     report[optional_string], f"{label} score-set report.{optional_string}"
                 )
+
+
+def validate_operator_variant_label_fixture(value: Any, label: str) -> None:
+    """Validate the cross-language operator-variant content-fingerprint contract.
+
+    Re-derives the sha256 of the fixture's ``canonical_value`` with the SAME primitive dag-ml uses
+    (``sha256`` of the compact, sorted-key JSON bytes) and asserts it equals the pinned
+    ``variant_label``. This is the byte-identity check the nirs4all host runs to prove it can
+    recompute the SAME fingerprint dag-ml stamps on per-variant reports.
+    """
+    require(isinstance(value, dict), f"{label} operator-variant-label fixture must be an object")
+    require(
+        value.get("schema_version") == 1,
+        f"{label} operator-variant-label fixture schema_version must be 1",
+    )
+    require(
+        value.get("fixture_id") == OPERATOR_VARIANT_LABEL_FIXTURE_ID,
+        f"{label} operator-variant-label fixture_id mismatch",
+    )
+    canonical_form = value.get("canonical_form")
+    require(
+        isinstance(canonical_form, dict),
+        f"{label} operator-variant-label fixture must declare canonical_form",
+    )
+    for field in ("definition", "kind", "class", "params", "key_ordering", "numeric_policy", "digest"):
+        require_non_empty_string(
+            canonical_form.get(field), f"{label} operator-variant-label canonical_form.{field}"
+        )
+    case = value.get("case")
+    require(isinstance(case, dict), f"{label} operator-variant-label fixture must declare a case")
+    require_non_empty_string(case.get("case_id"), f"{label} operator-variant-label case.case_id")
+    canonical_value = case.get("canonical_value")
+    require(
+        isinstance(canonical_value, list) and bool(canonical_value),
+        f"{label} operator-variant-label case.canonical_value must be a non-empty array",
+    )
+    for index, step in enumerate(canonical_value):
+        step_label = f"{label} operator-variant-label canonical_value[{index}]"
+        require(isinstance(step, dict), f"{step_label} must be an object")
+        require(set(step.keys()) == {"kind", "class", "params"}, f"{step_label} keys must be exactly kind/class/params")
+        require_non_empty_string(step.get("kind"), f"{step_label}.kind")
+        require(isinstance(step.get("class"), str), f"{step_label}.class must be a string")
+        require(isinstance(step.get("params"), dict), f"{step_label}.params must be an object")
+    require_sha256(case.get("variant_label"), f"{label} operator-variant-label case.variant_label")
+    # Byte-identity: the host recomputes the SAME digest from canonical_value.
+    recomputed = canonical_json_sha256(canonical_value)
+    require(
+        recomputed == case["variant_label"],
+        f"{label} operator-variant-label digest drifted: recomputed {recomputed} != pinned {case['variant_label']}",
+    )
 
 
 def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
@@ -5230,6 +5284,9 @@ def main() -> int:
         local_node_result_schema = load_json(ROOT / NODE_RESULT_SCHEMA_REL)
         local_score_set_schema = load_json(ROOT / SCORE_SET_SCHEMA_REL)
         local_score_set_fixture = load_json(ROOT / SCORE_SET_FIXTURE_REL)
+        local_operator_variant_label_fixture = load_json(
+            ROOT / OPERATOR_VARIANT_LABEL_FIXTURE_REL
+        )
         local_process_adapter_description_schema = load_json(
             ROOT / PROCESS_ADAPTER_DESCRIPTION_SCHEMA_REL
         )
@@ -5320,6 +5377,9 @@ def main() -> int:
         validate_node_result_schema(local_node_result_schema, "dag-ml")
         validate_score_set_schema(local_score_set_schema, "dag-ml")
         validate_score_set_fixture(local_score_set_fixture, "dag-ml")
+        validate_operator_variant_label_fixture(
+            local_operator_variant_label_fixture, "dag-ml"
+        )
         validate_process_adapter_description_schema(
             local_process_adapter_description_schema,
             "dag-ml",

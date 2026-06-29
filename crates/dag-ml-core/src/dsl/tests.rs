@@ -2038,6 +2038,176 @@ fn operator_variant_model_rejects_nested_generator() {
     );
 }
 
+/// Phase 5 HOST CONTRACT: a known lowered operator sub-sequence hashes to a PINNED `variant_label`
+/// sha256. The constant is the cross-language contract — the nirs4all host recomputes the SAME bytes
+/// from its own operator-choice config (`sha256` of the JSON array of `{"kind", "class", "params"}`
+/// steps in step order, sorted keys, finite numbers, value forms preserved), so this constant MUST
+/// NOT drift. A bare-string operator renders `class` to itself; an object operator renders `class`
+/// to its COMPACT CANONICAL JSON text (sorted keys); `params` are carried verbatim (`5` stays `5`).
+#[test]
+fn operator_variant_label_matches_pinned_host_contract() {
+    let steps = vec![
+        PipelineDslStep::Transform(PipelineDslOperatorStep {
+            id: NodeId::new("transform:snv").unwrap(),
+            operator: serde_json::Value::String("SNV".to_string()),
+            params: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            seed_label: None,
+            representation: None,
+            train_params: BTreeMap::new(),
+            tuning: None,
+            variants: Vec::new(),
+            param_generators: Vec::new(),
+            shape: None,
+            inner_cv: None,
+        }),
+        PipelineDslStep::Model(PipelineDslOperatorStep {
+            id: NodeId::new("model:pls").unwrap(),
+            operator: serde_json::json!({"class": "sklearn.cross_decomposition.PLSRegression"}),
+            params: BTreeMap::from([("n_components".to_string(), serde_json::json!(5))]),
+            metadata: BTreeMap::new(),
+            seed_label: None,
+            representation: None,
+            train_params: BTreeMap::new(),
+            tuning: None,
+            variants: Vec::new(),
+            param_generators: Vec::new(),
+            shape: None,
+            inner_cv: None,
+        }),
+    ];
+
+    // The canonical bytes that BOTH dag-ml and the nirs4all host hash (build it explicitly here to
+    // pin the exact contract shape the host must reproduce).
+    let canonical = serde_json::json!([
+        {"kind": "transform", "class": "SNV", "params": {}},
+        {
+            "kind": "model",
+            "class": "{\"class\":\"sklearn.cross_decomposition.PLSRegression\"}",
+            "params": {"n_components": 5}
+        }
+    ]);
+    let expected = crate::campaign::stable_json_fingerprint(&canonical).unwrap();
+
+    let label = operator_variant_label(&steps).unwrap();
+    assert_eq!(
+        label, expected,
+        "operator_variant_label must equal the sha256 of the explicit canonical array"
+    );
+    // PIN the constant — this is the cross-language contract; drift here breaks the host mapping.
+    assert_eq!(
+        label, "50df90622e0ee5a318ca81b7a6668bb815509b79f5b34794bde052ac5c692de9",
+        "pinned operator-variant content fingerprint drifted from the host contract"
+    );
+}
+
+/// Phase 5 CROSS-REPO FIXTURE: the `docs/contracts/operator_variant_label.v1.json` fixture's
+/// `steps_json` runs through the SAME JSON entry point the dag-ml-py host helper
+/// (`canonical_operator_variant_label`) calls, and reproduces the fixture's pinned `variant_label`.
+/// This is the byte-identity anchor both repos validate against (`scripts/validate_contracts.py`
+/// recomputes the SAME digest from `canonical_value`).
+#[test]
+fn operator_variant_label_fixture_steps_json_matches_pinned() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../docs/contracts/operator_variant_label.v1.json"
+    ))
+    .unwrap();
+    let case = &fixture["case"];
+    let steps_json = case["steps_json"].as_str().unwrap();
+    let expected = case["variant_label"].as_str().unwrap();
+    let label = operator_variant_label_from_steps_json(steps_json).unwrap();
+    assert_eq!(
+        label, expected,
+        "fixture steps_json must hash to the pinned variant_label via the host-helper codepath"
+    );
+}
+
+/// Phase 5: `operator_variant_label` preserves numeric VALUE FORMS — `1` and `1.0` are distinct
+/// canonical bytes (the DSL carries them distinctly), so they hash to DIFFERENT labels. This guards
+/// the "do not coerce 1 vs 1.0" clause of the contract.
+#[test]
+fn operator_variant_label_preserves_numeric_value_forms() {
+    let with_int = vec![PipelineDslStep::Model(PipelineDslOperatorStep {
+        id: NodeId::new("model:pls").unwrap(),
+        operator: serde_json::Value::String("PLS".to_string()),
+        params: BTreeMap::from([("alpha".to_string(), serde_json::json!(1))]),
+        metadata: BTreeMap::new(),
+        seed_label: None,
+        representation: None,
+        train_params: BTreeMap::new(),
+        tuning: None,
+        variants: Vec::new(),
+        param_generators: Vec::new(),
+        shape: None,
+        inner_cv: None,
+    })];
+    let with_float = vec![PipelineDslStep::Model(PipelineDslOperatorStep {
+        id: NodeId::new("model:pls").unwrap(),
+        operator: serde_json::Value::String("PLS".to_string()),
+        params: BTreeMap::from([("alpha".to_string(), serde_json::json!(1.0))]),
+        metadata: BTreeMap::new(),
+        seed_label: None,
+        representation: None,
+        train_params: BTreeMap::new(),
+        tuning: None,
+        variants: Vec::new(),
+        param_generators: Vec::new(),
+        shape: None,
+        inner_cv: None,
+    })];
+    assert_ne!(
+        operator_variant_label(&with_int).unwrap(),
+        operator_variant_label(&with_float).unwrap(),
+        "1 and 1.0 must hash to distinct labels (value forms preserved)"
+    );
+}
+
+/// Phase 5: `compile_operator_variant_models` populates `variant_labels` as a strict bijection with
+/// the choices — one 64-hex sha256 per `active_subsequence`, each equal to `operator_variant_label`
+/// of that choice's lowered steps, and the model validates.
+#[test]
+fn compile_operator_variant_models_populates_variant_labels() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+  "id": "dsl-operator-or",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "branches": [
+        {"id": "snv", "steps": [{"kind": "transform", "id": "t:snv", "operator": "SNV"}]},
+        {"id": "msc", "steps": [{"kind": "transform", "id": "t:msc", "operator": "MSC"}]}
+      ]
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    let models = compile_operator_variant_models(&spec).unwrap();
+    assert_eq!(models.len(), 1);
+    let model = &models[0];
+    model.validate().unwrap();
+    // One label per choice, keyed identically to active_nodes (strict bijection).
+    assert_eq!(model.variant_labels.len(), model.dimension.choices.len());
+    for choice in &model.dimension.choices {
+        let key = choice.active_subsequence.as_ref().unwrap();
+        let label = model
+            .variant_labels
+            .get(key)
+            .expect("every choice has a variant_label");
+        assert_eq!(label.len(), 64);
+        assert!(label.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+    // The two distinct preprocessors (SNV vs MSC) hash to DISTINCT labels.
+    let labels: BTreeSet<&String> = model.variant_labels.values().collect();
+    assert_eq!(
+        labels.len(),
+        2,
+        "distinct sub-sequences need distinct labels"
+    );
+}
+
 /// MUST-FIX 2: `OperatorVariantModel::validate` rejects two choices sharing the same
 /// `active_subsequence` (no bijection), even when the active_nodes map length is padded.
 #[test]
@@ -2066,6 +2236,7 @@ fn operator_variant_model_validate_rejects_duplicate_active_subsequence() {
             ("shared".to_string(), node("gen:dup:c0:n0.a")),
             ("padding".to_string(), node("gen:dup:c1:n0.b")),
         ]),
+        variant_labels: BTreeMap::new(),
     };
     let error = model.validate().unwrap_err().to_string();
     assert!(error.contains("duplicate active_subsequence"), "{error}");
@@ -2095,6 +2266,7 @@ fn operator_variant_model_validate_rejects_stray_active_nodes_key() {
             // A stray key with no matching choice.
             ("orphan".to_string(), node("gen:stray:c1:n0.b")),
         ]),
+        variant_labels: BTreeMap::new(),
     };
     let error = model.validate().unwrap_err().to_string();
     assert!(error.contains("stray active-node set"), "{error}");

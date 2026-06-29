@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "fixture_id": "dag-ml.operator_variant_label.v1",
+  "description": "Cross-language CONTENT-fingerprint contract for an operator-variant's variant_label (Phase 5). dag-ml stamps this hex sha256 on every operator-SELECT RegressionMetricReport (OperatorVariantModel.variant_labels); the nirs4all host recomputes the SAME bytes from its own operator-choice config to map a per-variant report back to its config. The canonical form below is the strict contract: drift on either side breaks the mapping.",
+  "canonical_form": {
+    "definition": "variant_label = lowercase hex sha256 of serde_json::to_vec(canonical_value). canonical_value is a JSON array of the lowered operator sub-sequence's steps, in step order. Each step is the object {\"kind\": <step-kind str>, \"class\": <operator FQN str>, \"params\": {<params>}}.",
+    "kind": "the lowered step's serde tag (snake_case): transform | y_transform | tag | exclude | filter | sample_filter | augmentation | feature_augmentation | sample_augmentation | data_generation | concat_transform | model | tuner | branch | generator | sequential | merge | merge_model | chart.",
+    "class": "the step's operator FQN as a string. A bare-string operator (\"SNV\") renders to itself; any other operator value (an object like {\"class\": \"...\"}) renders to its COMPACT CANONICAL JSON text: json.dumps(operator, sort_keys=True, separators=(\",\", \":\")). Structural steps that carry no operator (concat_transform, merge, branch, generator, sequential) render class as the empty string.",
+    "params": "the step's params map, carried VERBATIM (the value forms as the DSL holds them: 1 is not coerced to 1.0). Structural steps without params render {}.",
+    "key_ordering": "object keys sorted everywhere (the value is built from BTreeMap-backed maps; serialize with sort_keys=True on the host).",
+    "numeric_policy": "numbers must be finite (no NaN / Inf — rejected); a bool is NOT a number; integer vs float value forms are preserved, never coerced.",
+    "digest": "lowercase hex sha256 of the UTF-8 bytes of the canonical value serialized with no extra whitespace (serde_json::to_vec)."
+  },
+  "case": {
+    "case_id": "snv_then_pls_object_operator",
+    "lowered_subsequence": [
+      {
+        "kind": "transform",
+        "id": "transform:snv",
+        "operator": "SNV"
+      },
+      {
+        "kind": "model",
+        "id": "model:pls",
+        "operator": {"class": "sklearn.cross_decomposition.PLSRegression"},
+        "params": {"n_components": 5}
+      }
+    ],
+    "steps_json": "[{\"kind\":\"transform\",\"id\":\"transform:snv\",\"operator\":\"SNV\"},{\"kind\":\"model\",\"id\":\"model:pls\",\"operator\":{\"class\":\"sklearn.cross_decomposition.PLSRegression\"},\"params\":{\"n_components\":5}}]",
+    "canonical_value": [
+      {"kind": "transform", "class": "SNV", "params": {}},
+      {
+        "kind": "model",
+        "class": "{\"class\":\"sklearn.cross_decomposition.PLSRegression\"}",
+        "params": {"n_components": 5}
+      }
+    ],
+    "variant_label": "50df90622e0ee5a318ca81b7a6668bb815509b79f5b34794bde052ac5c692de9"
+  },
+  "host_helper": {
+    "binding": "dag_ml.canonical_operator_variant_label(steps_json) -> hex",
+    "note": "The nirs4all host MUST call this PyO3 helper (NOT a pure-Python json.dumps + sha256) to compute variant_label for each operator-choice config. The helper shares the EXACT canonicalization + serde_json::to_vec (ryu) codepath dag-ml uses to stamp reports, so the host label is byte-identical to the report label by construction. Pure-Python json.dumps float formatting diverges from Rust (1e-05, 1e-7, 1-ULP shortest decimals — all common NIRS params), so re-deriving in Python would SILENTLY mismatch. Pass the lowered operator sub-sequence as a JSON array of PipelineDslStep objects (coerce numpy scalars via .item() / arrays via .tolist() first; non-JSON params are rejected)."
+  },
+  "consumer": {
+    "repo": "nirs4all",
+    "note": "Call dag_ml.canonical_operator_variant_label on each operator-choice config and match it against the per-variant RegressionMetricReport.variant_label to recover the choice (no positional zip)."
+  }
+}

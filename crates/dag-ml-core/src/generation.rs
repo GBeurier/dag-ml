@@ -211,6 +211,16 @@ pub struct OperatorVariantModel {
     /// `active_subsequence` (choice key) -> the exact namespaced node ids that choice activates.
     #[serde(default)]
     pub active_nodes: BTreeMap<String, BTreeSet<NodeId>>,
+    /// `active_subsequence` (choice key) -> the choice's `variant_label`: the cross-language content
+    /// fingerprint (hex sha256) of that choice's LOWERED operator sub-sequence (Phase 5). The host
+    /// recomputes the SAME bytes from its own operator-choice config (via the public
+    /// [`operator_variant_label`](crate::operator_variant_label), exposed through the dag-ml-py
+    /// binding) to map a per-variant report back to the config, so the canonical form is a strict
+    /// cross-language CONTRACT. Empty (`default`) for an operator model carrying no labels; otherwise
+    /// it is a strict bijection with the choices' `active_subsequence`, exactly parallel to
+    /// `active_nodes`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub variant_labels: BTreeMap<String, String>,
 }
 
 impl OperatorVariantModel {
@@ -263,6 +273,35 @@ impl OperatorVariantModel {
                     "operator variant model `{}` has a stray active-node set `{key}` with no matching choice",
                     self.generator_id
                 )));
+            }
+        }
+        // `variant_labels` is populated in Phase 5 (the cross-language content fingerprints). When
+        // present it is a STRICT BIJECTION with the choices (every choice keyed by its
+        // `active_subsequence`, every label a 64-hex sha256, no stray key) — exactly like
+        // `active_nodes`. An empty map is the pre-Phase-5 / label-less shape and is left untouched so
+        // hand-built fixtures without labels still validate.
+        if !self.variant_labels.is_empty() {
+            for active_subsequence in &active_subsequences {
+                let Some(label) = self.variant_labels.get(*active_subsequence) else {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "operator variant model `{}` has no variant_label for `{active_subsequence}`",
+                        self.generator_id
+                    )));
+                };
+                if label.len() != 64 || !label.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "operator variant model `{}` variant_label for `{active_subsequence}` is not a 64-hex sha256",
+                        self.generator_id
+                    )));
+                }
+            }
+            for key in self.variant_labels.keys() {
+                if !active_subsequences.contains(key.as_str()) {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "operator variant model `{}` has a stray variant_label `{key}` with no matching choice",
+                        self.generator_id
+                    )));
+                }
             }
         }
         Ok(())

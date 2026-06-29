@@ -394,6 +394,9 @@ where
                 ..plan.clone()
             })
         },
+        // Param-variant SELECT (Mechanism A) has no operator-variant content fingerprint, so reports
+        // carry `variant_id` only (no `variant_label`) — exactly the pre-Phase-5 shape.
+        |_variant| Ok(None),
         &mut run_single_variant_fit_cv,
     )
 }
@@ -450,9 +453,8 @@ where
         .cloned()
         .collect::<BTreeSet<NodeId>>();
     // Map each enumerated variant back to its operator choice (the choice's `active_subsequence`
-    // keys `active_nodes`). The model is a single operator dimension, so each variant carries exactly
-    // one choice.
-    let dimension_name = &model.dimension.name;
+    // keys `active_nodes`) via `operator_variant_active_subsequence`. The model is a single operator
+    // dimension, so each variant carries exactly one choice.
     score_and_rank_variants_by_cv(
         &variants,
         run_id,
@@ -460,18 +462,7 @@ where
         selection_metric,
         plan_oof_partition_mode(union_plan),
         |variant| {
-            let choice = variant.choices.get(dimension_name).ok_or_else(|| {
-                DagMlError::RuntimeValidation(format!(
-                    "operator variant `{}` is missing the operator dimension `{dimension_name}`",
-                    variant.variant_id
-                ))
-            })?;
-            let active_subsequence = choice.active_subsequence.as_ref().ok_or_else(|| {
-                DagMlError::RuntimeValidation(format!(
-                    "operator variant `{}` choice `{}` has no active_subsequence",
-                    variant.variant_id, choice.label
-                ))
-            })?;
+            let active_subsequence = operator_variant_active_subsequence(model, variant)?;
             let active_nodes = model.active_nodes.get(active_subsequence).ok_or_else(|| {
                 DagMlError::RuntimeValidation(format!(
                     "operator variant model `{}` has no active-node set for `{active_subsequence}`",
@@ -480,8 +471,37 @@ where
             })?;
             prune_plan_to_active(union_plan, active_nodes, &all_choice_nodes, variant)
         },
+        // Phase 5: stamp the choice's cross-language content fingerprint on every report. The
+        // operator model's `variant_labels` is the choice-keyed sha256; when a model was hand-built
+        // without labels (the older execution fixtures), the map is empty and reports carry no label.
+        |variant| {
+            let active_subsequence = operator_variant_active_subsequence(model, variant)?;
+            Ok(model.variant_labels.get(active_subsequence).cloned())
+        },
         &mut run_single_variant_fit_cv,
     )
+}
+
+/// Resolve the `active_subsequence` (choice key) of an enumerated operator variant against its
+/// model's single operator dimension. Shared by the prune-plan and the `variant_label` resolvers so
+/// both agree on the choice a variant names.
+fn operator_variant_active_subsequence<'a>(
+    model: &OperatorVariantModel,
+    variant: &'a VariantPlan,
+) -> Result<&'a str> {
+    let dimension_name = &model.dimension.name;
+    let choice = variant.choices.get(dimension_name).ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "operator variant `{}` is missing the operator dimension `{dimension_name}`",
+            variant.variant_id
+        ))
+    })?;
+    choice.active_subsequence.as_deref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "operator variant `{}` choice `{}` has no active_subsequence",
+            variant.variant_id, choice.label
+        ))
+    })
 }
 
 /// Route operator-SELECT from the operator-variant models lowered off a pipeline DSL
@@ -531,17 +551,22 @@ where
 /// rank by `selection_metric`. The two callers differ ONLY in `make_variant_plan` (clone-the-union
 /// vs. prune-to-active); everything below — the single-producer guard, the all-or-nothing scoring
 /// gate, the loser-report retention, and [`select_candidate`] ranking — is identical and lives here.
-fn score_and_rank_variants_by_cv<M, F>(
+/// `resolve_variant_label` resolves each variant's Phase-5 content fingerprint (the two closures
+/// keep the shared loop free of caller-specific plumbing).
+#[allow(clippy::too_many_arguments)]
+fn score_and_rank_variants_by_cv<M, L, F>(
     variants: &[VariantPlan],
     run_id: &RunId,
     root_seed: Option<u64>,
     selection_metric: RegressionMetricKind,
     partition_mode: FoldPartitionMode,
     mut make_variant_plan: M,
+    mut resolve_variant_label: L,
     run_single_variant_fit_cv: &mut F,
 ) -> Result<Option<VariantSelection>>
 where
     M: FnMut(&VariantPlan) -> Result<ExecutionPlan>,
+    L: FnMut(&VariantPlan) -> Result<Option<String>>,
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
 {
     if variants.is_empty() {
@@ -559,6 +584,10 @@ where
     let mut any_scores_seen = false;
     for variant in variants {
         let variant_plan = make_variant_plan(variant)?;
+        // Phase 5: the operator-variant content fingerprint for this variant (the choice's
+        // `variant_label`), resolved the SAME way `variant_id` is — `None` for param-variant /
+        // single-variant SELECT, `Some(<sha256>)` for an operator choice.
+        let variant_label = resolve_variant_label(variant)?;
         let mut ctx = RunContext::new(run_id.clone(), root_seed);
         ctx.variant_id = Some(variant.variant_id.clone());
         run_single_variant_fit_cv(&variant_plan, &mut ctx)?;
@@ -607,6 +636,7 @@ where
                 continue;
             }
             report.variant_id = Some(variant.variant_id.clone());
+            report.variant_label = variant_label.clone();
             variant_validation_reports.push(report);
         }
     }

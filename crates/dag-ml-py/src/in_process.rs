@@ -40,14 +40,15 @@ use pyo3::types::PyAnyMethods;
 use pythonize::{depythonize, pythonize};
 
 use dag_ml_core::{
-    build_execution_plan, compile_pipeline_dsl_with_generation_and_controller_registry,
+    build_execution_plan, compile_operator_variant_models,
+    compile_pipeline_dsl_with_generation_and_controller_registry, enumerate_variants,
     fan_out_data_aware_branches, parse_pipeline_dsl_json, plan_oof_partition_mode,
-    select_best_variant_by_cv, AggregationControllerResult, AggregationControllerTask,
-    ControllerId, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan,
-    ExternalDataPlanEnvelope, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
-    Phase, RegressionMetricKind, RegressionMetricReport, RunContext, RunId, RuntimeController,
-    RuntimeControllerRegistry, ScoreSet, SequentialScheduler, VariantId,
-    SCORE_SET_SCHEMA_VERSION,
+    prune_plan_to_active, select_best_operator_variant_from_models, select_best_variant_by_cv,
+    AggregationControllerResult, AggregationControllerTask, ControllerId, ControllerRegistry,
+    DagMlError as CoreDagMlError, ExecutionPlan, ExternalDataPlanEnvelope, InMemoryArtifactStore,
+    InMemoryDataProvider, NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
+    RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
+    ScoreSet, SequentialScheduler, VariantId, SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -197,23 +198,156 @@ fn build_runtime_controllers(
 /// bundle can surface ALL variants' CV scores — not just the winner's. The winner's validation
 /// reports come fresh from the real FIT_CV run, so only the LOSER variants' reports are carried here
 /// (avoiding a duplicate `(node, variant, partition, fold, level)` key in the final `ScoreSet`).
+#[derive(Debug)]
 struct ResolvedRefitVariant {
     variant_id: VariantId,
     loser_validation_reports: Vec<RegressionMetricReport>,
+    /// `Some` only for operator-SELECT: the union plan PRUNED to the winning operator choice
+    /// (merge, meta-model and inactive choices elided), on which the winner FIT_CV + REFIT must run
+    /// instead of the stacking union. `None` for param-variant / pinned / single-variant runs (the
+    /// union plan is the refit plan) — mirrors the CLI `ResolvedRefitVariant::pruned_plan`.
+    pruned_plan: Option<ExecutionPlan>,
+    /// The WINNER's operator-variant content fingerprint (Phase 5 `variant_label`): `Some(<sha256>)`
+    /// for an operator-SELECT winner, `None` otherwise. Stamped onto the winner's fresh FIT_CV/REFIT
+    /// reports so the WINNER report carries `variant_label`, not just the losers.
+    winner_variant_label: Option<String>,
+}
+
+/// Run native OPERATOR-SELECT off the lowered operator-variant models, mirroring the CLI's
+/// `resolve_operator_select`: score each choice on its PRUNED plan, return the winner together with
+/// its pruned plan, the losers' OOF reports, and the winner's content fingerprint. Returns
+/// `Ok(None)` when scoring is off (no host targets) so the caller falls back to the default. Keeps
+/// winner-ONLY refit (the multi-model 32-not-34 contract).
+fn resolve_operator_select(
+    plan: &ExecutionPlan,
+    operator_variant_models: &[OperatorVariantModel],
+    run_id: &RunId,
+    root_seed: u64,
+    selection_metric: RegressionMetricKind,
+    runtime_controllers: &RuntimeControllerRegistry,
+    data_provider: &InMemoryDataProvider,
+) -> Result<Option<ResolvedRefitVariant>, CoreDagMlError> {
+    let selected = select_best_operator_variant_from_models(
+        plan,
+        operator_variant_models,
+        run_id,
+        Some(root_seed),
+        selection_metric,
+        |pruned_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase_with_data_provider(
+                    pruned_plan,
+                    runtime_controllers,
+                    data_provider,
+                    ctx,
+                    Phase::FitCv,
+                )
+                .map(|_results| ())
+        },
+    )?;
+    let Some(selection) = selected else {
+        return Ok(None);
+    };
+    let variant_id = selection.selected_variant_id.clone();
+    // The winner's content fingerprint (Phase 5) — recovered from its OWN report in the selection
+    // loop (already stamped there) so the fresh winner FIT_CV/REFIT reports get the SAME label.
+    let winner_variant_label = selection
+        .validation_reports
+        .iter()
+        .find(|report| report.variant_id.as_ref() == Some(&variant_id))
+        .and_then(|report| report.variant_label.clone());
+    let loser_validation_reports = selection
+        .validation_reports
+        .into_iter()
+        .filter(|report| report.variant_id.as_ref() != Some(&variant_id))
+        .collect();
+    // Recompute the WINNER's pruned plan so FIT_CV + REFIT run on it (not the union). The single
+    // operator model is guaranteed by `select_best_operator_variant_from_models`.
+    let model = &operator_variant_models[0];
+    let pruned_plan = pruned_plan_for_operator_variant(plan, model, &variant_id, root_seed)?;
+    Ok(Some(ResolvedRefitVariant {
+        variant_id,
+        loser_validation_reports,
+        pruned_plan: Some(pruned_plan),
+        winner_variant_label,
+    }))
+}
+
+/// Rebuild the PRUNED plan for a chosen operator variant id by re-enumerating the model's variants
+/// (deterministic), matching the winner, and pruning the union to its active choice. Mirrors the
+/// CLI's `pruned_plan_for_operator_variant` so the in-process winner refits on the pruned candidate
+/// rather than the stacking union.
+fn pruned_plan_for_operator_variant(
+    union_plan: &ExecutionPlan,
+    model: &OperatorVariantModel,
+    variant_id: &VariantId,
+    root_seed: u64,
+) -> Result<ExecutionPlan, CoreDagMlError> {
+    let variants = enumerate_variants(&model.generation_spec(), Some(root_seed))?;
+    let variant = variants
+        .iter()
+        .find(|variant| &variant.variant_id == variant_id)
+        .ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(format!(
+                "operator-SELECT winner `{variant_id}` not found in enumerated variants"
+            ))
+        })?;
+    let choice = variant.choices.get(&model.dimension.name).ok_or_else(|| {
+        CoreDagMlError::RuntimeValidation(format!(
+            "operator winner `{variant_id}` missing operator dimension"
+        ))
+    })?;
+    let active_subsequence = choice.active_subsequence.as_ref().ok_or_else(|| {
+        CoreDagMlError::RuntimeValidation(format!(
+            "operator winner `{variant_id}` choice has no active_subsequence"
+        ))
+    })?;
+    let active_nodes = model.active_nodes.get(active_subsequence).ok_or_else(|| {
+        CoreDagMlError::RuntimeValidation(format!(
+            "operator model has no active-node set for `{active_subsequence}`"
+        ))
+    })?;
+    let all_choice_nodes = model
+        .active_nodes
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    prune_plan_to_active(union_plan, active_nodes, &all_choice_nodes, variant)
 }
 
 /// Resolve the variant REFIT targets, mirroring the CLI's `resolve_refit_variant`:
-/// a single-variant plan refits that variant; a multi-variant plan runs one
-/// single-variant FIT_CV per variant and refits the best by `selection_metric`
-/// (or the default variant when native scoring is off — no host targets).
+///
+/// * when the spec carries operator-variant models (a DSL operator generator), run native
+///   OPERATOR-SELECT — each choice scored on its PRUNED plan; the winner FIT_CV + REFITs on its
+///   pruned plan (winner-ONLY refit), or
+/// * otherwise, a multi-variant plan runs one single-variant FIT_CV per variant and refits the best
+///   by `selection_metric` (Mechanism A), or
+/// * a single-variant plan refits that variant (or the default when native scoring is off).
 fn resolve_refit_variant(
     plan: &ExecutionPlan,
+    operator_variant_models: &[OperatorVariantModel],
     run_id: &RunId,
     root_seed: u64,
     selection_metric: RegressionMetricKind,
     runtime_controllers: &RuntimeControllerRegistry,
     data_provider: &InMemoryDataProvider,
 ) -> Result<ResolvedRefitVariant, CoreDagMlError> {
+    if !operator_variant_models.is_empty() {
+        if let Some(resolved) = resolve_operator_select(
+            plan,
+            operator_variant_models,
+            run_id,
+            root_seed,
+            selection_metric,
+            runtime_controllers,
+            data_provider,
+        )? {
+            return Ok(resolved);
+        }
+        // Operator scoring was off (no host targets): fall back to the union plan's default variant,
+        // exactly today's behavior for unscored runs.
+    }
     if plan.variants.len() > 1 {
         let selected = select_best_variant_by_cv(
             plan,
@@ -243,6 +377,8 @@ fn resolve_refit_variant(
             return Ok(ResolvedRefitVariant {
                 variant_id,
                 loser_validation_reports,
+                pruned_plan: None,
+                winner_variant_label: None,
             });
         }
     }
@@ -256,6 +392,8 @@ fn resolve_refit_variant(
     Ok(ResolvedRefitVariant {
         variant_id,
         loser_validation_reports: Vec::new(),
+        pruned_plan: None,
+        winner_variant_label: None,
     })
 }
 
@@ -282,6 +420,22 @@ fn merge_loser_validation_reports(
                 selection_metric: None,
                 reports: loser_validation_reports,
             });
+        }
+    }
+}
+
+/// Stamp the operator-SELECT winner's content fingerprint (Phase 5 `variant_label`) onto EVERY report
+/// in the winner's freshly-scored `ScoreSet`. Called BEFORE the loser reports (which already carry
+/// their own labels) are merged, so it only touches the winner's reports. A no-op for param-variant /
+/// pinned / single-variant refit (`label` is `None`), keeping those paths byte-identical. Mirrors the
+/// CLI's `stamp_winner_variant_label`.
+fn stamp_winner_variant_label(scores: &mut Option<ScoreSet>, label: Option<String>) {
+    let Some(label) = label else {
+        return;
+    };
+    if let Some(score_set) = scores {
+        for report in &mut score_set.reports {
+            report.variant_label = Some(label.clone());
         }
     }
 }
@@ -339,6 +493,12 @@ pub fn run_cv_refit_in_process(
         &controller_registry,
     )
     .map_err(py_core_error)?;
+    // Lower the spec's operator-level generators (Mechanism B) into operator-variant models — the
+    // SAME additive derivation the CLI runs (it does not touch the compiled graph / OOF lanes /
+    // fingerprints). Empty when the spec has no operator generator. This is what enables the
+    // default in-process binding to native operator-SELECT, mirroring CLI Mechanism A.
+    let operator_variant_models =
+        compile_operator_variant_models(&dsl_spec).map_err(py_core_error)?;
     let plan = build_execution_plan(
         format!("plan:{}", dsl_spec.id),
         compiled.graph,
@@ -366,10 +526,13 @@ pub fn run_cv_refit_in_process(
     let run_id = RunId::new(format!("run:{}:in-process", dsl_spec.id)).map_err(py_core_error)?;
     let root_seed: u64 = 0;
 
-    // 4. Mirror `build_bundle_from_cv_then_captured_refit`: native variant SELECT
-    //    (when multi-variant), then FIT_CV + REFIT in ONE RunContext, then score.
+    // 4. Mirror `build_bundle_from_cv_then_captured_refit`: native operator-SELECT (when the spec
+    //    carries an operator generator) or param-variant SELECT (when multi-variant), then the
+    //    winner FIT_CV + REFIT in ONE RunContext, then score. For operator-SELECT the winner runs on
+    //    its PRUNED plan (merge + meta-model + inactive choices elided), not the stacking union.
     let resolved = resolve_refit_variant(
         &plan,
+        &operator_variant_models,
         &run_id,
         root_seed,
         metric,
@@ -379,6 +542,10 @@ pub fn run_cv_refit_in_process(
     .map_err(py_core_error)?;
     let selected_variant_id = resolved.variant_id;
     let loser_validation_reports = resolved.loser_validation_reports;
+    let winner_variant_label = resolved.winner_variant_label;
+    // For operator-SELECT the winner FIT_CV + REFIT run on the WINNER's PRUNED plan; for all other
+    // paths the union plan IS the refit plan.
+    let refit_plan = resolved.pruned_plan.as_ref().unwrap_or(&plan);
 
     let mut artifact_store = InMemoryArtifactStore::new();
     let mut ctx = RunContext::new(run_id, Some(root_seed));
@@ -386,7 +553,7 @@ pub fn run_cv_refit_in_process(
 
     let fit_cv_results = SequentialScheduler
         .execute_campaign_phase_with_data_provider(
-            &plan,
+            refit_plan,
             &runtime_controllers,
             &data_provider,
             &mut ctx,
@@ -396,7 +563,7 @@ pub fn run_cv_refit_in_process(
 
     let refit_results = SequentialScheduler
         .execute_campaign_phase_with_data_provider_and_artifact_store(
-            &plan,
+            refit_plan,
             &runtime_controllers,
             &data_provider,
             &mut artifact_store,
@@ -412,10 +579,15 @@ pub fn run_cv_refit_in_process(
     //    every variant's CV score, not just the winner's. Then build the native
     //    ScoreSet the host maps to a RunResult — identical to the CLI's
     //    `bundle.scores`.
-    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(&plan))
+    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))
         .map_err(py_core_error)?;
-    let mut scores = ctx.build_score_set(plan.id.clone(), None);
-    merge_loser_validation_reports(&mut scores, &plan.id, loser_validation_reports);
+    let mut scores = ctx.build_score_set(refit_plan.id.clone(), None);
+    // Phase 5: the winner reports come from the REAL winner FIT_CV/REFIT pass above (not the
+    // transient selection loop), so stamp the winner's operator-variant content fingerprint on them
+    // BEFORE merging the (already-labeled) loser reports — so the WINNER report carries
+    // `variant_label`, not just the losers.
+    stamp_winner_variant_label(&mut scores, winner_variant_label);
+    merge_loser_validation_reports(&mut scores, &refit_plan.id, loser_validation_reports);
 
     let mut node_results = fit_cv_results;
     node_results.extend(refit_results);
@@ -445,4 +617,544 @@ pub fn run_cv_refit_in_process(
         "scores": scores,
     });
     serde_json::to_string(&payload).map_err(py_serde_error)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Phase 7 (dag-ml part) — operator-SELECT through the DEFAULT in-process binding.
+    //!
+    //! These mirror the CLI's Phase-4 operator-SELECT tests for the in-process resolution path:
+    //! `resolve_refit_variant` runs native operator-SELECT off the lowered models, returns the
+    //! winner + its PRUNED plan + the losers' OOF reports (each carrying the Phase-5 `variant_label`),
+    //! keeps winner-ONLY refit, and rejects multiple operator generators. The data path uses an empty
+    //! `InMemoryDataProvider` (no envelope) over a hand-built union plan + model + mock controllers —
+    //! identical in shape to the CLI Phase-4 fixtures — so the test is self-contained and needs no
+    //! Python callback (the Python op bridge is exercised by the existing JSON-contract tests).
+
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use dag_ml_core::{
+        ArtifactId, ArtifactRef, ControllerManifest, ExecutionPlan, HandleKind, HandleRef,
+        LineageId, LineageRecord, NodeId, NodeKind, NodeResult, NodeTask, OperatorVariantModel,
+        Phase, PredictionBlock, PredictionLevel, PredictionPartition, PredictionUnitId,
+        RegressionMetricKind, RegressionTargetBlock, RunId, RuntimeController,
+        RuntimeControllerRegistry, SampleId,
+    };
+
+    use super::*;
+
+    // Two distinct, pinned 64-hex `variant_labels` (the cross-language content fingerprints). The
+    // derivation is contract-tested in dag-ml-core; here we only assert the labels PROPAGATE from the
+    // model onto the winner + loser reports through the in-process resolution path.
+    const CHOICE0_LABEL: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const CHOICE1_LABEL: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    fn stable_handle(node_id: &str) -> u64 {
+        let mut hash = 1469598103934665603u64;
+        for byte in node_id.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(1099511628211);
+        }
+        hash
+    }
+
+    /// A mock model/transform/filter/merge controller mirroring the CLI's `OperatorScoringCliController`:
+    /// a model node scores per fold (`model:choice0__pls` predicts y_true exactly -> RMSE 0, the
+    /// winner; `model:choice1__ridge` predicts y_true + 1 -> RMSE 1), emits a refit artifact, and the
+    /// non-model nodes pass through.
+    struct MockController {
+        id: ControllerId,
+        offsets: BTreeMap<NodeId, f64>,
+    }
+
+    impl MockController {
+        fn fold_sample(task: &NodeTask) -> Option<(SampleId, f64)> {
+            match task.fold_id.as_ref()?.as_str() {
+                "fold:0" => Some((SampleId::new("s1").unwrap(), 1.0)),
+                "fold:1" => Some((SampleId::new("s2").unwrap(), 2.0)),
+                _ => None,
+            }
+        }
+    }
+
+    impl RuntimeController for MockController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult, CoreDagMlError> {
+            let is_model = matches!(task.node_plan.kind, NodeKind::Model);
+            let data_output = HandleRef {
+                handle: stable_handle(task.node_plan.node_id.as_str()),
+                kind: HandleKind::Data,
+                owner_controller: self.id.clone(),
+            };
+            let prediction_output = HandleRef {
+                handle: stable_handle(task.node_plan.node_id.as_str()),
+                kind: HandleKind::Prediction,
+                owner_controller: self.id.clone(),
+            };
+            let mut predictions = Vec::new();
+            let mut regression_targets = Vec::new();
+            if is_model {
+                if task.phase == Phase::FitCv {
+                    if let Some((sample_id, y_true)) = Self::fold_sample(task) {
+                        let offset = self
+                            .offsets
+                            .get(&task.node_plan.node_id)
+                            .copied()
+                            .unwrap_or(0.0);
+                        predictions.push(PredictionBlock {
+                            prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                            producer_node: task.node_plan.node_id.clone(),
+                            partition: PredictionPartition::Validation,
+                            fold_id: task.fold_id.clone(),
+                            sample_ids: vec![sample_id.clone()],
+                            values: vec![vec![y_true + offset]],
+                            target_names: vec!["y".to_string()],
+                        });
+                        regression_targets.push(RegressionTargetBlock {
+                            level: PredictionLevel::Sample,
+                            unit_ids: vec![PredictionUnitId::Sample(sample_id)],
+                            values: vec![vec![y_true]],
+                            target_names: vec!["y".to_string()],
+                        });
+                    }
+                } else {
+                    predictions.push(PredictionBlock {
+                        prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                        producer_node: task.node_plan.node_id.clone(),
+                        partition: PredictionPartition::Final,
+                        fold_id: None,
+                        sample_ids: vec![SampleId::new("s1").unwrap()],
+                        values: vec![vec![1.0]],
+                        target_names: vec!["y".to_string()],
+                    });
+                }
+            }
+            let artifacts = if task.phase == Phase::Refit && is_model {
+                vec![ArtifactRef {
+                    id: ArtifactId::new(format!("artifact:{}:refit", task.node_plan.node_id))
+                        .unwrap(),
+                    kind: "mock_model".to_string(),
+                    controller_id: self.id.clone(),
+                    backend: None,
+                    uri: None,
+                    content_fingerprint: None,
+                    size_bytes: Some(128),
+                    plugin: None,
+                    plugin_version: None,
+                }]
+            } else {
+                Vec::new()
+            };
+            let artifact_handles = artifacts
+                .iter()
+                .map(|artifact| {
+                    (
+                        artifact.id.clone(),
+                        HandleRef {
+                            handle: stable_handle(artifact.id.as_str()),
+                            kind: HandleKind::Model,
+                            owner_controller: self.id.clone(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            Ok(NodeResult {
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([
+                    ("x".to_string(), data_output.clone()),
+                    ("out".to_string(), data_output),
+                    ("oof".to_string(), prediction_output),
+                ]),
+                predictions,
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
+                explanations: Vec::new(),
+                shape_deltas: Vec::new(),
+                fit_influence_diagnostics: Vec::new(),
+                artifacts: artifacts.clone(),
+                artifact_handles,
+                regression_targets,
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:{}:{:?}:{}:{}",
+                        task.node_plan.node_id,
+                        task.phase,
+                        task.variant_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "base".to_string()),
+                        task.fold_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "nofold".to_string())
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: artifacts,
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
+    /// The operator-SELECT UNION plan: a STACKING graph `filter -> choice_i(transform -> model) ->
+    /// merge:gen (oof) -> model:meta`, identical in shape to the CLI Phase-4 fixture.
+    fn operator_select_union_plan() -> ExecutionPlan {
+        let graph: dag_ml_core::GraphSpec = serde_json::from_str(
+            r#"{
+  "id": "graph:in_process.operator.select",
+  "interface": {"inputs": [], "outputs": []},
+  "nodes": [
+    {"id": "filter:y_outlier", "kind": "exclude", "operator": null, "params": {},
+     "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+               "outputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}]},
+     "metadata": {}, "seed_label": null},
+    {"id": "transform:choice0__snv", "kind": "transform", "operator": null, "params": {},
+     "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+               "outputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}]},
+     "metadata": {}, "seed_label": null},
+    {"id": "model:choice0__pls", "kind": "model", "operator": null, "params": {},
+     "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+               "outputs": [{"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}]},
+     "metadata": {}, "seed_label": null},
+    {"id": "transform:choice1__msc", "kind": "transform", "operator": null, "params": {},
+     "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+               "outputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}]},
+     "metadata": {}, "seed_label": null},
+    {"id": "model:choice1__ridge", "kind": "model", "operator": null, "params": {},
+     "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+               "outputs": [{"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}]},
+     "metadata": {}, "seed_label": null},
+    {"id": "merge:gen", "kind": "prediction_join", "operator": null, "params": {},
+     "ports": {"inputs": [{"name": "c0", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""},
+                           {"name": "c1", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}],
+               "outputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}]},
+     "metadata": {}, "seed_label": null},
+    {"id": "model:meta", "kind": "model", "operator": null, "params": {},
+     "ports": {"inputs": [{"name": "x", "kind": "data", "representation": null, "cardinality": "one", "description": ""}],
+               "outputs": [{"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}]},
+     "metadata": {}, "seed_label": null}
+  ],
+  "edges": [
+    {"source": {"node_id": "filter:y_outlier", "port_name": "x"}, "target": {"node_id": "transform:choice0__snv", "port_name": "x"},
+     "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}},
+    {"source": {"node_id": "transform:choice0__snv", "port_name": "x"}, "target": {"node_id": "model:choice0__pls", "port_name": "x"},
+     "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}},
+    {"source": {"node_id": "filter:y_outlier", "port_name": "x"}, "target": {"node_id": "transform:choice1__msc", "port_name": "x"},
+     "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}},
+    {"source": {"node_id": "transform:choice1__msc", "port_name": "x"}, "target": {"node_id": "model:choice1__ridge", "port_name": "x"},
+     "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}},
+    {"source": {"node_id": "model:choice0__pls", "port_name": "oof"}, "target": {"node_id": "merge:gen", "port_name": "c0"},
+     "contract": {"kind": "prediction", "representation": null, "requires_oof": true, "requires_fold_alignment": false, "propagates_lineage": true}},
+    {"source": {"node_id": "model:choice1__ridge", "port_name": "oof"}, "target": {"node_id": "merge:gen", "port_name": "c1"},
+     "contract": {"kind": "prediction", "representation": null, "requires_oof": true, "requires_fold_alignment": false, "propagates_lineage": true}},
+    {"source": {"node_id": "merge:gen", "port_name": "x"}, "target": {"node_id": "model:meta", "port_name": "x"},
+     "contract": {"kind": "data", "representation": null, "requires_oof": false, "requires_fold_alignment": false, "propagates_lineage": true}}
+  ],
+  "search_space_fingerprint": null,
+  "metadata": {}
+}"#,
+        )
+        .unwrap();
+        let campaign: dag_ml_core::CampaignSpec = serde_json::from_str(
+            r#"{
+  "id": "campaign:in_process.operator.select",
+  "root_seed": 7,
+  "leakage_policy": {"split_unit": "sample", "forbid_origin_cross_fold": true,
+    "allow_observation_split_with_shared_target": false, "require_group_ids": false, "unsafe_flags": []},
+  "aggregation_policy": {"aggregation_level": "sample", "method": "mean", "weights": "none",
+    "emit_parallel_metrics": true, "selection_metric_level": "sample",
+    "store_raw_predictions": true, "store_aggregated_predictions": true},
+  "split_invocation": {
+    "id": "split:in_process.operator.select", "controller_id": null,
+    "leakage_policy": {"split_unit": "sample", "forbid_origin_cross_fold": true,
+      "allow_observation_split_with_shared_target": false, "require_group_ids": false, "unsafe_flags": []},
+    "params": {},
+    "fold_set": {
+      "id": "folds:in_process.operator.select",
+      "sample_ids": ["s1", "s2"],
+      "folds": [
+        {"fold_id": "fold:0", "train_sample_ids": ["s2"], "validation_sample_ids": ["s1"], "metadata": {}},
+        {"fold_id": "fold:1", "train_sample_ids": ["s1"], "validation_sample_ids": ["s2"], "metadata": {}}
+      ],
+      "sample_groups": {}
+    }
+  },
+  "generation": {"strategy": "none", "dimensions": [], "max_variants": 1},
+  "shape_plans": {},
+  "data_bindings": {},
+  "metadata": {}
+}"#,
+        )
+        .unwrap();
+        let mut manifests = ControllerRegistry::new();
+        for json in [
+            r#"{"controller_id": "controller:filter", "controller_version": "0.1.0", "operator_kind": "exclude",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"}"#,
+            r#"{"controller_id": "controller:transform", "controller_version": "0.1.0", "operator_kind": "transform",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"}"#,
+            r#"{"controller_id": "controller:model", "controller_version": "0.1.0", "operator_kind": "model",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe", "emits_predictions", "consumes_oof_predictions", "emits_artifacts", "stateful"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"}"#,
+            r#"{"controller_id": "controller:merge", "controller_version": "0.1.0", "operator_kind": "prediction_join",
+               "priority": 0, "supported_phases": ["FIT_CV", "REFIT", "PREDICT"], "input_ports": [], "output_ports": [],
+               "data_requirements": null, "capabilities": ["deterministic", "thread_safe", "process_safe", "emits_predictions", "consumes_oof_predictions"],
+               "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"}"#,
+        ] {
+            manifests
+                .register(serde_json::from_str::<ControllerManifest>(json).unwrap())
+                .unwrap();
+        }
+        build_execution_plan(
+            "plan:in_process.operator.select",
+            graph,
+            campaign,
+            &manifests,
+        )
+        .unwrap()
+    }
+
+    /// The operator-variant model with Phase-5 `variant_labels` populated (pinned valid 64-hex
+    /// fingerprints), one per choice.
+    fn operator_select_model() -> OperatorVariantModel {
+        let model: OperatorVariantModel = serde_json::from_str(&format!(
+            r#"{{
+              "generator_id": "generator:preproc_model",
+              "dimension": {{
+                "name": "generator:preproc_model.operators",
+                "choices": [
+                  {{"label": "choice0", "value": "choice0", "active_subsequence": "choice0"}},
+                  {{"label": "choice1", "value": "choice1", "active_subsequence": "choice1"}}
+                ]
+              }},
+              "active_nodes": {{
+                "choice0": ["transform:choice0__snv", "model:choice0__pls"],
+                "choice1": ["transform:choice1__msc", "model:choice1__ridge"]
+              }},
+              "variant_labels": {{
+                "choice0": "{CHOICE0_LABEL}",
+                "choice1": "{CHOICE1_LABEL}"
+              }}
+            }}"#
+        ))
+        .unwrap();
+        model.validate().unwrap();
+        model
+    }
+
+    fn operator_select_controllers() -> RuntimeControllerRegistry {
+        let mut registry = RuntimeControllerRegistry::new();
+        for id in [
+            "controller:filter",
+            "controller:transform",
+            "controller:merge",
+        ] {
+            registry
+                .register(Box::new(MockController {
+                    id: ControllerId::new(id).unwrap(),
+                    offsets: BTreeMap::new(),
+                }))
+                .unwrap();
+        }
+        registry
+            .register(Box::new(MockController {
+                id: ControllerId::new("controller:model").unwrap(),
+                offsets: BTreeMap::from([
+                    (NodeId::new("model:choice0__pls").unwrap(), 0.0),
+                    (NodeId::new("model:choice1__ridge").unwrap(), 1.0),
+                ]),
+            }))
+            .unwrap();
+        registry
+    }
+
+    fn empty_provider() -> InMemoryDataProvider {
+        InMemoryDataProvider::new(ControllerId::new("controller:data.provider").unwrap())
+    }
+
+    #[test]
+    fn in_process_resolve_refit_variant_runs_operator_select_and_labels_reports() {
+        // Mirrors the CLI Phase-4 operator-SELECT path through the IN-PROCESS resolver: the winner is
+        // the lower-RMSE choice (choice0, offset 0); the loser report carries its Phase-5
+        // variant_label; the winner runs FIT_CV + REFIT on its PRUNED plan (merge + meta + sibling
+        // elided); and the WINNER's content fingerprint comes back so it can be stamped on the winner
+        // reports.
+        let union_plan = operator_select_union_plan();
+        let model = operator_select_model();
+        let controllers = operator_select_controllers();
+        let provider = empty_provider();
+        let run_id = RunId::new("run:in_process.operator.select").unwrap();
+
+        let resolved = resolve_refit_variant(
+            &union_plan,
+            std::slice::from_ref(&model),
+            &run_id,
+            7,
+            RegressionMetricKind::Rmse,
+            &controllers,
+            &provider,
+        )
+        .expect("in-process operator-SELECT must succeed");
+
+        // (a) The winner runs on the PRUNED plan — merge + meta + the losing sibling are elided.
+        let pruned = resolved
+            .pruned_plan
+            .as_ref()
+            .expect("operator-SELECT must thread out the pruned winner plan");
+        assert!(pruned
+            .node_plans
+            .contains_key(&NodeId::new("model:choice0__pls").unwrap()));
+        for elided in ["merge:gen", "model:meta", "model:choice1__ridge"] {
+            assert!(
+                !pruned
+                    .node_plans
+                    .contains_key(&NodeId::new(elided).unwrap()),
+                "`{elided}` must be elided from the pruned winner plan"
+            );
+        }
+
+        // (b) The winner's content fingerprint is choice0's label (so it can stamp the winner reports).
+        assert_eq!(
+            resolved.winner_variant_label.as_deref(),
+            Some(CHOICE0_LABEL),
+            "the winner's variant_label must be the choice0 content fingerprint"
+        );
+
+        // (c) Loser reports each carry their OWN variant_label (the losing choice1's fingerprint).
+        assert!(
+            !resolved.loser_validation_reports.is_empty(),
+            "the losing choice must surface its OOF reports"
+        );
+        for report in &resolved.loser_validation_reports {
+            assert_eq!(
+                report.partition,
+                PredictionPartition::Validation,
+                "operator-SELECT retains only Validation (OOF) reports"
+            );
+            assert_eq!(
+                report.variant_label.as_deref(),
+                Some(CHOICE1_LABEL),
+                "every loser report must carry the loser choice's variant_label"
+            );
+        }
+    }
+
+    #[test]
+    fn in_process_winner_report_carries_variant_label() {
+        // (3) The WINNER report (not just losers) carries variant_label: build the winner's freshly
+        // scored ScoreSet (real FIT_CV + REFIT on the pruned plan) and stamp it with the resolved
+        // winner label — exactly what `run_cv_refit_in_process` does before merging the losers.
+        let union_plan = operator_select_union_plan();
+        let model = operator_select_model();
+        let controllers = operator_select_controllers();
+        let provider = empty_provider();
+        let run_id = RunId::new("run:in_process.operator.winner").unwrap();
+
+        let resolved = resolve_refit_variant(
+            &union_plan,
+            std::slice::from_ref(&model),
+            &run_id,
+            7,
+            RegressionMetricKind::Rmse,
+            &controllers,
+            &provider,
+        )
+        .unwrap();
+        let refit_plan = resolved.pruned_plan.as_ref().unwrap();
+
+        let mut ctx = RunContext::new(run_id, Some(7));
+        ctx.variant_id = Some(resolved.variant_id.clone());
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                refit_plan,
+                &controllers,
+                &provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+        let mut artifact_store = InMemoryArtifactStore::new();
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                refit_plan,
+                &controllers,
+                &provider,
+                &mut artifact_store,
+                &mut ctx,
+                Phase::Refit,
+            )
+            .unwrap();
+        ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))
+            .unwrap();
+        let mut scores = ctx.build_score_set(refit_plan.id.clone(), None);
+        stamp_winner_variant_label(&mut scores, resolved.winner_variant_label.clone());
+
+        let score_set = scores.expect("the winner must produce a cross-fold OOF score");
+        assert!(
+            score_set
+                .reports
+                .iter()
+                .any(|report| report.variant_label.as_deref() == Some(CHOICE0_LABEL)),
+            "the WINNER report must carry the winner's variant_label, not just the losers"
+        );
+        assert!(
+            score_set
+                .reports
+                .iter()
+                .all(|report| report.variant_label.as_deref() == Some(CHOICE0_LABEL)),
+            "every winner report carries the winner's variant_label"
+        );
+    }
+
+    #[test]
+    fn in_process_resolve_refit_variant_rejects_multiple_operator_generators() {
+        // (6) Multiple operator generators are rejected for this phase (flat single operator generator
+        // scope), exactly as the CLI / core do.
+        let union_plan = operator_select_union_plan();
+        let model = operator_select_model();
+        let mut second = model.clone();
+        second.generator_id = NodeId::new("generator:other").unwrap();
+        second.dimension.name = "generator:other.operators".to_string();
+        let models = vec![model, second];
+        let controllers = operator_select_controllers();
+        let provider = empty_provider();
+        let run_id = RunId::new("run:in_process.operator.multi").unwrap();
+
+        let error = resolve_refit_variant(
+            &union_plan,
+            &models,
+            &run_id,
+            7,
+            RegressionMetricKind::Rmse,
+            &controllers,
+            &provider,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("does not support 2 operator generators"),
+            "multiple operator generators must be rejected: {error}"
+        );
+    }
 }

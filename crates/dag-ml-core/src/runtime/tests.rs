@@ -12034,6 +12034,7 @@ fn operator_select_union() -> (ExecutionPlan, OperatorVariantModel) {
             ],
         },
         active_nodes,
+        variant_labels: BTreeMap::new(),
     };
     model.validate().unwrap();
     (plan, model)
@@ -12285,6 +12286,73 @@ fn select_best_operator_variant_runs_both_pruned_candidates_and_picks_winner() {
             .all(|report| report.partition == PredictionPartition::Validation),
         "operator-SELECT retains only Validation (OOF) reports"
     );
+}
+
+/// Phase 5: when the operator model carries `variant_labels`, `select_best_operator_variant_by_cv`
+/// STAMPS each choice's content fingerprint on EVERY validation report — the WINNER's and the
+/// losers' — keyed by the choice the report belongs to (resolved the SAME way `variant_id` is). This
+/// is the cross-language mapping the nirs4all host relies on (report -> operator-choice config).
+#[test]
+fn select_best_operator_variant_stamps_variant_label_on_winner_and_loser_reports() {
+    use crate::metrics::RegressionMetricKind;
+
+    let (plan, mut model) = operator_select_union();
+    // Inject two distinct, valid 64-hex content fingerprints (the derivation is contract-tested in
+    // dag-ml-core's dsl tests; here we assert PROPAGATION onto the reports).
+    let choice0_label = "a".repeat(64);
+    let choice1_label = "b".repeat(64);
+    model.variant_labels = BTreeMap::from([
+        ("choice0".to_string(), choice0_label.clone()),
+        ("choice1".to_string(), choice1_label.clone()),
+    ]);
+    model.validate().unwrap();
+    let controllers = operator_select_controllers();
+    let run_id = RunId::new("run:operator.label").unwrap();
+
+    let selection = select_best_operator_variant_by_cv(
+        &plan,
+        &model,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |pruned_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase(pruned_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())
+        },
+    )
+    .unwrap()
+    .expect("operator scoring is on");
+
+    // The winner is choice0 (RMSE 0).
+    let (winner_variant, _, _) = operator_variant_for_choice(&model, "choice0");
+    let (loser_variant, _, _) = operator_variant_for_choice(&model, "choice1");
+
+    // Every report carries the label of the choice its variant belongs to (winner AND loser).
+    let mut saw_winner_label = false;
+    let mut saw_loser_label = false;
+    for report in &selection.validation_reports {
+        let variant_id = report.variant_id.as_ref().unwrap();
+        let expected = if variant_id == &winner_variant.variant_id {
+            saw_winner_label = true;
+            &choice0_label
+        } else if variant_id == &loser_variant.variant_id {
+            saw_loser_label = true;
+            &choice1_label
+        } else {
+            panic!("unexpected variant id {variant_id}");
+        };
+        assert_eq!(
+            report.variant_label.as_ref(),
+            Some(expected),
+            "each report must carry its own choice's variant_label"
+        );
+    }
+    assert!(
+        saw_winner_label,
+        "the WINNER report must carry variant_label, not just the losers"
+    );
+    assert!(saw_loser_label, "the loser report must carry variant_label");
 }
 
 #[test]

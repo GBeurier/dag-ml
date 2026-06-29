@@ -15,9 +15,10 @@ mod in_process;
 use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
-    fold_set_fingerprint, parse_pipeline_dsl_json, CampaignSpec, ControllerManifest,
-    ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan,
-    ExternalDataPlanEnvelope, FoldSet, GraphSpec,
+    fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
+    parse_pipeline_dsl_json, CampaignSpec, ControllerManifest, ControllerRegistry,
+    DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
+    FoldSet, GraphSpec,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -165,6 +166,35 @@ fn build_execution_plan_json(
     serde_json::to_string(&plan).map_err(py_serde_error)
 }
 
+/// Compute the cross-language `variant_label` (hex sha256) of a lowered operator sub-sequence
+/// (Phase 5). `steps_json` is a JSON array of `PipelineDslStep`s — the SAME shape a generator branch
+/// carries. The nirs4all host calls THIS for each of its operator-choice configs so the fingerprint
+/// is computed over the EXACT SAME canonicalization + `serde_json::to_vec` (ryu) codepath dag-ml
+/// uses to stamp per-variant reports — making the host label byte-identical to the report label by
+/// construction (rather than relying on Python `json.dumps`, whose float formatting diverges from
+/// Rust's for common params like `1e-05` / `1e-7` / 1-ULP shortest decimals).
+///
+/// The canonical form (the contract): a JSON array of steps in step order, each
+/// `{"kind": <step-kind str>, "class": <operator FQN str>, "params": {<sorted params>}}` — a
+/// bare-string operator renders `class` to itself, an object operator to its compact canonical JSON
+/// text, structural steps to `class:""` / `params:{}`; keys sorted everywhere; numbers finite-only;
+/// value forms preserved (`1` is not `1.0`).
+#[pyfunction]
+fn canonical_operator_variant_label(steps_json: &str) -> PyResult<String> {
+    operator_variant_label_from_steps_json(steps_json).map_err(py_core_error)
+}
+
+/// The canonical `{"kind", "class", "params"}` array (as JSON text) that
+/// [`canonical_operator_variant_label`] hashes — exposed for host-side debugging / fixture
+/// inspection so a mismatch can be diffed against the exact bytes dag-ml fingerprints.
+#[pyfunction]
+fn canonical_operator_variant_value_json(steps_json: &str) -> PyResult<String> {
+    let steps: Vec<dag_ml_core::PipelineDslStep> =
+        serde_json::from_str(steps_json).map_err(py_serde_error)?;
+    let canonical = operator_variant_canonical_value(&steps).map_err(py_core_error)?;
+    serde_json::to_string(&canonical).map_err(py_serde_error)
+}
+
 #[pymodule]
 fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("DagMlError", py.get_type::<DagMlError>())?;
@@ -212,6 +242,11 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_function(wrap_pyfunction!(fan_out_data_aware_branches_json, module)?)?;
     module.add_function(wrap_pyfunction!(build_execution_plan_json, module)?)?;
+    module.add_function(wrap_pyfunction!(canonical_operator_variant_label, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        canonical_operator_variant_value_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(
         in_process::run_cv_refit_in_process,
         module
@@ -262,7 +297,10 @@ fn contract_manifest() -> serde_json::Value {
             "compile_pipeline_dsl_graph_json",
             "compile_pipeline_dsl_artifact_json",
             "compile_pipeline_dsl_artifact_with_controllers_json",
-            "build_execution_plan_json"
+            "build_execution_plan_json",
+            "canonical_operator_variant_label",
+            "canonical_operator_variant_value_json",
+            "run_cv_refit_in_process"
         ],
         "wasm_exports": [
             "dag_ml_version",
@@ -451,6 +489,41 @@ mod tests {
             .expect("read DSL fixture");
         let graph = compile_pipeline_dsl_graph_json(&dsl).expect("compile graph JSON");
         assert!(graph.contains("\"nodes\""));
+    }
+
+    #[test]
+    fn canonical_operator_variant_label_matches_cross_repo_fixture() {
+        // Phase 5 host contract: the PyO3 helper reproduces the pinned `variant_label` from the
+        // cross-repo fixture's `steps_json`, over the SAME canonicalization + serde_json::to_vec
+        // (ryu) path dag-ml uses to stamp reports. The host calls THIS (not Python json.dumps), so
+        // its label is byte-identical to the report label by construction.
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/operator_variant_label.v1.json"
+        ))
+        .unwrap();
+        let case = &fixture["case"];
+        let steps_json = case["steps_json"].as_str().unwrap();
+        let expected = case["variant_label"].as_str().unwrap();
+
+        // Direct Rust call into the #[pyfunction].
+        let label = canonical_operator_variant_label(steps_json).expect("helper computes label");
+        assert_eq!(
+            label, expected,
+            "PyO3 helper must match the pinned fixture label"
+        );
+
+        // And through the Python module surface, proving the binding is registered and callable.
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "_dag_ml_test").unwrap();
+            _dag_ml(py, &module).unwrap();
+            let helper = module.getattr("canonical_operator_variant_label").unwrap();
+            let via_python: String = helper.call1((steps_json,)).unwrap().extract().unwrap();
+            assert_eq!(
+                via_python, expected,
+                "the registered Python helper must match the pinned fixture label"
+            );
+        });
     }
 
     #[test]
