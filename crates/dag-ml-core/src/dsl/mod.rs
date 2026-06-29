@@ -46,6 +46,14 @@ pub use compiler::*;
 pub use fanout::*;
 pub use types::*;
 
+// The operator-variant content-fingerprint contract (Phase 5) is part of the PUBLIC surface so the
+// dag-ml-py binding can expose the SAME canonicalization to the nirs4all host (one codepath, two
+// callers — host label byte-identical to the report label by construction).
+pub use generation::{
+    operator_variant_canonical_value, operator_variant_label,
+    operator_variant_label_from_steps_json,
+};
+
 // `alias`, `compat`, `compat_helpers`, and `generation` hold only crate-internal
 // helpers; re-export them crate-wide so sibling submodules resolve them through
 // `use super::*` without widening the public surface.

@@ -189,9 +189,13 @@ pub struct RegressionMetricReport {
     /// single-variant runs, so existing fixtures/fingerprints are byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_id: Option<VariantId>,
-    /// Human-readable label of the variant this score belongs to (operator/param dimension choice
-    /// label), the display counterpart to `variant_id`. Skipped (None) when absent, so existing
-    /// fixtures/fingerprints stay byte-identical (Phase 2: additive, no behavioral wiring).
+    /// Cross-language CONTENT fingerprint (hex sha256) of the operator-variant this score belongs to:
+    /// the canonical form of the variant's LOWERED operator sub-sequence (Phase 5). The nirs4all host
+    /// recomputes the SAME bytes from its own operator-choice config, so it can map a per-variant
+    /// dag-ml report back to the config that produced it (replacing a brittle positional zip). Set
+    /// only for operator-SELECT reports (the choice fingerprint from `OperatorVariantModel`'s
+    /// `variant_labels`); skipped (None) for param-variant / single-variant runs, so existing
+    /// fixtures/fingerprints stay byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_label: Option<String>,
     pub partition: PredictionPartition,
