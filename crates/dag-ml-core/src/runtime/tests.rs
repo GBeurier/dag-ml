@@ -7116,18 +7116,29 @@ fn cross_fold_validation_reports_scores_the_oof_average() {
         record("fold0", &[("s1", 1.0), ("s2", 2.0)]),
         record("fold1", &[("s3", 3.0), ("s4", 4.0)]),
     ];
-    let reports = cross_fold_validation_reports(
+    let outcome = cross_fold_validation_reports(
         &blocks,
         &records,
         SCORE_METRICS,
         FoldPartitionMode::Partition,
     )
     .unwrap();
+    let reports = &outcome.reports;
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].fold_id, Some(FoldId::new("avg").unwrap()));
     assert_eq!(reports[0].partition, PredictionPartition::Validation);
     assert_eq!(reports[0].row_count, 4);
     assert!((reports[0].metrics["rmse"] - 0.5).abs() < 1e-9); // sqrt((0+0+0+1)/4)
+
+    // Additive per-sample OOF average surface: one block, keyed identically to the scalar report
+    // (Validation / avg), pooled per-sample values + a y_true row per averaged sample (same id set).
+    assert_eq!(outcome.oof_averages.len(), 1);
+    let oof = &outcome.oof_averages[0];
+    assert_eq!(oof.predictions.partition, PredictionPartition::Validation);
+    assert_eq!(oof.predictions.fold_id, Some(FoldId::new("avg").unwrap()));
+    assert_eq!(oof.predictions.level, PredictionLevel::Sample);
+    assert_eq!(oof.predictions.unit_ids.len(), 4);
+    assert_eq!(oof.y_true.unit_ids, oof.predictions.unit_ids);
 }
 
 #[test]

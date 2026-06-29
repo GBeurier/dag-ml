@@ -44,8 +44,9 @@ pub(crate) use crate::ids::{
 };
 pub(crate) use crate::metrics::{
     cross_fold_validation_reports, reassemble_merge_targets, score_regression_aggregated_block,
-    score_regression_prediction_block, RegressionMetricKind, RegressionMetricReport,
-    RegressionTargetBlock, RegressionTargetRecord, ScoreSet, SCORE_SET_SCHEMA_VERSION,
+    score_regression_prediction_block, OofAverageBlock, RegressionMetricKind,
+    RegressionMetricReport, RegressionTargetBlock, RegressionTargetRecord, ScoreSet,
+    SCORE_SET_SCHEMA_VERSION,
 };
 pub(crate) use crate::oof::{PredictionBlock, PredictionPartition};
 pub(crate) use crate::phase::Phase;
@@ -246,6 +247,10 @@ pub struct RunContext {
     pub score_collector: Vec<RegressionMetricReport>,
     /// Per-fold `y_true` records, kept so cross-fold ensembles (the OOF average) can be scored.
     pub regression_target_records: Vec<RegressionTargetRecord>,
+    /// The per-sample cross-fold OOF average blocks (+ `y_true`) collected alongside the scalar OOF
+    /// average reports — one per scored producer. Surfaced so the host can fill the `(validation, avg)`
+    /// row's per-sample y_pred; populated by [`collect_cross_fold_validation_scores`], empty otherwise.
+    pub oof_average_blocks: Vec<OofAverageBlock>,
 }
 
 impl RunContext {
@@ -259,12 +264,16 @@ impl RunContext {
             lineage: InMemoryLineageRecorder::new(),
             score_collector: Vec::new(),
             regression_target_records: Vec::new(),
+            oof_average_blocks: Vec::new(),
         }
     }
 
     /// Score the cross-fold OOF average from the collected per-fold validation predictions + targets
-    /// and append the reports (one per producer, `fold_id = "avg"`) to the score collector. Call
-    /// after FIT_CV; a no-op when nothing was scored or no producer has more than one fold.
+    /// and append the reports (one per producer, `fold_id = "avg"`) to the score collector, plus —
+    /// additively — the per-sample OOF average block + `y_true` each report was computed from to
+    /// [`oof_average_blocks`](Self::oof_average_blocks) (so the host can fill the `(validation, avg)`
+    /// row's per-sample y_pred). Call after FIT_CV; a no-op when nothing was scored or no producer has
+    /// more than one fold.
     ///
     /// `partition_mode` is the campaign's [`FoldPartitionMode`]: `Partition` (KFold) requires a unique
     /// per-producer OOF set, while `Resampled` (ShuffleSplit / repeated CV) permits a sample to be
@@ -274,13 +283,14 @@ impl RunContext {
         &mut self,
         partition_mode: FoldPartitionMode,
     ) -> Result<()> {
-        let reports = cross_fold_validation_reports(
+        let outcome = cross_fold_validation_reports(
             self.prediction_store.blocks(),
             &self.regression_target_records,
             SCORE_METRICS,
             partition_mode,
         )?;
-        self.score_collector.extend(reports);
+        self.score_collector.extend(outcome.reports);
+        self.oof_average_blocks.extend(outcome.oof_averages);
         Ok(())
     }
 
