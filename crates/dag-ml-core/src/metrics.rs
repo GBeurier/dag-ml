@@ -736,10 +736,36 @@ fn combine_validation_targets(
     })
 }
 
+/// The per-sample cross-fold OOF average of one producer, surfaced alongside its scalar report so the
+/// host can show each OOF sample's averaged prediction (nirs4all's `(validation, avg)` row y_pred),
+/// not only the pooled scalar. The block is keyed by `producer_node` / `partition = Validation` /
+/// `fold_id = "avg"` — identical to the scalar [`RegressionMetricReport`] this pairs with — and the
+/// `y_true` covers exactly the block's samples (same id set), so the host pairs them by id. This is
+/// REPORT-grade output: it carries no variant tag (the block has none; the variant is stamped on the
+/// report downstream) and never feeds a training/feature path, so OOF/leakage invariants are
+/// unaffected — it is purely the same averaged values the scalar was computed from, exposed per sample.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OofAverageBlock {
+    pub predictions: AggregatedPredictionBlock,
+    pub y_true: RegressionTargetBlock,
+}
+
+/// The output of [`cross_fold_validation_reports`]: the scalar cross-fold OOF average reports (one per
+/// producer, `fold_id = "avg"`) plus — purely additively — the per-sample OOF average block + `y_true`
+/// each report was computed from. `reports` is byte-identical to the historical `Vec` return; callers
+/// that only need the scalars read `reports` and ignore `oof_averages`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CrossFoldValidation {
+    pub reports: Vec<RegressionMetricReport>,
+    pub oof_averages: Vec<OofAverageBlock>,
+}
+
 /// Score the cross-fold OOF average per producer: concatenate each producer's per-fold VALIDATION
 /// predictions into one block and score it against the combined `y_true`. Yields one report per
-/// producer with `fold_id = "avg"` — nirs4all's `cv_best_score` row. The per-fold join is
-/// identity-keyed; producers with a single fold are skipped (nothing to ensemble).
+/// producer with `fold_id = "avg"` — nirs4all's `cv_best_score` row — plus, additively, the per-sample
+/// OOF average block + `y_true` each report was computed from (so the host can fill the `(validation,
+/// avg)` row's per-sample y_pred, not only the scalar). The per-fold join is identity-keyed; producers
+/// with a single fold are skipped (nothing to ensemble).
 ///
 /// `partition_mode` mirrors the campaign [`FoldPartitionMode`](crate::fold::FoldPartitionMode):
 /// under `Partition` (KFold) the per-producer OOF must be unique (each sample scored exactly once);
@@ -751,7 +777,7 @@ pub fn cross_fold_validation_reports(
     target_records: &[RegressionTargetRecord],
     metrics: &[RegressionMetricKind],
     partition_mode: FoldPartitionMode,
-) -> Result<Vec<RegressionMetricReport>> {
+) -> Result<CrossFoldValidation> {
     let mut producers: Vec<NodeId> = Vec::new();
     let mut by_producer: BTreeMap<NodeId, Vec<PredictionBlock>> = BTreeMap::new();
     for block in prediction_blocks {
@@ -767,6 +793,7 @@ pub fn cross_fold_validation_reports(
             .push(block.clone());
     }
     let mut reports = Vec::new();
+    let mut oof_averages = Vec::new();
     for producer in &producers {
         let blocks = &by_producer[producer];
         if blocks.len() < 2 {
@@ -789,11 +816,62 @@ pub fn cross_fold_validation_reports(
             continue;
         }
         let average = reduce_predictions_across_folds(blocks, None, "avg")?;
+        // The scalar report is computed from `average` EXACTLY as before — byte-identical. The
+        // additive per-sample surface below reuses the SAME `average` values and the SAME `targets`,
+        // so it cannot perturb any score or `row_count`.
         reports.push(score_regression_prediction_block(
             &average, &targets, metrics,
         )?);
+        oof_averages.push(oof_average_block(&average, &targets));
     }
-    Ok(reports)
+    Ok(CrossFoldValidation {
+        reports,
+        oof_averages,
+    })
+}
+
+/// Build the per-sample OOF average surface (block + `y_true`) from the SAME `average`
+/// [`PredictionBlock`] and combined `targets` the scalar report was computed from. The block is the
+/// sample-level lift of `average` (its sample ids become `Sample` unit ids, values unchanged), keyed
+/// identically (producer / `Validation` / `avg`). The `y_true` is `targets` realigned to the block's
+/// sample order so a host pairs y_pred ↔ y_true per sample without re-sorting; every `average` sample
+/// has a y_true row because [`combine_validation_targets`] pools every per-fold validation record and
+/// the OOF coverage gate guarantees each averaged sample was validated.
+fn oof_average_block(
+    average: &PredictionBlock,
+    targets: &RegressionTargetBlock,
+) -> OofAverageBlock {
+    let unit_ids: Vec<PredictionUnitId> = average
+        .sample_ids
+        .iter()
+        .cloned()
+        .map(PredictionUnitId::Sample)
+        .collect();
+    let predictions = AggregatedPredictionBlock {
+        prediction_id: None,
+        producer_node: average.producer_node.clone(),
+        partition: average.partition.clone(),
+        fold_id: average.fold_id.clone(),
+        level: PredictionLevel::Sample,
+        unit_ids: unit_ids.clone(),
+        values: average.values.clone(),
+        target_names: average.target_names.clone(),
+    };
+    let target_by_unit: BTreeMap<&PredictionUnitId, &Vec<f64>> =
+        targets.unit_ids.iter().zip(&targets.values).collect();
+    let y_true = RegressionTargetBlock {
+        level: PredictionLevel::Sample,
+        unit_ids: unit_ids.clone(),
+        values: unit_ids
+            .iter()
+            .map(|unit_id| target_by_unit[unit_id].clone())
+            .collect(),
+        target_names: targets.target_names.clone(),
+    };
+    OofAverageBlock {
+        predictions,
+        y_true,
+    }
 }
 
 #[cfg(test)]
@@ -1321,7 +1399,7 @@ mod tests {
             target_record("1", &f1, &[0.0, 0.0, 0.0, 1.0, 2.0]),
         ];
 
-        let reports = cross_fold_validation_reports(
+        let outcome = cross_fold_validation_reports(
             &blocks,
             &targets,
             &[
@@ -1332,11 +1410,58 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(reports.len(), 1, "one pooled `avg` report for the producer");
-        let avg = &reports[0];
+        assert_eq!(
+            outcome.reports.len(),
+            1,
+            "one pooled `avg` report for the producer"
+        );
+        let avg = &outcome.reports[0];
         assert_eq!(avg.fold_id, Some(FoldId::new("avg").unwrap()));
         assert_eq!(avg.row_count, 10, "all OOF samples pooled exactly once");
         assert_close(avg.metrics["accuracy"], 0.70);
         assert_close(avg.metrics["balanced_accuracy"], 0.50);
+
+        // Additive per-sample OOF average surface: one block per scored producer, keyed identically to
+        // the scalar report (producer / Validation / avg), with the SAME pooled values and one y_true
+        // row per averaged sample (same id set), realigned to the block's sample order.
+        assert_eq!(outcome.oof_averages.len(), 1, "one OOF average block");
+        let oof = &outcome.oof_averages[0];
+        assert_eq!(oof.predictions.partition, PredictionPartition::Validation);
+        assert_eq!(oof.predictions.fold_id, Some(FoldId::new("avg").unwrap()));
+        assert_eq!(oof.predictions.level, PredictionLevel::Sample);
+        assert_eq!(oof.predictions.unit_ids.len(), 10);
+        assert_eq!(oof.y_true.unit_ids, oof.predictions.unit_ids);
+        // The pooled per-sample preds are the across-fold mean (each KFold sample validated once):
+        // [0,0,0,1,0] ++ [0,0,0,0,0] against y_true [0,0,0,1,2] ++ [0,0,0,1,2].
+        assert_eq!(
+            oof.predictions.values,
+            vec![
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![1.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+            ]
+        );
+        assert_eq!(
+            oof.y_true.values,
+            vec![
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![1.0],
+                vec![2.0],
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![1.0],
+                vec![2.0],
+            ]
+        );
     }
 }

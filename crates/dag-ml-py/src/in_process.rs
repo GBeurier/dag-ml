@@ -420,6 +420,26 @@ pub fn run_cv_refit_in_process(
     let mut node_results = fit_cv_results;
     node_results.extend(refit_results);
 
+    // 6. ADDITIVELY surface the per-sample cross-fold OOF AVERAGE so the host fills the
+    //    `(validation, avg)` row's y_pred (it had only the scalar OOF report before). Each
+    //    `OofAverageBlock` becomes a synthetic NodeResult frame carrying the SAMPLE-level
+    //    `aggregated_predictions` block (producer / validation / `avg`) + its id-matched sample-level
+    //    `regression_targets` y_true — the exact shape `result._index_sample_blocks` reads. The block
+    //    holds the SAME averaged values the scalar was computed from (purely additive; no score,
+    //    `num_predictions` or existing block changes), and never feeds a training/feature path.
+    let node_results = serde_json::to_value(&node_results).map_err(py_serde_error)?;
+    let mut node_results = match node_results {
+        serde_json::Value::Array(frames) => frames,
+        other => vec![other],
+    };
+    for oof in &ctx.oof_average_blocks {
+        node_results.push(serde_json::json!({
+            "node_id": oof.predictions.producer_node,
+            "aggregated_predictions": [oof.predictions],
+            "regression_targets": [oof.y_true],
+        }));
+    }
+
     let payload = serde_json::json!({
         "node_results": node_results,
         "scores": scores,
