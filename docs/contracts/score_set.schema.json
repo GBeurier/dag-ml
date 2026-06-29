@@ -22,6 +22,7 @@
       "properties": {
         "prediction_id": { "type": ["string", "null"] },
         "variant_id": { "type": ["string", "null"] },
+        "variant_label": { "type": ["string", "null"] },
         "producer_node": { "type": "string", "minLength": 1 },
         "partition": { "enum": ["train", "validation", "test", "final"] },
         "fold_id": { "type": ["string", "null"] },

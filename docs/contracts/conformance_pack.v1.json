@@ -200,6 +200,25 @@
         "train predictions cannot become training features by default",
         "selection decisions persist the metric level used"
       ]
+    },
+    "operator_level_variant_additive_fields.v1": {
+      "polarity": "positive",
+      "surfaces": [
+        "campaign_spec.generation_choice.active_subsequence",
+        "execution_plan.generation_choice.active_subsequence",
+        "score_set.regression_metric_report.variant_label"
+      ],
+      "fixtures": [],
+      "test_refs": [
+        "crates/dag-ml-core/src/generation.rs::additive_variant_fields_are_invisible_when_absent",
+        "crates/dag-ml-core/src/generation.rs::choice_cannot_set_both_param_overrides_and_active_subsequence"
+      ],
+      "assertions": [
+        "generation_choice carries an optional active_subsequence for operator-level variants",
+        "a choice cannot set both param_overrides and active_subsequence",
+        "regression_metric_report carries an optional variant_label",
+        "specs/fixtures without the new fields stay byte-identical and fingerprint-stable"
+      ]
     }
   },
   "c_abi": {

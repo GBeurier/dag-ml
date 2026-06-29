@@ -335,6 +335,11 @@
           "items": {
             "$ref": "#/$defs/generation_param_override"
           }
+        },
+        "active_subsequence": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
         }
       }
     },

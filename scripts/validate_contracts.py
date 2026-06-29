@@ -276,6 +276,7 @@ D8_CONFORMANCE_SCENARIOS = (
     "stacking_oof_contract.v1",
     "invalid_unit_join.v1",
     "row_vs_sample_selection_mismatch.v1",
+    "operator_level_variant_additive_fields.v1",
 )
 REQUIRED_PARITY_CASE_IDS = {
     "nirs4all_lite_browser_compile_plan",
@@ -2100,6 +2101,11 @@ def validate_score_set_fixture(value: Any, label: str) -> None:
             isinstance(report.get("metrics"), dict) and bool(report["metrics"]),
             f"{label} score-set report metrics must be a non-empty object",
         )
+        for optional_string in ("variant_id", "variant_label"):
+            if optional_string in report and report[optional_string] is not None:
+                require_non_empty_string(
+                    report[optional_string], f"{label} score-set report.{optional_string}"
+                )
 
 
 def validate_data_output_provenance_schema(schema: Any, label: str) -> None:
@@ -3292,6 +3298,21 @@ def validate_generation_spec(value: Any, label: str) -> None:
                 require_identifier(override.get("node_id"), f"{override_label}.node_id")
                 params = override.get("params")
                 require(isinstance(params, dict) and params, f"{override_label}.params non-empty")
+            if "active_subsequence" in choice:
+                active_subsequence = choice.get("active_subsequence")
+                require_non_empty_string(
+                    active_subsequence, f"{choice_label}.active_subsequence"
+                )
+                # Mirror Rust GenerationChoice::validate (trim().is_empty()): reject
+                # whitespace-only, matching the schema `\\S` pattern.
+                require(
+                    active_subsequence.strip() != "",
+                    f"{choice_label}.active_subsequence must not be whitespace-only",
+                )
+                require(
+                    not overrides,
+                    f"{choice_label} cannot set both param_overrides and active_subsequence",
+                )
         require(len(set(labels)) == len(labels), f"{dimension_label}.choices duplicate labels")
     require(len(set(names)) == len(names), f"{label}.dimensions duplicate names")
     if strategy == "zip":
@@ -3645,6 +3666,21 @@ def validate_execution_plan(value: Any, label: str) -> None:
                 require(override_node in graph_node_id_set, f"{override_label}.node_id unknown")
                 override_params = override.get("params", {})
                 require(isinstance(override_params, dict), f"{override_label}.params must be object")
+            if "active_subsequence" in choice:
+                active_subsequence = choice.get("active_subsequence")
+                require_non_empty_string(
+                    active_subsequence, f"{choice_label}.active_subsequence"
+                )
+                # Mirror Rust GenerationChoice::validate (trim().is_empty()): reject
+                # whitespace-only, matching the schema `\\S` pattern.
+                require(
+                    active_subsequence.strip() != "",
+                    f"{choice_label}.active_subsequence must not be whitespace-only",
+                )
+                require(
+                    not overrides,
+                    f"{choice_label} cannot set both param_overrides and active_subsequence",
+                )
 
     fold_set = value.get("fold_set")
     if fold_set is not None:
