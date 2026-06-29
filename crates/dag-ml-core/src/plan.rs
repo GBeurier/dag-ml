@@ -706,6 +706,172 @@ fn validate_campaign_node_targets(graph: &GraphSpec, campaign: &CampaignSpec) ->
     Ok(())
 }
 
+/// Prune `plan` (a Mechanism-B operator-generator UNION plan, compiled as a STACKING graph:
+/// every choice's terminal model fans into `merge:generator_predictions -> model:meta`) down to a
+/// single operator-SELECT candidate: the one operator choice in `active_nodes` plus the prefix it
+/// shares with the other choices, with the generator merge + meta-model + every inactive choice
+/// physically removed (C Phase 4, #23).
+///
+/// `active_nodes` is the chosen choice's active set (`OperatorVariantModel::active_nodes[choice]`);
+/// `all_choice_nodes` is the union of EVERY choice's active set. The kept set is computed by
+/// structure, not by id-prefix matching:
+///
+/// 1. `shared_prefix` = the transitive ANCESTORS of `active_nodes` in the compiled graph (walked via
+///    [`GraphSpec::upstream_nodes`], graph.rs), MINUS `all_choice_nodes`. The subtraction is the
+///    crux: ancestors that are themselves choice nodes (this choice's own upstream operators) stay
+///    in via `active_nodes`, but a sibling choice's nodes are never pulled in, and — because the
+///    merge + meta sit DOWNSTREAM of the choice models, never upstream — they are never ancestors,
+///    so they are elided.
+/// 2. `keep` = `shared_prefix ∪ active_nodes`.
+/// 3. graph nodes/edges are filtered to `keep` (an edge survives only when BOTH endpoints are kept,
+///    which drops the now-dangling stacking edges into the elided merge).
+/// 4. a fresh [`GraphPlan::from_graph`] recomputes the topo order + parallel levels for the pruned
+///    graph, `node_plans` are filtered to `keep`, and EACH surviving node plan's
+///    `input_nodes`/`output_nodes` are REBUILT from the pruned graph (the scheduler reads
+///    `input_nodes` to decide handle forwarding — a stale entry would silently reintroduce an
+///    inactive edge).
+/// 5. `graph_fingerprint` is recomputed from the pruned graph; `variants` is set to exactly the
+///    SELECT candidate's variant; the result is `validate`d and then run through
+///    [`validate_active_inputs`] (Invariant P4-1).
+///
+/// The campaign is carried unchanged (its `shape_plans`/`data_bindings`/`generation` are validated
+/// per-object, not re-checked against the pruned node set), so the pruned candidate replays exactly
+/// the chosen operator sub-sequence with no stacking residue.
+pub fn prune_plan_to_active(
+    plan: &ExecutionPlan,
+    active_nodes: &BTreeSet<NodeId>,
+    all_choice_nodes: &BTreeSet<NodeId>,
+    variant: &VariantPlan,
+) -> Result<ExecutionPlan> {
+    plan.validate()?;
+    variant.validate()?;
+    for node_id in active_nodes {
+        if !plan.node_plans.contains_key(node_id) {
+            return Err(DagMlError::Planning(format!(
+                "operator-SELECT prune: active node `{node_id}` is not in the union plan"
+            )));
+        }
+    }
+    if active_nodes.is_empty() {
+        return Err(DagMlError::Planning(
+            "operator-SELECT prune: active node set is empty".to_string(),
+        ));
+    }
+
+    // shared_prefix = transitive ancestors of the active nodes, MINUS every choice's active nodes
+    // (so sibling choices, the stacking merge, and the meta-model are all excluded).
+    let graph = &plan.graph_plan.graph;
+    let mut ancestors = BTreeSet::<NodeId>::new();
+    let mut stack: Vec<NodeId> = active_nodes.iter().cloned().collect();
+    while let Some(node_id) = stack.pop() {
+        for upstream in graph.upstream_nodes(&node_id) {
+            if ancestors.insert(upstream.clone()) {
+                stack.push(upstream);
+            }
+        }
+    }
+    let shared_prefix = ancestors
+        .into_iter()
+        .filter(|node_id| !all_choice_nodes.contains(node_id))
+        .collect::<BTreeSet<_>>();
+
+    let keep = shared_prefix
+        .iter()
+        .chain(active_nodes.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    // Filter the graph to `keep`; an edge survives only when BOTH endpoints survive, which drops the
+    // dangling edges into the elided merge/meta-model.
+    let mut pruned_graph = graph.clone();
+    pruned_graph.nodes.retain(|node| keep.contains(&node.id));
+    pruned_graph
+        .edges
+        .retain(|edge| keep.contains(&edge.source.node_id) && keep.contains(&edge.target.node_id));
+
+    let graph_plan = GraphPlan::from_graph(pruned_graph)?;
+
+    // Filter node plans to `keep` and rebuild every surviving plan's input/output nodes from the
+    // pruned graph (the scheduler reads `input_nodes`; stale entries reintroduce inactive edges).
+    let mut node_plans = BTreeMap::new();
+    for (node_id, node_plan) in &plan.node_plans {
+        if !keep.contains(node_id) {
+            continue;
+        }
+        let mut pruned_node_plan = node_plan.clone();
+        pruned_node_plan.input_nodes = graph_plan.graph.upstream_nodes(node_id);
+        pruned_node_plan.output_nodes = graph_plan.graph.downstream_nodes(node_id);
+        node_plans.insert(node_id.clone(), pruned_node_plan);
+    }
+
+    let graph_fingerprint = stable_json_fingerprint(&graph_plan.graph)?;
+    let pruned = ExecutionPlan {
+        id: plan.id.clone(),
+        graph_plan,
+        campaign: plan.campaign.clone(),
+        node_plans,
+        controller_manifests: plan.controller_manifests.clone(),
+        variants: vec![variant.clone()],
+        fold_set: plan.fold_set.clone(),
+        graph_fingerprint,
+        campaign_fingerprint: plan.campaign_fingerprint.clone(),
+        controller_fingerprint: plan.controller_fingerprint.clone(),
+    };
+    pruned.validate()?;
+    validate_active_inputs(&pruned, graph)?;
+    Ok(pruned)
+}
+
+/// Invariant P4-1: after an operator-SELECT prune, every kept node's edge-fed input port is still
+/// fed by exactly one surviving source.
+///
+/// The edge-driven scheduler / OOF traversals only ever see the surviving nodes+edges — the inactive
+/// choices, the merge, and the meta-model are physically gone — so the active-edge gate is otherwise
+/// IMPLICIT; this is the only residual check. It is strictly additive: it weakens no OOF/leakage
+/// validator.
+///
+/// For each input port of each kept node it compares the union graph's per-port edge count
+/// (`union_graph`) with the pruned graph's. A port that was edge-fed in the union but now has NO
+/// surviving source is DANGLING — its sole producer was pruned away, which is a malformed prune. A
+/// port with MORE THAN ONE surviving source is AMBIGUOUS. Ports that were never edge-fed in the union
+/// (graph-interface / data-binding inputs) carry no edge by design and are left alone.
+fn validate_active_inputs(plan: &ExecutionPlan, union_graph: &GraphSpec) -> Result<()> {
+    let pruned_graph = &plan.graph_plan.graph;
+    let kept: BTreeSet<&NodeId> = pruned_graph.nodes.iter().map(|node| &node.id).collect();
+
+    let mut union_port_sources = BTreeMap::<(NodeId, String), usize>::new();
+    for edge in &union_graph.edges {
+        if !kept.contains(&edge.target.node_id) {
+            continue;
+        }
+        *union_port_sources
+            .entry((edge.target.node_id.clone(), edge.target.port_name.clone()))
+            .or_insert(0) += 1;
+    }
+    let mut pruned_port_sources = BTreeMap::<(NodeId, String), usize>::new();
+    for edge in &pruned_graph.edges {
+        *pruned_port_sources
+            .entry((edge.target.node_id.clone(), edge.target.port_name.clone()))
+            .or_insert(0) += 1;
+    }
+
+    for (key, union_count) in &union_port_sources {
+        let pruned_count = pruned_port_sources.get(key).copied().unwrap_or(0);
+        let (node_id, port_name) = key;
+        if *union_count >= 1 && pruned_count == 0 {
+            return Err(DagMlError::Planning(format!(
+                "operator-SELECT prune left node `{node_id}` required input port `{port_name}` with zero surviving sources (dangling): its producer was pruned away"
+            )));
+        }
+        if pruned_count > 1 {
+            return Err(DagMlError::Planning(format!(
+                "operator-SELECT prune left node `{node_id}` input port `{port_name}` fed by {pruned_count} surviving sources (ambiguous)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
