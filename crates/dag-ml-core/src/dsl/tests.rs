@@ -1612,6 +1612,494 @@ fn compiles_sequential_filter_and_or_generator_surface() {
     );
 }
 
+/// Group a compiled graph's namespaced generator nodes (`gen:<g>:c<i>:n<k>.<orig>`) by their
+/// `c<i>` choice index — an INDEPENDENT oracle for the mirror test, derived straight from the graph
+/// the existing Mechanism B compile produced (not from the operator-variant model under test).
+fn graph_choice_node_groups(graph: &GraphSpec) -> BTreeMap<usize, BTreeSet<NodeId>> {
+    let mut groups = BTreeMap::<usize, BTreeSet<NodeId>>::new();
+    for node in &graph.nodes {
+        let Some(rest) = node.id.as_str().strip_prefix("gen:") else {
+            continue;
+        };
+        // rest = "<g>:c<i>:n<k>.<orig>"; the choice index is the `c<i>` segment.
+        let choice_index = rest
+            .split(':')
+            .find_map(|segment| segment.strip_prefix('c'))
+            .and_then(|index| index.split('n').next())
+            .and_then(|index| index.parse::<usize>().ok())
+            .unwrap_or_else(|| panic!("unexpected namespaced node id `{}`", node.id));
+        groups
+            .entry(choice_index)
+            .or_default()
+            .insert(node.id.clone());
+    }
+    groups
+}
+
+/// Phase-3 MIRROR TEST — the operator-variant model is the faithful mirror of Mechanism B's
+/// namespaced sub-sequences, proven WITHOUT running native execution.
+///
+/// For the committed operator-level generator example (`pipeline_dsl_nirs4all_generator_parity`,
+/// a 2×2 cartesian preproc/model search), this asserts:
+///   (a) the generated operator-variant SET (the dimension choices + their exact active-node-id
+///       sets) matches the EXPECTED set derived independently from the compiled graph's namespaced
+///       sub-sequences — each choice's active set equals exactly its sub-sequence's namespaced
+///       nodes (the authoritative minted set), and (union with the shared non-gen nodes) equals the
+///       set of nodes that choice executes;
+///   (b) `enumerate_variants` over the model's generation spec yields one `VariantPlan` per choice;
+///   (c) the existing Mechanism B compile is UNCHANGED (graph has no operator dimension folded in:
+///       `generation.strategy == None`, `search_space_fingerprint == None`).
+#[test]
+fn operator_variant_model_mirrors_generator_subsequences() {
+    let spec: PipelineDslSpec = serde_json::from_str(include_str!(
+        "../../../../examples/pipeline_dsl_nirs4all_generator_parity.json"
+    ))
+    .unwrap();
+
+    // The unchanged Mechanism B compile.
+    let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+    // (c) NO operator dimension is folded into the existing generation / fingerprint.
+    assert_eq!(compiled.generation.strategy, GenerationStrategy::None);
+    assert!(compiled.generation.dimensions.is_empty());
+    assert_eq!(compiled.graph.search_space_fingerprint, None);
+    assert_eq!(compiled.generation_fingerprint, None);
+
+    // The new opt-in derivation.
+    let models = compile_operator_variant_models(&spec).unwrap();
+    assert_eq!(models.len(), 1, "one operator-level generator in the spec");
+    let model = &models[0];
+    model.validate().unwrap();
+    assert_eq!(
+        model.generator_id.as_str(),
+        "generator:preproc_model_cartesian"
+    );
+
+    // The 2×2 cartesian produces exactly 4 operator choices, each operator-only.
+    assert_eq!(model.dimension.choices.len(), 4);
+    assert_eq!(model.active_nodes.len(), 4);
+    for choice in &model.dimension.choices {
+        assert!(choice.param_overrides.is_empty());
+        assert_eq!(
+            choice.active_subsequence.as_deref(),
+            Some(choice.label.as_str()),
+            "active_subsequence carries the choice key/namespace"
+        );
+    }
+
+    // The choice keys are the stable Mechanism B choice ids (also the OOF lane selector branch ids).
+    let choice_keys = model
+        .dimension
+        .choices
+        .iter()
+        .map(|choice| choice.label.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        choice_keys,
+        vec![
+            "generator:preproc_model_cartesian:choice0",
+            "generator:preproc_model_cartesian:choice1",
+            "generator:preproc_model_cartesian:choice2",
+            "generator:preproc_model_cartesian:choice3",
+        ]
+    );
+
+    // (a) The EXPECTED active sets, derived independently from the compiled graph's namespaced
+    // sub-sequences. Each choice's authoritative active set == exactly its sub-sequence's
+    // namespaced nodes (the minted set), keyed by `c<i>` index in choice order.
+    let graph_groups = graph_choice_node_groups(&compiled.graph);
+    assert_eq!(graph_groups.len(), 4);
+    for (choice_index, choice) in model.dimension.choices.iter().enumerate() {
+        let key = choice.active_subsequence.as_ref().unwrap();
+        let model_set = &model.active_nodes[key];
+        let expected_set = &graph_groups[&choice_index];
+        assert_eq!(
+            model_set, expected_set,
+            "choice {choice_index} active set must mirror its namespaced sub-sequence exactly"
+        );
+        // Every node in the active set is a real node in the compiled graph.
+        for node_id in model_set {
+            assert!(
+                compiled.graph.nodes.iter().any(|node| &node.id == node_id),
+                "active node `{node_id}` must exist in the compiled graph"
+            );
+        }
+    }
+
+    // The active sets are disjoint across choices (each sub-sequence is its own namespace).
+    for left in 0..4 {
+        for right in (left + 1)..4 {
+            let lhs = &graph_groups[&left];
+            let rhs = &graph_groups[&right];
+            assert!(
+                lhs.is_disjoint(rhs),
+                "choice {left} and {right} sub-sequences must not share namespaced nodes"
+            );
+        }
+    }
+
+    // The contract's union relationship: each choice's executed nodes == its sub-sequence's nodes
+    // ∪ the shared non-gen nodes. The shared non-gen nodes are the graph nodes outside every
+    // generator namespace (here: filter:y_outlier, merge:generator_predictions, model:meta).
+    let shared_non_gen = compiled
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| !node.id.as_str().starts_with("gen:"))
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(shared_non_gen.len(), 3);
+    for choice_index in 0..4 {
+        let mut executed = graph_groups[&choice_index].clone();
+        executed.extend(shared_non_gen.iter().cloned());
+        assert!(
+            shared_non_gen.is_subset(&executed),
+            "choice {choice_index} executes the shared non-gen nodes"
+        );
+        assert!(
+            graph_groups[&choice_index].is_subset(&executed),
+            "choice {choice_index} executes its own sub-sequence nodes"
+        );
+    }
+
+    // (b) enumerate_variants over the model's generation spec yields one VariantPlan per choice.
+    let generation = model.generation_spec();
+    generation.validate().unwrap();
+    let variants = crate::generation::enumerate_variants(&generation, spec.root_seed).unwrap();
+    assert_eq!(variants.len(), 4, "one VariantPlan per operator choice");
+    let dimension_name = model.dimension.name.clone();
+    for variant in &variants {
+        let choice = &variant.choices[&dimension_name];
+        assert!(choice.active_subsequence.is_some());
+        assert!(choice.param_overrides.is_empty());
+        assert!(model
+            .active_nodes
+            .contains_key(choice.active_subsequence.as_ref().unwrap()));
+    }
+    let variant_subsequences = variants
+        .iter()
+        .map(|variant| {
+            variant.choices[&dimension_name]
+                .active_subsequence
+                .clone()
+                .unwrap()
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        variant_subsequences,
+        choice_keys.iter().cloned().collect::<BTreeSet<_>>(),
+        "the VariantPlan set covers exactly the operator choices"
+    );
+}
+
+/// Determinism + fingerprint stability for the operator-variant model (extends the
+/// `cartesian_generation_is_deterministic_and_fingerprinted` pattern to the operator dimension):
+/// two derivations are byte-identical, the model's generation spec fingerprints stably, and a
+/// changed sub-sequence moves the fingerprint.
+#[test]
+fn operator_variant_model_is_deterministic_and_fingerprinted() {
+    let spec: PipelineDslSpec = serde_json::from_str(include_str!(
+        "../../../../examples/pipeline_dsl_nirs4all_generator_parity.json"
+    ))
+    .unwrap();
+
+    let left = compile_operator_variant_models(&spec).unwrap();
+    let right = compile_operator_variant_models(&spec).unwrap();
+    assert_eq!(left, right, "derivation is deterministic");
+
+    let generation = left[0].generation_spec();
+    let fingerprint = generation_spec_fingerprint(&generation).unwrap();
+    assert_eq!(
+        fingerprint,
+        generation_spec_fingerprint(&left[0].generation_spec()).unwrap()
+    );
+
+    // A spec with a different sub-sequence (an extra model branch) yields a different operator
+    // dimension and a different fingerprint.
+    let mut changed = spec.clone();
+    if let Some(PipelineDslStep::Generator(generator)) = changed
+        .steps
+        .iter_mut()
+        .find(|step| matches!(step, PipelineDslStep::Generator(_)))
+    {
+        // Drop one model branch from the second stage: 2×1 instead of 2×2.
+        generator.stages[1].branches.truncate(1);
+    } else {
+        panic!("expected a generator step");
+    }
+    let changed_models = compile_operator_variant_models(&changed).unwrap();
+    assert_eq!(changed_models[0].dimension.choices.len(), 2);
+    assert_ne!(
+        fingerprint,
+        generation_spec_fingerprint(&changed_models[0].generation_spec()).unwrap(),
+        "a different sub-sequence set moves the fingerprint"
+    );
+}
+
+/// A spec with NO operator-level generator yields no operator-variant models (the derivation is a
+/// no-op for the common case).
+#[test]
+fn operator_variant_model_empty_without_operator_generators() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+  "id": "dsl-no-operator-generator",
+  "steps": [
+    {
+      "kind": "transform",
+      "id": "transform:scale",
+      "operator": {"class": "sklearn.preprocessing.StandardScaler"}
+    },
+    {
+      "kind": "model",
+      "id": "model:base",
+      "operator": {"class": "sklearn.linear_model.Ridge"}
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    assert!(compile_operator_variant_models(&spec).unwrap().is_empty());
+}
+
+/// MUST-FIX 1: active_nodes contains ONLY ids that become real emitted graph nodes. A NAMED
+/// `sequential` inside a generator branch consumes a namespace counter slot but is NOT emitted as a
+/// graph node (`compile_sequence_container` writes only metadata) — its phantom container id must be
+/// absent from the active set, which must match the independent graph-derived oracle exactly.
+#[test]
+fn operator_variant_model_excludes_phantom_container_nodes() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+  "id": "dsl-named-seq-in-generator",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:choices",
+      "mode": "or",
+      "pick": 1,
+      "branches": [
+        {
+          "id": "pls",
+          "steps": [
+            {
+              "kind": "sequential",
+              "id": "seq:inner",
+              "steps": [
+                {
+                  "kind": "transform",
+                  "id": "transform:scale",
+                  "operator": {"class": "sklearn.preprocessing.StandardScaler"}
+                },
+                {
+                  "kind": "model",
+                  "id": "model:pls",
+                  "operator": {"class": "sklearn.cross_decomposition.PLSRegression"},
+                  "params": {"n_components": 8}
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "ridge",
+          "steps": [
+            {
+              "kind": "model",
+              "id": "model:ridge",
+              "operator": {"class": "sklearn.linear_model.Ridge"}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge",
+      "id": "merge:generated",
+      "output_as": "features",
+      "include_original_data": false,
+      "selectors": [
+        {"branch": "generator:choices:choice0", "select": "all"}
+      ]
+    },
+    {
+      "kind": "model",
+      "id": "model:meta",
+      "operator": {"class": "sklearn.linear_model.Ridge"}
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+    let models = compile_operator_variant_models(&spec).unwrap();
+    assert_eq!(models.len(), 1);
+    let model = &models[0];
+    model.validate().unwrap();
+    assert_eq!(model.dimension.choices.len(), 2);
+
+    // The named-sequential container id is namespaced (it occupies counter slot n0 of choice 0) but
+    // is NOT an emitted graph node, so it must NOT appear in any active set.
+    for (key, nodes) in &model.active_nodes {
+        assert!(
+            !nodes
+                .iter()
+                .any(|node| node.as_str().contains(".seq_inner")),
+            "active set for `{key}` must not contain the phantom sequential container id: {nodes:?}"
+        );
+    }
+
+    // Every active set equals exactly its sub-sequence's EMITTED graph nodes (the oracle derived
+    // straight from the compiled graph).
+    let graph_groups = graph_choice_node_groups(&compiled.graph);
+    assert_eq!(graph_groups.len(), 2);
+    for (choice_index, choice) in model.dimension.choices.iter().enumerate() {
+        let key = choice.active_subsequence.as_ref().unwrap();
+        assert_eq!(
+            &model.active_nodes[key], &graph_groups[&choice_index],
+            "choice {choice_index} active set must equal exactly its emitted graph nodes"
+        );
+        // Every active node is a real graph node.
+        for node_id in &model.active_nodes[key] {
+            assert!(
+                compiled.graph.nodes.iter().any(|node| &node.id == node_id),
+                "active node `{node_id}` must exist in the compiled graph"
+            );
+        }
+    }
+    // Choice 0 (pls): the named sequential's two operator children only (scale + pls).
+    assert_eq!(
+        model.active_nodes[&model.dimension.choices[0].label].len(),
+        2
+    );
+}
+
+/// MUST-FIX 1(b): a nested operator-generator (a `generator` inside another generator's branch) is
+/// rejected with a clear error — Phase 3 covers flat operator generators only.
+#[test]
+fn operator_variant_model_rejects_nested_generator() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+  "id": "dsl-nested-generator",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:outer",
+      "mode": "or",
+      "pick": 1,
+      "branches": [
+        {
+          "id": "branch_a",
+          "steps": [
+            {
+              "kind": "generator",
+              "id": "generator:inner",
+              "mode": "or",
+              "pick": 1,
+              "branches": [
+                {
+                  "id": "pls",
+                  "steps": [
+                    {
+                      "kind": "model",
+                      "id": "model:pls",
+                      "operator": {"class": "sklearn.cross_decomposition.PLSRegression"}
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "merge",
+      "id": "merge:generated",
+      "output_as": "features",
+      "include_original_data": false,
+      "selectors": [
+        {"branch": "generator:outer:choice0", "select": "all"}
+      ]
+    },
+    {
+      "kind": "model",
+      "id": "model:meta",
+      "operator": {"class": "sklearn.linear_model.Ridge"}
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    let error = compile_operator_variant_models(&spec)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("nested operator-generator") && error.contains("generator:inner"),
+        "{error}"
+    );
+}
+
+/// MUST-FIX 2: `OperatorVariantModel::validate` rejects two choices sharing the same
+/// `active_subsequence` (no bijection), even when the active_nodes map length is padded.
+#[test]
+fn operator_variant_model_validate_rejects_duplicate_active_subsequence() {
+    fn operator_choice(label: &str, active_subsequence: &str) -> GenerationChoice {
+        GenerationChoice {
+            label: label.to_string(),
+            value: serde_json::Value::String(active_subsequence.to_string()),
+            param_overrides: Vec::new(),
+            active_subsequence: Some(active_subsequence.to_string()),
+        }
+    }
+    let node = |id: &str| BTreeSet::from([NodeId::new(id).unwrap()]);
+    let model = OperatorVariantModel {
+        generator_id: NodeId::new("generator:dup").unwrap(),
+        dimension: GenerationDimension {
+            name: "generator:dup.operators".to_string(),
+            // Two DISTINCT labels but the SAME active_subsequence (`shared`).
+            choices: vec![
+                operator_choice("generator:dup:choice0", "shared"),
+                operator_choice("generator:dup:choice1", "shared"),
+            ],
+        },
+        // Length 2 (padded with a stray key) so the old length check would have passed.
+        active_nodes: BTreeMap::from([
+            ("shared".to_string(), node("gen:dup:c0:n0.a")),
+            ("padding".to_string(), node("gen:dup:c1:n0.b")),
+        ]),
+    };
+    let error = model.validate().unwrap_err().to_string();
+    assert!(error.contains("duplicate active_subsequence"), "{error}");
+}
+
+/// MUST-FIX 2: `OperatorVariantModel::validate` rejects a stray `active_nodes` key that does not
+/// correspond to any choice's `active_subsequence`.
+#[test]
+fn operator_variant_model_validate_rejects_stray_active_nodes_key() {
+    let node = |id: &str| BTreeSet::from([NodeId::new(id).unwrap()]);
+    let model = OperatorVariantModel {
+        generator_id: NodeId::new("generator:stray").unwrap(),
+        dimension: GenerationDimension {
+            name: "generator:stray.operators".to_string(),
+            choices: vec![GenerationChoice {
+                label: "generator:stray:choice0".to_string(),
+                value: serde_json::Value::String("generator:stray:choice0".to_string()),
+                param_overrides: Vec::new(),
+                active_subsequence: Some("generator:stray:choice0".to_string()),
+            }],
+        },
+        active_nodes: BTreeMap::from([
+            (
+                "generator:stray:choice0".to_string(),
+                node("gen:stray:c0:n0.a"),
+            ),
+            // A stray key with no matching choice.
+            ("orphan".to_string(), node("gen:stray:c1:n0.b")),
+        ]),
+    };
+    let error = model.validate().unwrap_err().to_string();
+    assert!(error.contains("stray active-node set"), "{error}");
+}
+
 #[test]
 fn compiles_cartesian_generator_as_explicit_prediction_choices() {
     let spec: PipelineDslSpec = serde_json::from_str(

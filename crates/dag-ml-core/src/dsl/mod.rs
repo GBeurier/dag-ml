@@ -16,7 +16,7 @@ pub(crate) use crate::error::{DagMlError, Result};
 pub(crate) use crate::fold::NestedCvSpec;
 pub(crate) use crate::generation::{
     generation_spec_fingerprint, GenerationChoice, GenerationDimension, GenerationParamOverride,
-    GenerationSpec, GenerationStrategy,
+    GenerationSpec, GenerationStrategy, OperatorVariantModel,
 };
 pub(crate) use crate::graph::{
     EdgeContract, EdgeSpec, GraphInterface, GraphSpec, NodeKind, NodeSpec, PortCardinality,

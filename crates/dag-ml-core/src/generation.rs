@@ -187,6 +187,98 @@ impl GenerationSpec {
     }
 }
 
+/// An operator-level variant model lowered from a single operator-level generator (Mechanism B's
+/// `PipelineDslStep::Generator`): a [`GenerationDimension`] whose every choice carries an
+/// `active_subsequence` (the choice's namespace key) — never `param_overrides` — paired with the
+/// EXACT set of namespaced node ids that choice activates.
+///
+/// The dimension is the search-space shape; `active_nodes` is the authoritative per-choice active
+/// set. Each entry is keyed by the choice's `active_subsequence` (identical to the matching
+/// choice's `active_subsequence`) and holds the node ids minted by
+/// `namespace_generated_sequence` for that choice — collected at the deterministic minting point,
+/// never by prefix-matching node id strings. `enumerate_variants` over `dimension`'s parent spec
+/// yields one [`VariantPlan`] per operator choice.
+///
+/// This model is produced by a NEW, opt-in compile entry point. It is NOT folded into
+/// `CompiledPipelineDsl.generation` / `search_space_fingerprint`, so the existing Mechanism B
+/// compilation (graph, OOF lanes, fingerprints) stays byte-identical.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OperatorVariantModel {
+    /// The generator id this model lowers (the `PipelineDslStep::Generator` `id`).
+    pub generator_id: NodeId,
+    /// The operator dimension: one `active_subsequence`-only choice per operator sub-sequence.
+    pub dimension: GenerationDimension,
+    /// `active_subsequence` (choice key) -> the exact namespaced node ids that choice activates.
+    #[serde(default)]
+    pub active_nodes: BTreeMap<String, BTreeSet<NodeId>>,
+}
+
+impl OperatorVariantModel {
+    /// Validate the operator dimension and its active-node-id sets.
+    ///
+    /// Beyond `GenerationDimension::validate`, this enforces a STRICT BIJECTION between the choices
+    /// and `active_nodes`: every choice is operator-only (an `active_subsequence`, no
+    /// `param_overrides`); the choices' `active_subsequence` values are unique; every choice has
+    /// exactly one non-empty `active_nodes` entry keyed by its `active_subsequence`; and
+    /// `active_nodes` carries no stray key that does not correspond to a choice.
+    pub fn validate(&self) -> Result<()> {
+        self.dimension.validate()?;
+        let mut active_subsequences = BTreeSet::new();
+        for choice in &self.dimension.choices {
+            if !choice.param_overrides.is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "operator variant model `{}` choice `{}` must not carry param_overrides",
+                    self.generator_id, choice.label
+                )));
+            }
+            let Some(active_subsequence) = &choice.active_subsequence else {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "operator variant model `{}` choice `{}` is missing an active_subsequence",
+                    self.generator_id, choice.label
+                )));
+            };
+            if !active_subsequences.insert(active_subsequence.as_str()) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "operator variant model `{}` has duplicate active_subsequence `{active_subsequence}`",
+                    self.generator_id
+                )));
+            }
+            let Some(nodes) = self.active_nodes.get(active_subsequence) else {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "operator variant model `{}` choice `{}` has no active-node set for `{active_subsequence}`",
+                    self.generator_id, choice.label
+                )));
+            };
+            if nodes.is_empty() {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "operator variant model `{}` choice `{}` has an empty active-node set",
+                    self.generator_id, choice.label
+                )));
+            }
+        }
+        // No stray active_nodes key: every key must correspond to a choice active_subsequence.
+        for key in self.active_nodes.keys() {
+            if !active_subsequences.contains(key.as_str()) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "operator variant model `{}` has a stray active-node set `{key}` with no matching choice",
+                    self.generator_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Build a single-dimension [`GenerationSpec`] (cartesian over the one operator dimension) so
+    /// `enumerate_variants` yields one [`VariantPlan`] per operator choice.
+    pub fn generation_spec(&self) -> GenerationSpec {
+        GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: vec![self.dimension.clone()],
+            max_variants: Some(self.dimension.choices.len()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VariantPlan {
     pub variant_id: VariantId,
