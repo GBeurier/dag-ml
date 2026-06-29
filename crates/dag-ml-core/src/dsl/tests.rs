@@ -1193,6 +1193,101 @@ fn compiles_coordinated_generation_dimensions() {
 }
 
 #[test]
+fn compiles_generation_constraints_and_prunes_variants() {
+    // Two explicit param-override dimensions (2x2 = 4 variants) with a `generation_constraints`
+    // block declaring a single mutex pair; the compiled GenerationSpec carries the constraint and
+    // `enumerate_variants` prunes the co-occurring variant -> 3 survivors (the DSL arrival path for
+    // item B, end-to-end into the native prune).
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+  "id": "dsl-generation-constraints",
+  "max_variants": 4,
+  "generation_dimensions": [
+    {
+      "name": "alpha",
+      "choices": [
+        {"label": "low", "param_overrides": [{"node_id": "model:ridge", "params": {"alpha": 0.1}}]},
+        {"label": "high", "param_overrides": [{"node_id": "model:ridge", "params": {"alpha": 1.0}}]}
+      ]
+    },
+    {
+      "name": "depth",
+      "choices": [
+        {"label": "shallow", "param_overrides": [{"node_id": "model:ridge", "params": {"solver_depth": 2}}]},
+        {"label": "deep", "param_overrides": [{"node_id": "model:ridge", "params": {"solver_depth": 8}}]}
+      ]
+    }
+  ],
+  "generation_constraints": {
+    "mutex": [[{"dimension": "alpha", "label": "low"}, {"dimension": "depth", "label": "deep"}]]
+  },
+  "steps": [
+    {
+      "kind": "model",
+      "id": "model:ridge",
+      "operator": {"type": "Ridge"}
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
+
+    // The constraint compiled onto the GenerationSpec.
+    assert_eq!(compiled.generation.constraints.mutex.len(), 1);
+    assert_eq!(
+        compiled.generation.constraints.mutex[0],
+        vec![
+            ChoiceRef {
+                dimension: "alpha".to_string(),
+                label: "low".to_string()
+            },
+            ChoiceRef {
+                dimension: "depth".to_string(),
+                label: "deep".to_string()
+            }
+        ]
+    );
+
+    // The native prune drops {alpha:low, depth:deep} -> 3 survivors, none carrying that pair.
+    let variants =
+        crate::generation::enumerate_variants(&compiled.generation, spec.root_seed).unwrap();
+    assert_eq!(variants.len(), 3);
+    for variant in &variants {
+        let is_low_deep = variant
+            .choices
+            .get("alpha")
+            .is_some_and(|choice| choice.label == "low")
+            && variant
+                .choices
+                .get("depth")
+                .is_some_and(|choice| choice.label == "deep");
+        assert!(!is_low_deep, "the mutex-violating variant survived pruning");
+    }
+
+    // An unknown constraint ref is refused at compile time.
+    let mut bad = spec.clone();
+    bad.generation_constraints = Some(PipelineDslGenerationConstraints {
+        exclude: vec![[
+            PipelineDslChoiceRef {
+                dimension: "alpha".to_string(),
+                label: "low".to_string(),
+            },
+            PipelineDslChoiceRef {
+                dimension: "depth".to_string(),
+                label: "nope".to_string(),
+            },
+        ]],
+        ..PipelineDslGenerationConstraints::default()
+    });
+    let error = compile_pipeline_dsl_with_generation(&bad)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unknown choice `depth:nope`"), "{error}");
+}
+
+#[test]
 fn compiles_active_subsequence_only_generation_choice() {
     // An operator-level variant: the DSL choice carries ONLY active_subsequence (no
     // param_overrides). It must compile to a GenerationChoice that preserves the

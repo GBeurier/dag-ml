@@ -219,6 +219,34 @@
         "regression_metric_report carries an optional variant_label",
         "specs/fixtures without the new fields stay byte-identical and fingerprint-stable"
       ]
+    },
+    "generation_constraints_prune_variants.v1": {
+      "polarity": "positive",
+      "surfaces": [
+        "campaign_spec.generation_spec.constraints",
+        "campaign_spec.generation_constraints.mutex",
+        "campaign_spec.generation_constraints.requires",
+        "campaign_spec.generation_constraints.exclude",
+        "campaign_spec.choice_ref"
+      ],
+      "fixtures": [],
+      "test_refs": [
+        "crates/dag-ml-core/src/generation.rs::constraint_mutex_prunes_pair",
+        "crates/dag-ml-core/src/generation.rs::constraint_requires_prunes",
+        "crates/dag-ml-core/src/generation.rs::constraint_exclude_prunes_pair",
+        "crates/dag-ml-core/src/generation.rs::constraint_cartesian_exclude_prunes_one_of_four",
+        "crates/dag-ml-core/src/generation.rs::constraint_combined_mutex_and_exclude",
+        "crates/dag-ml-core/src/generation.rs::constraint_prunes_to_one",
+        "crates/dag-ml-core/src/generation.rs::constraints_absent_keep_spec_byte_identical",
+        "crates/dag-ml-core/src/dsl/tests.rs::compiles_generation_constraints_and_prunes_variants"
+      ],
+      "assertions": [
+        "generation_spec carries an optional constraints block (mutex / requires / exclude over choice_ref)",
+        "_depends_on_ is a dead keyword and is not represented",
+        "mutex prunes co-occurring members, requires enforces dependency, exclude forbids a pair",
+        "the surviving variant set matches the nirs4all generation oracle's documented counts",
+        "a spec without constraints stays byte-identical and fingerprint-stable"
+      ]
     }
   },
   "c_abi": {

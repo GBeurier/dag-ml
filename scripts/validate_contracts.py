@@ -281,6 +281,7 @@ D8_CONFORMANCE_SCENARIOS = (
     "invalid_unit_join.v1",
     "row_vs_sample_selection_mismatch.v1",
     "operator_level_variant_additive_fields.v1",
+    "generation_constraints_prune_variants.v1",
 )
 REQUIRED_PARITY_CASE_IDS = {
     "nirs4all_lite_browser_compile_plan",
@@ -1236,6 +1237,8 @@ def validate_campaign_spec_schema(schema: Any, label: str) -> None:
         "fold_set",
         "split_invocation",
         "generation_spec",
+        "generation_constraints",
+        "choice_ref",
         "data_model_shape_plan",
         "data_view_policy",
         "data_binding",
