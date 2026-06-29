@@ -7,6 +7,25 @@ use super::*;
 pub fn compile_pipeline_dsl(spec: &PipelineDslSpec) -> Result<GraphSpec> {
     Ok(compile_pipeline_dsl_with_generation(spec)?.graph)
 }
+/// Opt-in: lower the spec's operator-level generators (Mechanism B's `PipelineDslStep::Generator`)
+/// into one [`OperatorVariantModel`] each — an `active_subsequence`-only operator dimension plus the
+/// exact per-choice active-node-id set.
+///
+/// This is a SEPARATE, additive derivation: it does not run or change
+/// `compile_pipeline_dsl_with_generation`, the graph, the OOF lanes, `CompiledPipelineDsl.generation`,
+/// or `search_space_fingerprint`. Existing specs (which never call this) compile byte-identically.
+/// Returns an empty vec when the spec has no operator-level generators.
+pub fn compile_operator_variant_models(
+    spec: &PipelineDslSpec,
+) -> Result<Vec<OperatorVariantModel>> {
+    validate_pipeline_dsl(spec)?;
+    let mut generators = Vec::new();
+    collect_operator_generator_steps(&spec.steps, &mut generators)?;
+    generators
+        .iter()
+        .map(lower_operator_variant_model)
+        .collect()
+}
 pub fn compile_pipeline_dsl_with_controller_registry(
     spec: &PipelineDslSpec,
     registry: &ControllerRegistry,
@@ -582,7 +601,7 @@ impl PipelineCompiler {
         }
         let mut predictions = Vec::new();
         for (choice_index, choice) in choices.into_iter().enumerate() {
-            let choice = namespace_generated_sequence(step, choice, choice_index)?;
+            let (choice, _minted_nodes) = namespace_generated_sequence(step, choice, choice_index)?;
             validate_branch_id(&choice.id)?;
             if choice.steps.is_empty() {
                 return Err(DagMlError::GraphValidation(format!(

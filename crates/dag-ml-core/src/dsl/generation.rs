@@ -12,6 +12,145 @@ pub(crate) struct GeneratedSequence {
     pub(crate) metadata: BTreeMap<String, serde_json::Value>,
 }
 
+/// Lower a single operator-level generator step (Mechanism B's `PipelineDslStep::Generator`) into
+/// an [`OperatorVariantModel`]: one `active_subsequence`-only choice per operator sub-sequence plus
+/// the exact set of EMITTED graph node ids each choice activates (control/metadata containers
+/// excluded).
+///
+/// This re-runs the SAME deterministic expansion (`expand_generator_sequences`) and namespacing
+/// (`namespace_generated_sequence`) that Mechanism B's compile uses, so the per-choice node sets are
+/// authoritative by construction (identical code path, not prefix-matched) and contain exactly the
+/// ids the compiler emits as graph nodes. It does NOT mutate the compiler or the graph; the existing
+/// compile output stays byte-identical.
+///
+/// The choice key (`active_subsequence`) and the dimension choice `label` are the generated choice
+/// id (`<generator_id>:choice<i>`) — the same stable branch id Mechanism B uses for the OOF lane
+/// selector — so the operator model lines up with the structural lanes. `variant_label` is left
+/// `None` (population is Phase 5); `value` carries the choice id for traceability.
+pub(crate) fn lower_operator_variant_model(
+    step: &PipelineDslGeneratorStep,
+) -> Result<OperatorVariantModel> {
+    let choices = expand_generator_sequences(step)?;
+    if choices.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` produced no choices",
+            step.id
+        )));
+    }
+    let mut dimension_choices = Vec::with_capacity(choices.len());
+    let mut active_nodes = BTreeMap::<String, BTreeSet<NodeId>>::new();
+    for (choice_index, choice) in choices.into_iter().enumerate() {
+        let (choice, minted) = namespace_generated_sequence(step, choice, choice_index)?;
+        validate_branch_id(&choice.id)?;
+        if choice.steps.is_empty() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generator `{}` choice `{}` has no steps",
+                step.id, choice.id
+            )));
+        }
+        if minted.is_empty() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generator `{}` choice `{}` activated no nodes",
+                step.id, choice.id
+            )));
+        }
+        dimension_choices.push(GenerationChoice {
+            label: choice.id.clone(),
+            value: serde_json::Value::String(choice.id.clone()),
+            param_overrides: Vec::new(),
+            active_subsequence: Some(choice.id.clone()),
+        });
+        active_nodes.insert(choice.id, minted);
+    }
+    let model = OperatorVariantModel {
+        generator_id: step.id.clone(),
+        dimension: GenerationDimension {
+            name: format!("{}.operators", step.id),
+            choices: dimension_choices,
+        },
+        active_nodes,
+    };
+    model.validate()?;
+    Ok(model)
+}
+
+/// Collect every FLAT operator-level generator step in the spec's step tree (top-level plus any
+/// reached through `sequential`/`branch` containers), in encounter order — matching the order
+/// Mechanism B's compile namespaces them.
+///
+/// Nested operator-generators (a `generator` inside another `generator`'s branch/stage sub-sequence)
+/// are REJECTED: Mechanism B namespaces a nested generator inside the OUTER generator's already
+/// namespaced context, so lowering it from the original un-namespaced spec would not mirror the
+/// compiled graph's choice labels/active ids. Nested operator-generators are a later extension;
+/// Phase 3 covers flat operator generators only.
+pub(crate) fn collect_operator_generator_steps(
+    steps: &[PipelineDslStep],
+    out: &mut Vec<PipelineDslGeneratorStep>,
+) -> Result<()> {
+    for step in steps {
+        match step {
+            PipelineDslStep::Generator(generator) => {
+                if let Some(nested) = find_nested_generator(generator) {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "pipeline DSL operator-variant model does not support the nested operator-generator `{nested}` inside generator `{}`; nested operator-generators are not covered by this Phase-3 API (flat operator generators only)",
+                        generator.id
+                    )));
+                }
+                out.push(generator.clone());
+            }
+            PipelineDslStep::Sequential(sequential) => {
+                collect_operator_generator_steps(&sequential.steps, out)?;
+            }
+            PipelineDslStep::Branch(branch_step) => {
+                for branch in &branch_step.branches {
+                    collect_operator_generator_steps(&branch.steps, out)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Return the id of the first operator-generator nested anywhere inside `generator`'s branch/stage
+/// sub-sequences (recursively), or `None` if the generator is flat.
+fn find_nested_generator(generator: &PipelineDslGeneratorStep) -> Option<NodeId> {
+    fn scan(steps: &[PipelineDslStep]) -> Option<NodeId> {
+        for step in steps {
+            match step {
+                PipelineDslStep::Generator(inner) => return Some(inner.id.clone()),
+                PipelineDslStep::Sequential(sequential) => {
+                    if let Some(found) = scan(&sequential.steps) {
+                        return Some(found);
+                    }
+                }
+                PipelineDslStep::Branch(branch_step) => {
+                    for branch in &branch_step.branches {
+                        if let Some(found) = scan(&branch.steps) {
+                            return Some(found);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    for branch in &generator.branches {
+        if let Some(found) = scan(&branch.steps) {
+            return Some(found);
+        }
+    }
+    for stage in &generator.stages {
+        for branch in &stage.branches {
+            if let Some(found) = scan(&branch.steps) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn compile_explicit_generation_dimensions(
     dimensions: &[PipelineDslGenerationDimension],
     nodes: &[NodeSpec],
@@ -1152,20 +1291,39 @@ pub(crate) fn generator_choice_metadata(
     }
     Ok(metadata)
 }
+/// Namespace a generated choice's node ids in place, returning the rewritten choice together with
+/// the EXACT set of namespaced node ids that become real EMITTED graph nodes
+/// (`gen:<g>:c<i>:n<k>.<orig>`).
+///
+/// The returned set is the authoritative active-node-id set for the operator-variant model
+/// (Phase 3), captured here at the single deterministic minting point rather than by prefix-matching
+/// node id strings later. It contains ONLY the ids the compiler emits as graph nodes (operator,
+/// concat-transform, merge, merge-model). Control/metadata containers — named `sequential` ids and
+/// nested `generator` container ids — are namespaced for uniqueness/rewrite (unchanged behavior) but
+/// are NOT emitted as graph nodes, so they are excluded from the active set. The existing Mechanism B
+/// caller ignores the returned set, so its behavior and output are unchanged.
 pub(crate) fn namespace_generated_sequence(
     generator: &PipelineDslGeneratorStep,
     mut choice: GeneratedSequence,
     choice_index: usize,
-) -> Result<GeneratedSequence> {
+) -> Result<(GeneratedSequence, BTreeSet<NodeId>)> {
     let mut node_map = BTreeMap::<NodeId, NodeId>::new();
+    let mut emitted = BTreeSet::<NodeId>::new();
     let mut counter = 0usize;
     for step in &mut choice.steps {
-        namespace_step_ids(generator, choice_index, step, &mut counter, &mut node_map)?;
+        namespace_step_ids(
+            generator,
+            choice_index,
+            step,
+            &mut counter,
+            &mut node_map,
+            &mut emitted,
+        )?;
     }
     for step in &mut choice.steps {
         rewrite_step_node_refs(step, &node_map);
     }
-    Ok(choice)
+    Ok((choice, emitted))
 }
 pub(crate) fn namespace_step_ids(
     generator: &PipelineDslGeneratorStep,
@@ -1173,6 +1331,7 @@ pub(crate) fn namespace_step_ids(
     step: &mut PipelineDslStep,
     counter: &mut usize,
     node_map: &mut BTreeMap<NodeId, NodeId>,
+    emitted: &mut BTreeSet<NodeId>,
 ) -> Result<()> {
     match step {
         PipelineDslStep::Transform(step)
@@ -1188,10 +1347,19 @@ pub(crate) fn namespace_step_ids(
         | PipelineDslStep::Model(step)
         | PipelineDslStep::Tuner(step)
         | PipelineDslStep::Chart(step) => {
-            namespace_operator_step_id(generator, choice_index, step, counter, node_map)?;
+            namespace_operator_step_id(generator, choice_index, step, counter, node_map, emitted)?;
         }
         PipelineDslStep::ConcatTransform(step) => {
-            namespace_node_id_field(generator, choice_index, &mut step.id, counter, node_map)?;
+            // The concat-transform id IS emitted as a FeatureJoin node; its branch operator steps
+            // are emitted too.
+            namespace_node_id_field(
+                generator,
+                choice_index,
+                &mut step.id,
+                counter,
+                node_map,
+                Some(emitted),
+            )?;
             for branch in &mut step.branches {
                 for branch_step in &mut branch.steps {
                     namespace_operator_step_id(
@@ -1200,6 +1368,7 @@ pub(crate) fn namespace_step_ids(
                         branch_step,
                         counter,
                         node_map,
+                        emitted,
                     )?;
                 }
             }
@@ -1207,15 +1376,39 @@ pub(crate) fn namespace_step_ids(
         PipelineDslStep::Branch(step) => {
             for branch in &mut step.branches {
                 for branch_step in &mut branch.steps {
-                    namespace_step_ids(generator, choice_index, branch_step, counter, node_map)?;
+                    namespace_step_ids(
+                        generator,
+                        choice_index,
+                        branch_step,
+                        counter,
+                        node_map,
+                        emitted,
+                    )?;
                 }
             }
         }
         PipelineDslStep::Generator(step) => {
-            namespace_node_id_field(generator, choice_index, &mut step.id, counter, node_map)?;
+            // A nested generator id is a CONTROL container: the compiler emits only its expanded
+            // child nodes, not the generator id itself — so namespace it for uniqueness/rewrite but
+            // do NOT record it in the emitted set.
+            namespace_node_id_field(
+                generator,
+                choice_index,
+                &mut step.id,
+                counter,
+                node_map,
+                None,
+            )?;
             for branch in &mut step.branches {
                 for branch_step in &mut branch.steps {
-                    namespace_step_ids(generator, choice_index, branch_step, counter, node_map)?;
+                    namespace_step_ids(
+                        generator,
+                        choice_index,
+                        branch_step,
+                        counter,
+                        node_map,
+                        emitted,
+                    )?;
                 }
             }
             for stage in &mut step.stages {
@@ -1227,24 +1420,41 @@ pub(crate) fn namespace_step_ids(
                             branch_step,
                             counter,
                             node_map,
+                            emitted,
                         )?;
                     }
                 }
             }
         }
         PipelineDslStep::Sequential(step) => {
+            // A named sequential id is METADATA only (`compile_sequence_container` writes no node):
+            // namespace it for uniqueness/rewrite but do NOT record it in the emitted set.
             if let Some(id) = &mut step.id {
-                namespace_node_id_field(generator, choice_index, id, counter, node_map)?;
+                namespace_node_id_field(generator, choice_index, id, counter, node_map, None)?;
             }
             for child in &mut step.steps {
-                namespace_step_ids(generator, choice_index, child, counter, node_map)?;
+                namespace_step_ids(generator, choice_index, child, counter, node_map, emitted)?;
             }
         }
         PipelineDslStep::Merge(step) => {
-            namespace_node_id_field(generator, choice_index, &mut step.id, counter, node_map)?;
+            namespace_node_id_field(
+                generator,
+                choice_index,
+                &mut step.id,
+                counter,
+                node_map,
+                Some(emitted),
+            )?;
         }
         PipelineDslStep::MergeModel(step) => {
-            namespace_node_id_field(generator, choice_index, &mut step.id, counter, node_map)?;
+            namespace_node_id_field(
+                generator,
+                choice_index,
+                &mut step.id,
+                counter,
+                node_map,
+                Some(emitted),
+            )?;
         }
     }
     Ok(())
@@ -1255,15 +1465,28 @@ pub(crate) fn namespace_operator_step_id(
     step: &mut PipelineDslOperatorStep,
     counter: &mut usize,
     node_map: &mut BTreeMap<NodeId, NodeId>,
+    emitted: &mut BTreeSet<NodeId>,
 ) -> Result<()> {
-    namespace_node_id_field(generator, choice_index, &mut step.id, counter, node_map)
+    namespace_node_id_field(
+        generator,
+        choice_index,
+        &mut step.id,
+        counter,
+        node_map,
+        Some(emitted),
+    )
 }
+/// Mint the namespaced id for `node_id` (in place), recording the original→namespaced mapping in
+/// `node_map`. When `emitted` is `Some`, the namespaced id is also recorded as a real emitted graph
+/// node; when `None`, the id is a control/metadata container that the compiler does not emit, so it
+/// is mapped (for rewrite + uniqueness) but excluded from the active set.
 pub(crate) fn namespace_node_id_field(
     generator: &PipelineDslGeneratorStep,
     choice_index: usize,
     node_id: &mut NodeId,
     counter: &mut usize,
     node_map: &mut BTreeMap<NodeId, NodeId>,
+    emitted: Option<&mut BTreeSet<NodeId>>,
 ) -> Result<()> {
     let original = node_id.clone();
     if node_map.contains_key(&original) {
@@ -1275,6 +1498,9 @@ pub(crate) fn namespace_node_id_field(
     let next = namespaced_generated_node_id(&generator.id, choice_index, *counter, &original)?;
     *counter += 1;
     *node_id = next.clone();
+    if let Some(emitted) = emitted {
+        emitted.insert(next.clone());
+    }
     node_map.insert(original, next);
     Ok(())
 }
