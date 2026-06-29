@@ -285,6 +285,57 @@
         }
       }
     },
+    "choice_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dimension", "label"],
+      "properties": {
+        "dimension": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "label": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "generation_constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mutex": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "$ref": "#/$defs/choice_ref"
+            }
+          }
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/$defs/choice_ref"
+            }
+          }
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/$defs/choice_ref"
+            }
+          }
+        }
+      }
+    },
     "generation_choice": {
       "type": "object",
       "additionalProperties": false,
@@ -339,6 +390,9 @@
         "max_variants": {
           "type": ["integer", "null"],
           "minimum": 1
+        },
+        "constraints": {
+          "$ref": "#/$defs/generation_constraints"
         }
       }
     },

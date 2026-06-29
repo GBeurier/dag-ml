@@ -24,7 +24,8 @@ use crate::controller::{
 use crate::data::{DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider};
 use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
 use crate::generation::{
-    GenerationChoice, GenerationDimension, GenerationSpec, GenerationStrategy,
+    GenerationChoice, GenerationConstraints, GenerationDimension, GenerationSpec,
+    GenerationStrategy,
 };
 use crate::graph::{
     EdgeContract, EdgeSpec, GraphInterface, GraphSpec, NodeKind, NodeSpec, PortCardinality,
@@ -2236,6 +2237,7 @@ fn parallel_stress_campaign() -> CampaignSpec {
                     .collect(),
             }],
             max_variants: Some(3),
+            constraints: GenerationConstraints::default(),
         },
         shape_plans: BTreeMap::new(),
         data_bindings: BTreeMap::new(),
@@ -2887,6 +2889,7 @@ fn campaign_scheduler_expands_variants_and_cv_folds() {
                     ],
                 }],
                 max_variants: Some(2),
+                constraints: GenerationConstraints::default(),
             },
             shape_plans: BTreeMap::new(),
             data_bindings: BTreeMap::new(),
@@ -2958,6 +2961,7 @@ fn node_tasks_expose_generation_variant_context() {
                     ],
                 }],
                 max_variants: Some(2),
+                constraints: GenerationConstraints::default(),
             },
             shape_plans: BTreeMap::new(),
             data_bindings: BTreeMap::new(),
@@ -7384,6 +7388,7 @@ fn variant_scoring_campaign(offsets: Vec<(&str, f64)>) -> CampaignSpec {
                 choices,
             }],
             max_variants,
+            constraints: GenerationConstraints::default(),
         },
         shape_plans: BTreeMap::new(),
         data_bindings: BTreeMap::new(),
@@ -7532,6 +7537,7 @@ fn two_model_variant_scoring_campaign(offsets: Vec<(&str, f64)>) -> CampaignSpec
                 choices,
             }],
             max_variants,
+            constraints: GenerationConstraints::default(),
         },
         shape_plans: BTreeMap::new(),
         data_bindings: BTreeMap::new(),
@@ -9310,6 +9316,7 @@ fn scoring_merge_plan_and_provider(
                 choices,
             }],
             max_variants,
+            constraints: GenerationConstraints::default(),
         }
     };
     let campaign = CampaignSpec {

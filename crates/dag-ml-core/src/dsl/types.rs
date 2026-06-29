@@ -21,6 +21,8 @@ pub struct PipelineDslSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub generation_dimensions: Vec<PipelineDslGenerationDimension>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_constraints: Option<PipelineDslGenerationConstraints>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub campaign_id: Option<String>,
     #[serde(default)]
     pub root_seed: Option<u64>,
@@ -254,6 +256,20 @@ pub struct PipelineDslGenerationDimension {
     pub name: String,
     #[serde(default)]
     pub choices: Vec<PipelineDslGenerationChoice>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslGenerationConstraints {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mutex: Vec<Vec<PipelineDslChoiceRef>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<[PipelineDslChoiceRef; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<[PipelineDslChoiceRef; 2]>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslChoiceRef {
+    pub dimension: String,
+    pub label: String,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PipelineDslGenerationChoice {

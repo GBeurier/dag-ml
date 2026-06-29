@@ -1064,7 +1064,8 @@ mod tests {
     }
     use crate::data::DataBinding;
     use crate::generation::{
-        GenerationChoice, GenerationDimension, GenerationParamOverride, GenerationStrategy,
+        GenerationChoice, GenerationConstraints, GenerationDimension, GenerationParamOverride,
+        GenerationStrategy,
     };
     use crate::graph::{
         EdgeContract, EdgeSpec, GraphInterface, NodeSpec, PortCardinality, PortKind, PortRef,
@@ -1691,6 +1692,7 @@ mod tests {
                     }],
                 }],
                 max_variants: Some(1),
+                constraints: GenerationConstraints::default(),
             },
             shape_plans: BTreeMap::new(),
             data_bindings: BTreeMap::new(),
@@ -1732,6 +1734,7 @@ mod tests {
                     }],
                 }],
                 max_variants: Some(1),
+                constraints: GenerationConstraints::default(),
             },
             shape_plans: BTreeMap::new(),
             data_bindings: BTreeMap::new(),

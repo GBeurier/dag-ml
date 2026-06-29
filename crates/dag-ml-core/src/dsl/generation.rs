@@ -354,6 +354,61 @@ fn find_nested_generator(generator: &PipelineDslGeneratorStep) -> Option<NodeId>
     None
 }
 
+/// Compile the DSL's `generation_constraints` into [`GenerationConstraints`], resolving each
+/// [`PipelineDslChoiceRef`] against the already-assembled generation `dimensions`. A `None` DSL
+/// value (or an empty one) compiles to the empty constraint set, so a constraint-free spec stays
+/// byte-identical. Final structural/reference validation is also performed by
+/// [`GenerationSpec::validate`]; resolving here gives a compile-time error at the DSL boundary.
+pub(crate) fn compile_generation_constraints(
+    constraints: Option<&PipelineDslGenerationConstraints>,
+    dimensions: &[GenerationDimension],
+) -> Result<GenerationConstraints> {
+    let Some(constraints) = constraints else {
+        return Ok(GenerationConstraints::default());
+    };
+    let valid = dimensions
+        .iter()
+        .flat_map(|dimension| {
+            dimension
+                .choices
+                .iter()
+                .map(move |choice| (dimension.name.clone(), choice.label.clone()))
+        })
+        .collect::<BTreeSet<_>>();
+    let lower = |reference: &PipelineDslChoiceRef| -> Result<ChoiceRef> {
+        let key = (reference.dimension.clone(), reference.label.clone());
+        if !valid.contains(&key) {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generation constraint references unknown choice `{}:{}`",
+                reference.dimension, reference.label
+            )));
+        }
+        Ok(ChoiceRef {
+            dimension: reference.dimension.clone(),
+            label: reference.label.clone(),
+        })
+    };
+    let mutex = constraints
+        .mutex
+        .iter()
+        .map(|group| group.iter().map(&lower).collect::<Result<Vec<_>>>())
+        .collect::<Result<Vec<_>>>()?;
+    let requires = constraints
+        .requires
+        .iter()
+        .map(|[left, right]| Ok((lower(left)?, lower(right)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let exclude = constraints
+        .exclude
+        .iter()
+        .map(|[left, right]| Ok((lower(left)?, lower(right)?)))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(GenerationConstraints {
+        mutex,
+        requires,
+        exclude,
+    })
+}
 pub(crate) fn compile_explicit_generation_dimensions(
     dimensions: &[PipelineDslGenerationDimension],
     nodes: &[NodeSpec],
@@ -1128,6 +1183,7 @@ pub(crate) fn build_generation_spec(
     requested_strategy: Option<GenerationStrategy>,
     max_variants: Option<usize>,
     dimensions: Vec<GenerationDimension>,
+    constraints: GenerationConstraints,
 ) -> Result<GenerationSpec> {
     let strategy = requested_strategy.unwrap_or(if dimensions.is_empty() {
         GenerationStrategy::None
@@ -1142,6 +1198,7 @@ pub(crate) fn build_generation_spec(
         } else {
             max_variants
         },
+        constraints,
     };
     generation.validate()?;
     Ok(generation)

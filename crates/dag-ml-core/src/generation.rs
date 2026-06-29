@@ -16,6 +16,52 @@ pub enum GenerationStrategy {
     Zip,
 }
 
+/// A reference to a single dimension choice — `dimension` is a [`GenerationDimension::name`] and
+/// `label` a [`GenerationChoice::label`] within it. Generation constraints are expressed as sets of
+/// these refs; a variant "contains" the ref when its selected choice for `dimension` carries `label`.
+///
+/// `Ord` is derived so refs can live in deterministically-ordered collections (sorted constraint
+/// groups, stable fingerprints).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ChoiceRef {
+    pub dimension: String,
+    pub label: String,
+}
+
+/// Declarative pruning constraints applied to the enumerated variant set BEFORE materialization.
+///
+/// All three keywords are read off the same `(dimension, label)` coordinate space ([`ChoiceRef`]):
+///
+/// * `mutex` — no two members of a group may co-occur in the same variant (a group of 2+ refs).
+/// * `requires` — choosing the first ref of a pair requires the second to be present too.
+/// * `exclude` — the first and second ref of a pair may not both be present.
+///
+/// The keywords mirror the nirs4all generation oracle's `_mutex_` / `_requires_` / `_exclude_`. The
+/// oracle's fourth keyword `_depends_on_` is a DEAD keyword with no filter semantics and is omitted
+/// here on purpose.
+///
+/// ADDITIVE: every field is `skip_serializing_if = "Vec::is_empty"` and the whole value is skipped
+/// when empty on [`GenerationSpec`], so a constraint-free spec serializes byte-identically to before
+/// this field existed (its fingerprint is unchanged).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationConstraints {
+    /// Mutual-exclusion groups: at most one member of each group may be present in a variant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mutex: Vec<Vec<ChoiceRef>>,
+    /// Dependency pairs `(a, b)`: if `a` is present, `b` must also be present.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<(ChoiceRef, ChoiceRef)>,
+    /// Forbidden pairs `(a, b)`: `a` and `b` may not both be present.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<(ChoiceRef, ChoiceRef)>,
+}
+
+impl GenerationConstraints {
+    pub fn is_empty(&self) -> bool {
+        self.mutex.is_empty() && self.requires.is_empty() && self.exclude.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GenerationChoice {
     pub label: String,
@@ -127,6 +173,10 @@ pub struct GenerationSpec {
     pub dimensions: Vec<GenerationDimension>,
     #[serde(default)]
     pub max_variants: Option<usize>,
+    /// Variant-pruning constraints (`mutex` / `requires` / `exclude`). ADDITIVE: skipped when empty,
+    /// so a constraint-free spec is byte-identical (and fingerprint-stable) to before this field.
+    #[serde(default, skip_serializing_if = "GenerationConstraints::is_empty")]
+    pub constraints: GenerationConstraints,
 }
 
 impl Default for GenerationSpec {
@@ -135,6 +185,7 @@ impl Default for GenerationSpec {
             strategy: GenerationStrategy::None,
             dimensions: Vec::new(),
             max_variants: Some(1),
+            constraints: GenerationConstraints::default(),
         }
     }
 }
@@ -150,6 +201,11 @@ impl GenerationSpec {
             if !self.dimensions.is_empty() {
                 return Err(DagMlError::CampaignValidation(
                     "generation dimensions require cartesian or zip strategy".to_string(),
+                ));
+            }
+            if !self.constraints.is_empty() {
+                return Err(DagMlError::CampaignValidation(
+                    "generation constraints require cartesian or zip strategy".to_string(),
                 ));
             }
             return Ok(());
@@ -181,6 +237,64 @@ impl GenerationSpec {
                     "zip generation requires every dimension to have the same number of choices"
                         .to_string(),
                 ));
+            }
+        }
+        self.validate_constraints()?;
+        Ok(())
+    }
+
+    /// Validate that every [`ChoiceRef`] in the constraints resolves to an existing
+    /// `(dimension, label)` and that each constraint group is well-formed (mutex needs >= 2 distinct
+    /// refs; a requires/exclude pair needs two distinct refs).
+    fn validate_constraints(&self) -> Result<()> {
+        if self.constraints.is_empty() {
+            return Ok(());
+        }
+        let mut valid = BTreeSet::<(&str, &str)>::new();
+        for dimension in &self.dimensions {
+            for choice in &dimension.choices {
+                valid.insert((dimension.name.as_str(), choice.label.as_str()));
+            }
+        }
+        let check = |reference: &ChoiceRef| -> Result<()> {
+            if !valid.contains(&(reference.dimension.as_str(), reference.label.as_str())) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "generation constraint references unknown choice `{}:{}`",
+                    reference.dimension, reference.label
+                )));
+            }
+            Ok(())
+        };
+        for group in &self.constraints.mutex {
+            if group.len() < 2 {
+                return Err(DagMlError::CampaignValidation(
+                    "generation mutex group requires at least two choices".to_string(),
+                ));
+            }
+            let mut distinct = BTreeSet::new();
+            for reference in group {
+                check(reference)?;
+                if !distinct.insert((reference.dimension.as_str(), reference.label.as_str())) {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "generation mutex group repeats choice `{}:{}`",
+                        reference.dimension, reference.label
+                    )));
+                }
+            }
+        }
+        for (group_label, pairs) in [
+            ("requires", &self.constraints.requires),
+            ("exclude", &self.constraints.exclude),
+        ] {
+            for (left, right) in pairs {
+                check(left)?;
+                check(right)?;
+                if left == right {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "generation {group_label} pair repeats choice `{}:{}`",
+                        left.dimension, left.label
+                    )));
+                }
             }
         }
         Ok(())
@@ -314,6 +428,7 @@ impl OperatorVariantModel {
             strategy: GenerationStrategy::Cartesian,
             dimensions: vec![self.dimension.clone()],
             max_variants: Some(self.dimension.choices.len()),
+            constraints: GenerationConstraints::default(),
         }
     }
 }
@@ -402,6 +517,17 @@ pub fn enumerate_variants(
         GenerationStrategy::Cartesian => cartesian_choices(&spec.dimensions),
         GenerationStrategy::Zip => zip_choices(&spec.dimensions),
     };
+    if !spec.constraints.is_empty() {
+        // Prune the enumerated cartesian/zip product BEFORE the max_variants check and before
+        // materializing VariantPlans, so the surviving set (and its fingerprints/order) is exactly
+        // the constraint-pruned set. `retain` is stable, so determinism/order is preserved.
+        variants.retain(|choices| satisfies_constraints(choices, &spec.constraints));
+        if variants.is_empty() {
+            return Err(DagMlError::CampaignValidation(
+                "generation constraints pruned every variant".to_string(),
+            ));
+        }
+    }
     if let Some(max_variants) = spec.max_variants {
         if variants.len() > max_variants {
             return Err(DagMlError::CampaignValidation(format!(
@@ -415,6 +541,35 @@ pub fn enumerate_variants(
         .drain(..)
         .map(|choices| variant_from_choices(choices, root_seed))
         .collect()
+}
+
+/// True when `choices` (a single variant's `dimension -> selected choice` map) violates none of the
+/// `constraints`. A ref is "present" when the variant's choice for `ref.dimension` carries `ref.label`.
+fn satisfies_constraints(
+    choices: &BTreeMap<String, GenerationChoice>,
+    constraints: &GenerationConstraints,
+) -> bool {
+    let present = |reference: &ChoiceRef| -> bool {
+        choices
+            .get(&reference.dimension)
+            .is_some_and(|choice| choice.label == reference.label)
+    };
+    for group in &constraints.mutex {
+        if group.iter().filter(|reference| present(reference)).count() > 1 {
+            return false;
+        }
+    }
+    for (left, right) in &constraints.requires {
+        if present(left) && !present(right) {
+            return false;
+        }
+    }
+    for (left, right) in &constraints.exclude {
+        if present(left) && present(right) {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn generation_spec_fingerprint(spec: &GenerationSpec) -> Result<String> {
@@ -536,6 +691,7 @@ mod tests {
                 },
             ],
             max_variants: Some(4),
+            constraints: GenerationConstraints::default(),
         };
 
         let left = enumerate_variants(&spec, Some(11)).unwrap();
@@ -670,6 +826,7 @@ mod tests {
                 },
             ],
             max_variants: None,
+            constraints: GenerationConstraints::default(),
         };
 
         assert!(spec.validate().is_err());
@@ -684,6 +841,7 @@ mod tests {
                 choices: vec![choice("a", json!(1)), choice("b", json!(2))],
             }],
             max_variants: Some(1),
+            constraints: GenerationConstraints::default(),
         };
 
         assert!(enumerate_variants(&spec, None).is_err());
@@ -702,6 +860,7 @@ mod tests {
                 )],
             }],
             max_variants: Some(1),
+            constraints: GenerationConstraints::default(),
         };
         let variants = enumerate_variants(&spec, Some(7)).unwrap();
         let base = BTreeMap::from([("scale".to_string(), json!(true))]);
@@ -737,10 +896,299 @@ mod tests {
                 },
             ],
             max_variants: Some(1),
+            constraints: GenerationConstraints::default(),
         };
 
         let error = enumerate_variants(&spec, None).unwrap_err().to_string();
 
         assert!(error.contains("conflicting generation overrides"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Generation CONSTRAINTS (item B): native `mutex` / `requires` / `exclude`
+    // pruning. The survivor COUNTS are pinned to the nirs4all generation oracle's
+    // documented locks (`tests/integration/parity/cases_generators_conformance.py`
+    // + `test_generators_conformance_extra._CONSTRAINT_SURVIVORS`):
+    //   mutex 6 -> 5, requires 6 -> 4, exclude 6 -> 5, cartesian_exclude 4 -> 3,
+    //   combined (mutex + exclude) 6 -> 4, prunes-to-one -> 1.
+    // dag-ml reproduces those COUNTS natively over its own dimension model (one
+    // choice per dimension, cross-dimension co-occurrence pruning); the host
+    // translation of operator-combination semantics into these constraints is the
+    // separate follow-on, out of scope here.
+    // -------------------------------------------------------------------------
+
+    fn cref(dimension: &str, label: &str) -> ChoiceRef {
+        ChoiceRef {
+            dimension: dimension.to_string(),
+            label: label.to_string(),
+        }
+    }
+
+    /// A 2x3 cartesian (6 pre-prune variants): dim `a` in {a1, a2}, dim `b` in {b1, b2, b3}.
+    fn two_by_three_dimensions() -> Vec<GenerationDimension> {
+        vec![
+            GenerationDimension {
+                name: "a".to_string(),
+                choices: vec![choice("a1", json!("a1")), choice("a2", json!("a2"))],
+            },
+            GenerationDimension {
+                name: "b".to_string(),
+                choices: vec![
+                    choice("b1", json!("b1")),
+                    choice("b2", json!("b2")),
+                    choice("b3", json!("b3")),
+                ],
+            },
+        ]
+    }
+
+    /// The survivor set as sorted `(dimension, label)` pairs per variant — the member-level lock
+    /// (not just the count), so a wrong-prune with the right count still fails.
+    fn survivor_signatures(variants: &[VariantPlan]) -> Vec<Vec<(String, String)>> {
+        variants
+            .iter()
+            .map(|variant| {
+                variant
+                    .choices
+                    .iter()
+                    .map(|(dimension, choice)| (dimension.clone(), choice.label.clone()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn constraint_mutex_prunes_pair() {
+        // mutex [[a:a1, b:b1]]: the single {a1, b1} variant is removed -> 6 - 1 = 5.
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: two_by_three_dimensions(),
+            max_variants: Some(6),
+            constraints: GenerationConstraints {
+                mutex: vec![vec![cref("a", "a1"), cref("b", "b1")]],
+                ..GenerationConstraints::default()
+            },
+        };
+        let variants = enumerate_variants(&spec, Some(11)).unwrap();
+        assert_eq!(variants.len(), 5);
+        let signatures = survivor_signatures(&variants);
+        assert!(!signatures.contains(&vec![
+            ("a".to_string(), "a1".to_string()),
+            ("b".to_string(), "b1".to_string())
+        ]));
+        // The pruned set is deterministic + fingerprinted across calls.
+        assert_eq!(variants, enumerate_variants(&spec, Some(11)).unwrap());
+    }
+
+    #[test]
+    fn constraint_requires_prunes() {
+        // requires (a:a1 -> b:b1): variants with a1 but not b1 ({a1,b2}, {a1,b3}) drop -> 6 - 2 = 4.
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: two_by_three_dimensions(),
+            max_variants: Some(6),
+            constraints: GenerationConstraints {
+                requires: vec![(cref("a", "a1"), cref("b", "b1"))],
+                ..GenerationConstraints::default()
+            },
+        };
+        let variants = enumerate_variants(&spec, None).unwrap();
+        assert_eq!(variants.len(), 4);
+        let signatures = survivor_signatures(&variants);
+        // a1 survives only paired with b1.
+        for signature in &signatures {
+            if signature.contains(&("a".to_string(), "a1".to_string())) {
+                assert!(signature.contains(&("b".to_string(), "b1".to_string())));
+            }
+        }
+    }
+
+    #[test]
+    fn constraint_exclude_prunes_pair() {
+        // exclude (a:a1, b:b1): the {a1, b1} variant is forbidden -> 6 - 1 = 5.
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: two_by_three_dimensions(),
+            max_variants: Some(6),
+            constraints: GenerationConstraints {
+                exclude: vec![(cref("a", "a1"), cref("b", "b1"))],
+                ..GenerationConstraints::default()
+            },
+        };
+        let variants = enumerate_variants(&spec, None).unwrap();
+        assert_eq!(variants.len(), 5);
+        assert!(!survivor_signatures(&variants).contains(&vec![
+            ("a".to_string(), "a1".to_string()),
+            ("b".to_string(), "b1".to_string())
+        ]));
+    }
+
+    #[test]
+    fn constraint_cartesian_exclude_prunes_one_of_four() {
+        // 2x2 cartesian (4 variants); exclude one pair -> 3, mirroring the oracle's
+        // `generator_cartesian_exclude` 4 -> 3 lock.
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: vec![
+                GenerationDimension {
+                    name: "a".to_string(),
+                    choices: vec![choice("a1", json!("a1")), choice("a2", json!("a2"))],
+                },
+                GenerationDimension {
+                    name: "b".to_string(),
+                    choices: vec![choice("b1", json!("b1")), choice("b2", json!("b2"))],
+                },
+            ],
+            max_variants: Some(4),
+            constraints: GenerationConstraints {
+                exclude: vec![(cref("a", "a1"), cref("b", "b1"))],
+                ..GenerationConstraints::default()
+            },
+        };
+        let variants = enumerate_variants(&spec, None).unwrap();
+        assert_eq!(variants.len(), 3);
+    }
+
+    #[test]
+    fn constraint_combined_mutex_and_exclude() {
+        // Two constraint kinds on one spec: mutex removes {a1,b1}, exclude removes {a2,b2}
+        // -> 6 - 1 - 1 = 4 (the oracle's combined `_mutex_` + `_exclude_` 6 -> 4 lock shape).
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: two_by_three_dimensions(),
+            max_variants: Some(6),
+            constraints: GenerationConstraints {
+                mutex: vec![vec![cref("a", "a1"), cref("b", "b1")]],
+                exclude: vec![(cref("a", "a2"), cref("b", "b2"))],
+                ..GenerationConstraints::default()
+            },
+        };
+        let variants = enumerate_variants(&spec, None).unwrap();
+        assert_eq!(variants.len(), 4);
+        let signatures = survivor_signatures(&variants);
+        assert!(!signatures.contains(&vec![
+            ("a".to_string(), "a1".to_string()),
+            ("b".to_string(), "b1".to_string())
+        ]));
+        assert!(!signatures.contains(&vec![
+            ("a".to_string(), "a2".to_string()),
+            ("b".to_string(), "b2".to_string())
+        ]));
+    }
+
+    #[test]
+    fn constraint_prunes_to_one() {
+        // Two mutex pairs prune the 2x3 product down to a single survivor, mirroring the oracle's
+        // `generator_constraint_prunes_to_one` lock. a1 is mutex with both b1 and b2; a2 is mutex
+        // with all of b1/b2/b3. Survivors: {a1,b3} only.
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: two_by_three_dimensions(),
+            max_variants: Some(6),
+            constraints: GenerationConstraints {
+                mutex: vec![
+                    vec![cref("a", "a1"), cref("b", "b1")],
+                    vec![cref("a", "a1"), cref("b", "b2")],
+                    vec![cref("a", "a2"), cref("b", "b1")],
+                    vec![cref("a", "a2"), cref("b", "b2")],
+                    vec![cref("a", "a2"), cref("b", "b3")],
+                ],
+                ..GenerationConstraints::default()
+            },
+        };
+        let variants = enumerate_variants(&spec, None).unwrap();
+        assert_eq!(variants.len(), 1);
+        assert_eq!(
+            survivor_signatures(&variants),
+            vec![vec![
+                ("a".to_string(), "a1".to_string()),
+                ("b".to_string(), "b3".to_string())
+            ]]
+        );
+    }
+
+    #[test]
+    fn constraint_all_pruned_is_an_error() {
+        // exclude removes a1-with-b*, mutex removes a2-with-b* -> no survivors -> error.
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: vec![
+                GenerationDimension {
+                    name: "a".to_string(),
+                    choices: vec![choice("a1", json!("a1"))],
+                },
+                GenerationDimension {
+                    name: "b".to_string(),
+                    choices: vec![choice("b1", json!("b1"))],
+                },
+            ],
+            max_variants: Some(1),
+            constraints: GenerationConstraints {
+                exclude: vec![(cref("a", "a1"), cref("b", "b1"))],
+                ..GenerationConstraints::default()
+            },
+        };
+        let error = enumerate_variants(&spec, None).unwrap_err().to_string();
+        assert!(error.contains("pruned every variant"), "{error}");
+    }
+
+    #[test]
+    fn constraint_unknown_choice_is_rejected() {
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: two_by_three_dimensions(),
+            max_variants: Some(6),
+            constraints: GenerationConstraints {
+                mutex: vec![vec![cref("a", "a1"), cref("b", "nope")]],
+                ..GenerationConstraints::default()
+            },
+        };
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("unknown choice `b:nope`"), "{error}");
+    }
+
+    #[test]
+    fn constraints_require_a_strategy() {
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::None,
+            dimensions: Vec::new(),
+            max_variants: Some(1),
+            constraints: GenerationConstraints {
+                exclude: vec![(cref("a", "a1"), cref("b", "b1"))],
+                ..GenerationConstraints::default()
+            },
+        };
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("constraints require cartesian or zip"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn constraints_absent_keep_spec_byte_identical() {
+        // A no-constraint spec must serialize without a `constraints` key and fingerprint exactly
+        // as it would before this field existed (additivity proof, parallel to the Phase-2 gate).
+        let with_default = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: two_by_three_dimensions(),
+            max_variants: Some(6),
+            constraints: GenerationConstraints::default(),
+        };
+        let serialized = serde_json::to_string(&with_default).unwrap();
+        assert!(
+            !serialized.contains("constraints"),
+            "absent constraints must not serialize: {serialized}"
+        );
+        // Round-trips through a constraint-less JSON shape identically.
+        let reparsed: GenerationSpec = serde_json::from_str(
+            r#"{"strategy":"cartesian","dimensions":[{"name":"a","choices":[{"label":"a1","value":"a1"},{"label":"a2","value":"a2"}]},{"name":"b","choices":[{"label":"b1","value":"b1"},{"label":"b2","value":"b2"},{"label":"b3","value":"b3"}]}],"max_variants":6}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            generation_spec_fingerprint(&with_default).unwrap(),
+            generation_spec_fingerprint(&reparsed).unwrap()
+        );
+        assert!(reparsed.constraints.is_empty());
     }
 }

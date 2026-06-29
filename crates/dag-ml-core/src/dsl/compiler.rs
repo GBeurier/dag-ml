@@ -108,10 +108,15 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
     let mut generation_dimensions =
         compile_explicit_generation_dimensions(&spec.generation_dimensions, &compiler.nodes)?;
     generation_dimensions.extend(compiler.generation_dimensions);
+    let generation_constraints = compile_generation_constraints(
+        spec.generation_constraints.as_ref(),
+        &generation_dimensions,
+    )?;
     let generation = build_generation_spec(
         spec.generation_strategy,
         spec.max_variants,
         generation_dimensions,
+        generation_constraints,
     )?;
     let generation_fingerprint = if generation.strategy == GenerationStrategy::None {
         None

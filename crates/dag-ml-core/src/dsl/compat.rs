@@ -79,6 +79,7 @@ impl CompatDslLowerer {
             max_variants: optional_root_field(root, "max_variants")?,
             generation_dimensions: optional_root_field(root, "generation_dimensions")?
                 .unwrap_or_default(),
+            generation_constraints: optional_root_field(root, "generation_constraints")?,
             campaign_id: optional_root_field(root, "campaign_id")?,
             root_seed: optional_root_field(root, "root_seed")?,
             leakage_policy: optional_root_field(root, "leakage_policy")?,

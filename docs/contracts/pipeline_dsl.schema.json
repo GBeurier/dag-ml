@@ -304,6 +304,9 @@
         "generation_dimensions": {
           "type": "array"
         },
+        "generation_constraints": {
+          "type": ["object", "null"]
+        },
         "campaign_id": {
           "type": ["string", "null"]
         },
