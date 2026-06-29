@@ -3803,7 +3803,10 @@ mod tests {
         // A bundle whose embedded scores.plan_id disagrees with the bundle plan_id is rejected.
         bundle.scores.as_mut().unwrap().plan_id = "plan:wrong".to_string();
         let err = bundle.validate().unwrap_err().to_string();
-        assert!(err.contains("does not match its embedded scores plan_id"), "{err}");
+        assert!(
+            err.contains("does not match its embedded scores plan_id"),
+            "{err}"
+        );
     }
 
     #[test]

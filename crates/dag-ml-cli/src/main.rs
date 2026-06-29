@@ -98,11 +98,16 @@ impl From<CliRegressionMetricKind> for RegressionMetricKind {
 }
 
 /// Metric that native variant SELECT optimizes when the caller does not pin a variant. `rmse`
-/// (minimized) is the default for regression; `accuracy` (maximized) is for classification.
+/// (minimized) is the default for regression; `accuracy` / `balanced_accuracy` (maximized) are for
+/// classification. `balanced_accuracy` mirrors nirs4all's default classification ranking metric — the
+/// clap value uses the SAME underscore spelling as the core metric name / Python `parse_selection_metric`
+/// / legacy `_resolve_effective_metric`, so the host passes one string verbatim across every surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliVariantSelectionMetric {
     Rmse,
     Accuracy,
+    #[value(name = "balanced_accuracy")]
+    BalancedAccuracy,
 }
 
 impl From<CliVariantSelectionMetric> for RegressionMetricKind {
@@ -110,6 +115,7 @@ impl From<CliVariantSelectionMetric> for RegressionMetricKind {
         match value {
             CliVariantSelectionMetric::Rmse => Self::Rmse,
             CliVariantSelectionMetric::Accuracy => Self::Accuracy,
+            CliVariantSelectionMetric::BalancedAccuracy => Self::BalancedAccuracy,
         }
     }
 }
