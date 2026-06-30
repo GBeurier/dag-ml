@@ -32,7 +32,9 @@ pub struct ChoiceRef {
 ///
 /// All three keywords are read off the same `(dimension, label)` coordinate space ([`ChoiceRef`]):
 ///
-/// * `mutex` — no two members of a group may co-occur in the same variant (a group of 2+ refs).
+/// * `mutex` — the FULL group may not all co-occur in one variant (a group of 2+ refs); a variant
+///   is pruned only when every member is present. For a PAIR this is "the two may not co-occur";
+///   for 3+ members only the single all-present variant is forbidden, every proper subset survives.
 /// * `requires` — choosing the first ref of a pair requires the second to be present too.
 /// * `exclude` — the first and second ref of a pair may not both be present.
 ///
@@ -45,7 +47,9 @@ pub struct ChoiceRef {
 /// this field existed (its fingerprint is unchanged).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenerationConstraints {
-    /// Mutual-exclusion groups: at most one member of each group may be present in a variant.
+    /// Mutual-exclusion groups: the FULL group may not all co-occur in one variant (matching the
+    /// nirs4all legacy `issubset` rule). A variant is pruned only when every member is present —
+    /// for a pair this is "not both", for 3+ only the all-present variant drops (subsets survive).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mutex: Vec<Vec<ChoiceRef>>,
     /// Dependency pairs `(a, b)`: if `a` is present, `b` must also be present.
@@ -555,7 +559,13 @@ fn satisfies_constraints(
             .is_some_and(|choice| choice.label == reference.label)
     };
     for group in &constraints.mutex {
-        if group.iter().filter(|reference| present(reference)).count() > 1 {
+        // nirs4all LEGACY mutex semantic (`_generator/constraints.py::_satisfies_mutex`,
+        // `mutex_set.issubset(combo_set)`): a variant is forbidden ONLY when EVERY member of
+        // the group co-occurs in it ("not all co-occur"), not when merely two-or-more do. For a
+        // PAIR (generator_or_pick_mutex 6->5) "all present" == "count > 1", so this
+        // is byte-identical to the prior `count > 1` rule; the two DIVERGE only for groups of 3+,
+        // where legacy forbids the SINGLE full-co-occurrence variant and keeps every proper subset.
+        if group.iter().all(present) {
             return false;
         }
     }
@@ -1074,6 +1084,75 @@ mod tests {
             ("a".to_string(), "a2".to_string()),
             ("b".to_string(), "b2".to_string())
         ]));
+    }
+
+    #[test]
+    fn constraint_mutex_group_of_three_forbids_only_full_co_occurrence() {
+        // A SIZE-3 mutex group [a:a1, b:b1, c:c1] over a 2x2x2 cartesian (8 variants). This is where
+        // the "not all co-occur" (legacy `issubset`) rule DIVERGES from the old "<=1 present" rule:
+        //   - legacy "not all co-occur" forbids ONLY the single {a1,b1,c1} variant       -> 8 - 1 = 7
+        //   - the old "count > 1" rule would forbid EVERY variant with 2+ of {a1,b1,c1}  -> only 4
+        // We lock 7 survivors with {a1,b1,c1} as the SOLE casualty, matching the nirs4all generation
+        // oracle (`generator_or_pick_mutex3`): a >2 mutex prunes exactly the all-present combination
+        // and keeps every proper subset. (For a PAIR the two rules coincide — see the cases above.)
+        let spec = GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: vec![
+                GenerationDimension {
+                    name: "a".to_string(),
+                    choices: vec![choice("a1", json!("a1")), choice("a2", json!("a2"))],
+                },
+                GenerationDimension {
+                    name: "b".to_string(),
+                    choices: vec![choice("b1", json!("b1")), choice("b2", json!("b2"))],
+                },
+                GenerationDimension {
+                    name: "c".to_string(),
+                    choices: vec![choice("c1", json!("c1")), choice("c2", json!("c2"))],
+                },
+            ],
+            max_variants: Some(8),
+            constraints: GenerationConstraints {
+                mutex: vec![vec![cref("a", "a1"), cref("b", "b1"), cref("c", "c1")]],
+                ..GenerationConstraints::default()
+            },
+        };
+        let variants = enumerate_variants(&spec, None).unwrap();
+        assert_eq!(variants.len(), 7);
+        let signatures = survivor_signatures(&variants);
+        // The all-present {a1,b1,c1} variant is the ONLY casualty.
+        let all_present = vec![
+            ("a".to_string(), "a1".to_string()),
+            ("b".to_string(), "b1".to_string()),
+            ("c".to_string(), "c1".to_string()),
+        ];
+        assert!(!signatures.contains(&all_present));
+        // Every PROPER subset of the mutex group survives (would be wrongly pruned by "count > 1"):
+        // exactly-two-present variants {a1,b1,c2}, {a1,b2,c1}, {a2,b1,c1} are all retained.
+        for retained in [
+            vec![
+                ("a".to_string(), "a1".to_string()),
+                ("b".to_string(), "b1".to_string()),
+                ("c".to_string(), "c2".to_string()),
+            ],
+            vec![
+                ("a".to_string(), "a1".to_string()),
+                ("b".to_string(), "b2".to_string()),
+                ("c".to_string(), "c1".to_string()),
+            ],
+            vec![
+                ("a".to_string(), "a2".to_string()),
+                ("b".to_string(), "b1".to_string()),
+                ("c".to_string(), "c1".to_string()),
+            ],
+        ] {
+            assert!(
+                signatures.contains(&retained),
+                "proper subset {retained:?} was wrongly pruned"
+            );
+        }
+        // Deterministic + fingerprinted across calls.
+        assert_eq!(variants, enumerate_variants(&spec, None).unwrap());
     }
 
     #[test]
