@@ -7646,6 +7646,32 @@ fn select_best_variant_by_cv_picks_lowest_oof_rmse_variant() {
             variant.variant_id
         );
     }
+
+    // ADDITIVE per-variant PREDICTIONS: alongside the scalar reports, EVERY variant's per-fold
+    // VALIDATION (OOF) predictions are captured + re-tagged with the variant's id, so a host can fill a
+    // non-selected variant's per-sample rows (not just its score). Param-variant SELECT carries no
+    // operator-variant fingerprint, so `variant_label` is None.
+    let predicted_variants: BTreeSet<VariantId> = selection
+        .variant_validation_predictions
+        .iter()
+        .map(|captured| captured.variant_id.clone())
+        .collect();
+    assert_eq!(
+        predicted_variants, expected_variants,
+        "captured validation predictions must cover ALL variants, not just the winner"
+    );
+    assert!(
+        selection
+            .variant_validation_predictions
+            .iter()
+            .all(|captured| captured.variant_label.is_none()
+                && !captured.predictions.is_empty()
+                && captured
+                    .predictions
+                    .iter()
+                    .all(|block| block.partition == PredictionPartition::Validation)),
+        "captured param-variant predictions are Validation-only with no operator fingerprint"
+    );
 }
 
 #[test]
@@ -12360,6 +12386,232 @@ fn select_best_operator_variant_stamps_variant_label_on_winner_and_loser_reports
         "the WINNER report must carry variant_label, not just the losers"
     );
     assert!(saw_loser_label, "the loser report must carry variant_label");
+}
+
+/// operator-SELECT additively surfaces EACH variant's per-fold VALIDATION (OOF) PREDICTIONS (not just
+/// the scalar reports), each re-tagged with the variant's id + content fingerprint, so a host can fill
+/// a non-selected variant's per-sample prediction rows. The blocks are the variant's OWN validation
+/// predictions (re-tagged by variant id — no cross-variant mixing), are `Validation`-only, and pair
+/// with their id-matched y_true — the leakage-safe contract.
+#[test]
+fn select_best_operator_variant_surfaces_per_variant_validation_predictions() {
+    use crate::metrics::RegressionMetricKind;
+
+    let (plan, mut model) = operator_select_union();
+    let choice0_label = "a".repeat(64);
+    let choice1_label = "b".repeat(64);
+    model.variant_labels = BTreeMap::from([
+        ("choice0".to_string(), choice0_label.clone()),
+        ("choice1".to_string(), choice1_label.clone()),
+    ]);
+    model.validate().unwrap();
+    let controllers = operator_select_controllers();
+    let run_id = RunId::new("run:operator.predictions").unwrap();
+
+    let selection = select_best_operator_variant_by_cv(
+        &plan,
+        &model,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |pruned_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase(pruned_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())
+        },
+    )
+    .unwrap()
+    .expect("operator scoring is on");
+
+    let (winner_variant, _, _) = operator_variant_for_choice(&model, "choice0");
+    let (loser_variant, _, _) = operator_variant_for_choice(&model, "choice1");
+
+    // Both variants surface captured validation predictions, each tagged with its OWN id + label.
+    let captured: BTreeSet<VariantId> = selection
+        .variant_validation_predictions
+        .iter()
+        .map(|captured| captured.variant_id.clone())
+        .collect();
+    assert_eq!(
+        captured,
+        BTreeSet::from([
+            winner_variant.variant_id.clone(),
+            loser_variant.variant_id.clone()
+        ]),
+        "every operator choice must surface its captured validation predictions"
+    );
+
+    for captured in &selection.variant_validation_predictions {
+        let expected_label = if captured.variant_id == winner_variant.variant_id {
+            &choice0_label
+        } else {
+            &choice1_label
+        };
+        assert_eq!(
+            captured.variant_label.as_ref(),
+            Some(expected_label),
+            "captured predictions carry the variant's own content fingerprint"
+        );
+        // Every captured block is a Validation (OOF) block — never Final/Test/refit (the transient run
+        // is FIT_CV-only), the leakage-safe contract.
+        assert!(
+            !captured.predictions.is_empty(),
+            "the variant's per-fold validation blocks are captured"
+        );
+        assert!(
+            captured
+                .predictions
+                .iter()
+                .all(|block| block.partition == PredictionPartition::Validation),
+            "only Validation (OOF) predictions are surfaced — no refit/train/test"
+        );
+        // Each prediction block is paired POSITION-FOR-POSITION with an id-matched y_true block.
+        assert_eq!(
+            captured.predictions.len(),
+            captured.regression_targets.len(),
+            "every captured prediction block has its paired y_true"
+        );
+        for (block, target) in captured
+            .predictions
+            .iter()
+            .zip(captured.regression_targets.iter())
+        {
+            let pred_ids: BTreeSet<_> = block.sample_ids.iter().cloned().collect();
+            let target_ids: BTreeSet<_> = target
+                .unit_ids
+                .iter()
+                .map(|unit| match unit {
+                    crate::aggregation::PredictionUnitId::Sample(sample_id) => sample_id.clone(),
+                    other => panic!("unexpected non-sample unit id {other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                pred_ids, target_ids,
+                "the per-fold y_true covers exactly the prediction block's samples (id-matched)"
+            );
+        }
+    }
+}
+
+/// A host controller may VALIDLY emit its `regression_targets` rows in a DIFFERENT order than the
+/// PredictionBlock's `sample_ids` (the scoring path realigns by unit id before computing metrics). But
+/// the host surfaces a captured loser block POSITIONALLY — y_pred from `block.sample_ids`/`values`
+/// paired ROW-FOR-ROW with `regression_targets.values`. So the captured y_true must be REBUILT in
+/// `sample_ids` order; `target_block_aligned_to_samples` does that. This pins the per-sample y_true is
+/// aligned to y_pred by id even when the target block arrives shuffled.
+#[test]
+fn captured_validation_y_true_is_realigned_to_prediction_sample_order() {
+    use crate::aggregation::PredictionUnitId;
+
+    let sample_order = [
+        SampleId::new("s1").unwrap(),
+        SampleId::new("s2").unwrap(),
+        SampleId::new("s3").unwrap(),
+    ];
+    // The y_true block arrives in a DIFFERENT order than `sample_order` (s3, s1, s2), each row a
+    // distinct value tied to its sample so a misalignment would be observable.
+    let shuffled_targets = RegressionTargetBlock {
+        level: PredictionLevel::Sample,
+        unit_ids: vec![
+            PredictionUnitId::Sample(SampleId::new("s3").unwrap()),
+            PredictionUnitId::Sample(SampleId::new("s1").unwrap()),
+            PredictionUnitId::Sample(SampleId::new("s2").unwrap()),
+        ],
+        values: vec![vec![30.0], vec![10.0], vec![20.0]],
+        target_names: vec!["y".to_string()],
+    };
+
+    let aligned = target_block_aligned_to_samples(&sample_order, &shuffled_targets);
+
+    // The realigned block is in `sample_order` (s1, s2, s3) with each sample's OWN value, so a
+    // positional zip of y_pred[i] (sample_order[i]) with y_true[i] pairs the right sample.
+    assert_eq!(
+        aligned.unit_ids,
+        vec![
+            PredictionUnitId::Sample(SampleId::new("s1").unwrap()),
+            PredictionUnitId::Sample(SampleId::new("s2").unwrap()),
+            PredictionUnitId::Sample(SampleId::new("s3").unwrap()),
+        ],
+        "y_true unit ids are realigned to the prediction block's sample order"
+    );
+    assert_eq!(
+        aligned.values,
+        vec![vec![10.0], vec![20.0], vec![30.0]],
+        "each y_true row moves with its sample id (s1->10, s2->20, s3->30), not its arrival position"
+    );
+    assert_eq!(aligned.target_names, vec!["y".to_string()]);
+}
+
+/// END-TO-END through `capture_variant_validation_predictions`: a fold's multi-sample VALIDATION
+/// `PredictionBlock` whose paired `RegressionTargetRecord` arrives in a DIFFERENT row order (the
+/// `sample_targets_match_block` precondition only requires the same sample SET) must be captured with
+/// its y_true REALIGNED to the prediction block's `sample_ids`, so a host that pairs y_pred ↔ y_true by
+/// row position reads the right per-sample ground truth — no cross-sample y_true misalignment.
+#[test]
+fn capture_variant_validation_predictions_realigns_shuffled_fold_targets() {
+    use crate::aggregation::PredictionUnitId;
+
+    let producer = NodeId::new("model:choice0__pls").unwrap();
+    let variant_id = VariantId::new("variant:probe").unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:capture.shuffle").unwrap(), Some(7));
+    ctx.variant_id = Some(variant_id.clone());
+
+    // A 3-sample validation block in s1,s2,s3 order — y_pred = y_true + 100 so each value is
+    // distinguishable per sample.
+    ctx.prediction_store
+        .append(PredictionBlock {
+            prediction_id: Some("pred:fold0".to_string()),
+            producer_node: producer.clone(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: vec![
+                SampleId::new("s1").unwrap(),
+                SampleId::new("s2").unwrap(),
+                SampleId::new("s3").unwrap(),
+            ],
+            values: vec![vec![110.0], vec![120.0], vec![130.0]],
+            target_names: vec!["y".to_string()],
+        })
+        .unwrap();
+    // The matching y_true record arrives SHUFFLED (s3, s1, s2) — a valid host ordering.
+    ctx.regression_target_records.push(RegressionTargetRecord {
+        producer_node: producer.clone(),
+        variant_id: Some(variant_id.clone()),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        block: RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: vec![
+                PredictionUnitId::Sample(SampleId::new("s3").unwrap()),
+                PredictionUnitId::Sample(SampleId::new("s1").unwrap()),
+                PredictionUnitId::Sample(SampleId::new("s2").unwrap()),
+            ],
+            values: vec![vec![30.0], vec![10.0], vec![20.0]],
+            target_names: vec!["y".to_string()],
+        },
+    });
+
+    let captured = capture_variant_validation_predictions(&variant_id, None, &ctx);
+    assert_eq!(captured.predictions.len(), 1);
+    assert_eq!(captured.regression_targets.len(), 1);
+
+    // The surfaced y_true is realigned to the prediction block's sample order (s1,s2,s3), so a
+    // POSITIONAL zip of y_pred[i] ↔ y_true[i] pairs the SAME sample: s1->(110,10), s2->(120,20),
+    // s3->(130,30). A misalignment (the raw shuffled order) would pair s1's y_pred with s3's y_true.
+    let block = &captured.predictions[0];
+    let target = &captured.regression_targets[0];
+    for (position, sample_id) in block.sample_ids.iter().enumerate() {
+        assert_eq!(
+            target.unit_ids[position],
+            PredictionUnitId::Sample(sample_id.clone()),
+            "y_true row {position} is aligned to the prediction block's sample at that position"
+        );
+    }
+    assert_eq!(
+        target.values,
+        vec![vec![10.0], vec![20.0], vec![30.0]],
+        "y_true values follow their sample id into prediction order, not their shuffled arrival order"
+    );
 }
 
 #[test]
