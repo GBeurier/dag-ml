@@ -13,6 +13,65 @@ env:
   WASM_PACK_VERSION: "0.15.0"
 
 jobs:
+  contract-lockstep:
+    name: Shared contract lockstep
+    runs-on: ubuntu-latest
+    env:
+      DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Resolve dag-ml-data contract peer
+        id: peer
+        shell: bash
+        run: |
+          set -euo pipefail
+          peer_repo="GBeurier/dag-ml-data"
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          ref="main"
+          paired="false"
+
+          if git ls-remote --exit-code --heads "https://github.com/${peer_repo}.git" "$branch" >/dev/null 2>&1; then
+            ref="$branch"
+            paired="true"
+          fi
+
+          contract_changed="false"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            changed="$(
+              git diff --name-only FETCH_HEAD HEAD -- \
+                docs/contracts \
+                examples/fixtures \
+                scripts/validate_contracts.py \
+                crates/dag-ml-capi/include \
+                crates/dag-ml-core/src/runtime/prediction_store.rs
+            )"
+            if [ -n "$changed" ]; then
+              contract_changed="true"
+            fi
+            if [ "$contract_changed" = "true" ] && [ "$paired" != "true" ]; then
+              echo "::error::Shared contract changes require a paired ${peer_repo} branch named '${branch}'."
+              printf '%s\n' "$changed"
+              exit 1
+            fi
+          fi
+
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "contract_changed=$contract_changed" >> "$GITHUB_OUTPUT"
+      - name: Checkout dag-ml-data contract peer
+        uses: actions/checkout@v6
+        with:
+          repository: GBeurier/dag-ml-data
+          ref: ${{ steps.peer.outputs.ref }}
+          path: external/dag-ml-data
+      - name: Shared contract
+        run: python scripts/validate_contracts.py --require-sibling --sibling-root external/dag-ml-data
+
   msrv:
     name: MSRV Rust
     runs-on: ubuntu-latest
@@ -63,7 +122,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install numpy scikit-learn
       - name: Shared contract
-        run: python scripts/validate_contracts.py
+        run: python scripts/validate_contracts.py --require-sibling --sibling-root external/dag-ml-data
       - name: Release metadata
         run: python scripts/validate_release_metadata.py
       - name: Error taxonomy
