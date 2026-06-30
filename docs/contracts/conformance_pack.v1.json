@@ -232,6 +232,7 @@
       "fixtures": [],
       "test_refs": [
         "crates/dag-ml-core/src/generation.rs::constraint_mutex_prunes_pair",
+        "crates/dag-ml-core/src/generation.rs::constraint_mutex_group_of_three_forbids_only_full_co_occurrence",
         "crates/dag-ml-core/src/generation.rs::constraint_requires_prunes",
         "crates/dag-ml-core/src/generation.rs::constraint_exclude_prunes_pair",
         "crates/dag-ml-core/src/generation.rs::constraint_cartesian_exclude_prunes_one_of_four",
@@ -243,7 +244,7 @@
       "assertions": [
         "generation_spec carries an optional constraints block (mutex / requires / exclude over choice_ref)",
         "_depends_on_ is a dead keyword and is not represented",
-        "mutex prunes co-occurring members, requires enforces dependency, exclude forbids a pair",
+        "mutex prunes only the variant where the FULL group co-occurs (legacy issubset rule: a pair forbids 'both present', a 3+ group forbids only the all-present variant and keeps every proper subset), requires enforces dependency, exclude forbids a pair",
         "the surviving variant set matches the nirs4all generation oracle's documented counts",
         "a spec without constraints stays byte-identical and fingerprint-stable"
       ]
