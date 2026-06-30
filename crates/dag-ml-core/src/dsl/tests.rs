@@ -2867,6 +2867,209 @@ fn compat_lowers_or_pick_constraints() {
     assert!(!survivors.contains(&member_set(&["A", "B"])));
 }
 
+/// ADR-17 item 5 slice B (the CATCH-22 fix): a MODEL-TERMINATED constrained `_or_`+pick+`_mutex_`
+/// generator — the model carried in the generator `tail` — lowers natively through BOTH the graph
+/// compile AND `compile_operator_variant_models`, yielding the EXACT 6 -> 5 pruned multi-operator
+/// survivor set (matching the oracle `generator_or_pick_mutex`) with the model TERMINATING each
+/// survivor sub-sequence EXACTLY ONCE.
+///
+/// This is the host's new lowering: instead of pre-expanding survivors with `expand_spec` and emitting
+/// one plain `_or_` branch per survivor, the host emits ONE constrained generator (pick + constraints
+/// PRESERVED) plus the downstream model in `tail`. The tail is appended AFTER the prune, so:
+///   * the operator-content member set stays the 2-op survivor (the model is NOT a constraint member),
+///   * every survivor's `steps` ends in the model (so the graph compile's "must produce a prediction"
+///     gate AND `lower_operator_variant_model`'s "activated nodes" gate both pass), and
+///   * each `variant_label` is the content fingerprint over `[<2 ops>, <model>]` (the host recomputes
+///     it byte-identically).
+#[test]
+fn model_terminated_constrained_or_pick_mutex_lowers_native_with_model_tail() {
+    const SPEC: &str = r#"{
+  "id": "dsl-or-pick-mutex-model",
+  "input": {"name": "X", "representation": "matrix"},
+  "output": {"name": "y_pred", "description": "prediction"},
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 2,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]},
+        {"id": "D", "steps": [{"kind": "transform", "id": "t:D", "operator": "D"}]}
+      ],
+      "constraints": {"mutex": [["A", "B"]]},
+      "tail": [{"kind": "model", "id": "m:base", "operator": "PLS"}]
+    }
+  ]
+}"#;
+    let spec: PipelineDslSpec = serde_json::from_str(SPEC).unwrap();
+
+    // (1) The operator-variant compile prunes the {A,B} pair -> 5 survivors, in legacy C(4,2) order —
+    // member-exact, derived from each choice's active TRANSFORM nodes (the model node is filtered out).
+    let models = compile_operator_variant_models(&spec).unwrap();
+    assert_eq!(models.len(), 1, "one operator generator in the spec");
+    models[0].validate().unwrap();
+    let survivors: Vec<BTreeSet<String>> = models[0]
+        .dimension
+        .choices
+        .iter()
+        .map(|choice| {
+            let key = choice.active_subsequence.as_ref().unwrap();
+            models[0].active_nodes[key]
+                .iter()
+                .filter_map(|node_id| {
+                    node_id
+                        .as_str()
+                        .rsplit('.')
+                        .next()
+                        .and_then(|suffix| suffix.strip_prefix("t_"))
+                        .map(str::to_string)
+                })
+                .collect::<BTreeSet<_>>()
+        })
+        .collect();
+    assert_eq!(
+        survivors,
+        vec![
+            member_set(&["A", "C"]),
+            member_set(&["A", "D"]),
+            member_set(&["B", "C"]),
+            member_set(&["B", "D"]),
+            member_set(&["C", "D"]),
+        ],
+        "member-exact mutex-pruned survivor set + legacy expand_spec order (model tail excluded)"
+    );
+    assert!(!survivors.contains(&member_set(&["A", "B"])));
+
+    // The model TERMINATES each survivor: every choice activates exactly one model node (the namespaced
+    // `m:base`), so the multi-operator survivor ends in the model EXACTLY ONCE (not once per picked
+    // branch).
+    for choice in &models[0].dimension.choices {
+        let key = choice.active_subsequence.as_ref().unwrap();
+        let model_nodes = models[0].active_nodes[key]
+            .iter()
+            .filter(|node_id| node_id.as_str().ends_with(".m_base"))
+            .count();
+        assert_eq!(
+            model_nodes, 1,
+            "exactly one model node terminates the survivor"
+        );
+    }
+    // Every survivor's `variant_label` is the content fingerprint over `[<2 ops>, <model>]`; the 5 are
+    // distinct (different operator pairs, same model tail) and present for every choice.
+    let labels: BTreeSet<&String> = models[0].variant_labels.values().collect();
+    assert_eq!(
+        labels.len(),
+        5,
+        "five distinct multi-op+model variant labels"
+    );
+
+    // (2) The graph compile accepts the SAME spec (the gate the pre-`tail` model-free choice failed):
+    // each pruned survivor produces a model prediction, so the union graph has exactly 5 model nodes.
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    let model_node_count = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Model)
+        .count();
+    assert_eq!(
+        model_node_count, 5,
+        "one model node per pruned survivor (the tail terminates each of the 5 survivors)"
+    );
+}
+
+/// ADR-17 item 5 slice B MUST-FIX 3: a multi-`_requires_` `[A, B, C]` is "A requires B AND A requires C".
+/// The host SPLITS it into the two `[A, B]` / `[A, C]` PAIRS dag-ml's `[String; 2]` `requires` form expects;
+/// this verifies the split pairs prune identically to the legacy multi-requires meaning. `_or_` over 4 ops,
+/// pick 3 (`C(4,3)=4`): the trigger A present demands BOTH B and C present. Of the 4 3-combos, only
+/// `{A,B,C}` keeps A with both B and C; `{A,B,D}` (A without C), `{A,C,D}` (A without B) drop; `{B,C,D}` has
+/// no A so it is unconstrained and survives — 4 -> 2.
+#[test]
+fn constrained_or_pick_multi_requires_split_pairs_prune_like_legacy() {
+    let survivors = constrained_operator_survivors(
+        r#"{
+  "id": "dsl-or-pick-multi-requires",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 3,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]},
+        {"id": "D", "steps": [{"kind": "transform", "id": "t:D", "operator": "D"}]}
+      ],
+      "constraints": {"requires": [["A", "B"], ["A", "C"]]}
+    }
+  ]
+}"#,
+    );
+    assert_eq!(survivors.len(), 2);
+    assert_eq!(
+        survivors,
+        vec![member_set(&["A", "B", "C"]), member_set(&["B", "C", "D"])],
+        "A-requires-both-B-and-C survivors (the split pairs) + legacy order"
+    );
+}
+
+/// ADR-17 item 5 slice B MUST-FIX 4: a data-only generator FOLLOWED BY a tail-bearing generator must NOT be
+/// fused — `generator_to_cartesian_stages` would DROP the following generator's model tail. The compat
+/// lowerer must keep them as SEPARATE steps with the tail intact. Here a leading `_or_` over two transforms
+/// (data-only) precedes a canonical tail-bearing `_or_` generator (its model lives in `tail`); the lowered
+/// spec must carry TWO generator steps and the second must still own its model tail.
+#[test]
+fn compat_does_not_fuse_following_tail_bearing_generator() {
+    let value: serde_json::Value = serde_json::from_str(
+        r#"{
+  "id": "compat-no-fuse-tail",
+  "pipeline": [
+    {"_or_": ["Lead0", "Lead1"]},
+    {
+      "kind": "generator",
+      "id": "generator:tail",
+      "mode": "or",
+      "pick": 2,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]}
+      ],
+      "tail": [{"kind": "model", "id": "m:base", "operator": "PLS"}]
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    let spec = lower_nirs4all_compat_pipeline_dsl(&value).unwrap();
+    let generators: Vec<&PipelineDslGeneratorStep> = spec
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            PipelineDslStep::Generator(generator) => Some(generator),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        generators.len(),
+        2,
+        "the data-only `_or_` and the tail-bearing generator stay SEPARATE (no fusion)"
+    );
+    // The tail-bearing generator kept its model tail (it was NOT cartesian-fused, which would drop it).
+    let tail_gen = generators
+        .iter()
+        .find(|generator| generator.id.as_str() == "generator:tail")
+        .expect("the tail-bearing generator survives lowering");
+    assert_eq!(tail_gen.tail.len(), 1, "the model tail is preserved");
+    assert!(
+        matches!(tail_gen.tail[0], PipelineDslStep::Model(_)),
+        "the preserved tail step is the model"
+    );
+}
+
 /// MUST-FIX 2: `OperatorVariantModel::validate` rejects two choices sharing the same
 /// `active_subsequence` (no bijection), even when the active_nodes map length is padded.
 #[test]

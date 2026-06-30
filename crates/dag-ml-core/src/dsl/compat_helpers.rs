@@ -636,6 +636,10 @@ pub(crate) fn generator_step_has_prediction(generator: &PipelineDslGeneratorStep
                 .iter()
                 .any(|branch| branch.steps.iter().any(step_has_prediction))
         })
+        // A generator that carries a fixed model tail (ADR-17 item 5 slice B) already terminates each
+        // survivor in a prediction, so it is NOT a data-only generator — it must never be fused with a
+        // following model (the fusion drops constraints + rejects pick). Treat the tail like a branch.
+        || generator.tail.iter().any(step_has_prediction)
 }
 pub(crate) fn generator_to_cartesian_stages(
     generator: PipelineDslGeneratorStep,
@@ -694,6 +698,7 @@ pub(crate) fn combined_cartesian_generator(
         then_arrange: None,
         count: None,
         constraints: None,
+        tail: Vec::new(),
         metadata: BTreeMap::from([(
             "dsl_compat_generator".to_string(),
             serde_json::Value::String("fused_data_to_prediction".to_string()),
