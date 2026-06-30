@@ -563,6 +563,37 @@ pub(crate) fn compat_generator_metadata(
     );
     Ok(metadata)
 }
+/// Lower the nirs4all operator-content constraint keywords (`_mutex_` / `_requires_` / `_exclude_`)
+/// off a generator node into a [`PipelineDslGeneratorConstraints`]. Returns `None` when none are
+/// present so a constraint-free generator stays byte-identical. The refs are operator-content labels
+/// (operator-class / branch ids), matched against the generated sequences' selected branch ids at
+/// sequence-build (`expand_*_generator_sequences`).
+pub(crate) fn compat_generator_constraints(
+    object: &serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) -> Result<Option<PipelineDslGeneratorConstraints>> {
+    let mutex: Vec<Vec<String>> = optional_object_field(object, "_mutex_")?.unwrap_or_default();
+    let requires: Vec<[String; 2]> =
+        optional_object_field(object, "_requires_")?.unwrap_or_default();
+    let exclude: Vec<[String; 2]> = optional_object_field(object, "_exclude_")?.unwrap_or_default();
+    let constraints = PipelineDslGeneratorConstraints {
+        mutex,
+        requires,
+        exclude,
+    };
+    if constraints.is_empty() {
+        if object.contains_key("_mutex_")
+            || object.contains_key("_requires_")
+            || object.contains_key("_exclude_")
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "{path} declares an empty generator constraint keyword"
+            )));
+        }
+        return Ok(None);
+    }
+    Ok(Some(constraints))
+}
 pub(crate) fn compat_branch_id(value: &serde_json::Value, index: usize) -> String {
     value
         .as_object()
@@ -662,6 +693,7 @@ pub(crate) fn combined_cartesian_generator(
         then_pick: None,
         then_arrange: None,
         count: None,
+        constraints: None,
         metadata: BTreeMap::from([(
             "dsl_compat_generator".to_string(),
             serde_json::Value::String("fused_data_to_prediction".to_string()),

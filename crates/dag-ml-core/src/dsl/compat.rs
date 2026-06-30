@@ -948,6 +948,7 @@ impl CompatDslLowerer {
             then_pick: optional_object_field(object, "then_pick")?,
             then_arrange: optional_object_field(object, "then_arrange")?,
             count: optional_object_field(object, "count")?,
+            constraints: compat_generator_constraints(object, path)?,
             metadata: compat_generator_metadata(object, key)?,
         })
     }
@@ -980,6 +981,7 @@ impl CompatDslLowerer {
             then_pick: None,
             then_arrange: None,
             count: optional_object_field(object, "count")?,
+            constraints: compat_generator_constraints(object, path)?,
             metadata: compat_generator_metadata(object, "_cartesian_")?,
         })
     }
@@ -1055,6 +1057,7 @@ impl CompatDslLowerer {
             then_pick: None,
             then_arrange: None,
             count: optional_object_field(object, "count")?,
+            constraints: None,
             metadata: compat_generator_metadata(object, "_grid_")?,
         })
     }
@@ -1074,6 +1077,7 @@ impl CompatDslLowerer {
             then_pick: None,
             then_arrange: None,
             count: optional_object_field(object, "count")?,
+            constraints: None,
             metadata: compat_generator_metadata(object, "_sample_")?,
         })
     }
