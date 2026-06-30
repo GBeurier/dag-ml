@@ -516,6 +516,7 @@ pub(crate) fn rewrite_step_id(
                     rewrite_branch_step_ids(&mut nested.steps, suffix, id_map)?;
                 }
             }
+            rewrite_branch_step_ids(&mut generator.tail, suffix, id_map)?;
         }
     }
     Ok(())

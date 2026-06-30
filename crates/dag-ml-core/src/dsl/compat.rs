@@ -672,6 +672,16 @@ impl CompatDslLowerer {
                 continue;
             }
             if let [PipelineDslStep::Generator(next_generator)] = steps.as_slice() {
+                // A following generator that carries a model TAIL (ADR-17 item 5 slice B) is a prediction
+                // boundary: `generator_to_cartesian_stages` would DROP its tail (the tail is neither a stage
+                // branch nor a fusable selector), silently losing the terminal model. So it must NOT be fused —
+                // abandon the fusion entirely (`None`). The caller then emits the LEADING data-generator alone
+                // and re-lowers the remaining steps (any intervening transforms + the tail-bearing generator)
+                // independently, exactly as the top-level `!generator_step_has_prediction` guard keeps a
+                // tail-bearing generator off the fusion path. (MUST-FIX 4.)
+                if !next_generator.tail.is_empty() {
+                    return Ok(None);
+                }
                 if !prefix_steps.is_empty() {
                     stages.push(single_stage(
                         format!("stage{}", stages.len()),
@@ -949,6 +959,7 @@ impl CompatDslLowerer {
             then_arrange: optional_object_field(object, "then_arrange")?,
             count: optional_object_field(object, "count")?,
             constraints: compat_generator_constraints(object, path)?,
+            tail: Vec::new(),
             metadata: compat_generator_metadata(object, key)?,
         })
     }
@@ -982,6 +993,7 @@ impl CompatDslLowerer {
             then_arrange: None,
             count: optional_object_field(object, "count")?,
             constraints: compat_generator_constraints(object, path)?,
+            tail: Vec::new(),
             metadata: compat_generator_metadata(object, "_cartesian_")?,
         })
     }
@@ -1058,6 +1070,7 @@ impl CompatDslLowerer {
             then_arrange: None,
             count: optional_object_field(object, "count")?,
             constraints: None,
+            tail: Vec::new(),
             metadata: compat_generator_metadata(object, "_grid_")?,
         })
     }
@@ -1078,6 +1091,7 @@ impl CompatDslLowerer {
             then_arrange: None,
             count: optional_object_field(object, "count")?,
             constraints: None,
+            tail: Vec::new(),
             metadata: compat_generator_metadata(object, "_sample_")?,
         })
     }

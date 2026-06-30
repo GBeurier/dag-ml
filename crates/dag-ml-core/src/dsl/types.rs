@@ -353,6 +353,20 @@ pub struct PipelineDslGeneratorStep {
     /// skipped when `None`, so a constraint-free generator serializes byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constraints: Option<PipelineDslGeneratorConstraints>,
+    /// A FIXED tail sub-sequence appended to EVERY expanded survivor (after pick/arrange + the
+    /// `_mutex_`/`_requires_`/`_exclude_` prune + the `count` truncate). The CATCH-22 fix for a
+    /// MODEL-TERMINATED constrained/pick operator generator (ADR-17 item 5 slice B): a constrained
+    /// `_or_`-pick / `_cartesian_` survivor is a multi-operator SEQUENCE, and the downstream model must
+    /// terminate it EXACTLY ONCE (not once per picked branch). The host carries that downstream model
+    /// (+ any `y_processing`) here, so `expand_*_generator_sequences` appends it to each pruned survivor
+    /// — making `compile_operator_variant_models` (and the graph compile, which shares
+    /// `expand_generator_sequences`) see model-terminated survivors that reuse the already-correct
+    /// constraint prune. The tail is NOT part of the operator-content member set (it is appended AFTER
+    /// the prune), so constraints + `variant_label` stay operator-only. ADDITIVE: empty by default, so a
+    /// tail-free generator (every pre-existing generator, including the constraint-free fusion path)
+    /// serializes + expands byte-identically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tail: Vec<PipelineDslStep>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }

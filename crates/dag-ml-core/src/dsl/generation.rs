@@ -359,7 +359,9 @@ fn find_nested_generator(generator: &PipelineDslGeneratorStep) -> Option<NodeId>
             }
         }
     }
-    None
+    // The fixed tail (ADR-17 item 5 slice B) terminates each survivor; a generator there would be a
+    // nested operator generator just like one in a branch/stage, so scan it too.
+    scan(&generator.tail)
 }
 
 /// Compile the DSL's `generation_constraints` into [`GenerationConstraints`], resolving each
@@ -1280,9 +1282,14 @@ pub(crate) fn expand_or_generator_sequences(
         choices
     };
     // Prune by operator-content constraints, THEN apply `count` as the final truncate so the cap
-    // counts SURVIVORS in legacy order.
+    // counts SURVIVORS in legacy order. Append the fixed model tail (if any) to each pruned survivor
+    // LAST, so the constraint member set + `count` stay operator-content-only (the tail terminates the
+    // survivor, it is not a selectable operator option).
     let choices = prune_sequences_by_constraints(choices, step)?;
-    Ok(truncate_generated_sequences(choices, step.count))
+    Ok(append_generator_tail(
+        truncate_generated_sequences(choices, step.count),
+        step,
+    ))
 }
 pub(crate) fn expand_cartesian_generator_sequences(
     step: &PipelineDslGeneratorStep,
@@ -1369,9 +1376,14 @@ pub(crate) fn expand_cartesian_generator_sequences(
         )?);
     }
     // Prune by operator-content constraints over the FULL cartesian (stable order), THEN truncate to
-    // `count` so the cap counts survivors. With no constraints the prune is a no-op.
+    // `count` so the cap counts survivors. With no constraints the prune is a no-op. Append the fixed
+    // model tail (if any) to each survivor LAST (after prune + truncate), so the tail terminates each
+    // multi-operator survivor without entering the constraint member set.
     let choices = prune_sequences_by_constraints(choices, step)?;
-    Ok(truncate_generated_sequences(choices, step.count))
+    Ok(append_generator_tail(
+        truncate_generated_sequences(choices, step.count),
+        step,
+    ))
 }
 /// Apply a generator's operator-content constraints (`_mutex_` / `_requires_` / `_exclude_`) to the
 /// already-merged multi-operator sequences, returning ONLY the survivors in their original
@@ -1615,6 +1627,28 @@ pub(crate) fn truncate_generated_sequences(
 ) -> Vec<GeneratedSequence> {
     if let Some(limit) = count {
         sequences.truncate(limit);
+    }
+    sequences
+}
+/// Append the generator's fixed [`tail`](PipelineDslGeneratorStep::tail) sub-sequence to EVERY
+/// already-pruned, already-truncated survivor's `steps` (ADR-17 item 5 slice B — the CATCH-22 fix).
+///
+/// The tail terminates each multi-operator survivor EXACTLY ONCE (the host carries the downstream
+/// model + any `y_processing` here), so both the graph compile and `compile_operator_variant_models`
+/// — which share [`expand_generator_sequences`] — see model-terminated survivors that reused the
+/// already-correct `_mutex_`/`_requires_`/`_exclude_` prune. The tail is appended AFTER the prune, so
+/// it never enters the operator-content member set (`labels`/`members`): constraints stay operator-
+/// only and `variant_label` is computed over `[<survivor operators>, <tail>]` exactly as the host
+/// recomputes it. A tail-free generator is a no-op (byte-identical to before).
+pub(crate) fn append_generator_tail(
+    mut sequences: Vec<GeneratedSequence>,
+    step: &PipelineDslGeneratorStep,
+) -> Vec<GeneratedSequence> {
+    if step.tail.is_empty() {
+        return sequences;
+    }
+    for sequence in &mut sequences {
+        sequence.steps.extend(step.tail.iter().cloned());
     }
     sequences
 }
