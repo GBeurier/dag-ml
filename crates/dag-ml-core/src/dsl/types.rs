@@ -346,6 +346,13 @@ pub struct PipelineDslGeneratorStep {
     pub then_arrange: Option<PipelineDslSelectionSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<usize>,
+    /// CONSTRAINED operator generators (ADR-17 1a + 1b): `_mutex_`/`_requires_`/`_exclude_` over the
+    /// generator's OPERATOR-CONTENT (its branch/option ids, the operator classes nirs4all references).
+    /// Applied during sequence-build so the operator dimension carries only the pruned survivor set
+    /// (see [`expand_or_generator_sequences`](crate::dsl::expand_or_generator_sequences)). ADDITIVE:
+    /// skipped when `None`, so a constraint-free generator serializes byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<PipelineDslGeneratorConstraints>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
@@ -355,6 +362,27 @@ pub enum PipelineDslGeneratorMode {
     #[default]
     Or,
     Cartesian,
+}
+/// Operator-content pruning constraints on a [`PipelineDslGeneratorStep`] (ADR-17 1a/1b). Each ref is
+/// an operator-content label — a generator branch/option id (`_or_`) or branch id (`_cartesian_`),
+/// the operator class nirs4all carries in its `_mutex_`/`_requires_`/`_exclude_`. The keywords mirror
+/// the nirs4all generation oracle (`_generator/constraints.py`): `mutex` = the full group may not all
+/// co-occur (issubset), `requires` = `[a, b]` means a present requires b present, `exclude` = `[a, b]`
+/// is a forbidden pair. Compiled to a single-dimension [`GenerationConstraints`] over the operator
+/// dimension and applied during sequence-build, NOT carried onto `OperatorVariantModel.generation_spec`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDslGeneratorConstraints {
+    #[serde(default, alias = "_mutex_", skip_serializing_if = "Vec::is_empty")]
+    pub mutex: Vec<Vec<String>>,
+    #[serde(default, alias = "_requires_", skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<[String; 2]>,
+    #[serde(default, alias = "_exclude_", skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<[String; 2]>,
+}
+impl PipelineDslGeneratorConstraints {
+    pub fn is_empty(&self) -> bool {
+        self.mutex.is_empty() && self.requires.is_empty() && self.exclude.is_empty()
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PipelineDslGeneratorStage {

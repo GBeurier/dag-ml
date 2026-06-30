@@ -427,6 +427,13 @@ impl OperatorVariantModel {
 
     /// Build a single-dimension [`GenerationSpec`] (cartesian over the one operator dimension) so
     /// `enumerate_variants` yields one [`VariantPlan`] per operator choice.
+    ///
+    /// The constraints are intentionally `default()` (empty): under ADR-17 Option A the operator
+    /// dimension's CHOICES are ALREADY the constraint-pruned survivor set — `_mutex_`/`_requires_`/
+    /// `_exclude_` are applied during sequence-build (`expand_or_generator_sequences` /
+    /// `expand_cartesian_generator_sequences`), so each surviving multi-operator sequence becomes one
+    /// constraint-free choice. The model therefore stays a single, constraint-free dimension and the
+    /// existing prune/score/refit path works unchanged.
     pub fn generation_spec(&self) -> GenerationSpec {
         GenerationSpec {
             strategy: GenerationStrategy::Cartesian,
@@ -547,25 +554,31 @@ pub fn enumerate_variants(
         .collect()
 }
 
-/// True when `choices` (a single variant's `dimension -> selected choice` map) violates none of the
-/// `constraints`. A ref is "present" when the variant's choice for `ref.dimension` carries `ref.label`.
-fn satisfies_constraints(
-    choices: &BTreeMap<String, GenerationChoice>,
-    constraints: &GenerationConstraints,
-) -> bool {
-    let present = |reference: &ChoiceRef| -> bool {
-        choices
-            .get(&reference.dimension)
-            .is_some_and(|choice| choice.label == reference.label)
-    };
+/// The SHARED constraint-rule core: true when a candidate (identified ONLY through the `present`
+/// membership predicate) violates none of the `constraints`. The rule logic — issubset-mutex,
+/// implication-requires, forbidden-pair-exclude — is defined HERE ONCE; callers supply only "is ref X
+/// present in this candidate" so a single rule core serves every candidate shape:
+///
+/// * [`satisfies_constraints`] (B's cartesian/zip variant pruning) passes a predicate that resolves a
+///   [`ChoiceRef`] against the variant's `dimension -> selected choice` map;
+/// * the operator-generator sequence-build prune (ADR-17 1a/1b) passes a predicate that resolves a
+///   ref against the operator-class SET each merged multi-operator sequence selected.
+///
+/// This mirrors nirs4all's `_generator/constraints.py::apply_all_constraints` (mutex → requires →
+/// exclude), each filter monotone over the input, so a single `retain` pass with this predicate is
+/// order-equivalent to the legacy three sequential passes.
+pub(crate) fn constraints_satisfied<F>(present: F, constraints: &GenerationConstraints) -> bool
+where
+    F: Fn(&ChoiceRef) -> bool,
+{
     for group in &constraints.mutex {
         // nirs4all LEGACY mutex semantic (`_generator/constraints.py::_satisfies_mutex`,
-        // `mutex_set.issubset(combo_set)`): a variant is forbidden ONLY when EVERY member of
+        // `mutex_set.issubset(combo_set)`): a candidate is forbidden ONLY when EVERY member of
         // the group co-occurs in it ("not all co-occur"), not when merely two-or-more do. For a
         // PAIR (generator_or_pick_mutex 6->5) "all present" == "count > 1", so this
         // is byte-identical to the prior `count > 1` rule; the two DIVERGE only for groups of 3+,
-        // where legacy forbids the SINGLE full-co-occurrence variant and keeps every proper subset.
-        if group.iter().all(present) {
+        // where legacy forbids the SINGLE full-co-occurrence candidate and keeps every proper subset.
+        if group.iter().all(&present) {
             return false;
         }
     }
@@ -580,6 +593,23 @@ fn satisfies_constraints(
         }
     }
     true
+}
+
+/// True when `choices` (a single variant's `dimension -> selected choice` map) violates none of the
+/// `constraints`. A ref is "present" when the variant's choice for `ref.dimension` carries `ref.label`.
+/// Delegates the rule logic to the shared [`constraints_satisfied`] core.
+fn satisfies_constraints(
+    choices: &BTreeMap<String, GenerationChoice>,
+    constraints: &GenerationConstraints,
+) -> bool {
+    constraints_satisfied(
+        |reference: &ChoiceRef| {
+            choices
+                .get(&reference.dimension)
+                .is_some_and(|choice| choice.label == reference.label)
+        },
+        constraints,
+    )
 }
 
 pub fn generation_spec_fingerprint(spec: &GenerationSpec) -> Result<String> {

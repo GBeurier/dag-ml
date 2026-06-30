@@ -2303,6 +2303,570 @@ fn compile_operator_variant_models_populates_variant_labels() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// ADR-17 item 1a (+ constrained-cartesian half of 1b): CONSTRAINED operator
+// generators. `compile_operator_variant_models` must yield the EXACT pruned
+// multi-operator survivor set (member-exact), reusing B's shared constraint
+// rule core during sequence-build (Option A). The survivor counts + member sets
+// are the nirs4all generation oracle's `_CONSTRAINT_SURVIVORS` locks
+// (`tests/integration/parity/test_generators_conformance_extra.py`):
+//   _or_+pick2+mutex[[A,B]]/4ops -> 5; pick3+mutex[[A,B,C]] -> 3;
+//   pick2+requires[[A,B]] -> 4; pick2+exclude[[A,D]] -> 5;
+//   cartesian[[A|B],[C|D]]+exclude[[A,C]] -> 3; pick2+mutex+exclude -> 4;
+//   prunes-to-one -> 1. Order is locked to legacy `expand_spec` survivor order.
+// ---------------------------------------------------------------------------
+
+/// Each survivor choice's operator-content member set, IN CHOICE ORDER. Reconstructed from the
+/// choice's `active_nodes` — every active node id is `gen:<g>:c<i>:n<k>.t_<OP>` (the namespaced form
+/// of a branch's `t:<OP>` transform), so the trailing `t_<OP>` segment recovers the operator letter.
+/// This is an INDEPENDENT member oracle (derived from the minted node ids, not the labels under test),
+/// so a wrong-prune with the right count still fails. The Vec preserves choice order for the
+/// order-parity lock.
+fn operator_survivor_members(model: &OperatorVariantModel) -> Vec<BTreeSet<String>> {
+    model
+        .dimension
+        .choices
+        .iter()
+        .map(|choice| {
+            let key = choice.active_subsequence.as_ref().unwrap();
+            model.active_nodes[key]
+                .iter()
+                .map(|node_id| {
+                    node_id
+                        .as_str()
+                        .rsplit('.')
+                        .next()
+                        .and_then(|suffix| suffix.strip_prefix("t_"))
+                        .unwrap_or_else(|| panic!("unexpected active node id `{node_id}`"))
+                        .to_string()
+                })
+                .collect::<BTreeSet<_>>()
+        })
+        .collect()
+}
+
+/// Compile the single operator generator out of a constrained `_or_`/`_cartesian_` spec and return
+/// its survivors as ordered operator-content member sets.
+fn constrained_operator_survivors(spec_json: &str) -> Vec<BTreeSet<String>> {
+    let spec: PipelineDslSpec = serde_json::from_str(spec_json).unwrap();
+    let models = compile_operator_variant_models(&spec).unwrap();
+    assert_eq!(models.len(), 1, "one operator generator in the spec");
+    models[0].validate().unwrap();
+    // Determinism: a second compile is byte-identical.
+    let again = compile_operator_variant_models(&spec).unwrap();
+    assert_eq!(
+        models, again,
+        "constrained operator lowering is deterministic"
+    );
+    operator_survivor_members(&models[0])
+}
+
+fn member_set(operators: &[&str]) -> BTreeSet<String> {
+    operators.iter().map(|op| op.to_string()).collect()
+}
+
+/// `_or_` over 4 operators, pick 2, `_mutex_[[A,B]]`: the single {A,B} 2-op set is removed -> 5.
+/// (nirs4all `generator_or_pick_mutex`: C(4,2)=6 -> 5.)
+#[test]
+fn constrained_or_pick_mutex_pair_prunes_to_five() {
+    let survivors = constrained_operator_survivors(
+        r#"{
+  "id": "dsl-or-pick-mutex",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 2,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]},
+        {"id": "D", "steps": [{"kind": "transform", "id": "t:D", "operator": "D"}]}
+      ],
+      "constraints": {"mutex": [["A", "B"]]}
+    }
+  ]
+}"#,
+    );
+    assert_eq!(survivors.len(), 5);
+    // The {A,B} pair is the SOLE casualty; every other 2-combination survives, in C(4,2) lex order.
+    assert_eq!(
+        survivors,
+        vec![
+            member_set(&["A", "C"]),
+            member_set(&["A", "D"]),
+            member_set(&["B", "C"]),
+            member_set(&["B", "D"]),
+            member_set(&["C", "D"]),
+        ],
+        "member-exact survivor set + legacy expand_spec order"
+    );
+    assert!(!survivors.contains(&member_set(&["A", "B"])));
+}
+
+/// `_or_` over 4 operators, pick 3, SIZE-3 `_mutex_[[A,B,C]]`: legacy "not all co-occur" (issubset)
+/// forbids ONLY {A,B,C} and keeps every 3-set with a proper subset -> 3 survivors. A "count>1"
+/// reading would over-prune. (nirs4all `generator_or_pick_mutex3`: C(4,3)=4 -> 3.)
+#[test]
+fn constrained_or_pick_mutex_group_of_three_keeps_subsets() {
+    let survivors = constrained_operator_survivors(
+        r#"{
+  "id": "dsl-or-pick-mutex3",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 3,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]},
+        {"id": "D", "steps": [{"kind": "transform", "id": "t:D", "operator": "D"}]}
+      ],
+      "constraints": {"mutex": [["A", "B", "C"]]}
+    }
+  ]
+}"#,
+    );
+    assert_eq!(survivors.len(), 3);
+    assert_eq!(
+        survivors,
+        vec![
+            member_set(&["A", "B", "D"]),
+            member_set(&["A", "C", "D"]),
+            member_set(&["B", "C", "D"]),
+        ],
+    );
+    // The all-present {A,B,C} 3-set is the only one dropped.
+    assert!(!survivors.contains(&member_set(&["A", "B", "C"])));
+}
+
+/// `_or_` over 4 operators, pick 2, `_requires_[[A,B]]`: A-without-B 2-sets ({A,C},{A,D}) drop -> 4.
+/// (nirs4all `generator_or_pick_requires`: 6 -> 4.)
+#[test]
+fn constrained_or_pick_requires_prunes_to_four() {
+    let survivors = constrained_operator_survivors(
+        r#"{
+  "id": "dsl-or-pick-requires",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 2,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]},
+        {"id": "D", "steps": [{"kind": "transform", "id": "t:D", "operator": "D"}]}
+      ],
+      "constraints": {"requires": [["A", "B"]]}
+    }
+  ]
+}"#,
+    );
+    assert_eq!(survivors.len(), 4);
+    assert_eq!(
+        survivors,
+        vec![
+            member_set(&["A", "B"]),
+            member_set(&["B", "C"]),
+            member_set(&["B", "D"]),
+            member_set(&["C", "D"]),
+        ],
+    );
+    // A survives only paired with B.
+    for survivor in &survivors {
+        if survivor.contains("A") {
+            assert!(survivor.contains("B"), "A requires B");
+        }
+    }
+}
+
+/// `_or_` over 4 operators, pick 2, `_exclude_[[A,D]]`: the {A,D} pair is forbidden -> 5.
+/// (nirs4all `generator_or_pick_exclude`: 6 -> 5.)
+#[test]
+fn constrained_or_pick_exclude_prunes_to_five() {
+    let survivors = constrained_operator_survivors(
+        r#"{
+  "id": "dsl-or-pick-exclude",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 2,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]},
+        {"id": "D", "steps": [{"kind": "transform", "id": "t:D", "operator": "D"}]}
+      ],
+      "constraints": {"exclude": [["A", "D"]]}
+    }
+  ]
+}"#,
+    );
+    assert_eq!(survivors.len(), 5);
+    assert_eq!(
+        survivors,
+        vec![
+            member_set(&["A", "B"]),
+            member_set(&["A", "C"]),
+            member_set(&["B", "C"]),
+            member_set(&["B", "D"]),
+            member_set(&["C", "D"]),
+        ],
+    );
+    assert!(!survivors.contains(&member_set(&["A", "D"])));
+}
+
+/// `_cartesian_[[A|B],[C|D]]` with `_exclude_[[A,C]]`: 2x2 = 4 pipelines, {A,C} pruned -> 3 (the
+/// constrained-cartesian half of ADR-17 1b). (nirs4all `generator_cartesian_exclude`: 4 -> 3.)
+#[test]
+fn constrained_cartesian_exclude_prunes_to_three() {
+    let survivors = constrained_operator_survivors(
+        r#"{
+  "id": "dsl-cartesian-exclude",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "cartesian",
+      "stages": [
+        {
+          "id": "stage0",
+          "branches": [
+            {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+            {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]}
+          ]
+        },
+        {
+          "id": "stage1",
+          "branches": [
+            {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]},
+            {"id": "D", "steps": [{"kind": "transform", "id": "t:D", "operator": "D"}]}
+          ]
+        }
+      ],
+      "constraints": {"exclude": [["A", "C"]]}
+    }
+  ]
+}"#,
+    );
+    assert_eq!(survivors.len(), 3);
+    // 2x2 cartesian lex order with {A,C} (the first row) removed.
+    assert_eq!(
+        survivors,
+        vec![
+            member_set(&["A", "D"]),
+            member_set(&["B", "C"]),
+            member_set(&["B", "D"]),
+        ],
+    );
+    assert!(!survivors.contains(&member_set(&["A", "C"])));
+}
+
+/// `_or_` over 4 operators, pick 2, COMBINED `_mutex_[[A,B]]` + `_exclude_[[C,D]]`: two kinds on one
+/// generator drop {A,B} and {C,D} -> 4. (nirs4all `generator_combined_constraints`: 6 -> 4.)
+#[test]
+fn constrained_or_pick_combined_mutex_and_exclude_prunes_to_four() {
+    let survivors = constrained_operator_survivors(
+        r#"{
+  "id": "dsl-or-pick-combined",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 2,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]},
+        {"id": "D", "steps": [{"kind": "transform", "id": "t:D", "operator": "D"}]}
+      ],
+      "constraints": {"mutex": [["A", "B"]], "exclude": [["C", "D"]]}
+    }
+  ]
+}"#,
+    );
+    assert_eq!(survivors.len(), 4);
+    assert_eq!(
+        survivors,
+        vec![
+            member_set(&["A", "C"]),
+            member_set(&["A", "D"]),
+            member_set(&["B", "C"]),
+            member_set(&["B", "D"]),
+        ],
+    );
+    assert!(!survivors.contains(&member_set(&["A", "B"])));
+    assert!(!survivors.contains(&member_set(&["C", "D"])));
+}
+
+/// `_or_` over 3 operators, pick 2, two mutex pairs that prune C(3,2)=3 down to a single survivor.
+/// (nirs4all `generator_constraint_prunes_to_one`: {B,C} only.)
+#[test]
+fn constrained_or_pick_prunes_to_one() {
+    let survivors = constrained_operator_survivors(
+        r#"{
+  "id": "dsl-or-pick-one",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 2,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]}
+      ],
+      "constraints": {"mutex": [["A", "B"], ["A", "C"]]}
+    }
+  ]
+}"#,
+    );
+    assert_eq!(survivors, vec![member_set(&["B", "C"])]);
+}
+
+/// MUST-FIX 1 (`_or_`): `count` must truncate the POST-prune survivor list in legacy order, NOT cap
+/// the pre-prune expansion. `_or_` over A,B,C pick=2 count=1 `_mutex_[[A,B]]`: the full lex expansion
+/// {A,B},{A,C},{B,C} is pruned of {A,B} -> {A,C},{B,C}, then `count=1` truncates to the FIRST survivor
+/// {A,C}. (The buggy order would generate only {A,B} first, prune it, and error with zero survivors.)
+#[test]
+fn constrained_or_pick_count_truncates_post_prune_survivors() {
+    let survivors = constrained_operator_survivors(
+        r#"{
+  "id": "dsl-or-pick-count",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 2,
+      "count": 1,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]}
+      ],
+      "constraints": {"mutex": [["A", "B"]]}
+    }
+  ]
+}"#,
+    );
+    // count=1 keeps exactly the FIRST post-prune survivor, in legacy lex order: {A,C}.
+    assert_eq!(survivors, vec![member_set(&["A", "C"])]);
+}
+
+/// MUST-FIX 1 (`_cartesian_`): `count` truncates the POST-prune cartesian survivors in order.
+/// `_cartesian_[[A|B],[C|D]]` count=1 `_exclude_[[A,C]]`: the full cartesian {A,C},{A,D},{B,C},{B,D}
+/// is pruned of {A,C} -> {A,D},{B,C},{B,D}, then `count=1` truncates to the FIRST survivor {A,D}.
+/// (The buggy order would cap the cartesian build at {A,C} first, prune it, and error.)
+#[test]
+fn constrained_cartesian_count_truncates_post_prune_survivors() {
+    let survivors = constrained_operator_survivors(
+        r#"{
+  "id": "dsl-cartesian-count",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "cartesian",
+      "count": 1,
+      "stages": [
+        {
+          "id": "stage0",
+          "branches": [
+            {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+            {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]}
+          ]
+        },
+        {
+          "id": "stage1",
+          "branches": [
+            {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]},
+            {"id": "D", "steps": [{"kind": "transform", "id": "t:D", "operator": "D"}]}
+          ]
+        }
+      ],
+      "constraints": {"exclude": [["A", "C"]]}
+    }
+  ]
+}"#,
+    );
+    assert_eq!(survivors, vec![member_set(&["A", "D"])]);
+}
+
+/// MUST-FIX 2 (colon-bearing branch ids): canonical branch ids ALLOW `:` (`validate_branch_id`), and
+/// the operator-content member identity must use the SAME sanitized branch id on BOTH the member set
+/// and the constraint-ref resolution — NOT a label re-parsed by `rsplit(':')`. Branches `pre:A`/`pre:B`/
+/// `pre:C` pick=2 with `_mutex_[["pre:A","pre:B"]]`: the ref must resolve to the `pre:A`/`pre:B`
+/// branches (sanitized `pre_A`/`pre_B`) and prune {pre:A,pre:B} -> 2 survivors. The transform nodes are
+/// `t:preA`/... so the independent node-level oracle reconstructs `{preA, preB, preC}`; the pruned
+/// survivor {preA,preB} is absent. (Under the old `rsplit(':')` member parse the ref `pre:A` would
+/// resolve to `pre_A` while the member set held `A`, rejecting the ref as an unknown operator.)
+#[test]
+fn constrained_operator_colon_branch_id_resolves_member() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+  "id": "dsl-colon-branch",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 2,
+      "branches": [
+        {"id": "pre:A", "steps": [{"kind": "transform", "id": "t:preA", "operator": "A"}]},
+        {"id": "pre:B", "steps": [{"kind": "transform", "id": "t:preB", "operator": "B"}]},
+        {"id": "pre:C", "steps": [{"kind": "transform", "id": "t:preC", "operator": "C"}]}
+      ],
+      "constraints": {"mutex": [["pre:A", "pre:B"]]}
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    // The colon-bearing refs RESOLVE (no unknown-operator error) and prune {pre:A, pre:B}.
+    let models = compile_operator_variant_models(&spec).unwrap();
+    let survivors = operator_survivor_members(&models[0]);
+    assert_eq!(
+        survivors,
+        vec![member_set(&["preA", "preC"]), member_set(&["preB", "preC"])],
+        "colon branch-id refs prune {{pre:A,pre:B}} member-exact, in lex order"
+    );
+    // And the buggy `rsplit(':')`-style ref (`A` instead of the full `pre:A` id) is now UNKNOWN,
+    // proving the member identity is the full sanitized branch id, not the colon tail.
+    let mut bad = spec.clone();
+    if let Some(PipelineDslStep::Generator(generator)) = bad.steps.first_mut() {
+        generator.constraints = Some(PipelineDslGeneratorConstraints {
+            mutex: vec![vec!["A".to_string(), "B".to_string()]],
+            ..PipelineDslGeneratorConstraints::default()
+        });
+    } else {
+        panic!("expected a generator step");
+    }
+    let error = compile_operator_variant_models(&bad)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("constraint references unknown operator `A`"),
+        "{error}"
+    );
+}
+
+/// An operator-content constraint referencing an operator NOT in the generator fails at compile time
+/// (parity with the DSL constraint resolver's unknown-choice rejection).
+#[test]
+fn constrained_operator_unknown_ref_is_rejected() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+  "id": "dsl-or-pick-bad",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 2,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]},
+        {"id": "C", "steps": [{"kind": "transform", "id": "t:C", "operator": "C"}]}
+      ],
+      "constraints": {"mutex": [["A", "NOPE"]]}
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    let error = compile_operator_variant_models(&spec)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("constraint references unknown operator `NOPE`"),
+        "{error}"
+    );
+}
+
+/// A constraint that prunes EVERY operator sequence is a loud compile error (parity with B's
+/// "constraints pruned every variant").
+#[test]
+fn constrained_operator_all_pruned_is_an_error() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+  "id": "dsl-or-pick-empty",
+  "steps": [
+    {
+      "kind": "generator",
+      "id": "generator:preproc",
+      "mode": "or",
+      "pick": 2,
+      "branches": [
+        {"id": "A", "steps": [{"kind": "transform", "id": "t:A", "operator": "A"}]},
+        {"id": "B", "steps": [{"kind": "transform", "id": "t:B", "operator": "B"}]}
+      ],
+      "constraints": {"mutex": [["A", "B"]]}
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    let error = compile_operator_variant_models(&spec)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("pruned every operator sequence"), "{error}");
+}
+
+/// The compat (nirs4all-JSON) lowerer accepts `_mutex_` on an `_or_`+pick node and routes through the
+/// same sequence-build prune — proving item 3 (the DSL lowerer wiring) end to end. The `_or_` entries
+/// are operator fragments whose `id` becomes the branch id (`compat_branch_id`); the constraint refs
+/// name those same ids (sanitized to `t_A`/`t_B`), so the prune drops {t:A,t:B} -> 5 survivors.
+#[test]
+fn compat_lowers_or_pick_constraints() {
+    let value: serde_json::Value = serde_json::from_str(
+        r#"{
+  "id": "compat-or-pick-mutex",
+  "steps": [
+    {
+      "_or_": [
+        {"kind": "model", "id": "t:A", "operator": "A"},
+        {"kind": "model", "id": "t:B", "operator": "B"},
+        {"kind": "model", "id": "t:C", "operator": "C"},
+        {"kind": "model", "id": "t:D", "operator": "D"}
+      ],
+      "id": "generator:preproc",
+      "pick": 2,
+      "_mutex_": [["t:A", "t:B"]]
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    let spec = lower_nirs4all_compat_pipeline_dsl(&value).unwrap();
+    // The lowered generator carries the operator-content constraint (routed from the `_mutex_` key).
+    let generator = spec
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            PipelineDslStep::Generator(generator) => Some(generator),
+            _ => None,
+        })
+        .expect("a generator step");
+    assert_eq!(
+        generator.constraints.as_ref().unwrap().mutex,
+        vec![vec!["t:A".to_string(), "t:B".to_string()]],
+    );
+    let models = compile_operator_variant_models(&spec).unwrap();
+    let survivors = operator_survivor_members(&models[0]);
+    assert_eq!(survivors.len(), 5);
+    assert!(!survivors.contains(&member_set(&["A", "B"])));
+}
+
 /// MUST-FIX 2: `OperatorVariantModel::validate` rejects two choices sharing the same
 /// `active_subsequence` (no bijection), even when the active_nodes map length is padded.
 #[test]

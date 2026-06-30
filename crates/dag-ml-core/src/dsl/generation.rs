@@ -8,6 +8,14 @@ use super::*;
 pub(crate) struct GeneratedSequence {
     pub(crate) id: String,
     pub(crate) labels: Vec<String>,
+    /// The STRUCTURED operator-content member ids this sequence selected: each option's branch id
+    /// carried verbatim from the source `PipelineDslBranch.id`, sanitized exactly once at the build
+    /// site (`sanitize_generation_label`) — the SAME canonical form constraint-ref resolution uses
+    /// (`compile_operator_content_constraints`). Held as structured ids rather than re-parsed from the
+    /// (display) `labels` so colon-bearing branch ids (canonical branch ids allow `:`) resolve
+    /// correctly and the member set and ref both key off the identical id. Merged by extension exactly
+    /// like `labels`.
+    pub(crate) members: Vec<String>,
     pub(crate) steps: Vec<PipelineDslStep>,
     pub(crate) metadata: BTreeMap<String, serde_json::Value>,
 }
@@ -1241,27 +1249,39 @@ pub(crate) fn expand_or_generator_sequences(
             Ok(GeneratedSequence {
                 id: generator_choice_id(&step.id, index),
                 labels: vec![branch.id.clone()],
+                members: vec![sanitize_generation_label(&branch.id)],
                 steps: branch.steps.clone(),
                 metadata: branch.metadata.clone(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
 
+    // ADR-17 1a/1b ORDER: `count` must truncate the POST-prune survivor list (legacy
+    // `expand_spec`: prune the FULL expansion, then cap). So when constraints are present we suppress
+    // the per-stage `count` cap and generate the full pick/arrange expansion; `count` is applied as the
+    // single final truncate after `prune_sequences_by_constraints`. With no constraints the prune is a
+    // no-op and the per-stage cap is kept (byte-identical to before).
+    let has_constraints = step.constraints.as_ref().is_some_and(|c| !c.is_empty());
+    let gen_count = if has_constraints { None } else { step.count };
+
     let choices = if let Some(sizes) = selection_sizes(step.pick)? {
-        generated_pick_sequences(&options, &step.id, "pick", &sizes, step.count)?
+        generated_pick_sequences(&options, &step.id, "pick", &sizes, gen_count)?
     } else if let Some(sizes) = selection_sizes(step.arrange)? {
-        generated_arrange_sequences(&options, &step.id, "arrange", &sizes, step.count)?
+        generated_arrange_sequences(&options, &step.id, "arrange", &sizes, gen_count)?
     } else {
-        truncate_generated_sequences(options, step.count)
+        truncate_generated_sequences(options, gen_count)
     };
 
     let choices = if let Some(sizes) = selection_sizes(step.then_pick)? {
-        generated_pick_sequences(&choices, &step.id, "then_pick", &sizes, step.count)?
+        generated_pick_sequences(&choices, &step.id, "then_pick", &sizes, gen_count)?
     } else if let Some(sizes) = selection_sizes(step.then_arrange)? {
-        generated_arrange_sequences(&choices, &step.id, "then_arrange", &sizes, step.count)?
+        generated_arrange_sequences(&choices, &step.id, "then_arrange", &sizes, gen_count)?
     } else {
         choices
     };
+    // Prune by operator-content constraints, THEN apply `count` as the final truncate so the cap
+    // counts SURVIVORS in legacy order.
+    let choices = prune_sequences_by_constraints(choices, step)?;
     Ok(truncate_generated_sequences(choices, step.count))
 }
 pub(crate) fn expand_cartesian_generator_sequences(
@@ -1320,6 +1340,7 @@ pub(crate) fn expand_cartesian_generator_sequences(
             options.push(GeneratedSequence {
                 id: format!("{stage_index}:{}", branch.id),
                 labels: vec![format!("{}:{}", stage.id, branch.id)],
+                members: vec![sanitize_generation_label(&branch.id)],
                 steps: branch.steps.clone(),
                 metadata,
             });
@@ -1327,8 +1348,14 @@ pub(crate) fn expand_cartesian_generator_sequences(
         stage_options.push(options);
     }
 
+    // ADR-17 1b ORDER: with constraints, `count` must cap the POST-prune survivors (legacy: prune the
+    // FULL cartesian, then truncate). Suppress the in-build `count` cap so the full product is
+    // enumerated, prune, then truncate. With no constraints the in-build cap is kept (byte-identical).
+    let has_constraints = step.constraints.as_ref().is_some_and(|c| !c.is_empty());
+    let build_count = if has_constraints { None } else { step.count };
+
     let mut rows = Vec::<Vec<usize>>::new();
-    build_cartesian_indices(&stage_options, 0, &mut Vec::new(), &mut rows, step.count);
+    build_cartesian_indices(&stage_options, 0, &mut Vec::new(), &mut rows, build_count);
     let mut choices = Vec::with_capacity(rows.len());
     for (choice_index, row) in rows.into_iter().enumerate() {
         let selected = row
@@ -1341,7 +1368,138 @@ pub(crate) fn expand_cartesian_generator_sequences(
             selected,
         )?);
     }
-    Ok(choices)
+    // Prune by operator-content constraints over the FULL cartesian (stable order), THEN truncate to
+    // `count` so the cap counts survivors. With no constraints the prune is a no-op.
+    let choices = prune_sequences_by_constraints(choices, step)?;
+    Ok(truncate_generated_sequences(choices, step.count))
+}
+/// Apply a generator's operator-content constraints (`_mutex_` / `_requires_` / `_exclude_`) to the
+/// already-merged multi-operator sequences, returning ONLY the survivors in their original
+/// (input-stable) order — mirroring nirs4all `OrStrategy._apply_constraints` /
+/// `apply_all_constraints`, which prunes the expanded operator-class lists in place.
+///
+/// Each sequence's operator-content MEMBER SET is the set of selected branch ids it carries (the
+/// branch-id segment of each `labels` entry: bare for `_or_`, the `branch` part of `stage:branch` for
+/// `_cartesian_`). A constraint ref (an operator-content label) is "present" when its sanitized form
+/// is in that member set, so the SHARED [`constraints_satisfied`](crate::generation::constraints_satisfied)
+/// rule core (the SAME one B's `satisfies_constraints` uses) decides each sequence with an
+/// operator-class-in-set predicate. Constraint refs are validated against the union of all member
+/// sets so an unknown operator-content label fails loudly at compile time (parity with the DSL
+/// constraint resolver).
+pub(crate) fn prune_sequences_by_constraints(
+    sequences: Vec<GeneratedSequence>,
+    step: &PipelineDslGeneratorStep,
+) -> Result<Vec<GeneratedSequence>> {
+    let Some(constraints) = &step.constraints else {
+        return Ok(sequences);
+    };
+    if constraints.is_empty() {
+        return Ok(sequences);
+    }
+    // The operator dimension name is synthetic — the prune is single-dimension, so every ref shares it.
+    let dimension = format!("{}.operators", step.id);
+    let generation_constraints =
+        compile_operator_content_constraints(constraints, &dimension, &sequences, step)?;
+    let survivors = sequences
+        .into_iter()
+        .filter(|sequence| {
+            let members = sequence_member_set(sequence);
+            constraints_satisfied(
+                |reference: &ChoiceRef| members.contains(&reference.label),
+                &generation_constraints,
+            )
+        })
+        .collect::<Vec<_>>();
+    if survivors.is_empty() {
+        return Err(DagMlError::GraphValidation(format!(
+            "pipeline DSL generator `{}` constraints pruned every operator sequence",
+            step.id
+        )));
+    }
+    Ok(survivors)
+}
+/// The operator-content member set of a merged sequence: its STRUCTURED `members` (each option's
+/// sanitized source branch id), keyed identically to constraint-ref resolution. Taken from the
+/// structured field, never re-parsed from the display `labels`, so colon-bearing branch ids resolve
+/// correctly (canonical branch ids allow `:`).
+fn sequence_member_set(sequence: &GeneratedSequence) -> BTreeSet<String> {
+    sequence.members.iter().cloned().collect()
+}
+/// Resolve a generator's operator-content [`PipelineDslGeneratorConstraints`] into a single-dimension
+/// [`GenerationConstraints`] (every ref under the synthetic operator `dimension`), validating group
+/// shape (mutex >= 2 distinct refs; a requires/exclude pair has two distinct refs) and that every ref
+/// is a real operator-content label (sanitized branch id present in some sequence's member set).
+fn compile_operator_content_constraints(
+    constraints: &PipelineDslGeneratorConstraints,
+    dimension: &str,
+    sequences: &[GeneratedSequence],
+    step: &PipelineDslGeneratorStep,
+) -> Result<GenerationConstraints> {
+    let valid = sequences
+        .iter()
+        .flat_map(sequence_member_set)
+        .collect::<BTreeSet<_>>();
+    let lower = |label: &str| -> Result<ChoiceRef> {
+        let sanitized = sanitize_generation_label(label);
+        if !valid.contains(&sanitized) {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generator `{}` constraint references unknown operator `{label}`",
+                step.id
+            )));
+        }
+        Ok(ChoiceRef {
+            dimension: dimension.to_string(),
+            label: sanitized,
+        })
+    };
+    let mut mutex = Vec::with_capacity(constraints.mutex.len());
+    for group in &constraints.mutex {
+        if group.len() < 2 {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generator `{}` mutex group requires at least two operators",
+                step.id
+            )));
+        }
+        let lowered = group
+            .iter()
+            .map(|label| lower(label))
+            .collect::<Result<Vec<_>>>()?;
+        let distinct = lowered.iter().collect::<BTreeSet<_>>();
+        if distinct.len() != lowered.len() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generator `{}` mutex group repeats an operator",
+                step.id
+            )));
+        }
+        mutex.push(lowered);
+    }
+    let lower_pair =
+        |label: &str, name: &str, pair: &[String; 2]| -> Result<(ChoiceRef, ChoiceRef)> {
+            let left = lower(&pair[0])?;
+            let right = lower(&pair[1])?;
+            if left == right {
+                return Err(DagMlError::GraphValidation(format!(
+                    "pipeline DSL generator `{}` {name} pair repeats operator `{label}`",
+                    step.id
+                )));
+            }
+            Ok((left, right))
+        };
+    let requires = constraints
+        .requires
+        .iter()
+        .map(|pair| lower_pair(&pair[0], "requires", pair))
+        .collect::<Result<Vec<_>>>()?;
+    let exclude = constraints
+        .exclude
+        .iter()
+        .map(|pair| lower_pair(&pair[0], "exclude", pair))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(GenerationConstraints {
+        mutex,
+        requires,
+        exclude,
+    })
 }
 pub(crate) fn generated_pick_sequences(
     options: &[GeneratedSequence],
@@ -1425,10 +1583,12 @@ pub(crate) fn merge_generated_sequence(
         )));
     }
     let mut labels = Vec::new();
+    let mut members = Vec::new();
     let mut steps = Vec::new();
     let mut metadata = BTreeMap::new();
     for sequence in sequences {
         labels.extend(sequence.labels);
+        members.extend(sequence.members);
         steps.extend(sequence.steps);
         if !sequence.metadata.is_empty() {
             metadata.insert(
@@ -1444,6 +1604,7 @@ pub(crate) fn merge_generated_sequence(
     Ok(GeneratedSequence {
         id,
         labels,
+        members,
         steps,
         metadata,
     })
