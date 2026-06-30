@@ -31,6 +31,11 @@
       "kind": "parity_oracle_manifest",
       "schema_version": 1,
       "canonical_json_sha256": "eb754d832f8c4c059349bbe810683f0afee606b8cab995d85201dd8bf1e83a67"
+    },
+    "representation_registry.v1": {
+      "kind": "representation_registry_manifest",
+      "schema_version": 1,
+      "canonical_json_sha256": "66446af592341061c4967eb2944e32c4e785c58c2baf05db7f00bff10a431508"
     }
   },
   "fixtures": {
@@ -309,7 +314,8 @@
       "contracts.schema_and_fixture_equivalence",
       "headers.include_order",
       "provider.f64_predict_replay",
-      "fold_set.fingerprint_parity"
+      "fold_set.fingerprint_parity",
+      "representation_registry.parity"
     ]
   }
 }
