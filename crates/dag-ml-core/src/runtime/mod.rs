@@ -333,6 +333,46 @@ pub struct VariantSelection {
     /// with its `variant_id`. The cross-fold OOF average per producer is re-tagged with the variant
     /// id (its native form has `variant_id = None`); the per-fold reports already carry it.
     pub validation_reports: Vec<RegressionMetricReport>,
+    /// Per-variant VALIDATION (OOF) PREDICTIONS for ALL ranked variants (winner included), captured
+    /// from each variant's transient FIT_CV [`RunContext`] BEFORE it is dropped, re-tagged with the
+    /// variant's id + content fingerprint. The scalar [`validation_reports`](Self::validation_reports)
+    /// above carry only the score; these carry the per-sample y_pred (+ id-matched y_true) so a host
+    /// can fill a non-selected variant's per-fold prediction rows, not just its CV score.
+    ///
+    /// LEAKAGE: these are each variant's OWN validation (OOF) predictions, re-tagged with that
+    /// variant's id (which prevents cross-variant mixing). They are surfaced for host
+    /// persistence/display only — every transient CV run executes FIT_CV ONLY (no Final/Test/refit),
+    /// so by construction this carries no train/refit predictions, and the captured blocks never feed
+    /// a training/feature path or cross a `requires_oof` edge. This is strictly ADDITIVE — the same
+    /// values the scalar reports were computed from, exposed per sample — analogous to the additive
+    /// OOF-average block surfacing; no leakage validator is relaxed.
+    pub variant_validation_predictions: Vec<VariantValidationPredictions>,
+}
+
+/// One scored variant's VALIDATION (OOF) predictions, captured from its transient FIT_CV
+/// [`RunContext`] and re-tagged with the variant's id + content fingerprint so a host can fill that
+/// variant's per-sample prediction rows. REPORT-grade output paired with
+/// [`VariantSelection::validation_reports`]: it never feeds a training/feature path (see the field
+/// docs on [`VariantSelection::variant_validation_predictions`]).
+#[derive(Clone, Debug)]
+pub struct VariantValidationPredictions {
+    /// The variant these predictions belong to — the re-tag that keeps them from mixing with another
+    /// variant's predictions.
+    pub variant_id: VariantId,
+    /// The variant's Phase-5 content fingerprint (`variant_label`), `None` for param-variant /
+    /// single-variant SELECT (which carry no operator-variant fingerprint).
+    pub variant_label: Option<String>,
+    /// Per-fold VALIDATION (OOF) prediction blocks (`partition = Validation`), one per `(producer,
+    /// fold)`, paired POSITION-FOR-POSITION with [`regression_targets`](Self::regression_targets) (the
+    /// matching y_true for the same producer/fold/samples).
+    pub predictions: Vec<PredictionBlock>,
+    /// The id-matched y_true blocks for [`predictions`](Self::predictions), one per prediction block in
+    /// the SAME order.
+    pub regression_targets: Vec<RegressionTargetBlock>,
+    /// The per-sample cross-fold OOF AVERAGE block (+ id-matched y_true), if the variant produced one
+    /// (`None` for a single-fold splitter). The same averaged values the variant's scalar `avg` report
+    /// was computed from, exposed per sample.
+    pub oof_average: Option<OofAverageBlock>,
 }
 
 /// Pick the best variant of a multi-variant plan by its cross-validation score, natively.
@@ -579,6 +619,11 @@ where
     // Every ranked variant's VALIDATION (OOF) reports, each tagged with its variant_id, accumulated
     // so the caller can emit ALL variants' CV scores (not just the winner's) in the bundle.
     let mut variant_validation_reports: Vec<RegressionMetricReport> = Vec::new();
+    // Every ranked variant's VALIDATION (OOF) PREDICTIONS, captured from its transient ctx and
+    // re-tagged with its variant id + content fingerprint, so the caller can fill a non-selected
+    // variant's per-sample prediction rows (not just its scalar CV score). Captured per variant; the
+    // caller filters to the LOSERS (the winner's predictions come fresh from the real FIT_CV pass).
+    let mut variant_validation_predictions: Vec<VariantValidationPredictions> = Vec::new();
     // Tracks whether ANY variant emitted scores at all (host targets present), so an empty candidate
     // set can be told apart from "scoring genuinely off" (no targets) — see the post-loop branch.
     let mut any_scores_seen = false;
@@ -594,6 +639,22 @@ where
         ctx.collect_cross_fold_validation_scores(partition_mode)?;
         if !ctx.score_collector.is_empty() {
             any_scores_seen = true;
+        }
+        // ADDITIVE prediction capture (paired with the scalar report retention below). Each per-fold
+        // VALIDATION (OOF) `PredictionBlock` in this variant's transient store is captured together
+        // with its id-matched y_true, plus the cross-fold OOF AVERAGE block — re-tagged with the
+        // variant's id + content fingerprint. Only `Validation` blocks are captured: the transient run
+        // executes FIT_CV ONLY (no Final/Test/refit), so this is OOF-only by construction, and the
+        // re-tag prevents cross-variant mixing. The same values the scalar reports were computed from,
+        // exposed per sample — strictly additive (the captured blocks never feed a training/feature
+        // path or cross a `requires_oof` edge).
+        let captured = capture_variant_validation_predictions(
+            &variant.variant_id,
+            variant_label.clone(),
+            &ctx,
+        );
+        if !captured.predictions.is_empty() || captured.oof_average.is_some() {
+            variant_validation_predictions.push(captured);
         }
         // `cross_fold_validation_reports` emits one cross-fold OOF average PER producer. Native SELECT
         // ranks a variant by a single score, so a multi-producer DAG is ambiguous and refused rather
@@ -680,7 +741,96 @@ where
     Ok(Some(VariantSelection {
         selected_variant_id,
         validation_reports: variant_validation_reports,
+        variant_validation_predictions,
     }))
+}
+
+/// Capture one variant's per-fold VALIDATION (OOF) predictions (paired with id-matched y_true) and
+/// its cross-fold OOF AVERAGE block from a transient FIT_CV [`RunContext`], re-tagged with the
+/// variant's id + content fingerprint. ADDITIVE + leakage-safe: only `Validation` blocks are read (a
+/// transient run is FIT_CV-only, so no Final/Test/refit block exists), and the captured blocks are
+/// copies surfaced for host display — they never feed a training/feature path. The per-fold y_true is
+/// the same record `apply_result_scoring` retained for the score, found by `(producer, fold)`; a
+/// prediction with no matching record is skipped (it could not have been scored either).
+///
+/// The matched target record covers exactly the prediction block's SAMPLE SET (see
+/// `sample_targets_match_block`) but its rows may be in a DIFFERENT ORDER than `block.sample_ids` — a
+/// host controller may validly emit its `regression_targets` in any order. The scoring path realigns
+/// by unit id, but the host surfaces these blocks POSITIONALLY (y_pred from `block.sample_ids`/`values`
+/// paired row-for-row with `regression_targets.values`), so the y_true is REBUILT in `block.sample_ids`
+/// order here — exactly as [`oof_average_block`](crate::metrics) does for the avg — so a host pairs
+/// y_pred ↔ y_true per sample without re-sorting.
+fn capture_variant_validation_predictions(
+    variant_id: &VariantId,
+    variant_label: Option<String>,
+    ctx: &RunContext,
+) -> VariantValidationPredictions {
+    let mut predictions = Vec::new();
+    let mut regression_targets = Vec::new();
+    for block in ctx.prediction_store.blocks() {
+        if block.partition != PredictionPartition::Validation {
+            continue;
+        }
+        let Some(record) = ctx.regression_target_records.iter().find(|record| {
+            record.producer_node == block.producer_node
+                && record.partition == PredictionPartition::Validation
+                && record.fold_id == block.fold_id
+        }) else {
+            continue;
+        };
+        predictions.push(block.clone());
+        regression_targets.push(target_block_aligned_to_samples(
+            &block.sample_ids,
+            &record.block,
+        ));
+    }
+    VariantValidationPredictions {
+        variant_id: variant_id.clone(),
+        variant_label,
+        predictions,
+        regression_targets,
+        oof_average: ctx.oof_average_blocks.first().cloned(),
+    }
+}
+
+/// Rebuild a per-fold VALIDATION `y_true` block in `sample_ids` ORDER so a host can pair it
+/// POSITIONALLY with the prediction block's `values` (the host surfaces direct prediction/target pairs
+/// by row position, not by id). `targets` covers exactly the same SAMPLE SET as `sample_ids` (the
+/// `sample_targets_match_block` precondition under which this record was retained), so every sample has
+/// a row; a missing one would indicate a broken invariant, so the original block is returned unchanged
+/// rather than dropping rows. Mirrors the avg realignment in [`oof_average_block`](crate::metrics).
+fn target_block_aligned_to_samples(
+    sample_ids: &[SampleId],
+    targets: &RegressionTargetBlock,
+) -> RegressionTargetBlock {
+    let value_by_sample: BTreeMap<&SampleId, &Vec<f64>> = targets
+        .unit_ids
+        .iter()
+        .zip(&targets.values)
+        .filter_map(|(unit_id, row)| match unit_id {
+            PredictionUnitId::Sample(sample_id) => Some((sample_id, row)),
+            _ => None,
+        })
+        .collect();
+    if sample_ids
+        .iter()
+        .any(|sample_id| !value_by_sample.contains_key(sample_id))
+    {
+        return targets.clone();
+    }
+    RegressionTargetBlock {
+        level: PredictionLevel::Sample,
+        unit_ids: sample_ids
+            .iter()
+            .cloned()
+            .map(PredictionUnitId::Sample)
+            .collect(),
+        values: sample_ids
+            .iter()
+            .map(|sample_id| value_by_sample[sample_id].clone())
+            .collect(),
+        target_names: targets.target_names.clone(),
+    }
 }
 
 #[cfg(test)]

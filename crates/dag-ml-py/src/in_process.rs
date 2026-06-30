@@ -48,7 +48,8 @@ use dag_ml_core::{
     DagMlError as CoreDagMlError, ExecutionPlan, ExternalDataPlanEnvelope, InMemoryArtifactStore,
     InMemoryDataProvider, NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
     RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    ScoreSet, SequentialScheduler, VariantId, SCORE_SET_SCHEMA_VERSION,
+    ScoreSet, SequentialScheduler, VariantId, VariantValidationPredictions,
+    SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -202,6 +203,11 @@ fn build_runtime_controllers(
 struct ResolvedRefitVariant {
     variant_id: VariantId,
     loser_validation_reports: Vec<RegressionMetricReport>,
+    /// The non-selected variants' VALIDATION (OOF) PREDICTIONS, each re-tagged with its own variant
+    /// id + content fingerprint, so the host can fill a LOSER variant's per-sample prediction rows
+    /// (not just its scalar CV score). The WINNER's predictions come fresh from the real FIT_CV pass,
+    /// so only the LOSERS' are carried here. Empty for param-variant / pinned / single-variant runs.
+    loser_validation_predictions: Vec<VariantValidationPredictions>,
     /// `Some` only for operator-SELECT: the union plan PRUNED to the winning operator choice
     /// (merge, meta-model and inactive choices elided), on which the winner FIT_CV + REFIT must run
     /// instead of the stacking union. `None` for param-variant / pinned / single-variant runs (the
@@ -261,6 +267,13 @@ fn resolve_operator_select(
         .into_iter()
         .filter(|report| report.variant_id.as_ref() != Some(&variant_id))
         .collect();
+    // Keep only the LOSER variants' captured VALIDATION (OOF) predictions — the winner's come fresh
+    // from the real FIT_CV pass below, so re-surfacing the transient ones would duplicate them.
+    let loser_validation_predictions = selection
+        .variant_validation_predictions
+        .into_iter()
+        .filter(|captured| captured.variant_id != variant_id)
+        .collect();
     // Recompute the WINNER's pruned plan so FIT_CV + REFIT run on it (not the union). The single
     // operator model is guaranteed by `select_best_operator_variant_from_models`.
     let model = &operator_variant_models[0];
@@ -268,6 +281,7 @@ fn resolve_operator_select(
     Ok(Some(ResolvedRefitVariant {
         variant_id,
         loser_validation_reports,
+        loser_validation_predictions,
         pruned_plan: Some(pruned_plan),
         winner_variant_label,
     }))
@@ -374,9 +388,15 @@ fn resolve_refit_variant(
                 .into_iter()
                 .filter(|report| report.variant_id.as_ref() != Some(&variant_id))
                 .collect();
+            let loser_validation_predictions = selection
+                .variant_validation_predictions
+                .into_iter()
+                .filter(|captured| captured.variant_id != variant_id)
+                .collect();
             return Ok(ResolvedRefitVariant {
                 variant_id,
                 loser_validation_reports,
+                loser_validation_predictions,
                 pruned_plan: None,
                 winner_variant_label: None,
             });
@@ -392,6 +412,7 @@ fn resolve_refit_variant(
     Ok(ResolvedRefitVariant {
         variant_id,
         loser_validation_reports: Vec::new(),
+        loser_validation_predictions: Vec::new(),
         pruned_plan: None,
         winner_variant_label: None,
     })
@@ -438,6 +459,44 @@ fn stamp_winner_variant_label(scores: &mut Option<ScoreSet>, label: Option<Strin
             report.variant_label = Some(label.clone());
         }
     }
+}
+
+/// Build the additive synthetic frames that surface one LOSER variant's captured VALIDATION (OOF)
+/// predictions, each TAGGED with the loser's `variant_id` + `variant_label` so the host routes them
+/// to ITS OWN variant (no cross-variant mixing). One frame per per-fold prediction block (paired
+/// POSITION-FOR-POSITION with its id-matched y_true), plus one frame for the cross-fold OOF AVERAGE
+/// block — exactly the shape the host's `_index_sample_blocks` reads for the winner (per-fold
+/// `predictions` + `regression_targets`; the avg as a sample-level `aggregated_predictions` block).
+/// The blocks are the loser's OWN validation predictions, surfaced for host display only — they never
+/// feed a training/feature path.
+fn surface_loser_validation_frames(
+    captured: &VariantValidationPredictions,
+) -> Vec<serde_json::Value> {
+    let mut frames = Vec::new();
+    let variant_id = captured.variant_id.as_str();
+    for (block, target) in captured
+        .predictions
+        .iter()
+        .zip(captured.regression_targets.iter())
+    {
+        frames.push(serde_json::json!({
+            "node_id": block.producer_node,
+            "variant_id": variant_id,
+            "variant_label": captured.variant_label,
+            "predictions": [block],
+            "regression_targets": [target],
+        }));
+    }
+    if let Some(oof) = &captured.oof_average {
+        frames.push(serde_json::json!({
+            "node_id": oof.predictions.producer_node,
+            "variant_id": variant_id,
+            "variant_label": captured.variant_label,
+            "aggregated_predictions": [oof.predictions],
+            "regression_targets": [oof.y_true],
+        }));
+    }
+    frames
 }
 
 /// Run a CV + refit campaign IN-PROCESS through the existing runtime, dispatching
@@ -542,6 +601,7 @@ pub fn run_cv_refit_in_process(
     .map_err(py_core_error)?;
     let selected_variant_id = resolved.variant_id;
     let loser_validation_reports = resolved.loser_validation_reports;
+    let loser_validation_predictions = resolved.loser_validation_predictions;
     let winner_variant_label = resolved.winner_variant_label;
     // For operator-SELECT the winner FIT_CV + REFIT run on the WINNER's PRUNED plan; for all other
     // paths the union plan IS the refit plan.
@@ -610,6 +670,18 @@ pub fn run_cv_refit_in_process(
             "aggregated_predictions": [oof.predictions],
             "regression_targets": [oof.y_true],
         }));
+    }
+
+    // 7. ADDITIVELY surface each LOSER variant's per-fold VALIDATION (OOF) predictions so the host can
+    //    fill that variant's per-sample prediction rows (it had only the loser's scalar OOF report
+    //    before). Each loser's captured per-fold `PredictionBlock` (paired POSITION-FOR-POSITION with
+    //    its id-matched y_true) + cross-fold OOF AVERAGE block becomes a synthetic frame TAGGED with
+    //    the loser's `variant_id` + `variant_label`, so the host routes a loser's frames to ITS OWN
+    //    variant (NO cross-variant mixing). These are the loser's OWN validation (OOF) predictions —
+    //    for host persistence/display only, never fed as a training feature / across a `requires_oof`
+    //    edge (strictly additive, analogous to the OOF-average block above).
+    for captured in &loser_validation_predictions {
+        node_results.extend(surface_loser_validation_frames(captured));
     }
 
     let payload = serde_json::json!({
@@ -1058,6 +1130,105 @@ mod tests {
                 "every loser report must carry the loser choice's variant_label"
             );
         }
+    }
+
+    #[test]
+    fn in_process_surfaces_loser_validation_predictions_tagged_by_variant() {
+        // The in-process resolver carries the LOSER variant's per-fold VALIDATION (OOF) predictions
+        // (not just its scalar reports), and `surface_loser_validation_frames` turns them into
+        // synthetic frames TAGGED with the loser's variant_id + variant_label — what lets the host fill
+        // the loser's per-fold val rows. The winner's predictions are NOT carried here (they come fresh
+        // from the real FIT_CV pass); only the loser's Validation (OOF) predictions are surfaced.
+        let union_plan = operator_select_union_plan();
+        let model = operator_select_model();
+        let controllers = operator_select_controllers();
+        let provider = empty_provider();
+        let run_id = RunId::new("run:in_process.operator.loser.predictions").unwrap();
+
+        let resolved = resolve_refit_variant(
+            &union_plan,
+            std::slice::from_ref(&model),
+            &run_id,
+            7,
+            RegressionMetricKind::Rmse,
+            &controllers,
+            &provider,
+        )
+        .unwrap();
+
+        // Only the LOSER (choice1) surfaces captured predictions — the winner's come fresh below.
+        assert_eq!(
+            resolved.loser_validation_predictions.len(),
+            1,
+            "exactly the single loser variant surfaces captured predictions"
+        );
+        let loser = &resolved.loser_validation_predictions[0];
+        assert_ne!(
+            loser.variant_id, resolved.variant_id,
+            "the carried predictions belong to the LOSER, not the winner"
+        );
+        assert_eq!(
+            loser.variant_label.as_deref(),
+            Some(CHOICE1_LABEL),
+            "the loser's captured predictions carry the loser choice's content fingerprint"
+        );
+        assert!(
+            !loser.predictions.is_empty()
+                && loser
+                    .predictions
+                    .iter()
+                    .all(|block| block.partition == PredictionPartition::Validation),
+            "only the loser's Validation (OOF) predictions are surfaced — no refit/train/test"
+        );
+
+        // The synthetic frames carry the loser's variant tag (so the host routes them to ITS variant)
+        // and exactly the captured per-fold prediction + paired y_true (id-matched).
+        let frames = surface_loser_validation_frames(loser);
+        assert!(
+            !frames.is_empty(),
+            "the loser surfaces at least one validation frame"
+        );
+        for frame in &frames {
+            assert_eq!(
+                frame.get("variant_id").and_then(|value| value.as_str()),
+                Some(loser.variant_id.as_str()),
+                "every surfaced loser frame is tagged with the loser's variant_id"
+            );
+            assert_eq!(
+                frame.get("variant_label").and_then(|value| value.as_str()),
+                Some(CHOICE1_LABEL),
+                "every surfaced loser frame is tagged with the loser's variant_label"
+            );
+        }
+        // A per-fold frame pairs `predictions[0]` with `regression_targets[0]` (the host reads them
+        // position-for-position), covering the SAME samples (id-matched).
+        let fold_frame = frames
+            .iter()
+            .find(|frame| frame.get("predictions").is_some())
+            .expect("a per-fold prediction frame is surfaced");
+        let pred = &fold_frame["predictions"][0];
+        let target = &fold_frame["regression_targets"][0];
+        assert_eq!(
+            pred["partition"].as_str(),
+            Some("validation"),
+            "the surfaced per-fold block is a Validation (OOF) block"
+        );
+        let pred_ids: BTreeSet<String> = pred["sample_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect();
+        let target_ids: BTreeSet<String> = target["unit_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|unit| unit["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            pred_ids, target_ids,
+            "the per-fold y_true covers exactly the prediction block's samples (id-matched)"
+        );
     }
 
     #[test]
