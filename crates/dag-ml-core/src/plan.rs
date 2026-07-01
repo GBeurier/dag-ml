@@ -8,13 +8,16 @@ use crate::controller::{
     ControllerRegistry, RngPolicy,
 };
 use crate::controller_adapter::representation_type_id;
-use crate::data::{BranchViewPlan, DataBinding, ExternalDataPlanEnvelope};
+use crate::data::{
+    BranchViewMode, BranchViewPlan, DataBinding, ExternalDataPlanEnvelope, ModelInputFusionMode,
+    ModelInputPortSpec, ModelInputSpec, RepresentationPlan, SOURCE_INDEX_METADATA_KEY,
+};
 use crate::error::{DagMlError, Result};
 use crate::fold::{FoldSet, NestedCvSpec};
 use crate::generation::{
     enumerate_variants, generation_spec_fingerprint, GenerationSpec, VariantPlan,
 };
-use crate::graph::{GraphSpec, NodeKind};
+use crate::graph::{GraphSpec, NodeKind, NodeSpec};
 use crate::ids::{ControllerId, FoldId, NodeId, VariantId};
 use crate::phase::Phase;
 use crate::policy::{AggregationPolicy, DataModelShapePlan, LeakageUnitPolicy};
@@ -291,7 +294,14 @@ impl ExecutionPlan {
                 }
                 binding.validate()?;
             }
-            validate_data_binding_requirements(node_id, plan, manifest)?;
+            let graph_node = self
+                .graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| &node.id == node_id)
+                .expect("topological node exists in graph");
+            validate_data_binding_requirements(node_id, plan, manifest, graph_node)?;
             let actual_params_fingerprint = stable_json_fingerprint(&plan.params)?;
             if actual_params_fingerprint != plan.params_fingerprint {
                 return Err(DagMlError::Planning(format!(
@@ -494,8 +504,24 @@ fn validate_data_binding_requirements(
     node_id: &NodeId,
     plan: &NodePlan,
     manifest: &ControllerManifest,
+    node: &NodeSpec,
 ) -> Result<()> {
+    let branch_view = branch_view_plan_from_node_metadata(node)?;
     let Some(model_input) = manifest.model_input_spec()? else {
+        for binding in &plan.data_bindings {
+            let effective_source_ids = effective_binding_source_ids(binding, branch_view.as_ref())?;
+            if effective_source_ids.len() > 1 {
+                return Err(data_requirement_refusal(
+                    "dagml.data_requirement.missing_data_requirements",
+                    node_id,
+                    binding,
+                    manifest,
+                    "multisource",
+                    &effective_source_ids,
+                    "multi-source data binding requires controller data_requirements".to_string(),
+                ));
+            }
+        }
         return Ok(());
     };
     for binding in &plan.data_bindings {
@@ -538,8 +564,252 @@ fn validate_data_binding_requirements(
                 )));
             }
         }
+        validate_data_binding_source_shape(
+            node_id,
+            binding,
+            port,
+            &model_input,
+            manifest,
+            branch_view.as_ref(),
+        )?;
     }
     Ok(())
+}
+
+fn branch_view_plan_from_node_metadata(node: &NodeSpec) -> Result<Option<BranchViewPlan>> {
+    let Some(value) = node.metadata.get("dsl_branch_view_plan") else {
+        return Ok(None);
+    };
+    let plan: BranchViewPlan = serde_json::from_value(value.clone()).map_err(|error| {
+        DagMlError::Planning(format!(
+            "node `{}` carries malformed `dsl_branch_view_plan` metadata: {error}",
+            node.id
+        ))
+    })?;
+    plan.validate()
+        .map_err(|error| DagMlError::Planning(error.to_string()))?;
+    Ok(Some(plan))
+}
+
+fn validate_data_binding_source_shape(
+    node_id: &NodeId,
+    binding: &DataBinding,
+    port: &ModelInputPortSpec,
+    model_input: &ModelInputSpec,
+    manifest: &ControllerManifest,
+    branch_view: Option<&BranchViewPlan>,
+) -> Result<()> {
+    let effective_source_ids = effective_binding_source_ids(binding, branch_view)?;
+    if effective_source_ids.len() < 2 {
+        return Ok(());
+    }
+    if !port.multi_source {
+        return Err(data_requirement_refusal(
+            "dagml.data_requirement.multi_source_port_not_supported",
+            node_id,
+            binding,
+            manifest,
+            "multisource",
+            &effective_source_ids,
+            format!(
+                "controller `{}` data_requirements port `{}` does not declare multi_source=true",
+                manifest.controller_id, port.name
+            ),
+        ));
+    }
+    let Some(fusion) = &model_input.default_fusion else {
+        return Err(data_requirement_refusal(
+            "dagml.data_requirement.missing_multisource_fusion",
+            node_id,
+            binding,
+            manifest,
+            "multisource",
+            &effective_source_ids,
+            "multi-source data binding requires an explicit default_fusion policy".to_string(),
+        ));
+    };
+    validate_fusion_sources_match_binding(
+        node_id,
+        binding,
+        manifest,
+        fusion.representation_plan.as_ref(),
+        &effective_source_ids,
+    )?;
+    match fusion.mode {
+        ModelInputFusionMode::ConcatenateFeatures => {
+            if binding
+                .metadata
+                .get(SOURCE_INDEX_METADATA_KEY)
+                .and_then(serde_json::Value::as_object)
+                .is_none()
+            {
+                return Err(data_requirement_refusal(
+                    "dagml.data_requirement.source_concat_requires_source_index",
+                    node_id,
+                    binding,
+                    manifest,
+                    "source_concat",
+                    &effective_source_ids,
+                    "source-concat feature fusion requires data binding metadata.source_index so feature-axis blocks are explicit".to_string(),
+                ));
+            }
+        }
+        ModelInputFusionMode::DictBySource | ModelInputFusionMode::Custom => {}
+        ModelInputFusionMode::SingleSource | ModelInputFusionMode::StackSamples => {
+            let fusion_mode = fusion_mode_label(fusion.mode);
+            return Err(data_requirement_refusal(
+                "dagml.data_requirement.unsupported_multisource_fusion_mode",
+                node_id,
+                binding,
+                manifest,
+                fusion_mode,
+                &effective_source_ids,
+                format!(
+                    "multi-source data binding cannot be planned with default_fusion.mode={fusion_mode}"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn fusion_mode_label(mode: ModelInputFusionMode) -> &'static str {
+    match mode {
+        ModelInputFusionMode::SingleSource => "single_source",
+        ModelInputFusionMode::ConcatenateFeatures => "concatenate_features",
+        ModelInputFusionMode::StackSamples => "stack_samples",
+        ModelInputFusionMode::DictBySource => "dict_by_source",
+        ModelInputFusionMode::Custom => "custom",
+    }
+}
+
+fn effective_binding_source_ids(
+    binding: &DataBinding,
+    branch_view: Option<&BranchViewPlan>,
+) -> Result<Vec<String>> {
+    let Some(branch_view) = branch_view else {
+        return Ok(binding.source_ids.clone());
+    };
+    if branch_view.mode != BranchViewMode::BySource {
+        return Ok(binding.source_ids.clone());
+    }
+    if branch_view.selector.source_ids.len() != 1 {
+        return Err(data_requirement_refusal_for_branch(
+            "dagml.data_requirement.unsupported_by_source_shape",
+            binding,
+            branch_view,
+            "by_source branch views must select exactly one source_id for per-source X-chain fit semantics".to_string(),
+        ));
+    }
+    if !binding.source_ids.is_empty() {
+        let declared = binding.source_ids.iter().collect::<BTreeSet<_>>();
+        for source_id in &branch_view.selector.source_ids {
+            if !declared.contains(source_id) {
+                return Err(data_requirement_refusal_for_branch(
+                    "dagml.data_requirement.by_source_selector_outside_binding",
+                    binding,
+                    branch_view,
+                    format!(
+                        "by_source branch selector source `{source_id}` is not declared by data binding source_ids"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(branch_view.selector.source_ids.clone())
+}
+
+fn validate_fusion_sources_match_binding(
+    node_id: &NodeId,
+    binding: &DataBinding,
+    manifest: &ControllerManifest,
+    representation_plan: Option<&RepresentationPlan>,
+    effective_source_ids: &[String],
+) -> Result<()> {
+    let Some(representation_plan) = representation_plan else {
+        return Ok(());
+    };
+    let component_sources = representation_plan_component_sources(representation_plan);
+    if component_sources.is_empty() {
+        return Ok(());
+    }
+    let declared = component_sources.iter().cloned().collect::<BTreeSet<_>>();
+    let effective = effective_source_ids.iter().collect::<BTreeSet<_>>();
+    if declared != effective {
+        return Err(data_requirement_refusal(
+            "dagml.data_requirement.representation_sources_mismatch",
+            node_id,
+            binding,
+            manifest,
+            "multisource",
+            effective_source_ids,
+            format!(
+                "default_fusion.representation_plan component_source_ids {:?} do not match binding source_ids {:?}",
+                component_sources, effective_source_ids
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn representation_plan_component_sources(plan: &RepresentationPlan) -> Vec<&String> {
+    match plan {
+        RepresentationPlan::Aggregate(_) => Vec::new(),
+        RepresentationPlan::CartesianProduct(plan) => {
+            plan.combination_plan.component_source_ids.iter().collect()
+        }
+        RepresentationPlan::MonteCarloCartesian(plan) => {
+            plan.combination_plan.component_source_ids.iter().collect()
+        }
+        RepresentationPlan::StackFixed(plan) => plan.component_source_ids.iter().collect(),
+        RepresentationPlan::StackPaddedMasked(plan) => plan.component_source_ids.iter().collect(),
+    }
+}
+
+fn data_requirement_refusal(
+    code: &'static str,
+    node_id: &NodeId,
+    binding: &DataBinding,
+    manifest: &ControllerManifest,
+    shape: &str,
+    source_ids: &[String],
+    message: String,
+) -> DagMlError {
+    DagMlError::Planning(format!(
+        "data requirement refusal: {}",
+        serde_json::json!({
+            "schema_version": 1,
+            "code": code,
+            "node_id": node_id.to_string(),
+            "input_name": binding.input_name.as_str(),
+            "controller_id": manifest.controller_id.to_string(),
+            "shape": shape,
+            "source_ids": source_ids,
+            "message": message
+        })
+    ))
+}
+
+fn data_requirement_refusal_for_branch(
+    code: &'static str,
+    binding: &DataBinding,
+    branch_view: &BranchViewPlan,
+    message: String,
+) -> DagMlError {
+    DagMlError::Planning(format!(
+        "data requirement refusal: {}",
+        serde_json::json!({
+            "schema_version": 1,
+            "code": code,
+            "node_id": binding.node_id.to_string(),
+            "input_name": binding.input_name.as_str(),
+            "branch_view_id": branch_view.view_id.as_str(),
+            "branch_id": branch_view.branch_id.as_str(),
+            "shape": "by_source",
+            "source_ids": &branch_view.selector.source_ids,
+            "message": message
+        })
+    ))
 }
 
 fn branch_view_for_in<'a>(
@@ -1116,7 +1386,9 @@ mod tests {
         assert!(matches!(error, DagMlError::Planning(_)));
         assert!(error.to_string().contains("at least two splits"));
     }
-    use crate::data::DataBinding;
+    use crate::data::{
+        BranchViewMode, BranchViewPlan, DataBinding, DataViewSelector, SOURCE_INDEX_METADATA_KEY,
+    };
     use crate::generation::{
         GenerationChoice, GenerationConstraints, GenerationDimension, GenerationParamOverride,
         GenerationStrategy,
@@ -1260,6 +1532,111 @@ mod tests {
         registry
     }
 
+    fn registry_with_model_data_requirements_json(
+        data_requirements: serde_json::Value,
+    ) -> ControllerRegistry {
+        let mut registry = ControllerRegistry::new();
+        registry
+            .register(manifest("controller:transform", NodeKind::Transform))
+            .unwrap();
+        let mut model = manifest("controller:model", NodeKind::Model);
+        model.data_requirements = Some(data_requirements);
+        registry.register(model).unwrap();
+        registry
+    }
+
+    fn model_data_requirements(
+        multi_source: bool,
+        default_fusion: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut spec = serde_json::json!({
+            "schema_version": 1,
+            "ports": [
+                {
+                    "name": "x",
+                    "accepted_representations": ["tabular_numeric"],
+                    "accepted_types": ["table"],
+                    "rank": 2,
+                    "multi_source": multi_source,
+                    "optional": false
+                }
+            ],
+            "metadata": {
+                "source": "plan-test"
+            }
+        });
+        if let Some(default_fusion) = default_fusion {
+            spec.as_object_mut()
+                .unwrap()
+                .insert("default_fusion".to_string(), default_fusion);
+        }
+        spec
+    }
+
+    fn multisource_binding(node_id: &NodeId) -> DataBinding {
+        let mut binding = data_binding(node_id);
+        binding.request_id = "nir-chem-source-concat".to_string();
+        binding.feature_set_id = Some("x_fused".to_string());
+        binding.source_ids = vec!["nir".to_string(), "chem".to_string()];
+        binding
+    }
+
+    fn add_source_index(binding: &mut DataBinding) {
+        binding.metadata.insert(
+            SOURCE_INDEX_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "nir": 0,
+                "chem": 1
+            }),
+        );
+    }
+
+    fn source_concat_fusion() -> serde_json::Value {
+        serde_json::json!({
+            "mode": "concatenate_features",
+            "alignment": "sample_id",
+            "adapter_id": null,
+            "params": {
+                "namespace_columns": true
+            }
+        })
+    }
+
+    fn by_source_graph(source_ids: Vec<&str>) -> GraphSpec {
+        let mut graph = graph();
+        let branch_view = BranchViewPlan {
+            view_id: "branch_view:source".to_string(),
+            branch_id: "branch:source".to_string(),
+            mode: BranchViewMode::BySource,
+            selector: DataViewSelector {
+                source_ids: source_ids.into_iter().map(str::to_string).collect(),
+                ..Default::default()
+            },
+            allow_overlap: false,
+            metadata: BTreeMap::new(),
+        };
+        graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.as_str() == "model:pls")
+            .unwrap()
+            .metadata
+            .insert(
+                "dsl_branch_view_plan".to_string(),
+                serde_json::to_value(branch_view).unwrap(),
+            );
+        graph
+    }
+
+    fn refusal_payload(error: DagMlError) -> serde_json::Value {
+        let message = error.to_string();
+        let payload = message
+            .split_once("data requirement refusal: ")
+            .unwrap_or_else(|| panic!("missing structured refusal payload in: {message}"))
+            .1;
+        serde_json::from_str(payload).unwrap()
+    }
+
     fn campaign(id: &str) -> CampaignSpec {
         CampaignSpec {
             id: id.to_string(),
@@ -1334,6 +1711,126 @@ mod tests {
             error.to_string().contains("registered type `table`"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn build_execution_plan_rejects_source_concat_without_source_index() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let mut campaign = campaign("campaign:datareq.source-concat.no-index");
+        campaign.data_bindings =
+            BTreeMap::from([(model_id.clone(), vec![multisource_binding(&model_id)])]);
+
+        let error = build_execution_plan(
+            "plan:datareq.source-concat.no-index",
+            graph(),
+            campaign,
+            &registry_with_model_data_requirements_json(model_data_requirements(
+                true,
+                Some(source_concat_fusion()),
+            )),
+        )
+        .unwrap_err();
+        let payload = refusal_payload(error);
+
+        assert_eq!(
+            payload["code"],
+            "dagml.data_requirement.source_concat_requires_source_index"
+        );
+        assert_eq!(payload["shape"], "source_concat");
+        assert_eq!(payload["source_ids"], serde_json::json!(["nir", "chem"]));
+    }
+
+    #[test]
+    fn build_execution_plan_rejects_multisource_binding_without_data_requirements() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let mut campaign = campaign("campaign:datareq.multisource.no-requirements");
+        campaign.data_bindings =
+            BTreeMap::from([(model_id.clone(), vec![multisource_binding(&model_id)])]);
+
+        let error = build_execution_plan(
+            "plan:datareq.multisource.no-requirements",
+            graph(),
+            campaign,
+            &registry(),
+        )
+        .unwrap_err();
+        let payload = refusal_payload(error);
+
+        assert_eq!(
+            payload["code"],
+            "dagml.data_requirement.missing_data_requirements"
+        );
+        assert_eq!(payload["source_ids"], serde_json::json!(["nir", "chem"]));
+    }
+
+    #[test]
+    fn build_execution_plan_accepts_source_concat_with_source_index() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let mut binding = multisource_binding(&model_id);
+        add_source_index(&mut binding);
+        let mut campaign = campaign("campaign:datareq.source-concat.index");
+        campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![binding])]);
+
+        let plan = build_execution_plan(
+            "plan:datareq.source-concat.index",
+            graph(),
+            campaign,
+            &registry_with_model_data_requirements_json(model_data_requirements(
+                true,
+                Some(source_concat_fusion()),
+            )),
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.node_plans[&model_id].data_bindings[0].metadata[SOURCE_INDEX_METADATA_KEY],
+            serde_json::json!({"nir": 0, "chem": 1})
+        );
+    }
+
+    #[test]
+    fn by_source_branch_allows_single_source_fit_from_multisource_binding() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let mut campaign = campaign("campaign:datareq.by-source.single");
+        campaign.data_bindings =
+            BTreeMap::from([(model_id.clone(), vec![multisource_binding(&model_id)])]);
+
+        let plan = build_execution_plan(
+            "plan:datareq.by-source.single",
+            by_source_graph(vec!["nir"]),
+            campaign,
+            &registry_with_model_data_requirements_json(model_data_requirements(false, None)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.node_plans[&model_id].data_bindings[0].source_ids.len(),
+            2
+        );
+    }
+
+    #[test]
+    fn by_source_branch_refuses_multi_source_selector_shape() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let mut campaign = campaign("campaign:datareq.by-source.multi");
+        campaign.data_bindings =
+            BTreeMap::from([(model_id.clone(), vec![multisource_binding(&model_id)])]);
+
+        let error = build_execution_plan(
+            "plan:datareq.by-source.multi",
+            by_source_graph(vec!["nir", "chem"]),
+            campaign,
+            &registry_with_model_data_requirements_json(model_data_requirements(true, None)),
+        )
+        .unwrap_err();
+        let payload = refusal_payload(error);
+
+        assert_eq!(
+            payload["code"],
+            "dagml.data_requirement.unsupported_by_source_shape"
+        );
+        assert_eq!(payload["shape"], "by_source");
+        assert_eq!(payload["source_ids"], serde_json::json!(["nir", "chem"]));
     }
 
     fn large_linear_graph(transform_count: usize) -> GraphSpec {
