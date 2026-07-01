@@ -866,7 +866,7 @@ def validate_feature_fusion_schema_artifact(schema: Any, expected_id: str, label
         properties.get("schema_version", {}).get("const") == 1,
         f"{label} feature-fusion schema_version const must be 1",
     )
-    for field in ("combination_plan", "representation_plan"):
+    for field in ("combination_plan", "representation_plan", "source_layout"):
         require(
             field in properties,
             f"{label} feature-fusion schema must declare optional `{field}`",
@@ -882,6 +882,7 @@ def validate_feature_fusion_schema_artifact(schema: Any, expected_id: str, label
         "combination_mode",
         "representation_missing_source_policy",
         "representation_cardinality",
+        "source_layout",
     ):
         require(name in defs, f"{label} feature-fusion schema misses `{name}` definition")
     require(
@@ -2777,6 +2778,152 @@ def validate_feature_fusion_selector(selector: Any, label: str) -> None:
     representation_plan = selector.get("representation_plan")
     if representation_plan is not None:
         validate_representation_plan(representation_plan, f"{label}.representation_plan")
+
+    source_layout = selector.get("source_layout")
+    if source_layout is not None:
+        validate_feature_fusion_source_layout(
+            source_layout,
+            selector["feature_set_id"],
+            sources,
+            policy,
+            label,
+        )
+
+
+def validate_feature_fusion_source_layout(
+    source_layout: Any,
+    feature_set_id: str,
+    sources: list[Any],
+    policy: Any,
+    label: str,
+) -> None:
+    require(isinstance(source_layout, dict), f"{label}.source_layout must be an object")
+    require(
+        source_layout.get("kind") == "by_source_concat",
+        f"{label}.source_layout.kind must be by_source_concat",
+    )
+    source_order = source_layout.get("source_order")
+    require(
+        isinstance(source_order, list) and source_order,
+        f"{label}.source_layout.source_order must be a non-empty array",
+    )
+    for index, source_id in enumerate(source_order):
+        require_non_empty_string(source_id, f"{label}.source_layout.source_order[{index}]")
+    require(
+        len(set(source_order)) == len(source_order),
+        f"{label}.source_layout.source_order contains duplicates",
+    )
+    selector_order = [source["source_id"] for source in sources]
+    require(
+        source_order == selector_order,
+        f"{label}.source_layout.source_order must match sources order",
+    )
+
+    blocks = source_layout.get("blocks")
+    require(
+        isinstance(blocks, list) and len(blocks) == len(source_order),
+        f"{label}.source_layout.blocks must match source_order length",
+    )
+    expected_column_start = 0
+    for index, block in enumerate(blocks):
+        block_label = f"{label}.source_layout.blocks[{index}]"
+        require(isinstance(block, dict), f"{block_label} must be an object")
+        require(
+            block.get("source_id") == source_order[index],
+            f"{block_label}.source_id must match source_order",
+        )
+        preprocessing_output = block.get("preprocessing_output")
+        require(
+            isinstance(preprocessing_output, dict),
+            f"{block_label}.preprocessing_output must be an object",
+        )
+        require_non_empty_string(
+            preprocessing_output.get("feature_set_id"),
+            f"{block_label}.preprocessing_output.feature_set_id",
+        )
+        require_non_empty_string(
+            preprocessing_output.get("representation_id"),
+            f"{block_label}.preprocessing_output.representation_id",
+        )
+        source = sources[index]
+        require(
+            preprocessing_output["feature_set_id"] == source["feature_set_id"],
+            f"{block_label}.preprocessing_output.feature_set_id must match source feature_set_id",
+        )
+        fit_scope = preprocessing_output.get("fit_scope")
+        if fit_scope is not None:
+            require(
+                fit_scope in {"stateless", "fold_train", "full_train", "inference_only"},
+                f"{block_label}.preprocessing_output.fit_scope is invalid",
+            )
+        adapter_id = preprocessing_output.get("adapter_id")
+        if adapter_id is not None:
+            require_non_empty_string(adapter_id, f"{block_label}.preprocessing_output.adapter_id")
+        column_start = block.get("column_start")
+        require(
+            isinstance(column_start, int) and column_start == expected_column_start,
+            f"{block_label}.column_start must be contiguous",
+        )
+        column_count = block.get("column_count")
+        require(
+            isinstance(column_count, int) and column_count > 0,
+            f"{block_label}.column_count must be a positive integer",
+        )
+        feature_names = block.get("feature_names")
+        if feature_names is not None:
+            require(
+                isinstance(feature_names, list) and len(feature_names) == column_count,
+                f"{block_label}.feature_names length must match column_count",
+            )
+            require(
+                len(set(feature_names)) == len(feature_names),
+                f"{block_label}.feature_names contains duplicates",
+            )
+            for feature_index, feature_name in enumerate(feature_names):
+                require_non_empty_string(
+                    feature_name,
+                    f"{block_label}.feature_names[{feature_index}]",
+                )
+            columns = source.get("columns")
+            if columns is not None:
+                require(
+                    feature_names == columns,
+                    f"{block_label}.feature_names must match source columns",
+                )
+        expected_column_start += column_count
+
+    concat = source_layout.get("concat")
+    require(isinstance(concat, dict), f"{label}.source_layout.concat must be an object")
+    require(
+        concat.get("feature_set_id") == feature_set_id,
+        f"{label}.source_layout.concat.feature_set_id must match selector feature_set_id",
+    )
+    require_non_empty_string(
+        concat.get("representation_id"),
+        f"{label}.source_layout.concat.representation_id",
+    )
+    require(
+        concat.get("axis") == "feature",
+        f"{label}.source_layout.concat.axis must be feature",
+    )
+    require(
+        concat.get("total_column_count") == expected_column_start,
+        f"{label}.source_layout.concat.total_column_count must match block spans",
+    )
+    require(
+        concat.get("preserve_source_order") is True,
+        f"{label}.source_layout.concat.preserve_source_order must be true",
+    )
+    namespace_columns = concat.get("namespace_columns")
+    require(
+        isinstance(namespace_columns, bool),
+        f"{label}.source_layout.concat.namespace_columns must be bool",
+    )
+    if isinstance(policy, dict) and "namespace_columns" in policy:
+        require(
+            namespace_columns == policy["namespace_columns"],
+            f"{label}.source_layout.concat.namespace_columns must match policy",
+        )
 
 
 def validate_fold_set_fixture(fold_set: Any, label: str) -> None:
