@@ -51,6 +51,10 @@
       "contract": "feature_fusion_selector.v1",
       "canonical_json_sha256": "aee68b20abc4cd9462171c43e034a67d3033768727995b8592bbf61226961f3f"
     },
+    "model_input_spec_tabular_regressor.v1": {
+      "contract": "model_input_spec.v1",
+      "canonical_json_sha256": "1b09535984864e4b72b85b1225b91ec789216a61deb14de9b5a33bdf33341e02"
+    },
     "data_output_provenance_augmented_view.v1": {
       "contract": "data_output_provenance.v1",
       "canonical_json_sha256": "68b48e3dc1b871dbb579c9e370ee777675c3a3ca23be8a9c003201ec6e4d7e25"
@@ -315,7 +319,8 @@
       "headers.include_order",
       "provider.f64_predict_replay",
       "fold_set.fingerprint_parity",
-      "representation_registry.parity"
+      "representation_registry.parity",
+      "model_input_spec.fixture_equivalence"
     ]
   }
 }

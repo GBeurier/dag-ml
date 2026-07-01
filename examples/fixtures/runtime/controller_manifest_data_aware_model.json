@@ -34,8 +34,8 @@
     "ports": [
       {
         "name": "x",
-        "accepted_representations": ["tabular_numeric", "columnar_f64"],
-        "accepted_types": ["f64"],
+        "accepted_representations": ["tabular_numeric"],
+        "accepted_types": ["table"],
         "rank": 2,
         "multi_source": true,
         "optional": false,
