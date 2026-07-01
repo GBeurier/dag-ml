@@ -36,7 +36,7 @@ use crate::graph::{
 use crate::ids::{
     ArtifactId, ControllerId, FoldId, GroupId, NodeId, ObservationId, SampleId, TargetId,
 };
-use crate::oof::{PredictionBlock, PredictionPartition};
+use crate::oof::{PredictionBlock, PredictionPartition, STACKING_OOF_REFIT_CONTRACT_METADATA_KEY};
 use crate::plan::{build_execution_plan, CampaignSpec, SplitInvocation};
 use crate::policy::{
     AggregationControllerSpec, AggregationMethod, AggregationPolicy, DataModelShapePlan,
@@ -1874,6 +1874,21 @@ fn oof_edge_graph() -> GraphSpec {
         search_space_fingerprint: None,
         metadata: BTreeMap::new(),
     }
+}
+
+fn oof_edge_graph_with_refit_policy(policy: &str) -> GraphSpec {
+    let mut graph = oof_edge_graph();
+    graph.id = format!("g:oof.edge.{policy}");
+    let meta = graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:meta")
+        .expect("meta node exists");
+    meta.metadata.insert(
+        STACKING_OOF_REFIT_CONTRACT_METADATA_KEY.to_string(),
+        json!({ "policy": policy }),
+    );
+    graph
 }
 
 fn runtime_controllers() -> RuntimeControllerRegistry {
@@ -4585,6 +4600,85 @@ fn requires_oof_prediction_edge_refit_rejects_incomplete_oof_coverage() {
         .to_string();
 
     assert!(error.contains("do not cover the refit sample universe"));
+    assert!(error.contains("cause=partial_oof_without_policy"));
+}
+
+#[test]
+fn requires_oof_prediction_edge_refit_skips_incomplete_oof_when_explicit() {
+    let plan = build_execution_plan(
+        "plan:oof.edge.refit.incomplete.skip",
+        oof_edge_graph_with_refit_policy("skip_refit_on_incomplete_oof"),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+    )
+    .unwrap();
+    let mut ctx = RunContext::new(
+        RunId::new("run:oof.edge.refit.incomplete.skip").unwrap(),
+        Some(11),
+    );
+    ctx.prediction_store
+        .append(PredictionBlock {
+            prediction_id: Some("pred:model:base:fold0".to_string()),
+            producer_node: NodeId::new("model:base").unwrap(),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: vec![SampleId::new("s1").unwrap()],
+            values: vec![vec![0.5]],
+            target_names: vec!["y".to_string()],
+        })
+        .unwrap();
+    let controllers = oof_edge_runtime_controllers(None, OofSampleMode::Aligned);
+
+    let results = SequentialScheduler
+        .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::Refit)
+        .unwrap();
+
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.node_id.as_str() == "model:meta")
+            .count(),
+        0
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.node_id.as_str() == "model:base")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn requires_oof_prediction_edge_refit_cv_only_skips_without_oof() {
+    let plan = build_execution_plan(
+        "plan:oof.edge.refit.cv_only",
+        oof_edge_graph_with_refit_policy("cv_only"),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+    )
+    .unwrap();
+    let controllers = oof_edge_runtime_controllers(None, OofSampleMode::Aligned);
+    let mut ctx = RunContext::new(RunId::new("run:oof.edge.refit.cv_only").unwrap(), Some(11));
+
+    let results = SequentialScheduler
+        .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::Refit)
+        .unwrap();
+
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.node_id.as_str() == "model:meta")
+            .count(),
+        0
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.node_id.as_str() == "model:base")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -4652,13 +4746,34 @@ fn refit_oof_cover_is_partition_mode_aware() {
     resampled
         .validate()
         .expect("resampled fold set is well-formed");
-    let resampled_blocks = [
+    let mut resampled_blocks = [
         val_block("fold:0", &["s1", "s2"]),
         val_block("fold:1", &["s1", "s3"]),
     ];
+    resampled_blocks[0].values[0] = vec![0.25];
+    resampled_blocks[1].values[0] = vec![0.75];
     let resampled_refs = resampled_blocks.iter().collect::<Vec<_>>();
     validate_oof_blocks_cover_fold_set(&edge, &resampled, &resampled_refs)
         .expect("Resampled multiply-validated sample must pass refit OOF coverage");
+    let refit_scope = PhaseScope {
+        phase: Phase::Refit,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: Some(11),
+    };
+    let resampled_spec = prediction_input_spec(&edge, &refit_scope, &resampled_refs, true)
+        .expect("resampled refit spec should average repeated OOF rows");
+    assert_eq!(
+        resampled_spec.sample_ids,
+        vec![
+            SampleId::new("s1").unwrap(),
+            SampleId::new("s2").unwrap(),
+            SampleId::new("s3").unwrap()
+        ]
+    );
+    assert_eq!(resampled_spec.values[0], vec![0.5]);
+    assert!(prediction_input_spec(&edge, &refit_scope, &resampled_refs, false).is_err());
 
     // Partition fold set with the SAME cross-fold duplicate (s1 in both folds): still rejected.
     let partition = FoldSet {
