@@ -1012,6 +1012,16 @@ pub(crate) fn data_view_for_partition(
         "feature_set_id".to_string(),
         serde_json::Value::String(binding.feature_set_id().to_string()),
     );
+    if let Some(source_index) = binding
+        .metadata
+        .get(crate::data::SOURCE_INDEX_METADATA_KEY)
+        .cloned()
+    {
+        extra.insert(
+            crate::data::SOURCE_INDEX_METADATA_KEY.to_string(),
+            source_index,
+        );
+    }
     if !binding.view_policy.unsafe_flags.is_empty() {
         extra.insert(
             "unsafe_flags".to_string(),

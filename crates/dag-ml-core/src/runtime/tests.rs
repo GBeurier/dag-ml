@@ -21,7 +21,9 @@ use crate::controller::{
     ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
     ControllerRegistry, RngPolicy,
 };
-use crate::data::{DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider};
+use crate::data::{
+    DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider, SOURCE_INDEX_METADATA_KEY,
+};
 use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
 use crate::generation::{
     GenerationChoice, GenerationConstraints, GenerationDimension, GenerationSpec,
@@ -8005,6 +8007,45 @@ fn fit_view_spec_drops_excluded_samples_while_validation_keeps_them() {
     assert!(
         predict_view.include_excluded,
         "predict read must keep excluded rows so they are still predicted"
+    );
+}
+
+#[test]
+fn data_view_extra_carries_source_index_metadata() {
+    let node_id = NodeId::new("node:model").unwrap();
+    let mut binding = data_binding(&node_id);
+    binding.source_ids = vec!["nir".to_string(), "chem".to_string()];
+    binding.metadata.insert(
+        SOURCE_INDEX_METADATA_KEY.to_string(),
+        json!({
+            "nir": 0,
+            "chem": 1
+        }),
+    );
+    binding.validate().unwrap();
+    let empty: BTreeSet<SampleId> = BTreeSet::new();
+    let scope = PhaseScope {
+        phase: Phase::Predict,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+
+    let view = data_view_for_partition(
+        &binding,
+        None,
+        &scope,
+        DataRequestPartition::Predict,
+        None,
+        DataViewRole::NonFit,
+        &empty,
+    )
+    .unwrap();
+
+    assert_eq!(
+        view.extra.get(SOURCE_INDEX_METADATA_KEY),
+        Some(&json!({"nir": 0, "chem": 1}))
     );
 }
 
