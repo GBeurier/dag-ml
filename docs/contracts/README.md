@@ -255,6 +255,15 @@ controller or binding. It lists required input ports, accepted
 representations/types, tensor rank expectations, multi-source support and the
 default fusion policy to ask from a data planner.
 
+For a multi-source `concatenate_features` request, the concrete
+`DataBinding.metadata.source_index` map is the required source-concat layout
+hint. It maps each source id to its feature-axis block index and is propagated
+into `DataProviderViewSpec.extra.source_index`; without it the planner refuses
+the binding with a structured `dagml.data_requirement.*` code instead of
+silently treating early fusion as ordinary flat features. `by_source` branches
+remain single-source per branch unless a future contract explicitly supports
+grouped source branches.
+
 ## DataPlan v1
 
 Schema: `data_plan.schema.json`
