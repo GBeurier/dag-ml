@@ -1,11 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::campaign::stable_json_fingerprint;
 use crate::error::{DagMlError, OofLeakageReport, OofLeakageViolation, Result};
-use crate::fold::{FoldPartitionMode, FoldSet};
+use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
 use crate::ids::{FoldId, NodeId, SampleId};
+
+pub const STACKING_OOF_REFIT_CONTRACT_METADATA_KEY: &str = "stacking_oof_refit_contract";
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -179,6 +182,256 @@ pub fn validate_producer_oof_coverage(
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StackingOofRefitPolicy {
+    /// Default: a stacking meta-model may enter REFIT only when every upstream
+    /// producer has validation OOF coverage for the complete refit sample
+    /// universe.
+    #[default]
+    RequireFullCoverage,
+    /// Explicit CV-only behavior: skip the REFIT task for this stacking node.
+    CvOnly,
+    /// Allow REFIT to be skipped when coverage is incomplete, while still
+    /// rejecting malformed OOF blocks.
+    SkipRefitOnIncompleteOof,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StackingOofRefitContract {
+    #[serde(default)]
+    pub policy: StackingOofRefitPolicy,
+}
+
+impl Default for StackingOofRefitContract {
+    fn default() -> Self {
+        Self {
+            policy: StackingOofRefitPolicy::RequireFullCoverage,
+        }
+    }
+}
+
+impl StackingOofRefitContract {
+    pub fn from_metadata(metadata: &BTreeMap<String, Value>) -> Result<Self> {
+        let Some(value) = metadata.get(STACKING_OOF_REFIT_CONTRACT_METADATA_KEY) else {
+            return Ok(Self::default());
+        };
+        let contract = serde_json::from_value::<Self>(value.clone()).map_err(|error| {
+            DagMlError::OofValidation(format!(
+                "`{STACKING_OOF_REFIT_CONTRACT_METADATA_KEY}` must be an object with policy \
+                 `require_full_coverage`, `cv_only` or `skip_refit_on_incomplete_oof`: {error}"
+            ))
+        })?;
+        Ok(contract)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StackingOofRefitDecision {
+    RefitAllowed(StackingOofRefitCoverageDiagnostic),
+    SkipRefit(StackingOofRefitCoverageDiagnostic),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StackingOofRefitCause {
+    FullCoverage,
+    CvOnly,
+    IncompleteOofCoverage,
+    PartialOofWithoutPolicy,
+    MissingFoldId,
+    UnknownFold,
+    FoldCoverageMismatch,
+    DuplicateValidationSample,
+    NonValidationPartition,
+}
+
+impl StackingOofRefitCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FullCoverage => "full_coverage",
+            Self::CvOnly => "cv_only",
+            Self::IncompleteOofCoverage => "incomplete_oof_coverage",
+            Self::PartialOofWithoutPolicy => "partial_oof_without_policy",
+            Self::MissingFoldId => "missing_fold_id",
+            Self::UnknownFold => "unknown_fold",
+            Self::FoldCoverageMismatch => "fold_coverage_mismatch",
+            Self::DuplicateValidationSample => "duplicate_validation_sample",
+            Self::NonValidationPartition => "non_validation_partition",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StackingOofRefitCoverageDiagnostic {
+    pub policy: StackingOofRefitPolicy,
+    pub cause: StackingOofRefitCause,
+    pub requested_sample_count: usize,
+    pub covered_sample_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_sample_ids: Vec<SampleId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_sample_ids: Vec<SampleId>,
+}
+
+impl StackingOofRefitDecision {
+    pub fn diagnostic(&self) -> &StackingOofRefitCoverageDiagnostic {
+        match self {
+            Self::RefitAllowed(diagnostic) | Self::SkipRefit(diagnostic) => diagnostic,
+        }
+    }
+
+    pub fn should_skip_refit(&self) -> bool {
+        matches!(self, Self::SkipRefit(_))
+    }
+}
+
+pub fn validate_stacking_oof_refit_contract(
+    producer_node: &NodeId,
+    blocks: &[&PredictionBlock],
+    fold_set: &FoldSet,
+    contract: &StackingOofRefitContract,
+) -> Result<StackingOofRefitDecision> {
+    fold_set.validate()?;
+    if contract.policy == StackingOofRefitPolicy::CvOnly {
+        return Ok(StackingOofRefitDecision::SkipRefit(
+            StackingOofRefitCoverageDiagnostic {
+                policy: contract.policy,
+                cause: StackingOofRefitCause::CvOnly,
+                requested_sample_count: fold_set.sample_ids.len(),
+                covered_sample_count: 0,
+                missing_sample_ids: fold_set.sample_ids.clone(),
+                extra_sample_ids: Vec::new(),
+            },
+        ));
+    }
+
+    let folds = fold_set
+        .folds
+        .iter()
+        .map(|fold| (&fold.fold_id, fold))
+        .collect::<BTreeMap<_, _>>();
+    let mut covered = BTreeSet::new();
+    for block in blocks {
+        if block.partition != PredictionPartition::Validation {
+            return Err(stacking_refit_contract_error(
+                producer_node,
+                StackingOofRefitCause::NonValidationPartition,
+                format!(
+                    "selected {:?} predictions for REFIT stacking; only validation OOF may train a meta-model",
+                    block.partition
+                ),
+            ));
+        }
+        block.validate_content()?;
+        let fold_id = block.fold_id.as_ref().ok_or_else(|| {
+            stacking_refit_contract_error(
+                producer_node,
+                StackingOofRefitCause::MissingFoldId,
+                "validation OOF block is missing fold_id".to_string(),
+            )
+        })?;
+        let fold = folds.get(fold_id).ok_or_else(|| {
+            stacking_refit_contract_error(
+                producer_node,
+                StackingOofRefitCause::UnknownFold,
+                format!("validation OOF block references unknown fold `{fold_id}`"),
+            )
+        })?;
+        validate_stacking_block_matches_fold(producer_node, block, fold)?;
+        for sample_id in &block.sample_ids {
+            if !covered.insert(sample_id.clone())
+                && fold_set.partition_mode == FoldPartitionMode::Partition
+            {
+                return Err(stacking_refit_contract_error(
+                    producer_node,
+                    StackingOofRefitCause::DuplicateValidationSample,
+                    format!(
+                        "sample `{sample_id}` appears in validation OOF for more than one fold"
+                    ),
+                ));
+            }
+        }
+    }
+
+    let requested = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    if covered == requested {
+        return Ok(StackingOofRefitDecision::RefitAllowed(
+            StackingOofRefitCoverageDiagnostic {
+                policy: contract.policy,
+                cause: StackingOofRefitCause::FullCoverage,
+                requested_sample_count: requested.len(),
+                covered_sample_count: covered.len(),
+                missing_sample_ids: Vec::new(),
+                extra_sample_ids: Vec::new(),
+            },
+        ));
+    }
+
+    let diagnostic = StackingOofRefitCoverageDiagnostic {
+        policy: contract.policy,
+        cause: match contract.policy {
+            StackingOofRefitPolicy::SkipRefitOnIncompleteOof => {
+                StackingOofRefitCause::IncompleteOofCoverage
+            }
+            StackingOofRefitPolicy::RequireFullCoverage => {
+                StackingOofRefitCause::PartialOofWithoutPolicy
+            }
+            StackingOofRefitPolicy::CvOnly => StackingOofRefitCause::CvOnly,
+        },
+        requested_sample_count: requested.len(),
+        covered_sample_count: covered.len(),
+        missing_sample_ids: requested.difference(&covered).cloned().collect(),
+        extra_sample_ids: covered.difference(&requested).cloned().collect(),
+    };
+    if contract.policy == StackingOofRefitPolicy::SkipRefitOnIncompleteOof {
+        return Ok(StackingOofRefitDecision::SkipRefit(diagnostic));
+    }
+    Err(stacking_refit_contract_error(
+        producer_node,
+        diagnostic.cause,
+        format!(
+            "OOF predictions do not cover the refit sample universe: {} requested sample(s), {} covered, {} missing, {} extra",
+            diagnostic.requested_sample_count,
+            diagnostic.covered_sample_count,
+            diagnostic.missing_sample_ids.len(),
+            diagnostic.extra_sample_ids.len()
+        ),
+    ))
+}
+
+fn validate_stacking_block_matches_fold(
+    producer_node: &NodeId,
+    block: &PredictionBlock,
+    fold: &FoldAssignment,
+) -> Result<()> {
+    let actual = block.sample_ids.iter().collect::<BTreeSet<_>>();
+    let expected = fold.validation_sample_ids.iter().collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(stacking_refit_contract_error(
+            producer_node,
+            StackingOofRefitCause::FoldCoverageMismatch,
+            format!(
+                "fold `{}` OOF samples do not match the fold validation samples",
+                fold.fold_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn stacking_refit_contract_error(
+    producer_node: &NodeId,
+    cause: StackingOofRefitCause,
+    detail: String,
+) -> DagMlError {
+    DagMlError::OofValidation(format!(
+        "stacking OOF refit contract violation for producer `{producer_node}`: cause={}; {detail}",
+        cause.as_str()
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -622,6 +875,29 @@ mod tests {
         }
     }
 
+    fn contract_fold_set() -> FoldSet {
+        FoldSet {
+            id: "folds:stacking.contract".to_string(),
+            sample_ids: ["s1", "s2", "s3", "s4"].iter().map(|s| sid(s)).collect(),
+            folds: vec![
+                FoldAssignment {
+                    fold_id: FoldId::new("fold0").unwrap(),
+                    train_sample_ids: ["s3", "s4"].iter().map(|s| sid(s)).collect(),
+                    validation_sample_ids: ["s1", "s2"].iter().map(|s| sid(s)).collect(),
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("fold1").unwrap(),
+                    train_sample_ids: ["s1", "s2"].iter().map(|s| sid(s)).collect(),
+                    validation_sample_ids: ["s3", "s4"].iter().map(|s| sid(s)).collect(),
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
+        }
+    }
+
     fn load_fixture(source: &str) -> OofCampaign {
         serde_json::from_str(source).unwrap()
     }
@@ -826,6 +1102,112 @@ mod tests {
             None,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn stacking_oof_refit_contract_allows_full_coverage() {
+        let fold_set = contract_fold_set();
+        let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
+        let f1 = campaign_block("model:pls", "fold1", &["s3", "s4"]);
+        let producer = NodeId::new("model:pls").unwrap();
+
+        let decision = validate_stacking_oof_refit_contract(
+            &producer,
+            &[&f0, &f1],
+            &fold_set,
+            &StackingOofRefitContract::default(),
+        )
+        .unwrap();
+
+        match decision {
+            StackingOofRefitDecision::RefitAllowed(diagnostic) => {
+                assert_eq!(diagnostic.cause, StackingOofRefitCause::FullCoverage);
+                assert_eq!(diagnostic.requested_sample_count, 4);
+                assert_eq!(diagnostic.covered_sample_count, 4);
+            }
+            other => panic!("full OOF coverage must allow refit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stacking_oof_refit_contract_rejects_partial_without_policy() {
+        let fold_set = contract_fold_set();
+        let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
+        let producer = NodeId::new("model:pls").unwrap();
+
+        let error = validate_stacking_oof_refit_contract(
+            &producer,
+            &[&f0],
+            &fold_set,
+            &StackingOofRefitContract::default(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("cause=partial_oof_without_policy"));
+        assert!(error.contains("do not cover the refit sample universe"));
+    }
+
+    #[test]
+    fn stacking_oof_refit_contract_skips_incomplete_when_explicit() {
+        let fold_set = contract_fold_set();
+        let f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
+        let producer = NodeId::new("model:pls").unwrap();
+        let contract = StackingOofRefitContract {
+            policy: StackingOofRefitPolicy::SkipRefitOnIncompleteOof,
+        };
+
+        let decision =
+            validate_stacking_oof_refit_contract(&producer, &[&f0], &fold_set, &contract).unwrap();
+
+        match decision {
+            StackingOofRefitDecision::SkipRefit(diagnostic) => {
+                assert_eq!(
+                    diagnostic.cause,
+                    StackingOofRefitCause::IncompleteOofCoverage
+                );
+                assert_eq!(diagnostic.covered_sample_count, 2);
+                assert_eq!(diagnostic.missing_sample_ids, vec![sid("s3"), sid("s4")]);
+            }
+            other => panic!("partial OOF with explicit skip policy must skip refit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stacking_oof_refit_contract_cv_only_skips_without_oof() {
+        let fold_set = contract_fold_set();
+        let producer = NodeId::new("model:pls").unwrap();
+        let contract = StackingOofRefitContract {
+            policy: StackingOofRefitPolicy::CvOnly,
+        };
+
+        let decision =
+            validate_stacking_oof_refit_contract(&producer, &[], &fold_set, &contract).unwrap();
+
+        match decision {
+            StackingOofRefitDecision::SkipRefit(diagnostic) => {
+                assert_eq!(diagnostic.cause, StackingOofRefitCause::CvOnly);
+                assert_eq!(diagnostic.missing_sample_ids, fold_set.sample_ids);
+            }
+            other => panic!("cv_only stacking policy must skip refit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stacking_oof_refit_contract_rejects_invalid_oof_even_with_skip_policy() {
+        let fold_set = contract_fold_set();
+        let mut f0 = campaign_block("model:pls", "fold0", &["s1", "s2"]);
+        f0.partition = PredictionPartition::Train;
+        let producer = NodeId::new("model:pls").unwrap();
+        let contract = StackingOofRefitContract {
+            policy: StackingOofRefitPolicy::SkipRefitOnIncompleteOof,
+        };
+
+        let error = validate_stacking_oof_refit_contract(&producer, &[&f0], &fold_set, &contract)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("cause=non_validation_partition"));
     }
 
     #[test]

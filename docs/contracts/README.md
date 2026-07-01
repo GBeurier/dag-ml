@@ -144,6 +144,17 @@ can reject malformed graph JSON before controller resolution or scheduling.
 Rust validation remains the semantic authority for uniqueness, endpoint checks,
 port-kind alignment and cycle refusal.
 
+Prediction-stacking meta-nodes reserve the optional node metadata key
+`stacking_oof_refit_contract`. Its current shape is
+`{"policy": "require_full_coverage" | "cv_only" | "skip_refit_on_incomplete_oof"}`.
+The default is `require_full_coverage`: REFIT consumes validation OOF only when
+the producer covers the complete refit sample universe. `cv_only` always skips
+the stacking node during REFIT, while `skip_refit_on_incomplete_oof` skips only
+when otherwise well-formed validation OOF is incomplete. Invalid OOF still fails
+with a stable cause such as `partial_oof_without_policy` or
+`non_validation_partition`; Rust validates the metadata object and the OOF
+coverage semantics.
+
 ## Pipeline DSL v1
 
 Schema: `pipeline_dsl.schema.json`
