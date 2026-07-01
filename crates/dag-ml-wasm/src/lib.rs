@@ -18,8 +18,8 @@ use dag_ml_core::{
     compile_pipeline_dsl_with_generation_and_controller_registry, fold_set_fingerprint,
     parse_pipeline_dsl_json, select_candidate, select_candidate_groups, CampaignSpec,
     CandidateScore, ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError,
-    ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec, KFoldSpec, SampleId, SelectionPolicy,
-    StratifiedKFoldSpec,
+    ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec, HostControllerSpec, KFoldSpec, SampleId,
+    SelectionPolicy, StratifiedKFoldSpec,
 };
 use dag_ml_core::{
     ControllerId, NodeResult, NodeTask, Phase, Result as CoreResult, RunContext, RunId,
@@ -57,6 +57,24 @@ pub fn validate_controller_manifest_json(json: &str) -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub fn validate_controller_manifest_list_json(json: &str) -> Result<(), JsValue> {
     controller_registry_from_json(json).map(|_| ())
+}
+
+#[wasm_bindgen]
+pub fn derive_controller_manifest_json(host_controller_spec_json: &str) -> Result<String, JsValue> {
+    let spec: HostControllerSpec =
+        serde_json::from_str(host_controller_spec_json).map_err(js_serde_error)?;
+    let manifest = spec.derive().map_err(js_core_error)?;
+    serde_json::to_string(&manifest).map_err(js_serde_error)
+}
+
+#[wasm_bindgen]
+pub fn derive_controller_manifest_list_json(
+    host_controller_specs_json: &str,
+) -> Result<String, JsValue> {
+    let specs = serde_json::from_str::<Vec<HostControllerSpec>>(host_controller_specs_json)
+        .map_err(js_serde_error)?;
+    let manifests = derive_controller_manifests(specs)?;
+    serde_json::to_string(&manifests).map_err(js_serde_error)
 }
 
 #[wasm_bindgen]
@@ -222,6 +240,19 @@ fn controller_registry_from_json(json: &str) -> Result<ControllerRegistry, JsVal
     Ok(registry)
 }
 
+fn derive_controller_manifests(
+    specs: Vec<HostControllerSpec>,
+) -> Result<Vec<ControllerManifest>, JsValue> {
+    let mut registry = ControllerRegistry::new();
+    let mut manifests = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let manifest = spec.derive().map_err(js_core_error)?;
+        registry.register(manifest.clone()).map_err(js_core_error)?;
+        manifests.push(manifest);
+    }
+    Ok(manifests)
+}
+
 fn contract_manifest() -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
@@ -243,6 +274,8 @@ fn contract_manifest() -> serde_json::Value {
             "compile_pipeline_dsl",
             "compile_pipeline_dsl_with_generation",
             "compile_pipeline_dsl_with_controller_registry",
+            "derive_controller_manifest_from_host_spec",
+            "derive_controller_manifest_registry_from_host_specs",
             "build_execution_plan",
             "fold_set_fingerprint",
             "structured_error_descriptors"
@@ -257,6 +290,8 @@ fn contract_manifest() -> serde_json::Value {
             "validate_campaign_json",
             "validate_controller_manifest_json",
             "validate_controller_manifest_list_json",
+            "derive_controller_manifest_json",
+            "derive_controller_manifest_list_json",
             "validate_pipeline_dsl_json",
             "validate_execution_plan_json",
             "validate_execution_bundle_json",
@@ -274,6 +309,8 @@ fn contract_manifest() -> serde_json::Value {
             "validate_campaign_json",
             "validate_controller_manifest_json",
             "validate_controller_manifest_list_json",
+            "derive_controller_manifest_json",
+            "derive_controller_manifest_list_json",
             "validate_pipeline_dsl_json",
             "validate_execution_plan_json",
             "validate_execution_bundle_json",
@@ -416,4 +453,59 @@ pub fn execute_campaign_phase_json(
         .execute_campaign_phase(&plan, &controllers, &mut ctx, phase)
         .map_err(js_core_error)?;
     serde_json::to_string(&results).map_err(js_serde_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derives_controller_manifest_json_for_wasm_surface() {
+        let spec_json = r#"{
+            "controller_id": "controller:nirs4all.model",
+            "controller_version": "0.10.0",
+            "operator_kind": "model",
+            "priority": 20
+        }"#;
+        let manifest_json =
+            derive_controller_manifest_json(spec_json).expect("host spec derives manifest JSON");
+        validate_controller_manifest_json(&manifest_json).expect("derived manifest validates");
+        let manifest: ControllerManifest =
+            serde_json::from_str(&manifest_json).expect("manifest JSON decodes");
+        assert_eq!(manifest.controller_id.as_str(), "controller:nirs4all.model");
+        assert_eq!(manifest.priority, 20);
+    }
+
+    #[test]
+    fn derives_controller_manifest_list_json_for_wasm_surface() {
+        let specs_json = r#"[
+            {
+                "controller_id": "controller:nirs4all.transform",
+                "controller_version": "0.10.0",
+                "operator_kind": "transform"
+            },
+            {
+                "controller_id": "controller:nirs4all.model",
+                "controller_version": "0.10.0",
+                "operator_kind": "model"
+            }
+        ]"#;
+        let manifests_json = derive_controller_manifest_list_json(specs_json)
+            .expect("host specs derive manifest list JSON");
+        validate_controller_manifest_list_json(&manifests_json)
+            .expect("derived manifest list validates");
+        let manifests: Vec<ControllerManifest> =
+            serde_json::from_str(&manifests_json).expect("manifest list decodes");
+        assert_eq!(manifests.len(), 2);
+
+        let manifest = contract_manifest();
+        assert!(manifest["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("derive_controller_manifest_json")));
+        assert!(manifest["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("derive_controller_manifest_list_json")));
+    }
 }

@@ -15,6 +15,8 @@ const REQUIRED_DTS_EXPORTS = [
   "compile_pipeline_dsl_graph_json",
   "contract_manifest_json",
   "dag_ml_version",
+  "derive_controller_manifest_json",
+  "derive_controller_manifest_list_json",
   "fold_set_fingerprint_json",
   "validate_fold_set_json",
 ];
@@ -70,6 +72,9 @@ assertPackageMetadata(manifest.version);
 if (!manifest.wasm_exports.includes("compile_pipeline_dsl_artifact_json")) {
   throw new Error("contract manifest is missing WASM DSL export");
 }
+if (!manifest.wasm_exports.includes("derive_controller_manifest_json")) {
+  throw new Error("contract manifest is missing WASM controller-derivation export");
+}
 if (!manifest.capabilities.includes("structured_error_descriptors")) {
   throw new Error("contract manifest is missing structured error capability");
 }
@@ -80,6 +85,29 @@ const artifact = JSON.parse(dagMl.compile_pipeline_dsl_artifact_json(dslJson));
 if (!artifact.campaign_template) {
   throw new Error("compiled artifact is missing campaign_template");
 }
+const hostControllerSpecs = [
+  {
+    controller_id: "controller:wasm.web.smoke.transform",
+    controller_version: "0.10.0",
+    operator_kind: "transform",
+  },
+  {
+    controller_id: "controller:wasm.web.smoke.model",
+    controller_version: "0.10.0",
+    operator_kind: "model",
+    priority: 20,
+  },
+];
+const derivedControllers = JSON.parse(
+  dagMl.derive_controller_manifest_list_json(JSON.stringify(hostControllerSpecs)),
+);
+if (derivedControllers.length !== 2) {
+  throw new Error("derived controller manifest list has wrong length");
+}
+dagMl.validate_controller_manifest_json(
+  dagMl.derive_controller_manifest_json(JSON.stringify(hostControllerSpecs[0])),
+);
+dagMl.validate_controller_manifest_list_json(JSON.stringify(derivedControllers));
 const foldSet = {
   id: "cv.partition",
   sample_ids: ["s1", "s2", "s3"],
