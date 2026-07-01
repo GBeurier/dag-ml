@@ -22,7 +22,7 @@
   "ports": [
     {
       "accepted_representations": ["tabular_numeric"],
-      "accepted_types": ["f32", "f64"],
+      "accepted_types": ["table"],
       "metadata": {
         "semantic_axes": ["sample", "feature"]
       },
