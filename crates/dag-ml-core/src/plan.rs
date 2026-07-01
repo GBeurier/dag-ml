@@ -7,6 +7,7 @@ use crate::controller::{
     ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
     ControllerRegistry, RngPolicy,
 };
+use crate::controller_adapter::representation_type_id;
 use crate::data::{BranchViewPlan, DataBinding, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::fold::{FoldSet, NestedCvSpec};
@@ -290,6 +291,7 @@ impl ExecutionPlan {
                 }
                 binding.validate()?;
             }
+            validate_data_binding_requirements(node_id, plan, manifest)?;
             let actual_params_fingerprint = stable_json_fingerprint(&plan.params)?;
             if actual_params_fingerprint != plan.params_fingerprint {
                 return Err(DagMlError::Planning(format!(
@@ -486,6 +488,58 @@ impl ExecutionPlan {
     pub fn branch_view_for_path(&self, branch_path: &[String]) -> Option<&BranchViewPlan> {
         branch_view_for_path_in(&self.campaign.branch_view_plans, branch_path)
     }
+}
+
+fn validate_data_binding_requirements(
+    node_id: &NodeId,
+    plan: &NodePlan,
+    manifest: &ControllerManifest,
+) -> Result<()> {
+    let Some(model_input) = manifest.model_input_spec()? else {
+        return Ok(());
+    };
+    for binding in &plan.data_bindings {
+        let Some(port) = model_input
+            .ports
+            .iter()
+            .find(|port| port.name == binding.input_name)
+        else {
+            return Err(DagMlError::Planning(format!(
+                "node `{node_id}` data binding `{}` is not declared by controller `{}` data_requirements",
+                binding.input_name, manifest.controller_id
+            )));
+        };
+        if !port
+            .accepted_representations
+            .iter()
+            .any(|representation| representation == &binding.output_representation)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{node_id}` data binding `{}` output representation `{}` is not accepted by controller `{}` data_requirements port `{}`",
+                binding.input_name,
+                binding.output_representation,
+                manifest.controller_id,
+                port.name
+            )));
+        }
+        if let Some(type_id) = representation_type_id(&binding.output_representation) {
+            if !port
+                .accepted_types
+                .iter()
+                .any(|accepted_type| accepted_type.as_str() == type_id)
+            {
+                return Err(DagMlError::Planning(format!(
+                    "node `{node_id}` data binding `{}` output representation `{}` has registered type `{type_id}` but controller `{}` data_requirements port `{}` accepts types {:?}",
+                    binding.input_name,
+                    binding.output_representation,
+                    manifest.controller_id,
+                    port.name,
+                    port.accepted_types
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn branch_view_for_in<'a>(
@@ -1177,6 +1231,35 @@ mod tests {
         registry
     }
 
+    fn registry_with_model_data_requirements(
+        accepted_representations: &[&str],
+        accepted_types: &[&str],
+    ) -> ControllerRegistry {
+        let mut registry = ControllerRegistry::new();
+        registry
+            .register(manifest("controller:transform", NodeKind::Transform))
+            .unwrap();
+        let mut model = manifest("controller:model", NodeKind::Model);
+        model.data_requirements = Some(serde_json::json!({
+            "schema_version": 1,
+            "ports": [
+                {
+                    "name": "x",
+                    "accepted_representations": accepted_representations,
+                    "accepted_types": accepted_types,
+                    "rank": 2,
+                    "multi_source": true,
+                    "optional": false
+                }
+            ],
+            "metadata": {
+                "source": "plan-test"
+            }
+        }));
+        registry.register(model).unwrap();
+        registry
+    }
+
     fn campaign(id: &str) -> CampaignSpec {
         CampaignSpec {
             id: id.to_string(),
@@ -1191,6 +1274,66 @@ mod tests {
             inner_cv: None,
             metadata: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn build_execution_plan_consumes_controller_data_requirements_for_bindings() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let mut campaign = campaign("campaign:datareq.ok");
+        campaign.data_bindings = BTreeMap::from([(
+            model_id,
+            vec![data_binding(&NodeId::new("model:pls").unwrap())],
+        )]);
+        let plan = build_execution_plan(
+            "plan:datareq.ok",
+            graph(),
+            campaign,
+            &registry_with_model_data_requirements(&["tabular_numeric"], &["table"]),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.node_plans[&NodeId::new("model:pls").unwrap()].data_bindings[0]
+                .output_representation,
+            "tabular_numeric"
+        );
+    }
+
+    #[test]
+    fn build_execution_plan_rejects_binding_representation_outside_data_requirements() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let mut campaign = campaign("campaign:datareq.representation");
+        campaign.data_bindings =
+            BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]);
+        let error = build_execution_plan(
+            "plan:datareq.representation",
+            graph(),
+            campaign,
+            &registry_with_model_data_requirements(&["signal_1d"], &["dense_signal"]),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("output representation"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn build_execution_plan_rejects_binding_registered_type_outside_data_requirements() {
+        let model_id = NodeId::new("model:pls").unwrap();
+        let mut campaign = campaign("campaign:datareq.type");
+        campaign.data_bindings =
+            BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]);
+        let error = build_execution_plan(
+            "plan:datareq.type",
+            graph(),
+            campaign,
+            &registry_with_model_data_requirements(&["tabular_numeric"], &["dense_signal"]),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("registered type `table`"),
+            "unexpected error: {error}"
+        );
     }
 
     fn large_linear_graph(transform_count: usize) -> GraphSpec {

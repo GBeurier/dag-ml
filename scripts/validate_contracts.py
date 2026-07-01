@@ -33,6 +33,7 @@ EXECUTION_PLAN_SCHEMA_REL = Path("docs/contracts/execution_plan.schema.json")
 MODEL_INPUT_SPEC_SCHEMA_REL = Path("docs/contracts/model_input_spec.schema.json")
 DATA_PLAN_SCHEMA_REL = Path("docs/contracts/data_plan.schema.json")
 CONTROLLER_MANIFEST_SCHEMA_REL = Path("docs/contracts/controller_manifest.schema.json")
+REPRESENTATION_REGISTRY_REL = Path("docs/contracts/representation_registry.v1.json")
 SELECTION_POLICY_SCHEMA_REL = Path("docs/contracts/selection_policy.schema.json")
 SELECTION_DECISION_SCHEMA_REL = Path("docs/contracts/selection_decision.schema.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
@@ -122,6 +123,9 @@ SIBLING_FIXTURE_REL = Path(
 )
 SIBLING_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/oof_campaign/feature_fusion_selector_nir_chem.json"
+)
+SIBLING_MODEL_INPUT_SPEC_FIXTURE_REL = Path(
+    "examples/fixtures/data/model_input_spec_tabular_regressor.json"
 )
 SIBLING_C_HEADER_REL = Path("crates/dag-ml-data-capi/include/dag_ml_data.h")
 LOCAL_SCHEMA_ID = (
@@ -4760,9 +4764,11 @@ def validate_conformance_pack(
     fitted_adapter_schema: Any,
     data_output_provenance_schema: Any,
     parity_oracle: Any,
+    representation_registry: Any,
     fixture: Any,
     multisource_fixture: Any,
     feature_fusion_fixture: Any,
+    model_input_spec_fixture: Any,
     data_output_provenance_fixture: Any,
     oof_success_fixture: Any,
     oof_train_refusal_fixture: Any,
@@ -4817,6 +4823,13 @@ def validate_conformance_pack(
         1,
         f"{label} parity oracle contract",
     )
+    validate_digest_record(
+        contracts.get("representation_registry.v1"),
+        canonical_json_sha256(representation_registry),
+        "representation_registry_manifest",
+        1,
+        f"{label} representation registry contract",
+    )
 
     fixtures = pack.get("fixtures")
     require(isinstance(fixtures, dict), f"{label} conformance pack fixtures must be an object")
@@ -4855,6 +4868,18 @@ def validate_conformance_pack(
     require(
         fusion_fixture.get("contract") == "feature_fusion_selector.v1",
         f"{label} feature fusion fixture must reference feature fusion contract",
+    )
+    model_input_record = fixtures.get("model_input_spec_tabular_regressor.v1")
+    validate_digest_record(
+        model_input_record,
+        canonical_json_sha256(model_input_spec_fixture),
+        None,
+        None,
+        f"{label} model input spec fixture",
+    )
+    require(
+        model_input_record.get("contract") == "model_input_spec.v1",
+        f"{label} model input fixture must reference model input contract",
     )
     provenance_fixture = fixtures.get("data_output_provenance_augmented_view.v1")
     validate_digest_record(
@@ -4948,6 +4973,8 @@ def validate_conformance_pack(
         "headers.include_order",
         "provider.f64_predict_replay",
         "fold_set.fingerprint_parity",
+        "representation_registry.parity",
+        "model_input_spec.fixture_equivalence",
     ):
         require(test_id in required_tests, f"{label} conformance pack must require `{test_id}`")
 
@@ -5285,6 +5312,7 @@ def main(argv: list[str] | None = None) -> int:
         local_model_input_spec_schema = load_json(ROOT / MODEL_INPUT_SPEC_SCHEMA_REL)
         local_data_plan_schema = load_json(ROOT / DATA_PLAN_SCHEMA_REL)
         local_controller_manifest_schema = load_json(ROOT / CONTROLLER_MANIFEST_SCHEMA_REL)
+        local_representation_registry = load_json(ROOT / REPRESENTATION_REGISTRY_REL)
         local_selection_policy_schema = load_json(ROOT / SELECTION_POLICY_SCHEMA_REL)
         local_selection_decision_schema = load_json(ROOT / SELECTION_DECISION_SCHEMA_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
@@ -5473,9 +5501,11 @@ def main(argv: list[str] | None = None) -> int:
             local_fitted_adapter_schema,
             local_data_output_provenance_schema,
             local_parity_oracle,
+            local_representation_registry,
             local_fixture,
             local_multisource_fixture,
             local_feature_fusion_fixture,
+            local_model_input_spec_fixture,
             local_data_output_provenance_fixture,
             local_oof_success_fixture,
             local_oof_train_refusal_fixture,
@@ -5501,9 +5531,13 @@ def main(argv: list[str] | None = None) -> int:
         sibling_feature_fusion_schema = load_json(sibling / FEATURE_FUSION_SCHEMA_REL)
         sibling_pack = load_json(sibling / CONFORMANCE_PACK_REL)
         sibling_parity_oracle = load_json(sibling / PARITY_ORACLE_REL)
+        sibling_representation_registry = load_json(sibling / REPRESENTATION_REGISTRY_REL)
         sibling_fixture = load_json(sibling / SIBLING_FIXTURE_REL)
         sibling_feature_fusion_fixture = load_json(
             sibling / SIBLING_FEATURE_FUSION_FIXTURE_REL
+        )
+        sibling_model_input_spec_fixture = load_json(
+            sibling / SIBLING_MODEL_INPUT_SPEC_FIXTURE_REL
         )
         sibling_fold_set_fixture = load_json(sibling / SHARED_FOLD_SET_FIXTURE_REL)
         sibling_header = load_text(sibling / SIBLING_C_HEADER_REL)
@@ -5515,6 +5549,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         validate_envelope(sibling_fixture, "dag-ml-data")
         validate_feature_fusion_selector(sibling_feature_fusion_fixture, "dag-ml-data")
+        validate_model_input_spec(sibling_model_input_spec_fixture, "dag-ml-data")
         validate_fold_set_fixture(sibling_fold_set_fixture, "dag-ml-data shared")
         require(
             canonical_fold_set_fingerprint(sibling_fold_set_fixture)
@@ -5536,9 +5571,11 @@ def main(argv: list[str] | None = None) -> int:
             local_fitted_adapter_schema,
             local_data_output_provenance_schema,
             sibling_parity_oracle,
+            sibling_representation_registry,
             sibling_fixture,
             local_multisource_fixture,
             sibling_feature_fusion_fixture,
+            sibling_model_input_spec_fixture,
             local_data_output_provenance_fixture,
             local_oof_success_fixture,
             local_oof_train_refusal_fixture,
@@ -5561,6 +5598,14 @@ def main(argv: list[str] | None = None) -> int:
         require(
             local_feature_fusion_fixture == sibling_feature_fusion_fixture,
             "feature fusion selector fixtures diverge",
+        )
+        require(
+            local_representation_registry == sibling_representation_registry,
+            "representation registries diverge",
+        )
+        require(
+            local_model_input_spec_fixture == sibling_model_input_spec_fixture,
+            "model input spec fixtures diverge",
         )
         require(
             canonical_fold_set_fingerprint(local_fold_set_fixture)
