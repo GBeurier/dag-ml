@@ -20,6 +20,7 @@ pub const MODEL_INPUT_SPEC_SCHEMA_ID: &str =
 pub const DATA_PLAN_SCHEMA_VERSION: u32 = 1;
 pub const DATA_PLAN_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/data_plan.v1.schema.json";
+pub const SOURCE_INDEX_METADATA_KEY: &str = "source_index";
 
 fn default_external_data_plan_envelope_schema_version() -> u32 {
     EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
@@ -1377,6 +1378,21 @@ impl DataBinding {
                 )));
             }
         }
+        validate_unique_strings(
+            &format!(
+                "data binding `{}` on `{}` source_ids",
+                self.input_name, self.node_id
+            ),
+            &self.source_ids,
+        )?;
+        validate_source_index_metadata(
+            &format!(
+                "data binding `{}` on `{}` metadata.source_index",
+                self.input_name, self.node_id
+            ),
+            self.metadata.get(SOURCE_INDEX_METADATA_KEY),
+            &self.source_ids,
+        )?;
         Ok(())
     }
 
@@ -1413,6 +1429,54 @@ impl DataBinding {
         }
         Ok(())
     }
+}
+
+pub(crate) fn validate_source_index_metadata(
+    label: &str,
+    value: Option<&serde_json::Value>,
+    expected_sources: &[String],
+) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let Some(source_index) = value.as_object() else {
+        return Err(DagMlError::CampaignValidation(format!(
+            "{label} must be an object mapping source id to feature-axis block index"
+        )));
+    };
+    if source_index.is_empty() {
+        return Err(DagMlError::CampaignValidation(format!(
+            "{label} must not be empty"
+        )));
+    }
+    let mut seen_indices = BTreeSet::new();
+    for (source_id, index_value) in source_index {
+        if source_id.trim().is_empty() {
+            return Err(DagMlError::CampaignValidation(format!(
+                "{label} contains an empty source id"
+            )));
+        }
+        let Some(index) = index_value.as_u64() else {
+            return Err(DagMlError::CampaignValidation(format!(
+                "{label} entry `{source_id}` must be a non-negative integer"
+            )));
+        };
+        if !seen_indices.insert(index) {
+            return Err(DagMlError::CampaignValidation(format!(
+                "{label} contains duplicate feature-axis block index `{index}`"
+            )));
+        }
+    }
+    if !expected_sources.is_empty() {
+        let actual = source_index.keys().cloned().collect::<BTreeSet<_>>();
+        let expected = expected_sources.iter().cloned().collect::<BTreeSet<_>>();
+        if actual != expected {
+            return Err(DagMlError::CampaignValidation(format!(
+                "{label} keys must match data binding source_ids"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
