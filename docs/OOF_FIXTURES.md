@@ -79,6 +79,16 @@ Assertions:
 `dag-ml` owns folds, prediction blocks, OOF joins, leakage refusal and campaign
 fingerprints. `dag-ml-data` owns schema/model-input/adapter-plan fixtures only.
 
+## Stacking REFIT Coverage Contract
+
+The runtime distinguishes three stacking REFIT outcomes:
+
+| Case | Required policy | Outcome |
+|---|---|---|
+| full validation-OOF coverage for the refit sample universe | default `require_full_coverage` | meta-model REFIT may consume OOF |
+| incomplete but otherwise well-formed validation OOF | `cv_only` or `skip_refit_on_incomplete_oof` on `metadata.stacking_oof_refit_contract.policy` | stacking REFIT is skipped |
+| incomplete OOF without explicit policy, train/final/test prediction input, missing fold ids, unknown folds, fold/sample mismatch or duplicate validation rows | none | rejected with a stable cause such as `partial_oof_without_policy` |
+
 ## D8 Conformance Pack
 
 `docs/contracts/conformance_pack.v1.json` pins canonical digests for

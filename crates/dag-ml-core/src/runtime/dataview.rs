@@ -325,6 +325,7 @@ pub(crate) struct CollectedInputs {
     pub(crate) handles: BTreeMap<String, HandleRef>,
     pub(crate) data_views: BTreeMap<String, DataProviderViewSpec>,
     pub(crate) prediction_inputs: BTreeMap<String, PredictionInputSpec>,
+    pub(crate) skip_node: bool,
 }
 
 pub(crate) fn data_view_key(input_name: &str) -> String {

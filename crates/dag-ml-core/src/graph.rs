@@ -237,6 +237,16 @@ impl GraphSpec {
                     node.id
                 )));
             }
+            crate::oof::StackingOofRefitContract::from_metadata(&node.metadata).map_err(
+                |error| {
+                    DagMlError::GraphValidation(format!(
+                        "node `{}` carries invalid `{}` metadata: {}",
+                        node.id,
+                        crate::oof::STACKING_OOF_REFIT_CONTRACT_METADATA_KEY,
+                        error
+                    ))
+                },
+            )?;
             validate_unique_ports(&node.id, "input", &node.ports.inputs)?;
             validate_unique_ports(&node.id, "output", &node.ports.outputs)?;
         }
