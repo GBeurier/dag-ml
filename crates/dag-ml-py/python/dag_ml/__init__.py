@@ -26,6 +26,8 @@ from ._dag_ml import (
     compile_pipeline_dsl_artifact_json,
     compile_pipeline_dsl_artifact_with_controllers_json,
     compile_pipeline_dsl_graph_json,
+    derive_controller_manifest_json,
+    derive_controller_manifest_list_json,
     fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
     validate_campaign_json,
@@ -51,6 +53,8 @@ _FACADE_EXPORTS = [
     "CampaignSpec",
     "ControllerManifest",
     "ControllerManifests",
+    "HostControllerSpec",
+    "HostControllerSpecs",
     "PipelineDslSpec",
     "ExecutionPlan",
     "ExecutionBundle",
@@ -59,6 +63,8 @@ _FACADE_EXPORTS = [
     "compile_pipeline_dsl_graph",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_with_controllers",
+    "derive_controller_manifest",
+    "derive_controller_manifests",
     "fan_out_data_aware_branches",
     "build_execution_plan",
 ]
@@ -152,6 +158,18 @@ class ControllerManifests(JsonContract):
         validate_controller_manifest_list_json(json_text)
 
 
+class HostControllerSpec(JsonContract):
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        derive_controller_manifest_json(json_text)
+
+
+class HostControllerSpecs(JsonContract):
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        derive_controller_manifest_list_json(json_text)
+
+
 class PipelineDslSpec(JsonContract):
     @classmethod
     def _validate_json(cls, json_text: str) -> None:
@@ -243,6 +261,20 @@ def compile_pipeline_dsl_artifact_with_controllers(
     )
 
 
+def derive_controller_manifest(host_controller_spec: Any) -> ControllerManifest:
+    """Derive a validated ControllerManifest from a HostControllerSpec JSON object."""
+    return ControllerManifest(
+        derive_controller_manifest_json(_coerce_json(host_controller_spec))
+    )
+
+
+def derive_controller_manifests(host_controller_specs: Any) -> ControllerManifests:
+    """Derive a validated ControllerManifest list from HostControllerSpec JSON objects."""
+    return ControllerManifests(
+        derive_controller_manifest_list_json(_coerce_json(host_controller_specs))
+    )
+
+
 def fan_out_data_aware_branches(dsl: Any, envelope: Any) -> PipelineDslSpec:
     """Expand an ``auto_separate`` separation-branch template into one branch per partition.
 
@@ -295,6 +327,8 @@ __all__ = [
     "ExecutionPlan",
     "FoldSet",
     "GraphSpec",
+    "HostControllerSpec",
+    "HostControllerSpecs",
     "JsonContract",
     "PipelineDslSpec",
     "build_execution_plan",
@@ -307,6 +341,10 @@ __all__ = [
     "compile_pipeline_dsl_artifact_with_controllers_json",
     "compile_pipeline_dsl_graph",
     "compile_pipeline_dsl_graph_json",
+    "derive_controller_manifest",
+    "derive_controller_manifest_json",
+    "derive_controller_manifest_list_json",
+    "derive_controller_manifests",
     "fan_out_data_aware_branches",
     "fan_out_data_aware_branches_json",
     "fold_set_fingerprint_json",

@@ -18,7 +18,7 @@ use dag_ml_core::{
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
     parse_pipeline_dsl_json, CampaignSpec, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
-    FoldSet, GraphSpec,
+    FoldSet, GraphSpec, HostControllerSpec,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -85,6 +85,22 @@ fn validate_controller_manifest_json(json: &str) -> PyResult<()> {
 #[pyfunction]
 fn validate_controller_manifest_list_json(json: &str) -> PyResult<()> {
     controller_registry_from_json(json).map(|_| ())
+}
+
+#[pyfunction]
+fn derive_controller_manifest_json(host_controller_spec_json: &str) -> PyResult<String> {
+    let spec: HostControllerSpec =
+        serde_json::from_str(host_controller_spec_json).map_err(py_serde_error)?;
+    let manifest = spec.derive().map_err(py_core_error)?;
+    serde_json::to_string(&manifest).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn derive_controller_manifest_list_json(host_controller_specs_json: &str) -> PyResult<String> {
+    let specs = serde_json::from_str::<Vec<HostControllerSpec>>(host_controller_specs_json)
+        .map_err(py_serde_error)?;
+    let manifests = derive_controller_manifests(specs)?;
+    serde_json::to_string(&manifests).map_err(py_serde_error)
 }
 
 #[pyfunction]
@@ -226,6 +242,11 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         validate_controller_manifest_list_json,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(derive_controller_manifest_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        derive_controller_manifest_list_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(validate_pipeline_dsl_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_execution_plan_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_execution_bundle_json, module)?)?;
@@ -275,6 +296,8 @@ fn contract_manifest() -> serde_json::Value {
             "compile_pipeline_dsl",
             "compile_pipeline_dsl_with_generation",
             "compile_pipeline_dsl_with_controller_registry",
+            "derive_controller_manifest_from_host_spec",
+            "derive_controller_manifest_registry_from_host_specs",
             "build_execution_plan",
             "fold_set_fingerprint",
             "structured_error_descriptors"
@@ -289,6 +312,8 @@ fn contract_manifest() -> serde_json::Value {
             "validate_campaign_json",
             "validate_controller_manifest_json",
             "validate_controller_manifest_list_json",
+            "derive_controller_manifest_json",
+            "derive_controller_manifest_list_json",
             "validate_pipeline_dsl_json",
             "validate_execution_plan_json",
             "validate_execution_bundle_json",
@@ -309,6 +334,8 @@ fn contract_manifest() -> serde_json::Value {
             "validate_campaign_json",
             "validate_controller_manifest_json",
             "validate_controller_manifest_list_json",
+            "derive_controller_manifest_json",
+            "derive_controller_manifest_list_json",
             "validate_pipeline_dsl_json",
             "validate_execution_plan_json",
             "validate_execution_bundle_json",
@@ -352,6 +379,19 @@ fn controller_registry_from_json(json: &str) -> PyResult<ControllerRegistry> {
         registry.register(manifest).map_err(py_core_error)?;
     }
     Ok(registry)
+}
+
+fn derive_controller_manifests(
+    specs: Vec<HostControllerSpec>,
+) -> PyResult<Vec<ControllerManifest>> {
+    let mut registry = ControllerRegistry::new();
+    let mut manifests = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let manifest = spec.derive().map_err(py_core_error)?;
+        registry.register(manifest.clone()).map_err(py_core_error)?;
+        manifests.push(manifest);
+    }
+    Ok(manifests)
 }
 
 fn py_serde_error(error: serde_json::Error) -> PyErr {
@@ -527,6 +567,80 @@ mod tests {
     }
 
     #[test]
+    fn derives_controller_manifest_from_host_spec_json() {
+        let spec_json = r#"{
+            "controller_id": "controller:nirs4all.model",
+            "controller_version": "0.10.0",
+            "operator_kind": "model",
+            "priority": 20,
+            "added_capabilities": ["needs_python_gil"],
+            "operator_selectors": [{"aliases": ["Ridge"]}]
+        }"#;
+        let manifest_json =
+            derive_controller_manifest_json(spec_json).expect("host spec derives manifest JSON");
+        validate_controller_manifest_json(&manifest_json).expect("derived manifest validates");
+        let manifest: ControllerManifest =
+            serde_json::from_str(&manifest_json).expect("manifest JSON decodes");
+        assert_eq!(manifest.controller_id.as_str(), "controller:nirs4all.model");
+        assert_eq!(manifest.priority, 20);
+        assert!(manifest
+            .capabilities
+            .contains(&dag_ml_core::ControllerCapability::NeedsPythonGil));
+
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "_dag_ml_test").unwrap();
+            _dag_ml(py, &module).unwrap();
+            let helper = module.getattr("derive_controller_manifest_json").unwrap();
+            let via_python: String = helper.call1((spec_json,)).unwrap().extract().unwrap();
+            assert_eq!(via_python, manifest_json);
+        });
+    }
+
+    #[test]
+    fn derives_controller_manifest_list_and_validates_registry() {
+        let specs_json = r#"[
+            {
+                "controller_id": "controller:nirs4all.transform",
+                "controller_version": "0.10.0",
+                "operator_kind": "transform"
+            },
+            {
+                "controller_id": "controller:nirs4all.model",
+                "controller_version": "0.10.0",
+                "operator_kind": "model"
+            }
+        ]"#;
+        let manifests_json = derive_controller_manifest_list_json(specs_json)
+            .expect("host specs derive manifest list JSON");
+        validate_controller_manifest_list_json(&manifests_json)
+            .expect("derived manifest list validates");
+        let manifests: Vec<ControllerManifest> =
+            serde_json::from_str(&manifests_json).expect("manifest list decodes");
+        assert_eq!(manifests.len(), 2);
+        assert_eq!(
+            manifests[0].controller_id.as_str(),
+            "controller:nirs4all.transform"
+        );
+
+        let duplicate_specs_json = r#"[
+            {
+                "controller_id": "controller:duplicate",
+                "controller_version": "0.10.0",
+                "operator_kind": "transform"
+            },
+            {
+                "controller_id": "controller:duplicate",
+                "controller_version": "0.10.0",
+                "operator_kind": "model"
+            }
+        ]"#;
+        let error = derive_controller_manifest_list_json(duplicate_specs_json)
+            .expect_err("duplicate controller ids are rejected");
+        assert!(error.to_string().contains("duplicate controller id"));
+    }
+
+    #[test]
     fn contract_manifest_declares_binding_surface() {
         let manifest =
             serde_json::from_str::<serde_json::Value>(&contract_manifest_json().unwrap()).unwrap();
@@ -536,6 +650,14 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("contract_manifest_json")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("derive_controller_manifest_json")));
+        assert!(manifest["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("derive_controller_manifest_list_json")));
         assert_eq!(
             manifest["shared"]["fold_set_fixture_fingerprint"],
             SHARED_FOLD_SET_FINGERPRINT

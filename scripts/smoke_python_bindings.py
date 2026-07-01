@@ -37,12 +37,16 @@ def main() -> None:
         )
     if "compile_pipeline_dsl_artifact_json" not in manifest["python_exports"]:
         raise SystemExit("contract manifest is missing Python DSL export")
+    if "derive_controller_manifest_json" not in manifest["python_exports"]:
+        raise SystemExit("contract manifest is missing Python controller-derivation export")
     if "compile_pipeline_dsl_artifact_json" not in manifest["wasm_exports"]:
         raise SystemExit("contract manifest is missing WASM DSL export")
     if "structured_error_descriptors" not in manifest["capabilities"]:
         raise SystemExit("contract manifest is missing structured error capability")
     if "CompiledPipelineArtifact" not in manifest["python_facade_exports"]:
         raise SystemExit("contract manifest is missing Python facade artifact export")
+    if "derive_controller_manifests" not in manifest["python_facade_exports"]:
+        raise SystemExit("contract manifest is missing Python facade controller derivation")
     if (
         manifest["shared"]["fold_set_fixture_fingerprint"]
         != SHARED_FOLD_SET_FINGERPRINT
@@ -56,6 +60,25 @@ def main() -> None:
     dag_ml.GraphSpec(typed_artifact.graph)
     dag_ml.CampaignSpec(typed_artifact.campaign_template)
     controllers = dag_ml.ControllerManifests(controller_manifests_json)
+    host_controller_specs = [
+        {
+            "controller_id": "controller:python.smoke.transform",
+            "controller_version": "0.10.0",
+            "operator_kind": "transform",
+        },
+        {
+            "controller_id": "controller:python.smoke.model",
+            "controller_version": "0.10.0",
+            "operator_kind": "model",
+            "priority": 20,
+        },
+    ]
+    derived_controllers = dag_ml.derive_controller_manifests(host_controller_specs)
+    if len(derived_controllers.to_dict()) != 2:
+        raise SystemExit("derived controller manifest list has wrong length")
+    dag_ml.ControllerManifest(
+        dag_ml.derive_controller_manifest(host_controller_specs[0]).json()
+    )
     typed_plan = dag_ml.build_execution_plan(
         "plan:python.facade",
         typed_artifact.graph,
