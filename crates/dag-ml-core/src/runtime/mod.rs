@@ -50,7 +50,9 @@ pub(crate) use crate::metrics::{
     RegressionMetricReport, RegressionTargetBlock, RegressionTargetRecord, ScoreSet,
     SCORE_SET_SCHEMA_VERSION,
 };
-pub(crate) use crate::oof::{PredictionBlock, PredictionPartition};
+pub(crate) use crate::oof::{
+    PredictionBlock, PredictionPartition, StackingOofRefitContract, StackingOofRefitDecision,
+};
 pub(crate) use crate::phase::Phase;
 pub(crate) use crate::plan::{prune_plan_to_active, CampaignSpec, ExecutionPlan, NodePlan};
 pub(crate) use crate::policy::{

@@ -714,6 +714,22 @@ Rules:
 9. Refit uses the selected aggregation and shape policies unless the predict/refit
    policy explicitly overrides them and records the override.
 
+### Stacking Refit Coverage Policy
+
+Prediction-stacking meta-nodes default to
+`stacking_oof_refit_contract.policy="require_full_coverage"`. Under that
+default, REFIT may train a meta-model only when each upstream OOF producer covers
+the complete refit sample universe from validation OOF blocks. Partial OOF
+coverage is rejected with the stable cause `partial_oof_without_policy`.
+
+A stacking node may explicitly opt out of meta-model REFIT by carrying
+`metadata.stacking_oof_refit_contract.policy="cv_only"`, or may run the CV path
+and skip REFIT only when coverage is incomplete with
+`"skip_refit_on_incomplete_oof"`. Both policies keep malformed OOF invalid:
+non-validation blocks, missing fold ids, unknown folds, fold/sample mismatches
+and duplicate validation samples are refused before any skip decision is
+accepted.
+
 ## Traceability
 
 Every accepted task emits or updates a `LineageRecord` containing:

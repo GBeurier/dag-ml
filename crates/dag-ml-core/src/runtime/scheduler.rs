@@ -426,6 +426,9 @@ impl SequentialScheduler {
                     ctx,
                     &scope,
                 )?;
+                if collected_inputs.skip_node {
+                    continue;
+                }
                 let mut input_handles = collected_inputs.handles;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
@@ -894,6 +897,9 @@ impl ParallelScheduler {
                     ctx,
                     &scope,
                 )?;
+                if collected_inputs.skip_node {
+                    continue;
+                }
                 let mut input_handles = collected_inputs.handles;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
@@ -1221,7 +1227,14 @@ pub(crate) fn collect_input_handles(
     }
     for edge in training_oof_edges {
         let key = format!("{}.{}", edge.source.node_id, edge.source.port_name);
-        let input = collect_oof_prediction_input(plan, edge, ctx, scope, resources)?;
+        let Some(input) = collect_oof_prediction_input(plan, edge, ctx, scope, resources)? else {
+            return Ok(CollectedInputs {
+                handles: BTreeMap::new(),
+                data_views: BTreeMap::new(),
+                prediction_inputs: BTreeMap::new(),
+                skip_node: true,
+            });
+        };
         if inputs.insert(key.clone(), input.handle).is_some() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "node `{}` received duplicate OOF prediction input `{key}`",
@@ -1362,6 +1375,7 @@ pub(crate) fn collect_input_handles(
         handles: inputs,
         data_views,
         prediction_inputs,
+        skip_node: false,
     })
 }
 pub(crate) fn preload_replay_prediction_cache_store(

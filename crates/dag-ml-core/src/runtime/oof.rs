@@ -147,7 +147,7 @@ pub(crate) fn collect_oof_prediction_input(
     ctx: &RunContext,
     scope: &PhaseScope,
     resources: &PhaseScopeResources<'_>,
-) -> Result<CollectedPredictionInput> {
+) -> Result<Option<CollectedPredictionInput>> {
     if scope.phase == Phase::Refit {
         if let Some(contract) = replay_prediction_cache_contract_for_edge(resources, edge) {
             if contract.requirement.prediction_level != PredictionLevel::Sample {
@@ -163,10 +163,10 @@ pub(crate) fn collect_oof_prediction_input(
                     resources,
                     &source_plan.controller_id,
                 )?;
-                return Ok(CollectedPredictionInput {
+                return Ok(Some(CollectedPredictionInput {
                     handle,
                     spec: prediction_input_spec_from_requirement(&contract.requirement, scope)?,
-                });
+                }));
             }
         }
     }
@@ -198,15 +198,18 @@ pub(crate) fn collect_oof_prediction_input(
             resources,
             &source_plan.controller_id,
         )?;
-        return Ok(CollectedPredictionInput {
+        return Ok(Some(CollectedPredictionInput {
             handle,
             spec: aggregated_prediction_input_spec(edge, scope, prediction_level, &blocks)?,
-        });
+        }));
     }
     let blocks = match scope.phase {
-        Phase::FitCv => validate_fit_cv_oof_edge(plan, edge, ctx, scope)?,
+        Phase::FitCv => Some(validate_fit_cv_oof_edge(plan, edge, ctx, scope)?),
         Phase::Refit => validate_refit_oof_edge(plan, edge, ctx)?,
-        _ => Vec::new(),
+        _ => Some(Vec::new()),
+    };
+    let Some(blocks) = blocks else {
+        return Ok(None);
     };
     let handle = materialize_oof_prediction_handle(
         plan,
@@ -216,10 +219,16 @@ pub(crate) fn collect_oof_prediction_input(
         resources,
         &source_plan.controller_id,
     )?;
-    Ok(CollectedPredictionInput {
+    Ok(Some(CollectedPredictionInput {
         handle,
-        spec: prediction_input_spec(edge, scope, &blocks)?,
-    })
+        spec: prediction_input_spec(
+            edge,
+            scope,
+            &blocks,
+            scope.phase == Phase::Refit
+                && plan_oof_partition_mode(plan) == FoldPartitionMode::Resampled,
+        )?,
+    }))
 }
 
 pub(crate) fn oof_prediction_level_for_source(source_plan: &NodePlan) -> PredictionLevel {
@@ -336,20 +345,54 @@ pub(crate) fn validate_refit_oof_edge<'a>(
     plan: &ExecutionPlan,
     edge: &EdgeSpec,
     ctx: &'a RunContext,
-) -> Result<Vec<&'a PredictionBlock>> {
+) -> Result<Option<Vec<&'a PredictionBlock>>> {
+    let contract = stacking_oof_refit_contract_for_edge(plan, edge)?;
     let blocks = ctx.prediction_store.find(
         Some(&edge.source.node_id),
         Some(&PredictionPartition::Validation),
         None,
     );
-    if blocks.is_empty() {
-        return Err(missing_oof_edge_error(edge, None));
-    }
     // MANDATORY exact OOF coverage — see `validate_fit_cv_oof_edge`. The branch-merge concat partition
     // exception is handled by the separation-merge handler, which never reaches this stacking path.
     let fold_set = required_fold_set_for_oof(plan, edge)?;
-    validate_oof_blocks_cover_fold_set(edge, fold_set, &blocks)?;
-    Ok(blocks)
+    let decision = crate::oof::validate_stacking_oof_refit_contract(
+        &edge.source.node_id,
+        &blocks,
+        fold_set,
+        &contract,
+    )?;
+    match decision {
+        StackingOofRefitDecision::RefitAllowed(_) => Ok(Some(blocks)),
+        StackingOofRefitDecision::SkipRefit(_) => Ok(None),
+    }
+}
+
+pub(crate) fn stacking_oof_refit_contract_for_edge(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+) -> Result<StackingOofRefitContract> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == edge.target.node_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "edge `{}.{}` -> `{}.{}` targets unknown node `{}`",
+                edge.source.node_id,
+                edge.source.port_name,
+                edge.target.node_id,
+                edge.target.port_name,
+                edge.target.node_id
+            ))
+        })?;
+    StackingOofRefitContract::from_metadata(&node.metadata).map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "node `{}` carries invalid stacking OOF refit contract: {}",
+            node.id, error
+        ))
+    })
 }
 
 pub(crate) fn validate_fit_cv_aggregated_oof_edge<'a>(
@@ -457,10 +500,8 @@ pub(crate) fn prediction_input_spec(
     edge: &EdgeSpec,
     scope: &PhaseScope,
     blocks: &[&PredictionBlock],
+    allow_cross_fold_duplicates: bool,
 ) -> Result<PredictionInputSpec> {
-    let sample_ids = collect_unique_oof_samples(edge, blocks)?
-        .into_iter()
-        .collect::<Vec<_>>();
     let fold_ids = blocks
         .iter()
         .filter_map(|block| block.fold_id.clone())
@@ -470,14 +511,26 @@ pub(crate) fn prediction_input_spec(
     // Validation OOF rows keyed by sample, so the meta-node host can build a
     // stacking feature matrix in FIT_CV/REFIT. Blocks are Validation-only (the
     // leakage guards in `validate_fit_cv_oof_edge` / `validate_refit_oof_edge`
-    // and `collect_unique_oof_samples` already refused any Train partition).
-    let mut rows_by_sample: BTreeMap<&SampleId, &[f64]> = BTreeMap::new();
+    // already refused any Train partition). Partition fold sets keep one row per
+    // sample; Resampled REFIT may average repeated validation rows after the
+    // contract validator has accepted that multiplicity.
+    let mut rows_by_sample: BTreeMap<&SampleId, Vec<&[f64]>> = BTreeMap::new();
     let mut prediction_width = None;
     let mut target_names = None;
     for block in blocks {
         let width = block.validate_shape()?;
         for (sample_id, row) in block.sample_ids.iter().zip(block.values.iter()) {
-            rows_by_sample.insert(sample_id, row.as_slice());
+            let rows = rows_by_sample.entry(sample_id).or_default();
+            if !allow_cross_fold_duplicates && !rows.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "edge `{}.{}` -> `{}.{}` has duplicate OOF prediction for sample `{sample_id}`",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name
+                )));
+            }
+            rows.push(row.as_slice());
         }
         let block_target_names = if block.target_names.is_empty() {
             (0..width)
@@ -510,12 +563,16 @@ pub(crate) fn prediction_input_spec(
         prediction_width = Some(width);
         target_names = Some(block_target_names);
     }
+    let sample_ids = rows_by_sample
+        .keys()
+        .map(|sample_id| (*sample_id).clone())
+        .collect::<Vec<_>>();
     let values = sample_ids
         .iter()
         .map(|sample_id| {
             rows_by_sample
                 .get(sample_id)
-                .map(|row| row.to_vec())
+                .map(|rows| average_prediction_rows(rows, prediction_width.unwrap_or_default()))
                 .ok_or_else(|| {
                     DagMlError::RuntimeValidation(format!(
                         "edge `{}.{}` -> `{}.{}` has no OOF prediction row for sample `{sample_id}`",
@@ -545,6 +602,23 @@ pub(crate) fn prediction_input_spec(
         prediction_width: prediction_width.unwrap_or_default(),
         target_names: target_names.unwrap_or_default(),
     })
+}
+
+fn average_prediction_rows(rows: &[&[f64]], width: usize) -> Vec<f64> {
+    if rows.len() == 1 {
+        return rows[0].to_vec();
+    }
+    let mut averaged = vec![0.0; width];
+    for row in rows {
+        for (index, value) in row.iter().enumerate() {
+            averaged[index] += value;
+        }
+    }
+    let denominator = rows.len() as f64;
+    for value in &mut averaged {
+        *value /= denominator;
+    }
+    averaged
 }
 
 pub(crate) fn aggregated_prediction_input_spec(
@@ -714,6 +788,7 @@ pub(crate) fn validate_oof_blocks_match_fold(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn validate_oof_blocks_cover_fold_set(
     edge: &EdgeSpec,
     fold_set: &FoldSet,
