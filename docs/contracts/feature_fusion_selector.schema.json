@@ -34,6 +34,12 @@
         { "type": "null" }
       ]
     },
+    "source_layout": {
+      "anyOf": [
+        { "$ref": "#/$defs/source_layout" },
+        { "type": "null" }
+      ]
+    },
     "policy": {
       "type": "object",
       "additionalProperties": false,
@@ -66,6 +72,15 @@
     },
     "representation_cardinality": {
       "enum": ["one_to_one", "one_to_many", "many_to_one", "many_to_many", "bounded_many"]
+    },
+    "fit_scope": {
+      "enum": ["stateless", "fold_train", "full_train", "inference_only"]
+    },
+    "source_layout_kind": {
+      "enum": ["by_source_concat"]
+    },
+    "source_concat_axis": {
+      "enum": ["feature"]
     },
     "combination_plan": {
       "type": "object",
@@ -180,6 +195,126 @@
           "type": "array",
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
+    "source_preprocessing_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["feature_set_id", "representation_id"],
+      "properties": {
+        "feature_set_id": {
+          "$ref": "#/$defs/non_empty_id"
+        },
+        "representation_id": {
+          "$ref": "#/$defs/non_empty_id"
+        },
+        "adapter_id": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "fit_scope": {
+          "anyOf": [
+            { "$ref": "#/$defs/fit_scope" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "source_layout_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "preprocessing_output", "column_start", "column_count"],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/non_empty_id"
+        },
+        "preprocessing_output": {
+          "$ref": "#/$defs/source_preprocessing_output"
+        },
+        "column_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "column_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "feature_names": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "source_concat_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feature_set_id",
+        "representation_id",
+        "axis",
+        "total_column_count",
+        "preserve_source_order",
+        "namespace_columns"
+      ],
+      "properties": {
+        "feature_set_id": {
+          "$ref": "#/$defs/non_empty_id"
+        },
+        "representation_id": {
+          "$ref": "#/$defs/non_empty_id"
+        },
+        "axis": {
+          "$ref": "#/$defs/source_concat_axis"
+        },
+        "total_column_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "preserve_source_order": {
+          "type": "boolean",
+          "const": true
+        },
+        "namespace_columns": {
+          "type": "boolean"
+        }
+      }
+    },
+    "source_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source_order", "blocks", "concat"],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/source_layout_kind"
+        },
+        "source_order": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_id"
+          }
+        },
+        "blocks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/source_layout_block"
+          }
+        },
+        "concat": {
+          "$ref": "#/$defs/source_concat_layout"
+        },
+        "metadata": {
+          "type": "object"
         }
       }
     },

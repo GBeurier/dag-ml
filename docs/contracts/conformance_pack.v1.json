@@ -10,7 +10,7 @@
     "feature_fusion_selector.v1": {
       "kind": "json_schema",
       "schema_version": 1,
-      "normalized_sha256": "44820d64f6dbc0f5324535135b6806f350518e06e9da63c2b79a8607ba31e84b"
+      "normalized_sha256": "8e0b16ce37ce41e8b009b288ff21e00c621f593b9e934133cf17c0042ade76a4"
     },
     "coordinator_branch_view.v1": {
       "kind": "json_schema",
@@ -49,7 +49,7 @@
     },
     "feature_fusion_selector_nir_chem.v1": {
       "contract": "feature_fusion_selector.v1",
-      "canonical_json_sha256": "aee68b20abc4cd9462171c43e034a67d3033768727995b8592bbf61226961f3f"
+      "canonical_json_sha256": "0320926e2cb095f2b2c2e0ff286c45647806e8ffb7be195127afec7d916a11d8"
     },
     "model_input_spec_tabular_regressor.v1": {
       "contract": "model_input_spec.v1",
@@ -74,7 +74,8 @@
       "surfaces": [
         "coordinator_data_plan_envelope",
         "relation.unit_identity",
-        "feature_fusion_selector"
+        "feature_fusion_selector",
+        "source_layout"
       ],
       "fixtures": [
         "coordinator_data_plan_envelope_multisource_repetitions.v1",
@@ -87,7 +88,29 @@
       "assertions": [
         "asymmetric A=2/B=3/C=2 repetitions are relation-backed observations",
         "relation and plan fingerprints are stable",
-        "feature fusion remains host-owned behind selector metadata"
+        "feature fusion remains host-owned behind selector metadata",
+        "by-source preprocessing outputs declare source order and feature-axis concat spans"
+      ]
+    },
+    "by_source_concat_layout.v1": {
+      "polarity": "positive",
+      "surfaces": [
+        "feature_fusion_selector.source_layout",
+        "source_preprocessing_output",
+        "concat_layout"
+      ],
+      "fixtures": [
+        "feature_fusion_selector_nir_chem.v1"
+      ],
+      "test_refs": [
+        "crates/dag-ml-data-core/src/fusion.rs::source_layout_validates_source_order_and_concat_spans",
+        "crates/dag-ml-data-core/src/fusion.rs::source_layout_refuses_block_order_mismatch",
+        "scripts/validate_contracts.py::validate_feature_fusion_selector"
+      ],
+      "assertions": [
+        "source_order is authoritative and matches selector source order",
+        "each source block names the preprocessing output feature_set_id and representation",
+        "feature-axis concat spans are contiguous and preserve source order"
       ]
     },
     "sample_level_late_fusion.v1": {
