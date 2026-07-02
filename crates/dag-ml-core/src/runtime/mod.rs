@@ -52,6 +52,7 @@ pub(crate) use crate::metrics::{
 };
 pub(crate) use crate::oof::{
     PredictionBlock, PredictionPartition, StackingOofRefitContract, StackingOofRefitDecision,
+    StackingOofRefitPolicy,
 };
 pub(crate) use crate::phase::Phase;
 pub(crate) use crate::plan::{prune_plan_to_active, CampaignSpec, ExecutionPlan, NodePlan};

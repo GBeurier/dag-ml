@@ -4682,6 +4682,40 @@ fn requires_oof_prediction_edge_refit_cv_only_skips_without_oof() {
 }
 
 #[test]
+fn requires_oof_prediction_edge_refit_rejects_missing_validation_predictions() {
+    // REGRESSION (0681cc6 dropped the empty-OOF guard from `validate_refit_oof_edge`): a direct REFIT
+    // with NO validation OOF at all — the FIT_CV phase was never run for the producer — must report the
+    // missing-OOF edge ("requires OOF validation predictions"), the same contract `validate_fit_cv_oof_edge`
+    // and `validate_refit_aggregated_oof_edge` enforce, instead of mislabeling zero coverage as
+    // `partial_oof_without_policy`. Only the default full-coverage policy turns empty into this error;
+    // `cv_only` / `skip_refit_on_incomplete_oof` still skip REFIT with zero OOF (see the two tests above).
+    let plan = build_execution_plan(
+        "plan:oof.edge.refit.missing",
+        oof_edge_graph(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+    )
+    .unwrap();
+    let controllers = oof_edge_runtime_controllers(None, OofSampleMode::Aligned);
+    let mut ctx = RunContext::new(RunId::new("run:oof.edge.refit.missing").unwrap(), Some(11));
+
+    let error = SequentialScheduler
+        .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::Refit)
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("requires OOF validation predictions"),
+        "got: {error}"
+    );
+    assert!(error.contains("model:base"), "got: {error}");
+    assert!(
+        !error.contains("partial_oof_without_policy"),
+        "empty OOF must not be reported as partial coverage, got: {error}"
+    );
+}
+
+#[test]
 fn refit_oof_cover_is_partition_mode_aware() {
     // REGRESSION (8dd4c6e over-rejected ShuffleSplit): the refit OOF-coverage edge validator must be
     // FoldPartitionMode-aware. Under Partition (KFold) a sample covered by two folds is a duplicated
