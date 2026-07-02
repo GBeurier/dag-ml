@@ -352,6 +352,16 @@ pub(crate) fn validate_refit_oof_edge<'a>(
         Some(&PredictionPartition::Validation),
         None,
     );
+    // No validation OOF at all, under the default full-coverage policy, means the CV phase was never
+    // run for this producer (e.g. a direct REFIT without a prior FIT_CV). Report it as a missing-OOF
+    // edge — matching `validate_fit_cv_oof_edge` and `validate_refit_aggregated_oof_edge`, which both
+    // guard `blocks.is_empty()` up front — rather than routing an empty set through the partial-coverage
+    // contract validator, which would mislabel "no OOF at all" as `partial_oof_without_policy`. The
+    // explicit `cv_only` / `skip_refit_on_incomplete_oof` policies still legitimately skip REFIT with
+    // zero OOF, so this guard is scoped to `RequireFullCoverage`.
+    if blocks.is_empty() && contract.policy == StackingOofRefitPolicy::RequireFullCoverage {
+        return Err(missing_oof_edge_error(edge, None));
+    }
     // MANDATORY exact OOF coverage — see `validate_fit_cv_oof_edge`. The branch-merge concat partition
     // exception is handled by the separation-merge handler, which never reaches this stacking path.
     let fold_set = required_fold_set_for_oof(plan, edge)?;
