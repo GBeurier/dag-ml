@@ -13,7 +13,7 @@
 [package]
 name = "dag-ml-py"
 description = "Python bindings for DAG-ML JSON contracts."
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.83"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
@@ -31,7 +31,7 @@ default = []
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-dag-ml-core = { path = "../dag-ml-core", version = "0.2.1" }
+dag-ml-core = { path = "../dag-ml-core", version = "0.2.2" }
 pyo3 = { version = "0.28.3", features = ["abi3-py311"] }
 pythonize = "0.28"
 serde = { version = "1.0", features = ["derive"] }
