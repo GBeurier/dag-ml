@@ -19,7 +19,7 @@ jobs:
     env:
       DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v6
@@ -64,7 +64,7 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "contract_changed=$contract_changed" >> "$GITHUB_OUTPUT"
       - name: Checkout dag-ml-data contract peer
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
           ref: ${{ steps.peer.outputs.ref }}
@@ -78,9 +78,9 @@ jobs:
     env:
       DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Checkout dag-ml-data contract peer
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
           path: external/dag-ml-data
@@ -99,7 +99,7 @@ jobs:
     env:
       DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Full history so scripts/check_so_freshness.py can compare the
           # committed .so's last-commit time against its Rust sources; a
@@ -107,7 +107,7 @@ jobs:
           # would make the guard false-negative.
           fetch-depth: 0
       - name: Checkout dag-ml-data contract peer
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
           path: external/dag-ml-data
@@ -160,7 +160,7 @@ jobs:
     name: AddressSanitizer (capi)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
@@ -178,7 +178,7 @@ jobs:
     name: Documentation site
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -197,9 +197,9 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Checkout dag-ml-data contract peer
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
           path: external/dag-ml-data
@@ -236,9 +236,9 @@ jobs:
       matrix:
         node-version: ["20", "22"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Checkout dag-ml-data contract peer
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
           path: external/dag-ml-data
