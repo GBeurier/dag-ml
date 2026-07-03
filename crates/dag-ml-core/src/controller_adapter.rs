@@ -91,7 +91,7 @@ const FROZEN_REPRESENTATION_TYPES: &[(&str, &str)] = &[
 
 /// Return the frozen `type_id` registered for `representation_id`, or `None`
 /// when the id is outside the mirrored registry subset
-/// ([`FROZEN_REPRESENTATION_TYPES`]). Hosts use this to type a port while
+/// (`FROZEN_REPRESENTATION_TYPES`). Hosts use this to type a port while
 /// building an explicit `data_requirements` override; the adapter uses it to
 /// synthesize the default one.
 pub fn representation_type_id(representation_id: &str) -> Option<&'static str> {
@@ -384,7 +384,7 @@ fn represented_port(name: &str, kind: PortKind, representation: &str) -> PortSpe
 /// data/target input ports.
 ///
 /// Each `Data`/`Target` input port that carries a representation present in the
-/// frozen registry mirror ([`FROZEN_REPRESENTATION_TYPES`]) contributes one
+/// frozen registry mirror (`FROZEN_REPRESENTATION_TYPES`) contributes one
 /// [`ModelInputPortSpec`] accepting that representation id and its registry
 /// `type_id`. Returns `Ok(None)` when the controller declares no such port (e.g.
 /// a prediction-join consuming only OOF predictions) or when a data/target port

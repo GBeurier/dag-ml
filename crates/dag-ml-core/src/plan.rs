@@ -1056,7 +1056,7 @@ fn validate_campaign_node_targets(graph: &GraphSpec, campaign: &CampaignSpec) ->
 ///    inactive edge).
 /// 5. `graph_fingerprint` is recomputed from the pruned graph; `variants` is set to exactly the
 ///    SELECT candidate's variant; the result is `validate`d and then run through
-///    [`validate_active_inputs`] (Invariant P4-1).
+///    `validate_active_inputs` (Invariant P4-1).
 ///
 /// The campaign is carried unchanged (its `shape_plans`/`data_bindings`/`generation` are validated
 /// per-object, not re-checked against the pruned node set), so the pruned candidate replays exactly

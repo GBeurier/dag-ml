@@ -777,7 +777,7 @@ pub struct CrossFoldValidation {
 /// avg)` row's per-sample y_pred, not only the scalar). The per-fold join is identity-keyed; producers
 /// with a single fold are skipped (nothing to ensemble).
 ///
-/// `partition_mode` mirrors the campaign [`FoldPartitionMode`](crate::fold::FoldPartitionMode):
+/// `partition_mode` mirrors the campaign [`FoldPartitionMode`]:
 /// under `Partition` (KFold) the per-producer OOF must be unique (each sample scored exactly once);
 /// under `Resampled` (ShuffleSplit / repeated CV) a sample may appear in several folds — those
 /// predictions are averaged by [`reduce_predictions_across_folds`] — so the across-fold uniqueness
