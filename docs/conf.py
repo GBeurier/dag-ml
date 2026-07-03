@@ -27,7 +27,6 @@ exclude_patterns = [
     "Thumbs.db",
     ".DS_Store",
     "design/source/*",
-    "design/DSL_NIRS4ALL_PARITY.md",
     "HOST_ADAPTER_BACKLOG.md",
     "STUDIO_LITE_WASM_GAPS.md",
     "HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md",
