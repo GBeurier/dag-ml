@@ -43,16 +43,16 @@ Read these three tiers in order. **Tier 3 is a trap: it is parallel design, not 
 | [`../COORDINATOR_SPEC.md`](../COORDINATOR_SPEC.md) | ★★★ | current | Normative product contract; has an explicit **"Confrontation With Current nirs4all Pipeline" + migration map**. The alignment source of truth. |
 | [`../CAPABILITY_MATRIX.md`](../CAPABILITY_MATRIX.md) | ★★★ | current | States outright the goal **is to replace the nirs4all core engine**; per-feature responsibility map + 4-stage MVP→replacement path. |
 | [`../design/DSL_NIRS4ALL_PARITY.md`](../design/DSL_NIRS4ALL_PARITY.md) | ★★★ | current | Live acceptance criterion: maps **every nirs4all construct → dag-ml NodeKind**, importer status, gaps/regression list. |
-| [`../STATUS.md`](../STATUS.md) | ★★★ | current* | Authoritative ledger of what's implemented in 0.2.0 vs backlog. |
+| `../STATUS.md` | ★★★ | current* | Authoritative ledger of what's implemented in 0.2.0 vs backlog. |
 | [`../SUPPORTED.md`](../SUPPORTED.md) | ★★★ | current | Per-area Supported / Conformance / Experimental / Backlog — what you may depend on as production. |
-| [`../HOST_ADAPTER_BACKLOG.md`](../HOST_ADAPTER_BACKLOG.md) | ★★★ | current* | Defines the **process-adapter JSONL wire protocol** nirs4all must implement; confirms sklearn adapter shipped. |
-| [`../MVP_ACCEPTANCE.md`](../MVP_ACCEPTANCE.md) | ★★★ | current* | dag-ml ↔ dag-ml-data ownership boundary + UC6/UC11 acceptance the MVP must satisfy. |
-| [`../TEST_PLAN.md`](../TEST_PLAN.md) | ★★★ | current* | Most complete inventory of what dag-ml validates today; the ledger to diff nirs4all behaviour against. |
+| `../HOST_ADAPTER_BACKLOG.md` | ★★★ | current* | Defines the **process-adapter JSONL wire protocol** nirs4all must implement; confirms sklearn adapter shipped. |
+| `../MVP_ACCEPTANCE.md` | ★★★ | current* | dag-ml ↔ dag-ml-data ownership boundary + UC6/UC11 acceptance the MVP must satisfy. |
+| `../TEST_PLAN.md` | ★★★ | current* | Most complete inventory of what dag-ml validates today; the ledger to diff nirs4all behaviour against. |
 | [`../ABI.md`](../ABI.md) | ★★★ | current | Full C-ABI surface (vtables, ownership, Arrow boundaries) — the in-process/WASM host path. |
-| [`../ROADMAP.md`](../ROADMAP.md) / [`../FINAL_RELEASE_AUDIT.md`](../FINAL_RELEASE_AUDIT.md) | ★★ | current* | Phase status + 0.2.0 release verdict + green-gate command sequence. |
-| [`../HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md`](../HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md) | ★★★ | current* | Phased D0–D10 roadmap for the NIRS-critical shared-target-multi-spectra feature. |
+| `../ROADMAP.md` / `../FINAL_RELEASE_AUDIT.md` | ★★ | current* | Phase status + 0.2.0 release verdict + green-gate command sequence. |
+| `../HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md` | ★★★ | current* | Phased D0–D10 roadmap for the NIRS-critical shared-target-multi-spectra feature. |
 | [`../PERFORMANCE.md`](../PERFORMANCE.md) | ★★ | current | **Perf is only sanity-probed, not benchmarked** — a named cutover risk (see harness doc). |
-| [`../ARCHITECTURE.md`](../ARCHITECTURE.md) / [`../AGGREGATION_INTEROP.md`](../AGGREGATION_INTEROP.md) / [`../OOF_FIXTURES.md`](../OOF_FIXTURES.md) / [`../STUDIO_LITE_WASM_GAPS.md`](../STUDIO_LITE_WASM_GAPS.md) | ★★ | current | Crate map, reducer interop, canonical OOF fixtures, remaining execution gaps. |
+| [`../ARCHITECTURE.md`](../ARCHITECTURE.md) / [`../AGGREGATION_INTEROP.md`](../AGGREGATION_INTEROP.md) / [`../OOF_FIXTURES.md`](../OOF_FIXTURES.md) / `../STUDIO_LITE_WASM_GAPS.md` | ★★ | current | Crate map, reducer interop, canonical OOF fixtures, remaining execution gaps. |
 
 **ADRs — framed as Phase-0 of the nirs4all integration** ([`../adr/README.md`](../adr/README.md)):
 
@@ -66,7 +66,7 @@ Read these three tiers in order. **Tier 3 is a trap: it is parallel design, not 
 | [ADR-05 repetition-cv-invariant](../adr/ADR-05-repetition-cv-invariant.md) · [ADR-11 error-taxonomy](../adr/ADR-11-error-taxonomy.md) | Leakage invariant the bridge can't drop · typed error substrate. |
 | ADR-03/04/06/07/08/13/15/16/19 | Per-feature semantics the bridge must reproduce (branches, tag/exclude masks, signal-type, reducers, sessions, process-adapter security, GIL/async, artifact security, multisource units). |
 
-**Archived design-source** (historical but richest code-level orders) — [`../design/source/_archive/`](../design/source/_archive/):
+**Archived design-source** (historical but richest code-level orders) — `../design/source/_archive/`:
 `dag_ml_specification_v1.md` **§19 = 10-step migration plan**; `dag_ml_externalization_from_code.md` = **9-step extraction order** from the live nirs4all engine; `dag_ml_use_cases.md` = **Annexe-A DSL→NodeKind acceptance table**.
 
 > *`current*` = the doc is part of the "kept-locally / untracked" set in `dag-ml/.gitignore`

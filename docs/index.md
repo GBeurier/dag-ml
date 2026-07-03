@@ -102,4 +102,17 @@ SUPPORTED
 AGGREGATION_INTEROP
 PERFORMANCE
 design/README
+design/DSL_NIRS4ALL_PARITY
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: nirs4all Migration
+:hidden:
+
+migration-nirs4all/README
+migration-nirs4all/WORKING_STRATEGY
+migration-nirs4all/PARITY_AND_PERF_HARNESS
+migration-nirs4all/TARGET_RESPONSIBILITY_SPLIT
+migration-nirs4all/NATIVE_PERSISTENCE_LAYER_REPORT
 ```
