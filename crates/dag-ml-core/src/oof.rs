@@ -107,7 +107,7 @@ impl PredictionBlock {
 
 /// Mandatory, central OOF *coverage* invariant — the single gate every path that *concatenates a
 /// producer's per-fold validation predictions into one out-of-fold set* must pass through. Spec
-/// [`COORDINATOR_SPEC.md`] §"OOF And Leakage Rules" rule 3: every producer must provide **exactly one
+/// `COORDINATOR_SPEC.md` §"OOF And Leakage Rules" rule 3: every producer must provide **exactly one
 /// validation prediction per requested sample** unless an explicit aggregation policy says otherwise.
 ///
 /// The gate is [`FoldPartitionMode`]-aware, matching the same Partition/Resampled split that
