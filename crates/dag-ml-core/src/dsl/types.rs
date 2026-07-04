@@ -349,7 +349,7 @@ pub struct PipelineDslGeneratorStep {
     /// CONSTRAINED operator generators (ADR-17 1a + 1b): `_mutex_`/`_requires_`/`_exclude_` over the
     /// generator's OPERATOR-CONTENT (its branch/option ids, the operator classes nirs4all references).
     /// Applied during sequence-build so the operator dimension carries only the pruned survivor set
-    /// (see [`expand_or_generator_sequences`](crate::dsl::expand_or_generator_sequences)). ADDITIVE:
+    /// (see `expand_or_generator_sequences`). ADDITIVE:
     /// skipped when `None`, so a constraint-free generator serializes byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constraints: Option<PipelineDslGeneratorConstraints>,

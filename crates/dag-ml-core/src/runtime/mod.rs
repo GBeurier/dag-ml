@@ -254,7 +254,7 @@ pub struct RunContext {
     pub regression_target_records: Vec<RegressionTargetRecord>,
     /// The per-sample cross-fold OOF average blocks (+ `y_true`) collected alongside the scalar OOF
     /// average reports — one per scored producer. Surfaced so the host can fill the `(validation, avg)`
-    /// row's per-sample y_pred; populated by [`collect_cross_fold_validation_scores`], empty otherwise.
+    /// row's per-sample y_pred; populated by `collect_cross_fold_validation_scores`, empty otherwise.
     pub oof_average_blocks: Vec<OofAverageBlock>,
 }
 
@@ -300,7 +300,7 @@ impl RunContext {
     }
 
     /// Build a [`ScoreSet`] from the collected reports (or `None` if scoring was off / produced
-    /// nothing), e.g. to attach to the [`ExecutionBundle`](crate::bundle::ExecutionBundle).
+    /// nothing), e.g. to attach to the [`ExecutionBundle`].
     pub fn build_score_set(
         &self,
         plan_id: impl Into<String>,
