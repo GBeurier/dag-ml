@@ -35,7 +35,7 @@ identical in **every language**, on top of which each language adds its own **co
   by construction.
 - **`nirs4all-methods` models are the SAME binary across languages** (portable C-ABI), so methods
   built on it get **full cross-language reproducibility** (binary + results).
-- **`nirs4all` becomes "nirs4all-lite + Python controllers"**: the lite skeleton plus Python
+- **`nirs4all` becomes "nirs4all-core + Python controllers"**: the core skeleton plus Python
   operators/controllers. Python is the flagship (SHAP, ML/DL controllers, Studio), but the skeleton
   is universal — **"torch from R" must behave like "torch from Python"** (same skeleton, same dag-ml
   core, same persistence; only the host controller differs).
