@@ -103,7 +103,7 @@ pub(crate) fn lower_operator_variant_model(
 /// NOT a number; and the param value forms are preserved exactly as the DSL carries them (`1` is not
 /// coerced to `1.0`). `variant_label` is the hex sha256 of `serde_json::to_vec` over that canonical
 /// array — the SAME `sha256(serde_json::to_vec(..))` primitive
-/// [`stable_json_fingerprint`](crate::campaign::stable_json_fingerprint) uses, applied to the
+/// `stable_json_fingerprint` uses, applied to the
 /// explicitly-built canonical value (never a struct's field order).
 ///
 /// `class` is the step's operator FQN as a string: a bare-string operator (`"SNV"`) renders to

@@ -90,8 +90,7 @@ const FROZEN_REPRESENTATION_TYPES: &[(&str, &str)] = &[
 ];
 
 /// Return the frozen `type_id` registered for `representation_id`, or `None`
-/// when the id is outside the mirrored registry subset
-/// ([`FROZEN_REPRESENTATION_TYPES`]). Hosts use this to type a port while
+/// when the id is outside the mirrored registry subset. Hosts use this to type a port while
 /// building an explicit `data_requirements` override; the adapter uses it to
 /// synthesize the default one.
 pub fn representation_type_id(representation_id: &str) -> Option<&'static str> {
