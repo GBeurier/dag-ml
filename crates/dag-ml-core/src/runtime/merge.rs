@@ -1045,7 +1045,7 @@ pub(crate) fn data_view_for_partition(
             }
             DataRequestPartition::FullTrain | DataRequestPartition::Predict => None,
         },
-        source_ids: (!binding.source_ids.is_empty()).then(|| binding.source_ids.clone()),
+        source_ids: source_ids_for_view(binding, branch_view)?,
         columns: None,
         include_augmented,
         include_excluded,
@@ -1054,6 +1054,32 @@ pub(crate) fn data_view_for_partition(
     };
     view.validate()?;
     Ok(view)
+}
+
+fn source_ids_for_view(
+    binding: &DataBinding,
+    branch_view: Option<&crate::data::BranchViewPlan>,
+) -> Result<Option<Vec<String>>> {
+    let Some(branch_view) = branch_view else {
+        return Ok((!binding.source_ids.is_empty()).then(|| binding.source_ids.clone()));
+    };
+    if branch_view.mode != crate::data::BranchViewMode::BySource {
+        return Ok((!binding.source_ids.is_empty()).then(|| binding.source_ids.clone()));
+    }
+    if branch_view.selector.source_ids.len() != 1 {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "by_source branch view `{}` must select exactly one source_id for `{}` on `{}`",
+            branch_view.view_id, binding.input_name, binding.node_id
+        )));
+    }
+    let source_id = branch_view.selector.source_ids[0].clone();
+    if !binding.source_ids.is_empty() && !binding.source_ids.iter().any(|item| item == &source_id) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "by_source branch view `{}` selects source `{source_id}` outside data binding source_ids {:?} for `{}` on `{}`",
+            branch_view.view_id, binding.source_ids, binding.input_name, binding.node_id
+        )));
+    }
+    Ok(Some(vec![source_id]))
 }
 
 pub(crate) fn data_partition_for_scope(
