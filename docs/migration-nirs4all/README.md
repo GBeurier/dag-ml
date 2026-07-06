@@ -95,7 +95,7 @@ These never reference dag-ml; they independently reinvent large parts of it. Tre
 
 ### Cross-repo integration contracts (adjacent, not core)
 
-`dag-ml-data:docs/ADR-0001-nirs4all-connector-ownership.md` · `nirs4all-methods:docs/nirs4all_integration_map.md` (per-class PLS/model → libn4m swap; largely blocked today) · `nirs4all-lite:docs/PARITY.md` (full-Python nirs4all = oracle of record) · `nirs4all-formats:docs/INTEGRATION_NIRS4ALL.md` (leaf readers, no dag-ml content).
+`dag-ml-data:docs/ADR-0001-nirs4all-connector-ownership.md` · `nirs4all-methods:docs/nirs4all_integration_map.md` (per-class PLS/model → libn4m swap; largely blocked today) · `nirs4all-core:docs/PARITY.md` (full-Python nirs4all = oracle of record) · `nirs4all-formats:docs/INTEGRATION_NIRS4ALL.md` (leaf readers, no dag-ml content).
 
 ---
 
