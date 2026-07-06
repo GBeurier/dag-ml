@@ -254,8 +254,7 @@ pub struct RunContext {
     pub regression_target_records: Vec<RegressionTargetRecord>,
     /// The per-sample cross-fold OOF average blocks (+ `y_true`) collected alongside the scalar OOF
     /// average reports — one per scored producer. Surfaced so the host can fill the `(validation, avg)`
-    /// row's per-sample y_pred; populated by [`RunContext::collect_cross_fold_validation_scores`],
-    /// empty otherwise.
+    /// row's per-sample y_pred; populated by `collect_cross_fold_validation_scores`, empty otherwise.
     pub oof_average_blocks: Vec<OofAverageBlock>,
 }
 

@@ -6,7 +6,7 @@ dispatch, lineage, artifact/cache contracts and deterministic scheduling. Data
 storage and feature-buffer ownership live in the companion `dag-ml-data` repo.
 
 This site is the contributor and integration entry point for the producer-side
-contracts used by future nirs4all and nirs4all-lite integrations. It does not
+contracts used by future nirs4all and nirs4all-core integrations. It does not
 wire nirs4all directly.
 
 ## Start Here
@@ -63,9 +63,9 @@ Dataset-assembly bridge → SpectroDataset.
 :link: https://nirs4all-datasets.readthedocs.io/en/latest/
 Curated DOI-pinned NIRS dataset catalog (n4a-datasets).
 :::
-:::{grid-item-card} nirs4all-lite
-:link: https://nirs4all-lite.readthedocs.io/en/latest/
-Portable aggregate distribution (Rust + bindings).
+:::{grid-item-card} nirs4all-core
+:link: https://nirs4all-core.readthedocs.io/en/latest/
+Canonical portable aggregate distribution (Rust, Python, R, WASM, MATLAB/Octave).
 :::
 ::::
 
@@ -115,4 +115,16 @@ migration-nirs4all/WORKING_STRATEGY
 migration-nirs4all/PARITY_AND_PERF_HARNESS
 migration-nirs4all/TARGET_RESPONSIBILITY_SPLIT
 migration-nirs4all/NATIVE_PERSISTENCE_LAYER_REPORT
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: nirs4all migration
+:hidden:
+
+migration-nirs4all/README
+migration-nirs4all/WORKING_STRATEGY
+migration-nirs4all/PARITY_AND_PERF_HARNESS
+migration-nirs4all/NATIVE_PERSISTENCE_LAYER_REPORT
+migration-nirs4all/TARGET_RESPONSIBILITY_SPLIT
 ```

@@ -42,17 +42,17 @@ Read these three tiers in order. **Tier 3 is a trap: it is parallel design, not 
 |---|---|---|---|
 | [`../COORDINATOR_SPEC.md`](../COORDINATOR_SPEC.md) | ★★★ | current | Normative product contract; has an explicit **"Confrontation With Current nirs4all Pipeline" + migration map**. The alignment source of truth. |
 | [`../CAPABILITY_MATRIX.md`](../CAPABILITY_MATRIX.md) | ★★★ | current | States outright the goal **is to replace the nirs4all core engine**; per-feature responsibility map + 4-stage MVP→replacement path. |
-| [`../design/DSL_NIRS4ALL_PARITY.md`](../design/DSL_NIRS4ALL_PARITY.md) | ★★★ | current | Live acceptance criterion: maps **every nirs4all construct → dag-ml NodeKind**, importer status, gaps/regression list. |
-| `../STATUS.md` | ★★★ | current* | Authoritative ledger of what's implemented in 0.2.0 vs backlog. |
+| `../design/DSL_NIRS4ALL_PARITY.md` | ★★★ | local design-source | Live acceptance criterion: maps **every nirs4all construct → dag-ml NodeKind**, importer status, gaps/regression list. |
+| `../STATUS.md` | ★★★ | local-only current* | Authoritative ledger of what's implemented in 0.2.0 vs backlog. |
 | [`../SUPPORTED.md`](../SUPPORTED.md) | ★★★ | current | Per-area Supported / Conformance / Experimental / Backlog — what you may depend on as production. |
-| `../HOST_ADAPTER_BACKLOG.md` | ★★★ | current* | Defines the **process-adapter JSONL wire protocol** nirs4all must implement; confirms sklearn adapter shipped. |
-| `../MVP_ACCEPTANCE.md` | ★★★ | current* | dag-ml ↔ dag-ml-data ownership boundary + UC6/UC11 acceptance the MVP must satisfy. |
-| `../TEST_PLAN.md` | ★★★ | current* | Most complete inventory of what dag-ml validates today; the ledger to diff nirs4all behaviour against. |
+| `../HOST_ADAPTER_BACKLOG.md` | ★★★ | local-only current* | Defines the **process-adapter JSONL wire protocol** nirs4all must implement; confirms sklearn adapter shipped. |
+| `../MVP_ACCEPTANCE.md` | ★★★ | local-only current* | dag-ml ↔ dag-ml-data ownership boundary + UC6/UC11 acceptance the MVP must satisfy. |
+| `../TEST_PLAN.md` | ★★★ | local-only current* | Most complete inventory of what dag-ml validates today; the ledger to diff nirs4all behaviour against. |
 | [`../ABI.md`](../ABI.md) | ★★★ | current | Full C-ABI surface (vtables, ownership, Arrow boundaries) — the in-process/WASM host path. |
-| `../ROADMAP.md` / `../FINAL_RELEASE_AUDIT.md` | ★★ | current* | Phase status + 0.2.0 release verdict + green-gate command sequence. |
-| `../HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md` | ★★★ | current* | Phased D0–D10 roadmap for the NIRS-critical shared-target-multi-spectra feature. |
+| `../ROADMAP.md` / `../FINAL_RELEASE_AUDIT.md` | ★★ | local-only current* | Phase status + 0.2.0 release verdict + green-gate command sequence. |
+| `../HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md` | ★★★ | local-only current* | Phased D0–D10 roadmap for the NIRS-critical shared-target-multi-spectra feature. |
 | [`../PERFORMANCE.md`](../PERFORMANCE.md) | ★★ | current | **Perf is only sanity-probed, not benchmarked** — a named cutover risk (see harness doc). |
-| [`../ARCHITECTURE.md`](../ARCHITECTURE.md) / [`../AGGREGATION_INTEROP.md`](../AGGREGATION_INTEROP.md) / [`../OOF_FIXTURES.md`](../OOF_FIXTURES.md) / `../STUDIO_LITE_WASM_GAPS.md` | ★★ | current | Crate map, reducer interop, canonical OOF fixtures, remaining execution gaps. |
+| [`../ARCHITECTURE.md`](../ARCHITECTURE.md) / [`../AGGREGATION_INTEROP.md`](../AGGREGATION_INTEROP.md) / [`../OOF_FIXTURES.md`](../OOF_FIXTURES.md) / `../STUDIO_LITE_WASM_GAPS.md` | ★★ | mixed | Crate map, reducer interop, canonical OOF fixtures, remaining execution gaps. `STUDIO_LITE_WASM_GAPS.md` is local-only. |
 
 **ADRs — framed as Phase-0 of the nirs4all integration** ([`../adr/README.md`](../adr/README.md)):
 
@@ -95,7 +95,7 @@ These never reference dag-ml; they independently reinvent large parts of it. Tre
 
 ### Cross-repo integration contracts (adjacent, not core)
 
-`dag-ml-data:docs/ADR-0001-nirs4all-connector-ownership.md` · `nirs4all-methods:docs/nirs4all_integration_map.md` (per-class PLS/model → libn4m swap; largely blocked today) · `nirs4all-lite:docs/PARITY.md` (full-Python nirs4all = oracle of record) · `nirs4all-formats:docs/INTEGRATION_NIRS4ALL.md` (leaf readers, no dag-ml content).
+`dag-ml-data:docs/ADR-0001-nirs4all-connector-ownership.md` · `nirs4all-methods:docs/nirs4all_integration_map.md` (per-class PLS/model → libn4m swap; largely blocked today) · `nirs4all-core:docs/PARITY.md` (full-Python nirs4all = oracle of record) · `nirs4all-formats:docs/INTEGRATION_NIRS4ALL.md` (leaf readers, no dag-ml content).
 
 ---
 
