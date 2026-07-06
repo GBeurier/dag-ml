@@ -12,10 +12,24 @@
   },
   "tolerance_profiles": [
     {
-      "profile_id": "regression.default",
+      "profile_id": "regression.cross_impl",
+      "metric": "prediction",
+      "absolute_tolerance": 1e-3,
+      "relative_tolerance": 1e-3,
+      "owner": "nirs4all compatibility ledger"
+    },
+    {
+      "profile_id": "regression.kernel",
       "metric": "prediction",
       "absolute_tolerance": 1e-9,
       "relative_tolerance": 1e-9,
+      "owner": "nirs4all compatibility ledger"
+    },
+    {
+      "profile_id": "regression.native_export",
+      "metric": "prediction",
+      "absolute_tolerance": 1e-6,
+      "relative_tolerance": 1e-6,
       "owner": "nirs4all compatibility ledger"
     },
     {

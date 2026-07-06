@@ -8199,6 +8199,73 @@ fn data_view_extra_carries_source_index_metadata() {
 }
 
 #[test]
+fn by_source_data_view_uses_branch_source_ids() {
+    use crate::data::{BranchViewMode, BranchViewPlan, DataViewSelector};
+
+    let node_id = NodeId::new("node:model").unwrap();
+    let mut binding = data_binding(&node_id);
+    binding.source_ids = vec!["nir".to_string(), "chem".to_string()];
+    let branch_view = BranchViewPlan {
+        view_id: "branch_view:chem".to_string(),
+        branch_id: "branch:chem".to_string(),
+        mode: BranchViewMode::BySource,
+        selector: DataViewSelector {
+            source_ids: vec!["chem".to_string()],
+            ..Default::default()
+        },
+        allow_overlap: false,
+        metadata: BTreeMap::new(),
+    };
+    let empty: BTreeSet<SampleId> = BTreeSet::new();
+    let scope = PhaseScope {
+        phase: Phase::Predict,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+
+    let view = data_view_for_partition(
+        &binding,
+        None,
+        &scope,
+        DataRequestPartition::Predict,
+        Some(&branch_view),
+        DataViewRole::NonFit,
+        &empty,
+    )
+    .unwrap();
+
+    assert_eq!(view.source_ids, Some(vec!["chem".to_string()]));
+    assert_eq!(view.branch_view.as_ref(), Some(&branch_view));
+
+    let invalid_branch_view = BranchViewPlan {
+        view_id: "branch_view:raman".to_string(),
+        branch_id: "branch:raman".to_string(),
+        selector: DataViewSelector {
+            source_ids: vec!["raman".to_string()],
+            ..Default::default()
+        },
+        ..branch_view
+    };
+    let error = data_view_for_partition(
+        &binding,
+        None,
+        &scope,
+        DataRequestPartition::Predict,
+        Some(&invalid_branch_view),
+        DataViewRole::NonFit,
+        &empty,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("outside data binding source_ids"),
+        "unexpected: {error}"
+    );
+}
+
+#[test]
 fn fit_influence_row_weights_match_post_exclusion_training_spec() {
     // (b) equal_sample_influence_weights row_weights length must equal the
     // post-exclusion training view, not the pre-exclusion fold train set.

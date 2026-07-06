@@ -14,7 +14,7 @@
 > controllers/operators. **Le langage target possède ses binaires de modèles** (format natif) ;
 > **dag-ml sauve tout le reste** (orchestration, prédictions, scores, agrégation, lineage) →
 > reproductible cross-language. Les modèles **nirs4all-methods** = même binaire partout (C-ABI)
-> → reproductibilité totale. **nirs4all = "nirs4all-lite + controllers Python"** ; Python =
+> → reproductibilité totale. **nirs4all = "nirs4all-core + controllers Python"** ; Python =
 > vaisseau amiral (SHAP, controllers ML/DL, Studio) ; « torch depuis R » ≡ « torch depuis Python ».
 
 

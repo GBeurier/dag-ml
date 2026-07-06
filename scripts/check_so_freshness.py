@@ -80,6 +80,69 @@ def last_commit_ts(repo: Path, relative: str) -> int | None:
     return int(text)
 
 
+def commits_after_ts(repo: Path, relative: str, ts: int) -> list[str]:
+    """Return commits that touched ``relative`` after unix timestamp ``ts``."""
+    result = subprocess.run(
+        ["git", "log", "--format=%H %ct", "--", relative],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    commits: list[str] = []
+    for line in result.stdout.splitlines():
+        try:
+            commit, raw_ct = line.split(maxsplit=1)
+        except ValueError:
+            continue
+        try:
+            commit_ts = int(raw_ct)
+        except ValueError:
+            continue
+        if commit_ts > ts:
+            commits.append(commit)
+    return commits
+
+
+def rust_commit_requires_rebuild(repo: Path, commit: str, relative: str) -> bool:
+    """Return True when a committed Rust diff is not comment/doc-only."""
+    if not relative.endswith(RUST_SUFFIX):
+        return True
+    result = subprocess.run(
+        ["git", "diff", "--unified=0", "--no-ext-diff", f"{commit}^!", "--", relative],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return True
+    for line in result.stdout.splitlines():
+        if not line or line.startswith(("+++", "---", "@@")):
+            continue
+        if line[0] not in "+-":
+            continue
+        text = line[1:].strip()
+        if not text:
+            continue
+        if text.startswith(("//", "/*", "*", "*/")):
+            continue
+        return True
+    return False
+
+
+def rust_paths_requiring_rebuild_after(repo: Path, paths: list[str], so_ts: int) -> list[str]:
+    """Return Rust paths with post-binary committed changes that can affect the binary."""
+    stale: list[str] = []
+    for relative in paths:
+        commits = commits_after_ts(repo, relative, so_ts)
+        if any(rust_commit_requires_rebuild(repo, commit, relative) for commit in commits):
+            stale.append(relative)
+    return stale
+
+
 def rust_paths(repo: Path) -> list[str]:
     """Collect the Rust-source paths (relative, posix) that feed the binary."""
     paths: list[str] = []
@@ -133,7 +196,13 @@ def check(repo: Path) -> int:
     rust_ts, rust_path = newest
     so_mtime = int(so_path.stat().st_mtime)
     if so_ts < rust_ts:
-        newer = [p for p in paths if (ts := last_commit_ts(repo, p)) is not None and ts > so_ts]
+        newer = rust_paths_requiring_rebuild_after(repo, paths, so_ts)
+        if not newer:
+            print(
+                f"{NOTICE} fresh — Rust commits newer than {SO_RELATIVE} are comment/doc-only; "
+                f"tracked .so ct={so_ts}, newest Rust ct={rust_ts}; checked {len(paths)} Rust path(s)."
+            )
+            return 0
         listing = "\n".join(f"  - {p}" for p in newer)
         print(
             f"{NOTICE} STALE — the committed extension binary is older than its Rust sources.\n"
@@ -201,8 +270,8 @@ def self_test() -> int:
         scaffold(repo)
         git(repo, "add", "-A")
         git(repo, "commit", "-q", "-m", "initial with so", ts=1_000_000)
-        # Advance Rust source in a later commit; the .so stays at the old commit.
-        (repo / "crates/dag-ml-core/src/lib.rs").write_text("// core v2\n", encoding="utf-8")
+        # Advance compiled Rust source in a later commit; the .so stays at the old commit.
+        (repo / "crates/dag-ml-core/src/lib.rs").write_text("pub fn changed() {}\n", encoding="utf-8")
         git(repo, "add", "crates/dag-ml-core/src/lib.rs")
         git(repo, "commit", "-q", "-m", "advance rust", ts=2_000_000)
         code = check(repo)

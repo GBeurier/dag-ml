@@ -60,7 +60,7 @@ For the 0.2.0 release window:
 - no C ABI symbol, struct layout, JSON schema id/version, Rust public function,
   Python facade function or WASM export changes without an explicit contract
   entry and ABI/schema snapshot update;
-- if such a change is accepted, downstream chains such as `nirs4all-lite`,
+- if such a change is accepted, downstream chains such as `nirs4all-core`,
   `nirs4all-web` and browser/Python smoke packages must be rebuilt before tag;
 - documentation, CI jobs, tests and private benchmark helpers are allowed when
   they do not alter exported signatures.
