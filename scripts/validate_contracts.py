@@ -295,6 +295,32 @@ REQUIRED_PARITY_CASE_IDS = {
     "branch_merge_oof_refit_replay",
     "python_wheel_facade_integration",
 }
+EXPECTED_PARITY_TOLERANCE_PROFILES = {
+    "regression.cross_impl": {
+        "metric": "prediction",
+        "absolute_tolerance": 1e-3,
+        "relative_tolerance": 1e-3,
+        "owner": "nirs4all compatibility ledger",
+    },
+    "regression.kernel": {
+        "metric": "prediction",
+        "absolute_tolerance": 1e-9,
+        "relative_tolerance": 1e-9,
+        "owner": "nirs4all compatibility ledger",
+    },
+    "regression.native_export": {
+        "metric": "prediction",
+        "absolute_tolerance": 1e-6,
+        "relative_tolerance": 1e-6,
+        "owner": "nirs4all compatibility ledger",
+    },
+    "classification.default": {
+        "metric": "class_label",
+        "absolute_tolerance": 0,
+        "relative_tolerance": 0,
+        "owner": "nirs4all compatibility ledger",
+    },
+}
 OPENLINEAGE_FACETS_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "openlineage_dagml_facets.v1.schema.json"
@@ -5164,6 +5190,7 @@ def validate_parity_oracle_manifest(
         f"{label} parity oracle must declare tolerance profiles",
     )
     profile_ids: set[str] = set()
+    profiles_by_id: dict[str, dict[str, Any]] = {}
     for index, profile in enumerate(tolerance_profiles):
         profile_label = f"{label} parity oracle tolerance_profiles[{index}]"
         require(isinstance(profile, dict), f"{profile_label} must be an object")
@@ -5183,6 +5210,18 @@ def validate_parity_oracle_manifest(
             f"{profile_label}.profile_id is duplicated",
         )
         profile_ids.add(profile["profile_id"])
+        profiles_by_id[profile["profile_id"]] = profile
+    require(
+        profile_ids == set(EXPECTED_PARITY_TOLERANCE_PROFILES),
+        f"{label} parity oracle tolerance profile set changed",
+    )
+    for profile_id, expected_profile in EXPECTED_PARITY_TOLERANCE_PROFILES.items():
+        profile = profiles_by_id[profile_id]
+        for field, expected_value in expected_profile.items():
+            require(
+                profile.get(field) == expected_value,
+                f"{label} parity oracle tolerance profile `{profile_id}` {field} drifted",
+            )
 
     required_case_ids = oracle.get("required_case_ids")
     require(
