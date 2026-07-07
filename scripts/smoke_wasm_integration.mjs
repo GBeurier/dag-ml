@@ -116,7 +116,7 @@ for (const name of ["plan_model_input_json", "build_coordinator_data_plan_envelo
 }
 
 const dataFixtureRoot = path.join(dagMlDataRepo, "examples", "fixtures", "oof_campaign");
-const schemaJson = readText(dataFixtureRoot, "schema_nirs4all_lite_contract.json");
+const schemaJson = readText(dataFixtureRoot, "schema_nirs4all_core_contract.json");
 const modelInputJson = readText(dataFixtureRoot, "model_input_tabular_numeric.json");
 const adapterRegistryJson = readText(dataFixtureRoot, "adapter_registry_signal_to_tabular.json");
 const relationsJson = readText(dataFixtureRoot, "sample_relations_grouped_augmented.json");

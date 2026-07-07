@@ -71,7 +71,7 @@ def main() -> None:
 
     data_fixture_root = dag_ml_data_repo / "examples" / "fixtures" / "oof_campaign"
     schema = dag_ml_data.DatasetSchema(
-        _read(data_fixture_root, "schema_nirs4all_lite_contract.json")
+        _read(data_fixture_root, "schema_nirs4all_core_contract.json")
     )
     model_input = dag_ml_data.ModelInputSpec(
         _read(data_fixture_root, "model_input_tabular_numeric.json")
