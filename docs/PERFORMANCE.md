@@ -1,6 +1,6 @@
 # Performance Probes
 
-`dag-ml` does not treat microbenchmarks as public API. The 0.2.0
+`dag-ml` does not treat microbenchmarks as public API. The 0.2.x RC
 baseline is a set of ignored Rust tests that can be run on demand in release
 mode to catch large regressions on critical control paths.
 
@@ -23,7 +23,7 @@ mode to catch large regressions on critical control paths.
 
 ## Next Baselines
 
-Post-0.2.0, add probes for:
+Post-0.2.x, add probes for:
 
 - prediction-cache row-major and columnar export;
 - bundle replay data/artifact/prediction-cache materialization;

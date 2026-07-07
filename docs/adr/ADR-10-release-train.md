@@ -11,11 +11,11 @@ dag-ml depends on dag-ml-data; nirs4all depends on dag-ml + dag-ml-data (eventua
 
 The release train is a fixed five-step sequence, scripted and CI-gated:
 
-1. **`dag-ml-data` releases first**. `cargo-release` cuts a tag, publishes the four `dag-ml-data-*` crates to crates.io, builds and uploads the Python wheel (`dag-ml-data-py`) to PyPI, and runs the cross-header parity test against `dag-ml` at HEAD.
+1. **`dag-ml-data` releases first**. `cargo-release` cuts a tag, publishes the publishable workspace crates to crates.io, builds the Python wheel target (`dag-ml-data-py`) for the configured PyPI publisher, and runs the cross-header parity test against `dag-ml` at HEAD.
 
 2. **`dag-ml`'s pinned `dag-ml-data` version bumps**. A scripted PR (opened by the release workflow) updates the workspace `Cargo.toml`'s `dag-ml-data = { version = "X.Y.Z" }` constraint, runs the green gate, and merges automatically if the gate is green.
 
-3. **`dag-ml` releases**. Same scripted path: `cargo-release` → crates.io for the four `dag-ml-*` crates → PyPI wheel for `dag-ml-py` → CHANGELOG entry referencing ADR-10.
+3. **`dag-ml` releases**. Same scripted path: `cargo-release` → crates.io for the publishable workspace crates → Python wheel target for `dag-ml-py` through the configured PyPI publisher → CHANGELOG entry referencing ADR-10.
 
 4. **`nirs4all`'s pinned dag-ml + dag-ml-data versions bump**. Same scripted-PR pattern; nirs4all's CI gates on dag-ml ≥ X.Y.Z AND dag-ml-data ≥ X.Y.Z.
 

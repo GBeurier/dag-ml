@@ -7,7 +7,7 @@
 - `dag-ml` owns ML-phase safety, OOF/refit legality, prediction levels,
   custom-controller routing and leakage-sensitive aggregation execution.
 
-This document is the 0.2.0 mapping. It is documentation-only and does not
+This document is the 0.2.x RC mapping. It is documentation-only and does not
 change any public schema or ABI signature.
 
 ## Mapping
@@ -25,7 +25,7 @@ change any public schema or ABI signature.
 
 ## Release Rule
 
-No implicit mapping may be added during the 0.2.0 release window. If `robust_mean` or
+No implicit mapping may be added during the 0.2.x RC release window. If `robust_mean` or
 `exclude_outliers` becomes a first-class `dag-ml` coordinator method, the change
 must include:
 
@@ -39,6 +39,6 @@ must include:
 
 `dag-ml-data` exposes signal-type validation helpers. `dag-ml` does not yet
 carry an expected signal type through bundle replay. Until that paired contract
-exists, 0.2.0 documents signal-type replay enforcement as a
+exists, 0.2.x documents signal-type replay enforcement as a
 provider/backlog item rather than silently accepting it as a supported
 coordinator invariant.
