@@ -30,7 +30,7 @@
     "parity_oracle.v1": {
       "kind": "parity_oracle_manifest",
       "schema_version": 1,
-      "canonical_json_sha256": "1ff851b7b35402cf8707463ca8759305de3601c77f1ea5fede6e81e8338131f6"
+      "canonical_json_sha256": "0fb00e7a5513aab7fea6eb9f9016eaa427f308bc03f7bf9cdd52ad54b7545953"
     },
     "representation_registry.v1": {
       "kind": "representation_registry_manifest",

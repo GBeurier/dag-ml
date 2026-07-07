@@ -289,7 +289,7 @@ D8_CONFORMANCE_SCENARIOS = (
     "generation_constraints_prune_variants.v1",
 )
 REQUIRED_PARITY_CASE_IDS = {
-    "nirs4all_lite_browser_compile_plan",
+    "nirs4all_core_browser_compile_plan",
     "repetition_group_leakage_refusal",
     "controller_registry_selector_parity",
     "branch_merge_oof_refit_replay",

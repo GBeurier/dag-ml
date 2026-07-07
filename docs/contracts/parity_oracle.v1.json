@@ -42,7 +42,7 @@
   ],
   "cases": [
     {
-      "case_id": "nirs4all_lite_browser_compile_plan",
+      "case_id": "nirs4all_core_browser_compile_plan",
       "ledger_topics": [
         "PipelineRunner.compile",
         "SpectroDataset.schema",
@@ -61,7 +61,7 @@
         },
         {
           "repo": "dag-ml-data",
-          "path": "examples/fixtures/oof_campaign/schema_nirs4all_lite_contract.json",
+          "path": "examples/fixtures/oof_campaign/schema_nirs4all_core_contract.json",
           "kind": "dataset_schema"
         },
         {
@@ -84,12 +84,12 @@
         {
           "repo": "dag-ml",
           "command": "node scripts/smoke_wasm_integration.mjs <dag-ml-web-pkg> <dag-ml-data-web-pkg> <dag-ml-data-repo>",
-          "proves": "both browser-target WASM packages can compose nirs4all-lite data planning into a dag-ml execution plan"
+          "proves": "both browser-target WASM packages can compose nirs4all-core data planning into a dag-ml execution plan"
         },
         {
           "repo": "dag-ml",
           "command": "python3 scripts/smoke_python_integration.py <dag-ml-data-repo>",
-          "proves": "installed Python wheels expose typed facades for the same nirs4all-lite planning path"
+          "proves": "installed Python wheels expose typed facades for the same nirs4all-core planning path"
         }
       ],
       "invariants": [
@@ -268,7 +268,7 @@
     }
   ],
   "required_case_ids": [
-    "nirs4all_lite_browser_compile_plan",
+    "nirs4all_core_browser_compile_plan",
     "repetition_group_leakage_refusal",
     "controller_registry_selector_parity",
     "branch_merge_oof_refit_replay",
