@@ -1,6 +1,7 @@
 # Supported Surface
 
-This page is the 0.2.0 support contract for `dag-ml`. It separates
+This page is the 0.2.x RC support contract for `dag-ml` (current package
+version: 0.2.5). It separates
 production-facing surfaces from conformance fixtures and backlog work. It does
 not change any public ABI, JSON schema, Rust, Python or WASM signature.
 
@@ -34,7 +35,7 @@ not change any public ABI, JSON schema, Rust, Python or WASM signature.
 
 ## dag-ml-data Dependency
 
-`dag-ml` 0.2.0 consumes the sibling `dag-ml-data` contracts through
+`dag-ml` 0.2.5 consumes the sibling `dag-ml-data` contracts through
 JSON-identical schemas and fixtures. The supported cross-repo contract for this
 release is:
 
@@ -55,7 +56,7 @@ remain provider-specific at runtime:
 
 ## Public-Signature Policy
 
-For the 0.2.0 release window:
+For the 0.2.x RC release window:
 
 - no C ABI symbol, struct layout, JSON schema id/version, Rust public function,
   Python facade function or WASM export changes without an explicit contract
@@ -65,7 +66,7 @@ For the 0.2.0 release window:
 - documentation, CI jobs, tests and private benchmark helpers are allowed when
   they do not alter exported signatures.
 
-## Post-0.2.0 Backlog
+## Post-0.2.x Backlog
 
 1. Keep the `dag-ml-capi` AddressSanitizer lane green and extend it beyond
    library unit tests when C ABI lifecycle coverage expands.

@@ -9,7 +9,7 @@
 
 - `nirs4all` `main` is **production** (tags 0.10.x; webapp depends on the frozen 0.9.x surface). It must keep shipping hotfixes/features the whole time.
 - The team already works **feature-branch-on-one-repo** (`GBeurier/nirs4all`): `cache_refactoring`, `feat/heterogeneous-repetitions`, `parquets_refactoring`, … This migration should ride that workflow, not fight it.
-- `dag-ml` is a **separate, contract-frozen submodule** (0.2.0) co-evolving with `dag-ml-data` under the ADR-10 release train. It is already `pip install`-able (`dag-ml` / `import dag_ml`, maturin).
+- `dag-ml` is a **separate, contract-frozen submodule** (0.2.x RC, currently 0.2.5) co-evolving with `dag-ml-data` under the ADR-10 release train. It is wheel-buildable/importable from the built PyO3 wheel; PyPI publishing is a configured release target.
 - nirs4all/CLAUDE.md mandates **phased execution** (≤5 files/phase, dead-code cleanup committed separately first) and **no long-lived backward-compat shims** (ADR-14 wants a temporary exception — open decision #3).
 
 ## Recommendation — *not* a fork, *not* a new repo: **selector-on-main + integration branch + worktree**

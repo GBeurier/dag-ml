@@ -13,7 +13,7 @@ Rust-first execution core for leakage-safe, in-process ML pipelines.
 cache and deterministic control RNG. It does not own source storage or feature
 buffers; those contracts live in the companion `dag-ml-data` repository.
 
-> Status: 0.2.0 release hardening complete. The core contracts, C ABI validation helpers, CLI
+> Status: 0.2.5 V1 RC release train. The core contracts, C ABI validation helpers, CLI
 > workflows, OOF/leakage checks, deterministic selection, replay bundles,
 > process-adapter protocol and cross-repo `dag-ml-data` fixtures are executable
 > and gated. Production support is intentionally scoped; see
@@ -83,9 +83,9 @@ node scripts/smoke_wasm_tarball_metadata.mjs "$data_web_out_dir"
 node scripts/smoke_wasm_integration.mjs "$web_out_dir" "$data_web_out_dir" ../dag-ml-data
 ```
 
-## 0.2.0 Release Scope
+## 0.2.x RC Release Scope
 
-The supported 0.2.0 scope is a Rust-first control core that can:
+The supported 0.2.x RC scope is a Rust-first control core that can:
 
 1. parse a canonical `GraphSpec`;
 2. validate edge contracts and acyclicity;

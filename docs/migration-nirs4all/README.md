@@ -20,7 +20,7 @@ nothing drifts. Companion proposals live next to this file:
 
 ## TL;DR readiness verdict
 
-**dag-ml 0.2.0 is ready to back the nirs4all _control plane_, not yet to run production
+**dag-ml 0.2.5 is ready to back the nirs4all _control plane_, not yet to run production
 _numerics_.** It is a closed, CI-gated, contract-frozen Rust coordinator built for exactly
 this problem (reproducible, OOF/leakage-safe, identity-keyed DAG coordination). It already
 implements every *coordination* capability the migration needs. By deliberate design it
@@ -43,13 +43,13 @@ Read these three tiers in order. **Tier 3 is a trap: it is parallel design, not 
 | [`../COORDINATOR_SPEC.md`](../COORDINATOR_SPEC.md) | ★★★ | current | Normative product contract; has an explicit **"Confrontation With Current nirs4all Pipeline" + migration map**. The alignment source of truth. |
 | [`../CAPABILITY_MATRIX.md`](../CAPABILITY_MATRIX.md) | ★★★ | current | States outright the goal **is to replace the nirs4all core engine**; per-feature responsibility map + 4-stage MVP→replacement path. |
 | `../design/DSL_NIRS4ALL_PARITY.md` | ★★★ | local design-source | Live acceptance criterion: maps **every nirs4all construct → dag-ml NodeKind**, importer status, gaps/regression list. |
-| `../STATUS.md` | ★★★ | local-only current* | Authoritative ledger of what's implemented in 0.2.0 vs backlog. |
+| `../STATUS.md` | ★★★ | local-only current* | Authoritative ledger of what's implemented in the 0.2.x RC line vs backlog. |
 | [`../SUPPORTED.md`](../SUPPORTED.md) | ★★★ | current | Per-area Supported / Conformance / Experimental / Backlog — what you may depend on as production. |
 | `../HOST_ADAPTER_BACKLOG.md` | ★★★ | local-only current* | Defines the **process-adapter JSONL wire protocol** nirs4all must implement; confirms sklearn adapter shipped. |
 | `../MVP_ACCEPTANCE.md` | ★★★ | local-only current* | dag-ml ↔ dag-ml-data ownership boundary + UC6/UC11 acceptance the MVP must satisfy. |
 | `../TEST_PLAN.md` | ★★★ | local-only current* | Most complete inventory of what dag-ml validates today; the ledger to diff nirs4all behaviour against. |
 | [`../ABI.md`](../ABI.md) | ★★★ | current | Full C-ABI surface (vtables, ownership, Arrow boundaries) — the in-process/WASM host path. |
-| `../ROADMAP.md` / `../FINAL_RELEASE_AUDIT.md` | ★★ | local-only current* | Phase status + 0.2.0 release verdict + green-gate command sequence. |
+| `../ROADMAP.md` / `../FINAL_RELEASE_AUDIT.md` | ★★ | mixed | `ROADMAP.md` tracks current 0.2.x closure; `FINAL_RELEASE_AUDIT.md` is a dated historical 0.2.0 audit. |
 | `../HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md` | ★★★ | local-only current* | Phased D0–D10 roadmap for the NIRS-critical shared-target-multi-spectra feature. |
 | [`../PERFORMANCE.md`](../PERFORMANCE.md) | ★★ | current | **Perf is only sanity-probed, not benchmarked** — a named cutover risk (see harness doc). |
 | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) / [`../AGGREGATION_INTEROP.md`](../AGGREGATION_INTEROP.md) / [`../OOF_FIXTURES.md`](../OOF_FIXTURES.md) / `../STUDIO_LITE_WASM_GAPS.md` | ★★ | mixed | Crate map, reducer interop, canonical OOF fixtures, remaining execution gaps. `STUDIO_LITE_WASM_GAPS.md` is local-only. |
