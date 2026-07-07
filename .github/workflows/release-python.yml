@@ -31,18 +31,23 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
+            label: linux-x86_64
             target: x86_64
             smoke: true
           - os: ubuntu-22.04
+            label: linux-aarch64
             target: aarch64
             smoke: false
           - os: macos-15-intel
+            label: macos-x86_64
             target: x86_64
             smoke: false
           - os: macos-14
+            label: macos-aarch64
             target: aarch64
             smoke: false
           - os: windows-2022
+            label: windows-x64
             target: x64
             smoke: true
     steps:
@@ -69,7 +74,7 @@ jobs:
           python scripts/smoke_python_bindings.py
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.target }}
+          name: wheels-${{ matrix.label }}
           path: dist/*.whl
           if-no-files-found: error
 
@@ -133,7 +138,41 @@ jobs:
           echo "Publishing ${PACKAGE_NAME} ${package_version} from ${GITHUB_REF_NAME}."
       - name: Validate distribution metadata
         run: python scripts/smoke_python_wheel_metadata.py dist/*.whl
+      - name: Validate Trusted Publisher release tuple
+        run: |
+          set -euo pipefail
+          expected_repo="GBeurier/dag-ml"
+          if [[ "${GITHUB_REPOSITORY}" != "${expected_repo}" ]]; then
+            echo "::error::PyPI Trusted Publisher for project dag-ml must target owner=GBeurier repo=dag-ml workflow=release-python.yml environment=pypi; current repository is ${GITHUB_REPOSITORY}." >&2
+            exit 1
+          fi
+          case "${GITHUB_WORKFLOW_REF}" in
+            */.github/workflows/release-python.yml@*)
+              ;;
+            *)
+              echo "::error::Expected GITHUB_WORKFLOW_REF to point at .github/workflows/release-python.yml, got ${GITHUB_WORKFLOW_REF}." >&2
+              exit 1
+              ;;
+          esac
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
           skip-existing: true
+
+  github-release:
+    name: Attach Python artifacts to GitHub Release
+    needs:
+      - build-wheels
+      - build-sdist
+    runs-on: ubuntu-22.04
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.event_name != 'workflow_dispatch' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
