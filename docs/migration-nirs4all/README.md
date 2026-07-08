@@ -20,7 +20,7 @@ nothing drifts. Companion proposals live next to this file:
 
 ## TL;DR readiness verdict
 
-**dag-ml 0.2.5 is ready to back the nirs4all _control plane_, not yet to run production
+**dag-ml 0.2.7 is ready to back the nirs4all _control plane_, not yet to run production
 _numerics_.** It is a closed, CI-gated, contract-frozen Rust coordinator built for exactly
 this problem (reproducible, OOF/leakage-safe, identity-keyed DAG coordination). It already
 implements every *coordination* capability the migration needs. By deliberate design it

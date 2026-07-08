@@ -13,7 +13,7 @@ Rust-first execution core for leakage-safe, in-process ML pipelines.
 cache and deterministic control RNG. It does not own source storage or feature
 buffers; those contracts live in the companion `dag-ml-data` repository.
 
-> Status: 0.2.5 V1 RC release train. The core contracts, C ABI validation helpers, CLI
+> Status: 0.2.7 V1 RC release train. The core contracts, C ABI validation helpers, CLI
 > workflows, OOF/leakage checks, deterministic selection, replay bundles,
 > process-adapter protocol and cross-repo `dag-ml-data` fixtures are executable
 > and gated. Production support is intentionally scoped; see
