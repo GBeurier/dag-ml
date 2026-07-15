@@ -1,5 +1,5 @@
 from os import PathLike
-from typing import Any, Self
+from typing import Any, Iterable, Self
 
 class DagMlError(Exception):
     category: str
@@ -55,6 +55,32 @@ class LocalImplementationRegistry:
     def __init__(self) -> None: ...
     def register_loss(self, loss_reference: Any, implementation: Any) -> None: ...
     def register_metric(self, metric_reference: Any, implementation: Any) -> None: ...
+    def register_local_loss(
+        self,
+        loss_spec: Any,
+        implementation: Any,
+        *,
+        registry_key: str | None = None,
+        provider_id: str = "provider:python-local",
+        implementation_version: str = "0+local",
+        implementation_fingerprint: str | None = None,
+        supported_controller_families: Iterable[str] = (),
+        runtime_requirements: Iterable[str] = (),
+        capabilities: Iterable[str] = (),
+    ) -> dict[str, Any]: ...
+    def register_local_metric(
+        self,
+        metric_spec: Any,
+        implementation: Any,
+        *,
+        registry_key: str | None = None,
+        provider_id: str = "provider:python-local",
+        implementation_version: str = "0+local",
+        implementation_fingerprint: str | None = None,
+        supported_controller_families: Iterable[str] = (),
+        runtime_requirements: Iterable[str] = (),
+        capabilities: Iterable[str] = (),
+    ) -> dict[str, Any]: ...
     def resolve_loss(self, loss_reference: Any) -> Any: ...
     def resolve_training_loss(self, training_loss_role: Any, phase: str) -> Any: ...
     def resolve_metric(self, metric_reference: Any) -> Any: ...

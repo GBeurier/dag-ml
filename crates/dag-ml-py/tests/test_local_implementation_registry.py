@@ -24,6 +24,7 @@ class LocalImplementationRegistryTests(unittest.TestCase):
         )
         cls.role = fixture["valid"]["training_loss_role"]
         cls.loss = cls.role["loss"]
+        cls.metric = fixture["valid"]["metric_role"]["metric"]
         cls.binding_fixture = json.loads(
             (
                 REPO / "examples/fixtures/criteria/python_local_implementations.v1.json"
@@ -46,6 +47,79 @@ class LocalImplementationRegistryTests(unittest.TestCase):
             registry.descriptors()[0]["descriptor_fingerprint"],
             self.loss["implementation"]["descriptor_fingerprint"],
         )
+
+    def test_convenience_registration_builds_native_host_local_references(self) -> None:
+        registry = dag_ml.LocalImplementationRegistry()
+
+        def absolute_error(target: float, prediction: float) -> float:
+            return abs(prediction - target)
+
+        unsigned_loss = deepcopy(self.loss["spec"])
+        unsigned_loss.pop("spec_fingerprint")
+        loss_reference = registry.register_local_loss(
+            unsigned_loss,
+            absolute_error,
+            registry_key="loss:python:test-convenience",
+            implementation_fingerprint="a" * 64,
+            capabilities=["differentiable"],
+        )
+        self.assertEqual(
+            loss_reference["spec"]["spec_fingerprint"],
+            self.loss["spec"]["spec_fingerprint"],
+        )
+        self.assertEqual(
+            loss_reference["implementation"]["binding_id"], "binding:python"
+        )
+        self.assertEqual(loss_reference["implementation"]["portability"], "host_local")
+        self.assertEqual(
+            loss_reference["implementation"]["replayability"], "registry_required"
+        )
+        self.assertEqual(
+            loss_reference["implementation"]["capabilities"],
+            ["differentiable", "needs_gil"],
+        )
+        self.assertIs(registry.resolve_loss(loss_reference), absolute_error)
+
+        def metric_callback(_task: object) -> list[dict[str, float]]:
+            return [{"value": 0.0}]
+
+        unsigned_metric = deepcopy(self.metric["spec"])
+        unsigned_metric.pop("spec_fingerprint")
+        metric_reference = registry.register_local_metric(
+            unsigned_metric,
+            metric_callback,
+            registry_key="metric:python:test-convenience",
+            implementation_fingerprint="b" * 64,
+        )
+        self.assertEqual(
+            metric_reference["spec"]["spec_fingerprint"],
+            self.metric["spec"]["spec_fingerprint"],
+        )
+        self.assertIs(registry.resolve_metric(metric_reference), metric_callback)
+
+        generated_registry = dag_ml.LocalImplementationRegistry()
+        generated = generated_registry.register_local_loss(
+            self.loss["spec"], absolute_error
+        )
+        self.assertTrue(
+            generated["implementation"]["registry_key"].startswith(
+                "loss:python-local:"
+            )
+        )
+        self.assertEqual(
+            len(generated["implementation"]["implementation_fingerprint"]), 64
+        )
+        self.assertIs(generated_registry.resolve_loss(generated), absolute_error)
+
+    def test_convenience_registration_rejects_explicit_invalid_identity(self) -> None:
+        registry = dag_ml.LocalImplementationRegistry()
+        with self.assertRaises(dag_ml.DagMlValidationError):
+            registry.register_local_loss(
+                self.loss["spec"],
+                lambda target, prediction: prediction - target,
+                registry_key="",
+                implementation_fingerprint="",
+            )
 
     def test_registry_is_explicitly_process_local(self) -> None:
         registry = dag_ml.LocalImplementationRegistry()
