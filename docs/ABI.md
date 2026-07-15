@@ -175,8 +175,29 @@ it receives or materializes through the vtables.
 | Rust row-major F64 tensor output | Rust allocation returned through ABI | `dagml_f64_tensor_free` |
 | Rust column-major F64 tensor output | Rust allocation returned through ABI | `dagml_f64_columnar_tensor_free` |
 | Host JSON byte output | Host allocation returned through prediction-cache vtable | `PredictionCacheVTable.release_bytes` |
+| Host local loss/metric result JSON | Host allocation returned through local implementation vtable | `DagMlLocalImplementationVTable.release_bytes` after DAG-ML copies it |
+| Local loss/metric `user_data` | Host or binding runtime | Optional paired `retain`/`release`; one retained reference per successful registry entry |
 | Arrow arrays | Producer of the Arrow array | Arrow C Data Interface release callback |
 | JSON blobs | Caller-provided view unless returned as owned bytes | ABI-specific free function |
+
+## Local Loss And Metric Callbacks
+
+`DagMlLocalImplementationRegistry` is an opaque process-local registry scoped
+to the binding id passed to `dagml_local_implementation_registry_create`.
+Registration accepts a complete `LossReference` or `MetricReference` plus a v1
+`DagMlLocalImplementationVTable`; descriptor resolution remains exact and loss
+and metric semantic paths remain distinct. `invoke_training_loss` accepts only
+`FIT_CV` or `REFIT` and returns a native execution attestation after the host
+callback succeeds.
+
+The invocation request and result are strict JSON but intentionally
+binding-defined: feature and autodiff tensors remain host-owned, so R, MATLAB,
+C, or another native controller can pass handles or its own local task shape
+through its trampoline. `release_bytes` is mandatory. Optional `retain` and
+`release` callbacks must be supplied together and preserve native language
+functions or environments until unregister, clear, or registry free. Host
+exceptions, long jumps, and language unwinds must be caught by the binding
+trampoline and converted to a DAG-ML status; crossing the C boundary is invalid.
 
 ## ABI Roadmap
 
