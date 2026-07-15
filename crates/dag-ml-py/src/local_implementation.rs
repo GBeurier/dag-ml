@@ -3,11 +3,13 @@
 use dag_ml_core::{
     deserialize_external_contract, DagMlError as CoreDagMlError, ImplementationCapability,
     ImplementationDescriptor, LocalImplementationRegistry, LossExecutionAttestation, LossReference,
-    MetricReference, Phase, PortabilityClass, TrainingLossRoleReference,
+    MetricEvaluationResult, MetricEvaluationTask, MetricEvaluationValue, MetricReference, NodeTask,
+    Phase, PortabilityClass, TrainingLossRoleReference,
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
+use pythonize::{depythonize, pythonize};
 
 use crate::py_core_error;
 
@@ -89,6 +91,77 @@ impl PyLocalImplementationRegistry {
             .map_err(py_core_error)
     }
 
+    fn resolve_task_training_loss(
+        &self,
+        py: Python<'_>,
+        node_task_json: &str,
+        role_index: usize,
+    ) -> PyResult<(Py<PyAny>, String)> {
+        let task = parse_node_task(node_task_json)?;
+        if !matches!(task.phase, Phase::FitCv | Phase::Refit) {
+            return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+                "training loss phase must be FIT_CV or REFIT".to_string(),
+            )));
+        }
+        task.validate_required_loss_attestations()
+            .map_err(py_core_error)?;
+        let roles = task
+            .node_plan
+            .training_losses_for_phase(task.phase)
+            .collect::<Vec<_>>();
+        let role = roles.get(role_index).ok_or_else(|| {
+            py_core_error(CoreDagMlError::RuntimeValidation(format!(
+                "role_index {role_index} is outside the active training loss range"
+            )))
+        })?;
+        validate_python_descriptor(&role.loss.implementation)?;
+        let implementation = self
+            .registry
+            .resolve_loss(&role.loss)
+            .map(|implementation| implementation.clone_ref(py))
+            .map_err(py_core_error)?;
+        let attestation = task
+            .required_loss_attestations
+            .get(role_index)
+            .expect("validated loss requirements match active roles");
+        let attestation_json = serde_json::to_string(attestation).map_err(crate::py_serde_error)?;
+        Ok((implementation, attestation_json))
+    }
+
+    fn evaluate_metric(&self, py: Python<'_>, metric_task_json: &str) -> PyResult<String> {
+        let task = MetricEvaluationTask::from_json(metric_task_json).map_err(py_core_error)?;
+        validate_python_descriptor(&task.metric.implementation)?;
+        let implementation = self
+            .registry
+            .resolve_metric(&task.metric)
+            .map_err(py_core_error)?;
+        let task_object = pythonize(py, &task).map_err(|error| {
+            py_core_error(CoreDagMlError::RuntimeValidation(format!(
+                "Python metric task conversion failed: {error}"
+            )))
+        })?;
+        let callback_result = implementation
+            .bind(py)
+            .call1((task_object,))
+            .map_err(|error| {
+                py_core_error(CoreDagMlError::RuntimeValidation(format!(
+                    "Python metric callback raised an exception: {error}"
+                )))
+            })?;
+        let values: Vec<MetricEvaluationValue> = depythonize(&callback_result).map_err(|error| {
+            py_core_error(CoreDagMlError::RuntimeValidation(format!(
+                "Python metric callback result conversion failed: {error}"
+            )))
+        })?;
+        let result = MetricEvaluationResult::for_task(&task, values).map_err(py_core_error)?;
+        let aggregate = result.aggregate_for_task(&task).map_err(py_core_error)?;
+        serde_json::to_string(&serde_json::json!({
+            "result": result,
+            "aggregate": aggregate,
+        }))
+        .map_err(crate::py_serde_error)
+    }
+
     fn unregister_loss(&mut self, loss_reference_json: &str) -> PyResult<Py<PyAny>> {
         let loss = parse_loss_reference(loss_reference_json)?;
         validate_python_descriptor(&loss.implementation)?;
@@ -161,6 +234,11 @@ fn parse_training_loss_role(json: &str) -> PyResult<TrainingLossRoleReference> {
     .map_err(py_core_error)?;
     role.validate().map_err(py_core_error)?;
     Ok(role)
+}
+
+fn parse_node_task(json: &str) -> PyResult<NodeTask> {
+    deserialize_external_contract(json, "node task", CoreDagMlError::RuntimeValidation)
+        .map_err(py_core_error)
 }
 
 fn parse_phase(phase: &str) -> PyResult<Phase> {
