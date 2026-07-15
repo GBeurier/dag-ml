@@ -3,8 +3,8 @@
   "pack_id": "dag-ml.training-replay-contracts.v1",
   "mode": "current",
   "base_pack_id": "dag-ml.training-contracts.v1",
-  "base_pack_sha256": "1ae2a543d1076a67d7968b7281ff32f4f751652988bfdd4dcf19454ca486e89f",
-  "base_pack_checksum": "d7e09800bb134f49657107d728ca141d89f064710eb35e8cdbbb437396eb7325",
+  "base_pack_sha256": "81e1142bed2ac91f8163dabde52a3466bc17631e90b4d1aa355415daeb612ac4",
+  "base_pack_checksum": "329e1576188007948735f64d121d35b698f60e27df52d79c4c6a8bb72b5bcfca",
   "base_pack_mode": "current",
   "hash_algorithm": "sha256-file-bytes",
   "canonical_profile": "DAG-ML TCV1",
@@ -191,7 +191,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "253c5c7caa9ca830cc713df184ed136e1a07e681aafdf8fa447ca3fa46220834",
+      "sha256": "bc8214dbb9659229f5d3e53842cbe9269008a1761e2e31a1351adb30655eab28",
       "kind": "base_python_controller_bridge"
     },
     {
@@ -421,7 +421,7 @@
     },
     {
       "path": "docs/contracts/training_contract_conformance_pack.v1.json",
-      "sha256": "1ae2a543d1076a67d7968b7281ff32f4f751652988bfdd4dcf19454ca486e89f",
+      "sha256": "81e1142bed2ac91f8163dabde52a3466bc17631e90b4d1aa355415daeb612ac4",
       "kind": "base_conformance_pack"
     },
     {
@@ -636,7 +636,7 @@
     },
     {
       "path": "parity/training/generate_training_replay_fixtures.py",
-      "sha256": "49255283b67d566e829c65d68dc245c66bf0239a8b1bf89567790667dbf85fec",
+      "sha256": "078e2f7c459657e80f5a4bb068f9b84808e45eec2422c5861a04c0462dd0c400",
       "kind": "generator"
     },
     {
@@ -686,7 +686,7 @@
     },
     {
       "path": "scripts/validate_training_replay_contracts.py",
-      "sha256": "74cf5e4981de5f79dbd678372b355389814e0c74d3077466109fc8ac599b6c33",
+      "sha256": "8140defd685b01b6da428dc5028c64e30cac55efb60c44594243ddabeb236485",
       "kind": "production_validator"
     }
   ],
@@ -765,5 +765,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "b3d7276fce94d9b31ee8693a0af42f65e0e81f3d5f9004c8f45d45b2d706d55b"
+  "pack_checksum": "7e7ffda66f098f676b0ab4115c1e7f98bed49680490c4f6bbbe55dc91a412575"
 }
