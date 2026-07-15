@@ -16,7 +16,7 @@
     },
     {
       "path": "crates/dag-ml-capi/src/lib.rs",
-      "sha256": "ea69f97214b8ab05d976691caa9a673ced3833eb42ff80ebca4dc8a0f11fee95",
+      "sha256": "719fb3fdcdd5c3a3b762de8e7ab88741af16ae1ce6ed2175c68f5efa475d7f8d",
       "kind": "c_training_binding"
     },
     {
@@ -26,7 +26,7 @@
     },
     {
       "path": "crates/dag-ml-capi/tests/c_conformance.rs",
-      "sha256": "7f1ad365f0bdec0312f936907c255d5782e4bf4de0ed934ff2818e40746310d7",
+      "sha256": "bcb1ddcad8abd8e955b78ee8d409f0f1ce8348d81ad35d85fc2f2c8999c39a1e",
       "kind": "c_binding_test"
     },
     {
@@ -36,7 +36,7 @@
     },
     {
       "path": "crates/dag-ml-capi/tests/training_execute.rs",
-      "sha256": "bb3a6fdd6655ff8dde389c7b6ea1b5fad87f9634a2eb24f6cacb575cabe129e6",
+      "sha256": "23126f92fafe4b98b9f8cc96ece01cca58b36d57fe32e2e1fd29d879e933a542",
       "kind": "c_training_test"
     },
     {
@@ -126,7 +126,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/artifact.rs",
-      "sha256": "914c016d201b93ccb4fc15587769b5fc76e32afdd208dd98e01c3daf0cd863c9",
+      "sha256": "d2a36d3f16b48d6dbecc705ff690924bd3c250e11487206a2331ee2549c0871f",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -151,7 +151,7 @@
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "22bdf33a3c41fed2144325f182b780989c8adc481e8e355d322c1b8c36317036",
+      "sha256": "214a894c3dfa957670f571825263a5a6cdc7c40b1b85f535233be74257b20d85",
       "kind": "native_integration_test"
     },
     {
@@ -171,7 +171,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "e9c4284a4b8f98aee879fc0c317f7dbeb3875b7d1d55e9cb04a0c829fac1c62d",
+      "sha256": "253c5c7caa9ca830cc713df184ed136e1a07e681aafdf8fa447ca3fa46220834",
       "kind": "python_controller_bridge"
     },
     {
@@ -181,7 +181,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/training.rs",
-      "sha256": "6f48043bf15f91cfc732a5c8a744c086b6b4c6e05fd6f78b8821a147db0d9bbd",
+      "sha256": "765c4eff99739beb67e1541e68ffb44841166f0881c8c8f2029dc520b8b69aa2",
       "kind": "python_training_binding"
     },
     {
@@ -201,7 +201,7 @@
     },
     {
       "path": "docs/contracts/README.md",
-      "sha256": "7e78b2e6172364e567c1f2c2d61ef9733b4ad84ea3ff49c66d1b8bfc6825cace",
+      "sha256": "1e1af8eb2973effa72c7904de09fa153e3528851e883a801a1f3a721d60ecc44",
       "kind": "contract_index_documentation"
     },
     {
@@ -227,6 +227,11 @@
     {
       "path": "docs/contracts/coordinator_data_plan_envelope.schema.json",
       "sha256": "e7e6cbac57a4eb583377351a809f55aad50b6fa3856adfb9bd8960c43f898001",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/early_stopping_record.schema.json",
+      "sha256": "2dc069c82b533bc3bfeba88833fd22ec36f24ad1219e1d76f2bee68f5af22710",
       "kind": "schema_dependency"
     },
     {
@@ -260,8 +265,18 @@
       "kind": "schema_dependency"
     },
     {
+      "path": "docs/contracts/metric_role.schema.json",
+      "sha256": "b530ee58934571d0e82373f16ae92f86b6521c308479bef80d86040b4946f5a5",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/metric_spec.schema.json",
+      "sha256": "d463d99eab6b2399aecefdab92b0e0a7912e9e85cc09710015b9167393ca3523",
+      "kind": "schema_dependency"
+    },
+    {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "9aecf8c3ff07f9ef9e9b2877f49093f1c88f354d9c92f24e05ba77b937cf2421",
+      "sha256": "fa4c7629141a671eb5c7d5848e031b4f01e76f96b457a4d3bc960af1809e31f1",
       "kind": "schema_dependency"
     },
     {
@@ -441,7 +456,7 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "b914e77fd230f6276cf99970ccb7d5b65936b72776d4ad5773e26a32af9c4614",
+      "sha256": "69cbcf9a9062c7afaa81cdd875b981ac869b88036a2c2d9f8300011aa5260124",
       "kind": "production_validator"
     }
   ],
@@ -514,5 +529,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "afcf6e9b224cfae8ee41bf6e688723e1166ad7654f0da7f043d93543dd371360"
+  "pack_checksum": "c604cc416d7be151cf94ec91cf9ee1bcd3cd86a31e506d0ee6996a17a485fc52"
 }

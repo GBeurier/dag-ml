@@ -543,6 +543,13 @@
           "items": {
             "$ref": "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json"
           }
+        },
+        "early_stopping_records": {
+          "type": "array",
+          "description": "Controller-reported stopping outcomes, distinct from persisted metric score sets.",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/early_stopping_record.v1.schema.json"
+          }
         }
       }
     }

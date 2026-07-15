@@ -5649,6 +5649,7 @@ impl RuntimeController for CapiMockController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -5903,6 +5904,7 @@ mod tests {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         };
         if result.validate_for_task(&task).is_err() {
@@ -6197,6 +6199,7 @@ mod tests {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         };
         result.validate_for_task(&task).unwrap();

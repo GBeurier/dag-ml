@@ -29,6 +29,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   refuses stale models trained under a different objective. Existing requests
   without configured losses remain wire-compatible, and the public C ABI is
   unchanged.
+- Controller results can now attach fingerprinted `EarlyStoppingRecord` lineage
+  evidence scoped to one `FIT_CV` fold or `REFIT` task and its exact
+  `early_stopping` metric role. These optional records remain separate from
+  `ScoreSet`, selection and tuning contracts. Existing results deserialize with
+  an empty record list, schemas and conformance packs are updated additively,
+  and the public C ABI is unchanged.
 - ADR-20 and W0 JSON contracts for conformal calibration ownership,
   `ParameterPatch`, `OutputBinding`, `TrainingInfluenceManifest`, complete
   `TrainingOutcome`/`ReplayOutcome` payloads, and the existing execution-bundle

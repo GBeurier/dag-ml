@@ -51,7 +51,7 @@
     },
     {
       "path": "crates/dag-ml-cli/src/main.rs",
-      "sha256": "494f4f300f1fb086cac1c1fa132c72fc9a36fc49c3ad221f0e7cd96c61ebd330",
+      "sha256": "60f88a26a457a28b9ea230da321518b2b93b8f60c80dcba775e1f6a69fbd51a9",
       "kind": "cli_validator"
     },
     {
@@ -61,7 +61,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/criteria.rs",
-      "sha256": "6f3e456f3512340fe3849925b6033529bcd5d29e0543c1dbbfe3dbdce1c6c149",
+      "sha256": "7b8b8d4f212ae53eb464ecd2e4eb350b50dbc56626f4994f14b80b842b1371a3",
       "kind": "rust_contract"
     },
     {
@@ -78,6 +78,11 @@
       "path": "crates/dag-ml-core/src/metrics.rs",
       "sha256": "2fd5b10eaa6f198e450ea1a84d954b6a44c95facd7a87700a7d6b958e880b78a",
       "kind": "native_metric_adapter"
+    },
+    {
+      "path": "crates/dag-ml-core/src/runtime/artifact.rs",
+      "sha256": "d2a36d3f16b48d6dbecc705ff690924bd3c250e11487206a2331ee2549c0871f",
+      "kind": "rust_lineage_contract"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
@@ -116,8 +121,13 @@
     },
     {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "603065afb14ecf1c5230e06bcf737b83010b9f319f0ff1a3d17c028a18131fae",
+      "sha256": "fb5ca56a17b9a77333cf5cd3cf7c7c4a74a9256c23c6b549cdf0b622fa794a21",
       "kind": "contract_documentation"
+    },
+    {
+      "path": "docs/contracts/early_stopping_record.schema.json",
+      "sha256": "2dc069c82b533bc3bfeba88833fd22ec36f24ad1219e1d76f2bee68f5af22710",
+      "kind": "schema"
     },
     {
       "path": "docs/contracts/implementation_descriptor.schema.json",
@@ -155,6 +165,11 @@
       "kind": "schema"
     },
     {
+      "path": "docs/contracts/node_result.schema.json",
+      "sha256": "fa4c7629141a671eb5c7d5848e031b4f01e76f96b457a4d3bc960af1809e31f1",
+      "kind": "schema"
+    },
+    {
       "path": "docs/contracts/training_loss_role.schema.json",
       "sha256": "078886aa7f622c05c86aa22b4eaeaeeff857e2ad68da1137f62fe4f1510d02e3",
       "kind": "schema"
@@ -166,7 +181,7 @@
     },
     {
       "path": "examples/fixtures/criteria/criteria_contracts.v1.json",
-      "sha256": "3b32a2d754253a4162bb230e0ca1ab79baa9c5ce1cb59fbd5f3617aa6eb9a032",
+      "sha256": "b2328be3ec466399f450d23368370fae5cc962e225c0a870171859fc86ea33cc",
       "kind": "fixture"
     },
     {
@@ -186,17 +201,17 @@
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "5b88ddbd5b87d46a88ba2f367d410b509d7bce504124204d7d88882fd3a8a908",
+      "sha256": "160b42ae67cb27e0078814e9c988602bd73b74e8a5c2d66904eee334ac8a556d",
       "kind": "generator"
     },
     {
       "path": "parity/criteria/oracle.py",
-      "sha256": "225def2c85c761ddb7bba1caab1acdaceee6369f602afc59aa1abd1f38b21e66",
+      "sha256": "0aac8777ec6cb8017c1dc290302dd958b5ce8d2d84077e0efddc293e31383a51",
       "kind": "independent_validator"
     },
     {
       "path": "parity/criteria/tests/test_criteria_contracts.py",
-      "sha256": "7369e6d80cb37781ee5dfedb1fc9564a0ea5473a9bb590d4361f1da6fbfcd64b",
+      "sha256": "a7b7f9ae7df5c46251020eefd39af95226e7c5d91a45d2b76baa372d43fb472e",
       "kind": "parity_test"
     },
     {
@@ -218,6 +233,10 @@
     "host_local_descriptor_without_registry_key",
     "selection_metric_skips_missing_values",
     "loss_attestation_wrong_phase",
+    "early_stopping_selection_role",
+    "early_stopping_invalid_iteration",
+    "early_stopping_refit_with_fold",
+    "early_stopping_tampered_fingerprint",
     "custom_metric_without_objective",
     "provider_result_wrong_scope",
     "provider_result_wrong_coverage",
@@ -226,5 +245,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "e039681d04ae8913ba63352432784550e884b57f7c82be5a1686360dc3c129ea"
+  "pack_checksum": "5123e2718b27e02039f95d3a4874cad41a277f28cce3f6cf3d87aea28d0dbd18"
 }

@@ -53,7 +53,10 @@ def _reject_executable_payload(value: Any, path: str) -> None:
 def _validate_common_spec(document: dict[str, Any], id_field: str) -> None:
     require(document.get("schema_version") == 1, "schema_version")
     identifier = document.get(id_field)
-    require(isinstance(identifier, str) and VERSIONED_ID.fullmatch(identifier) is not None, id_field)
+    require(
+        isinstance(identifier, str) and VERSIONED_ID.fullmatch(identifier) is not None,
+        id_field,
+    )
     require(bool(document.get("task_kinds")), "task_kinds")
     require(bool(document.get("prediction_kinds")), "prediction_kinds")
     inputs = set(document.get("required_inputs", []))
@@ -106,7 +109,8 @@ def validate_implementation_descriptor(document: dict[str, Any]) -> None:
     require(document.get("schema_version") == 1, "schema_version")
     semantic_id = document.get("semantic_id")
     require(
-        isinstance(semantic_id, str) and VERSIONED_ID.fullmatch(semantic_id) is not None,
+        isinstance(semantic_id, str)
+        and VERSIONED_ID.fullmatch(semantic_id) is not None,
         "semantic_id",
     )
     for field in ("semantic_fingerprint", "implementation_fingerprint"):
@@ -128,7 +132,9 @@ def validate_implementation_descriptor(document: dict[str, Any]) -> None:
         require(replayability != "detached", "host_local replayability")
     elif portability == "portable_registered":
         require(bool(registry_key), "portable_registered registry_key")
-        require(replayability == "registry_required", "portable_registered replayability")
+        require(
+            replayability == "registry_required", "portable_registered replayability"
+        )
     elif portability == "portable_built_in":
         require(registry_key is None, "portable_built_in registry_key")
         require(replayability == "detached", "portable_built_in replayability")
@@ -167,7 +173,9 @@ def validate_loss_execution_attestation(document: dict[str, Any]) -> None:
     for field in ("node_id", "output_id"):
         value = document.get(field)
         if value is not None:
-            require(isinstance(value, str) and TOKEN.fullmatch(value) is not None, field)
+            require(
+                isinstance(value, str) and TOKEN.fullmatch(value) is not None, field
+            )
     require(document.get("phase") in {"FIT_CV", "REFIT"}, "attestation phase")
     require(VERSIONED_ID.fullmatch(document.get("loss_id", "")) is not None, "loss_id")
     for field in (
@@ -189,7 +197,51 @@ def validate_metric_role(document: dict[str, Any]) -> None:
     if document.get("missing_value_policy") == "skip":
         require(document.get("role") == "reporting", "missing value policy")
     _validate_reference(document["metric"], "metric", "metric_id", validate_metric_spec)
-    require(document["level"] in document["metric"]["spec"]["supported_levels"], "level")
+    require(
+        document["level"] in document["metric"]["spec"]["supported_levels"], "level"
+    )
+
+
+def validate_early_stopping_record(document: dict[str, Any]) -> None:
+    require(document.get("schema_version") == 1, "schema_version")
+    node_id = document.get("node_id")
+    require(
+        isinstance(node_id, str) and TOKEN.fullmatch(node_id) is not None, "node_id"
+    )
+    phase = document.get("phase")
+    require(phase in {"FIT_CV", "REFIT"}, "early stopping phase")
+    fold_id = document.get("fold_id")
+    if phase == "FIT_CV":
+        require(
+            isinstance(fold_id, str) and TOKEN.fullmatch(fold_id) is not None,
+            "FIT_CV fold_id",
+        )
+    else:
+        require(fold_id is None, "REFIT fold_id")
+    metric_role = document["metric_role"]
+    validate_metric_role(metric_role)
+    require(metric_role.get("role") == "early_stopping", "early stopping metric role")
+    require(metric_role.get("partition") == "validation", "early stopping partition")
+    best_iteration = document.get("best_iteration")
+    observed_iterations = document.get("observed_iterations")
+    require(
+        isinstance(best_iteration, int)
+        and not isinstance(best_iteration, bool)
+        and isinstance(observed_iterations, int)
+        and not isinstance(observed_iterations, bool)
+        and observed_iterations > 0
+        and 0 <= best_iteration < observed_iterations,
+        "early stopping iterations",
+    )
+    best_value = document.get("best_value")
+    require(
+        isinstance(best_value, (int, float))
+        and not isinstance(best_value, bool)
+        and math.isfinite(best_value),
+        "early stopping best_value",
+    )
+    require(isinstance(document.get("stopped_early"), bool), "stopped_early")
+    _require_fingerprint(document, "record_fingerprint")
 
 
 def _matrix_shape(values: Any, label: str) -> tuple[int, int]:
@@ -340,9 +392,9 @@ def validate_metric_evaluation_result(
         aggregate = sum(raw_values)
     else:
         weights = task["sample_weights"]
-        aggregate = sum(value * weight for value, weight in zip(raw_values, weights)) / sum(
-            weights
-        )
+        aggregate = sum(
+            value * weight for value, weight in zip(raw_values, weights)
+        ) / sum(weights)
     require(math.isfinite(aggregate), "non-finite metric reduction")
     return aggregate
 
@@ -354,5 +406,6 @@ VALIDATORS: dict[str, Callable[[dict[str, Any]], None]] = {
     "training_loss_role": validate_training_loss_role,
     "loss_execution_attestation": validate_loss_execution_attestation,
     "metric_role": validate_metric_role,
+    "early_stopping_record": validate_early_stopping_record,
     "metric_evaluation_task": validate_metric_evaluation_task,
 }
