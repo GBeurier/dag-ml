@@ -5,6 +5,21 @@
   "fingerprint_profile": "DAGML-TCV1-unicode-17.0.0",
   "artifacts": [
     {
+      "path": "crates/dag-ml-capi/include/dag_ml.h",
+      "sha256": "3eb97a478d3748bdeee4961eea577994ed5c3b93d307b3c76870e97b65cf0b04",
+      "kind": "c_abi_header"
+    },
+    {
+      "path": "crates/dag-ml-capi/src/local_implementation.rs",
+      "sha256": "7a6752331305057cdf19f1da40daf951f210a1d8001b59dda89baf5826833a2f",
+      "kind": "c_local_registry"
+    },
+    {
+      "path": "crates/dag-ml-capi/tests/local_implementations.rs",
+      "sha256": "5799dd73005307d0e97ea326fc191c96f10c5f3c4f3c8d7b58c25b6f1c52fa9f",
+      "kind": "c_binding_test"
+    },
+    {
       "path": "crates/dag-ml-cli/src/main.rs",
       "sha256": "9278c608571b098fde52f2d6507dc5dd7150938a78fe9de7276e47413bd884a4",
       "kind": "cli_validator"
@@ -71,7 +86,7 @@
     },
     {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "1a63f3efcd8dd7c7b20f000df521585898c7888f86574052ac74c37632fd6132",
+      "sha256": "7b94fc201054f401fafcac32249bee46a31cb24013d4482f8864f57f551a554f",
       "kind": "contract_documentation"
     },
     {
@@ -115,6 +130,11 @@
       "kind": "schema"
     },
     {
+      "path": "examples/fixtures/criteria/c_local_implementations.v1.json",
+      "sha256": "59eeb1c47cb4d6ef3549f0a863d66f5e34edbfc321982bbc81d07d2924723190",
+      "kind": "fixture"
+    },
+    {
       "path": "examples/fixtures/criteria/criteria_contracts.v1.json",
       "sha256": "3b32a2d754253a4162bb230e0ca1ab79baa9c5ce1cb59fbd5f3617aa6eb9a032",
       "kind": "fixture"
@@ -131,7 +151,7 @@
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "e012c216324a9675fa00708002bdcc2fababec966217e1211f416169cd6c5a8f",
+      "sha256": "1fe1c9acfeaaa500500b8852f4a17269a87b310bd3984a54fad18f9e5676a39b",
       "kind": "generator"
     },
     {
@@ -171,5 +191,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "3c86af967fbbb79835cd4bed7934cfb0810d2e00661fffd95f59437f7544c5af"
+  "pack_checksum": "66d170977b49a8792942a7f7ce3290a6b5e2393011386f840498e12f25f7022e"
 }

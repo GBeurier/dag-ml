@@ -82,8 +82,14 @@ The semantic contracts are standalone v1 contracts. The controller-protocol
 integration adds only defaulted/optional fields to existing v1 JSON shapes, so
 historical requests, plans, tasks, results, caches and bundles without explicit
 losses remain readable. Future incompatible changes publish new schema ids and
-Rust readers. The generic registry does not alter a C ABI struct layout. The
-remaining native-host adapters will preserve this model: the C ABI will own
-callback/user-data trampolines for R, MATLAB and other native hosts. Each
-adapter must enforce its own binding identity and runtime capability
-declarations while preserving the shared exact descriptor lookup rules.
+Rust readers. The C ABI exposes an opaque process-local registry and a
+versioned callback vtable without changing any controller vtable layout. A
+registry is scoped to an explicit binding identity (`binding:c`, `binding:r`,
+`binding:matlab`, or a future native host), retains callback `user_data` through
+balanced optional `retain`/`release` hooks, and copies callback-owned result
+JSON before invoking its required `release_bytes` hook. Training-loss
+invocation is limited to `FIT_CV` and `REFIT` and returns the common attestation
+only after callback success. Host exceptions must be caught by the language
+trampoline and returned as `DAG_ML_STATUS_PANIC`; no unwind may cross the C
+boundary. Each process or worker owns a separate registry and must register its
+local runtime objects.

@@ -21,6 +21,7 @@ PROVIDER_FIXTURE = ROOT / "examples/fixtures/criteria/metric_provider_contracts.
 JAVASCRIPT_FIXTURE = (
     ROOT / "examples/fixtures/criteria/javascript_local_implementations.v1.json"
 )
+C_FIXTURE = ROOT / "examples/fixtures/criteria/c_local_implementations.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
 ARTIFACTS = {
     "crates/dag-ml-cli/src/main.rs": "cli_validator",
@@ -29,6 +30,9 @@ ARTIFACTS = {
     "crates/dag-ml-core/src/implementation_registry.rs": "rust_local_registry",
     "crates/dag-ml-core/src/metric_provider.rs": "rust_provider_contract",
     "crates/dag-ml-core/src/metrics.rs": "native_metric_adapter",
+    "crates/dag-ml-capi/include/dag_ml.h": "c_abi_header",
+    "crates/dag-ml-capi/src/local_implementation.rs": "c_local_registry",
+    "crates/dag-ml-capi/tests/local_implementations.rs": "c_binding_test",
     "crates/dag-ml-py/python/dag_ml/__init__.py": "python_facade",
     "crates/dag-ml-py/python/dag_ml/__init__.pyi": "python_types",
     "crates/dag-ml-py/src/local_implementation.rs": "python_local_registry",
@@ -45,6 +49,7 @@ ARTIFACTS = {
     "docs/contracts/metric_role.schema.json": "schema",
     "docs/contracts/metric_spec.schema.json": "schema",
     "docs/contracts/training_loss_role.schema.json": "schema",
+    "examples/fixtures/criteria/c_local_implementations.v1.json": "fixture",
     "examples/fixtures/criteria/criteria_contracts.v1.json": "fixture",
     "examples/fixtures/criteria/javascript_local_implementations.v1.json": "fixture",
     "examples/fixtures/criteria/metric_provider_contracts.v1.json": "fixture",
@@ -53,6 +58,69 @@ ARTIFACTS = {
     "parity/criteria/tests/test_criteria_contracts.py": "parity_test",
     "scripts/smoke_wasm_bindings.cjs": "javascript_binding_test",
 }
+
+
+def build_c_fixture(valid: dict[str, Any]) -> dict[str, Any]:
+    loss_implementation = copy.deepcopy(valid["loss_implementation"])
+    loss_implementation.update(
+        {
+            "provider_id": "provider:c-local",
+            "binding_id": "binding:c",
+            "implementation_fingerprint": hashlib.sha256(
+                b"dagml.c.asymmetric-loss.v1"
+            ).hexdigest(),
+            "capabilities": ["deterministic", "differentiable"],
+            "registry_key": "loss:c:asymmetric",
+            "descriptor_fingerprint": "",
+        }
+    )
+    loss_implementation["descriptor_fingerprint"] = fingerprint_without(
+        loss_implementation, "descriptor_fingerprint"
+    )
+    loss_reference = {
+        "spec": copy.deepcopy(valid["loss_spec"]),
+        "implementation": loss_implementation,
+    }
+
+    foreign_loss_reference = copy.deepcopy(loss_reference)
+    foreign_implementation = foreign_loss_reference["implementation"]
+    foreign_implementation["provider_id"] = "provider:r-local"
+    foreign_implementation["binding_id"] = "binding:r"
+    foreign_implementation["registry_key"] = "loss:r:asymmetric"
+    foreign_implementation["descriptor_fingerprint"] = fingerprint_without(
+        foreign_implementation, "descriptor_fingerprint"
+    )
+
+    metric_implementation = copy.deepcopy(valid["metric_implementation"])
+    metric_implementation.update(
+        {
+            "provider_id": "provider:c-local",
+            "binding_id": "binding:c",
+            "implementation_fingerprint": hashlib.sha256(
+                b"dagml.c.bias-metric.v1"
+            ).hexdigest(),
+            "registry_key": "metric:c:bias",
+            "descriptor_fingerprint": "",
+        }
+    )
+    metric_implementation["descriptor_fingerprint"] = fingerprint_without(
+        metric_implementation, "descriptor_fingerprint"
+    )
+    metric_reference = {
+        "spec": copy.deepcopy(valid["metric_spec"]),
+        "implementation": metric_implementation,
+    }
+
+    role = copy.deepcopy(valid["training_loss_role"])
+    role["loss"] = copy.deepcopy(loss_reference)
+    return {
+        "profile": "dagml.c-local-implementations.v1",
+        "canonicalization": "TCV1-unicode-17.0.0",
+        "loss_reference": loss_reference,
+        "foreign_loss_reference": foreign_loss_reference,
+        "training_loss_role": role,
+        "metric_reference": metric_reference,
+    }
 
 
 def build_javascript_fixture(valid: dict[str, Any]) -> dict[str, Any]:
@@ -295,6 +363,8 @@ def main() -> None:
     write(PROVIDER_FIXTURE, provider_fixture)
     javascript_fixture = build_javascript_fixture(valid)
     write(JAVASCRIPT_FIXTURE, javascript_fixture)
+    c_fixture = build_c_fixture(valid)
+    write(C_FIXTURE, c_fixture)
 
     pack: dict[str, Any] = {
         "pack_id": "dag-ml.criteria-conformance.v1",

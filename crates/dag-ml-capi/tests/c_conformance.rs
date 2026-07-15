@@ -2363,6 +2363,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
             data_bindings: Vec::new(),
             params: BTreeMap::new(),
             params_fingerprint: "params:c-conformance".to_string(),
+            training_losses: Vec::new(),
         },
         phase: Phase::FitCv,
         variant_id: Some(VariantId::new("variant:c-conformance").unwrap()),
@@ -2414,6 +2415,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
             seed: task.seed,
             unsafe_flags: BTreeSet::new(),
             metrics: BTreeMap::new(),
+            loss_attestations: Vec::new(),
         },
     };
     result.validate_for_task(&task).unwrap();
@@ -2661,6 +2663,7 @@ fn write_dag_ml_data_provider_bundle(workspace: &Path, path: &Path) {
             plugin_version: None,
         },
         params_fingerprint: model_plan.params_fingerprint.clone(),
+        training_loss_fingerprint: None,
         data_requirement_keys: vec!["model:base.x".to_string()],
         prediction_requirement_keys: Vec::new(),
     };

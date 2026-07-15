@@ -13531,6 +13531,34 @@ def validate_dag_ml_training_header(header: str, label: str) -> None:
         )
 
 
+def validate_dag_ml_local_implementation_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_LOCAL_IMPLEMENTATION_VTABLE_ABI_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_LOCAL_IMPLEMENTATION_VTABLE_ABI_VERSION=1",
+    )
+    for symbol in (
+        "typedef struct DagMlLocalImplementationRegistry",
+        "typedef struct DagMlLocalImplementationVTable",
+        "dagml_local_implementation_registry_create",
+        "dagml_local_implementation_registry_register_loss",
+        "dagml_local_implementation_registry_register_metric",
+        "dagml_local_implementation_registry_invoke_loss",
+        "dagml_local_implementation_registry_invoke_training_loss",
+        "dagml_local_implementation_registry_invoke_metric",
+        "dagml_local_implementation_registry_unregister_loss",
+        "dagml_local_implementation_registry_unregister_metric",
+        "dagml_local_implementation_registry_descriptors_json",
+        "dagml_local_implementation_registry_clear",
+        "dagml_local_implementation_registry_free",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
+    for callback in ("invoke", "release_bytes", "retain", "release"):
+        require(
+            callback in header,
+            f"{label} local implementation vtable must expose `{callback}`",
+        )
+
+
 def validate_dag_ml_data_shape_header(header: str, label: str) -> None:
     for macro in (
         "#define DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION 1u",
@@ -19148,6 +19176,7 @@ def main(argv: list[str] | None = None) -> int:
         validate_dag_ml_campaign_header(local_header, "dag-ml")
         validate_dag_ml_execution_plan_header(local_header, "dag-ml")
         validate_dag_ml_training_header(local_header, "dag-ml")
+        validate_dag_ml_local_implementation_header(local_header, "dag-ml")
         validate_dag_ml_data_shape_header(local_header, "dag-ml")
         validate_dag_ml_data_output_provenance_header(local_header, "dag-ml")
         validate_dag_ml_selection_header(local_header, "dag-ml")
