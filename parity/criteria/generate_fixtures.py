@@ -22,8 +22,12 @@ JAVASCRIPT_FIXTURE = (
     ROOT / "examples/fixtures/criteria/javascript_local_implementations.v1.json"
 )
 C_FIXTURE = ROOT / "examples/fixtures/criteria/c_local_implementations.v1.json"
+R_FIXTURE = ROOT / "bindings/r/inst/extdata/r_local_implementations.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
 ARTIFACTS = {
+    "bindings/r/R/local_implementation_registry.R": "r_local_registry",
+    "bindings/r/inst/extdata/r_local_implementations.v1.json": "fixture",
+    "bindings/r/tests/local_implementation_registry.R": "r_binding_test",
     "crates/dag-ml-cli/src/main.rs": "cli_validator",
     "crates/dag-ml-cli/tests/cli_contracts.rs": "cli_test",
     "crates/dag-ml-core/src/criteria.rs": "rust_contract",
@@ -58,6 +62,143 @@ ARTIFACTS = {
     "parity/criteria/tests/test_criteria_contracts.py": "parity_test",
     "scripts/smoke_wasm_bindings.cjs": "javascript_binding_test",
 }
+
+
+def loss_attestation(
+    role: dict[str, Any], phase: str
+) -> dict[str, Any]:
+    loss = role["loss"]
+    spec = loss["spec"]
+    implementation = loss["implementation"]
+    attestation = {
+        "schema_version": 1,
+        "node_id": role["node_id"],
+        "output_id": role["output_id"],
+        "phase": phase,
+        "loss_id": spec["loss_id"],
+        "semantic_fingerprint": spec["spec_fingerprint"],
+        "implementation_fingerprint": implementation[
+            "implementation_fingerprint"
+        ],
+        "descriptor_fingerprint": implementation["descriptor_fingerprint"],
+        "effective_parameters": copy.deepcopy(spec["parameters"]),
+        "reduction": spec["reduction"],
+        "attestation_fingerprint": "",
+    }
+    attestation["attestation_fingerprint"] = fingerprint_without(
+        attestation, "attestation_fingerprint"
+    )
+    return attestation
+
+
+def build_host_language_fixture(
+    valid: dict[str, Any], *, language: str, binding_id: str
+) -> dict[str, Any]:
+    loss_implementation = copy.deepcopy(valid["loss_implementation"])
+    loss_implementation.update(
+        {
+            "provider_id": f"provider:{language}-local",
+            "binding_id": binding_id,
+            "implementation_fingerprint": hashlib.sha256(
+                f"dagml.{language}.asymmetric-loss.v1".encode()
+            ).hexdigest(),
+            "capabilities": ["deterministic", "differentiable"],
+            "registry_key": f"loss:{language}:asymmetric",
+            "descriptor_fingerprint": "",
+        }
+    )
+    loss_implementation["descriptor_fingerprint"] = fingerprint_without(
+        loss_implementation, "descriptor_fingerprint"
+    )
+    loss_reference = {
+        "spec": copy.deepcopy(valid["loss_spec"]),
+        "implementation": loss_implementation,
+    }
+
+    foreign_loss_reference = copy.deepcopy(loss_reference)
+    foreign_implementation = foreign_loss_reference["implementation"]
+    foreign_implementation["provider_id"] = "provider:foreign-local"
+    foreign_implementation["binding_id"] = "binding:foreign"
+    foreign_implementation["registry_key"] = "loss:foreign:asymmetric"
+    foreign_implementation["descriptor_fingerprint"] = fingerprint_without(
+        foreign_implementation, "descriptor_fingerprint"
+    )
+
+    metric_implementation = copy.deepcopy(valid["metric_implementation"])
+    metric_implementation.update(
+        {
+            "provider_id": f"provider:{language}-local",
+            "binding_id": binding_id,
+            "implementation_fingerprint": hashlib.sha256(
+                f"dagml.{language}.bias-metric.v1".encode()
+            ).hexdigest(),
+            "registry_key": f"metric:{language}:bias",
+            "descriptor_fingerprint": "",
+        }
+    )
+    metric_implementation["descriptor_fingerprint"] = fingerprint_without(
+        metric_implementation, "descriptor_fingerprint"
+    )
+    metric_reference = {
+        "spec": copy.deepcopy(valid["metric_spec"]),
+        "implementation": metric_implementation,
+    }
+
+    role = copy.deepcopy(valid["training_loss_role"])
+    role["loss"] = copy.deepcopy(loss_reference)
+    node_plan = {
+        "node_id": role["node_id"],
+        "kind": "model",
+        "controller_id": f"controller:{language}-local",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV", "REFIT"],
+        "controller_capabilities": [
+            "deterministic",
+            "supports_configurable_loss",
+            "supports_custom_loss",
+            "supports_differentiable_loss",
+        ],
+        "training_losses": [copy.deepcopy(role)],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": None,
+        "data_bindings": [],
+        "params": {},
+        "params_fingerprint": hashlib.sha256(
+            f"dagml.{language}.local-task.params.v1".encode()
+        ).hexdigest(),
+    }
+
+    tasks: dict[str, Any] = {}
+    for phase in ("FIT_CV", "REFIT"):
+        tasks[phase] = {
+            "run_id": f"run:{language}-local-{phase.lower()}",
+            "node_plan": copy.deepcopy(node_plan),
+            "phase": phase,
+            "variant_id": None,
+            "variant": None,
+            "fold_id": "fold:0" if phase == "FIT_CV" else None,
+            "branch_path": [],
+            "input_handles": {},
+            "data_views": {},
+            "prediction_inputs": {},
+            "artifact_inputs": {},
+            "required_loss_attestations": [loss_attestation(role, phase)],
+            "seed": 42,
+        }
+
+    return {
+        "profile": f"dagml.{language}-local-implementations.v1",
+        "canonicalization": "TCV1-unicode-17.0.0",
+        "loss_reference": loss_reference,
+        "foreign_loss_reference": foreign_loss_reference,
+        "training_loss_role": role,
+        "metric_reference": metric_reference,
+        "tasks": tasks,
+    }
 
 
 def build_c_fixture(valid: dict[str, Any]) -> dict[str, Any]:
@@ -365,6 +506,10 @@ def main() -> None:
     write(JAVASCRIPT_FIXTURE, javascript_fixture)
     c_fixture = build_c_fixture(valid)
     write(C_FIXTURE, c_fixture)
+    r_fixture = build_host_language_fixture(
+        valid, language="r", binding_id="binding:r"
+    )
+    write(R_FIXTURE, r_fixture)
 
     pack: dict[str, Any] = {
         "pack_id": "dag-ml.criteria-conformance.v1",

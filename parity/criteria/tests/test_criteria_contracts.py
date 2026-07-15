@@ -26,6 +26,7 @@ from scripts.validate_contracts import build_local_schema_registry  # noqa: E402
 FIXTURE = ROOT / "examples/fixtures/criteria/criteria_contracts.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
 PROVIDER_FIXTURE = ROOT / "examples/fixtures/criteria/metric_provider_contracts.v1.json"
+R_FIXTURE = ROOT / "bindings/r/inst/extdata/r_local_implementations.v1.json"
 SCHEMA_IDS = {
     "loss_spec": "https://github.com/GBeurier/dag-ml/schemas/loss_spec.v1.schema.json",
     "metric_spec": "https://github.com/GBeurier/dag-ml/schemas/metric_spec.v1.schema.json",
@@ -35,6 +36,7 @@ SCHEMA_IDS = {
     "metric_role": "https://github.com/GBeurier/dag-ml/schemas/metric_role.v1.schema.json",
     "metric_evaluation_task": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_task.v1.schema.json",
     "metric_evaluation_result": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_result.v1.schema.json",
+    "node_task": "https://github.com/GBeurier/dag-ml/schemas/node_task.v1.schema.json",
 }
 VALID_CONTRACTS = {
     "loss_spec": "loss_spec",
@@ -155,6 +157,34 @@ def test_metric_provider_fixture_has_independent_task_result_and_refusal_parity(
     nonfinite["values"][0]["value"] = float("nan")
     with pytest.raises(CriteriaContractError, match="non-finite provider value"):
         validate_metric_evaluation_result(nonfinite, task)
+
+
+def test_r_local_registry_fixture_uses_native_node_task_requirements() -> None:
+    fixture = load(R_FIXTURE)
+    assert (
+        schema_errors(
+            "implementation_descriptor",
+            fixture["loss_reference"]["implementation"],
+        )
+        == []
+    )
+    assert (
+        schema_errors(
+            "implementation_descriptor",
+            fixture["metric_reference"]["implementation"],
+        )
+        == []
+    )
+    assert schema_errors("training_loss_role", fixture["training_loss_role"]) == []
+    for phase in ("FIT_CV", "REFIT"):
+        task = fixture["tasks"][phase]
+        assert schema_errors("node_task", task) == []
+        requirement = task["required_loss_attestations"][0]
+        assert schema_errors("loss_execution_attestation", requirement) == []
+        VALIDATORS["loss_execution_attestation"](requirement)
+        assert requirement["attestation_fingerprint"] == fingerprint_without(
+            requirement, "attestation_fingerprint"
+        )
 
 
 def test_conformance_pack_is_exact_and_self_fingerprinted() -> None:
