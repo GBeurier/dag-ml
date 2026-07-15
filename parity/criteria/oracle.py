@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Callable
 
@@ -91,6 +92,7 @@ def validate_metric_spec(document: dict[str, Any]) -> None:
         require(reduction != "global", "decomposed metric reduction")
         require("decomposable" in capabilities, "decomposable capability")
     if reduction == "weighted_mean":
+        require(decomposition == "per_unit", "weighted metric decomposition")
         require("sample_weight" in inputs, "weighted metric input")
         require("supports_sample_weights" in capabilities, "weighted metric capability")
     if "sample_weight" in inputs:
@@ -168,10 +170,166 @@ def validate_metric_role(document: dict[str, Any]) -> None:
     require(document["level"] in document["metric"]["spec"]["supported_levels"], "level")
 
 
+def _matrix_shape(values: Any, label: str) -> tuple[int, int]:
+    require(isinstance(values, list) and bool(values), label)
+    require(all(isinstance(row, list) and bool(row) for row in values), label)
+    width = len(values[0])
+    require(all(len(row) == width for row in values), f"{label} ragged")
+    require(
+        all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            for row in values
+            for value in row
+        ),
+        f"{label} non-finite",
+    )
+    return len(values), width
+
+
+def validate_metric_evaluation_task(document: dict[str, Any]) -> None:
+    require(document.get("schema_version") == 1, "task schema_version")
+    metric = document["metric"]
+    _validate_reference(metric, "metric", "metric_id", validate_metric_spec)
+    spec = metric["spec"]
+    require(document.get("task_kind") in spec["task_kinds"], "task kind")
+    require(
+        document.get("prediction_kind") in spec["prediction_kinds"],
+        "prediction kind",
+    )
+    scope = document["scope"]
+    require(scope.get("level") in spec["supported_levels"], "scope level")
+    units = document.get("unit_ids")
+    require(isinstance(units, list) and bool(units), "unit_ids")
+    coordinates = [(unit.get("level"), unit.get("id")) for unit in units]
+    require(len(coordinates) == len(set(coordinates)), "duplicate unit_ids")
+    require(all(level == scope["level"] for level, _ in coordinates), "unit level")
+    prediction_rows, prediction_width = _matrix_shape(
+        document.get("predictions"), "predictions"
+    )
+    target_rows, target_width = _matrix_shape(document.get("targets"), "targets")
+    require(prediction_rows == len(units) == target_rows, "row coverage")
+    output_ids = document.get("output_ids")
+    require(
+        isinstance(output_ids, list)
+        and len(output_ids) == target_width
+        and len(output_ids) == len(set(output_ids)),
+        "output_ids",
+    )
+    if document.get("prediction_kind") in {"regression_point", "class_label"}:
+        require(prediction_width == target_width, "prediction width")
+    required = set(spec["required_inputs"])
+    weights = document.get("sample_weights")
+    if "sample_weight" in required:
+        require(weights is not None, "sample_weights")
+    if weights is not None:
+        require(
+            "supports_sample_weights" in spec["capabilities"],
+            "sample weight capability",
+        )
+        require(
+            len(weights) == len(units)
+            and all(math.isfinite(value) and value >= 0 for value in weights)
+            and sum(weights) > 0,
+            "sample_weights",
+        )
+    mask = document.get("missing_mask")
+    if "missing_mask" in required:
+        require(mask is not None, "missing_mask")
+    if mask is not None:
+        require("supports_missing_mask" in spec["capabilities"], "mask capability")
+        require(
+            len(mask) == len(units) and all(len(row) == target_width for row in mask),
+            "missing_mask",
+        )
+    groups = document.get("group_ids")
+    if "group" in required:
+        require(groups is not None, "group_ids")
+    if groups is not None:
+        require("group" in required, "undeclared group_ids")
+        require(len(groups) == len(units), "group_ids")
+    _require_fingerprint(document, "task_fingerprint")
+
+
+def validate_metric_evaluation_result(
+    document: dict[str, Any], task: dict[str, Any]
+) -> float:
+    validate_metric_evaluation_task(task)
+    require(document.get("schema_version") == 1, "result schema_version")
+    spec = task["metric"]["spec"]
+    implementation = task["metric"]["implementation"]
+    require(document.get("request_id") == task["request_id"], "request_id")
+    require(document.get("semantic_id") == spec["metric_id"], "semantic_id")
+    require(
+        document.get("semantic_fingerprint") == spec["spec_fingerprint"],
+        "semantic_fingerprint",
+    )
+    require(
+        document.get("implementation_fingerprint")
+        == implementation["implementation_fingerprint"],
+        "implementation_fingerprint",
+    )
+    require(
+        document.get("descriptor_fingerprint")
+        == implementation["descriptor_fingerprint"],
+        "descriptor_fingerprint",
+    )
+    require(document.get("scope") == task["scope"], "result scope")
+    values = document.get("values")
+    require(isinstance(values, list) and bool(values), "result values")
+    require(
+        all(
+            isinstance(value.get("value"), (int, float))
+            and not isinstance(value["value"], bool)
+            and math.isfinite(value["value"])
+            for value in values
+        ),
+        "non-finite provider value",
+    )
+    decomposition = spec["decomposition"]
+    if decomposition == "global":
+        require(
+            len(values) == 1
+            and "unit_id" not in values[0]
+            and "output_id" not in values[0],
+            "global result coverage",
+        )
+    elif decomposition == "per_output":
+        require(
+            [value.get("output_id") for value in values] == task["output_ids"]
+            and all("unit_id" not in value for value in values),
+            "per-output result coverage",
+        )
+    else:
+        require(
+            [value.get("unit_id") for value in values] == task["unit_ids"]
+            and all("output_id" not in value for value in values),
+            "per-unit result coverage",
+        )
+    _require_fingerprint(document, "result_fingerprint")
+    raw_values = [value["value"] for value in values]
+    reduction = spec["reduction"]
+    if reduction == "global":
+        aggregate = raw_values[0]
+    elif reduction == "mean":
+        aggregate = sum(raw_values) / len(raw_values)
+    elif reduction == "sum":
+        aggregate = sum(raw_values)
+    else:
+        weights = task["sample_weights"]
+        aggregate = sum(value * weight for value, weight in zip(raw_values, weights)) / sum(
+            weights
+        )
+    require(math.isfinite(aggregate), "non-finite metric reduction")
+    return aggregate
+
+
 VALIDATORS: dict[str, Callable[[dict[str, Any]], None]] = {
     "loss_spec": validate_loss_spec,
     "metric_spec": validate_metric_spec,
     "implementation_descriptor": validate_implementation_descriptor,
     "training_loss_role": validate_training_loss_role,
     "metric_role": validate_metric_role,
+    "metric_evaluation_task": validate_metric_evaluation_task,
 }

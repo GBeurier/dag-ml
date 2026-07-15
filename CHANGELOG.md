@@ -15,9 +15,11 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   implementation-descriptor contracts under ADR-22. New standalone v1 schemas,
   strict TCV1 fingerprints, versioned built-in catalogs, compile-time loss
   resolution, negative fixtures, an independent semantic oracle, an exact
-  conformance pack and CLI validators establish the contract before controller
-  execution or binding-local callback registries are added. This additive
-  contract publication does not change the public C ABI.
+  conformance pack and CLI validators. A typed metric task/result protocol now
+  dispatches both built-in and host-local providers through one registry,
+  validates provider identity, finite values, scope and coverage, and reduces
+  results before native score persistence. This additive contract publication
+  does not change the public C ABI.
 - ADR-20 and W0 JSON contracts for conformal calibration ownership,
   `ParameterPatch`, `OutputBinding`, `TrainingInfluenceManifest`, complete
   `TrainingOutcome`/`ReplayOutcome` payloads, and the existing execution-bundle

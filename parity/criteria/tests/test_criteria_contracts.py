@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import sys
@@ -14,18 +15,25 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from parity.conformal.oracle import fingerprint_without  # noqa: E402
-from parity.criteria.oracle import VALIDATORS, CriteriaContractError  # noqa: E402
+from parity.criteria.oracle import (  # noqa: E402
+    VALIDATORS,
+    CriteriaContractError,
+    validate_metric_evaluation_result,
+)
 from scripts.validate_contracts import build_local_schema_registry  # noqa: E402
 
 
 FIXTURE = ROOT / "examples/fixtures/criteria/criteria_contracts.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
+PROVIDER_FIXTURE = ROOT / "examples/fixtures/criteria/metric_provider_contracts.v1.json"
 SCHEMA_IDS = {
     "loss_spec": "https://github.com/GBeurier/dag-ml/schemas/loss_spec.v1.schema.json",
     "metric_spec": "https://github.com/GBeurier/dag-ml/schemas/metric_spec.v1.schema.json",
     "implementation_descriptor": "https://github.com/GBeurier/dag-ml/schemas/implementation_descriptor.v1.schema.json",
     "training_loss_role": "https://github.com/GBeurier/dag-ml/schemas/training_loss_role.v1.schema.json",
     "metric_role": "https://github.com/GBeurier/dag-ml/schemas/metric_role.v1.schema.json",
+    "metric_evaluation_task": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_task.v1.schema.json",
+    "metric_evaluation_result": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_result.v1.schema.json",
 }
 VALID_CONTRACTS = {
     "loss_spec": "loss_spec",
@@ -116,6 +124,34 @@ def test_large_decimal_version_is_accepted_by_schema_and_semantics() -> None:
     VALIDATORS["loss_spec"](document)
 
 
+def test_metric_provider_fixture_has_independent_task_result_and_refusal_parity() -> None:
+    fixture = load(PROVIDER_FIXTURE)
+    task = fixture["valid"]["task"]
+    result = fixture["valid"]["result"]
+    assert schema_errors("metric_evaluation_task", task) == []
+    assert schema_errors("metric_evaluation_result", result) == []
+    VALIDATORS["metric_evaluation_task"](task)
+    assert validate_metric_evaluation_result(result, task) == fixture["valid"]["aggregate"]
+
+    for case in fixture["invalid"]:
+        errors = schema_errors(case["contract"], case["document"])
+        try:
+            if case["contract"] == "metric_evaluation_task":
+                VALIDATORS[case["contract"]](case["document"])
+            else:
+                validate_metric_evaluation_result(case["document"], task)
+        except (CriteriaContractError, KeyError):
+            semantic_rejected = True
+        else:
+            semantic_rejected = False
+        assert errors or semantic_rejected, case["id"]
+
+    nonfinite = copy.deepcopy(result)
+    nonfinite["values"][0]["value"] = float("nan")
+    with pytest.raises(CriteriaContractError, match="non-finite provider value"):
+        validate_metric_evaluation_result(nonfinite, task)
+
+
 def test_conformance_pack_is_exact_and_self_fingerprinted() -> None:
     pack = load(PACK)
     assert pack["pack_checksum"] == fingerprint_without(pack, "pack_checksum")
@@ -125,5 +161,7 @@ def test_conformance_pack_is_exact_and_self_fingerprinted() -> None:
         digest = hashlib.sha256((ROOT / artifact["path"]).read_bytes()).hexdigest()
         assert digest == artifact["sha256"], artifact["path"]
     assert pack["required_negative_cases"] == [
-        case["id"] for case in load(FIXTURE)["invalid"]
+        case["id"]
+        for case in load(FIXTURE)["invalid"] + load(PROVIDER_FIXTURE)["invalid"]
     ]
+    assert pack["runtime_only_negative_cases"] == ["provider_result_non_finite"]
