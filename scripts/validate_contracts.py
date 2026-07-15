@@ -570,6 +570,10 @@ NODE_TASK_SCHEMA_ID = (
 NODE_RESULT_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json"
 )
+LOSS_EXECUTION_ATTESTATION_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "loss_execution_attestation.v1.schema.json"
+)
 PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "process_adapter_description.v1.schema.json"
@@ -10398,6 +10402,14 @@ def validate_node_task_schema(schema: Any, label: str) -> None:
     require(
         "fit_influence" in properties, f"{label} NodeTask schema misses fit_influence"
     )
+    loss_requirements = properties.get("required_loss_attestations")
+    require(
+        isinstance(loss_requirements, dict)
+        and loss_requirements.get("type") == "array"
+        and loss_requirements.get("items", {}).get("$ref")
+        == LOSS_EXECUTION_ATTESTATION_SCHEMA_ID,
+        f"{label} NodeTask loss execution requirement schema mismatch",
+    )
     require(
         defs.get("handle_kind", {}).get("enum")
         == ["data", "data_view", "model", "artifact", "prediction", "relation"],
@@ -13072,6 +13084,55 @@ def validate_node_task(value: Any, label: str) -> None:
     fit_influence = value.get("fit_influence")
     if fit_influence is not None:
         validate_fit_influence_task(fit_influence, f"{label}.fit_influence")
+    requirements = value.get("required_loss_attestations", [])
+    require(
+        isinstance(requirements, list),
+        f"{label}.required_loss_attestations must be an array",
+    )
+    roles = node_plan.get("training_losses", [])
+    require(
+        isinstance(roles, list),
+        f"{label}.node_plan.training_losses must be an array",
+    )
+    active_roles = [
+        role
+        for role in roles
+        if isinstance(role, dict) and value.get("phase") in role.get("phases", [])
+    ]
+    require(
+        len(requirements) == len(active_roles),
+        f"{label}.required_loss_attestations count mismatch",
+    )
+    for index, (attestation, role) in enumerate(zip(requirements, active_roles)):
+        requirement_label = f"{label}.required_loss_attestations[{index}]"
+        require(
+            isinstance(attestation, dict),
+            f"{requirement_label} must be an object",
+        )
+        require(
+            attestation.get("node_id") == node_plan.get("node_id"),
+            f"{requirement_label}.node_id mismatch",
+        )
+        require(
+            attestation.get("output_id") == role.get("output_id"),
+            f"{requirement_label}.output_id mismatch",
+        )
+        require(
+            attestation.get("phase") == value.get("phase"),
+            f"{requirement_label}.phase mismatch",
+        )
+        loss = role.get("loss", {})
+        implementation = loss.get("implementation", {}) if isinstance(loss, dict) else {}
+        spec = loss.get("spec", {}) if isinstance(loss, dict) else {}
+        require(
+            attestation.get("loss_id") == spec.get("loss_id"),
+            f"{requirement_label}.loss_id mismatch",
+        )
+        require(
+            attestation.get("descriptor_fingerprint")
+            == implementation.get("descriptor_fingerprint"),
+            f"{requirement_label}.descriptor_fingerprint mismatch",
+        )
 
 
 def validate_node_result(value: Any, label: str) -> None:

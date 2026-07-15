@@ -16,7 +16,7 @@
     },
     {
       "path": "crates/dag-ml-capi/src/lib.rs",
-      "sha256": "21b9d473d0eac61b03487dcdc33281847756de24c2358b795387652e21ddbab2",
+      "sha256": "ea69f97214b8ab05d976691caa9a673ced3833eb42ff80ebca4dc8a0f11fee95",
       "kind": "c_training_binding"
     },
     {
@@ -26,7 +26,7 @@
     },
     {
       "path": "crates/dag-ml-capi/tests/c_conformance.rs",
-      "sha256": "ef0881451049c098087f4b928ad45cb7c1e5c26c609c030bd1b6744848215de7",
+      "sha256": "7f1ad365f0bdec0312f936907c255d5782e4bf4de0ed934ff2818e40746310d7",
       "kind": "c_binding_test"
     },
     {
@@ -131,7 +131,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/task.rs",
-      "sha256": "d0ed5ade6b1e5231257313f701ce4bfa54ae3d65724535db09bca26b1f25bf8d",
+      "sha256": "6b973fd66e52d76f0626890a22fb0fc83b4c2a5d8b91315ccc3cd008729b61ac",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -266,7 +266,7 @@
     },
     {
       "path": "docs/contracts/node_task.schema.json",
-      "sha256": "3f2fae8317a853cb1b2f0a3ff1d8a47dce2163b0fca01316bf694a74af555ee3",
+      "sha256": "e9b5548221d0b8f67b97c701b2a0e460f8d5cbc332f75c556317d56f4cc13eeb",
       "kind": "schema_dependency"
     },
     {
@@ -441,7 +441,7 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "13fda623f8245e992b88c3fccf1e5226ba66c4dc272b820690d8ef25460f1954",
+      "sha256": "c7212f2fd1d83952e881546b45c13875c03dc862e0b41d7320e0618edac9ff77",
       "kind": "production_validator"
     }
   ],
@@ -514,5 +514,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "5bb095982c0e07e014f854af3e43befe4ee793befda48079df21ff314101f0c4"
+  "pack_checksum": "fdc2b047bae54ed80e00d673dac2171b94a90828dee891a1272d1354a058cc17"
 }
