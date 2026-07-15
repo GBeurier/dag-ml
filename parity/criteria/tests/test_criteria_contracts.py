@@ -27,6 +27,7 @@ FIXTURE = ROOT / "examples/fixtures/criteria/criteria_contracts.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
 PROVIDER_FIXTURE = ROOT / "examples/fixtures/criteria/metric_provider_contracts.v1.json"
 R_FIXTURE = ROOT / "bindings/r/inst/extdata/r_local_implementations.v1.json"
+MATLAB_FIXTURE = ROOT / "bindings/matlab/fixtures/matlab_local_implementations.v1.json"
 SCHEMA_IDS = {
     "loss_spec": "https://github.com/GBeurier/dag-ml/schemas/loss_spec.v1.schema.json",
     "metric_spec": "https://github.com/GBeurier/dag-ml/schemas/metric_spec.v1.schema.json",
@@ -159,8 +160,11 @@ def test_metric_provider_fixture_has_independent_task_result_and_refusal_parity(
         validate_metric_evaluation_result(nonfinite, task)
 
 
-def test_r_local_registry_fixture_uses_native_node_task_requirements() -> None:
-    fixture = load(R_FIXTURE)
+@pytest.mark.parametrize("fixture_path", [R_FIXTURE, MATLAB_FIXTURE])
+def test_host_local_registry_fixture_uses_native_node_task_requirements(
+    fixture_path: Path,
+) -> None:
+    fixture = load(fixture_path)
     assert (
         schema_errors(
             "implementation_descriptor",

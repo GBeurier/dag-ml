@@ -5,6 +5,21 @@
   "fingerprint_profile": "DAGML-TCV1-unicode-17.0.0",
   "artifacts": [
     {
+      "path": "bindings/matlab/+dagml/LocalImplementationRegistry.m",
+      "sha256": "756fe1d4038c1d9235572720dbdc18dee1f117875dc05051a42f05c33f69dcaf",
+      "kind": "matlab_local_registry"
+    },
+    {
+      "path": "bindings/matlab/fixtures/matlab_local_implementations.v1.json",
+      "sha256": "650a47caed9653b8f01a3af2248f1bffa6a7d077c9f8f19e0d3f1926703893ae",
+      "kind": "fixture"
+    },
+    {
+      "path": "bindings/matlab/tests/local_implementation_registry.m",
+      "sha256": "d1d03f8f1c69b145320fec8dc121615e8bea83d89020e5382514d2bfd6e180c5",
+      "kind": "matlab_binding_test"
+    },
+    {
       "path": "bindings/r/R/local_implementation_registry.R",
       "sha256": "edee3d7b0b57cb7e9ee63def8dc7739d27ee66b348511bb62a3531f9aa641efe",
       "kind": "r_local_registry"
@@ -101,7 +116,7 @@
     },
     {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "8d53eb391a1af0a42457fb22b626eda28e7aa6f6fe892509288e4a36fc262055",
+      "sha256": "603065afb14ecf1c5230e06bcf737b83010b9f319f0ff1a3d17c028a18131fae",
       "kind": "contract_documentation"
     },
     {
@@ -166,7 +181,7 @@
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "8fc98d2ea9618530287a0c722bac198fd2655d673b039da46dcfde693e90e4a1",
+      "sha256": "9beb897a7d5fa839371e34978f725f351db3b389e2941430153faf8ec3871cb2",
       "kind": "generator"
     },
     {
@@ -176,7 +191,7 @@
     },
     {
       "path": "parity/criteria/tests/test_criteria_contracts.py",
-      "sha256": "c47bd9defe7e0406a01345718916731d6b31012f0deb3d46c5b04eda9349d547",
+      "sha256": "3307a803998004d744fa0be050ab1f540ccc028541251f0ce3f40c39a2610261",
       "kind": "parity_test"
     },
     {
@@ -206,5 +221,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "c318f83ed36766161a82debc96a671e4cd1f0fc72cad2b8e9924b9087df928f5"
+  "pack_checksum": "53bd8bb9184e28c7c8e0ae1f46871ca06b7305bef5efb9a3b7a683f5913117dd"
 }

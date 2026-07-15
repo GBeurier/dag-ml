@@ -66,6 +66,13 @@ Its training invocation consumes the native `NodeTask` requirement and returns
 that attestation only after the R function succeeds; the binding never computes
 TCV1 fingerprints or writes a function into DAG JSON.
 
+The MATLAB/Octave binding exposes `dagml.LocalImplementationRegistry`. It
+retains local `function_handle` objects for `binding:matlab` descriptors and
+uses the same separate loss and metric paths. `invokeTrainingLoss` validates a
+native `NodeTask` requirement for `FIT_CV` or `REFIT`, executes the selected
+function, and exposes the native-produced attestation only after success. Each
+MATLAB process, parallel worker, or Octave process owns an independent registry.
+
 `TrainingRequest.training_losses` is the authoritative pipeline assignment.
 Each role targets a node and an optional controller-local output/head and lists
 the exact training phases where it applies. The resolved roles travel inside
