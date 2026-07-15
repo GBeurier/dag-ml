@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/chain_effect_analysis.v1.schema.json",
+  "title": "DAG-ML ChainEffectAnalysis v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "metric",
+    "lens",
+    "baseline",
+    "points"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "https://github.com/GBeurier/dag-ml/schemas/chain_effect_analysis.v1.schema.json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "metric": {
+      "$ref": "#/$defs/metric"
+    },
+    "lens": {
+      "$ref": "#/$defs/lens"
+    },
+    "baseline": {
+      "type": "number"
+    },
+    "evaluation_scope": {
+      "anyOf": [
+        { "$ref": "#/$defs/evaluation_scope" },
+        { "type": "null" }
+      ]
+    },
+    "points": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/point"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "lens": { "enum": ["rank_by_dataset", "z_by_dataset"] }
+        },
+        "required": ["lens"]
+      },
+      "then": {
+        "properties": {
+          "points": {
+            "items": {
+              "required": ["dataset"]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "optional_string": {
+      "anyOf": [
+        { "$ref": "#/$defs/non_empty_string" },
+        { "type": "null" }
+      ]
+    },
+    "lens": {
+      "enum": ["raw", "rank_by_dataset", "z_by_dataset"]
+    },
+    "evaluation_scope": {
+      "enum": ["oof", "holdout", "final", "train", "refit"]
+    },
+    "role": {
+      "enum": ["split", "preprocess", "feature", "model", "augmentation", "target", "other"]
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "label", "lower_is_better"],
+      "properties": {
+        "key": { "$ref": "#/$defs/non_empty_string" },
+        "label": { "$ref": "#/$defs/non_empty_string" },
+        "lower_is_better": { "type": "boolean" }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token", "role"],
+      "properties": {
+        "token": { "$ref": "#/$defs/non_empty_string" },
+        "label": { "$ref": "#/$defs/optional_string" },
+        "role": { "$ref": "#/$defs/role" }
+      }
+    },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "score", "goodness", "ordered_tokens"],
+      "properties": {
+        "id": { "$ref": "#/$defs/non_empty_string" },
+        "score": { "type": "number" },
+        "goodness": { "type": "number" },
+        "dataset": { "$ref": "#/$defs/optional_string" },
+        "source": { "$ref": "#/$defs/optional_string" },
+        "ordered_tokens": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/step" }
+        }
+      }
+    }
+  }
+}

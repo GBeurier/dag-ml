@@ -58,6 +58,12 @@ NODE_TASK_SCHEMA_REL = Path("docs/contracts/node_task.schema.json")
 NODE_RESULT_SCHEMA_REL = Path("docs/contracts/node_result.schema.json")
 SCORE_SET_SCHEMA_REL = Path("docs/contracts/score_set.schema.json")
 SCORE_SET_FIXTURE_REL = Path("examples/fixtures/score_set.json")
+CHAIN_EFFECT_ANALYSIS_SCHEMA_REL = Path(
+    "docs/contracts/chain_effect_analysis.schema.json"
+)
+CHAIN_EFFECT_ANALYSIS_FIXTURE_REL = Path(
+    "examples/fixtures/chain_effect_analysis.json"
+)
 OPERATOR_VARIANT_LABEL_FIXTURE_REL = Path(
     "docs/contracts/operator_variant_label.v1.json"
 )
@@ -346,6 +352,9 @@ DATA_OUTPUT_PROVENANCE_SCHEMA_ID = (
     "data_output_provenance.v1.schema.json"
 )
 SCORE_SET_SCHEMA_ID = "https://github.com/GBeurier/dag-ml/schemas/score_set.v1.schema.json"
+CHAIN_EFFECT_ANALYSIS_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/chain_effect_analysis.v1.schema.json"
+)
 NODE_TASK_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "node_task.v1.schema.json"
@@ -2097,6 +2106,103 @@ def validate_aggregation_controller_result_schema(schema: Any, label: str) -> No
         == ["physical_sample", "source_sample", "observation", "combo"],
         f"{label} aggregation-controller result entity unit levels are not aligned",
     )
+
+
+def validate_chain_effect_analysis_schema(schema: Any, label: str) -> None:
+    require(
+        isinstance(schema, dict),
+        f"{label} chain-effect schema must be an object",
+    )
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} chain-effect schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == CHAIN_EFFECT_ANALYSIS_SCHEMA_ID,
+        f"{label} chain-effect schema has unexpected $id",
+    )
+    require(
+        schema.get("type") == "object",
+        f"{label} chain-effect root must be an object",
+    )
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} chain-effect root must reject unknown fields",
+    )
+    required = schema.get("required")
+    require(
+        isinstance(required, list),
+        f"{label} chain-effect required list is missing",
+    )
+    for field in (
+        "schema_id",
+        "schema_version",
+        "metric",
+        "lens",
+        "baseline",
+        "points",
+    ):
+        require(
+            field in required,
+            f"{label} chain-effect schema must require `{field}`",
+        )
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} chain-effect properties missing")
+    require(
+        "points" in properties,
+        f"{label} chain-effect schema must define `points`",
+    )
+
+
+def validate_chain_effect_analysis_fixture(value: Any, label: str) -> None:
+    require(
+        isinstance(value, dict),
+        f"{label} chain-effect fixture must be an object",
+    )
+    for field in (
+        "schema_id",
+        "schema_version",
+        "metric",
+        "lens",
+        "baseline",
+        "points",
+    ):
+        require(field in value, f"{label} chain-effect fixture missing `{field}`")
+    require(
+        value.get("schema_id") == CHAIN_EFFECT_ANALYSIS_SCHEMA_ID,
+        f"{label} chain-effect fixture has unexpected schema_id",
+    )
+    require(
+        value.get("lens") in ("raw", "rank_by_dataset", "z_by_dataset"),
+        f"{label} chain-effect fixture has an unknown lens",
+    )
+    points = value.get("points")
+    require(
+        isinstance(points, list) and bool(points),
+        f"{label} chain-effect fixture must have a non-empty points list",
+    )
+    dataset_required = value.get("lens") in ("rank_by_dataset", "z_by_dataset")
+    for point in points:
+        require(
+            isinstance(point, dict),
+            f"{label} chain-effect point must be an object",
+        )
+        for field in ("id", "score", "goodness", "ordered_tokens"):
+            require(field in point, f"{label} chain-effect point missing `{field}`")
+        require(
+            not dataset_required or point.get("dataset") not in (None, ""),
+            f"{label} chain-effect rank/z point must declare a dataset",
+        )
+        tokens = point.get("ordered_tokens")
+        require(
+            isinstance(tokens, list) and bool(tokens),
+            f"{label} chain-effect point ordered_tokens must be a non-empty list",
+        )
+        for token in tokens:
+            require(
+                isinstance(token, dict) and "token" in token and "role" in token,
+                f"{label} chain-effect token must declare `token` and `role`",
+            )
 
 
 def validate_score_set_schema(schema: Any, label: str) -> None:
@@ -5523,6 +5629,12 @@ def main(argv: list[str] | None = None) -> int:
         local_node_result_schema = load_json(ROOT / NODE_RESULT_SCHEMA_REL)
         local_score_set_schema = load_json(ROOT / SCORE_SET_SCHEMA_REL)
         local_score_set_fixture = load_json(ROOT / SCORE_SET_FIXTURE_REL)
+        local_chain_effect_analysis_schema = load_json(
+            ROOT / CHAIN_EFFECT_ANALYSIS_SCHEMA_REL
+        )
+        local_chain_effect_analysis_fixture = load_json(
+            ROOT / CHAIN_EFFECT_ANALYSIS_FIXTURE_REL
+        )
         local_operator_variant_label_fixture = load_json(
             ROOT / OPERATOR_VARIANT_LABEL_FIXTURE_REL
         )
@@ -5616,6 +5728,12 @@ def main(argv: list[str] | None = None) -> int:
         validate_node_result_schema(local_node_result_schema, "dag-ml")
         validate_score_set_schema(local_score_set_schema, "dag-ml")
         validate_score_set_fixture(local_score_set_fixture, "dag-ml")
+        validate_chain_effect_analysis_schema(
+            local_chain_effect_analysis_schema, "dag-ml"
+        )
+        validate_chain_effect_analysis_fixture(
+            local_chain_effect_analysis_fixture, "dag-ml"
+        )
         validate_operator_variant_label_fixture(
             local_operator_variant_label_fixture, "dag-ml"
         )

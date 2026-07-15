@@ -7,6 +7,7 @@
 pub mod aggregation;
 pub mod bundle;
 pub mod campaign;
+pub mod chain_effect;
 pub mod controller;
 pub mod controller_adapter;
 pub mod controller_registry;
@@ -32,6 +33,7 @@ pub mod selection;
 pub use aggregation::*;
 pub use bundle::*;
 pub use campaign::*;
+pub use chain_effect::*;
 pub use controller::*;
 pub use controller_adapter::*;
 pub use controller_registry::*;
