@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -72,10 +73,19 @@ class _FakeNativeTrainingResult:
 class _SuccessfulTrainingCallback:
     """Fixture controller that exercises the installed public training path."""
 
-    def __init__(self, *, explicit_model_ports: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        explicit_model_ports: bool = False,
+        local_implementations: dag_ml.LocalImplementationRegistry | None = None,
+    ) -> None:
         self.call_count = 0
+        self.loss_calls: list[
+            tuple[str, str | None, str | None, tuple[str, ...], float]
+        ] = []
         self._next_handle = 0
         self._explicit_model_ports = explicit_model_ports
+        self._local_implementations = local_implementations
 
     def _handle(self) -> int:
         self._next_handle += 1
@@ -87,6 +97,23 @@ class _SuccessfulTrainingCallback:
         node_id = node_plan["node_id"]
         phase = task["phase"]
         is_model = node_id == "model:base"
+        loss_attestations = []
+        if task.get("required_loss_attestations"):
+            if self._local_implementations is None:
+                raise RuntimeError("training task requires an unconfigured local loss")
+            invocation = self._local_implementations.invoke_training_loss(
+                task, 2.0, 5.0
+            )
+            self.loss_calls.append(
+                (
+                    phase,
+                    task["variant_id"],
+                    task["fold_id"],
+                    tuple(task["branch_path"]),
+                    invocation["value"],
+                )
+            )
+            loss_attestations.append(invocation["attestation"])
         fold_samples = {
             "fold:0": ["sample:1", "sample:2"],
             "fold:1": ["sample:3", "sample:4"],
@@ -95,7 +122,9 @@ class _SuccessfulTrainingCallback:
             task["fold_id"],
             ["sample:1", "sample:2", "sample:3", "sample:4"],
         )
-        partition = "final" if phase in {"REFIT", "PREDICT", "EXPLAIN"} else "validation"
+        partition = (
+            "final" if phase in {"REFIT", "PREDICT", "EXPLAIN"} else "validation"
+        )
         predictions = []
         if is_model and phase in {"FIT_CV", "REFIT", "PREDICT", "EXPLAIN"}:
             predictions.append(
@@ -104,11 +133,7 @@ class _SuccessfulTrainingCallback:
                         f"prediction:{node_id}:{phase}:{task['fold_id'] or 'full'}"
                     ),
                     "producer_node": node_id,
-                    **(
-                        {"producer_port": "oof"}
-                        if self._explicit_model_ports
-                        else {}
-                    ),
+                    **({"producer_port": "oof"} if self._explicit_model_ports else {}),
                     "partition": partition,
                     "fold_id": task["fold_id"] if phase == "FIT_CV" else None,
                     "sample_ids": sample_ids,
@@ -219,6 +244,7 @@ class _SuccessfulTrainingCallback:
                 "seed": task["seed"],
                 "unsafe_flags": [],
                 "metrics": {},
+                "loss_attestations": loss_attestations,
             },
         }
 
@@ -368,6 +394,86 @@ class TrainingResultTests(unittest.TestCase):
         self.assertIsNone(result.process_local_artifact_count)
         self.assertEqual(result.outcome.to_dict(), outcome)
 
+    def test_reference_controller_executes_local_loss_in_cv_and_refit(self) -> None:
+        fixture = json.loads(
+            (
+                REPO / "examples/fixtures/training/python_training_smoke.v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        criteria = json.loads(
+            (
+                REPO / "examples/fixtures/criteria/python_local_implementations.v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        request = deepcopy(fixture["request"])
+        role = deepcopy(criteria["training_loss_role"])
+        role["node_id"] = "model:base"
+        role["output_id"] = "oof"
+        request["training_losses"] = [role]
+        model_manifest = next(
+            manifest
+            for manifest in request["controller_manifests"]
+            if manifest["controller_id"] == "controller:model.mock"
+        )
+        model_manifest["capabilities"] = sorted(
+            {
+                *model_manifest["capabilities"],
+                "needs_python_gil",
+                "supports_configurable_loss",
+                "supports_custom_loss",
+                "supports_differentiable_loss",
+            }
+        )
+        request["request_fingerprint"] = "0" * 64
+        request = dag_ml.sign_training_request(request).to_dict()
+
+        registry = dag_ml.LocalImplementationRegistry()
+        raw_calls: list[tuple[float, float]] = []
+
+        def asymmetric_loss(target: float, prediction: float) -> float:
+            raw_calls.append((target, prediction))
+            return (prediction - target) ** 2
+
+        registry.register_loss(criteria["loss_reference"], asymmetric_loss)
+        callback = _SuccessfulTrainingCallback(local_implementations=registry)
+        result = dag_ml.execute_training(
+            request,
+            fixture["data_envelopes"],
+            fixture["relations"],
+            fixture["training_influence"],
+            callback,
+            outcome_id="outcome:python.public.local-loss",
+            run_id="run:python.public.local-loss",
+            bundle_id="bundle:python.public.local-loss",
+        )
+
+        cv_calls = [call for call in callback.loss_calls if call[0] == "FIT_CV"]
+        refit_calls = [call for call in callback.loss_calls if call[0] == "REFIT"]
+        self.assertEqual(len(cv_calls), 4)
+        self.assertEqual(
+            {variant_id for _, variant_id, *_ in cv_calls}, {"variant:base"}
+        )
+        self.assertEqual(
+            {fold_id for _, _, fold_id, *_ in cv_calls}, {"fold:0", "fold:1"}
+        )
+        self.assertEqual(
+            [fold_id for _, _, fold_id, _, _ in cv_calls].count("fold:0"),
+            2,
+        )
+        self.assertEqual(
+            [fold_id for _, _, fold_id, _, _ in cv_calls].count("fold:1"),
+            2,
+        )
+        self.assertTrue(all(value == 9.0 for *_, value in cv_calls))
+        self.assertEqual(len(refit_calls), 1)
+        self.assertEqual(refit_calls[0][0:3], ("REFIT", "variant:base", None))
+        self.assertEqual(refit_calls[0][-1], 9.0)
+        self.assertEqual(raw_calls, [(2.0, 5.0)] * 5)
+        refit_artifact = result.outcome.to_dict()["execution_bundle"][
+            "refit_artifacts"
+        ][0]
+        self.assertIsNotNone(refit_artifact["training_loss_fingerprint"])
+
     def test_public_facade_signs_training_request(self) -> None:
         fixture = json.loads(
             (
@@ -383,7 +489,9 @@ class TrainingResultTests(unittest.TestCase):
             signed.to_dict()["request_fingerprint"],
             fixture["request"]["request_fingerprint"],
         )
-        self.assertEqual(signed.project().to_dict()["request_id"], unsigned["request_id"])
+        self.assertEqual(
+            signed.project().to_dict()["request_id"], unsigned["request_id"]
+        )
 
     def test_public_facade_filters_explicit_multi_prediction_port_outputs(self) -> None:
         fixture = json.loads(
@@ -584,7 +692,9 @@ class TrainingResultTests(unittest.TestCase):
             run_id="run:python.public.package.explain.source",
             bundle_id="bundle:python.public.package.explain.source",
         )
-        self.assertEqual(result.outcome.to_dict()["replayable_phases"], ["PREDICT", "EXPLAIN"])
+        self.assertEqual(
+            result.outcome.to_dict()["replayable_phases"], ["PREDICT", "EXPLAIN"]
+        )
         package = result.export_portable_predictor_package(
             "predictor:python.public.package.explain"
         ).to_dict()

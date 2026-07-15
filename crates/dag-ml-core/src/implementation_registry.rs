@@ -166,6 +166,11 @@ fn resolution_error<T>(message: impl Into<String>) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
     use serde_json::Value;
 
     use super::*;
@@ -245,5 +250,28 @@ mod tests {
         );
         assert!(registry.is_empty());
         assert!(registry.resolve_loss(&loss).is_err());
+    }
+
+    #[test]
+    fn clear_releases_registry_owned_implementations() {
+        struct DropProbe(Arc<AtomicUsize>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let loss = custom_loss();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut registry = LocalImplementationRegistry::new();
+        registry
+            .register_loss(&loss, DropProbe(Arc::clone(&drops)))
+            .unwrap();
+
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        registry.clear();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(registry.is_empty());
     }
 }
