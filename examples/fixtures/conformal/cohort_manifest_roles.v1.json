@@ -1,0 +1,359 @@
+{
+  "fixture_id": "dag-ml.conformal.cohort-manifest-roles.v1",
+  "schema_version": 1,
+  "schema": "cohort_manifest.schema.json",
+  "valid_cases": [
+    {
+      "id": "development",
+      "document": {
+        "schema_version": 1,
+        "role": "development",
+        "exchangeability_unit": "physical_sample",
+        "physical_sample_ids": [
+          "sample:dev.01",
+          "sample:dev.02",
+          "sample:dev.03"
+        ],
+        "origin_sample_ids": [
+          "sample:dev.origin.01"
+        ],
+        "group_ids": [
+          "group:batch.A"
+        ],
+        "source_ids": [
+          "nir"
+        ],
+        "unit_relations": [
+          {
+            "physical_sample_id": "sample:dev.01",
+            "origin_sample_id": "sample:dev.origin.01",
+            "group_ids": [
+              "group:batch.A"
+            ],
+            "source_ids": [
+              "nir"
+            ]
+          },
+          {
+            "physical_sample_id": "sample:dev.02",
+            "origin_sample_id": null,
+            "group_ids": [
+              "group:batch.A"
+            ],
+            "source_ids": [
+              "nir"
+            ]
+          },
+          {
+            "physical_sample_id": "sample:dev.03",
+            "origin_sample_id": null,
+            "group_ids": [
+              "group:batch.A"
+            ],
+            "source_ids": [
+              "nir"
+            ]
+          }
+        ],
+        "target_names": [
+          "protein"
+        ],
+        "relation_fingerprint": "737251dc0fd453e56816c50e46aea43f9fbf363d9d5b4815c92ace834cc57dc1",
+        "content_fingerprint": "df2ca351ccf323b9092c2e2b2820af72322ce77e33724014bfe7c1b03b9b497a",
+        "manifest_fingerprint": "9908fccd01b4c468ee283e51aab877017702b1ae5348dcfffff8100593c9b348",
+        "axes_fingerprint": "b7826c7552d2ed0cb5193353162ac2e147de0a6081bf7c9074a157ec32e71bc8"
+      }
+    },
+    {
+      "id": "calibration",
+      "document": {
+        "schema_version": 1,
+        "role": "calibration",
+        "exchangeability_unit": "physical_sample",
+        "physical_sample_ids": [
+          "sample:cal.01",
+          "sample:cal.02",
+          "sample:cal.03"
+        ],
+        "origin_sample_ids": [
+          "sample:cal.origin.01"
+        ],
+        "group_ids": [
+          "group:batch.B"
+        ],
+        "source_ids": [
+          "nir"
+        ],
+        "unit_relations": [
+          {
+            "physical_sample_id": "sample:cal.01",
+            "origin_sample_id": "sample:cal.origin.01",
+            "group_ids": [
+              "group:batch.B"
+            ],
+            "source_ids": [
+              "nir"
+            ]
+          },
+          {
+            "physical_sample_id": "sample:cal.02",
+            "origin_sample_id": null,
+            "group_ids": [
+              "group:batch.B"
+            ],
+            "source_ids": [
+              "nir"
+            ]
+          },
+          {
+            "physical_sample_id": "sample:cal.03",
+            "origin_sample_id": null,
+            "group_ids": [
+              "group:batch.B"
+            ],
+            "source_ids": [
+              "nir"
+            ]
+          }
+        ],
+        "target_names": [
+          "protein"
+        ],
+        "relation_fingerprint": "641114151cdbe1c5bd370c6f7a3f5b1730fc56a540a126f0c910a1f19903784c",
+        "content_fingerprint": "b9f6a026ccdb49dbb5531330797042b2d8b727658903965a35acbb4b041998fd",
+        "manifest_fingerprint": "840524bf6d7c365d7901926bdcb71ade4113ab7f281ddde06d38e380e2203435",
+        "axes_fingerprint": "3d1b0ec7b9d6447f9193fd8f477235301bb611575db228b6b8321b579e81cb3d"
+      }
+    },
+    {
+      "id": "external_test",
+      "document": {
+        "schema_version": 1,
+        "role": "external_test",
+        "exchangeability_unit": "physical_sample",
+        "physical_sample_ids": [
+          "sample:ext.01",
+          "sample:ext.02",
+          "sample:ext.03",
+          "sample:ext.04"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:batch.A",
+          "group:batch.B"
+        ],
+        "source_ids": [
+          "nir",
+          "nir.secondary"
+        ],
+        "unit_relations": [
+          {
+            "physical_sample_id": "sample:ext.01",
+            "origin_sample_id": null,
+            "group_ids": [
+              "group:batch.A"
+            ],
+            "source_ids": [
+              "nir"
+            ]
+          },
+          {
+            "physical_sample_id": "sample:ext.02",
+            "origin_sample_id": null,
+            "group_ids": [
+              "group:batch.B"
+            ],
+            "source_ids": [
+              "nir"
+            ]
+          },
+          {
+            "physical_sample_id": "sample:ext.03",
+            "origin_sample_id": null,
+            "group_ids": [
+              "group:batch.A"
+            ],
+            "source_ids": [
+              "nir"
+            ]
+          },
+          {
+            "physical_sample_id": "sample:ext.04",
+            "origin_sample_id": null,
+            "group_ids": [
+              "group:batch.B"
+            ],
+            "source_ids": [
+              "nir.secondary"
+            ]
+          }
+        ],
+        "target_names": [
+          "protein"
+        ],
+        "relation_fingerprint": "6cda81f2c36995d54585a3327914ef3608d7d0ef3e495a76d8f19c88e5e2d0dd",
+        "content_fingerprint": "037463437d963e8f901dce08d656c98d9245f88d752605a4453a0202c0fc1e9a",
+        "manifest_fingerprint": "b989daea51c25e88125c1bdb32bd6465fb5098e0e7434d0e2dbcd1251114f4b8",
+        "axes_fingerprint": "b3ec8075ab868dde142f66da8f860a12fd1a0f1676ab5943a64410d5d41c4bb3"
+      }
+    },
+    {
+      "id": "production",
+      "document": {
+        "schema_version": 1,
+        "role": "production",
+        "exchangeability_unit": "physical_sample",
+        "physical_sample_ids": [
+          "sample:prod.01",
+          "sample:prod.02"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [],
+        "source_ids": [
+          "nir"
+        ],
+        "unit_relations": [
+          {
+            "physical_sample_id": "sample:prod.01",
+            "origin_sample_id": null,
+            "group_ids": [],
+            "source_ids": [
+              "nir"
+            ]
+          },
+          {
+            "physical_sample_id": "sample:prod.02",
+            "origin_sample_id": null,
+            "group_ids": [],
+            "source_ids": [
+              "nir"
+            ]
+          }
+        ],
+        "target_names": [
+          "protein"
+        ],
+        "relation_fingerprint": "aa3293a908c182e949d9d64b98fae4c0509451b88a2bebc8dac46e22944eaf77",
+        "content_fingerprint": "d9311c087cfe8837cbf1ea7425472164599bedde58278ec19309c924c9340267",
+        "manifest_fingerprint": "44bfe2214684dac02cc4543028e63e637d9f927a55f3a1237a914986bfb179b7",
+        "axes_fingerprint": null
+      }
+    }
+  ],
+  "invalid_cases": [
+    {
+      "id": "unknown_test_role_refuses",
+      "base_case": "external_test",
+      "mutations": [
+        {
+          "path": "/role",
+          "value": "test"
+        }
+      ],
+      "expected_error": "role",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "unsorted_samples_refuse",
+      "base_case": "external_test",
+      "mutations": [
+        {
+          "path": "/physical_sample_ids",
+          "value": [
+            "sample:ext.02",
+            "sample:ext.01",
+            "sample:ext.03",
+            "sample:ext.04"
+          ]
+        }
+      ],
+      "expected_error": "sorted",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "unit_relation_order_refuses",
+      "base_case": "external_test",
+      "mutations": [
+        {
+          "path": "/unit_relations/0/physical_sample_id",
+          "value": "sample:ext.02"
+        }
+      ],
+      "expected_error": "align",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "unit_relation_source_closure_refuses",
+      "base_case": "external_test",
+      "mutations": [
+        {
+          "path": "/unit_relations/3/source_ids",
+          "value": []
+        }
+      ],
+      "expected_error": "source closure",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "runtime_handle_refuses",
+      "base_case": "external_test",
+      "mutations": [
+        {
+          "path": "/cohort_handle",
+          "value": 1
+        }
+      ],
+      "expected_error": "handle",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "manifest_fingerprint_tamper_refuses",
+      "base_case": "external_test",
+      "mutations": [
+        {
+          "path": "/manifest_fingerprint",
+          "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      ],
+      "expected_error": "TCV1",
+      "targets_fingerprint": true
+    }
+  ],
+  "disjointness_cases": [
+    {
+      "id": "disjoint_training_and_calibration",
+      "training_sample_ids": [
+        "sample:dev.01",
+        "sample:dev.02"
+      ],
+      "training_origin_sample_ids": [
+        "sample:dev.origin.01"
+      ],
+      "calibration_case": "calibration",
+      "expected": "valid"
+    },
+    {
+      "id": "direct_sample_overlap",
+      "training_sample_ids": [
+        "sample:cal.01",
+        "sample:dev.02"
+      ],
+      "training_origin_sample_ids": [],
+      "calibration_case": "calibration",
+      "expected": "invalid",
+      "expected_error": "overlap"
+    },
+    {
+      "id": "origin_overlap",
+      "training_sample_ids": [
+        "sample:dev.01"
+      ],
+      "training_origin_sample_ids": [
+        "sample:cal.origin.01"
+      ],
+      "calibration_case": "calibration",
+      "expected": "invalid",
+      "expected_error": "overlap"
+    }
+  ]
+}

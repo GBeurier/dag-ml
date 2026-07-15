@@ -248,6 +248,268 @@ critical coordination fields; Rust validation remains the authority for DAG
 topology, controller-policy consistency, OOF capability checks, fold semantics,
 shape/data binding checks and fingerprint consistency.
 
+## Estimator outcome and conformal foundation v1
+
+Schemas: `parameter_patch.schema.json`, `output_binding.schema.json`,
+`training_influence_manifest.schema.json`, `training_outcome.schema.json`,
+`replay_outcome.schema.json`, `execution_bundle.schema.json`,
+`prediction_cache_payload_set.schema.json` and
+`conformal_calibration.schema.json`.
+
+Canonical fixtures live under `examples/fixtures/estimator/` and
+`examples/fixtures/conformal/`. These W0 contracts publish the portable
+boundary needed by native estimator-style fitting and conformal calibration;
+the conformal calibration, prediction, metric and robustness contract types are
+now native in `dag-ml-core`. Their dedicated C ABI, PyO3 and WASM exposure is a
+later integration step; hosts must not infer those bindings from the schemas.
+Install `scripts/requirements-contracts.txt` before running
+`scripts/validate_contracts.py`; the validator builds an offline Draft 2020-12
+registry from every local schema, resolves all estimator/conformal references,
+then applies the cross-plan and cache invariants that JSON Schema cannot express.
+
+`ParameterPatch` records one selected change after tuning. Its canonical key
+is `(node_id, namespace, path)`, arrays are sorted by that key, and duplicate
+targets are invalid. `path` is an array of object-key segments, not a JSON
+Pointer; `-` append semantics are unsupported. The namespaces mean:
+
+- `operator`: estimator or transform constructor parameters;
+- `fit`: fit-call-only parameters;
+- `control`: scheduler/controller behavior that does not change graph shape;
+- `structural`: explicit graph- or shape-affecting choices.
+
+For example, the canonical representation of a selected PLS component count
+is:
+
+```json
+{
+  "schema_version": 1,
+  "node_id": "model:pls",
+  "namespace": "operator",
+  "path": ["n_components"],
+  "value": 12
+}
+```
+
+The patch is not an instruction to mutate an opaque fitted model. The same
+value must already be materialized in the matching effective
+`ExecutionPlan.node_plans[node_id]` namespace before a `TrainingOutcome` can
+be accepted.
+
+`OutputBinding` removes output-shape guessing. It binds a graph node and port
+to prediction level/unit, prediction kind and source, optional refit strategy,
+aggregation fingerprint, target order, target units, per-target class
+vocabularies and target space. Regression uses one explicit empty class array
+per target. Class probabilities use `target_major_class_minor`; all other V1
+kinds use `target_order`. `binding_fingerprint` is TCV1 over the binding with
+only that field omitted. `bound_output` pairs the binding with the actual
+prediction blocks and validates producer, unit, row width and target/class
+column order.
+
+`TrainingInfluenceManifest` is the exact development-data identity closure for
+fit, selection, early stopping, weighting/resampling and trained aggregation.
+Every entry explicitly carries `node_id` (`null` when the influence is global),
+`origin_sample_ids` and `group_ids` (empty arrays when absent). It never carries
+`training_outcome_fingerprint`: `TrainingOutcome` owns the manifest and a
+conformal `PredictorBinding` references the two sibling fingerprints, which
+avoids a recursive hash.
+
+`TrainingOutcome` is the complete portable result of compile through `FIT_CV`
+and `SELECT`, plus optional `REFIT`. It always contains the full effective plan,
+selected variant, canonical patches, non-null OOF `ScoreSet`, bound outputs,
+lineage, influence manifest and replay bundle. The selected patches are exactly
+the leaf `param_overrides` of the selected variant, not merely values that happen
+to occur in the effective plan. Starting at every bound output, validation walks
+the full transitive `node_plans[*].input_nodes` closure. Every closure node that
+supports `FIT_CV` has one lineage record per fold and exactly one corresponding
+fit/transform/trained-meta influence entry; a completed refit has one `REFIT`
+lineage record per closure node that supports `REFIT`.
+
+Persisted refit artifacts follow controller capability, not a broad node-kind
+guess: every closure node whose `controller_capabilities` contains
+`emits_artifacts` must be represented in the execution bundle and its `REFIT`
+lineage, while a node without that capability must not invent an artifact. Each
+artifact record exactly cross-links its node's external data requirements and
+incoming OOF prediction requirements. A completed refit uses `final_refit`
+outputs; a skipped refit carries no refit artifact and exposes `REFIT` as its
+replayable phase. Runtime handles are forbidden. `outcome_fingerprint` is TCV1
+over the entire outcome with only `outcome_fingerprint` omitted.
+
+`ReplayOutcome` extends the existing replay summary counters with actual bound
+predictions, explanations and lineage. Counts must equal the payload, every
+emitted producer must have lineage for the replay phase, and its outcome
+fingerprint uses the same omit-self TCV1 rule. `execution_bundle.schema.json`
+and `prediction_cache_payload_set.schema.json` publish the existing Rust wire
+shapes used inside these outcomes; Rust bundle/replay validation remains the
+runtime authority. The positive refit fixture embeds both branch-to-meta OOF
+requirements, their cache records and the matching portable payload set; the
+no-refit fixture preserves the same complete OOF cache because replaying `REFIT`
+must not discard the fold predictions that justified selection. Requirement,
+cache-record and payload key sets must match exactly in both branches.
+
+`CalibrationArtifact` V1 implements split absolute-residual calibration at
+physical-sample level. Its predictor embeds the exact selected patches,
+full transitive external-data bindings, capability-required refit artifacts and
+`OutputBinding`, and binds the owning `TrainingOutcome` plus its influence
+manifest. Predictor artifact/data lists are derived from the execution bundle;
+omitting a base estimator or upstream transform binding is stale even when the
+final meta-estimator remains present. The sorted, unique
+`predictor_node_ids` member is the authoritative closure: it includes required
+transforms even when they emit no persisted artifact, and structural robustness
+scenarios may target only nodes in that list. Calibration sample/origin closure must be
+disjoint from training sample/origin closure. Coverages are strictly increasing
+binary64 values; rank is `ceil((n + 1) * Decimal(shortest-roundtrip coverage))`. A finite
+persisted quantile is a binary64 JSON float token (`2.0`, not `2`); an
+out-of-range rank under the permissive policy uses the tagged
+`{"status":"unbounded"}` value, never JSON infinity.
+
+Fingerprint algorithms are intentionally disjoint:
+
+- legacy DAG-ML graph/campaign/controller/parameter fingerprints use the
+  existing deterministic serde JSON profile;
+- new estimator/conformal fingerprints use DAG-ML Typed Canonical Value v1,
+  whose object keys are normalized and ordered by UTF-8 bytes;
+- nirs4all-methods fingerprints use RFC 8785/JCS and UTF-16 key ordering.
+
+A field names exactly one profile. Values are never co-hashed or compared
+across profiles. `scripts/validate_contracts.py` pins schema ownership,
+cross-fixture equality, TCV1 preimages, integer-versus-float distinction,
+shortest-roundtrip rank behavior, refit/no-refit semantics and stale predictor
+refusal.
+
+## Conformal prediction and robustness foundation v1
+
+Schemas: `cohort_manifest.schema.json`,
+`conformal_prediction_block.schema.json`,
+`conformal_metric_set.schema.json`,
+`domain_assessment_block.schema.json`, `decision_block.schema.json`,
+`robustness_scenario_spec.schema.json` and
+`robustness_report.schema.json`.
+
+The versioned positive and negative fixtures are under
+`examples/fixtures/conformal/` and `examples/fixtures/robustness/`. The
+byte-level artifact manifest is
+`conformal_robustness_conformance_pack.v1.json`. Together with
+`conformal_calibration.schema.json`, it pins the eight W0
+conformal/robustness contracts,
+their transitive estimator/calibration contracts, fixtures, rank and metric
+goldens, the independent Python semantic oracle, the frozen Philox counter
+oracle and the independent Rust canonical-profile oracle. Paths are
+repository-relative, sorted and unique; traversal and symlinks in any path
+component are refused, each file uses a byte SHA-256, and the pack itself uses
+an omit-self TCV1 checksum.
+
+`CohortManifest` names one of four roles: `development`, `calibration`,
+`external_test` or `production`. Its exchangeability unit is always
+`physical_sample`. `unit_relations` gives the exact per-sample origin, group
+and source membership; its ordered sample ids and the union of its relation
+members must equal the corresponding flat identity closures. A calibration
+cohort must be disjoint from every physical sample and origin that influenced
+fit, selection, early stopping, resampling or trained aggregation. Distinct
+digests alone are not evidence of disjointness.
+
+`ConformalPredictionBlock` binds intervals to an existing point-output binding,
+point-prediction fingerprint, predictor and calibration artifact. Unit rows,
+target columns and coverage levels are explicit and intervals must be nested.
+`assumption_status` records whether exchangeability is declared, shifted or
+not assessed. `guarantee_status` is consequently separate from finite bounds:
+under distribution shift a finite interval may remain useful as a diagnostic,
+but it does not silently retain a marginal or joint coverage guarantee.
+
+`ConformalMetricSet` is not a model `ScoreSet`. Its canonical coordinate is
+scenario, severity, slice, target, coverage, fold, repeat and seed. Records
+carry the actual sample count, empirical coverage, coverage gap, interval
+widths and interval score. Marginal targets must belong to the report cohort;
+`joint_max` records use a null target. Sliced or shifted measurements are
+`diagnostic_only` or `unavailable` unless a separately validated recalibration
+restores the stated assumption. The regression metric golden reconstructs
+coverage, mean/median width and the two-sided Winkler interval score directly
+from truth and bounds for marginal, joint and unbounded cases.
+
+The fixture-only `evidence_cases` and report `evidence_sets` close the numeric
+chain that the portable schemas intentionally fingerprint rather than embed.
+Each record contains finite binary64 point predictions and truth, exact TCV1
+fingerprints and a one-to-one block/metric-set link. The independent validators
+require the point matrix and truth matrix to match the block row/target shape,
+reconstruct every finite interval midpoint, and recompute empirical coverage,
+coverage gap, mean/median width and Winkler score from truth and bounds.
+Unbounded cells remain paired null endpoints with null width/score. These
+records are conformance evidence only; they are not a production report field
+or a new runtime API.
+
+`DomainAssessmentBlock` answers whether a predictor-support diagnostic regards
+each unit as in support, out of support or unknown. It makes no coverage claim.
+`DecisionBlock` applies an explicit named policy to conformal or domain
+evidence and owns actions such as `accept`, `reject` and `refer`; it makes no
+domain-score or statistical-guarantee claim of its own. Numeric comparison
+operators require finite binary64 JSON float thresholds (`2.0`, never `2`).
+Numeric domain scores/thresholds and numeric members of decision membership
+arrays follow the same lexical rule; string and boolean members remain typed.
+
+`RobustnessScenarioSpec` makes the identity severity `0.0` mandatory and pins
+Philox 4x32-10 plus the versioned counter/key derivation over scenario,
+binary64 severity, unit, target kind/id and draw index. Its three modes have
+different state transitions:
+
+- `clean_frozen` reuses predictor and calibrator and treats non-zero shifted
+  coverage as diagnostic or unavailable;
+- `matched_recalibration` reuses the predictor but requires a new, fully
+  checksum-addressed calibration artifact and a calibration cohort disjoint
+  from both external evaluation units and predictor-training influence. Its
+  diagnostics identify the exact scenario, binary64 severity and calibration
+  input fingerprint;
+- `structural_refit` requires a replacement node that resolves inside the
+  baseline predictor closure, a new plan/graph/selected-variant predictor
+  identity and either a new compatible calibrator or an explicitly invalidated
+  calibration. A declaration targeting an unrelated node is refused.
+
+`RobustnessReport` keeps predictor state, calibration state and coverage
+guarantee in separate fields. Every result records before/after input,
+relation, predictor and point-prediction identities. Severity-zero rows must be
+identity-preserving. Every non-zero slice is paired with an exact
+severity-zero baseline over the same split, environment, fold, repeat, seed,
+unit level and unit ids; point-metric baseline values must come from that row.
+Each declared severity includes an `all` slice. Conformal records additionally
+match fold/repeat/seed and sample count exactly. Non-null calibration checksums
+resolve to complete `CalibrationArtifact` documents in the report and are
+covered by provenance. A production report may instead be explicitly
+point-only: its calibration checksum is null, conformal artifacts/blocks/metric
+sets are empty, coverage is `unavailable`, and its example monitors the
+label-free `prediction_mean_shift` metric rather than implying that delayed
+truth was available for MAE, R² or RMSE.
+
+The fully resolved fixture has three calibration artifacts and exactly 18
+result/block/metric-set coordinates: clean mode covers `all`, both groups and
+both sources at both severities; matched recalibration covers `all` and both
+groups; structural refit covers `all`. A separate valid structural result
+demonstrates explicit calibration invalidation without inventing a prediction
+block or metric set. Every requested metric is either produced or named by a
+`metric_unavailable.<metric>` score error, and every declared group, source,
+environment or target slice value is present at every declared severity.
+
+These W0 contracts are owned by DAG-ML as portable coordination and audit
+shapes. `dag-ml-core` now exposes native Rust conformal contract types and exact
+split-conformal regression helpers over these semantics. Public C ABI, Python
+and WASM conformal bindings remain separate follow-up work.
+`parity/conformal/oracle.py`, `parity/robustness_rng/oracle.py` and
+`parity/canonical/rust-oracle/` are test-only authorities and production
+validation never imports them. TCV1 and the restricted RFC 8785/JCS profile
+are intentionally different: TCV1 uses NFC, UTF-8 key ordering and typed
+integer/binary64 tokens; restricted JCS uses no normalization, UTF-16 key
+ordering and tagged binary64 strings. A fingerprint field names exactly one
+profile.
+
+Run the complete local gates from the repository root:
+
+```bash
+python3 -m pip install -r scripts/requirements-contracts.txt pytest
+python3 scripts/validate_contracts.py --require-sibling --sibling-root ../dag-ml-data
+python3 -m pytest parity/conformal/tests/test_conformal_robustness_contracts.py -q
+python3 -m pytest parity/robustness_rng/tests/test_robustness_rng_contract.py -q
+CARGO_TARGET_DIR=/tmp/dagml-canonical-rust-target \
+  cargo test --locked --manifest-path parity/canonical/rust-oracle/Cargo.toml
+python3 -m pytest parity/canonical/tests/test_rust_oracle_parity.py -q
+```
+
 ## ModelInputSpec v1
 
 Schema: `model_input_spec.schema.json`
@@ -369,6 +631,65 @@ metric name/objective, optional required prediction level
 and the deterministic ranked candidate list. Rust validation remains the
 semantic authority for rank continuity, selected-candidate consistency,
 duplicate candidates and finite selected scores.
+
+## Native training and portable predictor contracts v1
+
+Schemas: `training_request.schema.json`, `parameter_projection.schema.json`,
+`cache_namespace.schema.json`, `training_outcome.schema.json` and
+`portable_predictor_package.schema.json`.
+
+Normative syntax and examples: [Native training contracts](../TRAINING_CONTRACTS.md).
+
+Conformance pack: `training_contract_conformance_pack.v1.json`.
+
+These W1 contracts turn the W0 estimator vocabulary into a strict native
+training boundary. `TrainingRequest` projects through the normal graph,
+campaign, controller and execution-plan types; it does not add a second runtime
+ABI. The separate `ParameterProjection.nodes[*]` object maps namespaces
+bijectively to `params`, `fit_params`, `control_params` and
+`structural_params`; `ExecutionPlan::NodePlan` still exposes only `params`.
+W1-0 validates and projects the other namespaces but does not silently execute
+them. A later runtime step must materialize each supported namespace explicitly.
+Data identities include schema, plan, relation, feature-content and
+target-content fingerprints. Active controller capabilities derive exact
+fold/refit influence slots, and cache namespaces bind every
+prediction-affecting coordinate. `selection_output_id` names the sole output
+whose averaged FIT_CV reports drive ranking; `TrainingOutcome` persists that
+choice and reconstructs the decision from scores.
+
+The D3 execution bindings expose that one native operation through
+`dagml_training_execute`/`DagMlTrainingResult` in the C ABI and through
+`dag_ml.execute_training`/`TrainingResult` in Python. Their complete field,
+callback, GIL, ownership, detach and memory rules are documented in
+[Native training contracts](../TRAINING_CONTRACTS.md#c-training-binding). Both
+bindings require an exact map from the rendered `node_id.input_name`
+requirement key to an attested `ExternalDataPlanEnvelope`; missing, extra,
+duplicate or colliding keys fail before controller/data execution. The envelope
+must derive the exact signed `TrainingDataIdentity`, including non-null
+relation, feature-content and target-content fingerprints.
+
+The C data vtable remains borrowed. Readable controller bindings opt into the
+header's borrowed-v2 or owning-v3 lifecycle, and an opaque result keeps
+controller/artifact resources alive until its exact-once free. Python releases
+the outer GIL while the native scheduler runs, re-acquires it per callback and
+returns an owning result whose `detach()` is idempotent. Detach preserves the
+portable outcome/bundle/scores/outputs/cache payloads while discarding callback
+objects and process-local data/view/artifact handles.
+
+`PortablePredictorPackage` cross-links the request/outcome, effective plan,
+execution bundle, output bindings, predictor closure, training influence, data
+identities and refit artifacts. Native artifacts require portable metadata;
+host-only fitted objects remain process-local sidecars and runtime handles are
+recursively forbidden from the package. Bundle content and the complete ordered
+data-identity array have dedicated TCV1 commitments in `TrainingOutcomeRef`, so
+ids alone cannot authorize replacement payloads.
+
+D3 does not expose a generic fitted-model resolver or `TrainingResult.predict`.
+Artifact properties contain portable records, never host object handles.
+`replayable_phases` therefore remains a validated capability statement; D4
+replay must consume the portable bundle/package, exact envelopes, retained OOF
+payloads and reloadable artifact stores. A host sidecar that must survive
+detach or process exit needs a host persistence/reload implementation.
 
 ## DAG-ML OpenLineage Facets v1
 

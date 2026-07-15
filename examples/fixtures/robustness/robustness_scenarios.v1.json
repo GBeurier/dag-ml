@@ -1,0 +1,343 @@
+{
+  "fixture_id": "dag-ml.robustness.scenarios.v1",
+  "schema_version": 1,
+  "schema": "robustness_scenario_spec.schema.json",
+  "valid_cases": [
+    {
+      "id": "clean_frozen",
+      "document": {
+        "schema_version": 1,
+        "scenario_id": "scenario:clean.noise",
+        "mode": "clean_frozen",
+        "cohort_role": "external_test",
+        "source_ids": [
+          "nir",
+          "nir.secondary"
+        ],
+        "node_ids": [],
+        "perturbation": {
+          "kind": "gaussian_noise",
+          "parameters": {
+            "profile": "gaussian_noise.v1"
+          }
+        },
+        "severities": [
+          0.0,
+          0.01
+        ],
+        "zero_severity_semantics": "identity",
+        "rng": {
+          "algorithm": "philox4x32-10",
+          "algorithm_version": 1,
+          "counter_profile": "dagml-robustness-counter.v1",
+          "counter_derivation": "sha256-tcv1-first128",
+          "counter_fields": [
+            "scenario_fingerprint",
+            "severity_binary64",
+            "unit_id",
+            "target_kind",
+            "target_id",
+            "draw_index"
+          ],
+          "key_derivation": "uint64-seed-as-two-little-endian-u32",
+          "target_kind": "source",
+          "seed": 17
+        },
+        "split_id": "split:external.holdout",
+        "environment_id": "environment:instrument.A",
+        "slice_by": [
+          "group",
+          "source"
+        ],
+        "metrics": [
+          "conformal_coverage",
+          "mae",
+          "mean_width",
+          "r2",
+          "rmse"
+        ],
+        "requires_refit": false,
+        "requires_recalibration": false,
+        "scenario_fingerprint": "ee27cf0affb6d76b769ec3c577ff517ea484293d770b0c59ab085ddaf754e4cb"
+      }
+    },
+    {
+      "id": "matched_recalibration",
+      "document": {
+        "schema_version": 1,
+        "scenario_id": "scenario:matched.noise",
+        "mode": "matched_recalibration",
+        "cohort_role": "external_test",
+        "source_ids": [
+          "nir"
+        ],
+        "node_ids": [],
+        "perturbation": {
+          "kind": "ordered_axis_shift",
+          "parameters": {
+            "profile": "ordered_axis_shift.v1"
+          }
+        },
+        "severities": [
+          0.0,
+          0.5
+        ],
+        "zero_severity_semantics": "identity",
+        "rng": {
+          "algorithm": "philox4x32-10",
+          "algorithm_version": 1,
+          "counter_profile": "dagml-robustness-counter.v1",
+          "counter_derivation": "sha256-tcv1-first128",
+          "counter_fields": [
+            "scenario_fingerprint",
+            "severity_binary64",
+            "unit_id",
+            "target_kind",
+            "target_id",
+            "draw_index"
+          ],
+          "key_derivation": "uint64-seed-as-two-little-endian-u32",
+          "target_kind": "source",
+          "seed": 17
+        },
+        "split_id": "split:external.holdout",
+        "environment_id": "environment:instrument.B",
+        "slice_by": [
+          "group"
+        ],
+        "metrics": [
+          "conformal_coverage",
+          "mae",
+          "mean_width",
+          "r2",
+          "rmse"
+        ],
+        "requires_refit": false,
+        "requires_recalibration": true,
+        "scenario_fingerprint": "eeda67008e2ea1cb26009032623894da226a882b52e0d41b28e022022d1585b1"
+      }
+    },
+    {
+      "id": "structural_refit",
+      "document": {
+        "schema_version": 1,
+        "scenario_id": "scenario:structural.node",
+        "mode": "structural_refit",
+        "cohort_role": "external_test",
+        "source_ids": [],
+        "node_ids": [
+          "branch:b1.augment:noise"
+        ],
+        "perturbation": {
+          "kind": "node_replacement",
+          "parameters": {
+            "profile": "node_replacement.v1"
+          }
+        },
+        "severities": [
+          0.0,
+          1.0
+        ],
+        "zero_severity_semantics": "identity",
+        "rng": {
+          "algorithm": "philox4x32-10",
+          "algorithm_version": 1,
+          "counter_profile": "dagml-robustness-counter.v1",
+          "counter_derivation": "sha256-tcv1-first128",
+          "counter_fields": [
+            "scenario_fingerprint",
+            "severity_binary64",
+            "unit_id",
+            "target_kind",
+            "target_id",
+            "draw_index"
+          ],
+          "key_derivation": "uint64-seed-as-two-little-endian-u32",
+          "target_kind": "node",
+          "seed": 17
+        },
+        "split_id": "split:external.holdout",
+        "environment_id": "environment:instrument.C",
+        "slice_by": [],
+        "metrics": [
+          "conformal_coverage",
+          "mae",
+          "mean_width",
+          "r2",
+          "rmse"
+        ],
+        "requires_refit": true,
+        "requires_recalibration": true,
+        "scenario_fingerprint": "e6b80cfd754d1c2d4e3911f205d355eefd42185c0b585d08f38454206466b4a7"
+      }
+    }
+  ],
+  "invalid_cases": [
+    {
+      "id": "legacy_recalibrated_name_refuses",
+      "base_case": "matched_recalibration",
+      "mutations": [
+        {
+          "path": "/mode",
+          "value": "recalibrated"
+        }
+      ],
+      "expected_error": "mode",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "unsorted_severities_refuse",
+      "base_case": "clean_frozen",
+      "mutations": [
+        {
+          "path": "/severities",
+          "value": [
+            0.01,
+            0.0
+          ]
+        }
+      ],
+      "expected_error": "severities",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "integer_severity_refuses",
+      "base_case": "clean_frozen",
+      "mutations": [
+        {
+          "path": "/severities",
+          "value": [
+            0,
+            0.01
+          ]
+        }
+      ],
+      "expected_error": "binary64",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "clean_frozen_refit_refuses",
+      "base_case": "clean_frozen",
+      "mutations": [
+        {
+          "path": "/requires_refit",
+          "value": true
+        }
+      ],
+      "expected_error": "policy",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "matched_without_recalibration_refuses",
+      "base_case": "matched_recalibration",
+      "mutations": [
+        {
+          "path": "/requires_recalibration",
+          "value": false
+        }
+      ],
+      "expected_error": "policy",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "structural_without_node_replacement_refuses",
+      "base_case": "structural_refit",
+      "mutations": [
+        {
+          "path": "/perturbation/kind",
+          "value": "gaussian_noise"
+        }
+      ],
+      "expected_error": "node_replacement",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "node_replacement_requires_structural_mode",
+      "base_case": "clean_frozen",
+      "mutations": [
+        {
+          "path": "/perturbation/kind",
+          "value": "node_replacement"
+        }
+      ],
+      "expected_error": "if and only if",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "identity_requires_zero_only_grid",
+      "base_case": "clean_frozen",
+      "mutations": [
+        {
+          "path": "/perturbation/kind",
+          "value": "identity"
+        },
+        {
+          "path": "/rng/target_kind",
+          "value": "global"
+        }
+      ],
+      "expected_error": "[0.0]",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "rng_algorithm_drift_refuses",
+      "base_case": "clean_frozen",
+      "mutations": [
+        {
+          "path": "/rng/algorithm",
+          "value": "counter_based"
+        }
+      ],
+      "expected_error": "algorithm",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "rng_target_kind_refuses",
+      "base_case": "structural_refit",
+      "mutations": [
+        {
+          "path": "/rng/target_kind",
+          "value": "source"
+        }
+      ],
+      "expected_error": "target_kind",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "parameter_runtime_handle_refuses",
+      "base_case": "clean_frozen",
+      "mutations": [
+        {
+          "path": "/perturbation/parameters/model_handle",
+          "value": 9
+        }
+      ],
+      "expected_error": "handle",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "zero_severity_must_be_identity",
+      "base_case": "clean_frozen",
+      "mutations": [
+        {
+          "path": "/zero_severity_semantics",
+          "value": "baseline_only"
+        }
+      ],
+      "expected_error": "identity",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "nirs_specific_shift_is_host_owned",
+      "base_case": "matched_recalibration",
+      "mutations": [
+        {
+          "path": "/perturbation/kind",
+          "value": "spectrometer_transfer"
+        }
+      ],
+      "expected_error": "not one of",
+      "recompute_fingerprints": true
+    }
+  ]
+}

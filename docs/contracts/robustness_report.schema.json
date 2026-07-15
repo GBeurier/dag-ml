@@ -1,0 +1,302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/robustness_report.v1.schema.json",
+  "title": "DAG-ML RobustnessReport v1",
+  "description": "Auditable robustness/generalization results indexed by scenario, severity, environment and slice, with point and conformal metrics kept distinct.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_id",
+    "plan_fingerprint",
+    "predictor_binding_fingerprint",
+    "calibration_artifact_checksum",
+    "calibration_artifacts",
+    "cohort_manifest",
+    "scenarios",
+    "conformal_prediction_blocks",
+    "conformal_metric_sets",
+    "results",
+    "provenance",
+    "warnings",
+    "report_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "report_id": { "$ref": "#/$defs/identifier" },
+    "plan_fingerprint": { "$ref": "#/$defs/sha256" },
+    "predictor_binding_fingerprint": { "$ref": "#/$defs/sha256" },
+    "calibration_artifact_checksum": {
+      "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    },
+    "calibration_artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json"
+      },
+      "description": "Complete, checksum-addressed CalibrationArtifact documents sorted by artifact_id. Every non-null result calibrator must resolve here."
+    },
+    "cohort_manifest": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/cohort_manifest.v1.schema.json"
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/robustness_scenario_spec.v1.schema.json"
+      }
+    },
+    "conformal_prediction_blocks": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_prediction_block.v1.schema.json"
+      },
+      "description": "Complete prediction blocks sorted by block_id. Every non-null result and metric-set block fingerprint must resolve here."
+    },
+    "conformal_metric_sets": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_metric_set.v1.schema.json"
+      }
+    },
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/robustness_result" }
+    },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "warnings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/non_empty_string" }
+    },
+    "report_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML TCV1 SHA-256 with report_fingerprint omitted."
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json#/$defs/identifier"
+    },
+    "non_empty_string": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json#/$defs/non_empty_string"
+    },
+    "sha256": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json#/$defs/sha256"
+    },
+    "point_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "direction", "status", "value", "baseline_value", "degradation"],
+      "properties": {
+        "metric": { "$ref": "#/$defs/non_empty_string" },
+        "direction": { "enum": ["minimize", "maximize"] },
+        "status": { "enum": ["finite", "unavailable"] },
+        "value": {
+          "anyOf": [
+            { "type": "number", "x-dagml-json-token-type": "binary64-float" },
+            { "type": "null" }
+          ]
+        },
+        "baseline_value": {
+          "anyOf": [
+            { "type": "number", "x-dagml-json-token-type": "binary64-float" },
+            { "type": "null" }
+          ]
+        },
+        "degradation": {
+          "anyOf": [
+            { "type": "number", "x-dagml-json-token-type": "binary64-float" },
+            { "type": "null" }
+          ],
+          "description": "Direction-normalized loss relative to the severity-zero baseline."
+        }
+      }
+    },
+    "point_metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/point_metric" },
+      "description": "Records sorted by metric name. This generic shape supports regression, classification and host-defined metrics without changing the wire schema."
+    },
+    "confidence_interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric_family",
+        "metric",
+        "coverage",
+        "target_name",
+        "level",
+        "lower",
+        "upper",
+        "method"
+      ],
+      "properties": {
+        "metric_family": { "enum": ["point", "conformal"] },
+        "metric": { "$ref": "#/$defs/non_empty_string" },
+        "coverage": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1,
+              "x-dagml-json-token-type": "binary64-float"
+            },
+            { "type": "null" }
+          ]
+        },
+        "target_name": {
+          "anyOf": [{ "$ref": "#/$defs/non_empty_string" }, { "type": "null" }]
+        },
+        "level": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "x-dagml-json-token-type": "binary64-float"
+        },
+        "lower": { "type": "number", "x-dagml-json-token-type": "binary64-float" },
+        "upper": { "type": "number", "x-dagml-json-token-type": "binary64-float" },
+        "method": { "$ref": "#/$defs/non_empty_string" }
+      }
+    },
+    "robustness_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_id",
+        "severity",
+        "split_id",
+        "environment_id",
+        "fold_id",
+        "repeat_id",
+        "seed",
+        "slice",
+        "unit_level",
+        "unit_ids",
+        "unit_count",
+        "point_metrics",
+        "conformal_metric_set_id",
+        "confidence_intervals",
+        "errors",
+        "predictor_status",
+        "calibration_status",
+        "coverage_guarantee_status",
+        "before_predictor_fingerprint",
+        "after_predictor_fingerprint",
+        "before_input_fingerprint",
+        "after_input_fingerprint",
+        "before_relation_fingerprint",
+        "after_relation_fingerprint",
+        "before_point_prediction_fingerprint",
+        "after_point_prediction_fingerprint",
+        "conformal_prediction_block_fingerprint",
+        "before_calibration_checksum",
+        "after_calibration_checksum"
+      ],
+      "properties": {
+        "scenario_id": { "$ref": "#/$defs/identifier" },
+        "severity": {
+          "type": "number",
+          "minimum": 0,
+          "x-dagml-json-token-type": "binary64-float"
+        },
+        "split_id": { "$ref": "#/$defs/identifier" },
+        "environment_id": { "$ref": "#/$defs/identifier" },
+        "fold_id": {
+          "anyOf": [{ "$ref": "#/$defs/identifier" }, { "type": "null" }]
+        },
+        "repeat_id": {
+          "anyOf": [{ "$ref": "#/$defs/identifier" }, { "type": "null" }]
+        },
+        "seed": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "slice": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_metric_set.v1.schema.json#/$defs/slice_key"
+        },
+        "unit_level": { "const": "physical_sample" },
+        "unit_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" },
+          "description": "Sorted physical SampleId values represented by this result coordinate."
+        },
+        "unit_count": { "type": "integer", "minimum": 1 },
+        "point_metrics": { "$ref": "#/$defs/point_metrics" },
+        "conformal_metric_set_id": {
+          "anyOf": [{ "$ref": "#/$defs/identifier" }, { "type": "null" }]
+        },
+        "confidence_intervals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/confidence_interval" }
+        },
+        "errors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/error_record" }
+        },
+        "predictor_status": {
+          "enum": ["reused", "refit"],
+          "description": "Lifecycle of the point predictor for this coordinate; it is not a statistical guarantee."
+        },
+        "calibration_status": {
+          "enum": ["absent", "reused", "recalibrated", "invalidated"],
+          "description": "Lifecycle of the conformal calibrator for this coordinate; it is independent from predictor lifecycle and guarantee scope."
+        },
+        "coverage_guarantee_status": {
+          "enum": ["marginal_coverage", "joint_coverage", "diagnostic_only", "unavailable"],
+          "description": "Statistical interpretation only. Slices and frozen distribution shifts are diagnostic_only even when finite intervals are emitted."
+        },
+        "before_predictor_fingerprint": { "$ref": "#/$defs/sha256" },
+        "after_predictor_fingerprint": { "$ref": "#/$defs/sha256" },
+        "before_input_fingerprint": { "$ref": "#/$defs/sha256" },
+        "after_input_fingerprint": { "$ref": "#/$defs/sha256" },
+        "before_relation_fingerprint": { "$ref": "#/$defs/sha256" },
+        "after_relation_fingerprint": { "$ref": "#/$defs/sha256" },
+        "before_point_prediction_fingerprint": { "$ref": "#/$defs/sha256" },
+        "after_point_prediction_fingerprint": { "$ref": "#/$defs/sha256" },
+        "conformal_prediction_block_fingerprint": {
+          "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+        },
+        "before_calibration_checksum": {
+          "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+        },
+        "after_calibration_checksum": {
+          "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+        }
+      }
+    },
+    "error_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "phase", "retriable"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/identifier",
+          "description": "Metric unavailability is encoded as metric_unavailable.<metric-name> with phase=score so every requested metric is accounted for."
+        },
+        "message": { "$ref": "#/$defs/non_empty_string" },
+        "phase": { "enum": ["prepare", "refit", "recalibrate", "predict", "score", "report"] },
+        "retriable": { "type": "boolean" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_ids", "artifact_checksums", "relation_fingerprint"],
+      "properties": {
+        "run_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "artifact_checksums": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/sha256" }
+        },
+        "relation_fingerprint": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

@@ -13,6 +13,7 @@ pub enum HandleKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HandleRef {
     pub handle: u64,
     pub kind: HandleKind,
@@ -32,6 +33,7 @@ pub enum ArtifactBackend {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactRef {
     pub id: ArtifactId,
     pub kind: String,
@@ -228,7 +230,9 @@ impl InMemoryArtifactStore {
                     .node_plan
                     .data_bindings
                     .iter()
-                    .map(|binding| format!("{}.{}", binding.node_id, binding.input_name))
+                    .map(|binding| {
+                        data_binding_requirement_key(&binding.node_id, &binding.input_name)
+                    })
                     .collect(),
                 // Only the Validation-OOF meta-feature inputs become replay
                 // prediction-cache requirements. The off-fold (REFIT/PREDICT)
@@ -709,6 +713,7 @@ impl RuntimeArtifactStore for FileArtifactPayloadStore {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LineageRecord {
     pub record_id: LineageId,
     pub run_id: RunId,

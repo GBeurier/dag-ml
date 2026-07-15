@@ -183,6 +183,9 @@
     "handle_kind": {
       "enum": ["data", "data_view", "model", "artifact", "prediction", "relation"]
     },
+    "artifact_backend": {
+      "enum": ["joblib", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
+    },
     "controller_capability": {
       "enum": [
         "deterministic",
@@ -203,7 +206,11 @@
         "supports_sample_weights",
         "supports_row_resampling",
         "supports_backend_loss_weights",
-        "supports_missing_masks"
+        "supports_missing_masks",
+        "uses_training_weights",
+        "uses_early_stopping",
+        "performs_internal_tuning",
+        "trains_aggregation"
       ]
     },
     "fit_influence_policy": {
@@ -566,7 +573,7 @@
     },
     "artifact_ref": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": ["id", "kind", "controller_id", "size_bytes"],
       "properties": {
         "id": {
@@ -578,9 +585,31 @@
         "controller_id": {
           "$ref": "#/$defs/identifier"
         },
+        "backend": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/artifact_backend"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uri": {
+          "type": ["string", "null"]
+        },
+        "content_fingerprint": {
+          "type": ["string", "null"]
+        },
         "size_bytes": {
           "type": ["integer", "null"],
           "minimum": 0
+        },
+        "plugin": {
+          "type": ["string", "null"]
+        },
+        "plugin_version": {
+          "type": ["string", "null"]
         }
       }
     }

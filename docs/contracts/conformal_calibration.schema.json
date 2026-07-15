@@ -1,0 +1,490 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json",
+  "title": "DAG-ML conformal CalibrationArtifact v1",
+  "description": "Portable split-conformal calibration artifact bound to one exact frozen predictor. Ordering and cross-field invariants described below are enforced by DAG-ML semantic validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_id",
+    "predictor_binding",
+    "predictor_binding_fingerprint",
+    "calibration_spec",
+    "calibration_spec_fingerprint",
+    "calibration_cohort",
+    "training_influence",
+    "effective_sample_count",
+    "quantiles",
+    "diagnostics",
+    "warnings",
+    "checksum"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "artifact_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "predictor_binding": {
+      "$ref": "#/$defs/predictor_binding"
+    },
+    "predictor_binding_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML Typed Canonical Value v1 SHA-256 of predictor_binding."
+    },
+    "calibration_spec": {
+      "$ref": "#/$defs/calibration_spec"
+    },
+    "calibration_spec_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML Typed Canonical Value v1 SHA-256 of calibration_spec."
+    },
+    "calibration_cohort": {
+      "$ref": "#/$defs/cohort_manifest"
+    },
+    "training_influence": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/training_influence_manifest.v1.schema.json"
+    },
+    "effective_sample_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "quantiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/calibration_quantile"
+      },
+      "description": "Exactly one record per calibration_spec.coverages entry, in the same strictly increasing order."
+    },
+    "diagnostics": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "checksum": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML Typed Canonical Value v1 SHA-256 of this artifact with checksum omitted."
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "physical_sample_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "description": "Sorted unique physical SampleId values. These are derived from relation.sample_id, never relation.effective_unit_id."
+    },
+    "optional_sorted_identifiers": {
+      "type": "array",
+      "default": [],
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "description": "Lexicographically sorted unique identifiers; semantic validation enforces ordering."
+    },
+    "data_cohort_role": {
+      "enum": [
+        "development",
+        "calibration",
+        "external_test",
+        "production"
+      ]
+    },
+    "exchangeability_unit": {
+      "const": "physical_sample",
+      "description": "V1 intentionally supports physical SampleId exchangeability only."
+    },
+    "cohort_manifest": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/cohort_manifest.v1.schema.json"
+    },
+    "predictor_data_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirement_key",
+        "schema_fingerprint",
+        "plan_fingerprint",
+        "relation_fingerprint",
+        "source_ids"
+      ],
+      "properties": {
+        "requirement_key": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "schema_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "plan_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "relation_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_ids": {
+          "$ref": "#/$defs/optional_sorted_identifiers"
+        }
+      }
+    },
+    "predictor_artifact_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "controller_id",
+        "artifact_id",
+        "backend",
+        "content_fingerprint",
+        "params_fingerprint",
+        "plugin",
+        "plugin_version"
+      ],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "artifact_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "backend": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "content_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "params_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "plugin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/non_empty_string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "plugin_version": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/non_empty_string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "predictor_binding": {
+      "type": "object",
+      "description": "Frozen predictor identity derived from one validated TrainingOutcome. Data bindings cover every external requirement in the transitive predictor closure and artifacts exactly mirror capability-required refit artifacts.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "plan_id",
+        "graph_fingerprint",
+        "campaign_fingerprint",
+        "controller_fingerprint",
+        "predictor_node_ids",
+        "data_bindings",
+        "selected_variant_id",
+        "selected_variant_fingerprint",
+        "selected_patches",
+        "artifacts",
+        "output_binding",
+        "target_processing_fingerprint",
+        "training_outcome_fingerprint",
+        "training_influence_fingerprint"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "plan_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "graph_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "campaign_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "controller_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "predictor_node_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" },
+          "description": "Canonical sorted node ids in the complete transitive predictor closure. This is authoritative and includes transforms even when they emit no fitted artifact or selected patch."
+        },
+        "data_bindings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/predictor_data_binding"
+          },
+          "description": "Sorted by requirement_key; duplicate keys are invalid. Exactly mirrors execution-bundle data requirements for the transitive predictor closure, including upstream transforms."
+        },
+        "selected_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "selected_variant_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "selected_patches": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/parameter_patch.v1.schema.json"
+          },
+          "description": "Sorted by (node_id, namespace, path); duplicate targets are invalid. Exactly mirrors TrainingOutcome.parameter_patches."
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/predictor_artifact_binding"
+          },
+          "description": "Sorted by (node_id, artifact_id); exactly mirrors execution-bundle refit artifacts for emits_artifacts nodes in the predictor closure. content_fingerprint is mandatory even for legacy replay artifacts."
+        },
+        "output_binding": {
+          "$ref": "#/$defs/conformal_output_binding"
+        },
+        "target_processing_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "training_outcome_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "training_influence_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "coverage_array": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "exclusiveMaximum": 1,
+        "x-dagml-json-token-type": "binary64-float"
+      },
+      "description": "Canonical wire form: finite, unique and strictly increasing. Scalar coverage is host-only sugar."
+    },
+    "calibration_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "method",
+        "coverages",
+        "exchangeability_unit",
+        "multi_target_policy",
+        "small_sample_policy",
+        "target_space",
+        "numeric_version",
+        "seed"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "method": {
+          "const": "split_absolute_residual"
+        },
+        "coverages": {
+          "$ref": "#/$defs/coverage_array"
+        },
+        "exchangeability_unit": {
+          "$ref": "#/$defs/exchangeability_unit"
+        },
+        "multi_target_policy": {
+          "enum": [
+            "marginal",
+            "joint_max"
+          ]
+        },
+        "small_sample_policy": {
+          "enum": [
+            "error",
+            "unbounded"
+          ]
+        },
+        "target_space": {
+          "const": "raw"
+        },
+        "numeric_version": {
+          "const": "split_absolute_residual.v1"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "tagged_quantile": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "value"
+          ],
+          "properties": {
+            "status": {
+              "const": "finite"
+            },
+            "value": {
+              "type": "number",
+              "minimum": 0,
+              "x-dagml-json-token-type": "binary64-float",
+              "description": "Canonical wire form is a finite binary64 JSON float token, including an explicit fractional or exponent form when the mathematical value is integral (for example 2.0, never 2). Semantic validation preserves and checks the integer-vs-float token distinction before TCV1 hashing."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "const": "unbounded"
+            }
+          }
+        }
+      ]
+    },
+    "calibration_quantile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coverage",
+        "rank",
+        "values"
+      ],
+      "properties": {
+        "coverage": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "x-dagml-json-token-type": "binary64-float"
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "ceil((effective_sample_count + 1) * coverage), one-indexed."
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/tagged_quantile"
+          },
+          "description": "Marginal: one value per target. joint_max: exactly one value."
+        }
+      }
+    },
+    "conformal_output_binding": {
+      "allOf": [
+        {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/output_binding.v1.schema.json"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "prediction_level": {
+              "const": "sample"
+            },
+            "unit_level": {
+              "const": "physical_sample"
+            },
+            "prediction_kind": {
+              "const": "regression_point"
+            },
+            "prediction_source": {
+              "enum": [
+                "final_refit",
+                "cv_ensemble"
+              ]
+            },
+            "target_units": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/non_empty_string"
+              }
+            },
+            "class_labels": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "array",
+                "maxItems": 0
+              }
+            },
+            "output_order": {
+              "const": "target_order"
+            },
+            "target_space": {
+              "const": "raw"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

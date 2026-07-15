@@ -73,6 +73,7 @@ impl RuntimeController for VariantProbeController {
             .map(ToString::to_string)
             .unwrap_or_else(|| "base".to_string());
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "out".to_string(),
@@ -153,6 +154,7 @@ impl RuntimeController for ShapeDataController {
             )]),
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("x_out".to_string(), output)]),
             predictions: Vec::new(),
@@ -220,6 +222,7 @@ impl RuntimeController for DataViewProbeController {
                 .unwrap_or_else(|| vec![SampleId::new("s1").unwrap()])
         });
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "oof".to_string(),
@@ -232,6 +235,7 @@ impl RuntimeController for DataViewProbeController {
             predictions: vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Validation,
                 fold_id: task.fold_id.clone(),
                 sample_ids: prediction_sample_ids.clone(),
@@ -348,6 +352,7 @@ impl RuntimeController for MockController {
             .then(|| PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Validation,
                 fold_id: task.fold_id.clone(),
                 sample_ids: prediction_sample_ids.clone(),
@@ -357,6 +362,7 @@ impl RuntimeController for MockController {
             .into_iter()
             .collect::<Vec<_>>();
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("out".to_string(), output.clone()),
@@ -493,6 +499,7 @@ impl RuntimeController for ReplayMockController {
             .then(|| PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Final,
                 fold_id: None,
                 sample_ids: vec![SampleId::new("sample:mock").unwrap()],
@@ -530,6 +537,7 @@ impl RuntimeController for ReplayMockController {
             })
             .collect::<BTreeMap<_, _>>();
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("out".to_string(), output)]),
             predictions,
@@ -660,6 +668,7 @@ impl RuntimeController for OofEdgeController {
                     PredictionBlock {
                         prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                         producer_node: task.node_plan.node_id.clone(),
+                        producer_port: None,
                         partition,
                         fold_id,
                         sample_ids: sample_ids.clone(),
@@ -679,6 +688,7 @@ impl RuntimeController for OofEdgeController {
             202
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -778,6 +788,7 @@ impl RuntimeController for CaptureOofValuesController {
             vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Validation,
                 fold_id: task.fold_id.clone(),
                 sample_ids,
@@ -794,6 +805,7 @@ impl RuntimeController for CaptureOofValuesController {
             606
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -901,6 +913,7 @@ impl RuntimeController for ExpectedRefitOofController {
             404
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -989,6 +1002,7 @@ impl RuntimeController for GroupAggregatedOofController {
                                 .unwrap_or_else(|| "nofold".to_string())
                         )),
                         producer_node: task.node_plan.node_id.clone(),
+                        producer_port: None,
                         partition: PredictionPartition::Validation,
                         fold_id: task.fold_id.clone(),
                         observation_ids,
@@ -1007,6 +1021,7 @@ impl RuntimeController for GroupAggregatedOofController {
             808
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1196,6 +1211,7 @@ impl RuntimeController for CustomAggregationController {
                         block: PredictionBlock {
                             prediction_id: block.prediction_id.clone(),
                             producer_node: block.producer_node.clone(),
+                            producer_port: None,
                             partition: block.partition.clone(),
                             fold_id: block.fold_id.clone(),
                             sample_ids: requested_sample_order.clone(),
@@ -1246,6 +1262,7 @@ impl RuntimeController for CustomAggregationController {
                         block: AggregatedPredictionBlock {
                             prediction_id: block.prediction_id.clone(),
                             producer_node: block.producer_node.clone(),
+                            producer_port: None,
                             partition: block.partition.clone(),
                             fold_id: block.fold_id.clone(),
                             level: PredictionLevel::Group,
@@ -1289,6 +1306,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
                 ),
             };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1302,6 +1320,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
             observation_predictions: vec![ObservationPredictionBlock {
                 prediction_id: Some("pred:obs.runtime".to_string()),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Validation,
                 fold_id: task.fold_id.clone(),
                 observation_ids,
@@ -1874,6 +1893,64 @@ fn oof_edge_graph() -> GraphSpec {
         search_space_fingerprint: None,
         metadata: BTreeMap::new(),
     }
+}
+
+fn oof_edge_graph_with_auxiliary_port() -> GraphSpec {
+    let mut graph = oof_edge_graph();
+    graph.id = "g:oof.edge.auxiliary".to_string();
+    let base = graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:base")
+        .expect("base node exists");
+    base.ports.outputs.push(port("aux", PortKind::Artifact));
+    let meta = graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:meta")
+        .expect("meta node exists");
+    meta.ports.inputs.push(port("aux", PortKind::Artifact));
+    graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: NodeId::new("model:base").unwrap(),
+            port_name: "aux".to_string(),
+        },
+        target: PortRef {
+            node_id: NodeId::new("model:meta").unwrap(),
+            port_name: "aux".to_string(),
+        },
+        contract: EdgeContract::new(PortKind::Artifact, None),
+    });
+    graph
+}
+
+fn oof_edge_graph_with_ambiguous_prediction_port() -> GraphSpec {
+    let mut graph = oof_edge_graph();
+    graph.id = "g:oof.edge.ambiguous.prediction.port".to_string();
+    let base = graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:base")
+        .expect("base node exists");
+    base.ports.outputs.push(port("aux", PortKind::Prediction));
+    let meta = graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:meta")
+        .expect("meta node exists");
+    meta.ports.inputs.push(port("aux", PortKind::Prediction));
+    graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: NodeId::new("model:base").unwrap(),
+            port_name: "aux".to_string(),
+        },
+        target: PortRef {
+            node_id: NodeId::new("model:meta").unwrap(),
+            port_name: "aux".to_string(),
+        },
+        contract: EdgeContract::new(PortKind::Prediction, None),
+    });
+    graph
 }
 
 fn oof_edge_graph_with_refit_policy(policy: &str) -> GraphSpec {
@@ -2463,6 +2540,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
             std::thread::sleep(std::time::Duration::from_millis(50));
             self.active.fetch_sub(1, Ordering::SeqCst);
             Ok(NodeResult {
+                schema_version: None,
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     "x".to_string(),
@@ -2599,6 +2677,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
                                 .unwrap_or_else(|| "nofold".to_string())
                         )),
                         producer_node: task.node_plan.node_id.clone(),
+                        producer_port: None,
                         partition: PredictionPartition::Validation,
                         fold_id: task.fold_id.clone(),
                         values: sample_ids
@@ -2613,6 +2692,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
                 .into_iter()
                 .collect::<Vec<_>>();
             Ok(NodeResult {
+                schema_version: None,
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     output_name.to_string(),
@@ -3090,11 +3170,15 @@ fn requires_oof_prediction_edge_rejects_missing_validation_predictions() {
 
     let error = SequentialScheduler
         .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
-    assert!(error.contains("requires OOF validation predictions"));
-    assert!(error.contains("model:base"));
+    assert!(matches!(&error, DagMlError::OofValidation(_)));
+    assert_eq!(error.category(), "validation");
+    assert_eq!(error.code(), "oof_validation");
+    assert_eq!(error.error_code(), 4);
+    let message = error.to_string();
+    assert!(message.contains("requires OOF validation predictions"));
+    assert!(message.contains("model:base"));
 }
 
 #[test]
@@ -3178,10 +3262,12 @@ fn requires_oof_prediction_edge_rejects_fold_misalignment() {
 
     let error = SequentialScheduler
         .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
-    assert!(error.contains("do not match validation samples"));
+    assert!(matches!(&error, DagMlError::OofValidation(_)));
+    assert!(error
+        .to_string()
+        .contains("do not match validation samples"));
 }
 
 #[test]
@@ -3479,12 +3565,13 @@ fn aggregated_oof_edge_rejects_relation_level_train_validation_overlap() {
             &mut ctx,
             Phase::FitCv,
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
+    assert!(matches!(&error, DagMlError::OofValidation(_)));
+    let message = error.to_string();
     assert!(
-        error.contains("both train and validation partitions"),
-        "unexpected overlap error: {error}"
+        message.contains("both train and validation partitions"),
+        "unexpected overlap error: {message}"
     );
 }
 
@@ -3514,6 +3601,7 @@ fn runtime_dispatches_custom_observation_aggregation_controller() {
         ObservationPredictionBlock {
             prediction_id: Some("pred:obs".to_string()),
             producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             observation_ids: vec![
@@ -3570,6 +3658,7 @@ fn runtime_dispatches_custom_sample_to_group_aggregation_controller() {
         PredictionBlock {
             prediction_id: Some("pred:sample".to_string()),
             producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: vec![
@@ -3612,6 +3701,7 @@ fn custom_aggregation_dispatch_requires_controller_capability() {
         ObservationPredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             observation_ids: vec![ObservationId::new("obs:s1:a").unwrap()],
@@ -3750,6 +3840,7 @@ fn refit_oof_accepts_grouped_repeated_aggregation_and_refuses_origin_leakage() {
         &ObservationPredictionBlock {
             prediction_id: Some("pred:model:base:fold0:obs".to_string()),
             producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             observation_ids: vec![
@@ -3776,6 +3867,7 @@ fn refit_oof_accepts_grouped_repeated_aggregation_and_refuses_origin_leakage() {
         &ObservationPredictionBlock {
             prediction_id: Some("pred:model:base:fold1:obs".to_string()),
             producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:1").unwrap()),
             observation_ids: vec![
@@ -3798,6 +3890,7 @@ fn refit_oof_accepts_grouped_repeated_aggregation_and_refuses_origin_leakage() {
         &ObservationPredictionBlock {
             prediction_id: Some("pred:model:base:fold2:obs".to_string()),
             producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:2").unwrap()),
             observation_ids: vec![ObservationId::new("obs:s3:a").unwrap()],
@@ -3876,9 +3969,13 @@ fn in_memory_prediction_cache_store_loads_and_materializes_oof_payloads() {
         prediction_width: 1,
         target_names: vec!["y".to_string()],
     };
-    let cache = build_prediction_cache_record(&requirement, ctx.prediction_store.blocks()).unwrap();
-    let payload =
+    let mut cache =
+        build_prediction_cache_record(&requirement, ctx.prediction_store.blocks()).unwrap();
+    let mut payload =
         build_prediction_cache_payload(&requirement, ctx.prediction_store.blocks()).unwrap();
+    let cache_namespace_fingerprints = vec!["a".repeat(64), "b".repeat(64)];
+    cache.cache_namespace_fingerprints = cache_namespace_fingerprints.clone();
+    payload.cache_namespace_fingerprints = cache_namespace_fingerprints.clone();
     let bundle = build_execution_bundle_with_prediction_contracts(
         BundleId::new("bundle:oof.edge.cache.store").unwrap(),
         &plan,
@@ -3897,6 +3994,12 @@ fn in_memory_prediction_cache_store_loads_and_materializes_oof_payloads() {
     let store = InMemoryPredictionCacheStore::from_payloads(&bundle, payload_set).unwrap();
     assert_eq!(store.payload_count(), 1);
     assert_eq!(store.load_blocks(&requirement.key()).unwrap().len(), 2);
+    let mut preload_ctx = RunContext::new(
+        RunId::new("run:oof.edge.cache.store.preload").unwrap(),
+        Some(11),
+    );
+    preload_replay_prediction_cache_store(&bundle, Some(&store), &mut preload_ctx).unwrap();
+    assert_eq!(preload_ctx.prediction_store.blocks().len(), 2);
 
     ReplayPhaseRequest {
         bundle_id: bundle.bundle_id.clone(),
@@ -3906,17 +4009,16 @@ fn in_memory_prediction_cache_store_loads_and_materializes_oof_payloads() {
     .validate_for_bundle_with_prediction_cache_store(&bundle, true)
     .unwrap();
 
-    let handle = store
-        .materialize(&PredictionCacheMaterializationRequest {
-            run_id: RunId::new("run:oof.edge.cache.store.replay").unwrap(),
-            bundle_id: bundle.bundle_id.clone(),
-            phase: Phase::Refit,
-            variant_id: bundle.selected_variant_id.clone(),
-            requirement: requirement.clone(),
-            cache,
-            producer_controller_id: ControllerId::new("controller:model").unwrap(),
-        })
-        .unwrap();
+    let request = PredictionCacheMaterializationRequest {
+        run_id: RunId::new("run:oof.edge.cache.store.replay").unwrap(),
+        bundle_id: bundle.bundle_id.clone(),
+        phase: Phase::Refit,
+        variant_id: bundle.selected_variant_id.clone(),
+        requirement: requirement.clone(),
+        cache: cache.clone(),
+        producer_controller_id: ControllerId::new("controller:model").unwrap(),
+    };
+    let handle = store.materialize(&request).unwrap();
     assert_eq!(handle.kind, HandleKind::Prediction);
     assert_eq!(
         handle.owner_controller,
@@ -3925,7 +4027,73 @@ fn in_memory_prediction_cache_store_loads_and_materializes_oof_payloads() {
     let records = store.materialization_records();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].requirement_key, requirement.key());
+    assert_eq!(
+        records[0].cache_namespace_fingerprints,
+        cache_namespace_fingerprints
+    );
     assert_eq!(records[0].handle, handle);
+    records[0].validate_against_request(&request).unwrap();
+    let mut missing_variant_request = request.clone();
+    missing_variant_request.variant_id = None;
+    assert!(store
+        .materialize(&missing_variant_request)
+        .unwrap_err()
+        .to_string()
+        .contains("requires variant_id"));
+    let mut dropped_namespace = records[0].clone();
+    dropped_namespace.cache_namespace_fingerprints.clear();
+    assert!(dropped_namespace
+        .validate_against_request(&request)
+        .unwrap_err()
+        .to_string()
+        .contains("dropped or changed"));
+    let mut wrong_handle_kind = records[0].clone();
+    wrong_handle_kind.handle.kind = HandleKind::Artifact;
+    assert!(wrong_handle_kind
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("non-prediction handle"));
+
+    let alternate_cache_namespace_fingerprints = vec!["c".repeat(64), "d".repeat(64)];
+    let mut alternate_cache = cache.clone();
+    alternate_cache.cache_namespace_fingerprints = alternate_cache_namespace_fingerprints.clone();
+    let mut alternate_payload =
+        build_prediction_cache_payload(&requirement, ctx.prediction_store.blocks()).unwrap();
+    alternate_payload.cache_namespace_fingerprints = alternate_cache_namespace_fingerprints;
+    let alternate_bundle = build_execution_bundle_with_prediction_contracts(
+        bundle.bundle_id.clone(),
+        &plan,
+        bundle.selected_variant_id.clone(),
+        BTreeMap::new(),
+        Vec::new(),
+        vec![requirement.clone()],
+        vec![alternate_cache.clone()],
+    )
+    .unwrap();
+    let alternate_payload_set = BundlePredictionCachePayloadSet {
+        bundle_id: alternate_bundle.bundle_id.clone(),
+        schema_version: PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+        caches: vec![alternate_payload],
+    };
+    let alternate_store =
+        InMemoryPredictionCacheStore::from_payloads(&alternate_bundle, alternate_payload_set)
+            .unwrap();
+    let alternate_handle = alternate_store
+        .materialize(&PredictionCacheMaterializationRequest {
+            run_id: request.run_id.clone(),
+            bundle_id: request.bundle_id.clone(),
+            phase: request.phase,
+            variant_id: request.variant_id.clone(),
+            requirement,
+            cache: alternate_cache,
+            producer_controller_id: request.producer_controller_id.clone(),
+        })
+        .unwrap();
+    assert_ne!(
+        alternate_handle.handle, handle.handle,
+        "D10 namespace fingerprints must participate in materialized cache handle identity"
+    );
 }
 
 #[test]
@@ -3959,6 +4127,7 @@ fn prediction_cache_stores_load_and_materialize_aggregated_payloads() {
         AggregatedPredictionBlock {
             prediction_id: Some("prediction:model:base.target.fold0".to_string()),
             producer_node: requirement.producer_node.clone(),
+            producer_port: Some("pred".to_string()),
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             level: PredictionLevel::Target,
@@ -3969,6 +4138,7 @@ fn prediction_cache_stores_load_and_materialize_aggregated_payloads() {
         AggregatedPredictionBlock {
             prediction_id: Some("prediction:model:base.target.fold1".to_string()),
             producer_node: requirement.producer_node.clone(),
+            producer_port: Some("pred".to_string()),
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:1").unwrap()),
             level: PredictionLevel::Target,
@@ -4063,6 +4233,7 @@ fn columnar_prediction_cache_block_round_trips_multi_target_rows() {
     let block = PredictionBlock {
         prediction_id: Some("pred:wide".to_string()),
         producer_node: NodeId::new("model:wide").unwrap(),
+        producer_port: Some("pred".to_string()),
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new("fold:0").unwrap()),
         sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
@@ -4083,6 +4254,7 @@ fn columnar_prediction_cache_block_round_trips_aggregated_units() {
     let block = AggregatedPredictionBlock {
         prediction_id: Some("pred:target".to_string()),
         producer_node: NodeId::new("model:target").unwrap(),
+        producer_port: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new("fold:0").unwrap()),
         level: PredictionLevel::Target,
@@ -4140,9 +4312,13 @@ fn columnar_prediction_cache_store_loads_and_materializes_oof_payloads() {
         prediction_width: 1,
         target_names: vec!["y".to_string()],
     };
-    let cache = build_prediction_cache_record(&requirement, ctx.prediction_store.blocks()).unwrap();
-    let payload =
+    let mut cache =
+        build_prediction_cache_record(&requirement, ctx.prediction_store.blocks()).unwrap();
+    let mut payload =
         build_prediction_cache_payload(&requirement, ctx.prediction_store.blocks()).unwrap();
+    let cache_namespace_fingerprints = vec!["c".repeat(64), "d".repeat(64)];
+    cache.cache_namespace_fingerprints = cache_namespace_fingerprints.clone();
+    payload.cache_namespace_fingerprints = cache_namespace_fingerprints.clone();
     let bundle = build_execution_bundle_with_prediction_contracts(
         BundleId::new("bundle:oof.edge.columnar.cache.store").unwrap(),
         &plan,
@@ -4163,22 +4339,25 @@ fn columnar_prediction_cache_store_loads_and_materializes_oof_payloads() {
     let manifest = store.manifests();
     assert_eq!(manifest.len(), 1);
     assert_eq!(manifest[0].requirement_key, requirement.key());
+    assert_eq!(
+        manifest[0].cache_namespace_fingerprints,
+        cache_namespace_fingerprints
+    );
     assert_eq!(manifest[0].prediction_level, PredictionLevel::Sample);
     assert_eq!(manifest[0].value_count, 2);
     assert_eq!(manifest[0].estimated_value_bytes, 16);
     assert_eq!(store.load_blocks(&requirement.key()).unwrap().len(), 2);
 
-    let handle = store
-        .materialize(&PredictionCacheMaterializationRequest {
-            run_id: RunId::new("run:oof.edge.columnar.cache.store.replay").unwrap(),
-            bundle_id: bundle.bundle_id.clone(),
-            phase: Phase::Refit,
-            variant_id: bundle.selected_variant_id.clone(),
-            requirement: requirement.clone(),
-            cache,
-            producer_controller_id: ControllerId::new("controller:model").unwrap(),
-        })
-        .unwrap();
+    let request = PredictionCacheMaterializationRequest {
+        run_id: RunId::new("run:oof.edge.columnar.cache.store.replay").unwrap(),
+        bundle_id: bundle.bundle_id.clone(),
+        phase: Phase::Refit,
+        variant_id: bundle.selected_variant_id.clone(),
+        requirement: requirement.clone(),
+        cache,
+        producer_controller_id: ControllerId::new("controller:model").unwrap(),
+    };
+    let handle = store.materialize(&request).unwrap();
     assert_eq!(handle.kind, HandleKind::Prediction);
     assert_eq!(
         handle.owner_controller,
@@ -4187,7 +4366,12 @@ fn columnar_prediction_cache_store_loads_and_materializes_oof_payloads() {
     let records = store.materialization_records();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].requirement_key, requirement.key());
+    assert_eq!(
+        records[0].cache_namespace_fingerprints,
+        cache_namespace_fingerprints
+    );
     assert_eq!(records[0].handle, handle);
+    records[0].validate_against_request(&request).unwrap();
 }
 
 #[test]
@@ -4227,9 +4411,13 @@ fn file_prediction_cache_store_round_trips_oof_payloads_and_detects_tampering() 
         prediction_width: 1,
         target_names: vec!["y".to_string()],
     };
-    let cache = build_prediction_cache_record(&requirement, ctx.prediction_store.blocks()).unwrap();
-    let payload =
+    let mut cache =
+        build_prediction_cache_record(&requirement, ctx.prediction_store.blocks()).unwrap();
+    let mut payload =
         build_prediction_cache_payload(&requirement, ctx.prediction_store.blocks()).unwrap();
+    let cache_namespace_fingerprints = vec!["e".repeat(64), "f".repeat(64)];
+    cache.cache_namespace_fingerprints = cache_namespace_fingerprints.clone();
+    payload.cache_namespace_fingerprints = cache_namespace_fingerprints.clone();
     let bundle = build_execution_bundle_with_prediction_contracts(
         BundleId::new("bundle:oof.edge.file.cache.store").unwrap(),
         &plan,
@@ -4251,25 +4439,68 @@ fn file_prediction_cache_store_round_trips_oof_payloads_and_detects_tampering() 
         FilePredictionCacheStore::write_payload_set(&root, &bundle, &payload_set).unwrap();
     assert_eq!(manifest.caches.len(), 1);
     assert_eq!(manifest.caches[0].prediction_level, PredictionLevel::Sample);
+    assert_eq!(
+        manifest.caches[0].cache_namespace_fingerprints,
+        cache_namespace_fingerprints
+    );
     assert!(root.join(FILE_PREDICTION_CACHE_MANIFEST_FILE).exists());
     assert!(root.join(&manifest.caches[0].file_name).exists());
+
+    let alternate_cache_namespace_fingerprints = vec!["1".repeat(64), "2".repeat(64)];
+    let mut alternate_cache = cache.clone();
+    alternate_cache.cache_namespace_fingerprints = alternate_cache_namespace_fingerprints.clone();
+    let mut alternate_payload =
+        build_prediction_cache_payload(&requirement, ctx.prediction_store.blocks()).unwrap();
+    alternate_payload.cache_namespace_fingerprints = alternate_cache_namespace_fingerprints;
+    let alternate_bundle = build_execution_bundle_with_prediction_contracts(
+        bundle.bundle_id.clone(),
+        &plan,
+        bundle.selected_variant_id.clone(),
+        BTreeMap::new(),
+        Vec::new(),
+        vec![requirement.clone()],
+        vec![alternate_cache],
+    )
+    .unwrap();
+    let alternate_payload_set = BundlePredictionCachePayloadSet {
+        bundle_id: alternate_bundle.bundle_id.clone(),
+        schema_version: PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+        caches: vec![alternate_payload],
+    };
+    let alternate_root =
+        temp_prediction_cache_dir("dag_ml_file_prediction_cache_store_alternate_namespace");
+    let alternate_manifest = FilePredictionCacheStore::write_payload_set(
+        &alternate_root,
+        &alternate_bundle,
+        &alternate_payload_set,
+    )
+    .unwrap();
+    assert_ne!(
+        alternate_manifest.caches[0].file_name, manifest.caches[0].file_name,
+        "D10 namespace fingerprints must participate in file payload identity"
+    );
 
     let store = FilePredictionCacheStore::open(root.clone(), &bundle).unwrap();
     assert_eq!(store.manifest().caches, manifest.caches);
     assert_eq!(store.load_blocks(&requirement.key()).unwrap().len(), 2);
-    let handle = store
-        .materialize(&PredictionCacheMaterializationRequest {
-            run_id: RunId::new("run:oof.edge.file.cache.store.replay").unwrap(),
-            bundle_id: bundle.bundle_id.clone(),
-            phase: Phase::Refit,
-            variant_id: bundle.selected_variant_id.clone(),
-            requirement: requirement.clone(),
-            cache: cache.clone(),
-            producer_controller_id: ControllerId::new("controller:model").unwrap(),
-        })
-        .unwrap();
+    let request = PredictionCacheMaterializationRequest {
+        run_id: RunId::new("run:oof.edge.file.cache.store.replay").unwrap(),
+        bundle_id: bundle.bundle_id.clone(),
+        phase: Phase::Refit,
+        variant_id: bundle.selected_variant_id.clone(),
+        requirement: requirement.clone(),
+        cache: cache.clone(),
+        producer_controller_id: ControllerId::new("controller:model").unwrap(),
+    };
+    let handle = store.materialize(&request).unwrap();
     assert_eq!(handle.kind, HandleKind::Prediction);
-    assert_eq!(store.materialization_records().len(), 1);
+    let records = store.materialization_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].cache_namespace_fingerprints,
+        cache_namespace_fingerprints
+    );
+    records[0].validate_against_request(&request).unwrap();
 
     let payload_path = root.join(&manifest.caches[0].file_name);
     let mut tampered: serde_json::Value =
@@ -4283,6 +4514,7 @@ fn file_prediction_cache_store_round_trips_oof_payloads_and_detects_tampering() 
     );
 
     let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(alternate_root);
 }
 
 fn portable_artifact_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBundle {
@@ -4585,6 +4817,7 @@ fn requires_oof_prediction_edge_refit_rejects_incomplete_oof_coverage() {
         .append(PredictionBlock {
             prediction_id: Some("pred:model:base:fold0".to_string()),
             producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: vec![SampleId::new("s1").unwrap()],
@@ -4620,6 +4853,7 @@ fn requires_oof_prediction_edge_refit_skips_incomplete_oof_when_explicit() {
         .append(PredictionBlock {
             prediction_id: Some("pred:model:base:fold0".to_string()),
             producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: vec![SampleId::new("s1").unwrap()],
@@ -4739,6 +4973,7 @@ fn refit_oof_cover_is_partition_mode_aware() {
     let val_block = |fold: &str, samples: &[&str]| PredictionBlock {
         prediction_id: None,
         producer_node: NodeId::new("model:base").unwrap(),
+        producer_port: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new(fold).unwrap()),
         sample_ids: samples.iter().map(|s| SampleId::new(*s).unwrap()).collect(),
@@ -5471,6 +5706,30 @@ fn published_node_task_and_result_schemas_declare_current_contracts() {
         .unwrap()
         .iter()
         .any(|field| field.as_str() == Some("lineage")));
+    assert_eq!(
+        task_schema["$defs"]["artifact_ref"]["additionalProperties"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(result_schema["additionalProperties"].as_bool(), Some(false));
+    for definition in [
+        "fit_influence_diagnostic",
+        "handle_ref",
+        "prediction_block",
+        "observation_prediction_block",
+        "regression_target_block",
+        "aggregated_prediction_block",
+        "explanation_block",
+        "prediction_unit_id",
+        "shape_delta",
+        "artifact_ref",
+        "lineage_record",
+    ] {
+        assert_eq!(
+            result_schema["$defs"][definition]["additionalProperties"].as_bool(),
+            Some(false),
+            "node-result schema definition `{definition}` must be closed"
+        );
+    }
 }
 
 #[test]
@@ -5490,6 +5749,145 @@ fn published_node_task_result_fixtures_validate_current_contract() {
         NodeId::new("transform:scale").unwrap()
     );
     assert_eq!(result.outputs.len(), 1);
+}
+
+#[test]
+fn node_result_deserialization_rejects_unknown_contract_fields_but_keeps_opaque_maps() {
+    let mut document: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../examples/fixtures/runtime/node_result_transform_scale.json"
+    ))
+    .unwrap();
+    let object = document.as_object_mut().unwrap();
+    object.insert(
+        "predictions".to_string(),
+        json!([{
+            "prediction_id": "prediction:strict",
+            "producer_node": "model:strict",
+            "partition": "validation",
+            "fold_id": "fold:0",
+            "sample_ids": ["sample:1"],
+            "values": [[1.0]],
+            "target_names": ["y"]
+        }]),
+    );
+    object.insert(
+        "observation_predictions".to_string(),
+        json!([{
+            "prediction_id": "prediction:observation.strict",
+            "producer_node": "model:strict",
+            "partition": "validation",
+            "fold_id": "fold:0",
+            "observation_ids": ["observation:1"],
+            "values": [[1.0]],
+            "weights": [1.0],
+            "target_names": ["y"]
+        }]),
+    );
+    object.insert(
+        "aggregated_predictions".to_string(),
+        json!([{
+            "prediction_id": "prediction:aggregate.strict",
+            "producer_node": "model:strict",
+            "partition": "validation",
+            "fold_id": "fold:0",
+            "level": "sample",
+            "unit_ids": [{"level": "sample", "id": "sample:1"}],
+            "values": [[1.0]],
+            "target_names": ["y"]
+        }]),
+    );
+    object.insert(
+        "explanations".to_string(),
+        json!([{
+            "producer_node": "model:strict",
+            "method": "strict_test",
+            "payload": {"unexpected_contract_field": "opaque payload remains open"}
+        }]),
+    );
+    object.insert(
+        "shape_deltas".to_string(),
+        json!([{
+            "node_id": "model:strict",
+            "kind": "feature",
+            "before_fingerprint": "before",
+            "after_fingerprint": "after",
+            "metadata": {"unexpected_contract_field": "opaque metadata remains open"}
+        }]),
+    );
+    object.insert(
+        "artifacts".to_string(),
+        json!([{
+            "id": "artifact:strict",
+            "kind": "model",
+            "controller_id": "controller:strict",
+            "backend": "raw",
+            "uri": null,
+            "content_fingerprint": null,
+            "size_bytes": 8,
+            "plugin": null,
+            "plugin_version": null
+        }]),
+    );
+    object.insert(
+        "fit_influence_diagnostics".to_string(),
+        json!([{
+            "requested_policy": "uniform_rows",
+            "effective_policy": "uniform_rows",
+            "mechanism": "uniform_rows",
+            "fallback_used": false,
+            "row_weight_count": 0,
+            "warnings": []
+        }]),
+    );
+    object.insert(
+        "regression_targets".to_string(),
+        json!([{
+            "level": "sample",
+            "unit_ids": [{"level": "sample", "id": "sample:1"}],
+            "values": [[1.0]],
+            "target_names": ["y"]
+        }]),
+    );
+    document["lineage"]["metrics"]["unexpected_contract_field"] = json!(1.0);
+
+    serde_json::from_value::<NodeResult>(document.clone())
+        .expect("closed node-result types still accept opaque payload/metadata/metrics maps");
+
+    for (label, pointer) in [
+        ("node result", ""),
+        ("output handle", "/outputs/x_out"),
+        ("prediction block", "/predictions/0"),
+        ("observation prediction block", "/observation_predictions/0"),
+        ("aggregated prediction block", "/aggregated_predictions/0"),
+        (
+            "aggregated prediction unit id",
+            "/aggregated_predictions/0/unit_ids/0",
+        ),
+        ("explanation block", "/explanations/0"),
+        ("shape delta", "/shape_deltas/0"),
+        ("artifact ref", "/artifacts/0"),
+        ("fit influence diagnostic", "/fit_influence_diagnostics/0"),
+        ("regression target block", "/regression_targets/0"),
+        (
+            "regression target unit id",
+            "/regression_targets/0/unit_ids/0",
+        ),
+        ("lineage record", "/lineage"),
+    ] {
+        let mut tampered = document.clone();
+        tampered
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected_contract_field".to_string(), json!(true));
+        let error = serde_json::from_value::<NodeResult>(tampered)
+            .expect_err("unknown node-result contract field must be rejected");
+        assert!(
+            error.to_string().contains("unexpected_contract_field"),
+            "{label} returned an unexpected error: {error}"
+        );
+    }
 }
 
 #[test]
@@ -5768,6 +6166,49 @@ fn fit_influence_view(sample_ids: Vec<&str>) -> BTreeMap<String, DataProviderVie
     )])
 }
 
+fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
+    let plan = build_execution_plan(
+        "plan:fit.influence.validation",
+        simple_graph(),
+        CampaignSpec {
+            inner_cv: None,
+            id: "campaign:fit.influence.validation".to_string(),
+            root_seed: Some(7),
+            leakage_policy: Default::default(),
+            aggregation_policy: Default::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        },
+        &manifests(),
+    )
+    .unwrap();
+    let node_plan = plan
+        .node_plans
+        .get(&NodeId::new("model:pls").unwrap())
+        .unwrap()
+        .clone();
+    NodeTask {
+        inner_fold_set: None,
+        run_id: RunId::new("run:fit.influence.validation").unwrap(),
+        node_plan,
+        phase: Phase::FitCv,
+        variant_id: None,
+        variant: None,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        branch_path: Vec::new(),
+        input_handles: BTreeMap::new(),
+        data_views: BTreeMap::new(),
+        prediction_inputs: BTreeMap::new(),
+        artifact_inputs: BTreeMap::new(),
+        fit_influence,
+        seed: Some(7),
+    }
+}
+
 #[test]
 fn fit_influence_strict_requires_weight_support() {
     let error = resolve_fit_influence_task(
@@ -5818,6 +6259,35 @@ fn fit_influence_auto_falls_back_with_warning() {
     assert!(diagnostic.fallback_used);
     assert_eq!(diagnostic.row_weight_count, 0);
     assert_eq!(diagnostic.warnings, task.warnings);
+}
+
+#[test]
+fn d9_fit_influence_diagnostic_must_match_runtime_task_warnings() {
+    let fit_influence = resolve_fit_influence_task(
+        FitInfluencePolicy::Auto,
+        &BTreeSet::new(),
+        &fit_influence_view(vec!["s1", "s1", "s2"]),
+    )
+    .unwrap();
+    let task = fit_influence_validation_task(fit_influence.clone());
+    let diagnostic = fit_influence.diagnostic();
+    diagnostic.validate(&task).unwrap();
+
+    let mut wrong_fallback = diagnostic.clone();
+    wrong_fallback.fallback_used = false;
+    let error = wrong_fallback.validate(&task).unwrap_err().to_string();
+    assert!(
+        error.contains("fallback_used"),
+        "unexpected fallback mismatch error: {error}"
+    );
+
+    let mut wrong_warning = diagnostic;
+    wrong_warning.warnings = vec!["different warning".to_string()];
+    let error = wrong_warning.validate(&task).unwrap_err().to_string();
+    assert!(
+        error.contains("warnings do not match"),
+        "unexpected warning mismatch error: {error}"
+    );
 }
 
 #[test]
@@ -6290,6 +6760,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
         seed: Some(99),
     };
     let result = NodeResult {
+        schema_version: None,
         node_id: model_id.clone(),
         outputs: BTreeMap::from([(
             "out".to_string(),
@@ -6302,6 +6773,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
         predictions: vec![PredictionBlock {
             prediction_id: Some("pred:bad.sample".to_string()),
             producer_node: model_id,
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: vec![SampleId::new("s2").unwrap()],
@@ -6404,6 +6876,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
     let aggregated_block = |sample: &str| AggregatedPredictionBlock {
         prediction_id: Some("pred:agg".to_string()),
         producer_node: model_id.clone(),
+        producer_port: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new("fold:0").unwrap()),
         level: PredictionLevel::Sample,
@@ -6412,6 +6885,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
         target_names: vec!["y".to_string()],
     };
     let mut result = NodeResult {
+        schema_version: None,
         node_id: model_id.clone(),
         outputs: BTreeMap::from([(
             "out".to_string(),
@@ -6548,6 +7022,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         |level: PredictionLevel, unit: PredictionUnitId| AggregatedPredictionBlock {
             prediction_id: Some("pred:agg".to_string()),
             producer_node: model_id.clone(),
+            producer_port: None,
             partition: PredictionPartition::Final,
             fold_id: None,
             level,
@@ -6575,11 +7050,13 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         metrics: BTreeMap::new(),
     };
     let base_result = |level: PredictionLevel, unit: PredictionUnitId| NodeResult {
+        schema_version: None,
         node_id: model_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![PredictionBlock {
             prediction_id: Some("pred:sample".to_string()),
             producer_node: model_id.clone(),
+            producer_port: None,
             partition: PredictionPartition::Final,
             fold_id: None,
             sample_ids: vec![SampleId::new("s1").unwrap()],
@@ -6861,6 +7338,307 @@ fn collect_input_handles_forwards_only_declared_source_ports() {
         "undeclared source port handle leaked: {:?}",
         collected.handles.keys().collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn collect_input_handles_masks_only_the_exact_oof_source_port_in_training() {
+    let plan = build_execution_plan(
+        "plan:oof.exact.port.training",
+        oof_edge_graph_with_auxiliary_port(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit, Phase::Predict])),
+    )
+    .unwrap();
+    let base = NodeId::new("model:base").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let node_plan = plan.node_plans.get(&meta).unwrap();
+    let owner = ControllerId::new("controller:model").unwrap();
+    let raw_prediction = HandleRef {
+        handle: 10,
+        kind: HandleKind::Prediction,
+        owner_controller: owner.clone(),
+    };
+    let auxiliary = HandleRef {
+        handle: 20,
+        kind: HandleKind::Artifact,
+        owner_controller: owner,
+    };
+    let output_handles = BTreeMap::from([(
+        base.clone(),
+        BTreeMap::from([
+            ("pred".to_string(), raw_prediction.clone()),
+            ("aux".to_string(), auxiliary.clone()),
+        ]),
+    )]);
+    let mut ctx = RunContext::new(RunId::new("run:oof.exact.port.training").unwrap(), Some(11));
+    for (fold_id, sample_id, value) in [("fold:0", "s1", 0.25), ("fold:1", "s2", 0.75)] {
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: Some(format!("pred:model:base:{fold_id}")),
+                producer_node: base.clone(),
+                producer_port: None,
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new(fold_id).unwrap()),
+                sample_ids: vec![SampleId::new(sample_id).unwrap()],
+                values: vec![vec![value]],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+    }
+
+    for (phase, fold_id, expected_samples) in [
+        (
+            Phase::FitCv,
+            Some(FoldId::new("fold:0").unwrap()),
+            vec![SampleId::new("s1").unwrap()],
+        ),
+        (
+            Phase::Refit,
+            None,
+            vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
+        ),
+    ] {
+        let collected = collect_input_handles(
+            &plan,
+            node_plan,
+            &output_handles,
+            &BTreeMap::new(),
+            &PhaseScopeResources::default(),
+            &ctx,
+            &PhaseScope {
+                phase,
+                variant_id: Some(VariantId::new("variant:base").unwrap()),
+                variant: None,
+                fold_id,
+                seed_root: Some(11),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            collected.handles.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from(["model:base.aux".to_string(), "model:base.pred".to_string()]),
+            "unexpected inputs in {phase:?}"
+        );
+        assert_eq!(collected.handles["model:base.aux"], auxiliary);
+        assert_ne!(
+            collected.handles["model:base.pred"], raw_prediction,
+            "the raw OOF source handle leaked in {phase:?}"
+        );
+        assert_eq!(
+            collected.prediction_inputs["model:base.pred"].sample_ids,
+            expected_samples
+        );
+    }
+}
+
+#[test]
+fn collect_input_handles_predict_uses_only_the_suffixed_off_fold_port() {
+    let plan = build_execution_plan(
+        "plan:oof.exact.port.predict",
+        oof_edge_graph_with_auxiliary_port(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit, Phase::Predict])),
+    )
+    .unwrap();
+    let base = NodeId::new("model:base").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let node_plan = plan.node_plans.get(&meta).unwrap();
+    let owner = ControllerId::new("controller:model").unwrap();
+    let raw_prediction = HandleRef {
+        handle: 30,
+        kind: HandleKind::Prediction,
+        owner_controller: owner.clone(),
+    };
+    let auxiliary = HandleRef {
+        handle: 40,
+        kind: HandleKind::Artifact,
+        owner_controller: owner,
+    };
+    let output_handles = BTreeMap::from([(
+        base.clone(),
+        BTreeMap::from([
+            ("pred".to_string(), raw_prediction),
+            ("aux".to_string(), auxiliary.clone()),
+        ]),
+    )]);
+    let mut ctx = RunContext::new(RunId::new("run:oof.exact.port.predict").unwrap(), Some(11));
+    let sample_ids = vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()];
+    let values = vec![vec![0.4], vec![0.6]];
+    ctx.prediction_store
+        .append(PredictionBlock {
+            prediction_id: Some("pred:model:base:final".to_string()),
+            producer_node: base,
+            producer_port: None,
+            partition: PredictionPartition::Final,
+            fold_id: None,
+            sample_ids: sample_ids.clone(),
+            values: values.clone(),
+            target_names: vec!["y".to_string()],
+        })
+        .unwrap();
+
+    let collected = collect_input_handles(
+        &plan,
+        node_plan,
+        &output_handles,
+        &BTreeMap::new(),
+        &PhaseScopeResources::default(),
+        &ctx,
+        &PhaseScope {
+            phase: Phase::Predict,
+            variant_id: Some(VariantId::new("variant:base").unwrap()),
+            variant: None,
+            fold_id: None,
+            seed_root: Some(11),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        collected.handles.keys().cloned().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "model:base.aux".to_string(),
+            "model:base.pred:predict".to_string()
+        ])
+    );
+    assert_eq!(collected.handles["model:base.aux"], auxiliary);
+    assert!(!collected.handles.contains_key("model:base.pred"));
+    assert_eq!(
+        collected
+            .prediction_inputs
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["model:base.pred:predict".to_string()])
+    );
+    let spec = &collected.prediction_inputs["model:base.pred:predict"];
+    assert_eq!(spec.producer_node, NodeId::new("model:base").unwrap());
+    assert_eq!(spec.source_port, "pred");
+    assert_eq!(spec.target_port, "pred");
+    assert_eq!(spec.partition, PredictionPartition::Final);
+    assert_eq!(spec.fold_id, None);
+    assert!(spec.fold_ids.is_empty());
+    assert_eq!(spec.sample_ids, sample_ids);
+    assert_eq!(spec.values, values);
+    assert_eq!(spec.prediction_width, 1);
+    assert_eq!(spec.target_names, vec!["y".to_string()]);
+}
+
+fn ambiguous_prediction_source_port_error(
+    phase: Phase,
+    partition: PredictionPartition,
+    fold_id: Option<FoldId>,
+    sample_ids: Vec<SampleId>,
+    producer_port: Option<&str>,
+) -> DagMlError {
+    let plan = build_execution_plan(
+        format!(
+            "plan:oof.ambiguous.port.{}",
+            phase.as_str().to_ascii_lowercase()
+        ),
+        oof_edge_graph_with_ambiguous_prediction_port(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit, Phase::Predict])),
+    )
+    .unwrap();
+    let base = NodeId::new("model:base").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let owner = ControllerId::new("controller:model").unwrap();
+    let output_handles = BTreeMap::from([(
+        base.clone(),
+        BTreeMap::from([
+            (
+                "pred".to_string(),
+                HandleRef {
+                    handle: 50,
+                    kind: HandleKind::Prediction,
+                    owner_controller: owner.clone(),
+                },
+            ),
+            (
+                "aux".to_string(),
+                HandleRef {
+                    handle: 60,
+                    kind: HandleKind::Prediction,
+                    owner_controller: owner,
+                },
+            ),
+        ]),
+    )]);
+    let mut ctx = RunContext::new(
+        RunId::new(format!(
+            "run:oof.ambiguous.port.{}",
+            phase.as_str().to_ascii_lowercase()
+        ))
+        .unwrap(),
+        Some(11),
+    );
+    // This is the only stored block. When it is tagged as sibling `aux`, the
+    // port-aware lookup must not relabel it as edge source `pred`. When the
+    // port is absent, the multi-output producer must still fail closed.
+    ctx.prediction_store
+        .append(PredictionBlock {
+            prediction_id: Some("pred:model:base:aux-only".to_string()),
+            producer_node: base,
+            producer_port: producer_port.map(str::to_string),
+            partition,
+            fold_id: fold_id.clone(),
+            values: vec![vec![0.5]; sample_ids.len()],
+            sample_ids,
+            target_names: vec!["y".to_string()],
+        })
+        .unwrap();
+
+    collect_input_handles(
+        &plan,
+        plan.node_plans.get(&meta).unwrap(),
+        &output_handles,
+        &BTreeMap::new(),
+        &PhaseScopeResources::default(),
+        &ctx,
+        &PhaseScope {
+            phase,
+            variant_id: Some(VariantId::new("variant:base").unwrap()),
+            variant: None,
+            fold_id,
+            seed_root: Some(11),
+        },
+    )
+    .err()
+    .expect("ambiguous prediction-port provenance must fail closed")
+}
+
+#[test]
+fn fit_cv_refuses_ambiguous_multi_prediction_source_port() {
+    let error = ambiguous_prediction_source_port_error(
+        Phase::FitCv,
+        PredictionPartition::Validation,
+        Some(FoldId::new("fold:0").unwrap()),
+        vec![SampleId::new("s1").unwrap()],
+        None,
+    );
+
+    assert!(matches!(&error, DagMlError::OofValidation(_)));
+    let message = error.to_string();
+    assert!(message.contains("without producer_port"));
+    assert!(message.contains("2 Prediction output ports"));
+    assert!(message.contains("[\"aux\", \"pred\"]"));
+}
+
+#[test]
+fn predict_refuses_sibling_prediction_source_port() {
+    let error = ambiguous_prediction_source_port_error(
+        Phase::Predict,
+        PredictionPartition::Final,
+        None,
+        vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
+        Some("aux"),
+    );
+
+    assert!(matches!(&error, DagMlError::OofValidation(_)));
+    let message = error.to_string();
+    assert!(message.contains("none for source port `pred`"));
 }
 
 #[test]
@@ -7152,6 +7930,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
     let predictions = PredictionBlock {
         prediction_id: None,
         producer_node: node.clone(),
+        producer_port: Some("pred".to_string()),
         partition: PredictionPartition::Validation,
         fold_id: None,
         sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
@@ -7168,6 +7947,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
         target_names: vec!["y".to_string()],
     };
     let make = |regression_targets: Vec<RegressionTargetBlock>| NodeResult {
+        schema_version: None,
         node_id: node.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![predictions.clone()],
@@ -7242,6 +8022,7 @@ fn cross_fold_validation_reports_scores_the_oof_average() {
     let pred = |fold: &str, rows: &[(&str, f64)]| PredictionBlock {
         prediction_id: None,
         producer_node: node.clone(),
+        producer_port: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new(fold).unwrap()),
         sample_ids: rows
@@ -7253,6 +8034,7 @@ fn cross_fold_validation_reports_scores_the_oof_average() {
     };
     let record = |fold: &str, rows: &[(&str, f64)]| RegressionTargetRecord {
         producer_node: node.clone(),
+        producer_port: None,
         variant_id: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new(fold).unwrap()),
@@ -7313,6 +8095,7 @@ fn cross_fold_validation_reports_rejects_cross_variant_mixed_oof() {
     let pred = |fold: &str, rows: &[(&str, f64)]| PredictionBlock {
         prediction_id: None,
         producer_node: node.clone(),
+        producer_port: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new(fold).unwrap()),
         sample_ids: rows
@@ -7351,6 +8134,7 @@ fn combine_validation_targets_rejects_conflicting_ground_truth() {
     let pred = |fold: &str, rows: &[(&str, f64)]| PredictionBlock {
         prediction_id: None,
         producer_node: node.clone(),
+        producer_port: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new(fold).unwrap()),
         sample_ids: rows
@@ -7362,6 +8146,7 @@ fn combine_validation_targets_rejects_conflicting_ground_truth() {
     };
     let record = |fold: &str, rows: &[(&str, f64)]| RegressionTargetRecord {
         producer_node: node.clone(),
+        producer_port: None,
         variant_id: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new(fold).unwrap()),
@@ -7441,6 +8226,7 @@ impl RuntimeController for VariantScoringController {
             predictions.push(PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Validation,
                 fold_id: task.fold_id.clone(),
                 sample_ids: vec![sample_id.clone()],
@@ -7467,6 +8253,7 @@ impl RuntimeController for VariantScoringController {
             .map(ToString::to_string)
             .unwrap_or_else(|| "nofold".to_string());
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("pred".to_string(), output)]),
             predictions,
@@ -7562,6 +8349,137 @@ fn variant_scoring_controllers() -> RuntimeControllerRegistry {
             id: ControllerId::new("controller:model").unwrap(),
             handle: 2,
             emit_targets: true,
+        }))
+        .unwrap();
+    controllers
+}
+
+fn multi_port_model_graph() -> GraphSpec {
+    let mut graph = simple_graph();
+    graph.id = "g:multi.port.model".to_string();
+    let model = graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:pls")
+        .unwrap();
+    model.ports.outputs = vec![
+        port("pred", PortKind::Prediction),
+        port("aux", PortKind::Prediction),
+    ];
+    graph
+}
+
+struct MultiPortVariantScoringController {
+    id: ControllerId,
+    handle: u64,
+}
+
+impl RuntimeController for MultiPortVariantScoringController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let output = HandleRef {
+            handle: self.handle,
+            kind: HandleKind::Data,
+            owner_controller: self.id.clone(),
+        };
+        let mut predictions = Vec::new();
+        let mut regression_targets = Vec::new();
+        if let Some((sample_id, y_true)) = VariantScoringController::fold_sample(task) {
+            let pred_offset = task
+                .node_plan
+                .params
+                .get("n_components")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+            let aux_offset = if pred_offset == 0.0 { 10.0 } else { 0.0 };
+            for (port_name, offset) in [("pred", pred_offset), ("aux", aux_offset)] {
+                predictions.push(PredictionBlock {
+                    prediction_id: Some(format!("pred:{}:{port_name}", task.node_plan.node_id)),
+                    producer_node: task.node_plan.node_id.clone(),
+                    producer_port: Some(port_name.to_string()),
+                    partition: PredictionPartition::Validation,
+                    fold_id: task.fold_id.clone(),
+                    sample_ids: vec![sample_id.clone()],
+                    values: vec![vec![y_true + offset]],
+                    target_names: vec!["y".to_string()],
+                });
+            }
+            regression_targets.push(crate::metrics::RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: vec![crate::aggregation::PredictionUnitId::Sample(sample_id)],
+                values: vec![vec![y_true]],
+                target_names: vec!["y".to_string()],
+            });
+        }
+        let variant_label = task
+            .variant_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "base".to_string());
+        let fold_label = task
+            .fold_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string());
+        Ok(NodeResult {
+            schema_version: None,
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([
+                ("pred".to_string(), output.clone()),
+                ("aux".to_string(), output),
+            ]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets,
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{:?}:{variant_label}:{fold_label}:multiport",
+                    task.node_plan.node_id, task.phase
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+            },
+        })
+    }
+}
+
+fn multi_port_variant_scoring_controllers() -> RuntimeControllerRegistry {
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(MultiPortVariantScoringController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 2,
         }))
         .unwrap();
     controllers
@@ -7822,6 +8740,86 @@ fn select_best_variant_by_cv_picks_lowest_oof_rmse_variant() {
                     .iter()
                     .all(|block| block.partition == PredictionPartition::Validation)),
         "captured param-variant predictions are Validation-only with no operator fingerprint"
+    );
+}
+
+#[test]
+fn select_best_variant_for_target_ignores_better_sibling_port() {
+    use crate::metrics::RegressionMetricKind;
+
+    // Same producer node, two prediction ports:
+    // - `pred` makes variant `accurate` perfect and `biased` bad.
+    // - `aux` intentionally does the opposite.
+    //
+    // Training SELECT resolves an OutputBinding to one concrete port. Targeting `pred` must therefore
+    // pick `accurate` even though sibling port `aux` gives `biased` the better score.
+    let plan = build_execution_plan(
+        "plan:variant.select.multi.port",
+        multi_port_model_graph(),
+        variant_scoring_campaign(vec![("accurate", 0.0), ("biased", 10.0)]),
+        &manifests(),
+    )
+    .unwrap();
+    assert_eq!(plan.variants.len(), 2);
+    let controllers = multi_port_variant_scoring_controllers();
+    let run_id = RunId::new("run:variant.select.multi.port").unwrap();
+    let target = NodeId::new("model:pls").unwrap();
+
+    let outcome = select_best_variant_outcome_by_cv_for_target(
+        &plan,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        &target,
+        Some("pred"),
+        PredictionLevel::Sample,
+        |variant_plan, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase(variant_plan, &controllers, ctx, Phase::FitCv)
+                .map(|_| ())
+        },
+    )
+    .unwrap()
+    .unwrap();
+
+    let accurate_variant = plan
+        .variants
+        .iter()
+        .find(|variant| variant.choices["model_offset"].label == "accurate")
+        .unwrap();
+    let biased_variant = plan
+        .variants
+        .iter()
+        .find(|variant| variant.choices["model_offset"].label == "biased")
+        .unwrap();
+    assert_eq!(
+        outcome.selection.selected_variant_id,
+        accurate_variant.variant_id
+    );
+
+    let avg_rmse = |variant_id: &VariantId, port_name: &str| {
+        outcome
+            .selection
+            .validation_reports
+            .iter()
+            .find(|report| {
+                report.variant_id.as_ref() == Some(variant_id)
+                    && report.producer_node == target
+                    && report.producer_port.as_deref() == Some(port_name)
+                    && report.partition == PredictionPartition::Validation
+                    && report
+                        .fold_id
+                        .as_ref()
+                        .is_some_and(|fold| fold.as_str() == "avg")
+            })
+            .map(|report| report.metrics["rmse"])
+            .unwrap()
+    };
+    assert_eq!(avg_rmse(&accurate_variant.variant_id, "pred"), 0.0);
+    assert_eq!(avg_rmse(&biased_variant.variant_id, "aux"), 0.0);
+    assert!(
+        avg_rmse(&biased_variant.variant_id, "pred")
+            > avg_rmse(&accurate_variant.variant_id, "pred")
     );
 }
 
@@ -8565,6 +9563,7 @@ impl RuntimeController for BranchScopeRecordingController {
             vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Validation,
                 fold_id: task.fold_id.clone(),
                 sample_ids: partition_ids
@@ -8578,6 +9577,7 @@ impl RuntimeController for BranchScopeRecordingController {
             Vec::new()
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -8662,6 +9662,7 @@ impl RuntimeController for OverlapEmittingController {
             vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Validation,
                 fold_id: task.fold_id.clone(),
                 sample_ids: fold_validation_ids.clone(),
@@ -8672,6 +9673,7 @@ impl RuntimeController for OverlapEmittingController {
             Vec::new()
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -9310,6 +10312,7 @@ impl RuntimeController for SilentBranchController {
             owner_controller: self.id.clone(),
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("oof".to_string(), output.clone()),
@@ -9434,6 +10437,7 @@ impl RuntimeController for ScoringBranchController {
                 let preds = vec![PredictionBlock {
                     prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                     producer_node: task.node_plan.node_id.clone(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: task.fold_id.clone(),
                     sample_ids: partition_ids
@@ -9470,6 +10474,7 @@ impl RuntimeController for ScoringBranchController {
             .map(ToString::to_string)
             .unwrap_or_else(|| "base".to_string());
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -10173,6 +11178,7 @@ impl RuntimeController for FusionBranchController {
                 let preds = vec![PredictionBlock {
                     prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                     producer_node: task.node_plan.node_id.clone(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: task.fold_id.clone(),
                     sample_ids: fold_validation_ids
@@ -10203,6 +11209,7 @@ impl RuntimeController for FusionBranchController {
                 (Vec::new(), Vec::new())
             };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -10641,6 +11648,7 @@ impl RuntimeController for ProbaBranchController {
             vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Validation,
                 fold_id: task.fold_id.clone(),
                 sample_ids: fold_validation_ids.clone(),
@@ -10651,6 +11659,7 @@ impl RuntimeController for ProbaBranchController {
             Vec::new()
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -10861,6 +11870,7 @@ impl RuntimeController for OffFoldScoringController {
             let preds = vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition,
                 fold_id: task.fold_id.clone(),
                 sample_ids: partition_ids
@@ -10907,6 +11917,7 @@ impl RuntimeController for OffFoldScoringController {
             .map(ToString::to_string)
             .unwrap_or_else(|| "base".to_string());
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -11214,6 +12225,7 @@ impl RuntimeController for OffFoldDuplicationController {
             let preds = vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition,
                 fold_id: task.fold_id.clone(),
                 sample_ids: ids.iter().map(|s| SampleId::new(s).unwrap()).collect(),
@@ -11247,6 +12259,7 @@ impl RuntimeController for OffFoldDuplicationController {
             owner_controller: self.id.clone(),
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -11412,6 +12425,7 @@ fn refit_merge_consumes_only_test_partition_not_train_or_final() {
             .append(PredictionBlock {
                 prediction_id: Some(format!("noise:train:{branch}")),
                 producer_node: branch.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Train,
                 fold_id: None,
                 sample_ids: vec![SampleId::new(site_sample).unwrap()],
@@ -11423,6 +12437,7 @@ fn refit_merge_consumes_only_test_partition_not_train_or_final() {
             .append(PredictionBlock {
                 prediction_id: Some(format!("noise:final:{branch}")),
                 producer_node: branch.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Final,
                 fold_id: None,
                 sample_ids: vec![SampleId::new(site_sample).unwrap()],
@@ -11712,6 +12727,7 @@ impl RuntimeController for DuplicateSampleBranchController {
             vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{node_id}")),
                 producer_node: node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Test,
                 fold_id: None,
                 sample_ids: sample_ids.clone(),
@@ -11727,6 +12743,7 @@ impl RuntimeController for DuplicateSampleBranchController {
             owner_controller: self.id.clone(),
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -11827,6 +12844,7 @@ impl RuntimeController for StackingOffFoldController {
                     vec![PredictionBlock {
                         prediction_id: Some("pred:model:base".to_string()),
                         producer_node: task.node_plan.node_id.clone(),
+                        producer_port: None,
                         partition: PredictionPartition::Validation,
                         fold_id: task.fold_id.clone(),
                         sample_ids: samples.clone(),
@@ -11839,6 +12857,7 @@ impl RuntimeController for StackingOffFoldController {
                     vec![PredictionBlock {
                         prediction_id: Some("pred:model:base:test".to_string()),
                         producer_node: task.node_plan.node_id.clone(),
+                        producer_port: None,
                         partition: PredictionPartition::Test,
                         fold_id: None,
                         sample_ids: samples.clone(),
@@ -11858,6 +12877,7 @@ impl RuntimeController for StackingOffFoldController {
             302
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -11986,6 +13006,8 @@ fn sample_relations_envelope(rows: &[(&str, &str)]) -> ExternalDataPlanEnvelope 
         relation_fingerprint: Some(
             "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10".to_string(),
         ),
+        data_content_fingerprint: None,
+        target_content_fingerprint: None,
         coordinator_relations: Some(relations),
     }
 }
@@ -12098,6 +13120,7 @@ impl RuntimeController for OperatorScoringController {
             predictions.push(PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Validation,
                 fold_id: task.fold_id.clone(),
                 sample_ids: vec![sample_id.clone()],
@@ -12122,6 +13145,7 @@ impl RuntimeController for OperatorScoringController {
             .map(ToString::to_string)
             .unwrap_or_else(|| "nofold".to_string());
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("oof".to_string(), output)]),
             predictions,
@@ -12819,6 +13843,7 @@ fn capture_variant_validation_predictions_realigns_shuffled_fold_targets() {
         .append(PredictionBlock {
             prediction_id: Some("pred:fold0".to_string()),
             producer_node: producer.clone(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: vec![
@@ -12833,6 +13858,7 @@ fn capture_variant_validation_predictions_realigns_shuffled_fold_targets() {
     // The matching y_true record arrives SHUFFLED (s3, s1, s2) — a valid host ordering.
     ctx.regression_target_records.push(RegressionTargetRecord {
         producer_node: producer.clone(),
+        producer_port: None,
         variant_id: Some(variant_id.clone()),
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new("fold:0").unwrap()),

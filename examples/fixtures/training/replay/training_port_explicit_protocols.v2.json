@@ -1,0 +1,263 @@
+{
+  "schema_version": 1,
+  "node_result": {
+    "schema_version": 2,
+    "node_id": "transform:scale",
+    "outputs": {
+      "x_out": {
+        "handle": 88,
+        "kind": "data",
+        "owner_controller": "controller:transform.mock"
+      }
+    },
+    "predictions": [],
+    "shape_deltas": [],
+    "artifacts": [],
+    "artifact_handles": {},
+    "lineage": {
+      "record_id": "lineage:fixture.node-result",
+      "run_id": "run:fixture.node-task",
+      "node_id": "transform:scale",
+      "phase": "FIT_CV",
+      "controller_id": "controller:transform.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:fixture",
+      "fold_id": "fold:0",
+      "branch_path": [],
+      "input_lineage": [],
+      "artifact_refs": [],
+      "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": 42,
+      "unsafe_flags": [],
+      "metrics": {}
+    }
+  },
+  "process_adapter_result": {
+    "type": "result",
+    "schema_version": 2,
+    "result": {
+      "schema_version": 2,
+      "node_id": "transform:scale",
+      "outputs": {
+        "x_out": {
+          "handle": 88,
+          "kind": "data",
+          "owner_controller": "controller:transform.mock"
+        }
+      },
+      "predictions": [],
+      "shape_deltas": [],
+      "artifacts": [],
+      "artifact_handles": {},
+      "lineage": {
+        "record_id": "lineage:fixture.node-result",
+        "run_id": "run:fixture.node-task",
+        "node_id": "transform:scale",
+        "phase": "FIT_CV",
+        "controller_id": "controller:transform.mock",
+        "controller_version": "0.1.0",
+        "variant_id": "variant:fixture",
+        "fold_id": "fold:0",
+        "branch_path": [],
+        "input_lineage": [],
+        "artifact_refs": [],
+        "params_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "data_model_shape_fingerprint": null,
+        "aggregation_policy_fingerprint": null,
+        "seed": 42,
+        "unsafe_flags": [],
+        "metrics": {}
+      }
+    }
+  },
+  "aggregation_task_observation": {
+    "schema_version": 2,
+    "task_id": "task:aggregate.observation",
+    "controller_id": "controller:aggregation.fixture",
+    "policy": {
+      "method": "custom_controller",
+      "custom_controller": {
+        "controller_id": "controller:aggregation.fixture"
+      }
+    },
+    "input": {
+      "input_kind": "observation_to_sample",
+      "block": {
+        "prediction_id": "prediction:observation.fixture",
+        "producer_node": "model:fixture",
+        "producer_port": "prediction",
+        "partition": "final",
+        "fold_id": null,
+        "observation_ids": [
+          "obs:1",
+          "obs:2"
+        ],
+        "values": [
+          [
+            1.0
+          ],
+          [
+            2.0
+          ]
+        ],
+        "weights": [
+          1.0,
+          1.0
+        ],
+        "target_names": [
+          "y"
+        ]
+      },
+      "relations": {
+        "records": [
+          {
+            "observation_id": "obs:1",
+            "sample_id": "sample:1",
+            "target_id": "target:1",
+            "group_id": "group:1",
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+          },
+          {
+            "observation_id": "obs:2",
+            "sample_id": "sample:2",
+            "target_id": "target:2",
+            "group_id": "group:1",
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+          }
+        ]
+      },
+      "requested_sample_order": [
+        "sample:1",
+        "sample:2"
+      ]
+    }
+  },
+  "aggregation_task_unit": {
+    "schema_version": 2,
+    "task_id": "task:aggregate.unit",
+    "controller_id": "controller:aggregation.fixture",
+    "policy": {
+      "method": "custom_controller",
+      "custom_controller": {
+        "controller_id": "controller:aggregation.fixture"
+      }
+    },
+    "input": {
+      "input_kind": "sample_to_unit",
+      "block": {
+        "prediction_id": "prediction:sample.fixture",
+        "producer_node": "model:fixture",
+        "producer_port": "prediction",
+        "partition": "final",
+        "fold_id": null,
+        "sample_ids": [
+          "sample:1",
+          "sample:2"
+        ],
+        "values": [
+          [
+            1.0
+          ],
+          [
+            2.0
+          ]
+        ],
+        "target_names": [
+          "y"
+        ]
+      },
+      "relations": {
+        "records": [
+          {
+            "observation_id": "obs:1",
+            "sample_id": "sample:1",
+            "target_id": "target:1",
+            "group_id": "group:1",
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+          },
+          {
+            "observation_id": "obs:2",
+            "sample_id": "sample:2",
+            "target_id": "target:2",
+            "group_id": "group:1",
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+          }
+        ]
+      },
+      "requested_unit_order": [
+        {
+          "level": "group",
+          "id": "group:1"
+        }
+      ]
+    }
+  },
+  "aggregation_result_sample": {
+    "schema_version": 2,
+    "task_id": "task:aggregate.observation",
+    "output": {
+      "output_kind": "sample",
+      "block": {
+        "prediction_id": "prediction:sample.fixture",
+        "producer_node": "model:fixture",
+        "producer_port": "prediction",
+        "partition": "final",
+        "fold_id": null,
+        "sample_ids": [
+          "sample:1",
+          "sample:2"
+        ],
+        "values": [
+          [
+            1.0
+          ],
+          [
+            2.0
+          ]
+        ],
+        "target_names": [
+          "y"
+        ]
+      }
+    }
+  },
+  "aggregation_result_unit": {
+    "schema_version": 2,
+    "task_id": "task:aggregate.unit",
+    "output": {
+      "output_kind": "unit",
+      "block": {
+        "prediction_id": "prediction:group.fixture",
+        "producer_node": "model:fixture",
+        "producer_port": "prediction",
+        "partition": "final",
+        "fold_id": null,
+        "level": "group",
+        "unit_ids": [
+          {
+            "level": "group",
+            "id": "group:1"
+          }
+        ],
+        "values": [
+          [
+            1.5
+          ]
+        ],
+        "target_names": [
+          "y"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,1720 @@
+{
+  "fixture_id": "dag-ml.conformal.calibration-artifacts.v1",
+  "schema_version": 1,
+  "schema": "conformal_calibration.schema.json",
+  "valid_cases": [
+    {
+      "id": "finite_calibration_artifact",
+      "document": {
+        "schema_version": 1,
+        "artifact_id": "calibration:split.v1",
+        "predictor_binding": {
+          "schema_version": 1,
+          "plan_id": "plan:fixture.execution.branch_merge",
+          "graph_fingerprint": "5ff380e69dad7b2f67725483afd8b917b3d2bcde7190c4cfa952b6c227d773d5",
+          "campaign_fingerprint": "0778413bc8e3069ef4c2148cb17a5e15ec8ffbc38ca588d2146c6d2aee713c05",
+          "controller_fingerprint": "03fce82bb64a7c1820c70146b0489d6ed649e90d922e392d6eb9309eba829897",
+          "data_bindings": [
+            {
+              "requirement_key": "branch:b0.model:ridge.x",
+              "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+              "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+              "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "requirement_key": "branch:b1.augment:noise.x",
+              "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+              "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+              "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "requirement_key": "merge:stack.pred_plus_original.meta:ridge.x_original",
+              "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+              "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+              "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+              "source_ids": [
+                "nir"
+              ]
+            }
+          ],
+          "selected_variant_id": "variant:a964828b1417c6e7",
+          "selected_variant_fingerprint": "a964828b1417c6e7c1262a7ee9c670a96e14488e793edc87afbd457f8c76265e",
+          "selected_patches": [
+            {
+              "schema_version": 1,
+              "node_id": "branch:b0.model:ridge",
+              "namespace": "operator",
+              "path": [
+                "alpha"
+              ],
+              "value": 0.1
+            },
+            {
+              "schema_version": 1,
+              "node_id": "branch:b1.model:rf",
+              "namespace": "operator",
+              "path": [
+                "max_depth"
+              ],
+              "value": 4
+            },
+            {
+              "schema_version": 1,
+              "node_id": "branch:b1.model:rf",
+              "namespace": "operator",
+              "path": [
+                "n_estimators"
+              ],
+              "value": 64
+            },
+            {
+              "schema_version": 1,
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "namespace": "operator",
+              "path": [
+                "alpha"
+              ],
+              "value": 0.05
+            }
+          ],
+          "artifacts": [
+            {
+              "node_id": "branch:b0.model:ridge",
+              "controller_id": "controller:model.mock",
+              "artifact_id": "artifact:branch:b0.model:ridge:refit",
+              "backend": "json",
+              "content_fingerprint": "b6ce0fe0c992ddd20c2f300917cb323003d7adadf5364d9d9b2f2e154a8e8917",
+              "params_fingerprint": "af39a185b5a846fc6bbdc703ee4a7bf3e4b7ad9a304563d6cc024a36dc6628ab",
+              "plugin": "dagml.python_process",
+              "plugin_version": "1.0.0"
+            },
+            {
+              "node_id": "branch:b1.model:rf",
+              "controller_id": "controller:model.mock",
+              "artifact_id": "artifact:branch:b1.model:rf:refit",
+              "backend": "json",
+              "content_fingerprint": "080f39410270fecb7030f29ef828f6a2b753ec69c56ecaed8dbdd01fd47b8adb",
+              "params_fingerprint": "825b0d7229d08dad92ad5f81443063e14bdeb3e03ef3ca294c81c156711b7924",
+              "plugin": "dagml.python_process",
+              "plugin_version": "1.0.0"
+            },
+            {
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "controller_id": "controller:model.mock",
+              "artifact_id": "artifact:merge:stack.pred_plus_original.meta:ridge:refit",
+              "backend": "json",
+              "content_fingerprint": "e04a465664fa5d102d7345c2d7dd334fa822209438cc32e7ed07205224abb019",
+              "params_fingerprint": "e7fcc53de2b14105e7e7f5b943b3eb32811c5ac79ad70f10fee4de31137921d2",
+              "plugin": "dagml.python_process",
+              "plugin_version": "1.0.0"
+            }
+          ],
+          "output_binding": {
+            "schema_version": 1,
+            "binding_id": "output:meta.final",
+            "node_id": "merge:stack.pred_plus_original.meta:ridge",
+            "port_name": "oof",
+            "prediction_level": "sample",
+            "unit_level": "physical_sample",
+            "prediction_kind": "regression_point",
+            "prediction_source": "final_refit",
+            "refit_strategy": "refit_one",
+            "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+            "target_names": [
+              "protein"
+            ],
+            "target_units": [
+              "percent"
+            ],
+            "class_labels": [
+              []
+            ],
+            "output_order": "target_order",
+            "target_space": "raw",
+            "binding_fingerprint": "c8d90368ab9e3a2a6ed03f729fdbda2521a42e429bd88d2334d86f6b55214c4f"
+          },
+          "target_processing_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "training_outcome_fingerprint": "7d609677433b1f5d2eeb0b77c40c21a80acfd028a6bc3e00c0322a21241c14af",
+          "training_influence_fingerprint": "cf8f6ce4dbf07b81621d4baf62fca07e218936da8a85d444a91e74e302f485dd",
+          "predictor_node_ids": [
+            "branch:b0.model:ridge",
+            "branch:b1.augment:noise",
+            "branch:b1.model:rf",
+            "merge:stack.pred_plus_original.meta:ridge"
+          ]
+        },
+        "predictor_binding_fingerprint": "bb73f1c18f17a6eaa522e121509914a85b7cc532f0ddec19c18b5fe1e6d62fb3",
+        "calibration_spec": {
+          "schema_version": 1,
+          "method": "split_absolute_residual",
+          "coverages": [
+            0.9,
+            0.95
+          ],
+          "exchangeability_unit": "physical_sample",
+          "multi_target_policy": "marginal",
+          "small_sample_policy": "error",
+          "target_space": "raw",
+          "numeric_version": "split_absolute_residual.v1",
+          "seed": null
+        },
+        "calibration_spec_fingerprint": "a97853b9ffa9a17a3786ad3049f26130346e6e65f0e4c2c65ad7a29e0c89ab41",
+        "calibration_cohort": {
+          "schema_version": 1,
+          "role": "calibration",
+          "exchangeability_unit": "physical_sample",
+          "physical_sample_ids": [
+            "sample:base.cal.01",
+            "sample:base.cal.02",
+            "sample:base.cal.03",
+            "sample:base.cal.04",
+            "sample:base.cal.05",
+            "sample:base.cal.06",
+            "sample:base.cal.07",
+            "sample:base.cal.08",
+            "sample:base.cal.09",
+            "sample:base.cal.10",
+            "sample:base.cal.11",
+            "sample:base.cal.12",
+            "sample:base.cal.13",
+            "sample:base.cal.14",
+            "sample:base.cal.15",
+            "sample:base.cal.16",
+            "sample:base.cal.17",
+            "sample:base.cal.18",
+            "sample:base.cal.19",
+            "sample:base.cal.20"
+          ],
+          "origin_sample_ids": [
+            "sample:base.cal.origin.01"
+          ],
+          "group_ids": [
+            "group:base.cal.A",
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ],
+          "unit_relations": [
+            {
+              "physical_sample_id": "sample:base.cal.01",
+              "origin_sample_id": "sample:base.cal.origin.01",
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.02",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.03",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.04",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.05",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.06",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.07",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.08",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.09",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.10",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.11",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.12",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.13",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.14",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.15",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.16",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.17",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.18",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.19",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.20",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            }
+          ],
+          "target_names": [
+            "protein"
+          ],
+          "relation_fingerprint": "509e3b457e6113ef2b8224da96a6cb25cb6588daef53f15a304a0f831d52d39e",
+          "content_fingerprint": "4ef6dda6ed43470ed4d721b7d106607d513dcefa3f3bf5c3378ab4d6fb70b8df",
+          "manifest_fingerprint": "0e2f3f77ae1b209b0110f0ce8a4e2653e3c8049ab2df3b1585d0c219593d5d69",
+          "axes_fingerprint": "2e9ac3049c38aca243404044f9fd231769a06e159cdbadbaec979c9295b4ca70"
+        },
+        "training_influence": {
+          "schema_version": 1,
+          "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+          "entries": [
+            {
+              "kind": "transform_fit",
+              "scope_id": "fit:branch.b1.augmentation",
+              "node_id": "branch:b1.augment:noise",
+              "physical_sample_ids": [
+                "sample:1",
+                "sample:2",
+                "sample:3",
+                "sample:4"
+              ],
+              "origin_sample_ids": [],
+              "group_ids": []
+            },
+            {
+              "kind": "model_fit",
+              "scope_id": "fit:branch.b0.ridge",
+              "node_id": "branch:b0.model:ridge",
+              "physical_sample_ids": [
+                "sample:1",
+                "sample:2",
+                "sample:3",
+                "sample:4"
+              ],
+              "origin_sample_ids": [],
+              "group_ids": []
+            },
+            {
+              "kind": "model_fit",
+              "scope_id": "fit:branch.b1.rf",
+              "node_id": "branch:b1.model:rf",
+              "physical_sample_ids": [
+                "sample:1",
+                "sample:2",
+                "sample:3",
+                "sample:4"
+              ],
+              "origin_sample_ids": [],
+              "group_ids": []
+            },
+            {
+              "kind": "hpo_selection",
+              "scope_id": "selection:rmse",
+              "node_id": null,
+              "physical_sample_ids": [
+                "sample:1",
+                "sample:2",
+                "sample:3",
+                "sample:4"
+              ],
+              "origin_sample_ids": [],
+              "group_ids": []
+            },
+            {
+              "kind": "trained_meta_aggregation",
+              "scope_id": "fit:meta.ridge",
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "physical_sample_ids": [
+                "sample:1",
+                "sample:2",
+                "sample:3",
+                "sample:4"
+              ],
+              "origin_sample_ids": [],
+              "group_ids": []
+            }
+          ],
+          "manifest_fingerprint": "cf8f6ce4dbf07b81621d4baf62fca07e218936da8a85d444a91e74e302f485dd"
+        },
+        "effective_sample_count": 20,
+        "quantiles": [
+          {
+            "coverage": 0.9,
+            "rank": 19,
+            "values": [
+              {
+                "status": "finite",
+                "value": 1.9
+              }
+            ]
+          },
+          {
+            "coverage": 0.95,
+            "rank": 20,
+            "values": [
+              {
+                "status": "finite",
+                "value": 2.0
+              }
+            ]
+          }
+        ],
+        "diagnostics": {
+          "quantile_convention": "rank=ceil((n+1)*coverage), one-indexed",
+          "guarantee": "marginal split-conformal under physical-sample exchangeability"
+        },
+        "warnings": [],
+        "checksum": "88dd183f1dcc6159ce070cc1b82ca79e858a4bda947ee7802ed737fd9b3d6787"
+      }
+    },
+    {
+      "id": "small_n_unbounded_artifact",
+      "document": {
+        "schema_version": 1,
+        "artifact_id": "calibration:small-n.unbounded.v1",
+        "predictor_binding": {
+          "schema_version": 1,
+          "plan_id": "plan:fixture.execution.branch_merge",
+          "graph_fingerprint": "5ff380e69dad7b2f67725483afd8b917b3d2bcde7190c4cfa952b6c227d773d5",
+          "campaign_fingerprint": "0778413bc8e3069ef4c2148cb17a5e15ec8ffbc38ca588d2146c6d2aee713c05",
+          "controller_fingerprint": "03fce82bb64a7c1820c70146b0489d6ed649e90d922e392d6eb9309eba829897",
+          "data_bindings": [
+            {
+              "requirement_key": "branch:b0.model:ridge.x",
+              "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+              "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+              "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "requirement_key": "branch:b1.augment:noise.x",
+              "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+              "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+              "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "requirement_key": "merge:stack.pred_plus_original.meta:ridge.x_original",
+              "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+              "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+              "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+              "source_ids": [
+                "nir"
+              ]
+            }
+          ],
+          "selected_variant_id": "variant:a964828b1417c6e7",
+          "selected_variant_fingerprint": "a964828b1417c6e7c1262a7ee9c670a96e14488e793edc87afbd457f8c76265e",
+          "selected_patches": [
+            {
+              "schema_version": 1,
+              "node_id": "branch:b0.model:ridge",
+              "namespace": "operator",
+              "path": [
+                "alpha"
+              ],
+              "value": 0.1
+            },
+            {
+              "schema_version": 1,
+              "node_id": "branch:b1.model:rf",
+              "namespace": "operator",
+              "path": [
+                "max_depth"
+              ],
+              "value": 4
+            },
+            {
+              "schema_version": 1,
+              "node_id": "branch:b1.model:rf",
+              "namespace": "operator",
+              "path": [
+                "n_estimators"
+              ],
+              "value": 64
+            },
+            {
+              "schema_version": 1,
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "namespace": "operator",
+              "path": [
+                "alpha"
+              ],
+              "value": 0.05
+            }
+          ],
+          "artifacts": [
+            {
+              "node_id": "branch:b0.model:ridge",
+              "controller_id": "controller:model.mock",
+              "artifact_id": "artifact:branch:b0.model:ridge:refit",
+              "backend": "json",
+              "content_fingerprint": "b6ce0fe0c992ddd20c2f300917cb323003d7adadf5364d9d9b2f2e154a8e8917",
+              "params_fingerprint": "af39a185b5a846fc6bbdc703ee4a7bf3e4b7ad9a304563d6cc024a36dc6628ab",
+              "plugin": "dagml.python_process",
+              "plugin_version": "1.0.0"
+            },
+            {
+              "node_id": "branch:b1.model:rf",
+              "controller_id": "controller:model.mock",
+              "artifact_id": "artifact:branch:b1.model:rf:refit",
+              "backend": "json",
+              "content_fingerprint": "080f39410270fecb7030f29ef828f6a2b753ec69c56ecaed8dbdd01fd47b8adb",
+              "params_fingerprint": "825b0d7229d08dad92ad5f81443063e14bdeb3e03ef3ca294c81c156711b7924",
+              "plugin": "dagml.python_process",
+              "plugin_version": "1.0.0"
+            },
+            {
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "controller_id": "controller:model.mock",
+              "artifact_id": "artifact:merge:stack.pred_plus_original.meta:ridge:refit",
+              "backend": "json",
+              "content_fingerprint": "e04a465664fa5d102d7345c2d7dd334fa822209438cc32e7ed07205224abb019",
+              "params_fingerprint": "e7fcc53de2b14105e7e7f5b943b3eb32811c5ac79ad70f10fee4de31137921d2",
+              "plugin": "dagml.python_process",
+              "plugin_version": "1.0.0"
+            }
+          ],
+          "output_binding": {
+            "schema_version": 1,
+            "binding_id": "output:meta.final",
+            "node_id": "merge:stack.pred_plus_original.meta:ridge",
+            "port_name": "oof",
+            "prediction_level": "sample",
+            "unit_level": "physical_sample",
+            "prediction_kind": "regression_point",
+            "prediction_source": "final_refit",
+            "refit_strategy": "refit_one",
+            "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+            "target_names": [
+              "moisture",
+              "protein"
+            ],
+            "target_units": [
+              "percent",
+              "percent"
+            ],
+            "class_labels": [
+              [],
+              []
+            ],
+            "output_order": "target_order",
+            "target_space": "raw",
+            "binding_fingerprint": "bbdd031b6ead3ed25f95033a8ce9bcc288dea76291f6b5378aff20b5baa74b51"
+          },
+          "target_processing_fingerprint": "af5eafb8569f37d8cffd3426367aea97be19b14f6ca391bcbe05fe9ea0eebd0f",
+          "training_outcome_fingerprint": "7d609677433b1f5d2eeb0b77c40c21a80acfd028a6bc3e00c0322a21241c14af",
+          "training_influence_fingerprint": "cf8f6ce4dbf07b81621d4baf62fca07e218936da8a85d444a91e74e302f485dd",
+          "predictor_node_ids": [
+            "branch:b0.model:ridge",
+            "branch:b1.augment:noise",
+            "branch:b1.model:rf",
+            "merge:stack.pred_plus_original.meta:ridge"
+          ]
+        },
+        "predictor_binding_fingerprint": "07c4dea732ebafb8b89476c6907fcac39412c3588782104c1ebf52b262453ff8",
+        "calibration_spec": {
+          "schema_version": 1,
+          "method": "split_absolute_residual",
+          "coverages": [
+            0.99,
+            0.999
+          ],
+          "exchangeability_unit": "physical_sample",
+          "multi_target_policy": "marginal",
+          "small_sample_policy": "unbounded",
+          "target_space": "raw",
+          "numeric_version": "split_absolute_residual.v1",
+          "seed": null
+        },
+        "calibration_spec_fingerprint": "c203513ef1afb6cc85d597b3fe0a7a8a13e830ab6efd423b1569b5ac56b322a1",
+        "calibration_cohort": {
+          "schema_version": 1,
+          "role": "calibration",
+          "exchangeability_unit": "physical_sample",
+          "physical_sample_ids": [
+            "sample:base.cal.01",
+            "sample:base.cal.02",
+            "sample:base.cal.03",
+            "sample:base.cal.04",
+            "sample:base.cal.05",
+            "sample:base.cal.06",
+            "sample:base.cal.07",
+            "sample:base.cal.08",
+            "sample:base.cal.09",
+            "sample:base.cal.10",
+            "sample:base.cal.11",
+            "sample:base.cal.12",
+            "sample:base.cal.13",
+            "sample:base.cal.14",
+            "sample:base.cal.15",
+            "sample:base.cal.16",
+            "sample:base.cal.17",
+            "sample:base.cal.18",
+            "sample:base.cal.19",
+            "sample:base.cal.20"
+          ],
+          "origin_sample_ids": [
+            "sample:base.cal.origin.01"
+          ],
+          "group_ids": [
+            "group:base.cal.A",
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ],
+          "unit_relations": [
+            {
+              "physical_sample_id": "sample:base.cal.01",
+              "origin_sample_id": "sample:base.cal.origin.01",
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.02",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.03",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.04",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.05",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.06",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.07",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.08",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.09",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.10",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.A"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.11",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.12",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.13",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.14",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.15",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.16",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.17",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.18",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.19",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            },
+            {
+              "physical_sample_id": "sample:base.cal.20",
+              "origin_sample_id": null,
+              "group_ids": [
+                "group:base.cal.B"
+              ],
+              "source_ids": [
+                "nir"
+              ]
+            }
+          ],
+          "target_names": [
+            "moisture",
+            "protein"
+          ],
+          "relation_fingerprint": "509e3b457e6113ef2b8224da96a6cb25cb6588daef53f15a304a0f831d52d39e",
+          "content_fingerprint": "4ef6dda6ed43470ed4d721b7d106607d513dcefa3f3bf5c3378ab4d6fb70b8df",
+          "manifest_fingerprint": "ed09b329d97e788e49938e41f2b74182dc1067e9acaff7df6b23e2eb49ad5b15",
+          "axes_fingerprint": "2e9ac3049c38aca243404044f9fd231769a06e159cdbadbaec979c9295b4ca70"
+        },
+        "training_influence": {
+          "schema_version": 1,
+          "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+          "entries": [
+            {
+              "kind": "transform_fit",
+              "scope_id": "fit:branch.b1.augmentation",
+              "node_id": "branch:b1.augment:noise",
+              "physical_sample_ids": [
+                "sample:1",
+                "sample:2",
+                "sample:3",
+                "sample:4"
+              ],
+              "origin_sample_ids": [],
+              "group_ids": []
+            },
+            {
+              "kind": "model_fit",
+              "scope_id": "fit:branch.b0.ridge",
+              "node_id": "branch:b0.model:ridge",
+              "physical_sample_ids": [
+                "sample:1",
+                "sample:2",
+                "sample:3",
+                "sample:4"
+              ],
+              "origin_sample_ids": [],
+              "group_ids": []
+            },
+            {
+              "kind": "model_fit",
+              "scope_id": "fit:branch.b1.rf",
+              "node_id": "branch:b1.model:rf",
+              "physical_sample_ids": [
+                "sample:1",
+                "sample:2",
+                "sample:3",
+                "sample:4"
+              ],
+              "origin_sample_ids": [],
+              "group_ids": []
+            },
+            {
+              "kind": "hpo_selection",
+              "scope_id": "selection:rmse",
+              "node_id": null,
+              "physical_sample_ids": [
+                "sample:1",
+                "sample:2",
+                "sample:3",
+                "sample:4"
+              ],
+              "origin_sample_ids": [],
+              "group_ids": []
+            },
+            {
+              "kind": "trained_meta_aggregation",
+              "scope_id": "fit:meta.ridge",
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "physical_sample_ids": [
+                "sample:1",
+                "sample:2",
+                "sample:3",
+                "sample:4"
+              ],
+              "origin_sample_ids": [],
+              "group_ids": []
+            }
+          ],
+          "manifest_fingerprint": "cf8f6ce4dbf07b81621d4baf62fca07e218936da8a85d444a91e74e302f485dd"
+        },
+        "effective_sample_count": 20,
+        "quantiles": [
+          {
+            "coverage": 0.99,
+            "rank": 21,
+            "values": [
+              {
+                "status": "unbounded"
+              },
+              {
+                "status": "unbounded"
+              }
+            ]
+          },
+          {
+            "coverage": 0.999,
+            "rank": 21,
+            "values": [
+              {
+                "status": "unbounded"
+              },
+              {
+                "status": "unbounded"
+              }
+            ]
+          }
+        ],
+        "diagnostics": {
+          "context": "small_n_unbounded",
+          "quantile_convention": "rank=ceil((n+1)*coverage), one-indexed",
+          "guarantee": "unbounded interval when the finite-sample rank exceeds n"
+        },
+        "warnings": [],
+        "checksum": "8e2a8e97044ef230acb9b2f174d877d91bc883ee5f43671b64bc75bb188850cd"
+      }
+    }
+  ],
+  "invalid_cases": [
+    {
+      "id": "unbounded_value_null_refuses",
+      "base_case": "small_n_unbounded_artifact",
+      "mutations": [
+        {
+          "path": "/quantiles",
+          "value": [
+            {
+              "coverage": 0.99,
+              "rank": 21,
+              "values": [
+                {
+                  "status": "unbounded",
+                  "value": null
+                },
+                {
+                  "status": "unbounded"
+                }
+              ]
+            },
+            {
+              "coverage": 0.999,
+              "rank": 21,
+              "values": [
+                {
+                  "status": "unbounded"
+                },
+                {
+                  "status": "unbounded"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "path": "/checksum",
+          "value": "fa5d97640cf7414fd9f0171ce24128a957efa8a8905ad2a82827a60b2d0fb29d"
+        }
+      ],
+      "expected_error": "value",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "mixed_unbounded_finite_refuses",
+      "base_case": "small_n_unbounded_artifact",
+      "mutations": [
+        {
+          "path": "/quantiles",
+          "value": [
+            {
+              "coverage": 0.99,
+              "rank": 21,
+              "values": [
+                {
+                  "status": "unbounded"
+                },
+                {
+                  "status": "finite",
+                  "value": 2.0
+                }
+              ]
+            },
+            {
+              "coverage": 0.999,
+              "rank": 21,
+              "values": [
+                {
+                  "status": "unbounded"
+                },
+                {
+                  "status": "unbounded"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "path": "/checksum",
+          "value": "b2e6378908179d0cec2b61d8da53c049c663da84dbdb56c0976e94824dffab68"
+        }
+      ],
+      "expected_error": "unbounded",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "unbounded_cannot_return_finite",
+      "base_case": "small_n_unbounded_artifact",
+      "mutations": [
+        {
+          "path": "/quantiles",
+          "value": [
+            {
+              "coverage": 0.99,
+              "rank": 21,
+              "values": [
+                {
+                  "status": "unbounded"
+                },
+                {
+                  "status": "unbounded"
+                }
+              ]
+            },
+            {
+              "coverage": 0.999,
+              "rank": 21,
+              "values": [
+                {
+                  "status": "finite",
+                  "value": 2.0
+                },
+                {
+                  "status": "finite",
+                  "value": 2.0
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "path": "/checksum",
+          "value": "0e0f770a8b6ce98455cd63dcaa7367047e0c972c1a57e4f289eeb224773b3bbb"
+        }
+      ],
+      "expected_error": "unbounded",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "finite_quantile_integer_token_refuses",
+      "base_case": "finite_calibration_artifact",
+      "mutations": [
+        {
+          "path": "/quantiles",
+          "value": [
+            {
+              "coverage": 0.9,
+              "rank": 19,
+              "values": [
+                {
+                  "status": "finite",
+                  "value": 1.9
+                }
+              ]
+            },
+            {
+              "coverage": 0.95,
+              "rank": 20,
+              "values": [
+                {
+                  "status": "finite",
+                  "value": 2
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "path": "/checksum",
+          "value": "df77895b7fca8442adecb44db6d5617beece6e651de76a4e26d4aace748f34a6"
+        }
+      ],
+      "expected_error": "binary64",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "finite_quantiles_must_be_monotone",
+      "base_case": "finite_calibration_artifact",
+      "mutations": [
+        {
+          "path": "/quantiles",
+          "value": [
+            {
+              "coverage": 0.9,
+              "rank": 19,
+              "values": [
+                {
+                  "status": "finite",
+                  "value": 1.9
+                }
+              ]
+            },
+            {
+              "coverage": 0.95,
+              "rank": 20,
+              "values": [
+                {
+                  "status": "finite",
+                  "value": 1.8
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "path": "/checksum",
+          "value": "21d695cb2fc966fca8e344e58c66cf2327222aa82df09de2502642b19e532c60"
+        }
+      ],
+      "expected_error": "monot",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "predictor_artifacts_must_be_sorted",
+      "base_case": "finite_calibration_artifact",
+      "mutations": [
+        {
+          "path": "/predictor_binding",
+          "value": {
+            "schema_version": 1,
+            "plan_id": "plan:fixture.execution.branch_merge",
+            "graph_fingerprint": "5ff380e69dad7b2f67725483afd8b917b3d2bcde7190c4cfa952b6c227d773d5",
+            "campaign_fingerprint": "0778413bc8e3069ef4c2148cb17a5e15ec8ffbc38ca588d2146c6d2aee713c05",
+            "controller_fingerprint": "03fce82bb64a7c1820c70146b0489d6ed649e90d922e392d6eb9309eba829897",
+            "data_bindings": [
+              {
+                "requirement_key": "branch:b0.model:ridge.x",
+                "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+                "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+                "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+                "source_ids": [
+                  "nir"
+                ]
+              },
+              {
+                "requirement_key": "branch:b1.augment:noise.x",
+                "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+                "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+                "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+                "source_ids": [
+                  "nir"
+                ]
+              },
+              {
+                "requirement_key": "merge:stack.pred_plus_original.meta:ridge.x_original",
+                "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+                "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+                "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+                "source_ids": [
+                  "nir"
+                ]
+              }
+            ],
+            "selected_variant_id": "variant:a964828b1417c6e7",
+            "selected_variant_fingerprint": "a964828b1417c6e7c1262a7ee9c670a96e14488e793edc87afbd457f8c76265e",
+            "selected_patches": [
+              {
+                "schema_version": 1,
+                "node_id": "branch:b0.model:ridge",
+                "namespace": "operator",
+                "path": [
+                  "alpha"
+                ],
+                "value": 0.1
+              },
+              {
+                "schema_version": 1,
+                "node_id": "branch:b1.model:rf",
+                "namespace": "operator",
+                "path": [
+                  "max_depth"
+                ],
+                "value": 4
+              },
+              {
+                "schema_version": 1,
+                "node_id": "branch:b1.model:rf",
+                "namespace": "operator",
+                "path": [
+                  "n_estimators"
+                ],
+                "value": 64
+              },
+              {
+                "schema_version": 1,
+                "node_id": "merge:stack.pred_plus_original.meta:ridge",
+                "namespace": "operator",
+                "path": [
+                  "alpha"
+                ],
+                "value": 0.05
+              }
+            ],
+            "artifacts": [
+              {
+                "node_id": "merge:stack.pred_plus_original.meta:ridge",
+                "controller_id": "controller:model.mock",
+                "artifact_id": "artifact:merge:stack.pred_plus_original.meta:ridge:refit",
+                "backend": "json",
+                "content_fingerprint": "e04a465664fa5d102d7345c2d7dd334fa822209438cc32e7ed07205224abb019",
+                "params_fingerprint": "e7fcc53de2b14105e7e7f5b943b3eb32811c5ac79ad70f10fee4de31137921d2",
+                "plugin": "dagml.python_process",
+                "plugin_version": "1.0.0"
+              },
+              {
+                "node_id": "branch:b1.model:rf",
+                "controller_id": "controller:model.mock",
+                "artifact_id": "artifact:branch:b1.model:rf:refit",
+                "backend": "json",
+                "content_fingerprint": "080f39410270fecb7030f29ef828f6a2b753ec69c56ecaed8dbdd01fd47b8adb",
+                "params_fingerprint": "825b0d7229d08dad92ad5f81443063e14bdeb3e03ef3ca294c81c156711b7924",
+                "plugin": "dagml.python_process",
+                "plugin_version": "1.0.0"
+              },
+              {
+                "node_id": "branch:b0.model:ridge",
+                "controller_id": "controller:model.mock",
+                "artifact_id": "artifact:branch:b0.model:ridge:refit",
+                "backend": "json",
+                "content_fingerprint": "b6ce0fe0c992ddd20c2f300917cb323003d7adadf5364d9d9b2f2e154a8e8917",
+                "params_fingerprint": "af39a185b5a846fc6bbdc703ee4a7bf3e4b7ad9a304563d6cc024a36dc6628ab",
+                "plugin": "dagml.python_process",
+                "plugin_version": "1.0.0"
+              }
+            ],
+            "output_binding": {
+              "schema_version": 1,
+              "binding_id": "output:meta.final",
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "port_name": "oof",
+              "prediction_level": "sample",
+              "unit_level": "physical_sample",
+              "prediction_kind": "regression_point",
+              "prediction_source": "final_refit",
+              "refit_strategy": "refit_one",
+              "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+              "target_names": [
+                "protein"
+              ],
+              "target_units": [
+                "percent"
+              ],
+              "class_labels": [
+                []
+              ],
+              "output_order": "target_order",
+              "target_space": "raw",
+              "binding_fingerprint": "c8d90368ab9e3a2a6ed03f729fdbda2521a42e429bd88d2334d86f6b55214c4f"
+            },
+            "target_processing_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "training_outcome_fingerprint": "7d609677433b1f5d2eeb0b77c40c21a80acfd028a6bc3e00c0322a21241c14af",
+            "training_influence_fingerprint": "cf8f6ce4dbf07b81621d4baf62fca07e218936da8a85d444a91e74e302f485dd",
+            "predictor_node_ids": [
+              "branch:b0.model:ridge",
+              "branch:b1.augment:noise",
+              "branch:b1.model:rf",
+              "merge:stack.pred_plus_original.meta:ridge"
+            ]
+          }
+        },
+        {
+          "path": "/predictor_binding_fingerprint",
+          "value": "765160badf0a16dd998839692fec947a64f32577fdba52cbd2886a9a6c5eb54d"
+        },
+        {
+          "path": "/checksum",
+          "value": "8fd4187015d82dc893ccd82804439828434791bc1bba1a5f94fd06403a00161e"
+        }
+      ],
+      "expected_error": "artifacts must be sorted",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "all_data_bindings_must_match_influence_relation",
+      "base_case": "finite_calibration_artifact",
+      "mutations": [
+        {
+          "path": "/predictor_binding",
+          "value": {
+            "schema_version": 1,
+            "plan_id": "plan:fixture.execution.branch_merge",
+            "graph_fingerprint": "5ff380e69dad7b2f67725483afd8b917b3d2bcde7190c4cfa952b6c227d773d5",
+            "campaign_fingerprint": "0778413bc8e3069ef4c2148cb17a5e15ec8ffbc38ca588d2146c6d2aee713c05",
+            "controller_fingerprint": "03fce82bb64a7c1820c70146b0489d6ed649e90d922e392d6eb9309eba829897",
+            "data_bindings": [
+              {
+                "requirement_key": "branch:b0.model:ridge.x",
+                "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+                "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+                "relation_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "source_ids": [
+                  "nir"
+                ]
+              },
+              {
+                "requirement_key": "branch:b1.augment:noise.x",
+                "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+                "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+                "relation_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "source_ids": [
+                  "nir"
+                ]
+              },
+              {
+                "requirement_key": "merge:stack.pred_plus_original.meta:ridge.x_original",
+                "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+                "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+                "relation_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "source_ids": [
+                  "nir"
+                ]
+              }
+            ],
+            "selected_variant_id": "variant:a964828b1417c6e7",
+            "selected_variant_fingerprint": "a964828b1417c6e7c1262a7ee9c670a96e14488e793edc87afbd457f8c76265e",
+            "selected_patches": [
+              {
+                "schema_version": 1,
+                "node_id": "branch:b0.model:ridge",
+                "namespace": "operator",
+                "path": [
+                  "alpha"
+                ],
+                "value": 0.1
+              },
+              {
+                "schema_version": 1,
+                "node_id": "branch:b1.model:rf",
+                "namespace": "operator",
+                "path": [
+                  "max_depth"
+                ],
+                "value": 4
+              },
+              {
+                "schema_version": 1,
+                "node_id": "branch:b1.model:rf",
+                "namespace": "operator",
+                "path": [
+                  "n_estimators"
+                ],
+                "value": 64
+              },
+              {
+                "schema_version": 1,
+                "node_id": "merge:stack.pred_plus_original.meta:ridge",
+                "namespace": "operator",
+                "path": [
+                  "alpha"
+                ],
+                "value": 0.05
+              }
+            ],
+            "artifacts": [
+              {
+                "node_id": "branch:b0.model:ridge",
+                "controller_id": "controller:model.mock",
+                "artifact_id": "artifact:branch:b0.model:ridge:refit",
+                "backend": "json",
+                "content_fingerprint": "b6ce0fe0c992ddd20c2f300917cb323003d7adadf5364d9d9b2f2e154a8e8917",
+                "params_fingerprint": "af39a185b5a846fc6bbdc703ee4a7bf3e4b7ad9a304563d6cc024a36dc6628ab",
+                "plugin": "dagml.python_process",
+                "plugin_version": "1.0.0"
+              },
+              {
+                "node_id": "branch:b1.model:rf",
+                "controller_id": "controller:model.mock",
+                "artifact_id": "artifact:branch:b1.model:rf:refit",
+                "backend": "json",
+                "content_fingerprint": "080f39410270fecb7030f29ef828f6a2b753ec69c56ecaed8dbdd01fd47b8adb",
+                "params_fingerprint": "825b0d7229d08dad92ad5f81443063e14bdeb3e03ef3ca294c81c156711b7924",
+                "plugin": "dagml.python_process",
+                "plugin_version": "1.0.0"
+              },
+              {
+                "node_id": "merge:stack.pred_plus_original.meta:ridge",
+                "controller_id": "controller:model.mock",
+                "artifact_id": "artifact:merge:stack.pred_plus_original.meta:ridge:refit",
+                "backend": "json",
+                "content_fingerprint": "e04a465664fa5d102d7345c2d7dd334fa822209438cc32e7ed07205224abb019",
+                "params_fingerprint": "e7fcc53de2b14105e7e7f5b943b3eb32811c5ac79ad70f10fee4de31137921d2",
+                "plugin": "dagml.python_process",
+                "plugin_version": "1.0.0"
+              }
+            ],
+            "output_binding": {
+              "schema_version": 1,
+              "binding_id": "output:meta.final",
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "port_name": "oof",
+              "prediction_level": "sample",
+              "unit_level": "physical_sample",
+              "prediction_kind": "regression_point",
+              "prediction_source": "final_refit",
+              "refit_strategy": "refit_one",
+              "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+              "target_names": [
+                "protein"
+              ],
+              "target_units": [
+                "percent"
+              ],
+              "class_labels": [
+                []
+              ],
+              "output_order": "target_order",
+              "target_space": "raw",
+              "binding_fingerprint": "c8d90368ab9e3a2a6ed03f729fdbda2521a42e429bd88d2334d86f6b55214c4f"
+            },
+            "target_processing_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "training_outcome_fingerprint": "7d609677433b1f5d2eeb0b77c40c21a80acfd028a6bc3e00c0322a21241c14af",
+            "training_influence_fingerprint": "cf8f6ce4dbf07b81621d4baf62fca07e218936da8a85d444a91e74e302f485dd",
+            "predictor_node_ids": [
+              "branch:b0.model:ridge",
+              "branch:b1.augment:noise",
+              "branch:b1.model:rf",
+              "merge:stack.pred_plus_original.meta:ridge"
+            ]
+          }
+        },
+        {
+          "path": "/predictor_binding_fingerprint",
+          "value": "47361b242ab10eb27fa91d1bf1035c0d61218cbfb2e288cd588491a9a9220abb"
+        },
+        {
+          "path": "/checksum",
+          "value": "c8f004c92771374164b22e697e142e425889a3bf7a1364d38428d91e80be86c9"
+        }
+      ],
+      "expected_error": "training influence",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "predictor_node_closure_cannot_omit_transform",
+      "base_case": "finite_calibration_artifact",
+      "mutations": [
+        {
+          "path": "/predictor_binding",
+          "value": {
+            "schema_version": 1,
+            "plan_id": "plan:fixture.execution.branch_merge",
+            "graph_fingerprint": "5ff380e69dad7b2f67725483afd8b917b3d2bcde7190c4cfa952b6c227d773d5",
+            "campaign_fingerprint": "0778413bc8e3069ef4c2148cb17a5e15ec8ffbc38ca588d2146c6d2aee713c05",
+            "controller_fingerprint": "03fce82bb64a7c1820c70146b0489d6ed649e90d922e392d6eb9309eba829897",
+            "data_bindings": [
+              {
+                "requirement_key": "branch:b0.model:ridge.x",
+                "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+                "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+                "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+                "source_ids": [
+                  "nir"
+                ]
+              },
+              {
+                "requirement_key": "branch:b1.augment:noise.x",
+                "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+                "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+                "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+                "source_ids": [
+                  "nir"
+                ]
+              },
+              {
+                "requirement_key": "merge:stack.pred_plus_original.meta:ridge.x_original",
+                "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+                "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+                "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+                "source_ids": [
+                  "nir"
+                ]
+              }
+            ],
+            "selected_variant_id": "variant:a964828b1417c6e7",
+            "selected_variant_fingerprint": "a964828b1417c6e7c1262a7ee9c670a96e14488e793edc87afbd457f8c76265e",
+            "selected_patches": [
+              {
+                "schema_version": 1,
+                "node_id": "branch:b0.model:ridge",
+                "namespace": "operator",
+                "path": [
+                  "alpha"
+                ],
+                "value": 0.1
+              },
+              {
+                "schema_version": 1,
+                "node_id": "branch:b1.model:rf",
+                "namespace": "operator",
+                "path": [
+                  "max_depth"
+                ],
+                "value": 4
+              },
+              {
+                "schema_version": 1,
+                "node_id": "branch:b1.model:rf",
+                "namespace": "operator",
+                "path": [
+                  "n_estimators"
+                ],
+                "value": 64
+              },
+              {
+                "schema_version": 1,
+                "node_id": "merge:stack.pred_plus_original.meta:ridge",
+                "namespace": "operator",
+                "path": [
+                  "alpha"
+                ],
+                "value": 0.05
+              }
+            ],
+            "artifacts": [
+              {
+                "node_id": "branch:b0.model:ridge",
+                "controller_id": "controller:model.mock",
+                "artifact_id": "artifact:branch:b0.model:ridge:refit",
+                "backend": "json",
+                "content_fingerprint": "b6ce0fe0c992ddd20c2f300917cb323003d7adadf5364d9d9b2f2e154a8e8917",
+                "params_fingerprint": "af39a185b5a846fc6bbdc703ee4a7bf3e4b7ad9a304563d6cc024a36dc6628ab",
+                "plugin": "dagml.python_process",
+                "plugin_version": "1.0.0"
+              },
+              {
+                "node_id": "branch:b1.model:rf",
+                "controller_id": "controller:model.mock",
+                "artifact_id": "artifact:branch:b1.model:rf:refit",
+                "backend": "json",
+                "content_fingerprint": "080f39410270fecb7030f29ef828f6a2b753ec69c56ecaed8dbdd01fd47b8adb",
+                "params_fingerprint": "825b0d7229d08dad92ad5f81443063e14bdeb3e03ef3ca294c81c156711b7924",
+                "plugin": "dagml.python_process",
+                "plugin_version": "1.0.0"
+              },
+              {
+                "node_id": "merge:stack.pred_plus_original.meta:ridge",
+                "controller_id": "controller:model.mock",
+                "artifact_id": "artifact:merge:stack.pred_plus_original.meta:ridge:refit",
+                "backend": "json",
+                "content_fingerprint": "e04a465664fa5d102d7345c2d7dd334fa822209438cc32e7ed07205224abb019",
+                "params_fingerprint": "e7fcc53de2b14105e7e7f5b943b3eb32811c5ac79ad70f10fee4de31137921d2",
+                "plugin": "dagml.python_process",
+                "plugin_version": "1.0.0"
+              }
+            ],
+            "output_binding": {
+              "schema_version": 1,
+              "binding_id": "output:meta.final",
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "port_name": "oof",
+              "prediction_level": "sample",
+              "unit_level": "physical_sample",
+              "prediction_kind": "regression_point",
+              "prediction_source": "final_refit",
+              "refit_strategy": "refit_one",
+              "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+              "target_names": [
+                "protein"
+              ],
+              "target_units": [
+                "percent"
+              ],
+              "class_labels": [
+                []
+              ],
+              "output_order": "target_order",
+              "target_space": "raw",
+              "binding_fingerprint": "c8d90368ab9e3a2a6ed03f729fdbda2521a42e429bd88d2334d86f6b55214c4f"
+            },
+            "target_processing_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "training_outcome_fingerprint": "7d609677433b1f5d2eeb0b77c40c21a80acfd028a6bc3e00c0322a21241c14af",
+            "training_influence_fingerprint": "cf8f6ce4dbf07b81621d4baf62fca07e218936da8a85d444a91e74e302f485dd",
+            "predictor_node_ids": [
+              "branch:b0.model:ridge",
+              "branch:b1.model:rf",
+              "merge:stack.pred_plus_original.meta:ridge"
+            ]
+          }
+        },
+        {
+          "path": "/predictor_binding_fingerprint",
+          "value": "abece12ac1ae5fb5262422499429a9dd9021d25a565f75643ec76c25e242c6b7"
+        },
+        {
+          "path": "/checksum",
+          "value": "e44ecedb34209dd047057928339a880b19e297a22f134277880219cae8647a94"
+        }
+      ],
+      "expected_error": "predictor closure",
+      "recompute_fingerprints": true
+    }
+  ]
+}

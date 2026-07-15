@@ -1,0 +1,15 @@
+[package]
+name = "dagml-canonical-rust-oracle"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "CECILL-2.1 OR AGPL-3.0-or-later"
+publish = false
+
+# Keep this test oracle outside the production workspace.  It is deliberately
+# compiled and exercised by the cross-language parity test only.
+[workspace]
+
+[dependencies]
+sha2 = "=0.10.9"
+unicode-normalization = "=0.1.25"

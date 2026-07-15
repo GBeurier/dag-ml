@@ -1,0 +1,724 @@
+{
+  "schema_version": 1,
+  "pack_id": "dag-ml.training-replay-contracts.v1",
+  "mode": "current",
+  "base_pack_id": "dag-ml.training-contracts.v1",
+  "base_pack_sha256": "58ff492b09b2a33e45646e6568c5f8e6c56115b34914f5eebbd51c4e29938434",
+  "base_pack_checksum": "9caeeaba05b7312ab77f9b192f58a848d9ae0f716f81a03c455d451875897fbb",
+  "base_pack_mode": "current",
+  "hash_algorithm": "sha256-file-bytes",
+  "canonical_profile": "DAG-ML TCV1",
+  "artifacts": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "3a14788da7ee58d2f91ac056cd9b24903ed47ead96ff1a1b007ef7d3fa96e75f",
+      "kind": "base_ci_gate"
+    },
+    {
+      "path": ".github/workflows/training-replay-contracts.yml",
+      "sha256": "c08340618669dcda8e6a0c042d9640cabe8d952f43265b63fe866c74d7795cb9",
+      "kind": "ci_gate"
+    },
+    {
+      "path": "crates/dag-ml-capi/include/dag_ml.h",
+      "sha256": "8a047091ec381258d69e7511c7f219047a01f6e785e6ace3bfb2984dea940787",
+      "kind": "base_c_abi_header"
+    },
+    {
+      "path": "crates/dag-ml-capi/src/lib.rs",
+      "sha256": "013f4636d86a1e74ef7064499ceac574e10530a6dcddd40926b0c70fe1d6a181",
+      "kind": "base_c_training_binding"
+    },
+    {
+      "path": "crates/dag-ml-capi/tests/c_conformance.rs",
+      "sha256": "b734f1c8a6b5ed1c5479ae7c8df60b5c8aff1ed7620f19eb75a1b37767f19f49",
+      "kind": "base_c_binding_test"
+    },
+    {
+      "path": "crates/dag-ml-capi/tests/training_execute.rs",
+      "sha256": "07c0160d98dcc99eeb62de8e0eb4832b3e16ea7c443e3bb00e676d3ffd7356f4",
+      "kind": "base_c_training_test"
+    },
+    {
+      "path": "crates/dag-ml-cli/tests/training_contracts.rs",
+      "sha256": "07baad83791521de0f3a5d9dc925d32ae0339939d768e73770068ba5035144da",
+      "kind": "base_binding_test"
+    },
+    {
+      "path": "crates/dag-ml-core/src/aggregation.rs",
+      "sha256": "2ab69599ec4b837783762219eda0cdea8137795be16aaa82847d246fd192a615",
+      "kind": "base_typed_cache_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/bundle.rs",
+      "sha256": "4e19d9aab6464c305eb7c0c57943e36bac19db882d33c0f9237c4279df598269",
+      "kind": "base_native_bundle_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/src/campaign.rs",
+      "sha256": "fa9ae9def1b15ac7ae3e738b6f399adb1e889103cee0334ae33efc63354fb9b6",
+      "kind": "base_historical_fingerprint_source"
+    },
+    {
+      "path": "crates/dag-ml-core/src/canonical.rs",
+      "sha256": "4234891277fa4d85e898659caa2234d585367b80720261377010f173f9134348",
+      "kind": "base_native_canonical_fingerprint"
+    },
+    {
+      "path": "crates/dag-ml-core/src/controller.rs",
+      "sha256": "bfbfad01e16c6ee6da5ae8bba10def916c7c85b849c5e45517e7dd56f8725812",
+      "kind": "base_typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/data.rs",
+      "sha256": "f02ba993fdf2ebba5090fb163f0adac04c9d040512474ea02385923b1e1bfca0",
+      "kind": "base_typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/fold.rs",
+      "sha256": "81f1fdc2a3271ed20ca5ecf94a7a3ea6796743854ede5a8e3feea80d1f26cf91",
+      "kind": "base_typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/generation.rs",
+      "sha256": "aa4945a83fc4ce7601f6a4914a7b6933cd9af5be8d5f56ed41515a1f296f2eb9",
+      "kind": "base_typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/graph.rs",
+      "sha256": "9d931cd06c33d9c22eebf77c0e5cd108c2847fac51720ffb4b7c0a9e1cfe58dd",
+      "kind": "base_typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/ids.rs",
+      "sha256": "be6db93243a1b49f16fbeece86bc21d01ff34ac5c667638761471da242970d9d",
+      "kind": "base_typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/lib.rs",
+      "sha256": "74b34eb5ac45331dd0c2ab465ac1d20b47ddbb3d3619c50521c0b5c64c1e2c65",
+      "kind": "training_replay_public_export"
+    },
+    {
+      "path": "crates/dag-ml-core/src/metrics.rs",
+      "sha256": "deb1c458c2d0bd69b15badcec28b2f94f294e12d37fec7883dcc47057f3fb657",
+      "kind": "base_typed_cache_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/oof.rs",
+      "sha256": "024c952917fe7e5e37c685c8f359bc3ad058b0189dd30aa5504f9edab3c4588b",
+      "kind": "base_typed_cache_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/phase.rs",
+      "sha256": "e65433e29903bd0c2a7a8af45ec1f3f6e62549810e36f444aefe7bad4804c45d",
+      "kind": "base_typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/plan.rs",
+      "sha256": "5fd18d73f47ea4a9d732983e6f6754d0557d3a57bd9e5d07608db005276aab26",
+      "kind": "base_native_plan_validator"
+    },
+    {
+      "path": "crates/dag-ml-core/src/policy.rs",
+      "sha256": "9012884b501e3a5d2f8b4f9bdebee108b28bd6d44724c5f8b191b5aee2d25678",
+      "kind": "base_typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/relation.rs",
+      "sha256": "8f5bad4f7636696754d07b23d3520d04e9f96ecfb69f3fe67af487d6802a15be",
+      "kind": "base_typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/replay.rs",
+      "sha256": "764f2c25d123562ed1de514c3efcaf654e36f7d9dbe241675291c0da453e4ae7",
+      "kind": "training_replay_core_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/src/runtime/artifact.rs",
+      "sha256": "5d3d6c138043b7cf45b258740b17085354bf3178c1a210d6d79a8988dbe26e46",
+      "kind": "base_typed_runtime_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/runtime/task.rs",
+      "sha256": "e2b5716747c9d13222681710c3fbc787570a1a47527f893009b6530d0ddb41ef",
+      "kind": "base_typed_runtime_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/selection.rs",
+      "sha256": "110df9073acee79fba779e361df9b05bd57a011f724b200b0e97e10e9f9c3987",
+      "kind": "base_typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/training.rs",
+      "sha256": "160c4bbf92cc85d94ad2f994bb0ceabd4ae1c5bcf706f7bbbcb000c6389d6eb6",
+      "kind": "base_native_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/src/training_runtime.rs",
+      "sha256": "cf29fb4a1a57c21916ac7288e8fb5c0597a50f2f7be4aa9725cd3e92c4fbff62",
+      "kind": "base_native_runtime_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
+      "sha256": "94570085a94c4900f2c77d727443b98bdaa0525745d41f7792ce98997099d5db",
+      "kind": "base_native_integration_test"
+    },
+    {
+      "path": "crates/dag-ml-py/README.md",
+      "sha256": "3669971da59b96c33e6374534a73cf12aea2e3a65ddcf3b3891a86615f6b12b9",
+      "kind": "base_python_binding_documentation"
+    },
+    {
+      "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
+      "sha256": "538edc425f3b95c3d58abab6b7bb1d87af98a6474f4e150aa21bad2ddde87949",
+      "kind": "base_python_facade"
+    },
+    {
+      "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
+      "sha256": "a05f4641ec6e8c00000644f58a4fd86f1f5bce46385f53aa4846ee8b65042d2f",
+      "kind": "base_python_typing"
+    },
+    {
+      "path": "crates/dag-ml-py/src/in_process.rs",
+      "sha256": "c47a74c16c7510d69809ef017cef7091897912f578214d481db2d6674cd8db6c",
+      "kind": "base_python_controller_bridge"
+    },
+    {
+      "path": "crates/dag-ml-py/src/lib.rs",
+      "sha256": "32d8979e860e144361a0ef74101e0d7e1c50361e002b3197aca5fe5e8fc1d55c",
+      "kind": "base_python_binding"
+    },
+    {
+      "path": "crates/dag-ml-py/src/training.rs",
+      "sha256": "35b1e46fa2b19532539a587e4c5f70499e4489a7d201de17a977a5c4a5c89fd0",
+      "kind": "base_python_training_binding"
+    },
+    {
+      "path": "crates/dag-ml-py/tests/test_training_result.py",
+      "sha256": "41d9575748f454cab0ed7e9e0c6ca823f07ba2d372e6be620b1eb095c7188e7c",
+      "kind": "base_python_binding_test"
+    },
+    {
+      "path": "crates/dag-ml-wasm/src/lib.rs",
+      "sha256": "b52b213a3f0983dd6ee7a1bf6b66311267f35b874e912807bec8f4ec11f1c851",
+      "kind": "base_wasm_binding"
+    },
+    {
+      "path": "docs/TRAINING_CONTRACTS.md",
+      "sha256": "92a9a79c2a66daf44e322951e21ba5ffaa36265ab3ff855f192f27ccc1c3785e",
+      "kind": "base_documentation"
+    },
+    {
+      "path": "docs/TRAINING_REPLAY_CONTRACTS.md",
+      "sha256": "3babe5eb4b02ffbbe807ceab7bffca4a87303fd011af364a0464420830d81e05",
+      "kind": "documentation"
+    },
+    {
+      "path": "docs/adr/ADR-21-forward-replay-ownership.md",
+      "sha256": "d049d3724d0670ae886f7bfc962a015d16da30fb16a834f885bb8084e9144071",
+      "kind": "architecture_decision"
+    },
+    {
+      "path": "docs/adr/README.md",
+      "sha256": "8e33dc16db615f65a7f932a82cd4c0a0d30a8e295597d4023d419e4a2c41032e",
+      "kind": "documentation_index"
+    },
+    {
+      "path": "docs/contracts/README.md",
+      "sha256": "00280a1adba9ef380d9fea7356027b3c3e7c2c9ee5bc587bc991562ffe3069fc",
+      "kind": "base_contract_index_documentation"
+    },
+    {
+      "path": "docs/contracts/abi_snapshot.v1.json",
+      "sha256": "2135478ce00b026b0de9244fe3a474ccbc594ed7136c35de0f0356ff60270cb4",
+      "kind": "base_c_abi_snapshot"
+    },
+    {
+      "path": "docs/contracts/aggregation_controller_result.schema.json",
+      "sha256": "e782d57c2bff01031ab4cf453b362afab5bf25e1e83eac5cf65ef463347045ff",
+      "kind": "legacy_schema_authority"
+    },
+    {
+      "path": "docs/contracts/aggregation_controller_result.v2.schema.json",
+      "sha256": "64bde5142610a729e6c3546ea21b8afffadff51438022266670acdf087d5cdd8",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/aggregation_controller_task.schema.json",
+      "sha256": "2b12131727f5e3a355b0c6b5e402f6075c37cf5ed3e7a186c9e0890da5583ccd",
+      "kind": "legacy_schema_authority"
+    },
+    {
+      "path": "docs/contracts/aggregation_controller_task.v2.schema.json",
+      "sha256": "3e8741f96cf697597940497961fa221939d3b80fb01372da7687dd4b3ff854f8",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/bound_training_output.v2.schema.json",
+      "sha256": "4f63a8dd9c3a769c4461b0c18b96956bd37ea9ca499803a7e095b7de0f3d0977",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/cache_namespace.schema.json",
+      "sha256": "29e01f2c69ba03b51d289b5f7e158482403a7ceebe6f79a24c9fe4d5b7986ebc",
+      "kind": "base_schema"
+    },
+    {
+      "path": "docs/contracts/campaign_spec.schema.json",
+      "sha256": "3f40f734122b842da1c0ee8e2e0ddace9e58f02cdfcd2cf631cda13ffa4aa869",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/controller_manifest.schema.json",
+      "sha256": "e2af2cf1203655e11bf28555a5288cc162aa158c3e194967570e1082bf788f58",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/coordinator_data_plan_envelope.schema.json",
+      "sha256": "e7e6cbac57a4eb583377351a809f55aad50b6fa3856adfb9bd8960c43f898001",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/execution_bundle.schema.json",
+      "sha256": "3a0f66ee65c27a35809e2e8ce485c368c7f5042e55c100502e531ba83a1761bf",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/execution_bundle.v2.schema.json",
+      "sha256": "eb2d457b456be27b98a117b687fabd95b8af8612fe193bd81e75252f412b314a",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/execution_plan.schema.json",
+      "sha256": "f56e7e65ebe6c328728c719d09f4b2266d707e7e4680ac91ceb7bd2ee7ebdf60",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/graph_spec.schema.json",
+      "sha256": "fbe8ee5ab1c7c5692c259bc007cbaf4067970bac309be3daf8a7a88768fa4168",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/node_result.schema.json",
+      "sha256": "6fb4a3856e3ec070b5bb49511ce10b4c21273cd030ecad04719248a5ce98686f",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/node_result.v2.schema.json",
+      "sha256": "7e2211cb807304e5e5fdd2b65acbd4ec206c29d6c42de0bd382edcc11f5d92fc",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/node_task.schema.json",
+      "sha256": "61a0969d5c4ea6c06f032220f4b081a49ad10492c094d637731e1af5ba267be3",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/output_binding.schema.json",
+      "sha256": "5b3cf6c841ff0d2b8fc36cdd61240f63a12f507f2721e02322a159b6217cfbc2",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/parameter_patch.schema.json",
+      "sha256": "6e1a62e7fe25b68c577d59f6de6940f1924b30e0f539c86c47aad88f4d1bda0e",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/parameter_projection.schema.json",
+      "sha256": "94bee2fcdd73ad889fd4346875b256b13cf107cb15a92c191f6ac1c506421ea4",
+      "kind": "base_schema"
+    },
+    {
+      "path": "docs/contracts/portable_predictor_package.schema.json",
+      "sha256": "b404a74aaa263fe8322d2cad24bd826168f1a447a3c58c0f0f39f741a3bb1777",
+      "kind": "base_schema"
+    },
+    {
+      "path": "docs/contracts/prediction_cache_payload_set.schema.json",
+      "sha256": "d4147d75da2ce3354d17f58b01687bb1f3dc421290805bb673c039a73b71ac2e",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/prediction_cache_payload_set.v2.schema.json",
+      "sha256": "fd3881536ce5a4c241f7c8234cf9680b1fca08e538db1ffa801f1e6df0b6ed64",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/process_adapter_frame.schema.json",
+      "sha256": "024ee268eca668479acc1e0ddf979247fb1214f5022373ce36f85e55bf9499f3",
+      "kind": "legacy_schema_authority"
+    },
+    {
+      "path": "docs/contracts/process_adapter_frame.v2.schema.json",
+      "sha256": "614fd9f8f3b0b3bb95bbb30d3b50c9371493b0afc240bf4027f3d8d40db9d6a2",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/replay_outcome.schema.json",
+      "sha256": "c57279e8c76e4e2467af0eca5eb59804a2f7bb97bec6cce9d8b23975f223c36a",
+      "kind": "legacy_schema_context"
+    },
+    {
+      "path": "docs/contracts/score_set.schema.json",
+      "sha256": "b0122078a2812760688e71be449e7492c1ae9dd38d8aeb51211bc51eb1e87622",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/score_set.v2.schema.json",
+      "sha256": "b6b7fb3167cbd7548d652e2fe7765c3cd00c5cbb2e181ceb2d036d28a97c3e39",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/selection_decision.schema.json",
+      "sha256": "7f1d955a2dda4111c86cc76d196ae3fb81dc82304e7b8a0238c43334b0bd133b",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/selection_policy.schema.json",
+      "sha256": "a6196da912f5775ddd319698649adf04f7e91406f504a8669c8c3d5c2caf99e4",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/training_contract_conformance_pack.v1.json",
+      "sha256": "58ff492b09b2a33e45646e6568c5f8e6c56115b34914f5eebbd51c4e29938434",
+      "kind": "base_conformance_pack"
+    },
+    {
+      "path": "docs/contracts/training_influence_manifest.schema.json",
+      "sha256": "79cb45a4c1cc79a1ecd74b9bcd23f6a69dd8f9d6dd03675f6339a3c9574bdfbf",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/training_outcome.schema.json",
+      "sha256": "cf9223520d6aa089beaf661934a520f65fcda6c882a9ff99c250a83bd3efe2eb",
+      "kind": "base_schema_dependency"
+    },
+    {
+      "path": "docs/contracts/training_outcome.v2.schema.json",
+      "sha256": "3c0ba1159367a1110bc367eb5b495f9f07a618f235a1cedcdc8a180b20efd205",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/training_replay_outcome.schema.json",
+      "sha256": "dacf6bd9a9cfefd11c018c72cffe46cddc57cea8141d0888c67440667bb9deae",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/training_replay_request.schema.json",
+      "sha256": "74bfb8acbdfa2fa4dd98efc940c9d6ef993ab0d82ff49549613d3e4ecffe1e1e",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/training_request.schema.json",
+      "sha256": "363ee1009772115b84d11b9e3b9db37ef00d5255958e097b9d8b24349b6be6a9",
+      "kind": "base_schema"
+    },
+    {
+      "path": "docs/index.md",
+      "sha256": "a720e94be335d122b0ce197b1359ad26af8c991806482b0a474371176f0bcd35",
+      "kind": "documentation_index"
+    },
+    {
+      "path": "examples/fixtures/estimator/replay_outcome_class_probability.v1.json",
+      "sha256": "2bcb925b79f1766515c924697f7b5ff62ede396e10095e183a14baefdd622329",
+      "kind": "legacy_fixture"
+    },
+    {
+      "path": "examples/fixtures/estimator/replay_outcome_explain.v1.json",
+      "sha256": "fe593f9bdd89ecfcffdb224435b0ce842f5a492a7b8045657ba22bfc63185db7",
+      "kind": "legacy_fixture"
+    },
+    {
+      "path": "examples/fixtures/estimator/replay_outcome_predict.v1.json",
+      "sha256": "037fad7f3cb907f3474cce4f51526538f2c4d6fcad3af93a320c6d282ce470c5",
+      "kind": "legacy_fixture"
+    },
+    {
+      "path": "examples/fixtures/estimator/training_outcome_no_refit.v1.json",
+      "sha256": "45657124b51bdab72201a3b1e482cea25c5e2d6364da63185d7b0c4142c78a71",
+      "kind": "base_source_fixture"
+    },
+    {
+      "path": "examples/fixtures/estimator/training_outcome_refit.v1.json",
+      "sha256": "eefeb752d8d4484a253abef038fabbefcf481c5a31f5ac32388b8120e14c7999",
+      "kind": "base_source_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/cache_namespace_fit_cv.v1.json",
+      "sha256": "b54c2fc4d0072727b4c9bf384cdef7b8bfe0696bcf6181324df3ecf856021e48",
+      "kind": "base_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/negative_cases.v1.json",
+      "sha256": "9983d12eee7d9e54769a5e36804c1ea6cafefb798ed463da8bc833a1d66709df",
+      "kind": "base_negative_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/parameter_projection_empty.v1.json",
+      "sha256": "87e1e58daf368d0708bb08d1798d35ea5a971f4a6462d38a86637a6e218978b9",
+      "kind": "base_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/portable_predictor_package.v1.json",
+      "sha256": "b234667c20456f8ca38c261a11a624890227a4fb4607046424f3b5fa03809d1b",
+      "kind": "base_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/python_training_multiport_smoke.v1.json",
+      "sha256": "e71d9d74839793001ca591bc1f3c34073033aca351a711f1f683a0eea13612d0",
+      "kind": "base_binding_smoke_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/python_training_smoke.v1.json",
+      "sha256": "efd1fec788ec07bcff14d2f8aa3ad19601ffb45feff4276d4b5542a89b33e20b",
+      "kind": "base_binding_smoke_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_outcome_port_explicit.v2.json",
+      "sha256": "471a79fd377fc0456c75d6f8dfa997d778cf165257974c143dccc7afb4f0da49",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_port_explicit_protocols.v2.json",
+      "sha256": "b840f936eae177cca4bf45d7d1aa7973ba9bd831b3f625e851f03a7d30b94b06",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_input_envelopes.v1.json",
+      "sha256": "c3ae7fd46b50cf2e8ffef3191283ea19c547add47c21560e4374cd9f8056c67e",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_multi_port_outputs.v1.json",
+      "sha256": "afd7fb720d69fdb4007f86cbb12f5af5a3b1827949fa5e45e14d779181634eb8",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_negative_cases.v1.json",
+      "sha256": "ee010d57d99362f02820aea3badc265c41d234502e00b9094a47064144a0432d",
+      "kind": "negative_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_outcome_explain.v1.json",
+      "sha256": "fd71b3114f21179c7436a3741628d4b9a30328e574fe004e53f773f8774440d9",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_outcome_explain_only.v1.json",
+      "sha256": "cb27f21199852d7bfa0c047bf446e640286092cae576053906bb46f23875c331",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_outcome_predict.v1.json",
+      "sha256": "7fcbdda96cfe4cd23f8efac43aab62cf5d470408eb855197ce78d625af87d83d",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_output_class_label.v1.json",
+      "sha256": "481c3eb5d7954d49523038020c77e9525ef4ddf7d58b4a2c39781d16bb30c000",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_output_class_probability.v1.json",
+      "sha256": "70257518da9f62614b1d93681d2af22b044c86de60d07658a99da38fa5694ea0",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_output_observation.v1.json",
+      "sha256": "ff09a8fc962a1995240865400f45cdf06fd2eb82327e3fdfa8256126d414d906",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_request_explain.v1.json",
+      "sha256": "df490ac00665626d1ac13706dc4fa483a6d243c6d9e93fcd5b7867462f2b659b",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_request_predict.v1.json",
+      "sha256": "e10a56bf89f7c1f16dac45562e11db0573a9c94f34a751512baafba0ce8c0b58",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/replay/training_replay_source_outcome_explain.v1.json",
+      "sha256": "54596fb9983f9a36510011155cde7bc2ec1ce7df4f7cacac6a5b15e89d6e7594",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/training_outcome_refit.v1.json",
+      "sha256": "db828b49d8776230fbc05986a90ecc5924c3b3d817f50a26d4ff5dda2c11ed7e",
+      "kind": "base_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/training_request_active_influence.v1.json",
+      "sha256": "d553a2f9062de4a66f9a02cf056c57cf9ec826d6f794c7b9673cc6351b9b6cdf",
+      "kind": "base_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/training_request_no_refit.v1.json",
+      "sha256": "806342929af822ada8d90b7cc45d35e7b93fd2cf34276f52e2568fcebfad533a",
+      "kind": "base_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/training_request_package_refit.v1.json",
+      "sha256": "5cebfabdd0f2d2def6aeda9443eaca79c232027af0d20464b5e874175b908fc1",
+      "kind": "base_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/training_request_refit.v1.json",
+      "sha256": "5fb8c37b56a8f966f5b0b03977680e97b3892984c4edc885c634c94b2c97ffe1",
+      "kind": "base_fixture"
+    },
+    {
+      "path": "parity/conformal/generate_fixtures.py",
+      "sha256": "11c4e8267534c9b444ffd1ec38c5534d98c4fea0d86d2da1ed2698ed897e914e",
+      "kind": "base_generator_dependency"
+    },
+    {
+      "path": "parity/conformal/oracle.py",
+      "sha256": "1ef8c122df82c889bbce8dd3f4c2ff9d9b34af0251bb34e0b0566e4d445964cc",
+      "kind": "base_tcv1_oracle_dependency"
+    },
+    {
+      "path": "parity/schema_dependencies.py",
+      "sha256": "066d4e64dea2c314e0a1ef00b7e0da317ff49f2e9543e0172ad3741338669a5e",
+      "kind": "base_schema_dependency_resolver"
+    },
+    {
+      "path": "parity/training/generate_fixtures.py",
+      "sha256": "619557a9be09e0541f46b28f951449539cd79751365ea368bace5e62b76f4e90",
+      "kind": "base_generator"
+    },
+    {
+      "path": "parity/training/generate_training_replay_fixtures.py",
+      "sha256": "dffd5a0b3d3852e9d46224fa019109ece0d31fb4e00cedf19b6b410f084f4e43",
+      "kind": "generator"
+    },
+    {
+      "path": "parity/training/oracle.py",
+      "sha256": "0404b2e1528fe3af749035dbca5bdc0cb1ceed12a233fc8531c8d3ce9c2899fb",
+      "kind": "base_test_oracle"
+    },
+    {
+      "path": "parity/training/tests/test_training_contracts.py",
+      "sha256": "03ce612e6e88fb1c5c2cd974c22f6c9322c4b158cae3021b7c65e586eaf84426",
+      "kind": "base_test"
+    },
+    {
+      "path": "parity/training/tests/test_training_replay_contracts.py",
+      "sha256": "33e2c825c3b98664e2162364d1b0131360e61d6615c464b10fad24a5daaf101e",
+      "kind": "test"
+    },
+    {
+      "path": "parity/training/training_replay_oracle.py",
+      "sha256": "77e81471b6ac9498ef7a27d834004012ae9467ad7a0331b1d9afaa07ee1c56ef",
+      "kind": "test_oracle"
+    },
+    {
+      "path": "scripts/check_so_freshness.py",
+      "sha256": "5f67b45f39dbed5cbef27e016f13386d8007f0bee89679db0e6b37d9ff988663",
+      "kind": "base_python_extension_freshness_gate"
+    },
+    {
+      "path": "scripts/requirements-contracts.txt",
+      "sha256": "0fb73079389a87c2c5181e04fbba11949b8be3b6a536de59cce33c54b2f1089d",
+      "kind": "ci_dependency"
+    },
+    {
+      "path": "scripts/smoke_python_bindings.py",
+      "sha256": "3d419748694c1a6a4200fb4ef0421dcc294859c44dbe6a896ec762828bb72789",
+      "kind": "base_binding_smoke"
+    },
+    {
+      "path": "scripts/validate_abi_snapshot.py",
+      "sha256": "9294b2fb8c2c7ddda7dbdb0a9a061171cc2d388d7a14147e95abc1156cc92bf0",
+      "kind": "base_c_abi_gate"
+    },
+    {
+      "path": "scripts/validate_contracts.py",
+      "sha256": "10f723ad684acfb387f4df76ac15881983bd7be64ec212f6e80f70b76c948bd5",
+      "kind": "base_production_validator"
+    },
+    {
+      "path": "scripts/validate_training_replay_contracts.py",
+      "sha256": "d185da3e0bb42ccb6ec24e4556e8c51f58321a44ca3ddccee4cb13313e9108aa",
+      "kind": "production_validator"
+    }
+  ],
+  "positive_fixture_ids": [
+    "training_outcome_port_explicit.v2",
+    "training_port_explicit_protocols.v2",
+    "training_replay_input_envelopes.v1",
+    "training_replay_multi_port_outputs.v1",
+    "training_replay_outcome_explain.v1",
+    "training_replay_outcome_explain_only.v1",
+    "training_replay_outcome_predict.v1",
+    "training_replay_output_class_label.v1",
+    "training_replay_output_class_probability.v1",
+    "training_replay_output_observation.v1",
+    "training_replay_request_explain.v1",
+    "training_replay_request_predict.v1",
+    "training_replay_source_outcome_explain.v1"
+  ],
+  "negative_case_ids": [
+    "d4_replay_request_refit_is_not_public",
+    "d4_replay_request_unknown_phase",
+    "d4_replay_request_unsorted_envelope_keys",
+    "d4_replay_request_source_transplant",
+    "d4_replay_request_empty_output_binding_ids",
+    "d4_replay_request_duplicate_output_binding_ids",
+    "d4_replay_request_unsorted_output_binding_ids",
+    "d4_replay_request_unknown_output_binding_id",
+    "d4_replay_outcome_source_ref_transplant",
+    "d4_replay_outcome_request_transplant",
+    "d4_replay_outcome_schema_rebinding_forbidden",
+    "d4_replay_outcome_cache_store_forbidden",
+    "d4_replay_outcome_unknown_producer_port",
+    "d4_replay_outcome_missing_v2_producer_port",
+    "d4_replay_outcome_rejects_legacy_bound_output",
+    "d4_replay_outcome_aggregation_transplant",
+    "d4_replay_outcome_non_final_partition",
+    "d4_replay_outcome_non_null_fold",
+    "d4_replay_outcome_duplicate_aggregated_unit",
+    "d4_replay_outcome_duplicate_sample_across_blocks",
+    "d4_replay_outcome_alien_sample",
+    "d4_replay_outcome_wrong_lineage_controller",
+    "d4_replay_outcome_invalid_data_shape_fingerprint",
+    "d4_replay_outcome_lineage_plugin_version_requires_plugin",
+    "d4_replay_outcome_empty_lineage_metric_key",
+    "d4_replay_outcome_observation_count_drift",
+    "d4_replay_outcome_result_count_drift",
+    "d4_replay_outcome_lineage_count_drift",
+    "d4_replay_outcome_prediction_count_drift",
+    "d4_replay_outcome_controller_count_drift",
+    "d4_replay_outcome_requested_binding_absent",
+    "d4_replay_outcome_duplicate_binding",
+    "d4_replay_outcome_unsorted_bindings",
+    "d4_replay_outcome_unsorted_warnings",
+    "d4_replay_outcome_blank_warning",
+    "d4_replay_outcome_nested_diagnostics",
+    "d4_replay_explanation_unknown_target",
+    "d4_replay_explanation_blank_method",
+    "d4_replay_explanation_raw_feature_payload",
+    "d4_replay_envelopes_missing_key",
+    "d4_replay_envelopes_extra_key",
+    "d4_replay_envelopes_stale_relation",
+    "d4_replay_envelopes_plan_rebinding",
+    "d4_replay_envelopes_feature_set_rebinding",
+    "d4_replay_envelopes_missing_feature_set_id",
+    "d4_replay_relations_sample_multiple_targets",
+    "d4_replay_relations_combo_self_component",
+    "d4_replay_relations_invalid_identifier",
+    "d4_replay_probability_outside_unit_interval",
+    "d4_replay_probability_not_on_simplex",
+    "d4_replay_class_label_negative_index",
+    "d4_replay_class_label_out_of_vocabulary",
+    "d4_replay_class_label_fractional_index",
+    "d4_replay_observation_binding_requires_observation_predictions",
+    "d4_replay_legacy_port_omission_ambiguous",
+    "d4_replay_legacy_port_omission_zero_prediction_ports",
+    "d4_replay_legacy_wrapper_rejects_explicit_port",
+    "d4_score_set_v2_duplicate_port_aware_key"
+  ],
+  "pack_checksum": "0c8fdd7f7cb8c68a0a354f74c0c079ac6441fc15d105a4c0d3c42b34ffe00f4d"
+}

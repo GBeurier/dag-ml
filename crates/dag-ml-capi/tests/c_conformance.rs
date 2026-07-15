@@ -2377,6 +2377,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
         seed: Some(42),
     };
     let result = NodeResult {
+        schema_version: None,
         node_id: node_id.clone(),
         outputs: BTreeMap::from([(
             "out".to_string(),
@@ -2719,5 +2720,199 @@ fn find_named_dynamic_library(target_debug: &Path, crate_name: &str) -> PathBuf 
         "could not locate dynamic C ABI library `{}` under {}",
         library_name,
         target_debug.display()
+    );
+}
+
+const C_TRAINING_EXECUTE_PREFLIGHT_SOURCE: &str = r#"
+#include "dag_ml.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int g_invoked = 0;
+static int g_controller_destroyed = 0;
+
+static DagMlBytesView bytes_view(const char *text) {
+    DagMlBytesView view = { (const uint8_t *)text, strlen(text) };
+    return view;
+}
+
+static DagMlStatusCode controller_invoke(void *user_data, DagMlBytesView task_json, DagMlOwnedBytes *out_json) {
+    (void)user_data;
+    (void)task_json;
+    (void)out_json;
+    g_invoked += 1;
+    return 2; /* VALIDATION_ERROR: must never be reached before the preflight refusal */
+}
+
+static void controller_release_bytes(void *user_data, DagMlOwnedBytes bytes) {
+    (void)user_data;
+    (void)bytes;
+}
+
+static void controller_release(void *user_data, DagMlHandle handle) {
+    (void)user_data;
+    (void)handle;
+}
+
+static void controller_destroy(void *user_data) {
+    (void)user_data;
+    g_controller_destroyed += 1;
+}
+
+static DagMlStatusCode data_materialize(void *user_data, DagMlHandle dataset, DagMlBytesView request_json, DagMlHandle *out_handle) {
+    (void)user_data;
+    (void)dataset;
+    (void)request_json;
+    *out_handle = 1;
+    return 0;
+}
+
+static DagMlStatusCode data_make_view(void *user_data, DagMlHandle data, DagMlBytesView selector_json, DagMlHandle *out_view) {
+    (void)user_data;
+    (void)data;
+    (void)selector_json;
+    *out_view = 2;
+    return 0;
+}
+
+int main(void) {
+    DagMlControllerVTable controller;
+    memset(&controller, 0, sizeof(controller));
+    controller.abi_version = 3u; /* owned: user_data is destroyed by the call */
+    controller.user_data = NULL;
+    controller.invoke = controller_invoke;
+    controller.release_bytes = controller_release_bytes;
+    controller.release = controller_release;
+    controller.destroy = controller_destroy;
+
+    DagMlControllerBinding binding;
+    binding.controller_id = bytes_view("controller:model.mock");
+    binding.vtable = controller;
+
+    DagMlDataVTable data;
+    memset(&data, 0, sizeof(data));
+    data.abi_version = DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION;
+    data.user_data = NULL;
+    data.materialize = data_materialize;
+    data.make_view = data_make_view;
+
+    DagMlTrainingExecuteRequest request;
+    memset(&request, 0, sizeof(request));
+    request.request_json = bytes_view("{}"); /* not a self-signed TrainingRequest */
+    request.outcome_id = bytes_view("outcome:c.native");
+    request.run_id = bytes_view("run:c.native");
+    request.bundle_id = bytes_view("bundle:c.native");
+    request.relations_json = bytes_view("{\"records\":[]}");
+    request.influence_json = bytes_view("{}");
+    request.envelopes_json = bytes_view("{}");
+    /* warnings_json / diagnostics_json left NULL: treated as empty defaults */
+    request.dataset = 1;
+    request.data_provider = data;
+    request.data_owner_controller_id = bytes_view("controller:model.mock");
+    request.controller_bindings = &binding;
+    request.controller_binding_count = 1;
+
+    DagMlTrainingResult *result = (DagMlTrainingResult *)0xdeadbeef; /* poisoned */
+    DagMlString error;
+    memset(&error, 0, sizeof(error));
+
+    DagMlStatusCode status = dagml_training_execute(&request, &result, &error);
+    if (status == 0) {
+        fprintf(stderr, "expected a failure for an invalid training request\n");
+        return 2;
+    }
+    if (result != NULL) {
+        fprintf(stderr, "out_result must be NULL on failure\n");
+        return 2;
+    }
+    if (g_invoked != 0) {
+        fprintf(stderr, "controller callback fired before the preflight refusal\n");
+        return 2;
+    }
+    if (g_controller_destroyed != 1) {
+        fprintf(stderr, "owned controller destroyed %d time(s), expected exactly 1\n", g_controller_destroyed);
+        return 2;
+    }
+    dagml_string_free(error);
+
+    /* Freeing NULL is a no-op; the getter rejects NULL with INVALID_ARGUMENT. */
+    dagml_training_result_free(NULL);
+    DagMlOwnedBytes out_json;
+    memset(&out_json, 0, sizeof(out_json));
+    DagMlString getter_error;
+    memset(&getter_error, 0, sizeof(getter_error));
+    DagMlStatusCode getter_status = dagml_training_result_outcome_json(NULL, &out_json, &getter_error);
+    if (getter_status != 1) {
+        fprintf(stderr, "outcome getter should reject NULL with INVALID_ARGUMENT\n");
+        return 2;
+    }
+    if (out_json.ptr != NULL) {
+        fprintf(stderr, "outcome getter must not allocate on a NULL result\n");
+        return 2;
+    }
+    dagml_string_free(getter_error);
+
+    return 0;
+}
+"#;
+
+#[test]
+fn c_program_refuses_native_training_before_callbacks_against_c_abi() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target_debug = std::env::current_exe()
+        .expect("current test exe path")
+        .parent()
+        .and_then(Path::parent)
+        .expect("test exe lives under target/debug/deps")
+        .to_path_buf();
+    let dynamic_lib = find_dynamic_library(&target_debug);
+    let dynamic_lib_dir = dynamic_lib
+        .parent()
+        .expect("dynamic library has parent directory")
+        .to_path_buf();
+    let temp = std::env::temp_dir().join(format!(
+        "dag_ml_training_execute_conformance_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&temp).expect("create training-execute conformance temp dir");
+
+    let c_path = temp.join("training_execute.c");
+    let exe_path = temp.join("training_execute");
+    fs::write(&c_path, C_TRAINING_EXECUTE_PREFLIGHT_SOURCE)
+        .expect("write training-execute C conformance source");
+
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let mut compile = Command::new(cc);
+    compile
+        .arg("-std=c11")
+        .arg(&c_path)
+        .arg("-I")
+        .arg(manifest_dir.join("include"))
+        .arg(&dynamic_lib)
+        .arg("-o")
+        .arg(&exe_path);
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
+        compile.arg(format!("-Wl,-rpath,{}", dynamic_lib_dir.display()));
+    }
+    let compile_output = compile.output().expect("run C compiler");
+    assert!(
+        compile_output.status.success(),
+        "training-execute C conformance compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile_output.stdout),
+        String::from_utf8_lossy(&compile_output.stderr)
+    );
+
+    let run_output = Command::new(&exe_path)
+        .output()
+        .expect("run training-execute C conformance executable");
+    assert!(
+        run_output.status.success(),
+        "training-execute C conformance executable failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
     );
 }

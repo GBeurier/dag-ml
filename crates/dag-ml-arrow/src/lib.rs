@@ -323,6 +323,7 @@ mod tests {
         PredictionBlock {
             prediction_id: Some("pred:1".to_string()),
             producer_node: NodeId::new("model:ridge").unwrap(),
+            producer_port: Some("pred".to_string()),
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: vec![
@@ -338,6 +339,7 @@ mod tests {
         AggregatedPredictionBlock {
             prediction_id: Some("pred:agg:1".to_string()),
             producer_node: NodeId::new("model:ridge").unwrap(),
+            producer_port: Some("pred".to_string()),
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             level: PredictionLevel::Target,

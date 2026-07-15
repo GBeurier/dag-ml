@@ -21,6 +21,10 @@ wire nirs4all directly.
 | Run release performance probes | [Performance probes](PERFORMANCE.md) |
 | Map nirs4all parity capabilities | [Capability matrix](CAPABILITY_MATRIX.md) |
 | Inspect shared contracts | [Contract manifests](contracts/README.md) |
+| Use native training/fine-tuning contracts | [Training contracts](TRAINING_CONTRACTS.md) |
+| Review public training replay syntax and migration | [Training replay contracts](TRAINING_REPLAY_CONTRACTS.md) |
+| Review conformal/robustness W0 contracts | [Conformal contract foundation](contracts/README.md#conformal-prediction-and-robustness-foundation-v1) |
+| Review conformal ownership and lifecycle modes | [ADR-20](adr/ADR-20-conformal-calibration-ownership.md) |
 | Review accepted decisions | [Architecture decisions](adr/README.md) |
 | Pick an example by audience | `examples/README.md` |
 
@@ -88,6 +92,8 @@ CAPABILITY_MATRIX
 :hidden:
 
 contracts/README
+TRAINING_CONTRACTS
+TRAINING_REPLAY_CONTRACTS
 adr/README
 OOF_FIXTURES
 OBSERVABILITY
@@ -115,16 +121,4 @@ migration-nirs4all/WORKING_STRATEGY
 migration-nirs4all/PARITY_AND_PERF_HARNESS
 migration-nirs4all/TARGET_RESPONSIBILITY_SPLIT
 migration-nirs4all/NATIVE_PERSISTENCE_LAYER_REPORT
-```
-
-```{toctree}
-:maxdepth: 1
-:caption: nirs4all migration
-:hidden:
-
-migration-nirs4all/README
-migration-nirs4all/WORKING_STRATEGY
-migration-nirs4all/PARITY_AND_PERF_HARNESS
-migration-nirs4all/NATIVE_PERSISTENCE_LAYER_REPORT
-migration-nirs4all/TARGET_RESPONSIBILITY_SPLIT
 ```

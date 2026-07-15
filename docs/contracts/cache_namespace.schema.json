@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/cache_namespace.v1.schema.json",
+  "title": "DAG-ML CacheNamespace v1",
+  "description": "FIT_CV-only candidate prediction-block cache identity. It binds parameter, complete data identity, producer/source, consumer/target, fold, trial and seed so requirement-key reuse cannot cross candidates or datasets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "prediction_requirement_key",
+    "data_requirement_key",
+    "producer_node_id",
+    "source_port_name",
+    "consumer_node_id",
+    "target_port_name",
+    "phase",
+    "params_fingerprint",
+    "data_identity_fingerprint",
+    "fold_id",
+    "trial_id",
+    "seed",
+    "namespace_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "prediction_requirement_key": { "$ref": "#/$defs/non_empty_string" },
+    "data_requirement_key": { "$ref": "#/$defs/non_empty_string" },
+    "producer_node_id": { "$ref": "#/$defs/identifier" },
+    "source_port_name": { "$ref": "#/$defs/non_empty_string" },
+    "consumer_node_id": { "$ref": "#/$defs/identifier" },
+    "target_port_name": { "$ref": "#/$defs/non_empty_string" },
+    "phase": { "const": "FIT_CV" },
+    "params_fingerprint": { "$ref": "#/$defs/sha256" },
+    "data_identity_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "TrainingDataIdentity.identity_fingerprint, covering schema/plan/relation/data/targets."
+    },
+    "fold_id": { "$ref": "#/$defs/identifier" },
+    "trial_id": { "$ref": "#/$defs/identifier" },
+    "seed": { "type": "integer", "minimum": 0 },
+    "namespace_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML TCV1 SHA-256 with only namespace_fingerprint omitted."
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

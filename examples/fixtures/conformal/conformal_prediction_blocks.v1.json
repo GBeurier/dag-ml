@@ -1,0 +1,412 @@
+{
+  "fixture_id": "dag-ml.conformal.prediction-blocks.v1",
+  "schema_version": 1,
+  "schema": "conformal_prediction_block.schema.json",
+  "valid_cases": [
+    {
+      "id": "joint_max_two_target_nested",
+      "document": {
+        "schema_version": 1,
+        "block_id": "conformal:block.external.joint",
+        "calibration_artifact_id": "calibration:standalone.joint",
+        "calibration_artifact_checksum": "98a7b8fc95033984bda32602227889ac6b9d92c7ccd87fa80a3b5b248d3d2dd9",
+        "predictor_binding_fingerprint": "84148104df149f366b712c5c9b34e02f38f62863b3aeef8888787ee5979905a5",
+        "cohort_manifest_fingerprint": "b989daea51c25e88125c1bdb32bd6465fb5098e0e7434d0e2dbcd1251114f4b8",
+        "point_prediction_fingerprint": "3ee2d1e6315d42c4d491424367ae7721dd57a1478c9c3b36d1db26d3dc3cfc86",
+        "point_output_binding": {
+          "schema_version": 1,
+          "binding_id": "output:external.final",
+          "node_id": "model:pls",
+          "port_name": "prediction",
+          "prediction_level": "sample",
+          "unit_level": "physical_sample",
+          "prediction_kind": "regression_point",
+          "prediction_source": "final_refit",
+          "refit_strategy": "refit_one",
+          "aggregation_fingerprint": "584db0ce342027ea87aeb27023530efead6f1b889366813b7952bd1bfac481df",
+          "target_names": [
+            "moisture",
+            "protein"
+          ],
+          "target_units": [
+            "percent",
+            "percent"
+          ],
+          "class_labels": [
+            [],
+            []
+          ],
+          "output_order": "target_order",
+          "target_space": "raw",
+          "binding_fingerprint": "423ca99227f9506efdc89bd2116232b7e713c1ec5a6d423590d7441f033369cb"
+        },
+        "method": "split_absolute_residual",
+        "numeric_version": "split_absolute_residual.v1",
+        "unit_level": "physical_sample",
+        "prediction_level": "sample",
+        "unit_ids": [
+          "sample:ext.01",
+          "sample:ext.02"
+        ],
+        "target_names": [
+          "moisture",
+          "protein"
+        ],
+        "multi_target_policy": "joint_max",
+        "intervals": [
+          {
+            "coverage": 0.8,
+            "lower": [
+              [
+                7.0,
+                17.0
+              ],
+              [
+                8.0,
+                18.0
+              ]
+            ],
+            "upper": [
+              [
+                13.0,
+                23.0
+              ],
+              [
+                14.0,
+                24.0
+              ]
+            ]
+          },
+          {
+            "coverage": 0.9,
+            "lower": [
+              [
+                6.0,
+                16.0
+              ],
+              [
+                7.0,
+                17.0
+              ]
+            ],
+            "upper": [
+              [
+                14.0,
+                24.0
+              ],
+              [
+                15.0,
+                25.0
+              ]
+            ]
+          }
+        ],
+        "assumption_status": "declared_exchangeable",
+        "guarantee_status": "joint_coverage",
+        "block_fingerprint": "053f100aad9afa718a9bcc218577f601ef5ca83ee534212149a5339165bf4f02"
+      }
+    },
+    {
+      "id": "marginal_two_target_nested",
+      "document": {
+        "schema_version": 1,
+        "block_id": "conformal:block.external.marginal",
+        "calibration_artifact_id": "calibration:standalone.marginal",
+        "calibration_artifact_checksum": "b814c547f5596caed584d0d7072a257a3d5f5dd0b8dfc66a69cf1362ce468054",
+        "predictor_binding_fingerprint": "84148104df149f366b712c5c9b34e02f38f62863b3aeef8888787ee5979905a5",
+        "cohort_manifest_fingerprint": "b989daea51c25e88125c1bdb32bd6465fb5098e0e7434d0e2dbcd1251114f4b8",
+        "point_prediction_fingerprint": "3ee2d1e6315d42c4d491424367ae7721dd57a1478c9c3b36d1db26d3dc3cfc86",
+        "point_output_binding": {
+          "schema_version": 1,
+          "binding_id": "output:external.final",
+          "node_id": "model:pls",
+          "port_name": "prediction",
+          "prediction_level": "sample",
+          "unit_level": "physical_sample",
+          "prediction_kind": "regression_point",
+          "prediction_source": "final_refit",
+          "refit_strategy": "refit_one",
+          "aggregation_fingerprint": "584db0ce342027ea87aeb27023530efead6f1b889366813b7952bd1bfac481df",
+          "target_names": [
+            "moisture",
+            "protein"
+          ],
+          "target_units": [
+            "percent",
+            "percent"
+          ],
+          "class_labels": [
+            [],
+            []
+          ],
+          "output_order": "target_order",
+          "target_space": "raw",
+          "binding_fingerprint": "423ca99227f9506efdc89bd2116232b7e713c1ec5a6d423590d7441f033369cb"
+        },
+        "method": "split_absolute_residual",
+        "numeric_version": "split_absolute_residual.v1",
+        "unit_level": "physical_sample",
+        "prediction_level": "sample",
+        "unit_ids": [
+          "sample:ext.01",
+          "sample:ext.02"
+        ],
+        "target_names": [
+          "moisture",
+          "protein"
+        ],
+        "multi_target_policy": "marginal",
+        "intervals": [
+          {
+            "coverage": 0.8,
+            "lower": [
+              [
+                8.0,
+                18.0
+              ],
+              [
+                9.0,
+                19.0
+              ]
+            ],
+            "upper": [
+              [
+                12.0,
+                22.0
+              ],
+              [
+                13.0,
+                23.0
+              ]
+            ]
+          },
+          {
+            "coverage": 0.9,
+            "lower": [
+              [
+                7.0,
+                17.0
+              ],
+              [
+                8.0,
+                18.0
+              ]
+            ],
+            "upper": [
+              [
+                13.0,
+                23.0
+              ],
+              [
+                14.0,
+                24.0
+              ]
+            ]
+          }
+        ],
+        "assumption_status": "declared_exchangeable",
+        "guarantee_status": "marginal_coverage",
+        "block_fingerprint": "a9813ac96b8c8de716eb46d19e13946fd3c7f4fb938cfcf999076839a1507c5e"
+      }
+    },
+    {
+      "id": "small_n_unbounded_interval",
+      "document": {
+        "schema_version": 1,
+        "block_id": "conformal:block.external.unbounded",
+        "calibration_artifact_id": "calibration:standalone.unbounded",
+        "calibration_artifact_checksum": "373c22d9d26d2ee534930af627a558eda1285c99fc6123461f1945e0c3a26ba6",
+        "predictor_binding_fingerprint": "84148104df149f366b712c5c9b34e02f38f62863b3aeef8888787ee5979905a5",
+        "cohort_manifest_fingerprint": "b989daea51c25e88125c1bdb32bd6465fb5098e0e7434d0e2dbcd1251114f4b8",
+        "point_prediction_fingerprint": "a4d6ddb662cb56d1e810934c28ba508531a3bf549b133f10cd9142ac1d050c2b",
+        "point_output_binding": {
+          "schema_version": 1,
+          "binding_id": "output:external.final",
+          "node_id": "model:pls",
+          "port_name": "prediction",
+          "prediction_level": "sample",
+          "unit_level": "physical_sample",
+          "prediction_kind": "regression_point",
+          "prediction_source": "final_refit",
+          "refit_strategy": "refit_one",
+          "aggregation_fingerprint": "584db0ce342027ea87aeb27023530efead6f1b889366813b7952bd1bfac481df",
+          "target_names": [
+            "moisture",
+            "protein"
+          ],
+          "target_units": [
+            "percent",
+            "percent"
+          ],
+          "class_labels": [
+            [],
+            []
+          ],
+          "output_order": "target_order",
+          "target_space": "raw",
+          "binding_fingerprint": "423ca99227f9506efdc89bd2116232b7e713c1ec5a6d423590d7441f033369cb"
+        },
+        "method": "split_absolute_residual",
+        "numeric_version": "split_absolute_residual.v1",
+        "unit_level": "physical_sample",
+        "prediction_level": "sample",
+        "unit_ids": [
+          "sample:ext.01"
+        ],
+        "target_names": [
+          "moisture",
+          "protein"
+        ],
+        "multi_target_policy": "marginal",
+        "intervals": [
+          {
+            "coverage": 0.99,
+            "lower": [
+              [
+                null,
+                null
+              ]
+            ],
+            "upper": [
+              [
+                null,
+                null
+              ]
+            ]
+          }
+        ],
+        "assumption_status": "not_assessed",
+        "guarantee_status": "unavailable",
+        "block_fingerprint": "fbde2e98e72d31b5fcfa28068d9af66cfef9ebfa436227fb58d339ecbec77b3d"
+      }
+    }
+  ],
+  "invalid_cases": [
+    {
+      "id": "coverages_not_increasing",
+      "base_case": "marginal_two_target_nested",
+      "mutations": [
+        {
+          "path": "/intervals/1/coverage",
+          "value": 0.7
+        }
+      ],
+      "expected_error": "coverage",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "higher_coverage_not_nested",
+      "base_case": "marginal_two_target_nested",
+      "mutations": [
+        {
+          "path": "/intervals/1/lower/0/0",
+          "value": 9.0
+        }
+      ],
+      "expected_error": "nested",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "lower_above_upper",
+      "base_case": "marginal_two_target_nested",
+      "mutations": [
+        {
+          "path": "/intervals/0/lower/1/1",
+          "value": 24.0
+        }
+      ],
+      "expected_error": "lower bound",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "target_order_mismatch",
+      "base_case": "marginal_two_target_nested",
+      "mutations": [
+        {
+          "path": "/point_output_binding",
+          "value": {
+            "schema_version": 1,
+            "binding_id": "output:external.final",
+            "node_id": "model:pls",
+            "port_name": "prediction",
+            "prediction_level": "sample",
+            "unit_level": "physical_sample",
+            "prediction_kind": "regression_point",
+            "prediction_source": "final_refit",
+            "refit_strategy": "refit_one",
+            "aggregation_fingerprint": "584db0ce342027ea87aeb27023530efead6f1b889366813b7952bd1bfac481df",
+            "target_names": [
+              "protein",
+              "moisture"
+            ],
+            "target_units": [
+              "percent",
+              "percent"
+            ],
+            "class_labels": [
+              [],
+              []
+            ],
+            "output_order": "target_order",
+            "target_space": "raw",
+            "binding_fingerprint": "f70b1c49aa5166b73a352e5eccb3b81740b056271c4915f6d44f178af1c64f86"
+          }
+        },
+        {
+          "path": "/block_fingerprint",
+          "value": "8648151c77993bd4ce8d1a2c0244787077178006e285174f226e8e1a423dbaaf"
+        }
+      ],
+      "expected_error": "target order",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "shift_cannot_claim_formal_coverage",
+      "base_case": "marginal_two_target_nested",
+      "mutations": [
+        {
+          "path": "/assumption_status",
+          "value": "distribution_shift"
+        }
+      ],
+      "expected_error": "overclaims",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "domain_status_is_not_conformal",
+      "base_case": "marginal_two_target_nested",
+      "mutations": [
+        {
+          "path": "/domain_status",
+          "value": "out_of_support"
+        }
+      ],
+      "expected_error": "domain_status",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "runtime_handle_refuses",
+      "base_case": "marginal_two_target_nested",
+      "mutations": [
+        {
+          "path": "/point_prediction_handle",
+          "value": 99
+        }
+      ],
+      "expected_error": "handle",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "one_sided_unbounded_refuses",
+      "base_case": "small_n_unbounded_interval",
+      "mutations": [
+        {
+          "path": "/intervals/0/upper/0/0",
+          "value": 12.0
+        }
+      ],
+      "expected_error": "paired",
+      "recompute_fingerprints": true
+    }
+  ]
+}
