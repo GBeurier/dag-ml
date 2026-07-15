@@ -88,7 +88,8 @@ portable to another language.
 ## Blocks
 
 No binding-specific public custom-loss API should be stabilized before L1 and
-L2 freeze the semantic contracts and controller attestation protocol. The
-nirs4all compatibility layer remains downstream of those contracts.
-Fingerprints must use the integrated `dag_ml_core::canonical` TCV1 API from
-draft PR #20; no binding or provider may introduce another canonicalizer.
+L2 freeze the semantic contracts and controller attestation protocol.
+nirs4all's legacy-argument translation layer remains downstream of those
+contracts and cannot become a second semantic registry. Fingerprints must use
+the integrated `dag_ml_core::canonical` TCV1 API from draft PR #20; no binding
+or provider may introduce another canonicalizer.

@@ -222,7 +222,7 @@ without adding a second scoring path.
 - callable/code payload present in canonical JSON;
 - mismatched embedded fingerprint.
 
-The metric-provider contract must independently test a custom metric without an
+The generic provider protocol must independently test a custom metric without an
 objective, non-finite provider output, wrong scope/coverage and mismatched
 provider fingerprint before metric integration is accepted here.
 
@@ -264,7 +264,7 @@ native aggregation or selection. L2 does not implement a second provider path.
 - false or stale attestation fails after fit;
 - `FIT_CV`/`REFIT` divergence fails unless explicitly configured;
 - cache key changes with implementation fingerprint;
-- detached replay fails when a host-local implementation is unavailable;
+- detached replay fails when a host-local implementation is unavailable.
 - custom metric provider output with invalid scope, coverage, value or
   fingerprint is rejected before selection.
 
