@@ -5,6 +5,26 @@ DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
 validator: it checks fingerprints, campaign fold membership, OOF boundaries and
 leakage policies before any controller receives a handle.
 
+## Loss, Metric and Early-Stopping Contracts
+
+Schemas: `loss_spec.schema.json`, `metric_spec.schema.json`,
+`implementation_descriptor.schema.json`, `training_loss_role.schema.json`,
+`loss_execution_attestation.schema.json`, `metric_role.schema.json`,
+`metric_evaluation_task.schema.json`, `metric_evaluation_result.schema.json`
+and `early_stopping_record.schema.json`.
+
+Training losses are optimizer objectives; metrics are typed evaluations with an
+explicit objective direction and pipeline role. `EarlyStoppingRecord` is a
+fingerprinted controller outcome bound to an `early_stopping` metric role and
+one `FIT_CV` fold or `REFIT` task. It is optional lineage evidence in
+`NodeResult`, not a `ScoreSet`, selection decision, tuning observation or second
+metric-provider protocol. Rust validation additionally enforces finite values,
+iteration ordering, validation-partition monitoring and exact lineage scope.
+
+Canonical fixtures are under `examples/fixtures/criteria/`; the byte-exact
+closure is `criteria_conformance_pack.v1.json` and the independent semantic
+oracle is `parity/criteria/oracle.py`.
+
 ## Heterogeneous Multi-Source Vocabulary and Evolution
 
 The heterogeneous multi-source repetitions roadmap

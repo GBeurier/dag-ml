@@ -332,6 +332,7 @@ pub(crate) fn reassemble_branch_merge_off_fold(
         unsafe_flags: BTreeSet::new(),
         metrics: BTreeMap::new(),
         loss_attestations: Vec::new(),
+        early_stopping_records: Vec::new(),
     };
 
     Ok(Some(NodeResult {
@@ -696,6 +697,7 @@ pub(crate) fn reassemble_separation_merge(
         unsafe_flags: BTreeSet::new(),
         metrics: BTreeMap::new(),
         loss_attestations: Vec::new(),
+        early_stopping_records: Vec::new(),
     };
 
     Ok(Some(NodeResult {
@@ -954,6 +956,7 @@ pub(crate) fn reassemble_fusion_merge(
         unsafe_flags: BTreeSet::new(),
         metrics: BTreeMap::new(),
         loss_attestations: Vec::new(),
+        early_stopping_records: Vec::new(),
     };
 
     Ok(Some(NodeResult {

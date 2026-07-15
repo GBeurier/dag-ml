@@ -13,7 +13,7 @@ use crate::canonical::{
     deserialize_external_contract, parse_typed_json, validate_typed_serde_value,
 };
 use crate::error::{DagMlError, Result};
-use crate::ids::NodeId;
+use crate::ids::{FoldId, NodeId};
 use crate::oof::PredictionPartition;
 use crate::phase::Phase;
 use crate::policy::PredictionLevel;
@@ -26,6 +26,7 @@ pub const IMPLEMENTATION_DESCRIPTOR_SCHEMA_VERSION: u32 = 1;
 pub const LOSS_ROLE_SCHEMA_VERSION: u32 = 1;
 pub const METRIC_ROLE_SCHEMA_VERSION: u32 = 1;
 pub const LOSS_EXECUTION_ATTESTATION_SCHEMA_VERSION: u32 = 1;
+pub const EARLY_STOPPING_RECORD_SCHEMA_VERSION: u32 = 1;
 
 pub const LOSS_SPEC_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/loss_spec.v1.schema.json";
@@ -39,6 +40,8 @@ pub const METRIC_ROLE_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/metric_role.v1.schema.json";
 pub const LOSS_EXECUTION_ATTESTATION_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json";
+pub const EARLY_STOPPING_RECORD_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/early_stopping_record.v1.schema.json";
 
 const FINGERPRINT_LEN: usize = 64;
 const FORBIDDEN_EXECUTABLE_KEYS: &[&str] = &[
@@ -928,6 +931,129 @@ impl MetricRoleReference {
     }
 }
 
+/// Controller-reported early-stopping outcome, kept separate from persisted
+/// OOF/reporting scores and bound to one exact metric role and task scope.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EarlyStoppingRecord {
+    pub schema_version: u32,
+    pub node_id: NodeId,
+    pub phase: Phase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fold_id: Option<FoldId>,
+    pub metric_role: MetricRoleReference,
+    /// Zero-based iteration at which `best_value` was observed.
+    pub best_iteration: u64,
+    /// Number of completed iterations observed by the monitor.
+    pub observed_iterations: u64,
+    pub best_value: f64,
+    pub stopped_early: bool,
+    pub record_fingerprint: String,
+}
+
+impl EarlyStoppingRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        node_id: NodeId,
+        phase: Phase,
+        fold_id: Option<FoldId>,
+        metric_role: MetricRoleReference,
+        best_iteration: u64,
+        observed_iterations: u64,
+        best_value: f64,
+        stopped_early: bool,
+    ) -> Result<Self> {
+        let mut record = Self {
+            schema_version: EARLY_STOPPING_RECORD_SCHEMA_VERSION,
+            node_id,
+            phase,
+            fold_id,
+            metric_role,
+            best_iteration,
+            observed_iterations,
+            best_value,
+            stopped_early,
+            record_fingerprint: String::new(),
+        };
+        record.record_fingerprint = record.compute_fingerprint()?;
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn from_json(json: &str) -> Result<Self> {
+        let record: Self = deserialize_external_contract(
+            json,
+            "early stopping record",
+            DagMlError::RuntimeValidation,
+        )?;
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        fingerprint_without(self, "record_fingerprint", "early stopping record")
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_schema_version(
+            "early stopping record",
+            self.schema_version,
+            EARLY_STOPPING_RECORD_SCHEMA_VERSION,
+        )?;
+        if !matches!(self.phase, Phase::FitCv | Phase::Refit) {
+            return contract_error("early stopping phase must be FIT_CV or REFIT");
+        }
+        match (self.phase, self.fold_id.as_ref()) {
+            (Phase::FitCv, None) => {
+                return contract_error("FIT_CV early stopping requires fold_id")
+            }
+            (Phase::Refit, Some(_)) => {
+                return contract_error("REFIT early stopping must not declare fold_id")
+            }
+            _ => {}
+        }
+        self.metric_role.validate()?;
+        if self.metric_role.role != MetricRoleKind::EarlyStopping {
+            return contract_error("early stopping record requires an early_stopping metric role");
+        }
+        if self.metric_role.partition != PredictionPartition::Validation {
+            return contract_error(
+                "early stopping metric role must monitor validation predictions",
+            );
+        }
+        if self.observed_iterations == 0 || self.best_iteration >= self.observed_iterations {
+            return contract_error(
+                "early stopping best_iteration must be below non-zero observed_iterations",
+            );
+        }
+        if !self.best_value.is_finite() {
+            return contract_error("early stopping best_value must be finite");
+        }
+        validate_fingerprint("early stopping record", &self.record_fingerprint)?;
+        let expected = self.compute_fingerprint()?;
+        if self.record_fingerprint != expected {
+            return contract_error(format!(
+                "early stopping record fingerprint mismatch: declared {}, expected {expected}",
+                self.record_fingerprint
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_against(
+        &self,
+        node_id: &NodeId,
+        phase: Phase,
+        fold_id: Option<&FoldId>,
+    ) -> Result<()> {
+        self.validate()?;
+        if &self.node_id != node_id || self.phase != phase || self.fold_id.as_ref() != fold_id {
+            return contract_error("early stopping record does not match lineage task scope");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LossResolutionSource {
@@ -1302,6 +1428,38 @@ mod tests {
         .unwrap()
     }
 
+    fn early_stopping_metric_role() -> MetricRoleReference {
+        let metric = builtin_metric_catalog().unwrap()["dagml.metric.rmse@1"].clone();
+        MetricRoleReference {
+            schema_version: METRIC_ROLE_SCHEMA_VERSION,
+            role_id: "early-stopping:rmse".to_string(),
+            role: MetricRoleKind::EarlyStopping,
+            output_id: Some("prediction".to_string()),
+            partition: PredictionPartition::Validation,
+            level: PredictionLevel::Sample,
+            missing_value_policy: MissingMetricPolicy::Error,
+            metric: MetricReference {
+                implementation: ImplementationDescriptor::new(
+                    ImplementationSemanticKind::Metric,
+                    &metric.metric_id,
+                    &metric.spec_fingerprint,
+                    "provider:dag-ml-core",
+                    "binding:rust",
+                    "1.0.0",
+                    "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+                    BTreeSet::new(),
+                    BTreeSet::new(),
+                    BTreeSet::from([ImplementationCapability::Deterministic]),
+                    PortabilityClass::PortableBuiltIn,
+                    ReplayabilityClass::Detached,
+                    None,
+                )
+                .unwrap(),
+                spec: metric,
+            },
+        }
+    }
+
     #[test]
     fn built_in_catalogs_are_versioned_and_self_fingerprinted() {
         let losses = builtin_loss_catalog().unwrap();
@@ -1617,6 +1775,111 @@ mod tests {
     }
 
     #[test]
+    fn early_stopping_record_is_fingerprinted_and_task_scoped() {
+        let record = EarlyStoppingRecord::new(
+            NodeId::new("model:custom").unwrap(),
+            Phase::FitCv,
+            Some(FoldId::new("fold:0").unwrap()),
+            early_stopping_metric_role(),
+            3,
+            5,
+            0.125,
+            true,
+        )
+        .unwrap();
+
+        record.validate().unwrap();
+        record
+            .validate_against(
+                &NodeId::new("model:custom").unwrap(),
+                Phase::FitCv,
+                Some(&FoldId::new("fold:0").unwrap()),
+            )
+            .unwrap();
+        assert_eq!(
+            EarlyStoppingRecord::from_json(&serde_json::to_string(&record).unwrap()).unwrap(),
+            record
+        );
+        assert_eq!(record.record_fingerprint.len(), FINGERPRINT_LEN);
+    }
+
+    #[test]
+    fn early_stopping_record_rejects_wrong_role_values_and_scope() {
+        let mut selection_role = early_stopping_metric_role();
+        selection_role.role = MetricRoleKind::Selection;
+        assert!(EarlyStoppingRecord::new(
+            NodeId::new("model:custom").unwrap(),
+            Phase::FitCv,
+            Some(FoldId::new("fold:0").unwrap()),
+            selection_role,
+            3,
+            5,
+            0.125,
+            true,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("early_stopping metric role"));
+
+        for (best_iteration, observed_iterations, best_value) in
+            [(5, 5, 0.125), (0, 0, 0.125), (0, 1, f64::NAN)]
+        {
+            assert!(EarlyStoppingRecord::new(
+                NodeId::new("model:custom").unwrap(),
+                Phase::FitCv,
+                Some(FoldId::new("fold:0").unwrap()),
+                early_stopping_metric_role(),
+                best_iteration,
+                observed_iterations,
+                best_value,
+                true,
+            )
+            .is_err());
+        }
+
+        assert!(EarlyStoppingRecord::new(
+            NodeId::new("model:custom").unwrap(),
+            Phase::FitCv,
+            None,
+            early_stopping_metric_role(),
+            3,
+            5,
+            0.125,
+            true,
+        )
+        .is_err());
+        assert!(EarlyStoppingRecord::new(
+            NodeId::new("model:custom").unwrap(),
+            Phase::Predict,
+            None,
+            early_stopping_metric_role(),
+            3,
+            5,
+            0.125,
+            true,
+        )
+        .is_err());
+
+        let mut tampered = EarlyStoppingRecord::new(
+            NodeId::new("model:custom").unwrap(),
+            Phase::Refit,
+            None,
+            early_stopping_metric_role(),
+            3,
+            5,
+            0.125,
+            false,
+        )
+        .unwrap();
+        tampered.best_value = 0.5;
+        assert!(tampered
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("fingerprint mismatch"));
+    }
+
+    #[test]
     fn strict_json_rejects_duplicate_keys_before_deserialization() {
         let valid = serde_json::to_string(&custom_loss()).unwrap();
         LossSpec::from_json(&valid).unwrap();
@@ -1657,6 +1920,7 @@ mod tests {
         LossExecutionAttestation::from_json(&valid["loss_execution_attestation"].to_string())
             .unwrap();
         MetricRoleReference::from_json(&valid["metric_role"].to_string()).unwrap();
+        EarlyStoppingRecord::from_json(&valid["early_stopping_record"].to_string()).unwrap();
 
         for case in fixture["invalid"].as_array().unwrap() {
             let document = case["document"].to_string();
@@ -1671,6 +1935,7 @@ mod tests {
                     LossExecutionAttestation::from_json(&document).map(|_| ())
                 }
                 "metric_role" => MetricRoleReference::from_json(&document).map(|_| ()),
+                "early_stopping_record" => EarlyStoppingRecord::from_json(&document).map(|_| ()),
                 contract => panic!("unknown criteria fixture contract `{contract}`"),
             };
             assert!(

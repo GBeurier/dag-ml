@@ -86,9 +86,7 @@ SCORE_SET_FIXTURE_REL = Path("examples/fixtures/score_set.json")
 CHAIN_EFFECT_ANALYSIS_SCHEMA_REL = Path(
     "docs/contracts/chain_effect_analysis.schema.json"
 )
-CHAIN_EFFECT_ANALYSIS_FIXTURE_REL = Path(
-    "examples/fixtures/chain_effect_analysis.json"
-)
+CHAIN_EFFECT_ANALYSIS_FIXTURE_REL = Path("examples/fixtures/chain_effect_analysis.json")
 CONFORMAL_CALIBRATION_SCHEMA_REL = Path(
     "docs/contracts/conformal_calibration.schema.json"
 )
@@ -573,6 +571,9 @@ NODE_RESULT_SCHEMA_ID = (
 LOSS_EXECUTION_ATTESTATION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "loss_execution_attestation.v1.schema.json"
+)
+EARLY_STOPPING_RECORD_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/early_stopping_record.v1.schema.json"
 )
 PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
@@ -10482,6 +10483,15 @@ def validate_node_result_schema(schema: Any, label: str) -> None:
         "fit_influence_diagnostics" in properties,
         f"{label} NodeResult schema misses fit_influence_diagnostics",
     )
+    lineage_properties = defs.get("lineage_record", {}).get("properties", {})
+    early_stopping_records = lineage_properties.get("early_stopping_records")
+    require(
+        isinstance(early_stopping_records, dict)
+        and early_stopping_records.get("type") == "array"
+        and early_stopping_records.get("items", {}).get("$ref")
+        == EARLY_STOPPING_RECORD_SCHEMA_ID,
+        f"{label} NodeResult early-stopping record schema mismatch",
+    )
     require(
         defs.get("prediction_partition", {}).get("enum")
         == ["train", "validation", "test", "final"],
@@ -13122,7 +13132,9 @@ def validate_node_task(value: Any, label: str) -> None:
             f"{requirement_label}.phase mismatch",
         )
         loss = role.get("loss", {})
-        implementation = loss.get("implementation", {}) if isinstance(loss, dict) else {}
+        implementation = (
+            loss.get("implementation", {}) if isinstance(loss, dict) else {}
+        )
         spec = loss.get("spec", {}) if isinstance(loss, dict) else {}
         require(
             attestation.get("loss_id") == spec.get("loss_id"),
@@ -13134,8 +13146,7 @@ def validate_node_task(value: Any, label: str) -> None:
             f"{requirement_label}.descriptor_fingerprint mismatch",
         )
         require(
-            attestation.get("semantic_fingerprint")
-            == spec.get("spec_fingerprint"),
+            attestation.get("semantic_fingerprint") == spec.get("spec_fingerprint"),
             f"{requirement_label}.semantic_fingerprint mismatch",
         )
         require(

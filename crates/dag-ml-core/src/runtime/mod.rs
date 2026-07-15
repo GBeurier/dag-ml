@@ -30,7 +30,7 @@ pub(crate) use crate::bundle::{
 };
 pub(crate) use crate::campaign::stable_json_fingerprint;
 pub(crate) use crate::controller::{capabilities_support_fit_influence, ControllerCapability};
-pub(crate) use crate::criteria::LossExecutionAttestation;
+pub(crate) use crate::criteria::{EarlyStoppingRecord, LossExecutionAttestation};
 pub(crate) use crate::data::{
     data_binding_requirement_key, DataBinding, DataRequestPartition, ExternalDataPlanEnvelope,
     RepresentationCompatibilityReport, RepresentationPlan, RepresentationReplayManifest,
