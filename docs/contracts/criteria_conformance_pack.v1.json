@@ -51,7 +51,7 @@
     },
     {
       "path": "crates/dag-ml-cli/src/main.rs",
-      "sha256": "9278c608571b098fde52f2d6507dc5dd7150938a78fe9de7276e47413bd884a4",
+      "sha256": "494f4f300f1fb086cac1c1fa132c72fc9a36fc49c3ad221f0e7cd96c61ebd330",
       "kind": "cli_validator"
     },
     {
@@ -221,5 +221,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "f851e266a87d273443d121cf479719673e5ea68723788584a5534293d59e1a22"
+  "pack_checksum": "08caa82ccb75df046348b3a224ea933e5088b5884ff2d3dd9cf7e09c379bb6a4"
 }
