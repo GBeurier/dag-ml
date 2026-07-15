@@ -262,12 +262,11 @@ Missing characterization tests required before changing each surface:
 
 ## L0 status
 
-- This baseline inventory is published in draft PR `dag-ml#19` and was
-  independently approved with no blocking findings.
-- ADR-22 and the delivery roadmap are published in draft PR `dag-ml#18` and
-  independently approved as documentation.
+- This baseline inventory is published for review in draft PR `dag-ml#19`.
+- ADR-22 and the delivery roadmap are published for review in draft PR
+  `dag-ml#18`.
 - The PyTorch silent-loss fallback fix is published in draft PR `nirs4all#46`,
-  independently approved twice, and covered by focused resolution tests.
+  and covered by focused resolution tests.
 - The baseline inventory is complete, but L0 remains open until the concurrent
   score-provider work publishes its branch, commit, PR and API map, the
   training/TCV1 work publishes its branch, commit or PR and canonicalization API,
