@@ -5,6 +5,21 @@
   "fingerprint_profile": "DAGML-TCV1-unicode-17.0.0",
   "artifacts": [
     {
+      "path": "bindings/r/R/local_implementation_registry.R",
+      "sha256": "edee3d7b0b57cb7e9ee63def8dc7739d27ee66b348511bb62a3531f9aa641efe",
+      "kind": "r_local_registry"
+    },
+    {
+      "path": "bindings/r/inst/extdata/r_local_implementations.v1.json",
+      "sha256": "16c248630f13789ca16737e773a6c2e167bc9197c655e276e62daa44fd358d48",
+      "kind": "fixture"
+    },
+    {
+      "path": "bindings/r/tests/local_implementation_registry.R",
+      "sha256": "81a8eaebc5aee4f6ae4ed5a4ff7fc1e3a7ee3ec2b04d6feac0499f81ab940b82",
+      "kind": "r_binding_test"
+    },
+    {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
       "sha256": "3eb97a478d3748bdeee4961eea577994ed5c3b93d307b3c76870e97b65cf0b04",
       "kind": "c_abi_header"
@@ -86,7 +101,7 @@
     },
     {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "52ec3effe7da8ba9085b4c23f76225ec030973cd8dcbf2ab3976fdeb4da2b53e",
+      "sha256": "8d53eb391a1af0a42457fb22b626eda28e7aa6f6fe892509288e4a36fc262055",
       "kind": "contract_documentation"
     },
     {
@@ -151,7 +166,7 @@
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "1fe1c9acfeaaa500500b8852f4a17269a87b310bd3984a54fad18f9e5676a39b",
+      "sha256": "8fc98d2ea9618530287a0c722bac198fd2655d673b039da46dcfde693e90e4a1",
       "kind": "generator"
     },
     {
@@ -161,7 +176,7 @@
     },
     {
       "path": "parity/criteria/tests/test_criteria_contracts.py",
-      "sha256": "dca0ca81478c110b18360878ac146d92d0eca9e7c6130529b67eb180bcd75f52",
+      "sha256": "c47bd9defe7e0406a01345718916731d6b31012f0deb3d46c5b04eda9349d547",
       "kind": "parity_test"
     },
     {
@@ -191,5 +206,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "c5bf1700de0f1876fca5b747733c9c76973d8a530ae23c67ec3d14ebe5fc4717"
+  "pack_checksum": "c318f83ed36766161a82debc96a671e4cd1f0fc72cad2b8e9924b9087df928f5"
 }

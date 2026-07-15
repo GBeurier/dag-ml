@@ -1,0 +1,15 @@
+Package: dagml
+Title: R Binding for DAG-ML Local Implementations
+Version: 0.2.7
+Authors@R: person("Gregory", "Beurier", email = "gregory.beurier@cirad.fr", role = c("aut", "cre"))
+Description: Retains R loss and metric functions in process-local registries
+    keyed by validated DAG-ML implementation descriptors. Training controllers
+    can execute local functions during FIT_CV and REFIT and return native
+    DAG-ML loss attestations without serializing executable code.
+License: CeCILL-2.1 | AGPL (>= 3)
+URL: https://github.com/GBeurier/dag-ml
+BugReports: https://github.com/GBeurier/dag-ml/issues
+Depends: R (>= 4.1)
+Imports: jsonlite
+Encoding: UTF-8
+NeedsCompilation: no
