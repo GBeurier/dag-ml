@@ -2,7 +2,7 @@
 
 # ADR-22: Training-loss and metric contract ownership
 
-**Status**: proposed (2026-07-15)
+**Status**: accepted (2026-07-15)
 **Blocks**: loss/metric roadmap phases L1-L7, nirs4all DAG-ML backend migration, local custom-loss support in every official binding.
 
 ## Context
@@ -75,13 +75,12 @@ portable to another language.
   least one configurable controller complete the conformance gate.
 - Algorithms with fixed analytical objectives remain valid but must expose the
   limitation explicitly.
-- Shared changes to metric providers, controller capabilities, task contracts or
-  schemas require coordination with concurrent score-provider work. Neither
-  implementation may introduce a duplicate provider descriptor or registry.
-- The concurrent score-provider work owns `MetricSpec`, its implementation
-  descriptor and the typed custom-metric evaluation task. Loss work consumes
-  those contracts after their branch/commit is recorded and reviewed; it must
-  not create provisional metric types while that dependency is unpublished.
+- Losses and metrics share one generic implementation descriptor and provider
+  lifecycle. Semantic objective/direction remains in `LossSpec` or `MetricSpec`.
+- The previously announced score-provider effort completed without a published
+  artifact. After repository/ref/worktree audit and explicit user transfer,
+  this native effort owns `MetricSpec`, provider dispatch and the typed metric
+  evaluation task together with `LossSpec`.
 - Every versioned controller/task/result/schema change follows ADR-02 in the
   same batch, including fixtures, read-window/version decision, CHANGELOG and C
   ABI impact.
@@ -89,11 +88,7 @@ portable to another language.
 ## Blocks
 
 No binding-specific public custom-loss API should be stabilized before L1 and
-L2 freeze the semantic contracts and controller attestation protocol. The ADR
-must be accepted before the nirs4all compatibility layer becomes authoritative.
-Metric-related L1/L2 source changes are additionally blocked until the active
-score-provider work has a named branch/commit/PR and its API is mapped against
-this ADR. Loss-only semantic design may proceed independently, but source work
-that computes or validates fingerprints must consume the concurrent
-training/TCV1 canonicalization API after its branch, commit or PR is published;
-it must not copy the dirty worktree or introduce a second canonicalizer.
+L2 freeze the semantic contracts and controller attestation protocol. The
+nirs4all compatibility layer remains downstream of those contracts.
+Fingerprints must use the integrated `dag_ml_core::canonical` TCV1 API from
+draft PR #20; no binding or provider may introduce another canonicalizer.

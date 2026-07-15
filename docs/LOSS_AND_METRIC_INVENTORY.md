@@ -17,9 +17,17 @@ The baseline revisions are:
 | `nirs4all` | `16c8f070` | clean committed `main` |
 | `nirs4all-core` | `83c246c` | clean committed `main` |
 
+Integration addendum (2026-07-15): the completed DAG-ML training/runtime/TCV1
+work was preserved at `3097da5`, repaired and integrated at `87785fc` on
+`agent/loss-runtime-integration`, and published in draft PR #20. The announced
+score-provider effort completed without any discoverable branch, commit, PR,
+worktree implementation or provider API. After explicit user transfer, the
+native loss-contract branch also owns `MetricSpec`, the shared implementation
+descriptor, provider dispatch and the typed metric evaluation task.
+
 The private `nirs4all-drafts` and `nirs4all-lab` repositories are out of scope.
-Line references below are pinned to the revisions above unless a row is
-explicitly labelled as uncommitted concurrent work.
+Line references below are pinned to the revisions above unless superseded by
+the integration addendum.
 
 ## Summary
 
@@ -93,7 +101,7 @@ currently supplied by host surfaces:
 | Host surface | Default/behavior | Source | Test status |
 | --- | --- | --- | --- |
 | CLI | `rmse`; accepted names are clap-enumerated | `dag-ml-cli/src/main.rs:107-119`, `:506` | `dag-ml-cli/tests/cli_contracts.rs` |
-| Python in-process | `accuracy` and `balanced_accuracy` map explicitly; every other value maps to `rmse` | `dag-ml-py/src/in_process.rs:167-175` | missing negative characterization; owned by score-provider integration |
+| Python in-process | `accuracy` and `balanced_accuracy` map explicitly; every other value maps to `rmse` | `dag-ml-py/src/in_process.rs:167-175` | missing negative characterization; owned by native metric-provider integration |
 | C ABI serde scorer | known enum names only; unknown values fail deserialization | `dag-ml-capi/src/lib.rs:1774-1839` | C ABI scorer tests |
 | policy metric level | sample level | `dag-ml-core/src/policy.rs:280-295` | policy tests |
 
@@ -107,27 +115,18 @@ currently supplied by host surfaces:
   independently selected metric (`aggregation.rs:1305-1491`).
 - No committed threshold-optimization metric contract exists.
 
-### Concurrent work boundary
+### Integrated work boundary
 
-The original dag-ml checkout contains a large active, unstaged training/runtime
-change. At inventory time it has no published branch, commit or PR. It adds
-uncommitted `training.rs`, `training_runtime.rs`, `canonical.rs`, conformal and
-replay contracts, plus modifications to metrics, tasks, controllers, schemas and
-bindings. In particular, its TCV1 implementation and native training request are
-not available from clean `main` and must not be copied or treated as landed API.
-This training/TCV1 worktree is distinct from the separately announced
-score-provider effort, for which no published integration artifact is available.
+At inventory time the original dag-ml checkout contained a large active,
+unstaged training/runtime change. That work is now preserved at `3097da5` and
+integrated in draft PR #20 at `87785fc`. Its TCV1 implementation is the sole
+canonicalization API for new loss and metric contracts.
 
 No `MetricProvider`, provider registry, implementation descriptor or typed
-custom-metric evaluation task was discoverable in that worktree. Consequently:
-
-- loss-only planning may continue;
-- L1 source work requiring TCV1 waits for the concurrent artifact instead of
-  duplicating canonicalization;
-- metric/shared-schema implementation remains blocked until a branch, commit,
-  PR and API map are published;
-- the loss roadmap must consume the provider descriptor if it is generic enough,
-  rather than adding a parallel descriptor type.
+custom-metric evaluation task was discoverable in that worktree, any local ref,
+remote head or open PR after the score-provider agent completed. Metric work is
+therefore unblocked under the explicit ownership amendment: L1 introduces one
+generic provider descriptor and registry contract shared by losses and metrics.
 
 ## nirs4all Python baseline
 
@@ -227,7 +226,7 @@ instead of adding six more independent semantics.
 | ID | Severity | Current behavior | Required disposition |
 | --- | --- | --- | --- |
 | `F-LOSS-001` | high | unknown nirs4all PyTorch loss silently becomes MSE | error explicitly; the reviewed draft fix in `nirs4all#46` still requires merge |
-| `F-METRIC-001` | high | unknown dag-ml Python in-process selection metric silently becomes RMSE | score-provider-owned resolver must error before execution |
+| `F-METRIC-001` | high | unknown dag-ml Python in-process selection metric silently becomes RMSE | native metric resolver must error before execution |
 | `F-DIR-001` | high | unknown nirs4all metric silently means minimize/ascending | require explicit objective for custom metrics and error for unresolved built-ins |
 | `F-REPORT-001` | medium | `eval_list` converts metric failures to `None` | reporting policy must make missing/error behavior explicit |
 | `D-METRIC-001` | high | RMSE calculation and argmin duplicated in five bindings plus oracle | replace with native DAG-ML metric/selection contract; bindings adapt only |
@@ -257,7 +256,7 @@ Missing characterization tests required before changing each surface:
 | PyTorch callable invocation in CV and refit | `nirs4all` after DAG contract | gradient/counter integration test; resolution-only tests already exist in PR #46 |
 | JAX task loss and monitor defaults | `nirs4all` | extracted resolver/monitor characterization before adding registry support |
 | shared selection defaults | `nirs4all` | direct tests for `get_best_score_metric` and effective refit resolution |
-| Python metric unknown-name rejection | `dag-ml` score-provider branch | negative binding test replacing silent RMSE fallback |
+| Python metric unknown-name rejection | `dag-ml` native contract branch | negative binding test replacing silent RMSE fallback |
 | local custom loss lifecycle | `dag-ml` bindings | one registry/callback lifetime test per official language |
 
 ## L0 status
@@ -267,9 +266,9 @@ Missing characterization tests required before changing each surface:
   `dag-ml#18`.
 - The PyTorch silent-loss fallback fix is published in draft PR `nirs4all#46`,
   and covered by focused resolution tests.
-- The baseline inventory is complete, but L0 remains open until the concurrent
-  score-provider work publishes its branch, commit, PR and API map, the
-  training/TCV1 work publishes its branch, commit or PR and canonicalization API,
-  and the missing characterization tests above land in their owning repositories.
-- No source or shared-schema file in the active dag-ml worktree was modified by
-  this inventory effort.
+- The training/TCV1 dependency is integrated in draft PR #20 and its canonical
+  API is mapped in the roadmap.
+- The score-provider dependency is closed by the explicit ownership amendment;
+  no external implementation artifact exists to integrate.
+- L0 remains open only for the missing characterization tests in their owning
+  repositories and independent review of this ownership amendment.
