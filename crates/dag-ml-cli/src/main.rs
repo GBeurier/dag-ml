@@ -27,14 +27,15 @@ use dag_ml_core::{
     ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle, ExplanationBlock,
     ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
     FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
-    InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
-    OofCampaign, OperatorVariantModel, ParallelScheduler, Phase, PipelineDslSpec,
-    PortablePredictorPackage, PredictionBlock, PredictionLevel, PredictionPartition,
-    PredictionUnitId, RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport,
-    RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId,
-    RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
-    RuntimePredictionCacheStore, SampleId, ScoreSet, SelectionDecision, SelectionMetric,
-    SelectionPolicy, SequentialScheduler, TrainingRequest, VariantId, SCORE_SET_SCHEMA_VERSION,
+    InMemoryDataProvider, LineageId, LineageRecord, LossSpec, MetricObjective, MetricSpec, NodeId,
+    NodeResult, NodeTask, OofCampaign, OperatorVariantModel, ParallelScheduler, Phase,
+    PipelineDslSpec, PortablePredictorPackage, PredictionBlock, PredictionLevel,
+    PredictionPartition, PredictionUnitId, RefitArtifactRecord, RegressionMetricKind,
+    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage,
+    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
+    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, ScoreSet, SelectionDecision,
+    SelectionMetric, SelectionPolicy, SequentialScheduler, TrainingRequest, VariantId,
+    SCORE_SET_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -218,6 +219,14 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     ValidateGraph {
+        path: PathBuf,
+    },
+    /// Strictly validate a versioned training-loss semantic contract.
+    ValidateLossSpec {
+        path: PathBuf,
+    },
+    /// Strictly validate a versioned metric semantic contract.
+    ValidateMetricSpec {
         path: PathBuf,
     },
     /// Strictly parse, fingerprint and semantically validate a W1 TrainingRequest.
@@ -881,6 +890,14 @@ fn main() -> Result<()> {
         Command::ValidateGraph { path } => {
             let graph = read_external_contract(&path, "graph", GraphSpec::from_json)?;
             println!("valid graph: {}", graph.id);
+        }
+        Command::ValidateLossSpec { path } => {
+            let spec = read_external_contract(&path, "loss spec", LossSpec::from_json)?;
+            println!("valid loss spec: {}", spec.loss_id);
+        }
+        Command::ValidateMetricSpec { path } => {
+            let spec = read_external_contract(&path, "metric spec", MetricSpec::from_json)?;
+            println!("valid metric spec: {}", spec.metric_id);
         }
         Command::ValidateTrainingRequest { path } => {
             let json = std::fs::read_to_string(&path).with_context(|| {
