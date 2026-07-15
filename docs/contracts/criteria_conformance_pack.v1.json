@@ -35,8 +35,28 @@
       "kind": "native_metric_adapter"
     },
     {
+      "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
+      "sha256": "9ed56d7a5112c34b6343d28352fb638e2f28aa9217f952c3565c23155f34ad79",
+      "kind": "python_facade"
+    },
+    {
+      "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
+      "sha256": "517c54ae4e18316ba2d9fe39c5da2c56aede2fba29e5fe0ca3f51665ca65c1ca",
+      "kind": "python_types"
+    },
+    {
+      "path": "crates/dag-ml-py/src/local_implementation.rs",
+      "sha256": "3db63cd8280c1029ac4a7b8c753bf4ed64209e66ddf2c2b7fc7d7b42272cff9e",
+      "kind": "python_local_registry"
+    },
+    {
+      "path": "crates/dag-ml-py/tests/test_local_implementation_registry.py",
+      "sha256": "f9f47d5fe859d9cb5d43cb938fa0c3b462d3ea89e49b773558ae6b8328f66280",
+      "kind": "python_binding_test"
+    },
+    {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "0ccce0d36f66f79b7566719a4dec66ba8ae00135cb74c3e76189ba243aec7d8a",
+      "sha256": "e39ecf65913545e9405ad68c24b2ba094e539fe48275699ca466f2980e0b9b45",
       "kind": "contract_documentation"
     },
     {
@@ -91,7 +111,7 @@
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "caf7564babbb8cd7f8275c5afb085b335a015e1db7d2da0c90a927643d87f3aa",
+      "sha256": "677027c3c4965547f04f4d5f4c70dab8fd992268d9784942beedfcec70ae9597",
       "kind": "generator"
     },
     {
@@ -126,5 +146,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "e165b4fb513545891f461b3950f81991d068a8cd920ca1b469a2a1d72936c943"
+  "pack_checksum": "0165911dac1bef87e1d306d783b589e46a063bbac74892258bd36d7c5052f6c6"
 }

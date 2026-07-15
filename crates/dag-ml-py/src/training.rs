@@ -10,11 +10,11 @@ use std::sync::{Mutex, MutexGuard};
 use dag_ml_core::{
     execute_attached_training_replay, execute_loaded_predictor_replay, execute_training,
     parse_typed_json, ArtifactId, ArtifactLoadMode, AttachedTrainingReplayInput, BundleId,
-    DataBinding, EnvelopeAttestedRuntimeDataProvider, ExternalDataPlanEnvelope,
-    FittedArtifactMode, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
-    LoadedPredictor, LoadedPredictorReplayInput, PortablePredictorPackage, RunId,
-    RuntimeControllerRegistry, SampleRelationSet, TrainingExecutionInput,
-    TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest, TrainingRequest,
+    DataBinding, EnvelopeAttestedRuntimeDataProvider, ExternalDataPlanEnvelope, FittedArtifactMode,
+    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LoadedPredictor,
+    LoadedPredictorReplayInput, PortablePredictorPackage, RunId, RuntimeControllerRegistry,
+    SampleRelationSet, TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome,
+    TrainingReplayRequest, TrainingRequest,
 };
 use pyo3::prelude::*;
 use serde::de::DeserializeOwned;
@@ -164,6 +164,7 @@ impl TrainingResult {
         warnings_json = "[]",
         diagnostics_json = "{}"
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn replay_json(
         &self,
         _py: Python<'_>,
@@ -410,10 +411,8 @@ pub fn execute_loaded_predictor_replay_json(
         "loaded predictor artifact handle map",
     )?;
     validate_loaded_predictor_handles(&package, &artifact_handles)?;
-    let warnings = parse_strict_json::<Vec<String>>(
-        warnings_json,
-        "loaded predictor replay warnings",
-    )?;
+    let warnings =
+        parse_strict_json::<Vec<String>>(warnings_json, "loaded predictor replay warnings")?;
     let diagnostics = parse_strict_json::<BTreeMap<String, serde_json::Value>>(
         diagnostics_json,
         "loaded predictor replay diagnostics",
@@ -429,8 +428,9 @@ pub fn execute_loaded_predictor_replay_json(
             .register_envelope(envelope)
             .map_err(py_core_error)?;
     }
-    let controllers = build_runtime_controllers(py, &predictor.package().effective_plan, &op_callback)
-        .map_err(py_core_error)?;
+    let controllers =
+        build_runtime_controllers(py, &predictor.package().effective_plan, &op_callback)
+            .map_err(py_core_error)?;
 
     let outcome = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
         predictor: &predictor,
@@ -501,7 +501,9 @@ fn validate_loaded_predictor_handles(
     for (artifact_id, handle) in artifact_handles {
         let Some(record) = records.get(artifact_id) else {
             return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
-                format!("loaded predictor sidecar handle references unknown artifact `{artifact_id}`"),
+                format!(
+                    "loaded predictor sidecar handle references unknown artifact `{artifact_id}`"
+                ),
             )));
         };
         if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact) {
@@ -583,8 +585,7 @@ mod tests {
                 PredictionPartition::Validation
             };
             let explicit_model_ports = is_model && self.explicit_model_ports;
-            let mut predictions = if is_model && matches!(task.phase, Phase::FitCv | Phase::Refit)
-            {
+            let mut predictions = if is_model && matches!(task.phase, Phase::FitCv | Phase::Refit) {
                 vec![PredictionBlock {
                     prediction_id: Some(format!(
                         "prediction:{}:{}:{}",
@@ -732,6 +733,7 @@ mod tests {
                     seed: task.seed,
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
                 },
             };
             pythonize::pythonize(py, &result)

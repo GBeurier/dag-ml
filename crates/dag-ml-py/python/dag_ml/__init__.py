@@ -19,6 +19,7 @@ from ._dag_ml import (
     DagMlRuntimeError,
     DagMlSecurityError,
     DagMlValidationError,
+    LocalImplementationRegistry as _NativeLocalImplementationRegistry,
     TrainingResult as _NativeTrainingResult,
     build_execution_plan_json,
     canonical_operator_variant_label,
@@ -32,6 +33,7 @@ from ._dag_ml import (
     execute_training_json as _native_execute_training_json,
     fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
+    loss_execution_attestation_json as _native_loss_execution_attestation_json,
     project_training_request_json,
     sample_relation_set_fingerprint_json,
     sign_training_request_json as _native_sign_training_request_json,
@@ -81,6 +83,8 @@ _FACADE_EXPORTS = [
     "ParameterProjection",
     "CacheNamespace",
     "PortablePredictorPackage",
+    "LocalImplementationRegistry",
+    "loss_execution_attestation",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
     "compile_pipeline_dsl_artifact",
@@ -162,6 +166,60 @@ class JsonContract:
 
     def __eq__(self, other: object) -> bool:
         return type(self) is type(other) and self._json == other._json
+
+
+class LocalImplementationRegistry:
+    """Process-local Python callables resolved by exact DAG-ML descriptors."""
+
+    __slots__ = ("_native",)
+
+    def __init__(self) -> None:
+        self._native = _NativeLocalImplementationRegistry()
+
+    def register_loss(self, loss_reference: Any, implementation: Any) -> None:
+        self._native.register_loss(_coerce_json(loss_reference), implementation)
+
+    def register_metric(self, metric_reference: Any, implementation: Any) -> None:
+        self._native.register_metric(_coerce_json(metric_reference), implementation)
+
+    def resolve_loss(self, loss_reference: Any) -> Any:
+        return self._native.resolve_loss(_coerce_json(loss_reference))
+
+    def resolve_training_loss(self, training_loss_role: Any, phase: str) -> Any:
+        return self._native.resolve_training_loss(
+            _coerce_json(training_loss_role), phase
+        )
+
+    def resolve_metric(self, metric_reference: Any) -> Any:
+        return self._native.resolve_metric(_coerce_json(metric_reference))
+
+    def unregister_loss(self, loss_reference: Any) -> Any:
+        return self._native.unregister_loss(_coerce_json(loss_reference))
+
+    def unregister_metric(self, metric_reference: Any) -> Any:
+        return self._native.unregister_metric(_coerce_json(metric_reference))
+
+    def descriptors(self) -> list[dict[str, Any]]:
+        return json.loads(self._native.descriptors_json())
+
+    def clear(self) -> None:
+        self._native.clear()
+
+    def __len__(self) -> int:
+        return len(self._native)
+
+    def __reduce__(self) -> Any:
+        raise TypeError("DAG-ML local implementation registries cannot be serialized")
+
+
+def loss_execution_attestation(training_loss_role: Any, phase: str) -> dict[str, Any]:
+    """Build the exact lineage attestation for an executed loss role."""
+
+    return json.loads(
+        _native_loss_execution_attestation_json(
+            _coerce_json(training_loss_role), phase
+        )
+    )
 
 
 class GraphSpec(JsonContract):
@@ -728,6 +786,7 @@ __all__ = [
     "HostControllerSpec",
     "HostControllerSpecs",
     "JsonContract",
+    "LocalImplementationRegistry",
     "ParameterProjection",
     "PipelineDslSpec",
     "PortablePredictorPackage",
@@ -758,6 +817,7 @@ __all__ = [
     "fan_out_data_aware_branches",
     "fan_out_data_aware_branches_json",
     "fold_set_fingerprint_json",
+    "loss_execution_attestation",
     "sample_relation_set_fingerprint_json",
     "project_training_request",
     "project_training_request_json",
