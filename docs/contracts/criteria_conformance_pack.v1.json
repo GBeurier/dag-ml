@@ -55,8 +55,23 @@
       "kind": "python_binding_test"
     },
     {
+      "path": "crates/dag-ml-wasm/README.md",
+      "sha256": "a88922910ca4948834532dbe2c891f70134b35fe26f2c6e3cce974aaf8dbe946",
+      "kind": "javascript_binding_documentation"
+    },
+    {
+      "path": "crates/dag-ml-wasm/src/lib.rs",
+      "sha256": "b1f03e721452937382b613b45b824cc2f08c395c45a5b5bc423f25feacb7664f",
+      "kind": "javascript_binding"
+    },
+    {
+      "path": "crates/dag-ml-wasm/src/local_implementation.rs",
+      "sha256": "c7fb3901f1c553eaca4bbf517d5f326910d61d9118224f4009a07081ba8e450d",
+      "kind": "javascript_local_registry"
+    },
+    {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "e39ecf65913545e9405ad68c24b2ba094e539fe48275699ca466f2980e0b9b45",
+      "sha256": "1a63f3efcd8dd7c7b20f000df521585898c7888f86574052ac74c37632fd6132",
       "kind": "contract_documentation"
     },
     {
@@ -105,13 +120,18 @@
       "kind": "fixture"
     },
     {
+      "path": "examples/fixtures/criteria/javascript_local_implementations.v1.json",
+      "sha256": "95b0cbacabea856d6e193e5080cecfb02f75733f936967f92a2e98d3d5ad39ef",
+      "kind": "fixture"
+    },
+    {
       "path": "examples/fixtures/criteria/metric_provider_contracts.v1.json",
       "sha256": "940eb1961335e600568bc03e74b9ef71751f8e6b5429a95c32e39af344d4a725",
       "kind": "fixture"
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "677027c3c4965547f04f4d5f4c70dab8fd992268d9784942beedfcec70ae9597",
+      "sha256": "e012c216324a9675fa00708002bdcc2fababec966217e1211f416169cd6c5a8f",
       "kind": "generator"
     },
     {
@@ -123,6 +143,11 @@
       "path": "parity/criteria/tests/test_criteria_contracts.py",
       "sha256": "dca0ca81478c110b18360878ac146d92d0eca9e7c6130529b67eb180bcd75f52",
       "kind": "parity_test"
+    },
+    {
+      "path": "scripts/smoke_wasm_bindings.cjs",
+      "sha256": "842ab82795cb1e23a968b34fafeef1c79bd9cbcac77aed5c0b4196d4ddf3a3f1",
+      "kind": "javascript_binding_test"
     }
   ],
   "required_negative_cases": [
@@ -146,5 +171,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "0165911dac1bef87e1d306d783b589e46a063bbac74892258bd36d7c5052f6c6"
+  "pack_checksum": "3c86af967fbbb79835cd4bed7934cfb0810d2e00661fffd95f59437f7544c5af"
 }

@@ -52,6 +52,13 @@ implementations remain native catalog entries. The registry itself is not
 serializable. A detached worker or replay process must explicitly register the
 same descriptor before resolving its opaque `registry_key`.
 
+The WASM binding exposes the same primitive as a JavaScript
+`LocalImplementationRegistry`. It retains `Function` objects for
+`binding:javascript` descriptors, resolves loss roles only for their declared
+training phases, and emits the common execution attestation. Registries reject
+JSON serialization. Every browser main thread or worker must register its own
+local callback before execution or replay.
+
 `TrainingRequest.training_losses` is the authoritative pipeline assignment.
 Each role targets a node and an optional controller-local output/head and lists
 the exact training phases where it applies. The resolved roles travel inside
@@ -76,8 +83,7 @@ integration adds only defaulted/optional fields to existing v1 JSON shapes, so
 historical requests, plans, tasks, results, caches and bundles without explicit
 losses remain readable. Future incompatible changes publish new schema ids and
 Rust readers. The generic registry does not alter a C ABI struct layout. The
-remaining binding adapters will preserve this model: WASM will retain
-JavaScript functions, while the C ABI will own callback/user-data trampolines
-for R, MATLAB and other native hosts. Each adapter must enforce its own binding
-identity and runtime capability declarations while preserving the shared exact
-descriptor lookup rules.
+remaining native-host adapters will preserve this model: the C ABI will own
+callback/user-data trampolines for R, MATLAB and other native hosts. Each
+adapter must enforce its own binding identity and runtime capability
+declarations while preserving the shared exact descriptor lookup rules.
