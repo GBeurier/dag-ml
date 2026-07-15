@@ -1,6 +1,6 @@
 //! Typed metric-provider dispatch shared by native and binding-local implementations.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ use crate::criteria::{
 };
 use crate::error::{DagMlError, Result};
 use crate::ids::{FoldId, GroupId, NodeId, ObservationId, SampleId, TargetId, VariantId};
+use crate::implementation_registry::LocalImplementationRegistry;
 use crate::metrics::{compute_metric_per_target, RegressionMetricKind};
 use crate::oof::PredictionPartition;
 use crate::policy::PredictionLevel;
@@ -376,14 +377,9 @@ pub trait MetricProvider: Send + Sync {
     fn evaluate(&self, task: &MetricEvaluationTask) -> Result<MetricEvaluationResult>;
 }
 
-struct RegisteredMetricProvider {
-    descriptor: ImplementationDescriptor,
-    provider: Arc<dyn MetricProvider>,
-}
-
 #[derive(Default)]
 pub struct MetricProviderRegistry {
-    providers: BTreeMap<String, RegisteredMetricProvider>,
+    providers: LocalImplementationRegistry<Arc<dyn MetricProvider>>,
 }
 
 impl MetricProviderRegistry {
@@ -396,43 +392,17 @@ impl MetricProviderRegistry {
         if descriptor.semantic_kind != ImplementationSemanticKind::Metric {
             return task_error("metric provider registry rejects non-metric descriptor");
         }
-        let key = provider_dispatch_key(&descriptor);
-        if self.providers.contains_key(&key) {
-            return task_error(format!("duplicate metric provider registry key `{key}`"));
-        }
-        self.providers.insert(
-            key,
-            RegisteredMetricProvider {
-                descriptor,
-                provider,
-            },
-        );
-        Ok(())
+        self.providers.register(descriptor, provider)
     }
 
     pub fn evaluate(&self, task: &MetricEvaluationTask) -> Result<ValidatedMetricEvaluation> {
         task.validate()?;
-        let key = provider_dispatch_key(&task.metric.implementation);
-        let registered = self.providers.get(&key).ok_or_else(|| {
-            DagMlError::RuntimeValidation(format!(
-                "metric provider registry has no implementation for `{key}`"
-            ))
-        })?;
-        if registered.descriptor != task.metric.implementation {
-            return result_error("registered metric provider descriptor does not match task");
-        }
-        let result = registered.provider.evaluate(task)?;
+        let provider = self.providers.resolve_metric(&task.metric)?;
+        let result = provider.evaluate(task)?;
         result.validate_against(task)?;
         let aggregate = result.reduce(task)?;
         Ok(ValidatedMetricEvaluation { result, aggregate })
     }
-}
-
-fn provider_dispatch_key(descriptor: &ImplementationDescriptor) -> String {
-    descriptor
-        .registry_key
-        .clone()
-        .unwrap_or_else(|| format!("portable_builtin:{}", descriptor.descriptor_fingerprint))
 }
 
 pub fn builtin_metric_reference(metric: RegressionMetricKind) -> Result<MetricReference> {
