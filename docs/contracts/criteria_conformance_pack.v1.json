@@ -66,7 +66,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/implementation_registry.rs",
-      "sha256": "7a2207a0b2c365d05de2d83b623784ec724ca8b622f31135e4d167f0fa89c52d",
+      "sha256": "d2f825b3257ffca01852f25f2ed4e78f6692552baaebd56c187d024b90536845",
       "kind": "rust_local_registry"
     },
     {
@@ -101,7 +101,7 @@
     },
     {
       "path": "crates/dag-ml-py/tests/test_local_implementation_registry.py",
-      "sha256": "036f486add68d3a927a2edfd0fc199ed4a4429099a5176140104a7d6a37688e1",
+      "sha256": "4a40fbda51741eac224cb08aa940ee4bed6bd4ecfd1ca51a6d27faa997f3b615",
       "kind": "python_binding_test"
     },
     {
@@ -245,5 +245,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "5123e2718b27e02039f95d3a4874cad41a277f28cce3f6cf3d87aea28d0dbd18"
+  "pack_checksum": "d922d0c5fab348d6c082a6ec5efe27a158551dc2a4c408c54a0a467f9958bfda"
 }
