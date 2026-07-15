@@ -1,3 +1,5 @@
+:orphan:
+
 # ADR-22: Training-loss and metric contract ownership
 
 **Status**: proposed (2026-07-15)
