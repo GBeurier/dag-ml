@@ -539,6 +539,7 @@
         },
         "loss_attestations": {
           "type": "array",
+          "description": "One attestation per resolved training-loss role for the task phase, preserving the node plan's strict (output_id, phases) order.",
           "items": {
             "$ref": "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json"
           }
