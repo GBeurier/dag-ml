@@ -74,7 +74,7 @@ The cross-language rows are tracked-but-external from dag-ml's perspective.
 Their owning repository must publish its own reviewed PR and green gate before
 the ecosystem criterion can be marked complete.
 
-## Ownership and concurrent score-provider work
+## Ownership and concurrent dependencies
 
 A concurrent agent is implementing a score provider. Until that work lands, the
 following ownership boundary prevents duplicate or conflicting abstractions.
@@ -83,8 +83,15 @@ following ownership boundary prevents duplicate or conflicting abstractions.
 has no published branch or commit available in this worktree. Metric-contract
 implementation is therefore **blocked**. L0 must replace this paragraph with the
 exact branch/commit/PR and a checked-in API map before any metric-related L1/L2
-source or shared-schema edit begins. Loss-only contracts may proceed because
-they do not define metric provider execution.
+source or shared-schema edit begins. Loss-only contract design may proceed
+because it does not define metric provider execution.
+
+The active dag-ml checkout separately contains an unpublished TCV1
+canonicalization implementation as part of concurrent training/runtime work.
+L0 must also record that work's branch, commit or PR and canonicalization API
+before L1 source work computes or validates fingerprints. Loss work must consume
+that API and must not copy the dirty checkout or create a second canonical JSON
+or fingerprint implementation.
 
 | Surface | Loss roadmap ownership | Score-provider ownership | Integration rule |
 | --- | --- | --- | --- |
@@ -194,12 +201,14 @@ complete.
   and tuning default by controller and language;
 - record every unknown-name fallback and every duplicated metric implementation;
 - map concurrent score-provider types and reserve shared integration points;
+- map the concurrent training/TCV1 artifact and reserve its canonicalization API;
 - add focused characterization tests for current defaults before behavior changes.
 
 **Acceptance evidence**:
 
 - inventory links each default to source and a characterization test;
 - the score-provider branch/commit/PR and API map are recorded in this roadmap;
+- the training/TCV1 branch/commit/PR and canonicalization API are recorded;
 - no source changes overlap the active score-provider worktree;
 - independent documentation review confirms ownership and terminology.
 
@@ -211,10 +220,15 @@ complete.
 
 - Rust types for loss semantic specs, loss role references and portability/
   replayability classes;
-- canonical validation and TCV1 fingerprints;
+- canonical validation and TCV1 fingerprints using the published shared
+  canonicalization API, without a second implementation;
 - loss JSON schemas, negative fixtures and contract conformance entries;
 - versioned built-in loss catalog descriptors without importing ML frameworks;
 - compile-time default-resolution contract.
+
+Fingerprint-related L1 source work remains blocked until the training/TCV1
+artifact identified in L0 is published. Contract design can continue, but no
+provisional canonicalizer or incompatible fingerprint format may be committed.
 
 Metric work in this batch is integration-only and remains blocked until the
 score-provider artifact identified in L0 lands. Once unblocked, L1 consumes its
