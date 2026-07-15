@@ -43,6 +43,15 @@ can therefore retain closures or trait objects directly, while language
 bindings retain their own callable handles without putting executable objects
 into serialized contracts.
 
+The Python binding exposes this primitive as `LocalImplementationRegistry`.
+`register_loss` and `register_metric` accept Python callables but keep separate
+semantic resolution paths. Python-local descriptors must use
+`binding_id = "binding:python"`, declare `needs_gil`, and use either the
+`host_local` or `portable_registered` lifecycle; `portable_builtin`
+implementations remain native catalog entries. The registry itself is not
+serializable. A detached worker or replay process must explicitly register the
+same descriptor before resolving its opaque `registry_key`.
+
 `TrainingRequest.training_losses` is the authoritative pipeline assignment.
 Each role targets a node and an optional controller-local output/head and lists
 the exact training phases where it applies. The resolved roles travel inside
@@ -66,6 +75,9 @@ The semantic contracts are standalone v1 contracts. The controller-protocol
 integration adds only defaulted/optional fields to existing v1 JSON shapes, so
 historical requests, plans, tasks, results, caches and bundles without explicit
 losses remain readable. Future incompatible changes publish new schema ids and
-Rust readers. This publication does not add or modify a C ABI symbol, macro or
-struct layout; process-local callback registration is provided by binding
-registries in the next implementation layer.
+Rust readers. The generic registry does not alter a C ABI struct layout. The
+remaining binding adapters will preserve this model: WASM will retain
+JavaScript functions, while the C ABI will own callback/user-data trampolines
+for R, MATLAB and other native hosts. Each adapter must enforce its own binding
+identity and runtime capability declarations while preserving the shared exact
+descriptor lookup rules.

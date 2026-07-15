@@ -72,6 +72,30 @@ portable_artifacts = result.artifacts
 result.detach()  # explicitly release callbacks, views and artifact handles
 ```
 
+Custom losses and metrics remain Python objects in a process-local registry;
+only their DAG-ML references are serialized. A controller resolves the role for
+its current phase, executes the returned callable inside its backend-native
+training loop, then emits the matching attestation:
+
+```python
+implementations = dag_ml.LocalImplementationRegistry()
+implementations.register_loss(weighted_huber_reference, weighted_huber)
+
+def run_node(task):
+    role = task["node_plan"]["training_losses"][0]
+    loss = implementations.resolve_training_loss(role, task["phase"])
+    result = train_with_backend(task, loss)
+    result["lineage"]["loss_attestations"] = [
+        dag_ml.loss_execution_attestation(role, task["phase"])
+    ]
+    return result
+```
+
+Python-local descriptors must use `binding:python`, declare `needs_gil`, and
+be `host_local` or `portable_registered`. Registries and callables cannot be
+pickled or embedded in contracts. Detached replay therefore requires the same
+descriptor to be registered explicitly in the replay process.
+
 Portable package replay is available without the original `TrainingResult`.
 Hosts pass the signed package, a `TrainingReplayRequest` whose `phase` is either
 `PREDICT` or `EXPLAIN`, the current cohort data envelopes, and explicit sidecar
