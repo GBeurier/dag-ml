@@ -35,6 +35,14 @@ shape, which carries only provider identity, capabilities and lifecycle. Local
 callbacks are resolved through opaque registry keys; executable code and import
 instructions are forbidden in canonical JSON.
 
+`LocalImplementationRegistry<T>` is the native process-local resolution
+primitive shared by loss and metric implementations. It stores an arbitrary
+binding-owned executable object as `T`, but resolves it only when the complete
+validated implementation descriptor matches the registered descriptor. Rust
+can therefore retain closures or trait objects directly, while language
+bindings retain their own callable handles without putting executable objects
+into serialized contracts.
+
 `TrainingRequest.training_losses` is the authoritative pipeline assignment.
 Each role targets a node and an optional controller-local output/head and lists
 the exact training phases where it applies. The resolved roles travel inside
