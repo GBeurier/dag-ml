@@ -936,6 +936,7 @@ mod tests {
                     seed: task.seed,
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
                 },
             })
         }
