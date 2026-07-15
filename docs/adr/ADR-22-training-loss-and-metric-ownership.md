@@ -93,4 +93,7 @@ L2 freeze the semantic contracts and controller attestation protocol. The ADR
 must be accepted before the nirs4all compatibility layer becomes authoritative.
 Metric-related L1/L2 source changes are additionally blocked until the active
 score-provider work has a named branch/commit/PR and its API is mapped against
-this ADR. Loss-only semantic contracts may proceed independently.
+this ADR. Loss-only semantic design may proceed independently, but source work
+that computes or validates fingerprints must consume the concurrent
+training/TCV1 canonicalization API after its branch, commit or PR is published;
+it must not copy the dirty worktree or introduce a second canonicalizer.
