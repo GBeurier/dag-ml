@@ -7,7 +7,8 @@ fixturePath = fullfile(bindingRoot, 'fixtures', ...
     'matlab_local_implementations.v1.json');
 fixture = jsondecode(fileread(fixturePath));
 
-calls = 0;
+global DAGML_TEST_LOSS_CALLS;
+DAGML_TEST_LOSS_CALLS = 0;
 registry = dagml.LocalImplementationRegistry();
 registry.registerLoss(fixture.loss_reference, @asymmetricLoss);
 registry.registerMetric(fixture.metric_reference, @biasMetric);
@@ -24,7 +25,7 @@ for index = 1:numel(phases)
     assert(strcmp(attestation.descriptor_fingerprint, ...
         fixture.loss_reference.implementation.descriptor_fingerprint));
 end
-assert(calls == 2);
+assert(DAGML_TEST_LOSS_CALLS == 2);
 
 metricValue = registry.invokeMetric( ...
     fixture.metric_reference, [2, 4], [5, 3]);
@@ -34,7 +35,7 @@ predictTask = fixture.tasks.FIT_CV;
 predictTask.phase = 'PREDICT';
 assertThrows(@() registry.invokeTrainingLoss( ...
     predictTask, 1, 2, 5), 'FIT_CV or REFIT');
-assert(calls == 2);
+assert(DAGML_TEST_LOSS_CALLS == 2);
 
 assertThrows(@() registry.registerLoss( ...
     fixture.foreign_loss_reference, @asymmetricLoss), 'binding:matlab');
@@ -59,13 +60,13 @@ tamperedTask = fixture.tasks.FIT_CV;
 tamperedTask.required_loss_attestations.implementation_fingerprint = 'tampered';
 assertThrows(@() registry.invokeTrainingLoss( ...
     tamperedTask, 1, 2, 5), 'implementation_fingerprint');
-assert(calls == 2);
+assert(DAGML_TEST_LOSS_CALLS == 2);
 
 wrongSchemaTask = fixture.tasks.FIT_CV;
 wrongSchemaTask.required_loss_attestations.schema_version = 2;
 assertThrows(@() registry.invokeTrainingLoss( ...
     wrongSchemaTask, 1, 2, 5), 'schema_version');
-assert(calls == 2);
+assert(DAGML_TEST_LOSS_CALLS == 2);
 
 missingRequirementTask = fixture.tasks.FIT_CV;
 missingRequirementTask.required_loss_attestations = struct([]);
@@ -73,7 +74,7 @@ assertThrows(@() registry.invokeTrainingLoss( ...
     missingRequirementTask, 1, 2, 5), 'count does not match');
 assertThrows(@() registry.invokeTrainingLoss( ...
     fixture.tasks.FIT_CV, 2, 2, 5), 'outside the active');
-assert(calls == 2);
+assert(DAGML_TEST_LOSS_CALLS == 2);
 
 failing = dagml.LocalImplementationRegistry();
 failing.registerLoss(fixture.loss_reference, @failingLoss);
@@ -92,14 +93,16 @@ assert(registry.count() == 0);
 registry.registerMetric(fixture.metric_reference, @biasMetric);
 registry.clear();
 assert(registry.count() == 0);
+clear global DAGML_TEST_LOSS_CALLS;
+end
 
-    function value = asymmetricLoss(target, prediction)
-        calls = calls + 1;
-        difference = prediction - target;
-        weights = ones(size(difference));
-        weights(difference < 0) = 2;
-        value = mean(weights .* difference .^ 2);
-    end
+function value = asymmetricLoss(target, prediction)
+global DAGML_TEST_LOSS_CALLS;
+DAGML_TEST_LOSS_CALLS = DAGML_TEST_LOSS_CALLS + 1;
+difference = prediction - target;
+weights = ones(size(difference));
+weights(difference < 0) = 2;
+value = mean(weights .* difference .^ 2);
 end
 
 function value = biasMetric(target, prediction)
