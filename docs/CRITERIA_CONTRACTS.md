@@ -46,7 +46,9 @@ when the controller or implementation cannot satisfy its required inputs or
 runtime capabilities.
 
 For every configured role, `NodeResult.lineage.loss_attestations` must contain
-one ordered `LossExecutionAttestation`. DAG-ML compares semantic,
+one ordered `LossExecutionAttestation`. Attestations use the resolved node-plan
+order: roles are strictly ordered by `(output_id, phases)` and filtering for the
+current phase preserves that order. DAG-ML compares semantic,
 implementation and descriptor fingerprints, effective parameters, reduction,
 node, output and phase against the resolved role. `FIT_CV` cache namespaces and
 `REFIT` artifact records commit to the corresponding ordered loss-role set;
