@@ -58,7 +58,7 @@
     },
     "token": {
       "type": "string",
-      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f]+$"
     }
   }
 }

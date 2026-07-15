@@ -231,6 +231,82 @@
       }
     },
     {
+      "id": "loss_leading_zero_version",
+      "contract": "loss_spec",
+      "document": {
+        "schema_version": 1,
+        "loss_id": "example.loss.asymmetric@01",
+        "kind": "custom",
+        "task_kinds": [
+          "regression"
+        ],
+        "prediction_kinds": [
+          "regression_point"
+        ],
+        "objective": "minimize",
+        "reduction": "mean",
+        "required_inputs": [
+          "target",
+          "prediction"
+        ],
+        "capabilities": [],
+        "parameters": {},
+        "spec_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "loss_c1_control_id",
+      "contract": "loss_spec",
+      "document": {
+        "schema_version": 1,
+        "loss_id": "example.loss.\u0085unsafe@1",
+        "kind": "custom",
+        "task_kinds": [
+          "regression"
+        ],
+        "prediction_kinds": [
+          "regression_point"
+        ],
+        "objective": "minimize",
+        "reduction": "mean",
+        "required_inputs": [
+          "target",
+          "prediction"
+        ],
+        "capabilities": [],
+        "parameters": {},
+        "spec_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "loss_uppercase_callable_payload",
+      "contract": "loss_spec",
+      "document": {
+        "schema_version": 1,
+        "loss_id": "example.loss.unsafe@1",
+        "kind": "custom",
+        "task_kinds": [
+          "regression"
+        ],
+        "prediction_kinds": [
+          "regression_point"
+        ],
+        "objective": "minimize",
+        "reduction": "mean",
+        "required_inputs": [
+          "target",
+          "prediction"
+        ],
+        "capabilities": [],
+        "parameters": {
+          "nested": {
+            "CallAble": "lambda y, p: 0"
+          }
+        },
+        "spec_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
       "id": "loss_unknown_task",
       "contract": "loss_spec",
       "document": {
