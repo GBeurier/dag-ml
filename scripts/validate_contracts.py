@@ -18,12 +18,12 @@ import os
 import re
 import struct
 import sys
-import unicodedata
 from decimal import Decimal
 from json.encoder import encode_basestring
 from pathlib import Path
 from typing import Any
 
+import unicodedata2 as unicodedata
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 from referencing import Registry, Resource
@@ -32,6 +32,13 @@ from referencing.exceptions import Unresolvable
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+TCV1_UNICODE_VERSION = "17.0.0"
+if unicodedata.unidata_version != TCV1_UNICODE_VERSION:
+    raise RuntimeError(
+        "TCV1 requires Unicode "
+        f"{TCV1_UNICODE_VERSION}, got {unicodedata.unidata_version}"
+    )
 
 from parity.schema_dependencies import (  # noqa: E402
     SchemaDependencyError,

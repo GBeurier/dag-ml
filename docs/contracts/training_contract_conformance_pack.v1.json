@@ -41,7 +41,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/bundle.rs",
-      "sha256": "4e19d9aab6464c305eb7c0c57943e36bac19db882d33c0f9237c4279df598269",
+      "sha256": "fd302f6c3f1950581015dbe5f8ae1b97cf9d7500ecf2acd7e64a6a61504e9051",
       "kind": "native_bundle_contract"
     },
     {
@@ -51,7 +51,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/canonical.rs",
-      "sha256": "4234891277fa4d85e898659caa2234d585367b80720261377010f173f9134348",
+      "sha256": "f0cc478b651381c13576e1d6980597cba7784d687ac6f067042bef2840a467fa",
       "kind": "native_canonical_fingerprint"
     },
     {
@@ -101,7 +101,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/plan.rs",
-      "sha256": "5fd18d73f47ea4a9d732983e6f6754d0557d3a57bd9e5d07608db005276aab26",
+      "sha256": "cae71f749a28c1dc2c74283abb29c2abb113fd45efe67f7ca72bc90859efb3aa",
       "kind": "native_plan_validator"
     },
     {
@@ -121,7 +121,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/task.rs",
-      "sha256": "e2b5716747c9d13222681710c3fbc787570a1a47527f893009b6530d0ddb41ef",
+      "sha256": "450b61c110663013528dec9b4273078774c853c3460ddec908c40a9f5d5ee09b",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -136,7 +136,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/training_runtime.rs",
-      "sha256": "cf29fb4a1a57c21916ac7288e8fb5c0597a50f2f7be4aa9725cd3e92c4fbff62",
+      "sha256": "ab50e10280843f87da75c92d1b733879533eb9c7540fce3fa4124ac7a448e332",
       "kind": "native_runtime_contract"
     },
     {
@@ -166,7 +166,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "32d8979e860e144361a0ef74101e0d7e1c50361e002b3197aca5fe5e8fc1d55c",
+      "sha256": "ea4729d4f9f6144150ab1c104b8323851d123b702562de54771124240c1ecc86",
       "kind": "python_binding"
     },
     {
@@ -371,7 +371,7 @@
     },
     {
       "path": "parity/conformal/oracle.py",
-      "sha256": "1ef8c122df82c889bbce8dd3f4c2ff9d9b34af0251bb34e0b0566e4d445964cc",
+      "sha256": "ef8d9062969fd4f885eb0fa7a90c710f178763cfd006b424e860771bf14668be",
       "kind": "tcv1_oracle_dependency"
     },
     {
@@ -411,7 +411,7 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "10f723ad684acfb387f4df76ac15881983bd7be64ec212f6e80f70b76c948bd5",
+      "sha256": "c0567a482d8368028dcf79ce33a74891a53c9a6a2c54fe76dc2c1fec64368245",
       "kind": "production_validator"
     }
   ],
@@ -484,5 +484,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "9caeeaba05b7312ab77f9b192f58a848d9ae0f716f81a03c455d451875897fbb"
+  "pack_checksum": "75332fa1630cc9904b0805c3cfea939bd237d69d8b10b0997a5940c8fb08d99c"
 }

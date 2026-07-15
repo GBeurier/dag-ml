@@ -142,13 +142,18 @@ fn validate_training_request_json(json: &str) -> PyResult<()> {
 
 #[pyfunction]
 fn sample_relation_set_fingerprint_json(json: &str) -> PyResult<String> {
-    let relations = serde_json::from_str::<SampleRelationSet>(json).map_err(py_serde_error)?;
+    let relations: SampleRelationSet = dag_ml_core::deserialize_external_contract(
+        json,
+        "sample relation set",
+        dag_ml_core::DagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
     relations.fingerprint().map_err(py_core_error)
 }
 
 #[pyfunction]
 fn sign_training_request_json(json: &str) -> PyResult<String> {
-    let mut request = serde_json::from_str::<TrainingRequest>(json).map_err(py_serde_error)?;
+    let mut request = TrainingRequest::from_json(json).map_err(py_core_error)?;
     request.request_fingerprint = request.compute_fingerprint().map_err(py_core_error)?;
     request.validate().map_err(py_core_error)?;
     serde_json::to_string(&request).map_err(py_serde_error)
@@ -582,6 +587,26 @@ fn py_core_error(error: CoreDagMlError) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fingerprint_and_signing_helpers_reject_duplicate_json_keys() {
+        Python::initialize();
+        let relation_error = sample_relation_set_fingerprint_json(
+            r#"{"records":[],"records":[]}"#,
+        )
+        .expect_err("duplicate relation-set keys must be rejected");
+        assert!(relation_error
+            .to_string()
+            .contains("duplicate JSON object key"));
+
+        let request_error = sign_training_request_json(
+            r#"{"schema_version":1,"schema_version":1}"#,
+        )
+        .expect_err("duplicate training-request keys must be rejected");
+        assert!(request_error
+            .to_string()
+            .contains("duplicate JSON object key"));
+    }
 
     #[test]
     fn error_subclasses_map_by_category() {

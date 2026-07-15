@@ -217,7 +217,7 @@ impl FitInfluenceDiagnostic {
                 task.fit_influence.row_weights.len()
             )));
         }
-        if self.fallback_used != !task.fit_influence.warnings.is_empty() {
+        if self.fallback_used == task.fit_influence.warnings.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "fit influence diagnostic fallback_used does not match task warnings".to_string(),
             ));
