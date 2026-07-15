@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "3a14788da7ee58d2f91ac056cd9b24903ed47ead96ff1a1b007ef7d3fa96e75f",
+      "sha256": "6bfd48be07cb2ed785bc1aff82ae364ee109d4424d82bc7b350530ce24472a91",
       "kind": "ci_gate"
     },
     {
@@ -441,7 +441,7 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "c7212f2fd1d83952e881546b45c13875c03dc862e0b41d7320e0618edac9ff77",
+      "sha256": "b914e77fd230f6276cf99970ccb7d5b65936b72776d4ad5773e26a32af9c4614",
       "kind": "production_validator"
     }
   ],
@@ -514,5 +514,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "fdc2b047bae54ed80e00d673dac2171b94a90828dee891a1272d1354a058cc17"
+  "pack_checksum": "07dd8d550662c25aaf71f1d6d4915b6cd89ca60f9cbb730f476de20e338099c7"
 }
