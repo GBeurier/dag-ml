@@ -82,6 +82,7 @@
       "if": { "properties": { "reduction": { "const": "weighted_mean" } } },
       "then": {
         "properties": {
+          "decomposition": { "const": "per_unit" },
           "required_inputs": { "contains": { "const": "sample_weight" } },
           "capabilities": { "contains": { "const": "supports_sample_weights" } }
         }
