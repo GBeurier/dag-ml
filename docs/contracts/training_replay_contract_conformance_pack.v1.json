@@ -96,7 +96,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/lib.rs",
-      "sha256": "a991c357253b6bac2bc8274de71ef5a0bc46ad81b094ef37587edd98461d94ed",
+      "sha256": "72ca9dece143460ab0b8631becd723da83f60eb795b29c696c0e98842dae247c",
       "kind": "training_replay_public_export"
     },
     {
@@ -740,5 +740,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "b7b5483a9ba4fd09f8bfefc63be336ec9fc1eba0f881972a6c292b9e06632a07"
+  "pack_checksum": "fa49a92d796a54f5e31b65b0b68d48107ea5817af034cf6435accca2426be118"
 }

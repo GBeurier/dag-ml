@@ -23,6 +23,7 @@ ARTIFACTS = {
     "crates/dag-ml-cli/src/main.rs": "cli_validator",
     "crates/dag-ml-cli/tests/cli_contracts.rs": "cli_test",
     "crates/dag-ml-core/src/criteria.rs": "rust_contract",
+    "crates/dag-ml-core/src/implementation_registry.rs": "rust_local_registry",
     "crates/dag-ml-core/src/metric_provider.rs": "rust_provider_contract",
     "crates/dag-ml-core/src/metrics.rs": "native_metric_adapter",
     "docs/CRITERIA_CONTRACTS.md": "contract_documentation",

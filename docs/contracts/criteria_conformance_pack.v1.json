@@ -20,8 +20,13 @@
       "kind": "rust_contract"
     },
     {
+      "path": "crates/dag-ml-core/src/implementation_registry.rs",
+      "sha256": "7a2207a0b2c365d05de2d83b623784ec724ca8b622f31135e4d167f0fa89c52d",
+      "kind": "rust_local_registry"
+    },
+    {
       "path": "crates/dag-ml-core/src/metric_provider.rs",
-      "sha256": "73f997881c015e429b75e30a9e0f8092ec10569ccb63d01116c8715e6b16f14c",
+      "sha256": "d5bf4fd72a8f682352d3a29b89370a7d1e79ae0a3f06e416041359fcd0c2b505",
       "kind": "rust_provider_contract"
     },
     {
@@ -31,7 +36,7 @@
     },
     {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "6653fa957c491d11f847070e5853ef8987a51ee7f063d8ae30037a9493db564f",
+      "sha256": "0ccce0d36f66f79b7566719a4dec66ba8ae00135cb74c3e76189ba243aec7d8a",
       "kind": "contract_documentation"
     },
     {
@@ -86,7 +91,7 @@
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "7fe212a26b7ac08d8daa380df30417f8322c6c38e8bab096404733799ed4df55",
+      "sha256": "caf7564babbb8cd7f8275c5afb085b335a015e1db7d2da0c90a927643d87f3aa",
       "kind": "generator"
     },
     {
@@ -121,5 +126,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "a36f5983cade0ead2cbe007f1061130f7ab651e225819f1c23452efa068dd3b0"
+  "pack_checksum": "e165b4fb513545891f461b3950f81991d068a8cd920ca1b469a2a1d72936c943"
 }
