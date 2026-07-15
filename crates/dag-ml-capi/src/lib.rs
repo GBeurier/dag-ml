@@ -44,6 +44,10 @@ use dag_ml_core::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
+mod local_implementation;
+
+pub use local_implementation::*;
+
 pub type DagMlHandle = u64;
 pub const DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION: u32 = 3;
@@ -5644,6 +5648,7 @@ impl RuntimeController for CapiMockController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -5897,6 +5902,7 @@ mod tests {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         };
         if result.validate_for_task(&task).is_err() {
@@ -6137,6 +6143,7 @@ mod tests {
                 data_bindings: Vec::new(),
                 params: BTreeMap::new(),
                 params_fingerprint: "params:controller-fixture".to_string(),
+                training_losses: Vec::new(),
             },
             phase: Phase::FitCv,
             variant_id: Some(VariantId::new("variant:controller").unwrap()),
@@ -6188,6 +6195,7 @@ mod tests {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         };
         result.validate_for_task(&task).unwrap();
@@ -6287,6 +6295,7 @@ mod tests {
                 plugin_version: None,
             },
             params_fingerprint: "params:artifact-fixture".to_string(),
+            training_loss_fingerprint: None,
         }
     }
 
