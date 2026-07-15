@@ -201,6 +201,22 @@
           "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077"
         }
       }
+    },
+    "loss_execution_attestation": {
+      "schema_version": 1,
+      "node_id": "model:custom",
+      "output_id": "prediction",
+      "phase": "FIT_CV",
+      "loss_id": "example.loss.asymmetric@1",
+      "semantic_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0",
+      "implementation_fingerprint": "1f4c71b0b758c5ed25b4e38b132b9ad56fb2f5ff2cf490f7eb8786c4350a62f7",
+      "descriptor_fingerprint": "031c7b120740620dade9ba14a5f2e142831ecb1be47ea7181f68511dfafdd807",
+      "effective_parameters": {
+        "over_weight": 1.0,
+        "under_weight": 2.0
+      },
+      "reduction": "mean",
+      "attestation_fingerprint": "deba8d866539e1f77624cd5ddeabce7bcbe28d5c2b6f7fbe448dc798feaec51b"
     }
   },
   "invalid": [
@@ -517,6 +533,26 @@
             "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077"
           }
         }
+      }
+    },
+    {
+      "id": "loss_attestation_wrong_phase",
+      "contract": "loss_execution_attestation",
+      "document": {
+        "schema_version": 1,
+        "node_id": "model:custom",
+        "output_id": "prediction",
+        "phase": "PREDICT",
+        "loss_id": "example.loss.asymmetric@1",
+        "semantic_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0",
+        "implementation_fingerprint": "1f4c71b0b758c5ed25b4e38b132b9ad56fb2f5ff2cf490f7eb8786c4350a62f7",
+        "descriptor_fingerprint": "031c7b120740620dade9ba14a5f2e142831ecb1be47ea7181f68511dfafdd807",
+        "effective_parameters": {
+          "over_weight": 1.0,
+          "under_weight": 2.0
+        },
+        "reduction": "mean",
+        "attestation_fingerprint": "97c3a9fdec7b4ff51861d966fc543a4a9144eebd768f30f987bf2e265399b551"
       }
     }
   ]

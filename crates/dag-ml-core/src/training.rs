@@ -16,6 +16,7 @@ use crate::controller::{
     ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
     ControllerRegistry,
 };
+use crate::criteria::TrainingLossRoleReference;
 use crate::data::{data_binding_requirement_key, DataBinding, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::graph::{GraphSpec, NodeKind, PortKind};
@@ -954,6 +955,8 @@ pub struct TrainingRequest {
     pub graph: GraphSpec,
     pub campaign: CampaignSpec,
     pub controller_manifests: Vec<ControllerManifest>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub training_losses: Vec<TrainingLossRoleReference>,
     pub data_identities: Vec<TrainingDataIdentity>,
     pub parameter_patches: Vec<ParameterPatch>,
     pub patch_policies: Vec<NodePatchPolicy>,
@@ -1122,7 +1125,7 @@ impl TrainingRequest {
             previous_controller = Some(manifest.controller_id.as_str());
             registry.register(manifest.clone())?;
         }
-        let plan = build_execution_plan(
+        let mut plan = build_execution_plan(
             self.plan_id.clone(),
             self.graph.clone(),
             self.campaign.clone(),
@@ -1130,11 +1133,13 @@ impl TrainingRequest {
         )?;
         validate_output_controllers(&plan, &outputs)?;
         validate_selection_output(&plan, &self.options, &outputs)?;
+        let predictor_node_ids =
+            predictor_closure(&plan, outputs.iter().map(|output| &output.node_id))?;
+        attach_training_losses(&self.training_losses, &predictor_node_ids, &mut plan)?;
+        plan.validate()?;
         validate_training_data_identities(self, &plan)?;
         let parameters =
             project_parameter_patches(&plan, &self.parameter_patches, &self.patch_policies)?;
-        let predictor_node_ids =
-            predictor_closure(&plan, outputs.iter().map(|output| &output.node_id))?;
         validate_scheduler_capabilities(&self.options.scheduler, &plan, &predictor_node_ids)?;
         validate_artifact_mode(&self.options.artifacts, &plan, &predictor_node_ids)?;
         validate_influence_requirements(self, &plan, &predictor_node_ids)?;
@@ -1151,6 +1156,46 @@ impl TrainingRequest {
     }
 }
 
+fn attach_training_losses(
+    roles: &[TrainingLossRoleReference],
+    predictor_node_ids: &BTreeSet<NodeId>,
+    plan: &mut ExecutionPlan,
+) -> Result<()> {
+    let mut previous_key: Option<(NodeId, Option<String>, BTreeSet<Phase>)> = None;
+    for role in roles {
+        role.validate()?;
+        let key = (
+            role.node_id.clone(),
+            role.output_id.clone(),
+            role.phases.clone(),
+        );
+        if previous_key
+            .as_ref()
+            .is_some_and(|previous| previous >= &key)
+        {
+            return contract_error(
+                "training losses must be strictly sorted by node_id, output_id and phases"
+                    .to_string(),
+            );
+        }
+        previous_key = Some(key);
+        if !predictor_node_ids.contains(&role.node_id) {
+            return contract_error(format!(
+                "training loss node `{}` is outside the predictor closure",
+                role.node_id
+            ));
+        }
+        let node_plan = plan.node_plans.get_mut(&role.node_id).ok_or_else(|| {
+            DagMlError::CampaignValidation(format!(
+                "training loss references unknown node `{}`",
+                role.node_id
+            ))
+        })?;
+        node_plan.training_losses.push(role.clone());
+    }
+    Ok(())
+}
+
 /// Candidate-cache identity. Every field that can change predictions is part
 /// of the TCV1 namespace; a requirement key alone is deliberately insufficient.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -1165,6 +1210,8 @@ pub struct CacheNamespace {
     pub target_port_name: String,
     pub phase: Phase,
     pub params_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub training_loss_fingerprint: Option<String>,
     pub data_identity_fingerprint: String,
     pub fold_id: FoldId,
     pub trial_id: String,
@@ -1182,6 +1229,7 @@ impl CacheNamespace {
         consumer_node_id: NodeId,
         target_port_name: String,
         params_fingerprint: String,
+        training_loss_fingerprint: Option<String>,
         data_identity_fingerprint: String,
         fold_id: FoldId,
         trial_id: String,
@@ -1197,6 +1245,7 @@ impl CacheNamespace {
             target_port_name,
             phase: Phase::FitCv,
             params_fingerprint,
+            training_loss_fingerprint,
             data_identity_fingerprint,
             fold_id,
             trial_id,
@@ -1267,6 +1316,9 @@ impl CacheNamespace {
             ("cache namespace", &self.namespace_fingerprint),
         ] {
             validate_sha256(label, fingerprint)?;
+        }
+        if let Some(fingerprint) = &self.training_loss_fingerprint {
+            validate_sha256("cache training loss", fingerprint)?;
         }
         if self.namespace_fingerprint != self.compute_fingerprint()? {
             return contract_error(
@@ -2829,6 +2881,7 @@ mod tests {
             data_identities: vec![data_identity(&campaign)],
             campaign,
             controller_manifests: manifests(),
+            training_losses: Vec::new(),
             parameter_patches: Vec::new(),
             patch_policies: Vec::new(),
             influence_requirements: Vec::new(),
@@ -2891,6 +2944,17 @@ mod tests {
         request.request_fingerprint = request.compute_fingerprint().unwrap();
     }
 
+    fn custom_training_loss_role() -> TrainingLossRoleReference {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/criteria/criteria_contracts.v1.json"
+        ))
+        .unwrap();
+        let mut role: TrainingLossRoleReference =
+            serde_json::from_value(fixture["valid"]["training_loss_role"].clone()).unwrap();
+        role.node_id = NodeId::new("model:base").unwrap();
+        role
+    }
+
     #[test]
     fn training_request_projects_identically_for_refit_on_and_off() {
         let request = request();
@@ -2912,6 +2976,49 @@ mod tests {
         let projection = no_refit.project().unwrap();
         assert_eq!(projection.outputs, refit.outputs);
         assert_eq!(projection.plan, refit.plan);
+    }
+
+    #[test]
+    fn training_request_resolves_custom_loss_into_node_plan() {
+        let mut request = request();
+        request.training_losses = vec![custom_training_loss_role()];
+        let model_manifest = request
+            .controller_manifests
+            .iter_mut()
+            .find(|manifest| manifest.operator_kind == NodeKind::Model)
+            .unwrap();
+        model_manifest.capabilities.extend([
+            ControllerCapability::NeedsPythonGil,
+            ControllerCapability::SupportsConfigurableLoss,
+            ControllerCapability::SupportsCustomLoss,
+            ControllerCapability::SupportsDifferentiableLoss,
+        ]);
+        resign_request(&mut request);
+
+        let projection = request.project().unwrap();
+        let node_plan = &projection.plan.node_plans[&NodeId::new("model:base").unwrap()];
+        assert_eq!(node_plan.training_losses, request.training_losses);
+        assert!(node_plan
+            .training_loss_fingerprint(Phase::FitCv)
+            .unwrap()
+            .is_some());
+        assert!(node_plan
+            .training_loss_fingerprint(Phase::Refit)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn training_request_rejects_loss_without_controller_capability() {
+        let mut request = request();
+        request.training_losses = vec![custom_training_loss_role()];
+        resign_request(&mut request);
+
+        let error = request.project().unwrap_err().to_string();
+        assert!(
+            error.contains("configurable loss"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -3407,6 +3514,7 @@ mod tests {
             target_port_name: "stacked".to_string(),
             phase: Phase::FitCv,
             params_fingerprint: "a".repeat(64),
+            training_loss_fingerprint: None,
             data_identity_fingerprint: "b".repeat(64),
             fold_id: FoldId::new("fold:0").unwrap(),
             trial_id: "trial:0".to_string(),
@@ -3425,13 +3533,14 @@ mod tests {
         base.namespace_fingerprint = zero_fingerprint();
         base.namespace_fingerprint = base.compute_fingerprint().unwrap();
         base.validate_for_identity(&identity).unwrap();
-        for mutation in 0..5 {
+        for mutation in 0..6 {
             let mut changed = base.clone();
             match mutation {
                 0 => changed.params_fingerprint = "d".repeat(64),
-                1 => changed.data_identity_fingerprint = "e".repeat(64),
-                2 => changed.fold_id = FoldId::new("fold:1").unwrap(),
-                3 => changed.trial_id = "trial:1".to_string(),
+                1 => changed.training_loss_fingerprint = Some("e".repeat(64)),
+                2 => changed.data_identity_fingerprint = "f".repeat(64),
+                3 => changed.fold_id = FoldId::new("fold:1").unwrap(),
+                4 => changed.trial_id = "trial:1".to_string(),
                 _ => changed.seed += 1,
             }
             changed.namespace_fingerprint = zero_fingerprint();

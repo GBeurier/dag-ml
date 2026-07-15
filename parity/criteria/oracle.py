@@ -162,6 +162,28 @@ def validate_training_loss_role(document: dict[str, Any]) -> None:
     _validate_reference(document["loss"], "loss", "loss_id", validate_loss_spec)
 
 
+def validate_loss_execution_attestation(document: dict[str, Any]) -> None:
+    require(document.get("schema_version") == 1, "schema_version")
+    for field in ("node_id", "output_id"):
+        value = document.get(field)
+        if value is not None:
+            require(isinstance(value, str) and TOKEN.fullmatch(value) is not None, field)
+    require(document.get("phase") in {"FIT_CV", "REFIT"}, "attestation phase")
+    require(VERSIONED_ID.fullmatch(document.get("loss_id", "")) is not None, "loss_id")
+    for field in (
+        "semantic_fingerprint",
+        "implementation_fingerprint",
+        "descriptor_fingerprint",
+    ):
+        value = document.get(field)
+        require(isinstance(value, str) and SHA256.fullmatch(value) is not None, field)
+    require(document.get("reduction") in {"mean", "sum", "weighted_mean"}, "reduction")
+    parameters = document.get("effective_parameters")
+    require(isinstance(parameters, dict), "effective_parameters")
+    _reject_executable_payload(parameters, "effective_parameters")
+    _require_fingerprint(document, "attestation_fingerprint")
+
+
 def validate_metric_role(document: dict[str, Any]) -> None:
     require(document.get("schema_version") == 1, "schema_version")
     if document.get("missing_value_policy") == "skip":
@@ -330,6 +352,7 @@ VALIDATORS: dict[str, Callable[[dict[str, Any]], None]] = {
     "metric_spec": validate_metric_spec,
     "implementation_descriptor": validate_implementation_descriptor,
     "training_loss_role": validate_training_loss_role,
+    "loss_execution_attestation": validate_loss_execution_attestation,
     "metric_role": validate_metric_role,
     "metric_evaluation_task": validate_metric_evaluation_task,
 }

@@ -1660,6 +1660,7 @@ pub(crate) fn materialize_replay_artifact_handles(
             controller_id: artifact.controller_id.clone(),
             artifact: artifact.artifact.clone(),
             params_fingerprint: artifact.params_fingerprint.clone(),
+            training_loss_fingerprint: artifact.training_loss_fingerprint.clone(),
         })?;
         if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact) {
             return Err(DagMlError::RuntimeValidation(format!(

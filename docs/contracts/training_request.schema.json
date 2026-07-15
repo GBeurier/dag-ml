@@ -37,6 +37,13 @@
       },
       "description": "Strictly sorted by controller_id; duplicate ids are invalid."
     },
+    "training_losses": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/training_loss_role.v1.schema.json"
+      },
+      "description": "Strictly sorted node/output loss roles resolved into the effective predictor plan for FIT_CV and REFIT."
+    },
     "data_identities": {
       "type": "array",
       "items": { "$ref": "#/$defs/training_data_identity" },

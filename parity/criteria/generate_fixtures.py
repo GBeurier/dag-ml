@@ -27,6 +27,7 @@ ARTIFACTS = {
     "crates/dag-ml-core/src/metrics.rs": "native_metric_adapter",
     "docs/CRITERIA_CONTRACTS.md": "contract_documentation",
     "docs/contracts/implementation_descriptor.schema.json": "schema",
+    "docs/contracts/loss_execution_attestation.schema.json": "schema",
     "docs/contracts/loss_spec.schema.json": "schema",
     "docs/contracts/metric_evaluation_result.schema.json": "schema",
     "docs/contracts/metric_evaluation_task.schema.json": "schema",
@@ -163,6 +164,42 @@ def main() -> None:
         "spec": valid["loss_spec"],
         "implementation": valid["loss_implementation"],
     }
+    valid["loss_execution_attestation"] = {
+        "schema_version": 1,
+        "node_id": valid["training_loss_role"]["node_id"],
+        "output_id": valid["training_loss_role"]["output_id"],
+        "phase": "FIT_CV",
+        "loss_id": valid["loss_spec"]["loss_id"],
+        "semantic_fingerprint": valid["loss_spec"]["spec_fingerprint"],
+        "implementation_fingerprint": valid["loss_implementation"][
+            "implementation_fingerprint"
+        ],
+        "descriptor_fingerprint": valid["loss_implementation"][
+            "descriptor_fingerprint"
+        ],
+        "effective_parameters": copy.deepcopy(valid["loss_spec"]["parameters"]),
+        "reduction": valid["loss_spec"]["reduction"],
+        "attestation_fingerprint": "",
+    }
+    valid["loss_execution_attestation"]["attestation_fingerprint"] = fingerprint_without(
+        valid["loss_execution_attestation"], "attestation_fingerprint"
+    )
+    wrong_phase = copy.deepcopy(valid["loss_execution_attestation"])
+    wrong_phase["phase"] = "PREDICT"
+    wrong_phase["attestation_fingerprint"] = fingerprint_without(
+        wrong_phase, "attestation_fingerprint"
+    )
+    fixture["invalid"] = [
+        case
+        for case in fixture["invalid"]
+        if case["id"] != "loss_attestation_wrong_phase"
+    ] + [
+        {
+            "id": "loss_attestation_wrong_phase",
+            "contract": "loss_execution_attestation",
+            "document": wrong_phase,
+        }
+    ]
     valid["metric_role"]["metric"] = {
         "spec": valid["metric_spec"],
         "implementation": valid["metric_implementation"],

@@ -536,6 +536,12 @@
           "additionalProperties": {
             "type": "number"
           }
+        },
+        "loss_attestations": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json"
+          }
         }
       }
     }

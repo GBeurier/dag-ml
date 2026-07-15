@@ -16,7 +16,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/criteria.rs",
-      "sha256": "cacd70df9e57a2f04a98f6f83b4eeb62aa90b768e0edca6306b596de83359e56",
+      "sha256": "6f3e456f3512340fe3849925b6033529bcd5d29e0543c1dbbfe3dbdce1c6c149",
       "kind": "rust_contract"
     },
     {
@@ -31,12 +31,17 @@
     },
     {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "8e0ee62145503c49881eae583c1988f9c1fbb17bd227fe04c7585ae973441f85",
+      "sha256": "c1046f857a96b079f32242222cd4a32934a5c293f8ecb9509d2de43057dd5ccd",
       "kind": "contract_documentation"
     },
     {
       "path": "docs/contracts/implementation_descriptor.schema.json",
       "sha256": "7fc37cd6dda7f7fcdb778facd691a5b27e64c825051965dd0948cfdb09092210",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/loss_execution_attestation.schema.json",
+      "sha256": "d3997aa28a9a785ac42ad328509ba001136fd5796b473a5246e2bc96b2577028",
       "kind": "schema"
     },
     {
@@ -71,7 +76,7 @@
     },
     {
       "path": "examples/fixtures/criteria/criteria_contracts.v1.json",
-      "sha256": "07284ac6c366c87ffc23af805410f79cd1d4875f2449fcb3dc2c4c3e45c1e5be",
+      "sha256": "3b32a2d754253a4162bb230e0ca1ab79baa9c5ce1cb59fbd5f3617aa6eb9a032",
       "kind": "fixture"
     },
     {
@@ -81,17 +86,17 @@
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "5d420161c10293d7f594d176ad38e39d064dda1f19e69572ee2262e4c5032ad6",
+      "sha256": "7fe212a26b7ac08d8daa380df30417f8322c6c38e8bab096404733799ed4df55",
       "kind": "generator"
     },
     {
       "path": "parity/criteria/oracle.py",
-      "sha256": "03508d1815c897a31423ec46eef611757b00ba45a353b256b646f45833e7ddbc",
+      "sha256": "225def2c85c761ddb7bba1caab1acdaceee6369f602afc59aa1abd1f38b21e66",
       "kind": "independent_validator"
     },
     {
       "path": "parity/criteria/tests/test_criteria_contracts.py",
-      "sha256": "457d485773542c815132a1bd62725f462ed141e43dfb72f8678dd0b8e8aa1fbb",
+      "sha256": "dca0ca81478c110b18360878ac146d92d0eca9e7c6130529b67eb180bcd75f52",
       "kind": "parity_test"
     }
   ],
@@ -107,6 +112,7 @@
     "metric_without_objective",
     "host_local_descriptor_without_registry_key",
     "selection_metric_skips_missing_values",
+    "loss_attestation_wrong_phase",
     "custom_metric_without_objective",
     "provider_result_wrong_scope",
     "provider_result_wrong_coverage",
@@ -115,5 +121,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "ee34c0acb4960e86a26ee6ffd53e95c9c6fb79f0e5ea019d2c58940db8ae8e7b"
+  "pack_checksum": "2cd39c3316c71be9446fbcb10aeb089d5dd73c96b6eb9741fa68dd85c2025b3e"
 }

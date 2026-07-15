@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json",
+  "title": "DAG-ML LossExecutionAttestation v1",
+  "description": "Controller attestation of the exact resolved loss implementation executed for one node output during FIT_CV or REFIT.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "node_id",
+    "phase",
+    "loss_id",
+    "semantic_fingerprint",
+    "implementation_fingerprint",
+    "descriptor_fingerprint",
+    "effective_parameters",
+    "reduction",
+    "attestation_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "node_id": { "$ref": "#/$defs/identifier" },
+    "output_id": { "$ref": "#/$defs/token" },
+    "phase": { "enum": ["FIT_CV", "REFIT"] },
+    "loss_id": { "$ref": "#/$defs/versioned_id" },
+    "semantic_fingerprint": { "$ref": "#/$defs/sha256" },
+    "implementation_fingerprint": { "$ref": "#/$defs/sha256" },
+    "descriptor_fingerprint": { "$ref": "#/$defs/sha256" },
+    "effective_parameters": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/loss_spec.v1.schema.json#/$defs/parameters"
+    },
+    "reduction": { "enum": ["mean", "sum", "weighted_mean"] },
+    "attestation_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML canonical SHA-256 with only attestation_fingerprint omitted."
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "token": {
+      "type": "string",
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "versioned_id": {
+      "type": "string",
+      "pattern": "^[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+@[1-9][0-9]*$"
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

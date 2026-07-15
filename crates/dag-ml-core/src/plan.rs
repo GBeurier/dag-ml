@@ -9,6 +9,10 @@ use crate::controller::{
     ControllerRegistry, RngPolicy,
 };
 use crate::controller_adapter::representation_type_id;
+use crate::criteria::{
+    CriterionInput, ImplementationCapability, LossCapability, SemanticSpecKind,
+    TrainingLossRoleReference,
+};
 use crate::data::{
     BranchViewMode, BranchViewPlan, DataBinding, ExternalDataPlanEnvelope, ModelInputFusionMode,
     ModelInputPortSpec, ModelInputSpec, RepresentationPlan, SOURCE_INDEX_METADATA_KEY,
@@ -196,6 +200,8 @@ pub struct NodePlan {
     pub supported_phases: BTreeSet<Phase>,
     #[serde(default)]
     pub controller_capabilities: BTreeSet<ControllerCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub training_losses: Vec<TrainingLossRoleReference>,
     pub fit_scope: ControllerFitScope,
     pub rng_policy: RngPolicy,
     pub artifact_policy: ArtifactPolicy,
@@ -211,6 +217,26 @@ pub struct NodePlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inner_cv: Option<NestedCvSpec>,
     pub params_fingerprint: String,
+}
+
+impl NodePlan {
+    pub fn training_losses_for_phase(
+        &self,
+        phase: Phase,
+    ) -> impl Iterator<Item = &TrainingLossRoleReference> {
+        self.training_losses
+            .iter()
+            .filter(move |role| role.phases.contains(&phase))
+    }
+
+    pub fn training_loss_fingerprint(&self, phase: Phase) -> Result<Option<String>> {
+        let roles = self.training_losses_for_phase(phase).collect::<Vec<_>>();
+        if roles.is_empty() {
+            Ok(None)
+        } else {
+            stable_json_fingerprint(&roles).map(Some)
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -418,6 +444,7 @@ impl ExecutionPlan {
                 binding.validate()?;
             }
             validate_data_binding_requirements(node_id, plan, manifest, graph_node)?;
+            validate_node_training_losses(plan)?;
             let actual_params_fingerprint = stable_json_fingerprint(&plan.params)?;
             if actual_params_fingerprint != plan.params_fingerprint {
                 return Err(DagMlError::Planning(format!(
@@ -704,6 +731,121 @@ fn validate_data_binding_requirements(
             manifest,
             branch_view.as_ref(),
         )?;
+    }
+    Ok(())
+}
+
+fn validate_node_training_losses(plan: &NodePlan) -> Result<()> {
+    let mut previous_key: Option<(Option<String>, BTreeSet<Phase>)> = None;
+    let mut occupied_phases = BTreeSet::new();
+    for role in &plan.training_losses {
+        role.validate()?;
+        if role.node_id != plan.node_id {
+            return Err(DagMlError::Planning(format!(
+                "node plan `{}` contains training loss for `{}`",
+                plan.node_id, role.node_id
+            )));
+        }
+        let key = (role.output_id.clone(), role.phases.clone());
+        if previous_key
+            .as_ref()
+            .is_some_and(|previous| previous >= &key)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node plan `{}` training losses must be strictly sorted by output_id and phases",
+                plan.node_id
+            )));
+        }
+        previous_key = Some(key);
+        for phase in &role.phases {
+            if !plan.supported_phases.contains(phase) {
+                return Err(DagMlError::Planning(format!(
+                    "node `{}` has a training loss for unsupported phase {phase:?}",
+                    plan.node_id
+                )));
+            }
+            if !occupied_phases.insert((role.output_id.clone(), *phase)) {
+                return Err(DagMlError::Planning(format!(
+                    "node `{}` has overlapping training losses for output {:?} in phase {phase:?}",
+                    plan.node_id, role.output_id
+                )));
+            }
+        }
+        if !plan
+            .controller_capabilities
+            .contains(&ControllerCapability::SupportsConfigurableLoss)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` configures a training loss but its controller does not support configurable loss",
+                plan.node_id
+            )));
+        }
+        if role.loss.spec.kind == SemanticSpecKind::Custom
+            && !plan
+                .controller_capabilities
+                .contains(&ControllerCapability::SupportsCustomLoss)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` configures a custom loss but its controller does not support custom loss",
+                plan.node_id
+            )));
+        }
+        if role
+            .loss
+            .spec
+            .capabilities
+            .contains(&LossCapability::Differentiable)
+            && !plan
+                .controller_capabilities
+                .contains(&ControllerCapability::SupportsDifferentiableLoss)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` configures a differentiable loss but its controller does not support differentiable loss",
+                plan.node_id
+            )));
+        }
+        if role
+            .loss
+            .spec
+            .required_inputs
+            .contains(&CriterionInput::SampleWeight)
+            && !plan
+                .controller_capabilities
+                .contains(&ControllerCapability::SupportsSampleWeights)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` loss requires sample weights but its controller does not support them",
+                plan.node_id
+            )));
+        }
+        if role
+            .loss
+            .spec
+            .required_inputs
+            .contains(&CriterionInput::MissingMask)
+            && !plan
+                .controller_capabilities
+                .contains(&ControllerCapability::SupportsMissingMasks)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` loss requires missing masks but its controller does not support them",
+                plan.node_id
+            )));
+        }
+        if role
+            .loss
+            .implementation
+            .capabilities
+            .contains(&ImplementationCapability::NeedsGil)
+            && !plan
+                .controller_capabilities
+                .contains(&ControllerCapability::NeedsPythonGil)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` loss implementation needs the Python GIL but its controller does not declare it",
+                plan.node_id
+            )));
+        }
     }
     Ok(())
 }
@@ -1060,6 +1202,7 @@ pub fn build_execution_plan(
                 controller_version: manifest.controller_version.clone(),
                 supported_phases: manifest.supported_phases.clone(),
                 controller_capabilities: manifest.capabilities.clone(),
+                training_losses: Vec::new(),
                 fit_scope: manifest.fit_scope,
                 rng_policy: manifest.rng_policy,
                 artifact_policy: manifest.artifact_policy,
