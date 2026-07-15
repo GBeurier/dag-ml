@@ -193,6 +193,31 @@ class LocalImplementationRegistry:
     def resolve_metric(self, metric_reference: Any) -> Any:
         return self._native.resolve_metric(_coerce_json(metric_reference))
 
+    def invoke_training_loss(
+        self,
+        node_task: Any,
+        *args: Any,
+        role_index: int = 0,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Execute one native-required local loss and return its attestation."""
+
+        implementation, attestation_json = self._native.resolve_task_training_loss(
+            _coerce_json(node_task), role_index
+        )
+        try:
+            value = implementation(*args, **kwargs)
+        except Exception as error:
+            raise DagMlRuntimeError(
+                f"Python training loss callback raised an exception: {error}"
+            ) from error
+        return {"value": value, "attestation": json.loads(attestation_json)}
+
+    def evaluate_metric(self, metric_task: Any) -> dict[str, Any]:
+        """Execute a local metric for a native typed evaluation task."""
+
+        return json.loads(self._native.evaluate_metric(_coerce_json(metric_task)))
+
     def unregister_loss(self, loss_reference: Any) -> Any:
         return self._native.unregister_loss(_coerce_json(loss_reference))
 

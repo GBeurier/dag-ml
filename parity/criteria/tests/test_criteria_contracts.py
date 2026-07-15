@@ -27,6 +27,7 @@ FIXTURE = ROOT / "examples/fixtures/criteria/criteria_contracts.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
 PROVIDER_FIXTURE = ROOT / "examples/fixtures/criteria/metric_provider_contracts.v1.json"
 R_FIXTURE = ROOT / "bindings/r/inst/extdata/r_local_implementations.v1.json"
+PYTHON_FIXTURE = ROOT / "examples/fixtures/criteria/python_local_implementations.v1.json"
 MATLAB_FIXTURE = ROOT / "bindings/matlab/fixtures/matlab_local_implementations.v1.json"
 SCHEMA_IDS = {
     "loss_spec": "https://github.com/GBeurier/dag-ml/schemas/loss_spec.v1.schema.json",
@@ -160,7 +161,7 @@ def test_metric_provider_fixture_has_independent_task_result_and_refusal_parity(
         validate_metric_evaluation_result(nonfinite, task)
 
 
-@pytest.mark.parametrize("fixture_path", [R_FIXTURE, MATLAB_FIXTURE])
+@pytest.mark.parametrize("fixture_path", [PYTHON_FIXTURE, R_FIXTURE, MATLAB_FIXTURE])
 def test_host_local_registry_fixture_uses_native_node_task_requirements(
     fixture_path: Path,
 ) -> None:
@@ -189,6 +190,10 @@ def test_host_local_registry_fixture_uses_native_node_task_requirements(
         assert requirement["attestation_fingerprint"] == fingerprint_without(
             requirement, "attestation_fingerprint"
         )
+    if fixture_path == PYTHON_FIXTURE:
+        metric_task = fixture["metric_task"]
+        assert schema_errors("metric_evaluation_task", metric_task) == []
+        VALIDATORS["metric_evaluation_task"](metric_task)
 
 
 def test_conformance_pack_is_exact_and_self_fingerprinted() -> None:
