@@ -21,6 +21,26 @@ target. It keeps five concepts independent:
 The roadmap is native-first at the contract and orchestration layers. It does
 not move feature matrices, model objects or autodiff tensors into Rust.
 
+## Implementation status (2026-07-15)
+
+All entries marked complete refer to published draft branches and reviewed
+commits. They are not merged release behavior.
+
+| Level | Status | Published evidence and remaining boundary |
+| --- | --- | --- |
+| L0 - decisions and inventory | Complete | ADR-22 and roadmap in `dag-ml#18`; pinned inventory in `dag-ml#19` |
+| L1 - native semantic contracts | Complete for DAG-ML | `LossSpec`, `MetricSpec`, implementation descriptors, typed roles and provider contracts in `dag-ml#21` |
+| L2 - controller/runtime protocol | Complete for DAG-ML | loss planning, task requirements, capabilities, attestation, cache, artifact and replay commitments in `dag-ml#22` and `dag-ml#24` |
+| L3 - Python reference binding | Complete | local registries, direct callable registration, stable reconstruction identity, callback lifetime tests and `FIT_CV`/`REFIT` execution proof in `dag-ml#23` and `dag-ml#24` |
+| L4 - full Python nirs4all migration | Pending approval | only the P0 rejection of unknown PyTorch loss names is published in `nirs4all#46`; production TensorFlow/PyTorch controllers are not migrated |
+| L5 - other native bindings | Protocol complete; controller integration pending | Rust, C ABI and JavaScript/WASM registries and callback invocation are in `dag-ml#23`; real nirs4all algorithm controllers still need to consume them |
+| L6 - nirs4all aggregate and language pipelines | Aggregate exposure complete; pipelines pending | thin Rust/Python/R/JS-WASM/MATLAB exposure in `nirs4all-core#2`, including R and MATLAB facades over the C ABI; one real custom-loss nirs4all pipeline per language is still required |
+| L7 - advanced portability | Deferred | `portable_registered`, composite losses and multi-objective policies follow stabilization of the simple host-local contract |
+
+`dag-ml-data#15` supplies the optional data/target content fingerprints required
+by the shared lineage contract. It is an integration dependency, not a second
+loss or metric implementation authority.
+
 ## Non-negotiable completion criteria
 
 The program is complete only when all of the following are evidenced in current
