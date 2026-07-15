@@ -14,7 +14,7 @@ execution <- implementations$invoke_training_loss(
   target = y_true,
   prediction = y_pred
 )
-result$lineage$loss_attestations <- list(execution$attestation)
+loss_attestations <- list(execution$attestation)
 ```
 
 `invoke_training_loss()` accepts only `FIT_CV` and `REFIT`. It validates the
