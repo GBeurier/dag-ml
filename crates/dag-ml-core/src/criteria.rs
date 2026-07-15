@@ -366,6 +366,11 @@ impl MetricSpec {
         {
             return contract_error("weighted_mean metric requires sample_weight input");
         }
+        if self.reduction == MetricReduction::WeightedMean
+            && self.decomposition != MetricDecomposition::PerUnit
+        {
+            return contract_error("weighted_mean metric requires per_unit decomposition");
+        }
         if self.decomposition != MetricDecomposition::Global
             && !self.capabilities.contains(&MetricCapability::Decomposable)
         {
@@ -910,6 +915,7 @@ pub fn builtin_metric_catalog() -> Result<BTreeMap<String, MetricSpec>> {
         PredictionLevel::Group,
     ]);
     let target_prediction = BTreeSet::from([CriterionInput::Target, CriterionInput::Prediction]);
+    let decomposable = BTreeSet::from([MetricCapability::Decomposable]);
     let mut specs = Vec::new();
     for (name, objective) in [
         ("mse", MetricObjective::Minimize),
@@ -924,10 +930,10 @@ pub fn builtin_metric_catalog() -> Result<BTreeMap<String, MetricSpec>> {
             BTreeSet::from([PredictionKind::RegressionPoint]),
             objective,
             all_levels.clone(),
-            MetricDecomposition::Global,
-            MetricReduction::Global,
+            MetricDecomposition::PerOutput,
+            MetricReduction::Mean,
             target_prediction.clone(),
-            BTreeSet::new(),
+            decomposable.clone(),
             empty_parameters(),
         )?);
     }
@@ -955,10 +961,10 @@ pub fn builtin_metric_catalog() -> Result<BTreeMap<String, MetricSpec>> {
             BTreeSet::from([PredictionKind::ClassLabel]),
             MetricObjective::Maximize,
             all_levels.clone(),
-            MetricDecomposition::Global,
-            MetricReduction::Global,
+            MetricDecomposition::PerOutput,
+            MetricReduction::Mean,
             target_prediction.clone(),
-            BTreeSet::new(),
+            decomposable.clone(),
             empty_parameters(),
         )?);
     }
@@ -999,7 +1005,7 @@ fn validate_versioned_id(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_token(label: &str, value: &str) -> Result<()> {
+pub(crate) fn validate_token(label: &str, value: &str) -> Result<()> {
     if value.is_empty()
         || value.trim() != value
         || value.chars().any(char::is_whitespace)
@@ -1088,7 +1094,7 @@ fn validate_descriptor_semantic(
     Ok(())
 }
 
-fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
+pub(crate) fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
     if value.len() != FINGERPRINT_LEN
         || !value
             .bytes()
@@ -1099,7 +1105,11 @@ fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn fingerprint_without<T: Serialize>(value: &T, field: &str, label: &str) -> Result<String> {
+pub(crate) fn fingerprint_without<T: Serialize>(
+    value: &T,
+    field: &str,
+    label: &str,
+) -> Result<String> {
     let json = serde_json::to_string(value)?;
     parse_typed_json(&json)
         .and_then(|value| value.fingerprint_without(field))
@@ -1313,6 +1323,30 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("cannot use global reduction"));
+
+        let error = MetricSpec::new(
+            "example.metric.bad-weighted-output@1",
+            SemanticSpecKind::Custom,
+            BTreeSet::from([LearningTaskKind::Regression]),
+            BTreeSet::from([PredictionKind::RegressionPoint]),
+            MetricObjective::Minimize,
+            BTreeSet::from([PredictionLevel::Sample]),
+            MetricDecomposition::PerOutput,
+            MetricReduction::WeightedMean,
+            BTreeSet::from([
+                CriterionInput::Target,
+                CriterionInput::Prediction,
+                CriterionInput::SampleWeight,
+            ]),
+            BTreeSet::from([
+                MetricCapability::Decomposable,
+                MetricCapability::SupportsSampleWeights,
+            ]),
+            empty_parameters(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("requires per_unit decomposition"));
     }
 
     #[test]

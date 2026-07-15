@@ -86,7 +86,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/metrics.rs",
-      "sha256": "deb1c458c2d0bd69b15badcec28b2f94f294e12d37fec7883dcc47057f3fb657",
+      "sha256": "2fd5b10eaa6f198e450ea1a84d954b6a44c95facd7a87700a7d6b958e880b78a",
       "kind": "typed_cache_dependency"
     },
     {
@@ -484,5 +484,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "75332fa1630cc9904b0805c3cfea939bd237d69d8b10b0997a5940c8fb08d99c"
+  "pack_checksum": "77c96dd4a5bdb51c1c1ce4d6016d41099477550c82b21387c13bb4168629e1fc"
 }
