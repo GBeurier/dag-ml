@@ -86,7 +86,7 @@
     },
     {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "7b94fc201054f401fafcac32249bee46a31cb24013d4482f8864f57f551a554f",
+      "sha256": "52ec3effe7da8ba9085b4c23f76225ec030973cd8dcbf2ab3976fdeb4da2b53e",
       "kind": "contract_documentation"
     },
     {
@@ -191,5 +191,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "66d170977b49a8792942a7f7ce3290a6b5e2393011386f840498e12f25f7022e"
+  "pack_checksum": "c5bf1700de0f1876fca5b747733c9c76973d8a530ae23c67ec3d14ebe5fc4717"
 }

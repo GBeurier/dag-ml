@@ -6154,6 +6154,7 @@ mod tests {
             data_views: BTreeMap::new(),
             prediction_inputs: BTreeMap::new(),
             artifact_inputs: BTreeMap::new(),
+            required_loss_attestations: Vec::new(),
             fit_influence: dag_ml_core::FitInfluenceTask::default(),
             seed: Some(42),
         };

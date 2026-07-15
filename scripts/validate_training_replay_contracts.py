@@ -148,8 +148,8 @@ PACK_PATH = ROOT / "docs/contracts/training_replay_contract_conformance_pack.v1.
 BASE_PACK_PATH = ROOT / "docs/contracts/training_contract_conformance_pack.v1.json"
 TRAINING_FIXTURE_ROOT = ROOT / "examples/fixtures/training"
 FIXTURE_ROOT = TRAINING_FIXTURE_ROOT / "replay"
-BASE_PACK_SHA256 = "f8a070e2b5cd73bc953913309f3a8c6e1e85ae44dec25ee63d49dd2c2cc81597"
-BASE_PACK_CHECKSUM = "5bb095982c0e07e014f854af3e43befe4ee793befda48079df21ff314101f0c4"
+BASE_PACK_SHA256 = "8946257a3399470815954e06bbe2db37201b0419002e294693468858b4a33ea7"
+BASE_PACK_CHECKSUM = "fdc2b047bae54ed80e00d673dac2171b94a90828dee891a1272d1354a058cc17"
 LEGACY_AUTHORITY_SHA256 = {
     "docs/contracts/replay_outcome.schema.json": "c57279e8c76e4e2467af0eca5eb59804a2f7bb97bec6cce9d8b23975f223c36a",
     "examples/fixtures/estimator/replay_outcome_predict.v1.json": "037fad7f3cb907f3474cce4f51526538f2c4d6fcad3af93a320c6d282ce470c5",

@@ -6201,6 +6201,7 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        required_loss_attestations: Vec::new(),
         fit_influence,
         seed: Some(7),
     }
@@ -6362,6 +6363,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
         seed: Some(99),
     };
@@ -6404,6 +6406,12 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
     let mut loss_task = task.clone();
     let loss_role = runtime_custom_loss_role(loss_task.node_plan.node_id.clone());
     loss_task.node_plan.training_losses = vec![loss_role.clone()];
+    loss_task.required_loss_attestations =
+        NodeTask::required_loss_attestations_for(&loss_task.node_plan, loss_task.phase).unwrap();
+    assert_eq!(
+        serde_json::to_value(&loss_task).unwrap()["required_loss_attestations"],
+        serde_json::to_value(&loss_task.required_loss_attestations).unwrap()
+    );
     let missing_attestation = controller.invoke(&loss_task).unwrap();
     assert!(missing_attestation
         .validate_for_task(&loss_task)
@@ -6422,6 +6430,11 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
     second_role.output_id = Some("b".to_string());
     let mut multi_output_task = loss_task.clone();
     multi_output_task.node_plan.training_losses = vec![first_role.clone(), second_role.clone()];
+    multi_output_task.required_loss_attestations = NodeTask::required_loss_attestations_for(
+        &multi_output_task.node_plan,
+        multi_output_task.phase,
+    )
+    .unwrap();
     let mut reversed = controller.invoke(&multi_output_task).unwrap();
     reversed.lineage.loss_attestations = vec![
         LossExecutionAttestation::for_role(&second_role, Phase::FitCv).unwrap(),
@@ -6435,6 +6448,8 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
 
     let mut refit_task = loss_task.clone();
     refit_task.phase = Phase::Refit;
+    refit_task.required_loss_attestations =
+        NodeTask::required_loss_attestations_for(&refit_task.node_plan, refit_task.phase).unwrap();
     let mut refit_result = controller.invoke(&refit_task).unwrap();
     refit_result.lineage.loss_attestations =
         vec![LossExecutionAttestation::for_role(&loss_role, Phase::Refit).unwrap()];
@@ -6457,6 +6472,16 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         .unwrap_err()
         .to_string()
         .contains("does not match"));
+
+    let mut stale_requirements = loss_task.clone();
+    stale_requirements.required_loss_attestations.clear();
+    assert!(controller
+        .invoke(&stale_requirements)
+        .unwrap()
+        .validate_for_task(&stale_requirements)
+        .unwrap_err()
+        .to_string()
+        .contains("loss execution requirements"));
 }
 
 #[test]
@@ -6510,6 +6535,7 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
         seed: Some(99),
     };
@@ -6599,6 +6625,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
         seed: Some(99),
     };
@@ -6821,6 +6848,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
         )]),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
         seed: Some(99),
     };
@@ -6936,6 +6964,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
         )]),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
         seed: Some(99),
     };
@@ -7071,6 +7100,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
         seed: Some(99),
     };
