@@ -1933,23 +1933,6 @@ fn oof_edge_graph_with_ambiguous_prediction_port() -> GraphSpec {
         .find(|node| node.id.as_str() == "model:base")
         .expect("base node exists");
     base.ports.outputs.push(port("aux", PortKind::Prediction));
-    let meta = graph
-        .nodes
-        .iter_mut()
-        .find(|node| node.id.as_str() == "model:meta")
-        .expect("meta node exists");
-    meta.ports.inputs.push(port("aux", PortKind::Prediction));
-    graph.edges.push(EdgeSpec {
-        source: PortRef {
-            node_id: NodeId::new("model:base").unwrap(),
-            port_name: "aux".to_string(),
-        },
-        target: PortRef {
-            node_id: NodeId::new("model:meta").unwrap(),
-            port_name: "aux".to_string(),
-        },
-        contract: EdgeContract::new(PortKind::Prediction, None),
-    });
     graph
 }
 
@@ -2342,12 +2325,9 @@ fn parallel_stress_campaign() -> CampaignSpec {
 
 fn parallel_stress_manifests() -> crate::controller::ControllerRegistry {
     let mut registry = manifests();
-    registry
-        .register(controller_manifest(
-            "controller:mixed_join",
-            NodeKind::MixedJoin,
-        ))
-        .unwrap();
+    let mut mixed_join = controller_manifest("controller:mixed_join", NodeKind::MixedJoin);
+    mixed_join.fit_scope = ControllerFitScope::Stateless;
+    registry.register(mixed_join).unwrap();
     registry
 }
 
@@ -8770,9 +8750,7 @@ fn select_best_variant_for_target_ignores_better_sibling_port() {
         &run_id,
         Some(7),
         RegressionMetricKind::Rmse,
-        &target,
-        Some("pred"),
-        PredictionLevel::Sample,
+        (&target, Some("pred"), PredictionLevel::Sample),
         |variant_plan, ctx| {
             SequentialScheduler
                 .execute_campaign_phase(variant_plan, &controllers, ctx, Phase::FitCv)

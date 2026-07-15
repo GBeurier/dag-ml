@@ -1,10 +1,10 @@
 """Test-only oracle for DAG-ML conformal/robustness W0 contracts.
 
-This module intentionally uses only the Python standard library and imports no
-DAG-ML production module.  It freezes the exact finite-sample rank, the TCV1
-fingerprint profile, leakage closure checks, and cross-field semantics that JSON
-Schema cannot express.  Native Rust/C/WASM implementations must be compared to
-these committed results; production code must never import this oracle.
+This module intentionally imports no DAG-ML production module. It freezes the
+exact finite-sample rank, the TCV1 fingerprint profile, leakage closure checks,
+and cross-field semantics that JSON Schema cannot express. Native Rust/C/WASM
+implementations must be compared to these committed results; production code
+must never import this oracle.
 """
 
 from __future__ import annotations
@@ -14,12 +14,14 @@ import hashlib
 import json
 import math
 import struct
-import unicodedata
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
+import unicodedata2 as unicodedata
+
 TCV1_PREFIX = b"DAGML-TCV1\0"
+TCV1_UNICODE_VERSION = "17.0.0"
 TCV1_INT_MIN = -(2**63)
 TCV1_INT_MAX = 2**64 - 1
 PORTABLE_EXACT_INT_MAX = 2**53 - 1
@@ -41,6 +43,12 @@ CONFORMAL_METRIC_REQUESTS = {
     "interval_score": "interval_score",
     "set_size": "set_size",
 }
+
+if unicodedata.unidata_version != TCV1_UNICODE_VERSION:
+    raise RuntimeError(
+        "TCV1 requires Unicode "
+        f"{TCV1_UNICODE_VERSION}, got {unicodedata.unidata_version}"
+    )
 
 
 class ContractError(ValueError):
