@@ -251,7 +251,7 @@
     },
     {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "9767857e353664e8ac0200d8347218d99fef11bb937e9b4515f0efc4960abc93",
+      "sha256": "9aecf8c3ff07f9ef9e9b2877f49093f1c88f354d9c92f24e05ba77b937cf2421",
       "kind": "schema_dependency"
     },
     {
@@ -504,5 +504,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "e857408516c0f93ed8b39444e22cc57ea081ef424e695adbb8868d8a09940ed3"
+  "pack_checksum": "6f951456e81b060e18cd2f5ff6f7bb2fbf82f9bed486947ad8cfa6e9541a15f1"
 }

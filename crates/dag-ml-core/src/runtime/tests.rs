@@ -6416,6 +6416,23 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         vec![LossExecutionAttestation::for_role(&loss_role, Phase::FitCv).unwrap()];
     attested.validate_for_task(&loss_task).unwrap();
 
+    let mut first_role = loss_role.clone();
+    first_role.output_id = Some("a".to_string());
+    let mut second_role = loss_role.clone();
+    second_role.output_id = Some("b".to_string());
+    let mut multi_output_task = loss_task.clone();
+    multi_output_task.node_plan.training_losses = vec![first_role.clone(), second_role.clone()];
+    let mut reversed = controller.invoke(&multi_output_task).unwrap();
+    reversed.lineage.loss_attestations = vec![
+        LossExecutionAttestation::for_role(&second_role, Phase::FitCv).unwrap(),
+        LossExecutionAttestation::for_role(&first_role, Phase::FitCv).unwrap(),
+    ];
+    assert!(reversed
+        .validate_for_task(&multi_output_task)
+        .unwrap_err()
+        .to_string()
+        .contains("does not match"));
+
     let mut refit_task = loss_task.clone();
     refit_task.phase = Phase::Refit;
     let mut refit_result = controller.invoke(&refit_task).unwrap();
