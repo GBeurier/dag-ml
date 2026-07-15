@@ -148,8 +148,8 @@ PACK_PATH = ROOT / "docs/contracts/training_replay_contract_conformance_pack.v1.
 BASE_PACK_PATH = ROOT / "docs/contracts/training_contract_conformance_pack.v1.json"
 TRAINING_FIXTURE_ROOT = ROOT / "examples/fixtures/training"
 FIXTURE_ROOT = TRAINING_FIXTURE_ROOT / "replay"
-BASE_PACK_SHA256 = "42cb0153940bd039f81e680443c4e95be3ee9b9aee3ec4a548e62cbd94a46ff6"
-BASE_PACK_CHECKSUM = "77c96dd4a5bdb51c1c1ce4d6016d41099477550c82b21387c13bb4168629e1fc"
+BASE_PACK_SHA256 = "0f73f39afdc2f069be4307e77ea58a42fa2a9e234d13f0ad505b5fb9db106a76"
+BASE_PACK_CHECKSUM = "e857408516c0f93ed8b39444e22cc57ea081ef424e695adbb8868d8a09940ed3"
 LEGACY_AUTHORITY_SHA256 = {
     "docs/contracts/replay_outcome.schema.json": "c57279e8c76e4e2467af0eca5eb59804a2f7bb97bec6cce9d8b23975f223c36a",
     "examples/fixtures/estimator/replay_outcome_predict.v1.json": "037fad7f3cb907f3474cce4f51526538f2c4d6fcad3af93a320c6d282ce470c5",
@@ -2221,7 +2221,7 @@ def validate_pack() -> None:
         _sha256(BASE_PACK_PATH) == BASE_PACK_SHA256
         and base_pack.get("pack_id") == "dag-ml.training-contracts.v1"
         and base_pack.get("pack_checksum") == BASE_PACK_CHECKSUM
-        and len(base_pack.get("artifacts", [])) == 82,
+        and len(base_pack.get("artifacts", [])) == 86,
         "pinned D1-D3 base pack authority drifted",
     )
     base_entries: dict[str, dict[str, Any]] = {}

@@ -25,6 +25,7 @@ pub const METRIC_SPEC_SCHEMA_VERSION: u32 = 1;
 pub const IMPLEMENTATION_DESCRIPTOR_SCHEMA_VERSION: u32 = 1;
 pub const LOSS_ROLE_SCHEMA_VERSION: u32 = 1;
 pub const METRIC_ROLE_SCHEMA_VERSION: u32 = 1;
+pub const LOSS_EXECUTION_ATTESTATION_SCHEMA_VERSION: u32 = 1;
 
 pub const LOSS_SPEC_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/loss_spec.v1.schema.json";
@@ -36,6 +37,8 @@ pub const TRAINING_LOSS_ROLE_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/training_loss_role.v1.schema.json";
 pub const METRIC_ROLE_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/metric_role.v1.schema.json";
+pub const LOSS_EXECUTION_ATTESTATION_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json";
 
 const FINGERPRINT_LEN: usize = 64;
 const FORBIDDEN_EXECUTABLE_KEYS: &[&str] = &[
@@ -728,6 +731,134 @@ impl TrainingLossRoleReference {
             );
         }
         self.loss.validate()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LossExecutionAttestation {
+    pub schema_version: u32,
+    pub node_id: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_id: Option<String>,
+    pub phase: Phase,
+    pub loss_id: String,
+    pub semantic_fingerprint: String,
+    pub implementation_fingerprint: String,
+    pub descriptor_fingerprint: String,
+    pub effective_parameters: serde_json::Value,
+    pub reduction: LossReduction,
+    pub attestation_fingerprint: String,
+}
+
+impl LossExecutionAttestation {
+    pub fn for_role(role: &TrainingLossRoleReference, phase: Phase) -> Result<Self> {
+        role.validate()?;
+        if !role.phases.contains(&phase) {
+            return contract_error(format!(
+                "training loss role for `{}` does not apply to phase {phase:?}",
+                role.node_id
+            ));
+        }
+        let mut attestation = Self {
+            schema_version: LOSS_EXECUTION_ATTESTATION_SCHEMA_VERSION,
+            node_id: role.node_id.clone(),
+            output_id: role.output_id.clone(),
+            phase,
+            loss_id: role.loss.spec.loss_id.clone(),
+            semantic_fingerprint: role.loss.spec.spec_fingerprint.clone(),
+            implementation_fingerprint: role.loss.implementation.implementation_fingerprint.clone(),
+            descriptor_fingerprint: role.loss.implementation.descriptor_fingerprint.clone(),
+            effective_parameters: role.loss.spec.parameters.clone(),
+            reduction: role.loss.spec.reduction,
+            attestation_fingerprint: String::new(),
+        };
+        attestation.attestation_fingerprint = attestation.compute_fingerprint()?;
+        attestation.validate_against(role, &attestation.node_id, phase)?;
+        Ok(attestation)
+    }
+
+    pub fn from_json(json: &str) -> Result<Self> {
+        let attestation: Self = deserialize_external_contract(
+            json,
+            "loss execution attestation",
+            DagMlError::RuntimeValidation,
+        )?;
+        attestation.validate()?;
+        Ok(attestation)
+    }
+
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        fingerprint_without(
+            self,
+            "attestation_fingerprint",
+            "loss execution attestation",
+        )
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_schema_version(
+            "loss execution attestation",
+            self.schema_version,
+            LOSS_EXECUTION_ATTESTATION_SCHEMA_VERSION,
+        )?;
+        if let Some(output_id) = &self.output_id {
+            validate_token("loss attestation output_id", output_id)?;
+        }
+        if !matches!(self.phase, Phase::FitCv | Phase::Refit) {
+            return contract_error("loss execution attestation phase must be FIT_CV or REFIT");
+        }
+        validate_versioned_id("loss attestation", &self.loss_id)?;
+        validate_fingerprint(
+            "loss attestation semantic fingerprint",
+            &self.semantic_fingerprint,
+        )?;
+        validate_fingerprint(
+            "loss attestation implementation fingerprint",
+            &self.implementation_fingerprint,
+        )?;
+        validate_fingerprint(
+            "loss attestation descriptor fingerprint",
+            &self.descriptor_fingerprint,
+        )?;
+        validate_parameters("loss attestation", &self.effective_parameters)?;
+        validate_fingerprint("loss execution attestation", &self.attestation_fingerprint)?;
+        let expected = self.compute_fingerprint()?;
+        if self.attestation_fingerprint != expected {
+            return contract_error(format!(
+                "loss execution attestation fingerprint mismatch: declared {}, expected {expected}",
+                self.attestation_fingerprint
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_against(
+        &self,
+        role: &TrainingLossRoleReference,
+        node_id: &NodeId,
+        phase: Phase,
+    ) -> Result<()> {
+        self.validate()?;
+        role.validate()?;
+        if self.node_id != *node_id
+            || role.node_id != *node_id
+            || self.output_id != role.output_id
+            || self.phase != phase
+            || !role.phases.contains(&phase)
+            || self.loss_id != role.loss.spec.loss_id
+            || self.semantic_fingerprint != role.loss.spec.spec_fingerprint
+            || self.implementation_fingerprint
+                != role.loss.implementation.implementation_fingerprint
+            || self.descriptor_fingerprint != role.loss.implementation.descriptor_fingerprint
+            || self.effective_parameters != role.loss.spec.parameters
+            || self.reduction != role.loss.spec.reduction
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "loss execution attestation does not match the resolved {phase:?} loss for node `{node_id}`"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -1523,6 +1654,8 @@ mod tests {
             ImplementationDescriptor::from_json(&valid[key].to_string()).unwrap();
         }
         TrainingLossRoleReference::from_json(&valid["training_loss_role"].to_string()).unwrap();
+        LossExecutionAttestation::from_json(&valid["loss_execution_attestation"].to_string())
+            .unwrap();
         MetricRoleReference::from_json(&valid["metric_role"].to_string()).unwrap();
 
         for case in fixture["invalid"].as_array().unwrap() {
@@ -1534,6 +1667,9 @@ mod tests {
                     ImplementationDescriptor::from_json(&document).map(|_| ())
                 }
                 "training_loss_role" => TrainingLossRoleReference::from_json(&document).map(|_| ()),
+                "loss_execution_attestation" => {
+                    LossExecutionAttestation::from_json(&document).map(|_| ())
+                }
                 "metric_role" => MetricRoleReference::from_json(&document).map(|_| ()),
                 contract => panic!("unknown criteria fixture contract `{contract}`"),
             };

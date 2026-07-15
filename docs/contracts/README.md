@@ -600,14 +600,20 @@ C ABI: `DAG_ML_NODE_TASK_SCHEMA_VERSION`,
 `dagml_node_result_validate_for_task_json`
 
 These are the direct wire contracts between the Rust coordinator and external
-operator controllers. `NodeTask` carries the resolved node plan, phase,
-variant/fold context, handles, data views, OOF prediction inputs, refit artifact
-inputs and deterministic seed. `NodeResult` returns output handles,
+operator controllers. `NodeTask` carries the resolved node plan, including
+phase-specific training-loss roles, phase, variant/fold context, handles, data
+views, OOF prediction inputs, refit artifact inputs and deterministic seed.
+`NodeResult` returns output handles,
 sample predictions, optional observation-level predictions, optional aggregated
 sample/target/group predictions, shape deltas, artifacts and lineage. Rust validates every result
 against the exact task before committing it, including node/run/phase/fold,
 variant, controller, seed, params fingerprint, shape fingerprints, output
 ownership and artifact handle consistency.
+
+For `FIT_CV` and `REFIT`, each configured loss role requires an ordered lineage
+attestation of the exact semantic and executable implementation used. Missing,
+extra, stale or cross-phase attestations are rejected before the result is
+committed.
 
 ## SelectionPolicy / SelectionDecision v1
 
@@ -652,10 +658,18 @@ W1-0 validates and projects the other namespaces but does not silently execute
 them. A later runtime step must materialize each supported namespace explicitly.
 Data identities include schema, plan, relation, feature-content and
 target-content fingerprints. Active controller capabilities derive exact
-fold/refit influence slots, and cache namespaces bind every
+fold/refit influence slots. Training-loss roles remain separate from metric
+selection/reporting roles: losses configure optimizer objectives, while metrics
+continue to drive evaluation and pipeline policies. Cache namespaces bind every
 prediction-affecting coordinate. `selection_output_id` names the sole output
 whose averaged FIT_CV reports drive ranking; `TrainingOutcome` persists that
 choice and reconstructs the decision from scores.
+
+Configured `FIT_CV` losses are part of candidate-cache identity. Configured
+`REFIT` losses are part of refit artifact records, portable manifests and
+materialization requests. Reusing a cache block or model artifact under a
+different resolved objective is a validation error rather than an implicit
+backend fallback.
 
 The D3 execution bindings expose that one native operation through
 `dagml_training_execute`/`DagMlTrainingResult` in the C ABI and through
