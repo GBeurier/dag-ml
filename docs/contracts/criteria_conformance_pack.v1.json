@@ -1,0 +1,79 @@
+{
+  "pack_id": "dag-ml.criteria-conformance.v1",
+  "schema_version": 1,
+  "hash_algorithm": "sha256-file-bytes",
+  "fingerprint_profile": "DAGML-TCV1-unicode-17.0.0",
+  "artifacts": [
+    {
+      "path": "crates/dag-ml-cli/src/main.rs",
+      "sha256": "9278c608571b098fde52f2d6507dc5dd7150938a78fe9de7276e47413bd884a4",
+      "kind": "cli_validator"
+    },
+    {
+      "path": "crates/dag-ml-cli/tests/cli_contracts.rs",
+      "sha256": "43f1f2d584826c37fdba9d7c2b9b6974a29ebe6347054b0d936bfb7b9561efae",
+      "kind": "cli_test"
+    },
+    {
+      "path": "crates/dag-ml-core/src/criteria.rs",
+      "sha256": "9c249df0acd70ba75771c252e7bf3abd3a802ca2c29f9770d3fd8be8ac99b089",
+      "kind": "rust_contract"
+    },
+    {
+      "path": "docs/contracts/implementation_descriptor.schema.json",
+      "sha256": "2fa2a5d3458608b555edfff003090b25b02b0009b747038cdecd19338df8a1ef",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/loss_spec.schema.json",
+      "sha256": "ec0a5751ee44fbb87fe25cc60940edfd44819ec02b6e1c311dd06fd33965a62f",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/metric_role.schema.json",
+      "sha256": "39c80ccf13a48a25d0b07c39b5995b1248656d026829c0133922a7d0cae08428",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/metric_spec.schema.json",
+      "sha256": "36fb55482e48d054e903f656ac55a3ce5f970cae839efbdba4f2b46301fa91ce",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/training_loss_role.schema.json",
+      "sha256": "02b84e483728a62bf4398666d17b1b0ce3077608136b676f369488767dbadac6",
+      "kind": "schema"
+    },
+    {
+      "path": "examples/fixtures/criteria/criteria_contracts.v1.json",
+      "sha256": "45501a3ad397743a0e5b00924330a68caf2b449389b39d5a540a2d5b03c01439",
+      "kind": "fixture"
+    },
+    {
+      "path": "parity/criteria/generate_fixtures.py",
+      "sha256": "457e62d476cf286a7470dccff10b4be77dea39cff45cd96418101c4e3e09f29f",
+      "kind": "generator"
+    },
+    {
+      "path": "parity/criteria/oracle.py",
+      "sha256": "67d26914ed8330cc664dcfc28b6cd6481de3e3cde6285bf51ab83a1695775e1a",
+      "kind": "independent_validator"
+    },
+    {
+      "path": "parity/criteria/tests/test_criteria_contracts.py",
+      "sha256": "c3486ac6a1b682212b06859ab85ba00931e3a182abf9722b807113d7f6ea0227",
+      "kind": "parity_test"
+    }
+  ],
+  "required_negative_cases": [
+    "loss_unversioned_id",
+    "loss_unknown_task",
+    "loss_nested_callable_payload",
+    "loss_weighted_without_weight_input",
+    "loss_mismatched_fingerprint",
+    "metric_without_objective",
+    "host_local_descriptor_without_registry_key",
+    "selection_metric_skips_missing_values"
+  ],
+  "pack_checksum": "eb838cb556e32e6f261d00cf05788955a79c78967b1025edda7918eab9e3e2b4"
+}

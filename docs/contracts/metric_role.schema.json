@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/metric_role.v1.schema.json",
+  "title": "DAG-ML MetricRoleReference v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "role_id",
+    "role",
+    "partition",
+    "level",
+    "missing_value_policy",
+    "metric"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "role_id": { "$ref": "#/$defs/token" },
+    "output_id": { "$ref": "#/$defs/token" },
+    "role": {
+      "enum": [
+        "early_stopping",
+        "selection",
+        "reporting",
+        "tuning",
+        "pruning",
+        "threshold",
+        "ensemble_weighting"
+      ]
+    },
+    "partition": { "enum": ["train", "validation", "test", "final"] },
+    "level": { "enum": ["observation", "sample", "target", "group"] },
+    "missing_value_policy": { "enum": ["error", "skip"] },
+    "metric": { "$ref": "#/$defs/metric_reference" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "missing_value_policy": { "const": "skip" } },
+        "required": ["missing_value_policy"]
+      },
+      "then": { "properties": { "role": { "const": "reporting" } } }
+    }
+  ],
+  "$defs": {
+    "metric_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec", "implementation"],
+      "properties": {
+        "spec": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/metric_spec.v1.schema.json"
+        },
+        "implementation": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/implementation_descriptor.v1.schema.json"
+        }
+      }
+    },
+    "token": {
+      "type": "string",
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+    }
+  }
+}
