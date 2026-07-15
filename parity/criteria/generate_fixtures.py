@@ -18,6 +18,9 @@ from parity.conformal.oracle import fingerprint_without  # noqa: E402
 
 FIXTURE = ROOT / "examples/fixtures/criteria/criteria_contracts.v1.json"
 PROVIDER_FIXTURE = ROOT / "examples/fixtures/criteria/metric_provider_contracts.v1.json"
+JAVASCRIPT_FIXTURE = (
+    ROOT / "examples/fixtures/criteria/javascript_local_implementations.v1.json"
+)
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
 ARTIFACTS = {
     "crates/dag-ml-cli/src/main.rs": "cli_validator",
@@ -30,6 +33,9 @@ ARTIFACTS = {
     "crates/dag-ml-py/python/dag_ml/__init__.pyi": "python_types",
     "crates/dag-ml-py/src/local_implementation.rs": "python_local_registry",
     "crates/dag-ml-py/tests/test_local_implementation_registry.py": "python_binding_test",
+    "crates/dag-ml-wasm/README.md": "javascript_binding_documentation",
+    "crates/dag-ml-wasm/src/local_implementation.rs": "javascript_local_registry",
+    "crates/dag-ml-wasm/src/lib.rs": "javascript_binding",
     "docs/CRITERIA_CONTRACTS.md": "contract_documentation",
     "docs/contracts/implementation_descriptor.schema.json": "schema",
     "docs/contracts/loss_execution_attestation.schema.json": "schema",
@@ -40,11 +46,86 @@ ARTIFACTS = {
     "docs/contracts/metric_spec.schema.json": "schema",
     "docs/contracts/training_loss_role.schema.json": "schema",
     "examples/fixtures/criteria/criteria_contracts.v1.json": "fixture",
+    "examples/fixtures/criteria/javascript_local_implementations.v1.json": "fixture",
     "examples/fixtures/criteria/metric_provider_contracts.v1.json": "fixture",
     "parity/criteria/oracle.py": "independent_validator",
     "parity/criteria/generate_fixtures.py": "generator",
     "parity/criteria/tests/test_criteria_contracts.py": "parity_test",
+    "scripts/smoke_wasm_bindings.cjs": "javascript_binding_test",
 }
+
+
+def build_javascript_fixture(valid: dict[str, Any]) -> dict[str, Any]:
+    loss_spec = copy.deepcopy(valid["loss_spec"])
+    # JavaScript JSON.stringify cannot retain an integer-valued binary64 token.
+    loss_spec["parameters"] = {"over_weight": 1, "under_weight": 2}
+    loss_spec["spec_fingerprint"] = fingerprint_without(
+        loss_spec, "spec_fingerprint"
+    )
+    loss_implementation = copy.deepcopy(valid["loss_implementation"])
+    loss_implementation.update(
+        {
+            "semantic_fingerprint": loss_spec["spec_fingerprint"],
+            "provider_id": "provider:javascript-local",
+            "binding_id": "binding:javascript",
+            "implementation_fingerprint": hashlib.sha256(
+                b"dagml.javascript.asymmetric-loss.v1"
+            ).hexdigest(),
+            "capabilities": ["deterministic", "differentiable"],
+            "registry_key": "loss:javascript:asymmetric",
+            "descriptor_fingerprint": "",
+        }
+    )
+    loss_implementation["descriptor_fingerprint"] = fingerprint_without(
+        loss_implementation, "descriptor_fingerprint"
+    )
+    loss_reference = {
+        "spec": loss_spec,
+        "implementation": loss_implementation,
+    }
+    foreign_loss_reference = copy.deepcopy(loss_reference)
+    foreign_implementation = foreign_loss_reference["implementation"]
+    foreign_implementation["provider_id"] = "provider:python-local"
+    foreign_implementation["binding_id"] = "binding:python"
+    foreign_implementation["capabilities"] = [
+        "deterministic",
+        "differentiable",
+        "needs_gil",
+    ]
+    foreign_implementation["descriptor_fingerprint"] = fingerprint_without(
+        foreign_implementation, "descriptor_fingerprint"
+    )
+
+    metric_implementation = copy.deepcopy(valid["metric_implementation"])
+    metric_implementation.update(
+        {
+            "provider_id": "provider:javascript-local",
+            "binding_id": "binding:javascript",
+            "implementation_fingerprint": hashlib.sha256(
+                b"dagml.javascript.bias-metric.v1"
+            ).hexdigest(),
+            "registry_key": "metric:javascript:bias",
+            "descriptor_fingerprint": "",
+        }
+    )
+    metric_implementation["descriptor_fingerprint"] = fingerprint_without(
+        metric_implementation, "descriptor_fingerprint"
+    )
+    metric_reference = {
+        "spec": copy.deepcopy(valid["metric_spec"]),
+        "implementation": metric_implementation,
+    }
+
+    role = copy.deepcopy(valid["training_loss_role"])
+    role["loss"] = copy.deepcopy(loss_reference)
+    return {
+        "profile": "dagml.javascript-local-implementations.v1",
+        "canonicalization": "TCV1-unicode-17.0.0",
+        "loss_reference": loss_reference,
+        "foreign_loss_reference": foreign_loss_reference,
+        "training_loss_role": role,
+        "metric_reference": metric_reference,
+    }
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -212,6 +293,8 @@ def main() -> None:
     write(FIXTURE, fixture)
     provider_fixture = build_provider_fixture(valid)
     write(PROVIDER_FIXTURE, provider_fixture)
+    javascript_fixture = build_javascript_fixture(valid)
+    write(JAVASCRIPT_FIXTURE, javascript_fixture)
 
     pack: dict[str, Any] = {
         "pack_id": "dag-ml.criteria-conformance.v1",

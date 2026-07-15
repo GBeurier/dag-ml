@@ -26,6 +26,10 @@ use dag_ml_core::{
     RuntimeController, RuntimeControllerRegistry, SequentialScheduler,
 };
 
+mod local_implementation;
+
+pub use local_implementation::{loss_execution_attestation_json, LocalImplementationRegistry};
+
 const SHARED_FOLD_SET_FINGERPRINT: &str =
     "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c";
 
@@ -286,6 +290,8 @@ fn contract_manifest() -> serde_json::Value {
             "derive_controller_manifest_registry_from_host_specs",
             "build_execution_plan",
             "fold_set_fingerprint",
+            "process_local_implementation_registry",
+            "loss_execution_attestation",
             "structured_error_descriptors"
         ],
         "shared": {
@@ -331,6 +337,8 @@ fn contract_manifest() -> serde_json::Value {
             "kfold_split_json",
             "stratified_kfold_split_json",
             "select_candidates_json",
+            "LocalImplementationRegistry",
+            "loss_execution_attestation_json",
             "execute_campaign_phase_json"
         ]
     })
