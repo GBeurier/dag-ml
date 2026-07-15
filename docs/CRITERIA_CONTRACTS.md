@@ -8,6 +8,7 @@ The native owner is `dag_ml_core::criteria`. The published v1 wire family is:
 - `docs/contracts/training_loss_role.schema.json`;
 - `docs/contracts/loss_execution_attestation.schema.json`;
 - `docs/contracts/metric_role.schema.json`;
+- `docs/contracts/early_stopping_record.schema.json`;
 - `docs/contracts/metric_evaluation_task.schema.json`;
 - `docs/contracts/metric_evaluation_result.schema.json`.
 
@@ -99,6 +100,19 @@ its local function, then copies the corresponding native-produced template to
 `NodeResult.lineage.loss_attestations` only after execution succeeds. The core
 recomputes and verifies both the task requirements and the returned lineage, so
 R, MATLAB and other process adapters do not implement canonical fingerprinting.
+
+`NodeResult.lineage.early_stopping_records` stores controller-reported stopping
+outcomes separately from `ScoreSet`. Each fingerprinted record is scoped to one
+`FIT_CV` fold or one fold-free `REFIT` task and embeds the exact
+`MetricRoleReference` used by the controller. That role must be
+`early_stopping`, must monitor the validation partition and cannot use the
+reporting-only missing-value skip policy. The record captures the zero-based
+best iteration, total observed iterations, finite best value and whether the
+controller stopped early. It does not create another metric evaluator: the
+controller reports the outcome of the same typed metric implementation selected
+by the pipeline, while DAG-ML validates identity, scope and fingerprint. Final
+OOF/reporting scores, selection decisions and tuning observations retain their
+own contracts and lifecycles.
 
 The semantic contracts are standalone v1 contracts. The controller-protocol
 integration adds only defaulted/optional fields to existing v1 JSON shapes, so

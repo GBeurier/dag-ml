@@ -47,6 +47,54 @@ use crate::policy::{
 use crate::relation::{SampleRelation, SampleRelationSet};
 use serde_json::json;
 
+#[test]
+fn lineage_rejects_duplicate_or_out_of_scope_early_stopping_records() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../examples/fixtures/criteria/criteria_contracts.v1.json"
+    ))
+    .unwrap();
+    let record =
+        EarlyStoppingRecord::from_json(&fixture["valid"]["early_stopping_record"].to_string())
+            .unwrap();
+    let mut lineage = LineageRecord {
+        record_id: LineageId::new("lineage:early-stopping").unwrap(),
+        run_id: RunId::new("run:early-stopping").unwrap(),
+        node_id: record.node_id.clone(),
+        phase: record.phase,
+        controller_id: ControllerId::new("controller:early-stopping").unwrap(),
+        controller_version: "1.0.0".to_string(),
+        variant_id: None,
+        fold_id: record.fold_id.clone(),
+        branch_path: Vec::new(),
+        input_lineage: Vec::new(),
+        artifact_refs: Vec::new(),
+        params_fingerprint: "params:early-stopping".to_string(),
+        data_model_shape_fingerprint: None,
+        aggregation_policy_fingerprint: None,
+        seed: Some(42),
+        unsafe_flags: BTreeSet::new(),
+        metrics: BTreeMap::new(),
+        loss_attestations: Vec::new(),
+        early_stopping_records: vec![record.clone()],
+    };
+    lineage.validate().unwrap();
+
+    lineage.early_stopping_records.push(record.clone());
+    assert!(lineage
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate early-stopping role"));
+
+    lineage.early_stopping_records = vec![record];
+    lineage.node_id = NodeId::new("model:other").unwrap();
+    assert!(lineage
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("does not match lineage task scope"));
+}
+
 struct MockController {
     id: ControllerId,
     handle: u64,
@@ -116,6 +164,7 @@ impl RuntimeController for VariantProbeController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -198,6 +247,7 @@ impl RuntimeController for ShapeDataController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -281,6 +331,7 @@ impl RuntimeController for DataViewProbeController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -407,6 +458,7 @@ impl RuntimeController for MockController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -593,6 +645,7 @@ impl RuntimeController for ReplayMockController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -756,6 +809,7 @@ impl RuntimeController for OofEdgeController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -874,6 +928,7 @@ impl RuntimeController for CaptureOofValuesController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -979,6 +1034,7 @@ impl RuntimeController for ExpectedRefitOofController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -1103,6 +1159,7 @@ impl RuntimeController for GroupAggregatedOofController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -1398,6 +1455,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -2590,6 +2648,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
                 },
             })
         }
@@ -2751,6 +2810,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
                 },
             })
         }
@@ -7015,6 +7075,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
             unsafe_flags: BTreeSet::new(),
             metrics: BTreeMap::new(),
             loss_attestations: Vec::new(),
+            early_stopping_records: Vec::new(),
         },
     };
 
@@ -7133,6 +7194,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
             unsafe_flags: BTreeSet::new(),
             metrics: BTreeMap::new(),
             loss_attestations: Vec::new(),
+            early_stopping_records: Vec::new(),
         },
     };
 
@@ -7261,6 +7323,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         unsafe_flags: BTreeSet::new(),
         metrics: BTreeMap::new(),
         loss_attestations: Vec::new(),
+        early_stopping_records: Vec::new(),
     };
     let base_result = |level: PredictionLevel, unit: PredictionUnitId| NodeResult {
         schema_version: None,
@@ -8189,6 +8252,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
             unsafe_flags: BTreeSet::new(),
             metrics: BTreeMap::new(),
             loss_attestations: Vec::new(),
+            early_stopping_records: Vec::new(),
         },
     };
 
@@ -8500,6 +8564,7 @@ impl RuntimeController for VariantScoringController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -8676,6 +8741,7 @@ impl RuntimeController for MultiPortVariantScoringController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -9828,6 +9894,7 @@ impl RuntimeController for BranchScopeRecordingController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -9925,6 +9992,7 @@ impl RuntimeController for OverlapEmittingController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -10564,6 +10632,7 @@ impl RuntimeController for SilentBranchController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -10728,6 +10797,7 @@ impl RuntimeController for ScoringBranchController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -11460,6 +11530,7 @@ impl RuntimeController for FusionBranchController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -11910,6 +11981,7 @@ impl RuntimeController for ProbaBranchController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -12175,6 +12247,7 @@ impl RuntimeController for OffFoldScoringController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -12516,6 +12589,7 @@ impl RuntimeController for OffFoldDuplicationController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -12998,6 +13072,7 @@ impl RuntimeController for DuplicateSampleBranchController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -13145,6 +13220,7 @@ impl RuntimeController for StackingOffFoldController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -13402,6 +13478,7 @@ impl RuntimeController for OperatorScoringController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }

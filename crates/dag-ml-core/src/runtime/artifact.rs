@@ -773,6 +773,8 @@ pub struct LineageRecord {
     pub metrics: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loss_attestations: Vec<LossExecutionAttestation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub early_stopping_records: Vec<EarlyStoppingRecord>,
 }
 
 impl LineageRecord {
@@ -792,6 +794,16 @@ impl LineageRecord {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "lineage `{}` contains a loss attestation outside its node/phase scope",
                     self.record_id
+                )));
+            }
+        }
+        let mut early_stopping_roles = BTreeSet::new();
+        for record in &self.early_stopping_records {
+            record.validate_against(&self.node_id, self.phase, self.fold_id.as_ref())?;
+            if !early_stopping_roles.insert(record.metric_role.role_id.as_str()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "lineage `{}` contains duplicate early-stopping role `{}`",
+                    self.record_id, record.metric_role.role_id
                 )));
             }
         }

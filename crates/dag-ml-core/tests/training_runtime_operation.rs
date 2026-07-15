@@ -358,6 +358,7 @@ impl RuntimeController for TrainingController {
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }

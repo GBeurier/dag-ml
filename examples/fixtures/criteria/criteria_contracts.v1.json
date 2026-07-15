@@ -217,6 +217,71 @@
       },
       "reduction": "mean",
       "attestation_fingerprint": "deba8d866539e1f77624cd5ddeabce7bcbe28d5c2b6f7fbe448dc798feaec51b"
+    },
+    "early_stopping_record": {
+      "schema_version": 1,
+      "node_id": "model:custom",
+      "phase": "FIT_CV",
+      "fold_id": "fold:0",
+      "metric_role": {
+        "schema_version": 1,
+        "role_id": "early-stopping:bias",
+        "role": "early_stopping",
+        "output_id": "prediction",
+        "partition": "validation",
+        "level": "sample",
+        "missing_value_policy": "error",
+        "metric": {
+          "spec": {
+            "schema_version": 1,
+            "metric_id": "example.metric.bias@1",
+            "kind": "custom",
+            "task_kinds": [
+              "regression"
+            ],
+            "prediction_kinds": [
+              "regression_point"
+            ],
+            "objective": "minimize",
+            "supported_levels": [
+              "sample"
+            ],
+            "decomposition": "global",
+            "reduction": "global",
+            "required_inputs": [
+              "target",
+              "prediction"
+            ],
+            "capabilities": [],
+            "parameters": {},
+            "spec_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006"
+          },
+          "implementation": {
+            "schema_version": 1,
+            "semantic_kind": "metric",
+            "semantic_id": "example.metric.bias@1",
+            "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+            "provider_id": "provider:rust-local",
+            "binding_id": "binding:rust",
+            "implementation_version": "1.0.0",
+            "implementation_fingerprint": "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+            "supported_controller_families": [],
+            "runtime_requirements": [],
+            "capabilities": [
+              "deterministic"
+            ],
+            "portability": "host_local",
+            "replayability": "registry_required",
+            "registry_key": "metric:run-123:bias",
+            "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077"
+          }
+        }
+      },
+      "best_iteration": 3,
+      "observed_iterations": 5,
+      "best_value": 0.125,
+      "stopped_early": true,
+      "record_fingerprint": "2aed5e757a8af9a738676d2a9ca9124611e0f5e82daad4166dc507dda55ed6c0"
     }
   },
   "invalid": [
@@ -553,6 +618,282 @@
         },
         "reduction": "mean",
         "attestation_fingerprint": "97c3a9fdec7b4ff51861d966fc543a4a9144eebd768f30f987bf2e265399b551"
+      }
+    },
+    {
+      "id": "early_stopping_selection_role",
+      "contract": "early_stopping_record",
+      "document": {
+        "schema_version": 1,
+        "node_id": "model:custom",
+        "phase": "FIT_CV",
+        "fold_id": "fold:0",
+        "metric_role": {
+          "schema_version": 1,
+          "role_id": "early-stopping:bias",
+          "role": "selection",
+          "output_id": "prediction",
+          "partition": "validation",
+          "level": "sample",
+          "missing_value_policy": "error",
+          "metric": {
+            "spec": {
+              "schema_version": 1,
+              "metric_id": "example.metric.bias@1",
+              "kind": "custom",
+              "task_kinds": [
+                "regression"
+              ],
+              "prediction_kinds": [
+                "regression_point"
+              ],
+              "objective": "minimize",
+              "supported_levels": [
+                "sample"
+              ],
+              "decomposition": "global",
+              "reduction": "global",
+              "required_inputs": [
+                "target",
+                "prediction"
+              ],
+              "capabilities": [],
+              "parameters": {},
+              "spec_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006"
+            },
+            "implementation": {
+              "schema_version": 1,
+              "semantic_kind": "metric",
+              "semantic_id": "example.metric.bias@1",
+              "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+              "provider_id": "provider:rust-local",
+              "binding_id": "binding:rust",
+              "implementation_version": "1.0.0",
+              "implementation_fingerprint": "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+              "supported_controller_families": [],
+              "runtime_requirements": [],
+              "capabilities": [
+                "deterministic"
+              ],
+              "portability": "host_local",
+              "replayability": "registry_required",
+              "registry_key": "metric:run-123:bias",
+              "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077"
+            }
+          }
+        },
+        "best_iteration": 3,
+        "observed_iterations": 5,
+        "best_value": 0.125,
+        "stopped_early": true,
+        "record_fingerprint": "275cfd5d8ccc3403b4457f7547a680d3c5ef6c918bd06b20fe5205a6c1e3b987"
+      }
+    },
+    {
+      "id": "early_stopping_invalid_iteration",
+      "contract": "early_stopping_record",
+      "document": {
+        "schema_version": 1,
+        "node_id": "model:custom",
+        "phase": "FIT_CV",
+        "fold_id": "fold:0",
+        "metric_role": {
+          "schema_version": 1,
+          "role_id": "early-stopping:bias",
+          "role": "early_stopping",
+          "output_id": "prediction",
+          "partition": "validation",
+          "level": "sample",
+          "missing_value_policy": "error",
+          "metric": {
+            "spec": {
+              "schema_version": 1,
+              "metric_id": "example.metric.bias@1",
+              "kind": "custom",
+              "task_kinds": [
+                "regression"
+              ],
+              "prediction_kinds": [
+                "regression_point"
+              ],
+              "objective": "minimize",
+              "supported_levels": [
+                "sample"
+              ],
+              "decomposition": "global",
+              "reduction": "global",
+              "required_inputs": [
+                "target",
+                "prediction"
+              ],
+              "capabilities": [],
+              "parameters": {},
+              "spec_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006"
+            },
+            "implementation": {
+              "schema_version": 1,
+              "semantic_kind": "metric",
+              "semantic_id": "example.metric.bias@1",
+              "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+              "provider_id": "provider:rust-local",
+              "binding_id": "binding:rust",
+              "implementation_version": "1.0.0",
+              "implementation_fingerprint": "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+              "supported_controller_families": [],
+              "runtime_requirements": [],
+              "capabilities": [
+                "deterministic"
+              ],
+              "portability": "host_local",
+              "replayability": "registry_required",
+              "registry_key": "metric:run-123:bias",
+              "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077"
+            }
+          }
+        },
+        "best_iteration": 5,
+        "observed_iterations": 5,
+        "best_value": 0.125,
+        "stopped_early": true,
+        "record_fingerprint": "58d2bd128a8b4303ee242cd51ab83aff34114155b8c93f7870b45c905b4fde2a"
+      }
+    },
+    {
+      "id": "early_stopping_refit_with_fold",
+      "contract": "early_stopping_record",
+      "document": {
+        "schema_version": 1,
+        "node_id": "model:custom",
+        "phase": "REFIT",
+        "fold_id": "fold:0",
+        "metric_role": {
+          "schema_version": 1,
+          "role_id": "early-stopping:bias",
+          "role": "early_stopping",
+          "output_id": "prediction",
+          "partition": "validation",
+          "level": "sample",
+          "missing_value_policy": "error",
+          "metric": {
+            "spec": {
+              "schema_version": 1,
+              "metric_id": "example.metric.bias@1",
+              "kind": "custom",
+              "task_kinds": [
+                "regression"
+              ],
+              "prediction_kinds": [
+                "regression_point"
+              ],
+              "objective": "minimize",
+              "supported_levels": [
+                "sample"
+              ],
+              "decomposition": "global",
+              "reduction": "global",
+              "required_inputs": [
+                "target",
+                "prediction"
+              ],
+              "capabilities": [],
+              "parameters": {},
+              "spec_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006"
+            },
+            "implementation": {
+              "schema_version": 1,
+              "semantic_kind": "metric",
+              "semantic_id": "example.metric.bias@1",
+              "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+              "provider_id": "provider:rust-local",
+              "binding_id": "binding:rust",
+              "implementation_version": "1.0.0",
+              "implementation_fingerprint": "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+              "supported_controller_families": [],
+              "runtime_requirements": [],
+              "capabilities": [
+                "deterministic"
+              ],
+              "portability": "host_local",
+              "replayability": "registry_required",
+              "registry_key": "metric:run-123:bias",
+              "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077"
+            }
+          }
+        },
+        "best_iteration": 3,
+        "observed_iterations": 5,
+        "best_value": 0.125,
+        "stopped_early": true,
+        "record_fingerprint": "4826e358f2d9150f892f63b3ce0650cfbf0a76e9086868852a32189d12f1981b"
+      }
+    },
+    {
+      "id": "early_stopping_tampered_fingerprint",
+      "contract": "early_stopping_record",
+      "document": {
+        "schema_version": 1,
+        "node_id": "model:custom",
+        "phase": "FIT_CV",
+        "fold_id": "fold:0",
+        "metric_role": {
+          "schema_version": 1,
+          "role_id": "early-stopping:bias",
+          "role": "early_stopping",
+          "output_id": "prediction",
+          "partition": "validation",
+          "level": "sample",
+          "missing_value_policy": "error",
+          "metric": {
+            "spec": {
+              "schema_version": 1,
+              "metric_id": "example.metric.bias@1",
+              "kind": "custom",
+              "task_kinds": [
+                "regression"
+              ],
+              "prediction_kinds": [
+                "regression_point"
+              ],
+              "objective": "minimize",
+              "supported_levels": [
+                "sample"
+              ],
+              "decomposition": "global",
+              "reduction": "global",
+              "required_inputs": [
+                "target",
+                "prediction"
+              ],
+              "capabilities": [],
+              "parameters": {},
+              "spec_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006"
+            },
+            "implementation": {
+              "schema_version": 1,
+              "semantic_kind": "metric",
+              "semantic_id": "example.metric.bias@1",
+              "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+              "provider_id": "provider:rust-local",
+              "binding_id": "binding:rust",
+              "implementation_version": "1.0.0",
+              "implementation_fingerprint": "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+              "supported_controller_families": [],
+              "runtime_requirements": [],
+              "capabilities": [
+                "deterministic"
+              ],
+              "portability": "host_local",
+              "replayability": "registry_required",
+              "registry_key": "metric:run-123:bias",
+              "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077"
+            }
+          }
+        },
+        "best_iteration": 3,
+        "observed_iterations": 5,
+        "best_value": 0.5,
+        "stopped_early": true,
+        "record_fingerprint": "2aed5e757a8af9a738676d2a9ca9124611e0f5e82daad4166dc507dda55ed6c0"
       }
     }
   ]

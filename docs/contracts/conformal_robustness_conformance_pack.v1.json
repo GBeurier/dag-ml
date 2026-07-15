@@ -59,6 +59,11 @@
       "kind": "schema"
     },
     {
+      "path": "docs/contracts/early_stopping_record.schema.json",
+      "sha256": "2dc069c82b533bc3bfeba88833fd22ec36f24ad1219e1d76f2bee68f5af22710",
+      "kind": "schema_dependency"
+    },
+    {
       "path": "docs/contracts/execution_bundle.schema.json",
       "sha256": "eefa7a9bd99023901a6b9246223cbaf0bcf9c04247374976173648c96e345871",
       "kind": "schema_dependency"
@@ -89,8 +94,18 @@
       "kind": "schema_dependency"
     },
     {
+      "path": "docs/contracts/metric_role.schema.json",
+      "sha256": "b530ee58934571d0e82373f16ae92f86b6521c308479bef80d86040b4946f5a5",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/metric_spec.schema.json",
+      "sha256": "d463d99eab6b2399aecefdab92b0e0a7912e9e85cc09710015b9167393ca3523",
+      "kind": "schema_dependency"
+    },
+    {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "9aecf8c3ff07f9ef9e9b2877f49093f1c88f354d9c92f24e05ba77b937cf2421",
+      "sha256": "fa4c7629141a671eb5c7d5848e031b4f01e76f96b457a4d3bc960af1809e31f1",
       "kind": "schema_dependency"
     },
     {
@@ -428,5 +443,5 @@
       ]
     }
   ],
-  "pack_checksum": "adbb215d29ce4eac257fcff9defc4d7490afe1831572822f27000933035b1e0e"
+  "pack_checksum": "9db0ebee1991e25d5460e6cb827f030c6f95e745ca7790cba8e0faae1909e5b4"
 }

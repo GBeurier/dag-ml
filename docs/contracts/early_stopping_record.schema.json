@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/early_stopping_record.v1.schema.json",
+  "title": "DAG-ML EarlyStoppingRecord v1",
+  "$comment": "Rust and independent semantic validators additionally require best_iteration < observed_iterations; standard Draft 2020-12 cannot compare sibling numeric instance values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "node_id",
+    "phase",
+    "metric_role",
+    "best_iteration",
+    "observed_iterations",
+    "best_value",
+    "stopped_early",
+    "record_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "node_id": { "$ref": "#/$defs/identifier" },
+    "phase": { "enum": ["FIT_CV", "REFIT"] },
+    "fold_id": { "$ref": "#/$defs/identifier" },
+    "metric_role": {
+      "allOf": [
+        {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/metric_role.v1.schema.json"
+        },
+        {
+          "properties": {
+            "role": { "const": "early_stopping" },
+            "partition": { "const": "validation" }
+          }
+        }
+      ]
+    },
+    "best_iteration": { "type": "integer", "minimum": 0 },
+    "observed_iterations": { "type": "integer", "minimum": 1 },
+    "best_value": { "type": "number" },
+    "stopped_early": { "type": "boolean" },
+    "record_fingerprint": { "$ref": "#/$defs/fingerprint" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "phase": { "const": "FIT_CV" } },
+        "required": ["phase"]
+      },
+      "then": { "required": ["fold_id"] }
+    },
+    {
+      "if": {
+        "properties": { "phase": { "const": "REFIT" } },
+        "required": ["phase"]
+      },
+      "then": { "not": { "required": ["fold_id"] } }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
