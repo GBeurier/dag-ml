@@ -63,6 +63,13 @@
         "$ref": "#/$defs/artifact_input_spec"
       }
     },
+    "required_loss_attestations": {
+      "type": "array",
+      "description": "Native-produced attestation templates for the training-loss roles that apply to this phase, preserving the node plan's strict order. A controller returns each template only after the corresponding loss executes successfully.",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json"
+      }
+    },
     "inner_fold_set": {
       "anyOf": [
         { "$ref": "#/$defs/fold_set" },

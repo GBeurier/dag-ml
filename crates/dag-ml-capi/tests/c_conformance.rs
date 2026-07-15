@@ -2374,6 +2374,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
+        required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
         seed: Some(42),
     };

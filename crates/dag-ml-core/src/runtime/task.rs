@@ -78,6 +78,12 @@ pub struct NodeTask {
     pub prediction_inputs: BTreeMap<String, PredictionInputSpec>,
     #[serde(default)]
     pub artifact_inputs: BTreeMap<String, ArtifactInputSpec>,
+    /// Native-produced attestation templates for the training losses that must
+    /// execute in this task. The order matches `node_plan.training_losses`
+    /// after filtering for `phase`. A controller may copy an entry into its
+    /// lineage only after the corresponding local or built-in loss succeeds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_loss_attestations: Vec<LossExecutionAttestation>,
     /// Nested (inner) CV fold set for this node in the current outer fold, built
     /// by the runtime from the outer fold's training samples when an effective
     /// `inner_cv` policy applies (FIT_CV only). `None` otherwise. Leakage-safe by
@@ -87,6 +93,29 @@ pub struct NodeTask {
     #[serde(default, skip_serializing_if = "FitInfluenceTask::is_default")]
     pub fit_influence: FitInfluenceTask,
     pub seed: Option<u64>,
+}
+
+impl NodeTask {
+    pub fn required_loss_attestations_for(
+        node_plan: &NodePlan,
+        phase: Phase,
+    ) -> Result<Vec<LossExecutionAttestation>> {
+        node_plan
+            .training_losses_for_phase(phase)
+            .map(|role| LossExecutionAttestation::for_role(role, phase))
+            .collect()
+    }
+
+    pub fn validate_required_loss_attestations(&self) -> Result<()> {
+        let expected = Self::required_loss_attestations_for(&self.node_plan, self.phase)?;
+        if self.required_loss_attestations != expected {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "task for node `{}` has loss execution requirements that do not match its ordered training losses for phase {:?}",
+                self.node_plan.node_id, self.phase
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -504,6 +533,7 @@ impl NodeResult {
                 task.node_plan.params_fingerprint
             )));
         }
+        task.validate_required_loss_attestations()?;
         let expected_losses = task
             .node_plan
             .training_losses_for_phase(task.phase)
@@ -519,6 +549,12 @@ impl NodeResult {
         }
         for (attestation, role) in self.lineage.loss_attestations.iter().zip(expected_losses) {
             attestation.validate_against(role, &task.node_plan.node_id, task.phase)?;
+        }
+        if self.lineage.loss_attestations != task.required_loss_attestations {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` returned loss attestations that do not match the task requirements",
+                task.node_plan.node_id
+            )));
         }
         task.fit_influence.validate()?;
         for diagnostic in &self.fit_influence_diagnostics {
