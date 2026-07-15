@@ -23,8 +23,12 @@ JAVASCRIPT_FIXTURE = (
 )
 C_FIXTURE = ROOT / "examples/fixtures/criteria/c_local_implementations.v1.json"
 R_FIXTURE = ROOT / "bindings/r/inst/extdata/r_local_implementations.v1.json"
+MATLAB_FIXTURE = ROOT / "bindings/matlab/fixtures/matlab_local_implementations.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
 ARTIFACTS = {
+    "bindings/matlab/+dagml/LocalImplementationRegistry.m": "matlab_local_registry",
+    "bindings/matlab/fixtures/matlab_local_implementations.v1.json": "fixture",
+    "bindings/matlab/tests/local_implementation_registry.m": "matlab_binding_test",
     "bindings/r/R/local_implementation_registry.R": "r_local_registry",
     "bindings/r/inst/extdata/r_local_implementations.v1.json": "fixture",
     "bindings/r/tests/local_implementation_registry.R": "r_binding_test",
@@ -510,6 +514,10 @@ def main() -> None:
         valid, language="r", binding_id="binding:r"
     )
     write(R_FIXTURE, r_fixture)
+    matlab_fixture = build_host_language_fixture(
+        valid, language="matlab", binding_id="binding:matlab"
+    )
+    write(MATLAB_FIXTURE, matlab_fixture)
 
     pack: dict[str, Any] = {
         "pack_id": "dag-ml.criteria-conformance.v1",

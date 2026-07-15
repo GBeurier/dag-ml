@@ -353,6 +353,16 @@ jobs:
       - name: Check R source package
         run: R CMD check --no-manual target/r/dagml_*.tar.gz
 
+  matlab-octave-bindings:
+    name: MATLAB/Octave bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install GNU Octave
+        run: sudo apt-get update && sudo apt-get install --yes octave
+      - name: Test local implementation registry
+        run: octave --no-gui --quiet --eval "addpath('bindings/matlab/tests'); local_implementation_registry"
+
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
