@@ -272,6 +272,53 @@ typedef struct DagMlControllerBinding {
     DagMlControllerVTable vtable;
 } DagMlControllerBinding;
 
+/* Opaque, owning result of dagml_training_execute. It keeps the training
+ * outcome plus the controller registry and artifact store alive so emitted
+ * model/refit handles stay valid. Read it with
+ * dagml_training_result_outcome_json and release it with
+ * dagml_training_result_free (which releases handles, then destroys each owning
+ * controller user_data exactly once). Free at most once; NULL is a no-op. */
+typedef struct DagMlTrainingResult DagMlTrainingResult;
+
+/* Stateless input for dagml_training_execute. All JSON payloads are UTF-8.
+ * warnings_json (["..."]) and diagnostics_json ({"k": <json>}) are optional: a
+ * NULL pointer (or zero length) is the empty default. data_provider is a
+ * borrowed data vtable whose user_data is never destroyed by this crate;
+ * controllers whose vtable advertises the owned ABI are consumed by the call. */
+typedef struct DagMlTrainingExecuteRequest {
+    DagMlBytesView request_json;
+    DagMlBytesView outcome_id;
+    DagMlBytesView run_id;
+    DagMlBytesView bundle_id;
+    DagMlBytesView relations_json;
+    DagMlBytesView influence_json;
+    DagMlBytesView envelopes_json;
+    DagMlBytesView warnings_json;
+    DagMlBytesView diagnostics_json;
+    DagMlHandle dataset;
+    DagMlDataVTable data_provider;
+    DagMlBytesView data_owner_controller_id;
+    const DagMlControllerBinding *controller_bindings;
+    size_t controller_binding_count;
+} DagMlTrainingExecuteRequest;
+
+/* Stateless input for dagml_training_result_replay. All JSON payloads are
+ * UTF-8. warnings_json (["..."]) and diagnostics_json ({"k": <json>}) are
+ * optional: a NULL pointer (or zero length) is the empty default. data_provider
+ * is borrowed for the call; controllers/artifacts are borrowed from the live
+ * DagMlTrainingResult. */
+typedef struct DagMlTrainingReplayRequest {
+    DagMlBytesView replay_request_json;
+    DagMlBytesView outcome_id;
+    DagMlBytesView run_id;
+    DagMlBytesView data_envelopes_json;
+    DagMlBytesView warnings_json;
+    DagMlBytesView diagnostics_json;
+    DagMlHandle dataset;
+    DagMlDataVTable data_provider;
+    DagMlBytesView data_owner_controller_id;
+} DagMlTrainingReplayRequest;
+
 DagMlVersion dagml_version(void);
 void dagml_string_free(DagMlString value);
 /* ADR-11 thread-local last-error accessors. The buffer holds the structured
@@ -378,6 +425,30 @@ DagMlStatusCode dagml_research_provenance_export_json(const uint8_t *plan_ptr, s
 DagMlStatusCode dagml_openlineage_run_event_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *lineage_ptr, size_t lineage_len, const uint8_t *envelopes_ptr, size_t envelopes_len, const uint8_t *prediction_cache_manifest_ptr, size_t prediction_cache_manifest_len, const uint8_t *artifact_manifest_ptr, size_t artifact_manifest_len, DagMlBytesView namespace, DagMlBytesView event_time, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_mock_replay_execute_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, const uint8_t *envelopes_ptr, size_t envelopes_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_replay_execute_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, const uint8_t *envelopes_ptr, size_t envelopes_len, DagMlBytesView data_owner_controller_id, DagMlHandle dataset, DagMlDataVTable data_provider, DagMlArtifactStoreVTable artifact_store, const DagMlPredictionCacheVTable *prediction_cache_store, const DagMlControllerBinding *controller_bindings, size_t controller_binding_count, DagMlOwnedBytes *out_json, DagMlString *error_out);
+/* Execute native COMPILE/PLAN -> FIT_CV -> SELECT -> optional REFIT. After the
+ * required request and out_result pointers are accepted, once the
+ * controller_bindings slice is readable (count 0, or a non-null pointer), the
+ * call owns every DISTINCT owning controller user_data (owned-ABI vtable with a
+ * non-null destroy) and consumes each exactly once: on OK they move into
+ * *out_result (free with dagml_training_result_free); on any error *out_result
+ * is NULL and each distinct owning user_data is destroyed exactly once,
+ * including rejected/unreached bindings. Borrowed data/controller vtables are
+ * never destroyed; if controller_bindings is NULL with a non-zero count the
+ * caller keeps ownership. NULL request/out_result pointers are also rejected
+ * before ownership transfer. Every training controller binding must provide a
+ * non-null release callback. Strict-JSON/duplicate-key, envelope
+ * coverage/collision and any user_data alias involving an owning vtable are
+ * refused before any callback runs. */
+DagMlStatusCode dagml_training_execute(const DagMlTrainingExecuteRequest *request, DagMlTrainingResult **out_result, DagMlString *error_out);
+/* Serialize the outcome owned by result into fresh bytes (release with
+ * dagml_owned_bytes_free). NULL result yields INVALID_ARGUMENT. */
+DagMlStatusCode dagml_training_result_outcome_json(const DagMlTrainingResult *result, DagMlOwnedBytes *out_json, DagMlString *error_out);
+/* Execute attached PREDICT/EXPLAIN replay from a live result into fresh
+ * TrainingReplayOutcome JSON bytes (release with dagml_owned_bytes_free). NULL
+ * result/request yields INVALID_ARGUMENT. */
+DagMlStatusCode dagml_training_result_replay(const DagMlTrainingResult *result, const DagMlTrainingReplayRequest *request, DagMlOwnedBytes *out_json, DagMlString *error_out);
+/* Release a DagMlTrainingResult. NULL is a no-op; free at most once. */
+void dagml_training_result_free(DagMlTrainingResult *result);
 
 #ifdef __cplusplus
 }

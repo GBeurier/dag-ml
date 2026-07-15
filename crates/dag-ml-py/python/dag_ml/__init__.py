@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from importlib.metadata import PackageNotFoundError, version as _distribution_version
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,7 @@ from ._dag_ml import (
     DagMlRuntimeError,
     DagMlSecurityError,
     DagMlValidationError,
+    TrainingResult as _NativeTrainingResult,
     build_execution_plan_json,
     canonical_operator_variant_label,
     contract_manifest_json as _native_contract_manifest_json,
@@ -28,23 +28,36 @@ from ._dag_ml import (
     compile_pipeline_dsl_graph_json,
     derive_controller_manifest_json,
     derive_controller_manifest_list_json,
+    execute_loaded_predictor_replay_json as _native_execute_loaded_predictor_replay_json,
+    execute_training_json as _native_execute_training_json,
     fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
+    project_training_request_json,
+    sample_relation_set_fingerprint_json,
+    sign_training_request_json as _native_sign_training_request_json,
     validate_campaign_json,
+    validate_cache_namespace_json,
     validate_controller_manifest_json,
     validate_controller_manifest_list_json,
     validate_execution_bundle_json,
     validate_execution_plan_json,
     validate_fold_set_json,
     validate_graph_json,
+    validate_parameter_projection_json,
     validate_pipeline_dsl_json,
+    validate_portable_predictor_package_json,
+    validate_training_contract_projection_json,
+    validate_training_outcome_json,
+    validate_training_replay_outcome_json,
+    validate_training_replay_request_json,
+    validate_training_request_json,
     version as _native_version,
 )
 
-try:
-    __version__ = _distribution_version("dag-ml")
-except PackageNotFoundError:
-    __version__ = _native_version()
+# The loaded extension is the authoritative code version. Distribution metadata
+# can describe another installation when this package is imported directly from
+# a source tree via PYTHONPATH, so it must never override the native module.
+__version__ = _native_version()
 
 
 _FACADE_EXPORTS = [
@@ -59,6 +72,15 @@ _FACADE_EXPORTS = [
     "ExecutionPlan",
     "ExecutionBundle",
     "FoldSet",
+    "TrainingRequest",
+    "TrainingOutcome",
+    "TrainingReplayRequest",
+    "TrainingReplayOutcome",
+    "TrainingResult",
+    "TrainingContractProjection",
+    "ParameterProjection",
+    "CacheNamespace",
+    "PortablePredictorPackage",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
     "compile_pipeline_dsl_artifact",
@@ -67,6 +89,12 @@ _FACADE_EXPORTS = [
     "derive_controller_manifests",
     "fan_out_data_aware_branches",
     "build_execution_plan",
+    "project_training_request",
+    "sign_training_request",
+    "execute_training",
+    "execute_training_json",
+    "replay_loaded_predictor_package",
+    "replay_loaded_predictor_package_json",
 ]
 
 
@@ -99,7 +127,9 @@ def _facade_contract_error(message: str) -> DagMlError:
     error.remediation_hint = descriptor["remediation_hint"]
     error.context = context
     error.context_json = json.dumps(context, sort_keys=True, separators=(",", ":"))
-    error.descriptor_json = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
+    error.descriptor_json = json.dumps(
+        descriptor, sort_keys=True, separators=(",", ":")
+    )
     return error
 
 
@@ -186,6 +216,222 @@ class ExecutionBundle(JsonContract):
     @classmethod
     def _validate_json(cls, json_text: str) -> None:
         validate_execution_bundle_json(json_text)
+
+
+class TrainingRequest(JsonContract):
+    """Strict W1 training request with native projection semantics."""
+
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_training_request_json(json_text)
+
+    def project(self) -> "TrainingContractProjection":
+        return TrainingContractProjection(project_training_request_json(self._json))
+
+
+class TrainingContractProjection(JsonContract):
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_training_contract_projection_json(json_text)
+
+
+class TrainingOutcome(JsonContract):
+    """Self-fingerprinted portable result of one native training run."""
+
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_training_outcome_json(json_text)
+
+
+class TrainingReplayRequest(JsonContract):
+    """Self-fingerprinted attached replay request for a TrainingResult."""
+
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_training_replay_request_json(json_text)
+
+
+class TrainingReplayOutcome(JsonContract):
+    """Self-fingerprinted portable result of one attached training replay."""
+
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_training_replay_outcome_json(json_text)
+
+
+class ParameterProjection(JsonContract):
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_parameter_projection_json(json_text)
+
+
+class CacheNamespace(JsonContract):
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_cache_namespace_json(json_text)
+
+
+class PortablePredictorPackage(JsonContract):
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_portable_predictor_package_json(json_text)
+
+
+class TrainingResult:
+    """Owning native training result with explicit process-local detach."""
+
+    __slots__ = ("_native",)
+
+    def __init__(self, native: _NativeTrainingResult) -> None:
+        self._native = native
+
+    @property
+    def is_attached(self) -> bool:
+        """Whether callbacks, data views and artifact handles are retained."""
+
+        return self._native.is_attached
+
+    @property
+    def process_local_artifact_count(self) -> int | None:
+        return self._native.process_local_artifact_count
+
+    @property
+    def process_local_data_handle_count(self) -> int | None:
+        return self._native.process_local_data_handle_count
+
+    @property
+    def process_local_data_view_count(self) -> int | None:
+        return self._native.process_local_data_view_count
+
+    @property
+    def outcome_fingerprint(self) -> str:
+        return self._native.outcome_fingerprint
+
+    @property
+    def outcome(self) -> TrainingOutcome:
+        return TrainingOutcome(self.outcome_json())
+
+    @property
+    def execution_bundle(self) -> ExecutionBundle:
+        return ExecutionBundle(self.execution_bundle_json())
+
+    @property
+    def score_set(self) -> dict[str, Any]:
+        return json.loads(self.score_set_json())
+
+    @property
+    def outputs(self) -> list[dict[str, Any]]:
+        return json.loads(self.outputs_json())
+
+    @property
+    def artifacts(self) -> list[dict[str, Any]]:
+        """Portable artifact records; process-local handles are never returned."""
+
+        return json.loads(self.artifacts_json())
+
+    @property
+    def portable_prediction_caches(self) -> dict[str, Any] | None:
+        payload = self.portable_prediction_caches_json()
+        return None if payload is None else json.loads(payload)
+
+    def detach(self) -> bool:
+        """Release process-local resources, preserving every portable property."""
+
+        return self._native.detach()
+
+    def replay(
+        self,
+        request: Any,
+        data_envelopes: Any,
+        *,
+        outcome_id: str,
+        run_id: str,
+        warnings: list[str] | None = None,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> TrainingReplayOutcome:
+        """Execute attached PREDICT/EXPLAIN replay while native resources live."""
+
+        return TrainingReplayOutcome(
+            self.replay_json(
+                request,
+                data_envelopes,
+                outcome_id=outcome_id,
+                run_id=run_id,
+                warnings=warnings,
+                diagnostics=diagnostics,
+            )
+        )
+
+    def export_portable_predictor_package(
+        self,
+        package_id: str,
+        *,
+        fitted_artifact_mode: str = "allow_host_sidecar",
+        artifact_load_mode: str = "host_sidecar",
+    ) -> PortablePredictorPackage:
+        """Export a signed portable predictor package JSON contract."""
+
+        return PortablePredictorPackage(
+            self.portable_predictor_package_json(
+                package_id,
+                fitted_artifact_mode=fitted_artifact_mode,
+                artifact_load_mode=artifact_load_mode,
+            )
+        )
+
+    def outcome_json(self) -> str:
+        return self._native.outcome_json()
+
+    def execution_bundle_json(self) -> str:
+        return self._native.execution_bundle_json()
+
+    def score_set_json(self) -> str:
+        return self._native.score_set_json()
+
+    def outputs_json(self) -> str:
+        return self._native.outputs_json()
+
+    def artifacts_json(self) -> str:
+        return self._native.artifacts_json()
+
+    def portable_prediction_caches_json(self) -> str | None:
+        return self._native.portable_prediction_caches_json()
+
+    def portable_predictor_package_json(
+        self,
+        package_id: str,
+        *,
+        fitted_artifact_mode: str = "allow_host_sidecar",
+        artifact_load_mode: str = "host_sidecar",
+    ) -> str:
+        return self._native.portable_predictor_package_json(
+            package_id,
+            fitted_artifact_mode,
+            artifact_load_mode,
+        )
+
+    def replay_json(
+        self,
+        request: Any,
+        data_envelopes: Any,
+        *,
+        outcome_id: str,
+        run_id: str,
+        warnings: list[str] | None = None,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> str:
+        replay_request = TrainingReplayRequest(request)
+        envelopes_json = _coerce_json(data_envelopes)
+        warnings_json = _coerce_json([] if warnings is None else warnings)
+        diagnostics_json = _coerce_json({} if diagnostics is None else diagnostics)
+        return self._native.replay_json(
+            replay_request.json(),
+            envelopes_json,
+            outcome_id,
+            run_id,
+            warnings_json,
+            diagnostics_json,
+        )
 
 
 class FoldSet(JsonContract):
@@ -306,6 +552,157 @@ def build_execution_plan(
     )
 
 
+def project_training_request(request: Any) -> TrainingContractProjection:
+    """Validate and project a W1 training request through dag-ml-core."""
+
+    return TrainingContractProjection(
+        project_training_request_json(_coerce_json(request))
+    )
+
+
+def sign_training_request_json(request: Any) -> str:
+    """Sign and validate a W1 training request through dag-ml-core."""
+
+    return _native_sign_training_request_json(_coerce_json(request))
+
+
+def sign_training_request(request: Any) -> TrainingRequest:
+    """Return a typed, signed W1 training request."""
+
+    return TrainingRequest(sign_training_request_json(request))
+
+
+def execute_training_json(
+    request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    op_callback: Any,
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> TrainingResult:
+    """Run native training from already serialized strict JSON contracts."""
+
+    return TrainingResult(
+        _native_execute_training_json(
+            request_json,
+            data_envelopes_json,
+            relations_json,
+            training_influence_json,
+            op_callback,
+            outcome_id,
+            run_id,
+            bundle_id,
+            warnings_json,
+            diagnostics_json,
+        )
+    )
+
+
+def execute_training(
+    request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    op_callback: Any,
+    *,
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> TrainingResult:
+    """Execute native DAG-ML training with an in-process Python controller.
+
+    ``data_envelopes`` maps each exact ``node_id.input_name`` requirement key
+    to its signed coordinator envelope. ``op_callback`` receives one native
+    ``NodeTask`` dictionary and returns its ``NodeResult`` dictionary. DAG-ML
+    owns orchestration, OOF scoring, SELECT, optional REFIT and outcome binding.
+    """
+
+    return execute_training_json(
+        _coerce_json(request),
+        _coerce_json(data_envelopes),
+        _coerce_json(relations),
+        _coerce_json(training_influence),
+        op_callback,
+        outcome_id,
+        run_id,
+        bundle_id,
+        _coerce_json(warnings),
+        _coerce_json({} if diagnostics is None else diagnostics),
+    )
+
+
+def replay_loaded_predictor_package_json(
+    package: Any,
+    request: Any,
+    data_envelopes: Any,
+    artifact_handles: Any,
+    op_callback: Any,
+    *,
+    outcome_id: str,
+    run_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> str:
+    """Run stateless PREDICT/EXPLAIN replay from a portable package plus host sidecars.
+
+    ``package`` is a signed ``PortablePredictorPackage`` contract and must not
+    contain process-local handles. ``artifact_handles`` is the host-side sidecar
+    map keyed by package artifact id, with ``HandleRef`` values supplied by the
+    current runtime. ``request.phase`` selects ``PREDICT`` or ``EXPLAIN``; an
+    ``EXPLAIN`` request returns explanation blocks and may also return the final
+    bound predictions emitted by the requested package binding.
+    """
+
+    portable_package = PortablePredictorPackage(package)
+    replay_request = TrainingReplayRequest(request)
+    return _native_execute_loaded_predictor_replay_json(
+        portable_package.json(),
+        replay_request.json(),
+        _coerce_json(data_envelopes),
+        _coerce_json(artifact_handles),
+        op_callback,
+        outcome_id,
+        run_id,
+        _coerce_json(warnings),
+        _coerce_json({} if diagnostics is None else diagnostics),
+    )
+
+
+def replay_loaded_predictor_package(
+    package: Any,
+    request: Any,
+    data_envelopes: Any,
+    artifact_handles: Any,
+    op_callback: Any,
+    *,
+    outcome_id: str,
+    run_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> TrainingReplayOutcome:
+    """Run stateless PREDICT/EXPLAIN replay and return a validated replay outcome."""
+
+    return TrainingReplayOutcome(
+        replay_loaded_predictor_package_json(
+            package,
+            request,
+            data_envelopes,
+            artifact_handles,
+            op_callback,
+            outcome_id=outcome_id,
+            run_id=run_id,
+            warnings=warnings,
+            diagnostics=diagnostics,
+        )
+    )
+
+
 __all__ = [
     "__version__",
     "DagMlBundleError",
@@ -320,6 +717,7 @@ __all__ = [
     "DagMlSecurityError",
     "DagMlValidationError",
     "CampaignSpec",
+    "CacheNamespace",
     "CompiledPipelineArtifact",
     "ControllerManifest",
     "ControllerManifests",
@@ -330,7 +728,15 @@ __all__ = [
     "HostControllerSpec",
     "HostControllerSpecs",
     "JsonContract",
+    "ParameterProjection",
     "PipelineDslSpec",
+    "PortablePredictorPackage",
+    "TrainingContractProjection",
+    "TrainingOutcome",
+    "TrainingReplayOutcome",
+    "TrainingReplayRequest",
+    "TrainingResult",
+    "TrainingRequest",
     "build_execution_plan",
     "build_execution_plan_json",
     "canonical_operator_variant_label",
@@ -345,16 +751,31 @@ __all__ = [
     "derive_controller_manifest_json",
     "derive_controller_manifest_list_json",
     "derive_controller_manifests",
+    "execute_training",
+    "execute_training_json",
+    "replay_loaded_predictor_package",
+    "replay_loaded_predictor_package_json",
     "fan_out_data_aware_branches",
     "fan_out_data_aware_branches_json",
     "fold_set_fingerprint_json",
+    "sample_relation_set_fingerprint_json",
+    "project_training_request",
+    "project_training_request_json",
+    "sign_training_request",
+    "sign_training_request_json",
     "validate_campaign_json",
+    "validate_cache_namespace_json",
     "validate_controller_manifest_json",
     "validate_controller_manifest_list_json",
     "validate_execution_bundle_json",
     "validate_execution_plan_json",
     "validate_fold_set_json",
     "validate_graph_json",
+    "validate_parameter_projection_json",
     "validate_pipeline_dsl_json",
+    "validate_portable_predictor_package_json",
+    "validate_training_contract_projection_json",
+    "validate_training_outcome_json",
+    "validate_training_request_json",
     "version",
 ]

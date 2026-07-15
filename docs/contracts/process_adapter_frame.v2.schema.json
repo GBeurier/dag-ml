@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/process_adapter_frame.v2.schema.json",
+  "title": "DAG-ML Process Adapter Frame v2",
+  "description": "V2 control frame. Result frames carry NodeResult v2; task payloads remain NodeTask v1 because producer_port changes only result-side prediction provenance.",
+  "type": "object",
+  "required": ["type", "schema_version"],
+  "oneOf": [
+    { "$ref": "#/$defs/init_frame" },
+    { "$ref": "#/$defs/task_frame" },
+    { "$ref": "#/$defs/close_frame" },
+    { "$ref": "#/$defs/ack_frame" },
+    { "$ref": "#/$defs/result_frame" },
+    { "$ref": "#/$defs/error_frame" }
+  ],
+  "$defs": {
+    "schema_version": { "type": "integer", "const": 2 },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": { "type": "string", "minLength": 1 },
+    "node_task": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_task.v1.schema.json"
+    },
+    "node_result": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v2.schema.json"
+    },
+    "init_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "controller_id",
+        "worker_index",
+        "worker_count"
+      ],
+      "properties": {
+        "type": { "const": "init" },
+        "schema_version": { "$ref": "#/$defs/schema_version" },
+        "controller_id": { "$ref": "#/$defs/identifier" },
+        "worker_index": { "type": "integer", "minimum": 0 },
+        "worker_count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "task_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "schema_version", "task"],
+      "properties": {
+        "type": { "const": "task" },
+        "schema_version": { "$ref": "#/$defs/schema_version" },
+        "task": { "$ref": "#/$defs/node_task" }
+      }
+    },
+    "close_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "schema_version"],
+      "properties": {
+        "type": { "const": "close" },
+        "schema_version": { "$ref": "#/$defs/schema_version" }
+      }
+    },
+    "ack_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "schema_version", "status"],
+      "properties": {
+        "type": { "const": "ack" },
+        "schema_version": { "$ref": "#/$defs/schema_version" },
+        "status": { "enum": ["initialized", "closed"] }
+      }
+    },
+    "result_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "schema_version", "result"],
+      "properties": {
+        "type": { "const": "result" },
+        "schema_version": { "$ref": "#/$defs/schema_version" },
+        "result": { "$ref": "#/$defs/node_result" }
+      }
+    },
+    "adapter_error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/identifier" },
+        "message": { "$ref": "#/$defs/non_empty_string" },
+        "retryable": { "type": "boolean", "default": false }
+      }
+    },
+    "error_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "schema_version", "error"],
+      "properties": {
+        "type": { "const": "error" },
+        "schema_version": { "$ref": "#/$defs/schema_version" },
+        "error": { "$ref": "#/$defs/adapter_error" }
+      }
+    },
+    "request_frame": {
+      "oneOf": [
+        { "$ref": "#/$defs/init_frame" },
+        { "$ref": "#/$defs/task_frame" },
+        { "$ref": "#/$defs/close_frame" }
+      ]
+    },
+    "response_frame": {
+      "oneOf": [
+        { "$ref": "#/$defs/ack_frame" },
+        { "$ref": "#/$defs/result_frame" },
+        { "$ref": "#/$defs/error_frame" }
+      ]
+    }
+  }
+}

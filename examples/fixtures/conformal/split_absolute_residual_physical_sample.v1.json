@@ -1,0 +1,960 @@
+{
+  "fixture_id": "dag-ml.conformal.split_absolute_residual.physical_sample.v1",
+  "schema_version": 1,
+  "calibration_artifact": {
+    "schema_version": 1,
+    "artifact_id": "calibration:split.v1",
+    "predictor_binding": {
+      "schema_version": 1,
+      "plan_id": "plan:fixture.execution.branch_merge",
+      "graph_fingerprint": "5ff380e69dad7b2f67725483afd8b917b3d2bcde7190c4cfa952b6c227d773d5",
+      "campaign_fingerprint": "0778413bc8e3069ef4c2148cb17a5e15ec8ffbc38ca588d2146c6d2aee713c05",
+      "controller_fingerprint": "03fce82bb64a7c1820c70146b0489d6ed649e90d922e392d6eb9309eba829897",
+      "data_bindings": [
+        {
+          "requirement_key": "branch:b0.model:ridge.x",
+          "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+          "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+          "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "requirement_key": "branch:b1.augment:noise.x",
+          "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+          "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+          "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "requirement_key": "merge:stack.pred_plus_original.meta:ridge.x_original",
+          "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+          "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+          "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+          "source_ids": [
+            "nir"
+          ]
+        }
+      ],
+      "selected_variant_id": "variant:a964828b1417c6e7",
+      "selected_variant_fingerprint": "a964828b1417c6e7c1262a7ee9c670a96e14488e793edc87afbd457f8c76265e",
+      "selected_patches": [
+        {
+          "schema_version": 1,
+          "node_id": "branch:b0.model:ridge",
+          "namespace": "operator",
+          "path": [
+            "alpha"
+          ],
+          "value": 0.1
+        },
+        {
+          "schema_version": 1,
+          "node_id": "branch:b1.model:rf",
+          "namespace": "operator",
+          "path": [
+            "max_depth"
+          ],
+          "value": 4
+        },
+        {
+          "schema_version": 1,
+          "node_id": "branch:b1.model:rf",
+          "namespace": "operator",
+          "path": [
+            "n_estimators"
+          ],
+          "value": 64
+        },
+        {
+          "schema_version": 1,
+          "node_id": "merge:stack.pred_plus_original.meta:ridge",
+          "namespace": "operator",
+          "path": [
+            "alpha"
+          ],
+          "value": 0.05
+        }
+      ],
+      "artifacts": [
+        {
+          "node_id": "branch:b0.model:ridge",
+          "controller_id": "controller:model.mock",
+          "artifact_id": "artifact:branch:b0.model:ridge:refit",
+          "backend": "json",
+          "content_fingerprint": "b6ce0fe0c992ddd20c2f300917cb323003d7adadf5364d9d9b2f2e154a8e8917",
+          "params_fingerprint": "af39a185b5a846fc6bbdc703ee4a7bf3e4b7ad9a304563d6cc024a36dc6628ab",
+          "plugin": "dagml.python_process",
+          "plugin_version": "1.0.0"
+        },
+        {
+          "node_id": "branch:b1.model:rf",
+          "controller_id": "controller:model.mock",
+          "artifact_id": "artifact:branch:b1.model:rf:refit",
+          "backend": "json",
+          "content_fingerprint": "080f39410270fecb7030f29ef828f6a2b753ec69c56ecaed8dbdd01fd47b8adb",
+          "params_fingerprint": "825b0d7229d08dad92ad5f81443063e14bdeb3e03ef3ca294c81c156711b7924",
+          "plugin": "dagml.python_process",
+          "plugin_version": "1.0.0"
+        },
+        {
+          "node_id": "merge:stack.pred_plus_original.meta:ridge",
+          "controller_id": "controller:model.mock",
+          "artifact_id": "artifact:merge:stack.pred_plus_original.meta:ridge:refit",
+          "backend": "json",
+          "content_fingerprint": "e04a465664fa5d102d7345c2d7dd334fa822209438cc32e7ed07205224abb019",
+          "params_fingerprint": "e7fcc53de2b14105e7e7f5b943b3eb32811c5ac79ad70f10fee4de31137921d2",
+          "plugin": "dagml.python_process",
+          "plugin_version": "1.0.0"
+        }
+      ],
+      "output_binding": {
+        "schema_version": 1,
+        "binding_id": "output:meta.final",
+        "node_id": "merge:stack.pred_plus_original.meta:ridge",
+        "port_name": "oof",
+        "prediction_level": "sample",
+        "unit_level": "physical_sample",
+        "prediction_kind": "regression_point",
+        "prediction_source": "final_refit",
+        "refit_strategy": "refit_one",
+        "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+        "target_names": [
+          "protein"
+        ],
+        "target_units": [
+          "percent"
+        ],
+        "class_labels": [
+          []
+        ],
+        "output_order": "target_order",
+        "target_space": "raw",
+        "binding_fingerprint": "c8d90368ab9e3a2a6ed03f729fdbda2521a42e429bd88d2334d86f6b55214c4f"
+      },
+      "target_processing_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "training_outcome_fingerprint": "7d609677433b1f5d2eeb0b77c40c21a80acfd028a6bc3e00c0322a21241c14af",
+      "training_influence_fingerprint": "cf8f6ce4dbf07b81621d4baf62fca07e218936da8a85d444a91e74e302f485dd",
+      "predictor_node_ids": [
+        "branch:b0.model:ridge",
+        "branch:b1.augment:noise",
+        "branch:b1.model:rf",
+        "merge:stack.pred_plus_original.meta:ridge"
+      ]
+    },
+    "predictor_binding_fingerprint": "bb73f1c18f17a6eaa522e121509914a85b7cc532f0ddec19c18b5fe1e6d62fb3",
+    "calibration_spec": {
+      "schema_version": 1,
+      "method": "split_absolute_residual",
+      "coverages": [
+        0.9,
+        0.95
+      ],
+      "exchangeability_unit": "physical_sample",
+      "multi_target_policy": "marginal",
+      "small_sample_policy": "error",
+      "target_space": "raw",
+      "numeric_version": "split_absolute_residual.v1",
+      "seed": null
+    },
+    "calibration_spec_fingerprint": "a97853b9ffa9a17a3786ad3049f26130346e6e65f0e4c2c65ad7a29e0c89ab41",
+    "calibration_cohort": {
+      "schema_version": 1,
+      "role": "calibration",
+      "exchangeability_unit": "physical_sample",
+      "physical_sample_ids": [
+        "sample:base.cal.01",
+        "sample:base.cal.02",
+        "sample:base.cal.03",
+        "sample:base.cal.04",
+        "sample:base.cal.05",
+        "sample:base.cal.06",
+        "sample:base.cal.07",
+        "sample:base.cal.08",
+        "sample:base.cal.09",
+        "sample:base.cal.10",
+        "sample:base.cal.11",
+        "sample:base.cal.12",
+        "sample:base.cal.13",
+        "sample:base.cal.14",
+        "sample:base.cal.15",
+        "sample:base.cal.16",
+        "sample:base.cal.17",
+        "sample:base.cal.18",
+        "sample:base.cal.19",
+        "sample:base.cal.20"
+      ],
+      "origin_sample_ids": [
+        "sample:base.cal.origin.01"
+      ],
+      "group_ids": [
+        "group:base.cal.A",
+        "group:base.cal.B"
+      ],
+      "source_ids": [
+        "nir"
+      ],
+      "unit_relations": [
+        {
+          "physical_sample_id": "sample:base.cal.01",
+          "origin_sample_id": "sample:base.cal.origin.01",
+          "group_ids": [
+            "group:base.cal.A"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.02",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.A"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.03",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.A"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.04",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.A"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.05",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.A"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.06",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.A"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.07",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.A"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.08",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.A"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.09",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.A"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.10",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.A"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.11",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.12",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.13",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.14",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.15",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.16",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.17",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.18",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.19",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        },
+        {
+          "physical_sample_id": "sample:base.cal.20",
+          "origin_sample_id": null,
+          "group_ids": [
+            "group:base.cal.B"
+          ],
+          "source_ids": [
+            "nir"
+          ]
+        }
+      ],
+      "target_names": [
+        "protein"
+      ],
+      "relation_fingerprint": "509e3b457e6113ef2b8224da96a6cb25cb6588daef53f15a304a0f831d52d39e",
+      "content_fingerprint": "4ef6dda6ed43470ed4d721b7d106607d513dcefa3f3bf5c3378ab4d6fb70b8df",
+      "manifest_fingerprint": "0e2f3f77ae1b209b0110f0ce8a4e2653e3c8049ab2df3b1585d0c219593d5d69",
+      "axes_fingerprint": "2e9ac3049c38aca243404044f9fd231769a06e159cdbadbaec979c9295b4ca70"
+    },
+    "training_influence": {
+      "schema_version": 1,
+      "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+      "entries": [
+        {
+          "kind": "transform_fit",
+          "scope_id": "fit:branch.b1.augmentation",
+          "node_id": "branch:b1.augment:noise",
+          "physical_sample_ids": [
+            "sample:1",
+            "sample:2",
+            "sample:3",
+            "sample:4"
+          ],
+          "origin_sample_ids": [],
+          "group_ids": []
+        },
+        {
+          "kind": "model_fit",
+          "scope_id": "fit:branch.b0.ridge",
+          "node_id": "branch:b0.model:ridge",
+          "physical_sample_ids": [
+            "sample:1",
+            "sample:2",
+            "sample:3",
+            "sample:4"
+          ],
+          "origin_sample_ids": [],
+          "group_ids": []
+        },
+        {
+          "kind": "model_fit",
+          "scope_id": "fit:branch.b1.rf",
+          "node_id": "branch:b1.model:rf",
+          "physical_sample_ids": [
+            "sample:1",
+            "sample:2",
+            "sample:3",
+            "sample:4"
+          ],
+          "origin_sample_ids": [],
+          "group_ids": []
+        },
+        {
+          "kind": "hpo_selection",
+          "scope_id": "selection:rmse",
+          "node_id": null,
+          "physical_sample_ids": [
+            "sample:1",
+            "sample:2",
+            "sample:3",
+            "sample:4"
+          ],
+          "origin_sample_ids": [],
+          "group_ids": []
+        },
+        {
+          "kind": "trained_meta_aggregation",
+          "scope_id": "fit:meta.ridge",
+          "node_id": "merge:stack.pred_plus_original.meta:ridge",
+          "physical_sample_ids": [
+            "sample:1",
+            "sample:2",
+            "sample:3",
+            "sample:4"
+          ],
+          "origin_sample_ids": [],
+          "group_ids": []
+        }
+      ],
+      "manifest_fingerprint": "cf8f6ce4dbf07b81621d4baf62fca07e218936da8a85d444a91e74e302f485dd"
+    },
+    "effective_sample_count": 20,
+    "quantiles": [
+      {
+        "coverage": 0.9,
+        "rank": 19,
+        "values": [
+          {
+            "status": "finite",
+            "value": 1.9
+          }
+        ]
+      },
+      {
+        "coverage": 0.95,
+        "rank": 20,
+        "values": [
+          {
+            "status": "finite",
+            "value": 2.0
+          }
+        ]
+      }
+    ],
+    "diagnostics": {
+      "quantile_convention": "rank=ceil((n+1)*coverage), one-indexed",
+      "guarantee": "marginal split-conformal under physical-sample exchangeability"
+    },
+    "warnings": [],
+    "checksum": "88dd183f1dcc6159ce070cc1b82ca79e858a4bda947ee7802ed737fd9b3d6787"
+  },
+  "oracle_cases": [
+    {
+      "id": "finite_multi_coverage_unsorted_residuals",
+      "residuals": [
+        0.4,
+        1.0,
+        0.2,
+        1.8,
+        0.6,
+        1.2,
+        0.8,
+        2.0,
+        0.1,
+        1.6,
+        0.3,
+        1.4,
+        0.5,
+        1.9,
+        0.7,
+        1.1,
+        0.9,
+        1.3,
+        1.5,
+        1.7
+      ],
+      "coverages": [
+        0.9,
+        0.95
+      ],
+      "small_sample_policy": "error",
+      "expected": [
+        {
+          "coverage": 0.9,
+          "rank": 19,
+          "quantile": {
+            "status": "finite",
+            "value": 1.9
+          }
+        },
+        {
+          "coverage": 0.95,
+          "rank": 20,
+          "quantile": {
+            "status": "finite",
+            "value": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "id": "ties_are_not_interpolated",
+      "residuals": [
+        1.0,
+        0.0,
+        2.0,
+        0.5,
+        1.0,
+        2.0,
+        0.0,
+        1.0,
+        0.5
+      ],
+      "coverages": [
+        0.5,
+        0.8
+      ],
+      "small_sample_policy": "error",
+      "expected": [
+        {
+          "coverage": 0.5,
+          "rank": 5,
+          "quantile": {
+            "status": "finite",
+            "value": 1.0
+          }
+        },
+        {
+          "coverage": 0.8,
+          "rank": 8,
+          "quantile": {
+            "status": "finite",
+            "value": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "id": "decimal_rank_avoids_binary_overshoot",
+      "residuals": [
+        24.0,
+        23.0,
+        22.0,
+        21.0,
+        20.0,
+        19.0,
+        18.0,
+        17.0,
+        16.0,
+        15.0,
+        14.0,
+        13.0,
+        12.0,
+        11.0,
+        10.0,
+        9.0,
+        8.0,
+        7.0,
+        6.0,
+        5.0,
+        4.0,
+        3.0,
+        2.0,
+        1.0
+      ],
+      "coverages": [
+        0.28
+      ],
+      "small_sample_policy": "error",
+      "expected": [
+        {
+          "coverage": 0.28,
+          "rank": 7,
+          "quantile": {
+            "status": "finite",
+            "value": 7.0
+          }
+        }
+      ]
+    },
+    {
+      "id": "small_n_is_tagged_unbounded",
+      "residuals": [
+        0.2,
+        0.4,
+        0.6
+      ],
+      "coverages": [
+        0.95
+      ],
+      "small_sample_policy": "unbounded",
+      "expected": [
+        {
+          "coverage": 0.95,
+          "rank": 4,
+          "quantile": {
+            "status": "unbounded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "small_n_error_policy_refuses",
+      "residuals": [
+        0.2,
+        0.4,
+        0.6
+      ],
+      "coverages": [
+        0.95
+      ],
+      "small_sample_policy": "error",
+      "expected_error": "rank 4 exceeds calibration size 3"
+    },
+    {
+      "id": "non_numeric_residual_refuses",
+      "residuals": [
+        0.2,
+        "nan",
+        0.6
+      ],
+      "coverages": [
+        0.9
+      ],
+      "small_sample_policy": "error",
+      "expected_error": "residuals[1] must be a finite non-negative number"
+    }
+  ],
+  "invalid_spec_cases": [
+    {
+      "id": "scalar_coverage_is_not_wire_format",
+      "path": "/coverages",
+      "value": 0.9,
+      "expected_error": "coverages must be a non-empty array"
+    },
+    {
+      "id": "coverages_must_be_sorted",
+      "path": "/coverages",
+      "value": [
+        0.95,
+        0.9
+      ],
+      "expected_error": "coverages must be strictly increasing and unique"
+    },
+    {
+      "id": "coverages_must_be_unique",
+      "path": "/coverages",
+      "value": [
+        0.9,
+        0.9
+      ],
+      "expected_error": "coverages must be strictly increasing and unique"
+    },
+    {
+      "id": "coverage_one_is_invalid",
+      "path": "/coverages",
+      "value": [
+        1.0
+      ],
+      "expected_error": "coverages[0] must be"
+    },
+    {
+      "id": "observation_is_not_a_v1_exchangeability_unit",
+      "path": "/exchangeability_unit",
+      "value": "observation",
+      "expected_error": "exchangeability_unit must be physical_sample in V1"
+    },
+    {
+      "id": "zero_schema_version_refuses",
+      "path": "/schema_version",
+      "value": 0,
+      "expected_error": "calibration spec schema_version must be integer 1"
+    },
+    {
+      "id": "future_schema_version_refuses",
+      "path": "/schema_version",
+      "value": 2,
+      "expected_error": "calibration spec schema_version must be integer 1"
+    },
+    {
+      "id": "boolean_schema_version_refuses",
+      "path": "/schema_version",
+      "value": true,
+      "expected_error": "calibration spec schema_version must be integer 1"
+    },
+    {
+      "id": "string_coverage_refuses",
+      "path": "/coverages",
+      "value": [
+        "0.9"
+      ],
+      "expected_error": "coverages[0] must be"
+    },
+    {
+      "id": "numeric_version_is_pinned",
+      "path": "/numeric_version",
+      "value": "split_absolute_residual.v2",
+      "expected_error": "numeric_version must be split_absolute_residual.v1"
+    },
+    {
+      "id": "seed_exceeds_portable_integer",
+      "path": "/seed",
+      "value": 9007199254740992,
+      "expected_error": "seed exceeds the portable integer maximum"
+    }
+  ],
+  "invalid_influence_cases": [
+    {
+      "id": "fitted_artifact_without_fit_influence",
+      "operation": "remove_kind",
+      "kind": "model_fit",
+      "expected_error": "has no fitting influence"
+    },
+    {
+      "id": "selected_patch_without_selection_influence",
+      "operation": "remove_kind",
+      "kind": "hpo_selection",
+      "expected_error": "selected patches require hpo_selection influence"
+    },
+    {
+      "id": "foreign_training_relation",
+      "operation": "replace",
+      "path": "/relation_fingerprint",
+      "value": "1818181818181818181818181818181818181818181818181818181818181818",
+      "expected_error": "training influence relation fingerprint"
+    },
+    {
+      "id": "foreign_influence_fingerprint",
+      "operation": "override_predictor_influence_fingerprint",
+      "value": "2020202020202020202020202020202020202020202020202020202020202020",
+      "expected_error": "training influence fingerprint does not match predictor binding"
+    }
+  ],
+  "invalid_output_cases": [
+    {
+      "id": "observation_unit_refuses",
+      "path": "/unit_level",
+      "value": "observation",
+      "expected_error": "unit_level must be physical_sample"
+    },
+    {
+      "id": "classification_prediction_refuses",
+      "path": "/prediction_kind",
+      "value": "class_probability",
+      "expected_error": "class_probability requires every class vocabulary"
+    },
+    {
+      "id": "observation_prediction_level_refuses",
+      "path": "/prediction_level",
+      "value": "observation",
+      "expected_error": "prediction_level must be sample"
+    }
+  ],
+  "leakage_cases": [
+    {
+      "id": "direct_sample_overlap_refuses",
+      "physical_sample_ids": [
+        "sample:1"
+      ],
+      "origin_sample_ids": [],
+      "expected_error": "calibration identity closure overlaps training influence"
+    },
+    {
+      "id": "calibration_origin_overlap_refuses",
+      "physical_sample_ids": [
+        "sample:cal.unique"
+      ],
+      "origin_sample_ids": [
+        "sample:3"
+      ],
+      "expected_error": "calibration identity closure overlaps training influence"
+    },
+    {
+      "id": "training_origin_as_calibration_sample_refuses",
+      "physical_sample_ids": [
+        "sample:dev.origin.01"
+      ],
+      "origin_sample_ids": [],
+      "training_origin_sample_id": "sample:dev.origin.01",
+      "expected_error": "calibration identity closure overlaps training influence"
+    }
+  ],
+  "staleness_mutations": [
+    {
+      "id": "graph_changed",
+      "path": "/graph_fingerprint",
+      "value": "1212121212121212121212121212121212121212121212121212121212121212"
+    },
+    {
+      "id": "data_plan_changed",
+      "path": "/data_bindings/0/plan_fingerprint",
+      "value": "1313131313131313131313131313131313131313131313131313131313131313"
+    },
+    {
+      "id": "relation_changed",
+      "path": "/data_bindings/0/relation_fingerprint",
+      "value": "1414141414141414141414141414141414141414141414141414141414141414"
+    },
+    {
+      "id": "selected_patch_changed",
+      "path": "/selected_patches/0/value",
+      "value": 9
+    },
+    {
+      "id": "artifact_content_changed",
+      "path": "/artifacts/0/content_fingerprint",
+      "value": "1515151515151515151515151515151515151515151515151515151515151515"
+    },
+    {
+      "id": "output_port_changed",
+      "path": "/output_binding/port_name",
+      "value": "predictions_alt"
+    },
+    {
+      "id": "aggregation_changed",
+      "path": "/output_binding/aggregation_fingerprint",
+      "value": "1616161616161616161616161616161616161616161616161616161616161616"
+    },
+    {
+      "id": "prediction_source_changed",
+      "path": "/output_binding/prediction_source",
+      "value": "cv_ensemble"
+    },
+    {
+      "id": "target_processing_changed",
+      "path": "/target_processing_fingerprint",
+      "value": "1717171717171717171717171717171717171717171717171717171717171717"
+    },
+    {
+      "id": "controller_changed",
+      "path": "/controller_fingerprint",
+      "value": "2121212121212121212121212121212121212121212121212121212121212121"
+    },
+    {
+      "id": "selected_variant_changed",
+      "path": "/selected_variant_id",
+      "value": "variant:second"
+    },
+    {
+      "id": "target_unit_changed",
+      "path": "/output_binding/target_units/0",
+      "value": "fraction"
+    },
+    {
+      "id": "training_outcome_changed",
+      "path": "/training_outcome_fingerprint",
+      "value": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "id": "training_influence_changed",
+      "path": "/training_influence_fingerprint",
+      "value": "2323232323232323232323232323232323232323232323232323232323232323"
+    }
+  ],
+  "coverage_rank_vectors": [
+    {
+      "id": "shortest_roundtrip_above_057",
+      "sample_count": 99,
+      "coverage": 0.5700000000000001,
+      "shortest_token": "0.5700000000000001",
+      "expected_rank": 58
+    }
+  ],
+  "typed_canonical_value_vectors": [
+    {
+      "id": "map_key_order",
+      "value": {
+        "z": 1,
+        "a": 2
+      },
+      "equivalent_value": {
+        "a": 2,
+        "z": 1
+      },
+      "expected_preimage_hex": "4441474d4c2d54435631004f000000000000000253000000000000000161490000000000000001325300000000000000017a49000000000000000131",
+      "expected_sha256": "5441a8df23725b4a60e16316f3034a7ec8b25b853ce75600fa71dda19c8a16e1"
+    },
+    {
+      "id": "unicode_nfc",
+      "value": "é",
+      "equivalent_value": "é",
+      "expected_preimage_hex": "4441474d4c2d5443563100530000000000000002c3a9",
+      "expected_sha256": "a4af538cebb2c18fed88a1ad4245509500d201e68802a217e4e8500ef61c0e86"
+    },
+    {
+      "id": "negative_zero",
+      "value": -0.0,
+      "equivalent_value": 0.0,
+      "expected_preimage_hex": "4441474d4c2d5443563100440000000000000000",
+      "expected_sha256": "c01f83d2f6a8e96eb7f50c4794eef0dbae68ad4d20ed116af013ae5cd4ffa49d"
+    },
+    {
+      "id": "finite_float_bits",
+      "value": 0.28,
+      "equivalent_value": 0.28,
+      "expected_preimage_hex": "4441474d4c2d5443563100443fd1eb851eb851ec",
+      "expected_sha256": "197dc4f6938746ba4f7349f6655d40fffea12acf64fca6eb7b9b085bade7f823"
+    }
+  ]
+}

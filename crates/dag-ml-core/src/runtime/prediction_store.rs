@@ -96,7 +96,135 @@ pub struct PredictionCacheMaterializationRecord {
     pub variant_id: Option<VariantId>,
     pub requirement_key: String,
     pub cache_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_namespace_fingerprints: Vec<String>,
     pub handle: HandleRef,
+}
+
+impl PredictionCacheMaterializationRecord {
+    pub fn validate(&self) -> Result<()> {
+        validate_runtime_non_empty(
+            "prediction cache materialization requirement_key",
+            &self.requirement_key,
+        )?;
+        validate_runtime_non_empty("prediction cache materialization cache_id", &self.cache_id)?;
+        validate_runtime_cache_namespace_fingerprints(
+            &self.cache_id,
+            &self.cache_namespace_fingerprints,
+        )?;
+        if self.handle.kind != HandleKind::Prediction {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache materialization `{}` produced a non-prediction handle",
+                self.cache_id
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn validate_against_request(
+        &self,
+        request: &PredictionCacheMaterializationRequest,
+    ) -> Result<()> {
+        self.validate()?;
+        request.requirement.validate()?;
+        request.cache.validate()?;
+        if !request.cache.cache_namespace_fingerprints.is_empty() && request.variant_id.is_none() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache materialization for D10-enriched cache `{}` requires variant_id",
+                request.cache.cache_id
+            )));
+        }
+        let requirement_key = request.requirement.key();
+        if self.run_id != request.run_id {
+            return Err(DagMlError::RuntimeValidation(
+                "prediction cache materialization record run_id does not match request".to_string(),
+            ));
+        }
+        if self.bundle_id != request.bundle_id {
+            return Err(DagMlError::RuntimeValidation(
+                "prediction cache materialization record bundle_id does not match request"
+                    .to_string(),
+            ));
+        }
+        if self.phase != request.phase {
+            return Err(DagMlError::RuntimeValidation(
+                "prediction cache materialization record phase does not match request".to_string(),
+            ));
+        }
+        if self.variant_id != request.variant_id {
+            return Err(DagMlError::RuntimeValidation(
+                "prediction cache materialization record variant_id does not match request"
+                    .to_string(),
+            ));
+        }
+        if self.requirement_key != requirement_key
+            || self.requirement_key != request.cache.requirement_key
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache materialization record requirement `{}` does not match request `{}` / cache `{}`",
+                self.requirement_key, requirement_key, request.cache.requirement_key
+            )));
+        }
+        if self.cache_id != request.cache.cache_id {
+            return Err(DagMlError::RuntimeValidation(
+                "prediction cache materialization record cache_id does not match request"
+                    .to_string(),
+            ));
+        }
+        if self.cache_namespace_fingerprints != request.cache.cache_namespace_fingerprints {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache materialization record for `{}` dropped or changed cache namespace fingerprints",
+                self.cache_id
+            )));
+        }
+        if self.handle.owner_controller != request.producer_controller_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache materialization record for `{}` uses a handle owned by a different controller",
+                self.cache_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn prediction_cache_materialization_record(
+    request: &PredictionCacheMaterializationRequest,
+    handle: HandleRef,
+) -> Result<PredictionCacheMaterializationRecord> {
+    let record = PredictionCacheMaterializationRecord {
+        run_id: request.run_id.clone(),
+        bundle_id: request.bundle_id.clone(),
+        phase: request.phase,
+        variant_id: request.variant_id.clone(),
+        requirement_key: request.cache.requirement_key.clone(),
+        cache_id: request.cache.cache_id.clone(),
+        cache_namespace_fingerprints: request.cache.cache_namespace_fingerprints.clone(),
+        handle,
+    };
+    record.validate_against_request(request)?;
+    Ok(record)
+}
+
+fn prediction_cache_materialization_handle(
+    request: &PredictionCacheMaterializationRequest,
+) -> Result<HandleRef> {
+    let fingerprint = stable_json_fingerprint(&(
+        &request.run_id,
+        &request.bundle_id,
+        request.phase,
+        &request.variant_id,
+        &request.cache.requirement_key,
+        &request.cache.cache_id,
+        &request.cache.cache_namespace_fingerprints,
+        request.cache.prediction_level,
+        &request.cache.content_fingerprint,
+    ))?;
+    Ok(HandleRef {
+        handle: u64::from_str_radix(&fingerprint[..16], 16)
+            .expect("sha256 hex prefix should fit into u64"),
+        kind: HandleKind::Prediction,
+        owner_controller: request.producer_controller_id.clone(),
+    })
 }
 
 pub trait RuntimePredictionCacheStore {
@@ -123,6 +251,8 @@ pub(crate) fn default_file_prediction_cache_store_schema_version() -> u32 {
 pub struct FilePredictionCacheEntry {
     pub requirement_key: String,
     pub cache_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_namespace_fingerprints: Vec<String>,
     pub file_name: String,
     #[serde(default = "default_runtime_prediction_level")]
     pub prediction_level: PredictionLevel,
@@ -137,6 +267,10 @@ impl FilePredictionCacheEntry {
     pub fn validate(&self) -> Result<()> {
         validate_runtime_non_empty("requirement_key", &self.requirement_key)?;
         validate_runtime_non_empty("cache_id", &self.cache_id)?;
+        validate_runtime_cache_namespace_fingerprints(
+            &self.cache_id,
+            &self.cache_namespace_fingerprints,
+        )?;
         validate_runtime_non_empty("file_name", &self.file_name)?;
         validate_prediction_cache_file_name(&self.file_name)?;
         if self.block_count == 0 {
@@ -174,6 +308,7 @@ impl FilePredictionCacheEntry {
         Ok(Self {
             requirement_key: payload.requirement_key.clone(),
             cache_id: payload.cache_id.clone(),
+            cache_namespace_fingerprints: payload.cache_namespace_fingerprints.clone(),
             file_name: prediction_cache_payload_file_name(payload)?,
             prediction_level: payload.prediction_level,
             unit_ids: payload
@@ -190,12 +325,29 @@ impl FilePredictionCacheEntry {
     fn matches_record(&self, record: &BundlePredictionCacheRecord) -> bool {
         self.requirement_key == record.requirement_key
             && self.cache_id == record.cache_id
+            && self.cache_namespace_fingerprints == record.cache_namespace_fingerprints
             && self.prediction_level == record.prediction_level
             && self.unit_ids == record.unit_ids
             && self.block_count == record.block_count
             && self.row_count == record.row_count
             && self.content_fingerprint == record.content_fingerprint
     }
+}
+
+fn validate_runtime_cache_namespace_fingerprints(
+    cache_id: &str,
+    fingerprints: &[String],
+) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for fingerprint in fingerprints {
+        validate_runtime_fingerprint("prediction cache namespace", fingerprint)?;
+        if !seen.insert(fingerprint.as_str()) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "file prediction cache `{cache_id}` has duplicate cache namespace fingerprint `{fingerprint}`"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -450,33 +602,13 @@ impl RuntimePredictionCacheStore for FilePredictionCacheStore {
         }
         let payload = self.payload_for_requirement(&requirement_key)?;
         validate_prediction_cache_payload_matches_record(&payload, record)?;
-        let fingerprint = stable_json_fingerprint(&(
-            &request.run_id,
-            &request.bundle_id,
-            request.phase,
-            &request.variant_id,
-            &request.cache.requirement_key,
-            &request.cache.cache_id,
-            request.cache.prediction_level,
-            &request.cache.content_fingerprint,
-        ))?;
-        let handle = HandleRef {
-            handle: u64::from_str_radix(&fingerprint[..16], 16)
-                .expect("sha256 hex prefix should fit into u64"),
-            kind: HandleKind::Prediction,
-            owner_controller: request.producer_controller_id.clone(),
-        };
+        let handle = prediction_cache_materialization_handle(request)?;
         self.materialization_records
             .borrow_mut()
-            .push(PredictionCacheMaterializationRecord {
-                run_id: request.run_id.clone(),
-                bundle_id: request.bundle_id.clone(),
-                phase: request.phase,
-                variant_id: request.variant_id.clone(),
-                requirement_key,
-                cache_id: request.cache.cache_id.clone(),
-                handle: handle.clone(),
-            });
+            .push(prediction_cache_materialization_record(
+                request,
+                handle.clone(),
+            )?);
         Ok(handle)
     }
 }
@@ -487,6 +619,7 @@ pub(crate) fn prediction_cache_payload_file_name(
     let fingerprint = stable_json_fingerprint(&(
         &payload.requirement_key,
         &payload.cache_id,
+        &payload.cache_namespace_fingerprints,
         payload.prediction_level,
         &payload.content_fingerprint,
         payload.block_count,
@@ -509,6 +642,7 @@ pub(crate) fn validate_prediction_cache_file_name(file_name: &str) -> Result<()>
 pub struct ColumnarPredictionCacheBlock {
     pub prediction_id: Option<String>,
     pub producer_node: NodeId,
+    pub producer_port: Option<String>,
     pub partition: PredictionPartition,
     pub fold_id: Option<FoldId>,
     pub prediction_level: PredictionLevel,
@@ -531,6 +665,7 @@ impl ColumnarPredictionCacheBlock {
         Ok(Self {
             prediction_id: block.prediction_id.clone(),
             producer_node: block.producer_node.clone(),
+            producer_port: block.producer_port.clone(),
             partition: block.partition.clone(),
             fold_id: block.fold_id.clone(),
             prediction_level: PredictionLevel::Sample,
@@ -559,6 +694,7 @@ impl ColumnarPredictionCacheBlock {
         Ok(Self {
             prediction_id: block.prediction_id.clone(),
             producer_node: block.producer_node.clone(),
+            producer_port: block.producer_port.clone(),
             partition: block.partition.clone(),
             fold_id: block.fold_id.clone(),
             prediction_level: block.level,
@@ -684,6 +820,7 @@ impl ColumnarPredictionCacheBlock {
         let block = PredictionBlock {
             prediction_id: self.prediction_id.clone(),
             producer_node: self.producer_node.clone(),
+            producer_port: self.producer_port.clone(),
             partition: self.partition.clone(),
             fold_id: self.fold_id.clone(),
             sample_ids: self.sample_ids.clone(),
@@ -713,6 +850,7 @@ impl ColumnarPredictionCacheBlock {
         let block = AggregatedPredictionBlock {
             prediction_id: self.prediction_id.clone(),
             producer_node: self.producer_node.clone(),
+            producer_port: self.producer_port.clone(),
             partition: self.partition.clone(),
             fold_id: self.fold_id.clone(),
             level: self.prediction_level,
@@ -729,6 +867,8 @@ impl ColumnarPredictionCacheBlock {
 pub struct ColumnarPredictionCacheManifest {
     pub requirement_key: String,
     pub cache_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_namespace_fingerprints: Vec<String>,
     pub prediction_level: PredictionLevel,
     pub block_count: usize,
     pub row_count: usize,
@@ -865,6 +1005,7 @@ impl ColumnarPredictionCacheEntry {
         let payload = BundlePredictionCachePayload {
             requirement_key: self.cache.requirement_key.clone(),
             cache_id: self.cache.cache_id.clone(),
+            cache_namespace_fingerprints: self.cache.cache_namespace_fingerprints.clone(),
             format: self.cache.format.clone(),
             partition: self.cache.partition.clone(),
             prediction_level: self.cache.prediction_level,
@@ -886,6 +1027,7 @@ impl ColumnarPredictionCacheEntry {
         ColumnarPredictionCacheManifest {
             requirement_key: self.cache.requirement_key.clone(),
             cache_id: self.cache.cache_id.clone(),
+            cache_namespace_fingerprints: self.cache.cache_namespace_fingerprints.clone(),
             prediction_level: self.cache.prediction_level,
             block_count: self.cache.block_count,
             row_count: self.cache.row_count,
@@ -1006,33 +1148,13 @@ impl RuntimePredictionCacheStore for ColumnarPredictionCacheStore {
             ))
         })?;
         entry.validate_against_cache_record(&request.cache)?;
-        let fingerprint = stable_json_fingerprint(&(
-            &request.run_id,
-            &request.bundle_id,
-            request.phase,
-            &request.variant_id,
-            &request.cache.requirement_key,
-            &request.cache.cache_id,
-            request.cache.prediction_level,
-            &request.cache.content_fingerprint,
-        ))?;
-        let handle = HandleRef {
-            handle: u64::from_str_radix(&fingerprint[..16], 16)
-                .expect("sha256 hex prefix should fit into u64"),
-            kind: HandleKind::Prediction,
-            owner_controller: request.producer_controller_id.clone(),
-        };
+        let handle = prediction_cache_materialization_handle(request)?;
         self.materialization_records
             .borrow_mut()
-            .push(PredictionCacheMaterializationRecord {
-                run_id: request.run_id.clone(),
-                bundle_id: request.bundle_id.clone(),
-                phase: request.phase,
-                variant_id: request.variant_id.clone(),
-                requirement_key,
-                cache_id: request.cache.cache_id.clone(),
-                handle: handle.clone(),
-            });
+            .push(prediction_cache_materialization_record(
+                request,
+                handle.clone(),
+            )?);
         Ok(handle)
     }
 }
@@ -1369,33 +1491,13 @@ impl RuntimePredictionCacheStore for InMemoryPredictionCacheStore {
                 ))
             })?;
         validate_prediction_cache_payload_matches_record(payload, &request.cache)?;
-        let fingerprint = stable_json_fingerprint(&(
-            &request.run_id,
-            &request.bundle_id,
-            request.phase,
-            &request.variant_id,
-            &request.cache.requirement_key,
-            &request.cache.cache_id,
-            request.cache.prediction_level,
-            &request.cache.content_fingerprint,
-        ))?;
-        let handle = HandleRef {
-            handle: u64::from_str_radix(&fingerprint[..16], 16)
-                .expect("sha256 hex prefix should fit into u64"),
-            kind: HandleKind::Prediction,
-            owner_controller: request.producer_controller_id.clone(),
-        };
+        let handle = prediction_cache_materialization_handle(request)?;
         self.materialization_records
             .borrow_mut()
-            .push(PredictionCacheMaterializationRecord {
-                run_id: request.run_id.clone(),
-                bundle_id: request.bundle_id.clone(),
-                phase: request.phase,
-                variant_id: request.variant_id.clone(),
-                requirement_key: request.cache.requirement_key.clone(),
-                cache_id: request.cache.cache_id.clone(),
-                handle: handle.clone(),
-            });
+            .push(prediction_cache_materialization_record(
+                request,
+                handle.clone(),
+            )?);
         Ok(handle)
     }
 }

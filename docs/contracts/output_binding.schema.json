@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/output_binding.v1.schema.json",
+  "title": "DAG-ML OutputBinding v1",
+  "description": "Unambiguous binding from one graph prediction port to its unit, target/class order, aggregation and prediction source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "binding_id",
+    "node_id",
+    "port_name",
+    "prediction_level",
+    "unit_level",
+    "prediction_kind",
+    "prediction_source",
+    "refit_strategy",
+    "aggregation_fingerprint",
+    "target_names",
+    "target_units",
+    "class_labels",
+    "output_order",
+    "target_space",
+    "binding_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "binding_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "node_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "port_name": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "prediction_level": {
+      "$ref": "#/$defs/prediction_level"
+    },
+    "unit_level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/entity_unit_level"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "prediction_kind": {
+      "$ref": "#/$defs/prediction_kind"
+    },
+    "prediction_source": {
+      "$ref": "#/$defs/prediction_source"
+    },
+    "refit_strategy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/refit_strategy"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "aggregation_fingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "target_names": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
+    "target_units": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/non_empty_string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "description": "Exactly one explicit unit or null per target_names member."
+    },
+    "class_labels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      },
+      "description": "Exactly one ordered class vocabulary per target. Regression targets use an explicit empty array."
+    },
+    "output_order": {
+      "enum": ["target_order", "target_major_class_minor"]
+    },
+    "target_space": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "binding_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML TCV1 SHA-256 of this binding with only binding_fingerprint omitted."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "prediction_source": {
+            "const": "final_refit"
+          }
+        },
+        "required": ["prediction_source"]
+      },
+      "then": {
+        "properties": {
+          "refit_strategy": {
+            "$ref": "#/$defs/refit_strategy"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "refit_strategy": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "prediction_kind": {
+            "const": "class_probability"
+          }
+        },
+        "required": ["prediction_kind"]
+      },
+      "then": {
+        "properties": {
+          "output_order": {
+            "const": "target_major_class_minor"
+          },
+          "class_labels": {
+            "items": { "minItems": 1 }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "output_order": {
+            "const": "target_order"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "prediction_kind": { "const": "regression_point" } },
+        "required": ["prediction_kind"]
+      },
+      "then": {
+        "properties": { "class_labels": { "items": { "maxItems": 0 } } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "prediction_level": { "const": "sample" } },
+        "required": ["prediction_level"]
+      },
+      "then": {
+        "properties": { "unit_level": { "const": "physical_sample" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "prediction_level": { "enum": ["target", "group"] } },
+        "required": ["prediction_level"]
+      },
+      "then": { "properties": { "unit_level": { "type": "null" } } }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prediction_level": {
+      "enum": ["observation", "sample", "target", "group"]
+    },
+    "entity_unit_level": {
+      "enum": ["physical_sample", "source_sample", "observation", "combo"]
+    },
+    "prediction_kind": {
+      "enum": [
+        "regression_point",
+        "class_label",
+        "class_probability",
+        "decision_score"
+      ]
+    },
+    "prediction_source": {
+      "enum": ["final_refit", "cv_ensemble", "fold_member"]
+    },
+    "refit_strategy": {
+      "enum": ["refit_one", "refit_ensemble"]
+    },
+    "bound_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding",
+        "predictions",
+        "observation_predictions",
+        "aggregated_predictions"
+      ],
+      "properties": {
+        "binding": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/output_binding.v1.schema.json"
+        },
+        "predictions": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/prediction_block"
+          }
+        },
+        "observation_predictions": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/observation_prediction_block"
+          }
+        },
+        "aggregated_predictions": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/aggregated_prediction_block"
+          }
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "predictions": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "observation_predictions": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "aggregated_predictions": {
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v2.schema.json",
+  "title": "DAG-ML Aggregation Controller Task v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "controller_id", "policy", "input"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 2 },
+    "task_id": { "$ref": "#/$defs/non_empty_string" },
+    "controller_id": { "$ref": "#/$defs/non_empty_string" },
+    "policy": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json#/$defs/aggregation_policy"
+    },
+    "reduction_plan": {
+      "anyOf": [
+        {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json#/$defs/reduction_plan"
+        },
+        { "type": "null" }
+      ]
+    },
+    "input": {
+      "oneOf": [
+        { "$ref": "#/$defs/observation_to_sample_input" },
+        { "$ref": "#/$defs/sample_to_unit_input" }
+      ]
+    }
+  },
+  "$defs": {
+    "non_empty_string": { "type": "string", "minLength": 1 },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "observation_to_sample_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_kind", "block", "relations", "requested_sample_order"],
+      "properties": {
+        "input_kind": { "const": "observation_to_sample" },
+        "block": { "$ref": "#/$defs/observation_prediction_block" },
+        "relations": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json#/$defs/sample_relation_set"
+        },
+        "requested_sample_order": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
+        }
+      }
+    },
+    "sample_to_unit_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_kind", "block", "relations", "requested_unit_order"],
+      "properties": {
+        "input_kind": { "const": "sample_to_unit" },
+        "block": { "$ref": "#/$defs/prediction_block" },
+        "relations": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json#/$defs/sample_relation_set"
+        },
+        "requested_unit_order": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json#/$defs/prediction_unit_id"
+          }
+        }
+      }
+    },
+    "observation_prediction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_node",
+        "producer_port",
+        "partition",
+        "fold_id",
+        "observation_ids",
+        "values",
+        "target_names"
+      ],
+      "properties": {
+        "prediction_id": { "type": ["string", "null"] },
+        "producer_node": { "$ref": "#/$defs/identifier" },
+        "producer_port": { "$ref": "#/$defs/non_empty_string" },
+        "partition": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json#/$defs/prediction_partition"
+        },
+        "fold_id": { "type": ["string", "null"] },
+        "observation_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "values": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json#/$defs/f64_matrix"
+        },
+        "weights": { "type": "array", "items": { "type": "number" } },
+        "target_names": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "prediction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_node",
+        "producer_port",
+        "partition",
+        "fold_id",
+        "sample_ids",
+        "values",
+        "target_names"
+      ],
+      "properties": {
+        "prediction_id": { "type": ["string", "null"] },
+        "producer_node": { "$ref": "#/$defs/identifier" },
+        "producer_port": { "$ref": "#/$defs/non_empty_string" },
+        "partition": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json#/$defs/prediction_partition"
+        },
+        "fold_id": { "type": ["string", "null"] },
+        "sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "values": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/aggregation_controller_task.v1.schema.json#/$defs/f64_matrix"
+        },
+        "target_names": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

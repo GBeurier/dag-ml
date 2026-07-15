@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::aggregation::{AggregatedPredictionBlock, PredictionUnitId};
 use crate::campaign::stable_json_fingerprint;
+use crate::canonical::deserialize_external_contract;
 use crate::data::{
-    ExternalDataPlanEnvelope, RepresentationCompatibilityReport, RepresentationReplayManifest,
+    data_binding_requirement_key, ExternalDataPlanEnvelope, RepresentationCompatibilityReport,
+    RepresentationReplayManifest,
 };
 use crate::error::{DagMlError, Result};
 use crate::ids::{BundleId, ControllerId, FoldId, NodeId, SampleId, VariantId};
@@ -17,25 +19,120 @@ use crate::policy::PredictionLevel;
 use crate::runtime::ArtifactRef;
 use crate::selection::SelectionDecision;
 
-pub const EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 1;
-pub const PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
-pub const BUNDLE_PREDICTION_CACHE_FORMAT: &str = "dag-ml-json-prediction-blocks-v1";
+pub const EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 2;
+pub const PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION: u32 = 2;
+pub const LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 1;
+pub const LEGACY_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+pub const LEGACY_BUNDLE_PREDICTION_CACHE_FORMAT: &str = "dag-ml-json-prediction-blocks-v1";
+pub const BUNDLE_PREDICTION_CACHE_FORMAT: &str = "dag-ml-json-prediction-blocks-v2";
 
 pub const MIN_READABLE_EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 1;
-pub const MIN_WRITABLE_EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 1;
+pub const MIN_WRITABLE_EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 2;
 pub const MIN_READABLE_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
-pub const MIN_WRITABLE_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+pub const MIN_WRITABLE_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION: u32 = 2;
 
 fn default_execution_bundle_schema_version() -> u32 {
-    EXECUTION_BUNDLE_SCHEMA_VERSION
+    LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION
 }
 
 fn default_prediction_cache_payload_schema_version() -> u32 {
-    PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION
+    LEGACY_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION
 }
 
 fn default_prediction_level() -> PredictionLevel {
     PredictionLevel::Sample
+}
+
+fn supported_prediction_cache_format(format: &str) -> bool {
+    matches!(
+        format,
+        LEGACY_BUNDLE_PREDICTION_CACHE_FORMAT | BUNDLE_PREDICTION_CACHE_FORMAT
+    )
+}
+
+fn prediction_cache_schema_version_for_format(format: &str, owner: &str) -> Result<u32> {
+    match format {
+        LEGACY_BUNDLE_PREDICTION_CACHE_FORMAT => Ok(LEGACY_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION),
+        BUNDLE_PREDICTION_CACHE_FORMAT => Ok(PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION),
+        _ => Err(DagMlError::RuntimeValidation(format!(
+            "{owner} uses unsupported cache format `{format}`"
+        ))),
+    }
+}
+
+fn expected_prediction_cache_format_for_schema_version(
+    schema_version: u32,
+    owner: &str,
+) -> Result<&'static str> {
+    match schema_version {
+        LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION => Ok(LEGACY_BUNDLE_PREDICTION_CACHE_FORMAT),
+        EXECUTION_BUNDLE_SCHEMA_VERSION => Ok(BUNDLE_PREDICTION_CACHE_FORMAT),
+        _ => Err(DagMlError::RuntimeValidation(format!(
+            "{owner} uses unsupported cache family schema_version {schema_version}"
+        ))),
+    }
+}
+
+fn validate_prediction_cache_format_for_schema_version(
+    format: &str,
+    schema_version: u32,
+    owner: &str,
+) -> Result<()> {
+    let expected = expected_prediction_cache_format_for_schema_version(schema_version, owner)?;
+    if format != expected {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "{owner} uses cache format `{format}` but schema_version {schema_version} requires `{expected}`"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_prediction_block_port_family(
+    producer_port: &Option<String>,
+    schema_version: u32,
+    owner: &str,
+) -> Result<()> {
+    match (schema_version, producer_port.as_deref()) {
+        (LEGACY_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION, Some(_)) => Err(
+            DagMlError::RuntimeValidation(format!("{owner} is V1 but carries producer_port")),
+        ),
+        (PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION, Some(port)) if port.trim().is_empty() => {
+            Err(DagMlError::RuntimeValidation(format!(
+                "{owner} is V2 but carries an empty producer_port"
+            )))
+        }
+        (PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION, None) => Err(DagMlError::RuntimeValidation(
+            format!("{owner} is V2 and requires producer_port"),
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn validate_prediction_cache_payload_block_family(
+    payload: &BundlePredictionCachePayload,
+    schema_version: u32,
+) -> Result<()> {
+    for block in &payload.blocks {
+        validate_prediction_block_port_family(
+            &block.producer_port,
+            schema_version,
+            &format!(
+                "prediction cache payload `{}` block for node `{}`",
+                payload.cache_id, block.producer_node
+            ),
+        )?;
+    }
+    for block in &payload.aggregated_blocks {
+        validate_prediction_block_port_family(
+            &block.producer_port,
+            schema_version,
+            &format!(
+                "prediction cache payload `{}` aggregated block for node `{}`",
+                payload.cache_id, block.producer_node
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -125,7 +222,10 @@ pub fn execution_bundle_schema_migration_policy() -> SchemaMigrationPolicy {
         current_version: EXECUTION_BUNDLE_SCHEMA_VERSION,
         min_readable_version: MIN_READABLE_EXECUTION_BUNDLE_SCHEMA_VERSION,
         min_writable_version: MIN_WRITABLE_EXECUTION_BUNDLE_SCHEMA_VERSION,
-        automatic_migrations: BTreeMap::new(),
+        automatic_migrations: BTreeMap::from([(
+            LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION,
+            EXECUTION_BUNDLE_SCHEMA_VERSION,
+        )]),
     }
 }
 
@@ -135,7 +235,10 @@ pub fn prediction_cache_payload_schema_migration_policy() -> SchemaMigrationPoli
         current_version: PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
         min_readable_version: MIN_READABLE_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
         min_writable_version: MIN_WRITABLE_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
-        automatic_migrations: BTreeMap::new(),
+        automatic_migrations: BTreeMap::from([(
+            LEGACY_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+            PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+        )]),
     }
 }
 
@@ -158,7 +261,7 @@ pub struct BundleDataRequirement {
 
 impl BundleDataRequirement {
     pub fn key(&self) -> String {
-        format!("{}.{}", self.node_id, self.input_name)
+        data_binding_requirement_key(&self.node_id, &self.input_name)
     }
 
     fn matches_plan_requirement(&self, expected: &Self) -> bool {
@@ -321,6 +424,8 @@ impl BundlePredictionBlockCacheRecord {
 pub struct BundlePredictionCacheRecord {
     pub requirement_key: String,
     pub cache_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_namespace_fingerprints: Vec<String>,
     pub format: String,
     pub partition: PredictionPartition,
     #[serde(default = "default_prediction_level")]
@@ -344,8 +449,12 @@ impl BundlePredictionCacheRecord {
     pub fn validate(&self) -> Result<()> {
         validate_non_empty("requirement_key", &self.requirement_key)?;
         validate_non_empty("cache_id", &self.cache_id)?;
+        validate_prediction_cache_namespace_fingerprints(
+            &self.cache_id,
+            &self.cache_namespace_fingerprints,
+        )?;
         validate_non_empty("format", &self.format)?;
-        if self.format != BUNDLE_PREDICTION_CACHE_FORMAT {
+        if !supported_prediction_cache_format(&self.format) {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache `{}` uses unsupported format `{}`",
                 self.cache_id, self.format
@@ -377,6 +486,14 @@ impl BundlePredictionCacheRecord {
         if self.block_count == 0 || self.block_count != self.blocks.len() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache `{}` block_count does not match block records",
+                self.cache_id
+            )));
+        }
+        if !self.cache_namespace_fingerprints.is_empty()
+            && self.cache_namespace_fingerprints.len() != self.block_count
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache `{}` namespace fingerprint count does not match block_count",
                 self.cache_id
             )));
         }
@@ -672,6 +789,8 @@ fn validate_aggregated_prediction_cache_payload_blocks(
 pub struct BundlePredictionCachePayload {
     pub requirement_key: String,
     pub cache_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_namespace_fingerprints: Vec<String>,
     pub format: String,
     pub partition: PredictionPartition,
     #[serde(default = "default_prediction_level")]
@@ -689,13 +808,21 @@ impl BundlePredictionCachePayload {
     pub fn validate(&self) -> Result<()> {
         validate_non_empty("requirement_key", &self.requirement_key)?;
         validate_non_empty("cache_id", &self.cache_id)?;
+        validate_prediction_cache_namespace_fingerprints(
+            &self.cache_id,
+            &self.cache_namespace_fingerprints,
+        )?;
         validate_non_empty("format", &self.format)?;
-        if self.format != BUNDLE_PREDICTION_CACHE_FORMAT {
+        if !supported_prediction_cache_format(&self.format) {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache payload `{}` uses unsupported format `{}`",
                 self.cache_id, self.format
             )));
         }
+        let payload_schema_version = prediction_cache_schema_version_for_format(
+            &self.format,
+            &format!("prediction cache payload `{}`", self.cache_id),
+        )?;
         if self.partition != PredictionPartition::Validation {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache payload `{}` must cache validation OOF predictions",
@@ -725,6 +852,14 @@ impl BundlePredictionCachePayload {
                 self.cache_id
             )));
         }
+        if !self.cache_namespace_fingerprints.is_empty()
+            && self.cache_namespace_fingerprints.len() != self.block_count
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache payload `{}` namespace fingerprint count does not match block_count",
+                self.cache_id
+            )));
+        }
         let row_count = validate_prediction_cache_payload_blocks(self)?;
         if self.row_count == 0 || self.row_count != row_count {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -732,6 +867,7 @@ impl BundlePredictionCachePayload {
                 self.cache_id
             )));
         }
+        validate_prediction_cache_payload_block_family(self, payload_schema_version)?;
         validate_fingerprint(
             "prediction cache payload content",
             &self.content_fingerprint,
@@ -773,6 +909,15 @@ impl BundlePredictionCachePayloadSet {
         let mut cache_ids = BTreeSet::new();
         for payload in &self.caches {
             payload.validate()?;
+            validate_prediction_cache_format_for_schema_version(
+                &payload.format,
+                self.schema_version,
+                &format!(
+                    "prediction cache payload `{}` in set for bundle `{}`",
+                    payload.cache_id, self.bundle_id
+                ),
+            )?;
+            validate_prediction_cache_payload_block_family(payload, self.schema_version)?;
             if !requirement_keys.insert(payload.requirement_key.as_str()) {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "prediction cache payload set for bundle `{}` has duplicate requirement `{}`",
@@ -796,6 +941,12 @@ impl BundlePredictionCachePayloadSet {
             return Err(DagMlError::RuntimeValidation(format!(
                 "prediction cache payload set bundle `{}` does not match bundle `{}`",
                 self.bundle_id, bundle.bundle_id
+            )));
+        }
+        if self.schema_version != bundle.schema_version {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache payload set for bundle `{}` uses schema_version {} but bundle uses schema_version {}",
+                self.bundle_id, self.schema_version, bundle.schema_version
             )));
         }
         if self.caches.len() != bundle.prediction_caches.len() {
@@ -944,6 +1095,14 @@ pub struct ExecutionBundle {
 }
 
 impl ExecutionBundle {
+    /// Parse the published object-only bundle JSON representation and validate it.
+    pub fn from_json(json: &str) -> Result<Self> {
+        let bundle: Self =
+            deserialize_external_contract(json, "execution bundle", DagMlError::RuntimeValidation)?;
+        bundle.validate()?;
+        Ok(bundle)
+    }
+
     pub fn validate(&self) -> Result<()> {
         execution_bundle_schema_migration_policy()
             .validate_read_version(self.schema_version, &format!("bundle `{}`", self.bundle_id))?;
@@ -958,6 +1117,12 @@ impl ExecutionBundle {
         validate_fingerprint("controller", &self.controller_fingerprint)?;
         if let Some(scores) = &self.scores {
             scores.validate()?;
+            if scores.schema_version != self.schema_version {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` uses schema_version {} but embedded scores use schema_version {}",
+                    self.bundle_id, self.schema_version, scores.schema_version
+                )));
+            }
             if scores.plan_id != self.plan_id {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "bundle `{}` plan_id `{}` does not match its embedded scores plan_id `{}`",
@@ -999,6 +1164,21 @@ impl ExecutionBundle {
         let mut prediction_cache_keys = BTreeMap::new();
         for cache in &self.prediction_caches {
             cache.validate()?;
+            if !cache.cache_namespace_fingerprints.is_empty() && self.selected_variant_id.is_none()
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` prediction cache `{}` is D10-enriched and requires selected_variant_id",
+                    self.bundle_id, cache.cache_id
+                )));
+            }
+            validate_prediction_cache_format_for_schema_version(
+                &cache.format,
+                self.schema_version,
+                &format!(
+                    "prediction cache `{}` in bundle `{}`",
+                    cache.cache_id, self.bundle_id
+                ),
+            )?;
             let requirement = prediction_keys.get(&cache.requirement_key).ok_or_else(|| {
                 DagMlError::RuntimeValidation(format!(
                     "prediction cache `{}` references unknown prediction requirement `{}`",
@@ -1919,6 +2099,7 @@ pub fn build_prediction_cache_payload(
     let payload = BundlePredictionCachePayload {
         requirement_key: requirement.key(),
         cache_id: format!("prediction-cache:{}", requirement.key()),
+        cache_namespace_fingerprints: Vec::new(),
         format: BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
         partition: requirement.partition.clone(),
         prediction_level: requirement.prediction_level,
@@ -1950,6 +2131,7 @@ pub fn build_aggregated_prediction_cache_payload(
     let payload = BundlePredictionCachePayload {
         requirement_key: requirement.key(),
         cache_id: format!("prediction-cache:{}", requirement.key()),
+        cache_namespace_fingerprints: Vec::new(),
         format: BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
         partition: requirement.partition.clone(),
         prediction_level: requirement.prediction_level,
@@ -1973,6 +2155,7 @@ pub fn validate_prediction_cache_payload_matches_record(
     record.validate()?;
     if payload.requirement_key != record.requirement_key
         || payload.cache_id != record.cache_id
+        || payload.cache_namespace_fingerprints != record.cache_namespace_fingerprints
         || payload.format != record.format
         || payload.partition != record.partition
         || payload.prediction_level != record.prediction_level
@@ -2023,6 +2206,22 @@ pub fn validate_prediction_cache_payload_matches_record(
             "prediction cache payload `{}` block fingerprints do not match cache record",
             payload.cache_id
         )));
+    }
+    Ok(())
+}
+
+fn validate_prediction_cache_namespace_fingerprints(
+    cache_id: &str,
+    fingerprints: &[String],
+) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for fingerprint in fingerprints {
+        validate_fingerprint("prediction cache namespace", fingerprint)?;
+        if !seen.insert(fingerprint.as_str()) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "prediction cache `{cache_id}` has duplicate cache namespace fingerprint `{fingerprint}`"
+            )));
+        }
     }
     Ok(())
 }
@@ -2162,6 +2361,7 @@ fn build_prediction_cache_record_from_selected(
     let record = BundlePredictionCacheRecord {
         requirement_key: requirement.key(),
         cache_id: format!("prediction-cache:{}", requirement.key()),
+        cache_namespace_fingerprints: Vec::new(),
         format: BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
         partition: requirement.partition.clone(),
         prediction_level: requirement.prediction_level,
@@ -2251,6 +2451,7 @@ fn build_aggregated_prediction_cache_record_from_selected(
     let record = BundlePredictionCacheRecord {
         requirement_key: requirement.key(),
         cache_id: format!("prediction-cache:{}", requirement.key()),
+        cache_namespace_fingerprints: Vec::new(),
         format: BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
         partition: requirement.partition.clone(),
         prediction_level: requirement.prediction_level,
@@ -2593,6 +2794,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some(format!("prediction:{producer_node}:fold0")),
                 producer_node: producer_node.clone(),
+                producer_port: Some("pred".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:0").unwrap()),
                 sample_ids: vec![SampleId::new(fold0_sample).unwrap()],
@@ -2602,6 +2804,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some(format!("prediction:{producer_node}:fold1")),
                 producer_node,
+                producer_port: Some("pred".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:1").unwrap()),
                 sample_ids: vec![SampleId::new(fold1_sample).unwrap()],
@@ -2706,6 +2909,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some(format!("prediction:{producer_node}:fold0")),
                 producer_node: producer_node.clone(),
+                producer_port: Some("pred".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:0").unwrap()),
                 sample_ids: samples[0..2].to_vec(),
@@ -2715,6 +2919,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some(format!("prediction:{producer_node}:fold1")),
                 producer_node,
+                producer_port: Some("pred".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:1").unwrap()),
                 sample_ids: samples[2..4].to_vec(),
@@ -2889,6 +3094,7 @@ mod tests {
         let cache = BundlePredictionCacheRecord {
             requirement_key: "model:base.oof->model:meta.pred".to_string(),
             cache_id: "prediction-cache:d9.missing-units".to_string(),
+            cache_namespace_fingerprints: Vec::new(),
             format: BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
             partition: PredictionPartition::Validation,
             prediction_level: PredictionLevel::Target,
@@ -3221,6 +3427,7 @@ mod tests {
             reports: vec![crate::metrics::RegressionMetricReport {
                 prediction_id: Some("prediction:merge:sites:avg".to_string()),
                 producer_node: NodeId::new("merge:sites").unwrap(),
+                producer_port: Some("pred".to_string()),
                 variant_id: Some(plan.variants[0].variant_id.clone()),
                 variant_label: None,
                 partition: PredictionPartition::Validation,
@@ -3328,6 +3535,7 @@ mod tests {
             &[PredictionBlock {
                 prediction_id: Some("prediction:a:fold0".to_string()),
                 producer_node: NodeId::new("branch:site__A.model:pls").unwrap(),
+                producer_port: None,
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:0").unwrap()),
                 sample_ids: vec![SampleId::new("sample:1").unwrap()],
@@ -3502,6 +3710,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some("prediction:branch:b0.fold0".to_string()),
                 producer_node: producer_node.clone(),
+                producer_port: Some("oof".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(fold0),
                 sample_ids: samples[0..2].to_vec(),
@@ -3511,6 +3720,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some("prediction:branch:b0.fold1".to_string()),
                 producer_node: producer_node.clone(),
+                producer_port: Some("oof".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(fold1),
                 sample_ids: samples[2..4].to_vec(),
@@ -3527,6 +3737,57 @@ mod tests {
             .iter()
             .all(|block| block.prediction_level == PredictionLevel::Sample));
         validate_prediction_cache_payload_matches_record(&payload, &cache).unwrap();
+        let cache_namespace_fingerprints = vec!["a".repeat(64), "b".repeat(64)];
+        let mut d10_cache = cache.clone();
+        d10_cache.cache_namespace_fingerprints = cache_namespace_fingerprints.clone();
+        d10_cache.validate().unwrap();
+        let mut d10_payload = payload.clone();
+        d10_payload.cache_namespace_fingerprints = cache_namespace_fingerprints;
+        d10_payload.validate().unwrap();
+        validate_prediction_cache_payload_matches_record(&d10_payload, &d10_cache).unwrap();
+        for forbidden_partition in [
+            PredictionPartition::Train,
+            PredictionPartition::Test,
+            PredictionPartition::Final,
+        ] {
+            let mut non_oof_requirement = requirement.clone();
+            non_oof_requirement.partition = forbidden_partition.clone();
+            let requirement_error = non_oof_requirement.validate().unwrap_err().to_string();
+            assert!(
+                requirement_error.contains("must use validation OOF predictions"),
+                "D10 cache namespace must not broaden bundle prediction requirements to {forbidden_partition:?}: {requirement_error}"
+            );
+
+            let mut non_oof_cache = d10_cache.clone();
+            non_oof_cache.partition = forbidden_partition.clone();
+            let cache_error = non_oof_cache.validate().unwrap_err().to_string();
+            assert!(
+                cache_error.contains("must cache validation OOF predictions"),
+                "D10 cache namespace must not allow non-OOF cache records for {forbidden_partition:?}: {cache_error}"
+            );
+
+            let mut non_oof_payload = d10_payload.clone();
+            non_oof_payload.partition = forbidden_partition;
+            let payload_error = non_oof_payload.validate().unwrap_err().to_string();
+            assert!(
+                payload_error.contains("must cache validation OOF predictions"),
+                "D10 cache namespace must not allow non-OOF cache payloads: {payload_error}"
+            );
+        }
+        let mut short_namespace_cache = d10_cache.clone();
+        short_namespace_cache.cache_namespace_fingerprints.pop();
+        assert!(short_namespace_cache
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("namespace fingerprint count"));
+        let mut short_namespace_payload = d10_payload;
+        short_namespace_payload.cache_namespace_fingerprints.pop();
+        assert!(short_namespace_payload
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("namespace fingerprint count"));
         let mut wrong_level_requirement = requirement.clone();
         wrong_level_requirement.prediction_level = PredictionLevel::Target;
         assert!(wrong_level_requirement.validate().is_err());
@@ -3558,6 +3819,19 @@ mod tests {
             ],
             prediction_requirement_keys: vec![prediction_key],
         };
+
+        assert!(build_execution_bundle_with_prediction_contracts(
+            BundleId::new("bundle:d10.cache.without.selected.variant").unwrap(),
+            &plan,
+            None,
+            BTreeMap::new(),
+            vec![artifact.clone()],
+            vec![requirement.clone()],
+            vec![d10_cache],
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("requires selected_variant_id"));
 
         assert!(build_execution_bundle(
             BundleId::new("bundle:missing.prediction.requirement").unwrap(),
@@ -3665,6 +3939,7 @@ mod tests {
             AggregatedPredictionBlock {
                 prediction_id: Some("prediction:branch:b0.target.fold0".to_string()),
                 producer_node: producer_node.clone(),
+                producer_port: Some("pred".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(fold0),
                 level: PredictionLevel::Target,
@@ -3675,6 +3950,7 @@ mod tests {
             AggregatedPredictionBlock {
                 prediction_id: Some("prediction:branch:b0.target.fold1".to_string()),
                 producer_node,
+                producer_port: Some("pred".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(fold1),
                 level: PredictionLevel::Target,
@@ -3789,6 +4065,7 @@ mod tests {
             reports: vec![crate::metrics::RegressionMetricReport {
                 prediction_id: None,
                 producer_node: NodeId::new("model:compat.0").unwrap(),
+                producer_port: Some("pred".to_string()),
                 variant_id: None,
                 variant_label: None,
                 partition: PredictionPartition::Test,
@@ -3822,7 +4099,19 @@ mod tests {
             bundle_policy.min_readable_version,
             MIN_READABLE_EXECUTION_BUNDLE_SCHEMA_VERSION
         );
-        assert!(bundle_policy.automatic_migrations.is_empty());
+        assert_eq!(
+            bundle_policy.min_writable_version,
+            MIN_WRITABLE_EXECUTION_BUNDLE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            bundle_policy
+                .automatic_migrations
+                .get(&LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION),
+            Some(&EXECUTION_BUNDLE_SCHEMA_VERSION)
+        );
+        bundle_policy
+            .validate_read_version(LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION, "bundle `legacy`")
+            .unwrap();
         bundle_policy
             .validate_read_version(EXECUTION_BUNDLE_SCHEMA_VERSION, "bundle `current`")
             .unwrap();
@@ -3856,7 +4145,18 @@ mod tests {
             policy.current_version,
             PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION
         );
-        assert!(policy.automatic_migrations.is_empty());
+        assert_eq!(
+            policy
+                .automatic_migrations
+                .get(&LEGACY_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION),
+            Some(&PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION)
+        );
+        policy
+            .validate_read_version(
+                LEGACY_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+                "payload `legacy`",
+            )
+            .unwrap();
 
         let mut payload_set = BundlePredictionCachePayloadSet {
             bundle_id: BundleId::new("bundle:payload.schema").unwrap(),
@@ -3870,6 +4170,67 @@ mod tests {
 
         payload_set.schema_version = 0;
         assert!(payload_set.validate().is_err());
+    }
+
+    #[test]
+    fn prediction_cache_payload_format_enforces_port_family() {
+        fn payload_for_block(
+            format: &str,
+            producer_port: Option<String>,
+        ) -> BundlePredictionCachePayload {
+            let block = PredictionBlock {
+                prediction_id: Some("prediction:model:base.fold0".to_string()),
+                producer_node: NodeId::new("model:base").unwrap(),
+                producer_port,
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("fold:0").unwrap()),
+                sample_ids: vec![SampleId::new("sample:1").unwrap()],
+                values: vec![vec![1.0]],
+                target_names: vec!["y".to_string()],
+            };
+            let blocks = vec![block];
+            BundlePredictionCachePayload {
+                requirement_key: "model:base.oof->model:meta.pred".to_string(),
+                cache_id: "prediction-cache:model:base.oof->model:meta.pred".to_string(),
+                cache_namespace_fingerprints: Vec::new(),
+                format: format.to_string(),
+                partition: PredictionPartition::Validation,
+                prediction_level: PredictionLevel::Sample,
+                block_count: blocks.len(),
+                row_count: blocks.iter().map(|block| block.sample_ids.len()).sum(),
+                content_fingerprint: stable_json_fingerprint(&blocks).unwrap(),
+                blocks,
+                aggregated_blocks: Vec::new(),
+            }
+        }
+
+        payload_for_block(LEGACY_BUNDLE_PREDICTION_CACHE_FORMAT, None)
+            .validate()
+            .unwrap();
+        payload_for_block(BUNDLE_PREDICTION_CACHE_FORMAT, Some("oof".to_string()))
+            .validate()
+            .unwrap();
+
+        let v1_with_port = payload_for_block(
+            LEGACY_BUNDLE_PREDICTION_CACHE_FORMAT,
+            Some("oof".to_string()),
+        )
+        .validate()
+        .unwrap_err()
+        .to_string();
+        assert!(
+            v1_with_port.contains("V1") && v1_with_port.contains("producer_port"),
+            "unexpected V1 port-family error: {v1_with_port}"
+        );
+
+        let v2_without_port = payload_for_block(BUNDLE_PREDICTION_CACHE_FORMAT, None)
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            v2_without_port.contains("V2") && v2_without_port.contains("requires producer_port"),
+            "unexpected V2 port-family error: {v2_without_port}"
+        );
     }
 
     #[test]
@@ -3918,5 +4279,33 @@ mod tests {
         }
         .validate_for_bundle(&bundle)
         .is_err());
+    }
+
+    #[test]
+    fn prediction_level_wire_absent_parses_as_sample_but_serialization_stays_explicit() {
+        let mut requirement = BundlePredictionRequirement {
+            producer_node: NodeId::new("model:base").unwrap(),
+            source_port: "oof".to_string(),
+            consumer_node: NodeId::new("model:meta").unwrap(),
+            target_port: "x".to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
+            fold_ids: vec![FoldId::new("fold:0").unwrap()],
+            unit_ids: Vec::new(),
+            sample_ids: vec![SampleId::new("sample:1").unwrap()],
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+
+        let mut sample = serde_json::to_value(&requirement).unwrap();
+        assert_eq!(sample["prediction_level"], serde_json::json!("sample"));
+
+        sample.as_object_mut().unwrap().remove("prediction_level");
+        let parsed: BundlePredictionRequirement = serde_json::from_value(sample).unwrap();
+        assert_eq!(parsed.prediction_level, PredictionLevel::Sample);
+
+        requirement.prediction_level = PredictionLevel::Group;
+        let group = serde_json::to_value(&requirement).unwrap();
+        assert_eq!(group["prediction_level"], serde_json::json!("group"));
     }
 }

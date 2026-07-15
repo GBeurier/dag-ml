@@ -35,6 +35,15 @@ pub enum ControllerCapability {
     SupportsRowResampling,
     SupportsBackendLossWeights,
     SupportsMissingMasks,
+    /// Controller actively consumes non-uniform training influence, distinct
+    /// from merely supporting a weighting API.
+    UsesTrainingWeights,
+    /// Controller actively reads validation samples during fitting.
+    UsesEarlyStopping,
+    /// Controller performs a nested/internal candidate selection.
+    PerformsInternalTuning,
+    /// Prediction aggregation itself has fitted state.
+    TrainsAggregation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -217,6 +226,53 @@ impl ControllerManifest {
         {
             return Err(DagMlError::ControllerValidation(format!(
                 "controller `{}` has artifact output ports but lacks emits_artifacts",
+                self.controller_id
+            )));
+        }
+        let active_influence = [
+            ControllerCapability::UsesTrainingWeights,
+            ControllerCapability::UsesEarlyStopping,
+            ControllerCapability::PerformsInternalTuning,
+            ControllerCapability::TrainsAggregation,
+        ];
+        if matches!(
+            self.fit_scope,
+            ControllerFitScope::Stateless | ControllerFitScope::InferenceOnly
+        ) && active_influence
+            .iter()
+            .any(|capability| self.capabilities.contains(capability))
+        {
+            return Err(DagMlError::ControllerValidation(format!(
+                "controller `{}` has active training-influence capabilities with fit_scope {:?}",
+                self.controller_id, self.fit_scope
+            )));
+        }
+        if self
+            .capabilities
+            .contains(&ControllerCapability::UsesTrainingWeights)
+            && !self.capabilities.iter().any(|capability| {
+                matches!(
+                    capability,
+                    ControllerCapability::SupportsSampleWeights
+                        | ControllerCapability::SupportsRowResampling
+                        | ControllerCapability::SupportsBackendLossWeights
+                )
+            })
+        {
+            return Err(DagMlError::ControllerValidation(format!(
+                "controller `{}` uses training weights without a supported weighting mechanism",
+                self.controller_id
+            )));
+        }
+        if self
+            .capabilities
+            .contains(&ControllerCapability::TrainsAggregation)
+            && !self
+                .capabilities
+                .contains(&ControllerCapability::AggregatesPredictions)
+        {
+            return Err(DagMlError::ControllerValidation(format!(
+                "controller `{}` trains aggregation without aggregates_predictions",
                 self.controller_id
             )));
         }

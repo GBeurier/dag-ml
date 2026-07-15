@@ -1,0 +1,254 @@
+[
+  {
+    "record_id": "lineage:branch:b0.model:ridge:FIT_CV:variant:base:fold:0",
+    "run_id": "run:cli.process.cv.refit",
+    "node_id": "branch:b0.model:ridge",
+    "phase": "FIT_CV",
+    "controller_id": "controller:model.mock",
+    "controller_version": "0.1.0",
+    "variant_id": "variant:base",
+    "fold_id": "fold:0",
+    "branch_path": [],
+    "input_lineage": [],
+    "artifact_refs": [],
+    "params_fingerprint": "5f3bf651255bd175f356b47f47342573d6a3e617f87b37d4b6f35f3b33ddcf9b",
+    "data_model_shape_fingerprint": null,
+    "aggregation_policy_fingerprint": null,
+    "seed": 6461237505147599167,
+    "unsafe_flags": [],
+    "metrics": {
+      "adapter_smoke": 1.0,
+      "process_worker_count": 2.0,
+      "process_worker_index": 0.0
+    }
+  },
+  {
+    "record_id": "lineage:branch:b0.model:ridge:FIT_CV:variant:base:fold:1",
+    "run_id": "run:cli.process.cv.refit",
+    "node_id": "branch:b0.model:ridge",
+    "phase": "FIT_CV",
+    "controller_id": "controller:model.mock",
+    "controller_version": "0.1.0",
+    "variant_id": "variant:base",
+    "fold_id": "fold:1",
+    "branch_path": [],
+    "input_lineage": [],
+    "artifact_refs": [],
+    "params_fingerprint": "5f3bf651255bd175f356b47f47342573d6a3e617f87b37d4b6f35f3b33ddcf9b",
+    "data_model_shape_fingerprint": null,
+    "aggregation_policy_fingerprint": null,
+    "seed": 5624048779121153642,
+    "unsafe_flags": [],
+    "metrics": {
+      "adapter_smoke": 1.0,
+      "process_worker_count": 2.0,
+      "process_worker_index": 1.0
+    }
+  },
+  {
+    "record_id": "lineage:branch:b0.model:ridge:REFIT:variant:base:nofold",
+    "run_id": "run:cli.process.cv.refit",
+    "node_id": "branch:b0.model:ridge",
+    "phase": "REFIT",
+    "controller_id": "controller:model.mock",
+    "controller_version": "0.1.0",
+    "variant_id": "variant:base",
+    "fold_id": null,
+    "branch_path": [],
+    "input_lineage": [],
+    "artifact_refs": [
+      {
+        "id": "artifact:branch:b0.model:ridge:refit",
+        "kind": "mock_model",
+        "controller_id": "controller:model.mock",
+        "backend": "json",
+        "uri": "artifacts/daddc56f7cb31bc1af40e1a78cf32bd371520ea4e2d3bfd854176eda48db2684.json",
+        "content_fingerprint": "dcc2b05b79547e1842f6d27cf0292fa7481562689971f4f33446faf8877dd481",
+        "size_bytes": 128,
+        "plugin": "dagml.python_process",
+        "plugin_version": "1.0.0"
+      }
+    ],
+    "params_fingerprint": "5f3bf651255bd175f356b47f47342573d6a3e617f87b37d4b6f35f3b33ddcf9b",
+    "data_model_shape_fingerprint": null,
+    "aggregation_policy_fingerprint": null,
+    "seed": 6416833203749761512,
+    "unsafe_flags": [],
+    "metrics": {
+      "adapter_smoke": 1.0,
+      "process_worker_count": 2.0,
+      "process_worker_index": 1.0
+    }
+  },
+  {
+    "record_id": "lineage:branch:b1.model:rf:FIT_CV:variant:base:fold:0",
+    "run_id": "run:cli.process.cv.refit",
+    "node_id": "branch:b1.model:rf",
+    "phase": "FIT_CV",
+    "controller_id": "controller:model.mock",
+    "controller_version": "0.1.0",
+    "variant_id": "variant:base",
+    "fold_id": "fold:0",
+    "branch_path": [],
+    "input_lineage": [],
+    "artifact_refs": [],
+    "params_fingerprint": "693cb21e8c02f513121138dddbe13a5577fb308cb63c74dcb05ff5928b99b989",
+    "data_model_shape_fingerprint": null,
+    "aggregation_policy_fingerprint": null,
+    "seed": 24020959502787183,
+    "unsafe_flags": [],
+    "metrics": {
+      "adapter_smoke": 1.0,
+      "process_worker_count": 2.0,
+      "process_worker_index": 0.0
+    }
+  },
+  {
+    "record_id": "lineage:branch:b1.model:rf:FIT_CV:variant:base:fold:1",
+    "run_id": "run:cli.process.cv.refit",
+    "node_id": "branch:b1.model:rf",
+    "phase": "FIT_CV",
+    "controller_id": "controller:model.mock",
+    "controller_version": "0.1.0",
+    "variant_id": "variant:base",
+    "fold_id": "fold:1",
+    "branch_path": [],
+    "input_lineage": [],
+    "artifact_refs": [],
+    "params_fingerprint": "693cb21e8c02f513121138dddbe13a5577fb308cb63c74dcb05ff5928b99b989",
+    "data_model_shape_fingerprint": null,
+    "aggregation_policy_fingerprint": null,
+    "seed": 13011186343940047591,
+    "unsafe_flags": [],
+    "metrics": {
+      "adapter_smoke": 1.0,
+      "process_worker_count": 2.0,
+      "process_worker_index": 1.0
+    }
+  },
+  {
+    "record_id": "lineage:branch:b1.model:rf:REFIT:variant:base:nofold",
+    "run_id": "run:cli.process.cv.refit",
+    "node_id": "branch:b1.model:rf",
+    "phase": "REFIT",
+    "controller_id": "controller:model.mock",
+    "controller_version": "0.1.0",
+    "variant_id": "variant:base",
+    "fold_id": null,
+    "branch_path": [],
+    "input_lineage": [],
+    "artifact_refs": [
+      {
+        "id": "artifact:branch:b1.model:rf:refit",
+        "kind": "mock_model",
+        "controller_id": "controller:model.mock",
+        "backend": "json",
+        "uri": "artifacts/ea3c05fa8bf005a31f877be5a2de701d46a4c8e91a849c7f19ee2634c9c401c3.json",
+        "content_fingerprint": "b030a79338a175f938567db20de9ef7686e85f0fdfb21121e1ab57749da75d2a",
+        "size_bytes": 128,
+        "plugin": "dagml.python_process",
+        "plugin_version": "1.0.0"
+      }
+    ],
+    "params_fingerprint": "693cb21e8c02f513121138dddbe13a5577fb308cb63c74dcb05ff5928b99b989",
+    "data_model_shape_fingerprint": null,
+    "aggregation_policy_fingerprint": null,
+    "seed": 18195554942257187787,
+    "unsafe_flags": [],
+    "metrics": {
+      "adapter_smoke": 1.0,
+      "process_worker_count": 2.0,
+      "process_worker_index": 1.0
+    }
+  },
+  {
+    "record_id": "lineage:merge:stack.pred_plus_original.meta:ridge:FIT_CV:variant:base:fold:0",
+    "run_id": "run:cli.process.cv.refit",
+    "node_id": "merge:stack.pred_plus_original.meta:ridge",
+    "phase": "FIT_CV",
+    "controller_id": "controller:model.mock",
+    "controller_version": "0.1.0",
+    "variant_id": "variant:base",
+    "fold_id": "fold:0",
+    "branch_path": [],
+    "input_lineage": [
+      "lineage:branch:b0.model:ridge:FIT_CV:variant:base:fold:0",
+      "lineage:branch:b1.model:rf:FIT_CV:variant:base:fold:0"
+    ],
+    "artifact_refs": [],
+    "params_fingerprint": "79422a3be0aaab9e972b5297e644fdc60ea435bab8c7788b9b71cae7ed6a9c98",
+    "data_model_shape_fingerprint": null,
+    "aggregation_policy_fingerprint": null,
+    "seed": 10299592634600459419,
+    "unsafe_flags": [],
+    "metrics": {
+      "adapter_smoke": 1.0,
+      "process_worker_count": 2.0,
+      "process_worker_index": 0.0
+    }
+  },
+  {
+    "record_id": "lineage:merge:stack.pred_plus_original.meta:ridge:FIT_CV:variant:base:fold:1",
+    "run_id": "run:cli.process.cv.refit",
+    "node_id": "merge:stack.pred_plus_original.meta:ridge",
+    "phase": "FIT_CV",
+    "controller_id": "controller:model.mock",
+    "controller_version": "0.1.0",
+    "variant_id": "variant:base",
+    "fold_id": "fold:1",
+    "branch_path": [],
+    "input_lineage": [
+      "lineage:branch:b0.model:ridge:FIT_CV:variant:base:fold:1",
+      "lineage:branch:b1.model:rf:FIT_CV:variant:base:fold:1"
+    ],
+    "artifact_refs": [],
+    "params_fingerprint": "79422a3be0aaab9e972b5297e644fdc60ea435bab8c7788b9b71cae7ed6a9c98",
+    "data_model_shape_fingerprint": null,
+    "aggregation_policy_fingerprint": null,
+    "seed": 14659903078522846858,
+    "unsafe_flags": [],
+    "metrics": {
+      "adapter_smoke": 1.0,
+      "process_worker_count": 2.0,
+      "process_worker_index": 1.0
+    }
+  },
+  {
+    "record_id": "lineage:merge:stack.pred_plus_original.meta:ridge:REFIT:variant:base:nofold",
+    "run_id": "run:cli.process.cv.refit",
+    "node_id": "merge:stack.pred_plus_original.meta:ridge",
+    "phase": "REFIT",
+    "controller_id": "controller:model.mock",
+    "controller_version": "0.1.0",
+    "variant_id": "variant:base",
+    "fold_id": null,
+    "branch_path": [],
+    "input_lineage": [
+      "lineage:branch:b0.model:ridge:REFIT:variant:base:nofold",
+      "lineage:branch:b1.model:rf:REFIT:variant:base:nofold"
+    ],
+    "artifact_refs": [
+      {
+        "id": "artifact:merge:stack.pred_plus_original.meta:ridge:refit",
+        "kind": "mock_model",
+        "controller_id": "controller:model.mock",
+        "backend": "json",
+        "uri": "artifacts/9b568c6eb72a0587758375d8498e6f6e75b44c5d68318ab58b8c980200816d94.json",
+        "content_fingerprint": "c91ddcaf1ab597a7b462fad1b46a8bf269e15ddcd4b7d1d3a9045f9a9a5c63f9",
+        "size_bytes": 128,
+        "plugin": "dagml.python_process",
+        "plugin_version": "1.0.0"
+      }
+    ],
+    "params_fingerprint": "79422a3be0aaab9e972b5297e644fdc60ea435bab8c7788b9b71cae7ed6a9c98",
+    "data_model_shape_fingerprint": null,
+    "aggregation_policy_fingerprint": null,
+    "seed": 15894046248559749635,
+    "unsafe_flags": [],
+    "metrics": {
+      "adapter_smoke": 1.0,
+      "process_worker_count": 2.0,
+      "process_worker_index": 1.0
+    }
+  }
+]

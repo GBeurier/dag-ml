@@ -1,0 +1,391 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/training_request.v1.schema.json",
+  "title": "DAG-ML TrainingRequest v1",
+  "description": "Strict W1 contract for compile/plan/FIT_CV/SELECT and optional REFIT projection. Semantic validation resolves output ports, checks controller capabilities, data identities, patch policies and exact influence scopes before execution.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "plan_id",
+    "graph",
+    "campaign",
+    "controller_manifests",
+    "data_identities",
+    "parameter_patches",
+    "patch_policies",
+    "influence_requirements",
+    "options",
+    "request_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "request_id": { "$ref": "#/$defs/identifier" },
+    "plan_id": { "$ref": "#/$defs/non_empty_string" },
+    "graph": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/graph_spec.v1.schema.json"
+    },
+    "campaign": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/campaign_spec.v1.schema.json"
+    },
+    "controller_manifests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/controller_manifest.v1.schema.json"
+      },
+      "description": "Strictly sorted by controller_id; duplicate ids are invalid."
+    },
+    "data_identities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/training_data_identity" },
+      "description": "Strictly sorted and exactly covers campaign data bindings."
+    },
+    "parameter_patches": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/parameter_patch.v1.schema.json"
+      },
+      "description": "Strictly sorted by (node_id, namespace, path); duplicate and parent/child paths are invalid."
+    },
+    "patch_policies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node_patch_policy" },
+      "description": "Strictly sorted and exactly covers nodes targeted by parameter_patches."
+    },
+    "influence_requirements": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/controller_influence_requirement" },
+      "description": "Explicit sample sources for capability-driven early stopping, internal HPO and weighting, sorted by (kind, scope_id, node_id)."
+    },
+    "options": { "$ref": "#/$defs/training_options" },
+    "request_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML TCV1 SHA-256 of the complete request with only request_fingerprint omitted."
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "training_data_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirement_key",
+        "schema_fingerprint",
+        "plan_fingerprint",
+        "relation_fingerprint",
+        "data_content_fingerprint",
+        "target_content_fingerprint",
+        "identity_fingerprint"
+      ],
+      "properties": {
+        "requirement_key": { "$ref": "#/$defs/non_empty_string" },
+        "schema_fingerprint": { "$ref": "#/$defs/sha256" },
+        "plan_fingerprint": { "$ref": "#/$defs/sha256" },
+        "relation_fingerprint": { "$ref": "#/$defs/sha256" },
+        "data_content_fingerprint": { "$ref": "#/$defs/sha256" },
+        "target_content_fingerprint": { "$ref": "#/$defs/sha256" },
+        "identity_fingerprint": {
+          "$ref": "#/$defs/sha256",
+          "description": "TCV1 SHA-256 of this identity with identity_fingerprint omitted."
+        }
+      }
+    },
+    "parameter_namespace": {
+      "enum": ["operator", "fit", "control", "structural"]
+    },
+    "node_patch_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "allowed_namespaces"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/identifier" },
+        "allowed_namespaces": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/parameter_namespace" }
+        }
+      }
+    },
+    "training_influence_kind": {
+      "enum": [
+        "transform_fit",
+        "model_fit",
+        "hpo_selection",
+        "early_stopping",
+        "weighting_resampling",
+        "trained_meta_aggregation"
+      ]
+    },
+    "controller_influence_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "kind",
+        "scope_id",
+        "phase",
+        "fold_id",
+        "physical_sample_ids"
+      ],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/identifier" },
+        "kind": {
+          "enum": ["hpo_selection", "early_stopping", "weighting_resampling"]
+        },
+        "scope_id": { "$ref": "#/$defs/identifier" },
+        "phase": { "enum": ["FIT_CV", "REFIT"] },
+        "fold_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "physical_sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "phase": { "const": "FIT_CV" } },
+            "required": ["phase"]
+          },
+          "then": { "properties": { "fold_id": { "$ref": "#/$defs/identifier" } } },
+          "else": { "properties": { "fold_id": { "type": "null" } } }
+        }
+      ]
+    },
+    "prediction_level": {
+      "enum": ["observation", "sample", "target", "group"]
+    },
+    "entity_unit_level": {
+      "enum": ["physical_sample", "source_sample", "observation", "combo"]
+    },
+    "prediction_kind": {
+      "enum": ["regression_point", "class_label", "class_probability", "decision_score"]
+    },
+    "training_output_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "output_id",
+        "node_id",
+        "prediction_level",
+        "unit_level",
+        "prediction_kind",
+        "target_names",
+        "target_units",
+        "class_labels",
+        "output_order",
+        "target_space"
+      ],
+      "properties": {
+        "output_id": { "$ref": "#/$defs/identifier" },
+        "node_id": { "$ref": "#/$defs/identifier" },
+        "port_name": { "$ref": "#/$defs/non_empty_string" },
+        "prediction_level": { "$ref": "#/$defs/prediction_level" },
+        "unit_level": {
+          "anyOf": [
+            { "$ref": "#/$defs/entity_unit_level" },
+            { "type": "null" }
+          ]
+        },
+        "prediction_kind": { "$ref": "#/$defs/prediction_kind" },
+        "target_names": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "target_units": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "anyOf": [
+              { "$ref": "#/$defs/non_empty_string" },
+              { "type": "null" }
+            ]
+          }
+        },
+        "class_labels": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "$ref": "#/$defs/non_empty_string" }
+          }
+        },
+        "output_order": { "enum": ["target_order", "target_major_class_minor"] },
+        "target_space": { "$ref": "#/$defs/non_empty_string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "prediction_kind": { "const": "class_probability" } },
+            "required": ["prediction_kind"]
+          },
+          "then": {
+            "properties": {
+              "output_order": { "const": "target_major_class_minor" },
+              "class_labels": { "items": { "minItems": 1 } }
+            }
+          },
+          "else": { "properties": { "output_order": { "const": "target_order" } } }
+        },
+        {
+          "if": {
+            "properties": { "prediction_kind": { "const": "regression_point" } },
+            "required": ["prediction_kind"]
+          },
+          "then": {
+            "properties": { "class_labels": { "items": { "maxItems": 0 } } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "prediction_level": { "const": "sample" } },
+            "required": ["prediction_level"]
+          },
+          "then": {
+            "required": ["unit_level"],
+            "properties": { "unit_level": { "const": "physical_sample" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "prediction_level": { "enum": ["target", "group"] } },
+            "required": ["prediction_level"]
+          },
+          "then": { "properties": { "unit_level": { "type": "null" } } }
+        }
+      ]
+    },
+    "scheduler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "backend", "workers"],
+      "properties": {
+        "kind": { "enum": ["sequential", "parallel"] },
+        "backend": {
+          "anyOf": [
+            { "enum": ["threads", "processes"] },
+            { "type": "null" }
+          ]
+        },
+        "workers": { "type": "integer", "minimum": 1 }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "kind": { "const": "sequential" },
+            "backend": { "type": "null" },
+            "workers": { "const": 1 }
+          }
+        },
+        {
+          "properties": {
+            "kind": { "const": "parallel" },
+            "backend": { "enum": ["threads", "processes"] },
+            "workers": { "type": "integer", "minimum": 2 }
+          }
+        }
+      ]
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_threads", "gpu_devices"],
+      "properties": {
+        "cpu_threads": { "type": "integer", "minimum": 1 },
+        "memory_bytes": { "type": "integer", "minimum": 1 },
+        "gpu_devices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "wall_time_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "artifact_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cv_artifacts", "prediction_caches", "fitted_artifacts"],
+      "properties": {
+        "cv_artifacts": { "enum": ["discard", "metadata_only", "retain"] },
+        "prediction_caches": { "enum": ["discard", "retain"] },
+        "fitted_artifacts": { "enum": ["portable_required", "allow_host_sidecar"] }
+      }
+    },
+    "training_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "refit",
+        "refit_strategy",
+        "seed",
+        "selection",
+        "selection_output_id",
+        "outputs",
+        "scheduler",
+        "resources",
+        "artifacts"
+      ],
+      "properties": {
+        "refit": { "type": "boolean" },
+        "refit_strategy": {
+          "anyOf": [
+            { "enum": ["refit_one", "refit_ensemble"] },
+            { "type": "null" }
+          ]
+        },
+        "seed": { "type": "integer", "minimum": 0 },
+        "selection": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/selection_policy.v1.schema.json"
+        },
+        "selection_output_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Exactly one declared output_id whose FIT_CV reports drive SELECT. Multi-output producers are allowed when the output request resolves an explicit prediction port and score reports carry matching producer_port provenance."
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/training_output_request" }
+        },
+        "scheduler": { "$ref": "#/$defs/scheduler" },
+        "resources": { "$ref": "#/$defs/resources" },
+        "artifacts": { "$ref": "#/$defs/artifact_options" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "refit": { "const": true },
+            "refit_strategy": { "enum": ["refit_one", "refit_ensemble"] }
+          }
+        },
+        {
+          "properties": {
+            "refit": { "const": false },
+            "refit_strategy": { "type": "null" },
+            "artifacts": {
+              "properties": { "prediction_caches": { "const": "retain" } }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,534 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/execution_bundle.v2.schema.json",
+  "title": "DAG-ML ExecutionBundle v2",
+  "description": "ExecutionBundle v2 paired with port-explicit V2 prediction-cache payloads. All plan, selection, data, OOF cache and capability-driven artifact constraints remain identical to V1; only the cache wire marker changes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bundle_id",
+    "schema_version",
+    "plan_id",
+    "graph_fingerprint",
+    "campaign_fingerprint",
+    "controller_fingerprint",
+    "selected_variant_id",
+    "selections",
+    "refit_artifacts",
+    "prediction_requirements",
+    "prediction_caches",
+    "data_requirements",
+    "unsafe_flags",
+    "metadata"
+  ],
+  "properties": {
+    "bundle_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "plan_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "graph_fingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "campaign_fingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "controller_fingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "selected_variant_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/identifier"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "selections": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/selection_decision.v1.schema.json"
+      },
+      "default": {}
+    },
+    "refit_artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/refit_artifact_record"
+      },
+      "default": [],
+      "description": "After completed refit, exactly covers predictor-closure nodes whose controller capabilities include emits_artifacts; each record exactly lists its direct data and incoming OOF requirements. Empty for no-refit."
+    },
+    "prediction_requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/prediction_requirement"
+      },
+      "default": [],
+      "description": "Exactly covers requires_oof graph edges inside the predictor closure."
+    },
+    "prediction_caches": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/prediction_cache_record"
+      },
+      "default": [],
+      "description": "Exactly one cache record for every prediction requirement, with complete per-fold validation coverage."
+    },
+    "scores": {
+      "anyOf": [
+        {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/score_set.v2.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "data_requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/data_requirement"
+      },
+      "default": []
+    },
+    "unsafe_flags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      },
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "prediction_partition": {
+      "enum": [
+        "train",
+        "validation",
+        "test",
+        "final"
+      ]
+    },
+    "prediction_level": {
+      "enum": [
+        "observation",
+        "sample",
+        "target",
+        "group"
+      ]
+    },
+    "prediction_unit_id": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level",
+        "id"
+      ],
+      "properties": {
+        "level": {
+          "enum": [
+            "sample",
+            "target",
+            "group"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "artifact_backend": {
+      "enum": [
+        "joblib",
+        "torch",
+        "tensorflow",
+        "onnx",
+        "safetensors",
+        "json",
+        "raw"
+      ]
+    },
+    "artifact_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "controller_id",
+        "size_bytes"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "backend": {
+          "$ref": "#/$defs/artifact_backend"
+        },
+        "uri": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "content_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "plugin": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "plugin_version": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "refit_artifact_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "controller_id",
+        "artifact",
+        "params_fingerprint",
+        "data_requirement_keys",
+        "prediction_requirement_keys"
+      ],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "artifact": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "params_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "data_requirement_keys": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          },
+          "default": []
+        },
+        "prediction_requirement_keys": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          },
+          "default": []
+        }
+      }
+    },
+    "prediction_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_node",
+        "source_port",
+        "consumer_node",
+        "target_port",
+        "partition",
+        "fold_ids",
+        "sample_ids",
+        "prediction_width",
+        "target_names"
+      ],
+      "properties": {
+        "producer_node": {
+          "$ref": "#/$defs/identifier"
+        },
+        "source_port": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "consumer_node": {
+          "$ref": "#/$defs/identifier"
+        },
+        "target_port": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "partition": {
+          "const": "validation"
+        },
+        "prediction_level": {
+          "$ref": "#/$defs/prediction_level",
+          "default": "sample"
+        },
+        "fold_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "unit_ids": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/prediction_unit_id"
+          }
+        },
+        "sample_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "prediction_width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "target_names": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "prediction_cache_block_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prediction_id",
+        "fold_id",
+        "row_count",
+        "sample_ids",
+        "content_fingerprint"
+      ],
+      "properties": {
+        "prediction_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fold_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prediction_level": {
+          "$ref": "#/$defs/prediction_level",
+          "default": "sample"
+        },
+        "row_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "unit_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/prediction_unit_id"
+          }
+        },
+        "sample_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "content_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "prediction_cache_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirement_key",
+        "cache_id",
+        "cache_namespace_fingerprints",
+        "format",
+        "partition",
+        "fold_ids",
+        "sample_ids",
+        "prediction_width",
+        "target_names",
+        "block_count",
+        "row_count",
+        "content_fingerprint",
+        "blocks"
+      ],
+      "properties": {
+        "requirement_key": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "cache_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "cache_namespace_fingerprints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sha256"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "format": {
+          "const": "dag-ml-json-prediction-blocks-v2"
+        },
+        "partition": {
+          "const": "validation"
+        },
+        "prediction_level": {
+          "$ref": "#/$defs/prediction_level",
+          "default": "sample"
+        },
+        "fold_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "unit_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/prediction_unit_id"
+          }
+        },
+        "sample_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "prediction_width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "target_names": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "block_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "row_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "blocks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/prediction_cache_block_record"
+          }
+        }
+      }
+    },
+    "data_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "input_name",
+        "schema_fingerprint",
+        "plan_fingerprint",
+        "relation_fingerprint",
+        "output_representation",
+        "feature_set_id"
+      ],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "input_name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "schema_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "plan_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "relation_fingerprint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_representation": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "feature_set_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/non_empty_string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "representation_replay_manifest": {
+          "type": "object"
+        },
+        "representation_compatibility": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

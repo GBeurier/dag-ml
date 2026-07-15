@@ -30,6 +30,12 @@ exclude_patterns = [
     "HOST_ADAPTER_BACKLOG.md",
     "STUDIO_LITE_WASM_GAPS.md",
     "HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md",
+    "FINAL_RELEASE_AUDIT.md",
+    "MVP_ACCEPTANCE.md",
+    "ROADMAP.md",
+    "STATUS.md",
+    "TEST_PLAN.md",
+    "TOC.md",
 ]
 
 # autosectionlabel makes every section heading a cross-reference target; the

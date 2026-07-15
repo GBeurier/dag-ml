@@ -301,8 +301,179 @@ pub struct DataViewRequest {
 pub trait RuntimeDataProvider {
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef>;
     fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef>;
+    /// Attest the exact feature and target content bound to one training input.
+    ///
+    /// Legacy phase execution may return `None`; the native W1 training
+    /// operation requires `Some` and compares it byte-for-byte with the signed
+    /// [`TrainingDataIdentity`](crate::training::TrainingDataIdentity).
+    fn training_data_identity(
+        &self,
+        _binding: &DataBinding,
+    ) -> Result<Option<crate::training::TrainingDataIdentity>> {
+        Ok(None)
+    }
     fn coordinator_relations(&self, _binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
         Ok(None)
+    }
+}
+
+#[derive(Debug)]
+struct EnvelopeAttestation {
+    binding: DataBinding,
+    envelope: ExternalDataPlanEnvelope,
+    identity: crate::training::TrainingDataIdentity,
+}
+
+/// Owns a host data provider while supplying exact, envelope-backed training
+/// attestations at the runtime trust boundary.
+///
+/// Construction validates the complete binding/envelope set before the inner
+/// provider can be invoked. Runtime calls are delegated only when their full
+/// [`DataBinding`] is field-for-field equal to the binding registered for the
+/// rendered V1 requirement key.
+#[derive(Debug)]
+pub struct EnvelopeAttestedRuntimeDataProvider<P> {
+    inner: P,
+    attestations: BTreeMap<String, EnvelopeAttestation>,
+}
+
+impl<P> EnvelopeAttestedRuntimeDataProvider<P> {
+    pub fn new<I>(
+        inner: P,
+        bindings: I,
+        mut envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = DataBinding>,
+    {
+        let mut bindings_by_key: BTreeMap<String, DataBinding> = BTreeMap::new();
+        for binding in bindings {
+            binding.validate()?;
+            let key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
+            if let Some(previous) = bindings_by_key.get(&key) {
+                let detail = if previous.node_id == binding.node_id
+                    && previous.input_name == binding.input_name
+                {
+                    "duplicates the same coordinates"
+                } else {
+                    "uses distinct coordinates that collide under the V1 node.input spelling"
+                };
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "data binding requirement key `{key}` {detail}"
+                )));
+            }
+            bindings_by_key.insert(key, binding);
+        }
+
+        let expected_keys = bindings_by_key.keys().cloned().collect::<BTreeSet<_>>();
+        let actual_keys = envelopes.keys().cloned().collect::<BTreeSet<_>>();
+        if expected_keys != actual_keys {
+            let missing = expected_keys
+                .difference(&actual_keys)
+                .cloned()
+                .collect::<Vec<_>>();
+            let unexpected = actual_keys
+                .difference(&expected_keys)
+                .cloned()
+                .collect::<Vec<_>>();
+            return Err(DagMlError::RuntimeValidation(format!(
+                "attested data envelopes must exactly cover runtime bindings (missing: [{}]; unexpected: [{}])",
+                missing.join(", "),
+                unexpected.join(", ")
+            )));
+        }
+
+        let mut attestations = BTreeMap::new();
+        for (key, binding) in bindings_by_key {
+            let envelope = envelopes
+                .remove(&key)
+                .expect("exact key coverage was checked above");
+            let identity =
+                crate::training::TrainingDataIdentity::from_binding_envelope(&binding, &envelope)?;
+            attestations.insert(
+                key,
+                EnvelopeAttestation {
+                    binding,
+                    envelope,
+                    identity,
+                },
+            );
+        }
+
+        Ok(Self {
+            inner,
+            attestations,
+        })
+    }
+
+    pub fn inner(&self) -> &P {
+        &self.inner
+    }
+
+    pub fn into_inner(self) -> P {
+        self.inner
+    }
+
+    fn attestation_for_binding(&self, binding: &DataBinding) -> Result<&EnvelopeAttestation> {
+        binding.validate()?;
+        let key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
+        let attestation = self.attestations.get(&key).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "runtime data binding `{key}` has no registered envelope attestation"
+            ))
+        })?;
+        if attestation.binding != *binding {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime data binding `{key}` does not exactly match its attested binding"
+            )));
+        }
+        Ok(attestation)
+    }
+
+    fn validate_request_binding(
+        &self,
+        node_id: &NodeId,
+        input_name: &str,
+        binding: &DataBinding,
+    ) -> Result<()> {
+        if node_id != &binding.node_id || input_name != binding.input_name {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime data request coordinates `{node_id}.{input_name}` do not match binding `{}`",
+                data_binding_requirement_key(&binding.node_id, &binding.input_name)
+            )));
+        }
+        self.attestation_for_binding(binding)?;
+        Ok(())
+    }
+}
+
+impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeDataProvider<P> {
+    fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+        self.validate_request_binding(&request.node_id, &request.input_name, &request.binding)?;
+        self.inner.materialize(request)
+    }
+
+    fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+        request.view.validate()?;
+        self.validate_request_binding(&request.node_id, &request.input_name, &request.binding)?;
+        self.inner.make_view(request)
+    }
+
+    fn training_data_identity(
+        &self,
+        binding: &DataBinding,
+    ) -> Result<Option<crate::training::TrainingDataIdentity>> {
+        Ok(Some(
+            self.attestation_for_binding(binding)?.identity.clone(),
+        ))
+    }
+
+    fn coordinator_relations(&self, binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
+        Ok(self
+            .attestation_for_binding(binding)?
+            .envelope
+            .coordinator_relations
+            .clone())
     }
 }
 
@@ -552,4 +723,229 @@ pub(crate) fn validation_data_view_for_scope(
         excluded_samples,
     )
     .map(Some)
+}
+
+#[cfg(test)]
+mod envelope_attested_provider_tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[derive(Debug, Default)]
+    struct ProbeProvider {
+        materialize_calls: Cell<usize>,
+        make_view_calls: Cell<usize>,
+    }
+
+    impl RuntimeDataProvider for ProbeProvider {
+        fn materialize(&self, _request: &DataMaterializationRequest) -> Result<HandleRef> {
+            self.materialize_calls.set(self.materialize_calls.get() + 1);
+            Ok(HandleRef {
+                handle: 41,
+                kind: HandleKind::Data,
+                owner_controller: ControllerId::new("controller:data.probe").unwrap(),
+            })
+        }
+
+        fn make_view(&self, _request: &DataViewRequest) -> Result<HandleRef> {
+            self.make_view_calls.set(self.make_view_calls.get() + 1);
+            Ok(HandleRef {
+                handle: 42,
+                kind: HandleKind::DataView,
+                owner_controller: ControllerId::new("controller:data.probe").unwrap(),
+            })
+        }
+    }
+
+    fn complete_envelope() -> ExternalDataPlanEnvelope {
+        let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        envelope.data_content_fingerprint = Some("a".repeat(64));
+        envelope.target_content_fingerprint = Some("b".repeat(64));
+        envelope
+    }
+
+    fn binding_for(
+        node_id: &str,
+        input_name: &str,
+        envelope: &ExternalDataPlanEnvelope,
+    ) -> DataBinding {
+        DataBinding {
+            node_id: NodeId::new(node_id).unwrap(),
+            input_name: input_name.to_string(),
+            request_id: "request:data.probe".to_string(),
+            schema_fingerprint: envelope.schema_fingerprint.clone(),
+            plan_fingerprint: envelope.plan_fingerprint.clone(),
+            relation_fingerprint: envelope.relation_fingerprint.clone(),
+            output_representation: "tabular_numeric".to_string(),
+            feature_set_id: Some(input_name.to_string()),
+            source_ids: vec!["source:probe".to_string()],
+            require_relations: true,
+            view_policy: Default::default(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn envelopes_for(
+        binding: &DataBinding,
+        envelope: ExternalDataPlanEnvelope,
+    ) -> BTreeMap<String, ExternalDataPlanEnvelope> {
+        BTreeMap::from([(
+            data_binding_requirement_key(&binding.node_id, &binding.input_name),
+            envelope,
+        )])
+    }
+
+    fn materialization_request(binding: &DataBinding) -> DataMaterializationRequest {
+        DataMaterializationRequest {
+            run_id: RunId::new("run:attested.provider").unwrap(),
+            node_id: binding.node_id.clone(),
+            input_name: binding.input_name.clone(),
+            phase: Phase::Refit,
+            variant_id: None,
+            fold_id: None,
+            binding: binding.clone(),
+        }
+    }
+
+    #[test]
+    fn envelope_attested_provider_delegates_and_returns_exact_attestations() {
+        let envelope = complete_envelope();
+        let binding = binding_for("model:base", "x", &envelope);
+        let expected_identity =
+            crate::training::TrainingDataIdentity::from_binding_envelope(&binding, &envelope)
+                .unwrap();
+        let expected_relations = envelope.coordinator_relations.clone();
+        let provider = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![binding.clone()],
+            envelopes_for(&binding, envelope),
+        )
+        .unwrap();
+
+        assert_eq!(
+            provider.training_data_identity(&binding).unwrap(),
+            Some(expected_identity)
+        );
+        assert_eq!(
+            provider.coordinator_relations(&binding).unwrap(),
+            expected_relations
+        );
+
+        let materialization = materialization_request(&binding);
+        let data_handle = provider.materialize(&materialization).unwrap();
+        assert_eq!(data_handle.handle, 41);
+        let view_handle = provider
+            .make_view(&DataViewRequest {
+                run_id: materialization.run_id,
+                node_id: binding.node_id.clone(),
+                input_name: binding.input_name.clone(),
+                phase: Phase::Refit,
+                variant_id: None,
+                fold_id: None,
+                binding: binding.clone(),
+                data_handle,
+                view: DataProviderViewSpec {
+                    sample_ids: None,
+                    partition: DataRequestPartition::FullTrain,
+                    fold_id: None,
+                    source_ids: None,
+                    columns: None,
+                    include_augmented: true,
+                    include_excluded: false,
+                    branch_view: None,
+                    extra: BTreeMap::new(),
+                },
+            })
+            .unwrap();
+        assert_eq!(view_handle.handle, 42);
+        assert_eq!(provider.inner().materialize_calls.get(), 1);
+        assert_eq!(provider.inner().make_view_calls.get(), 1);
+
+        let inner = provider.into_inner();
+        assert_eq!(inner.materialize_calls.get(), 1);
+        assert_eq!(inner.make_view_calls.get(), 1);
+    }
+
+    #[test]
+    fn envelope_attested_provider_requires_exact_envelope_coverage() {
+        let envelope = complete_envelope();
+        let binding = binding_for("model:base", "x", &envelope);
+
+        let missing = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![binding.clone()],
+            BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("exactly cover"));
+        assert!(missing.to_string().contains("model:base.x"));
+
+        let mut unexpected = envelopes_for(&binding, envelope.clone());
+        unexpected.insert("model:other.x".to_string(), envelope);
+        let extra = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![binding],
+            unexpected,
+        )
+        .unwrap_err();
+        assert!(extra.to_string().contains("exactly cover"));
+        assert!(extra.to_string().contains("model:other.x"));
+    }
+
+    #[test]
+    fn envelope_attested_provider_rejects_rendered_key_collisions() {
+        let envelope = complete_envelope();
+        let left = binding_for("a.b", "c", &envelope);
+        let right = binding_for("a", "b.c", &envelope);
+        assert_eq!(
+            data_binding_requirement_key(&left.node_id, &left.input_name),
+            data_binding_requirement_key(&right.node_id, &right.input_name)
+        );
+
+        let error = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![left.clone(), right],
+            envelopes_for(&left, envelope),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("distinct coordinates"));
+        assert!(error.to_string().contains("a.b.c"));
+    }
+
+    #[test]
+    fn envelope_attested_provider_refuses_unattested_binding_before_delegation() {
+        let envelope = complete_envelope();
+        let binding = binding_for("model:base", "x", &envelope);
+        let provider = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![binding.clone()],
+            envelopes_for(&binding, envelope),
+        )
+        .unwrap();
+        let mut changed = binding;
+        changed.request_id = "request:data.changed".to_string();
+
+        let error = provider
+            .materialize(&materialization_request(&changed))
+            .unwrap_err();
+        assert!(error.to_string().contains("does not exactly match"));
+        assert_eq!(provider.inner().materialize_calls.get(), 0);
+    }
+
+    #[test]
+    fn envelope_attested_provider_refuses_incomplete_training_envelope() {
+        let mut envelope = complete_envelope();
+        envelope.data_content_fingerprint = None;
+        let binding = binding_for("model:base", "x", &envelope);
+        let error = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![binding.clone()],
+            envelopes_for(&binding, envelope),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("data content fingerprint"));
+    }
 }
