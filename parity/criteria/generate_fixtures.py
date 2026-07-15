@@ -22,6 +22,7 @@ JAVASCRIPT_FIXTURE = (
     ROOT / "examples/fixtures/criteria/javascript_local_implementations.v1.json"
 )
 C_FIXTURE = ROOT / "examples/fixtures/criteria/c_local_implementations.v1.json"
+PYTHON_FIXTURE = ROOT / "examples/fixtures/criteria/python_local_implementations.v1.json"
 R_FIXTURE = ROOT / "bindings/r/inst/extdata/r_local_implementations.v1.json"
 MATLAB_FIXTURE = ROOT / "bindings/matlab/fixtures/matlab_local_implementations.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
@@ -32,6 +33,7 @@ ARTIFACTS = {
     "bindings/r/R/local_implementation_registry.R": "r_local_registry",
     "bindings/r/inst/extdata/r_local_implementations.v1.json": "fixture",
     "bindings/r/tests/local_implementation_registry.R": "r_binding_test",
+    "examples/fixtures/criteria/python_local_implementations.v1.json": "fixture",
     "crates/dag-ml-cli/src/main.rs": "cli_validator",
     "crates/dag-ml-cli/tests/cli_contracts.rs": "cli_test",
     "crates/dag-ml-core/src/criteria.rs": "rust_contract",
@@ -96,7 +98,8 @@ def loss_attestation(
 
 
 def build_host_language_fixture(
-    valid: dict[str, Any], *, language: str, binding_id: str
+    valid: dict[str, Any], *, language: str, binding_id: str,
+    extra_capabilities: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     loss_implementation = copy.deepcopy(valid["loss_implementation"])
     loss_implementation.update(
@@ -106,7 +109,9 @@ def build_host_language_fixture(
             "implementation_fingerprint": hashlib.sha256(
                 f"dagml.{language}.asymmetric-loss.v1".encode()
             ).hexdigest(),
-            "capabilities": ["deterministic", "differentiable"],
+            "capabilities": sorted({
+                "deterministic", "differentiable", *extra_capabilities
+            }),
             "registry_key": f"loss:{language}:asymmetric",
             "descriptor_fingerprint": "",
         }
@@ -140,6 +145,9 @@ def build_host_language_fixture(
             "descriptor_fingerprint": "",
         }
     )
+    metric_implementation["capabilities"] = sorted({
+        *metric_implementation["capabilities"], *extra_capabilities
+    })
     metric_implementation["descriptor_fingerprint"] = fingerprint_without(
         metric_implementation, "descriptor_fingerprint"
     )
@@ -510,6 +518,19 @@ def main() -> None:
     write(JAVASCRIPT_FIXTURE, javascript_fixture)
     c_fixture = build_c_fixture(valid)
     write(C_FIXTURE, c_fixture)
+    python_fixture = build_host_language_fixture(
+        valid,
+        language="python",
+        binding_id="binding:python",
+        extra_capabilities=("needs_gil",),
+    )
+    python_metric_task = copy.deepcopy(provider_fixture["valid"]["task"])
+    python_metric_task["metric"] = copy.deepcopy(python_fixture["metric_reference"])
+    python_metric_task["task_fingerprint"] = fingerprint_without(
+        python_metric_task, "task_fingerprint"
+    )
+    python_fixture["metric_task"] = python_metric_task
+    write(PYTHON_FIXTURE, python_fixture)
     r_fixture = build_host_language_fixture(
         valid, language="r", binding_id="binding:r"
     )
