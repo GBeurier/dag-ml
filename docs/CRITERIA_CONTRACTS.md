@@ -53,6 +53,19 @@ implementations remain native catalog entries. The registry itself is not
 serializable. A detached worker or replay process must explicitly register the
 same descriptor before resolving its opaque `registry_key`.
 
+`register_local_loss` and `register_local_metric` are convenience methods for
+direct Python callables. They accept a semantic spec with an existing
+fingerprint or no `spec_fingerprint`; Rust signs an unsigned spec, constructs
+and fingerprints the `host_local`/`registry_required` descriptor, adds the
+mandatory `needs_gil` capability plus every implementation capability required
+by the semantic spec, and registers the callable atomically. When
+the caller omits implementation identity, Python generates opaque random
+process-local identifiers. Those identifiers deliberately make no claim about
+callable source equivalence and cannot support detached replay; callers that
+need reproducible reconstruction must supply a stable implementation
+fingerprint and registry key, then explicitly register the equivalent callable
+in the new process.
+
 The WASM binding exposes the same primitive as a JavaScript
 `LocalImplementationRegistry`. It retains `Function` objects for
 `binding:javascript` descriptors, resolves loss roles only for their declared
