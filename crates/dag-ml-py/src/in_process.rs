@@ -71,10 +71,16 @@ fn to_py_object<T: serde::Serialize>(
 /// Deserialize a Python object returned by a callback directly into a
 /// `dag-ml-core` value with `depythonize` (`PyObject` -> serde data model),
 /// skipping any JSON *string* step.
-fn from_py_object<T: serde::de::DeserializeOwned>(
-    obj: &Bound<'_, PyAny>,
-) -> Result<T, CoreDagMlError> {
-    depythonize(obj).map_err(pythonize_error)
+fn from_py_object<T>(obj: &Bound<'_, PyAny>) -> Result<T, CoreDagMlError>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let raw: serde_json::Value = depythonize(obj).map_err(pythonize_error)?;
+    dag_ml_core::deserialize_external_value(
+        raw,
+        "in-process callback result",
+        CoreDagMlError::RuntimeValidation,
+    )
 }
 
 /// Map a `pythonize`/`depythonize` conversion failure to a structured core error.
@@ -114,7 +120,7 @@ fn call_py_bridge<Req, Resp>(
 ) -> Result<Resp, CoreDagMlError>
 where
     Req: serde::Serialize,
-    Resp: serde::de::DeserializeOwned,
+    Resp: serde::de::DeserializeOwned + serde::Serialize,
 {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         Python::attach(|py| -> Result<Resp, CoreDagMlError> {
@@ -180,7 +186,7 @@ fn parse_selection_metric(metric: &str) -> RegressionMetricKind {
 /// per controller the plan references, all backed by the SAME host `op_callback`
 /// (the host dispatches by node kind inside `run_node`, exactly as the subprocess
 /// adapter does).
-fn build_runtime_controllers(
+pub(crate) fn build_runtime_controllers(
     py: Python<'_>,
     plan: &ExecutionPlan,
     op_callback: &Py<PyAny>,
@@ -721,6 +727,53 @@ mod tests {
     const CHOICE0_LABEL: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const CHOICE1_LABEL: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 
+    #[test]
+    fn in_process_callback_result_preserves_closed_object_shapes() {
+        Python::initialize();
+        Python::attach(|py| {
+            let valid = serde_json::json!({
+                "handle": 7,
+                "kind": "data",
+                "owner_controller": "controller:python.strict"
+            });
+            let valid_object = pythonize(py, &valid).unwrap();
+            from_py_object::<HandleRef>(&valid_object).expect("object-form handle is accepted");
+
+            let positional = serde_json::json!([7, "data", "controller:python.strict"]);
+            let positional_object = pythonize(py, &positional).unwrap();
+            let error = from_py_object::<HandleRef>(&positional_object)
+                .expect_err("serde's positional struct form must stay internal");
+            assert!(
+                error
+                    .to_string()
+                    .contains("must use a JSON object at the external contract boundary"),
+                "{error}"
+            );
+
+            let mut unknown = valid;
+            unknown.as_object_mut().unwrap().insert(
+                "unexpected_contract_field".to_string(),
+                serde_json::json!(true),
+            );
+            let unknown_object = pythonize(py, &unknown).unwrap();
+            let error = from_py_object::<HandleRef>(&unknown_object)
+                .expect_err("schema-closed callback fields must be rejected");
+            assert!(
+                error.to_string().contains("unexpected_contract_field"),
+                "{error}"
+            );
+
+            let mut colliding_keys = serde_json::Map::new();
+            colliding_keys.insert("é".to_string(), serde_json::json!(1));
+            colliding_keys.insert("e\u{301}".to_string(), serde_json::json!(2));
+            let colliding_object =
+                pythonize(py, &serde_json::Value::Object(colliding_keys)).unwrap();
+            let error = from_py_object::<BTreeMap<String, serde_json::Value>>(&colliding_object)
+                .expect_err("NFC-colliding callback map keys must be rejected");
+            assert!(error.to_string().contains("NFC-colliding"), "{error}");
+        });
+    }
+
     fn stable_handle(node_id: &str) -> u64 {
         let mut hash = 1469598103934665603u64;
         for byte in node_id.bytes() {
@@ -779,6 +832,7 @@ mod tests {
                         predictions.push(PredictionBlock {
                             prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                             producer_node: task.node_plan.node_id.clone(),
+                            producer_port: None,
                             partition: PredictionPartition::Validation,
                             fold_id: task.fold_id.clone(),
                             sample_ids: vec![sample_id.clone()],
@@ -796,6 +850,7 @@ mod tests {
                     predictions.push(PredictionBlock {
                         prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                         producer_node: task.node_plan.node_id.clone(),
+                        producer_port: None,
                         partition: PredictionPartition::Final,
                         fold_id: None,
                         sample_ids: vec![SampleId::new("s1").unwrap()],
@@ -834,6 +889,7 @@ mod tests {
                 })
                 .collect::<BTreeMap<_, _>>();
             Ok(NodeResult {
+                schema_version: None,
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([
                     ("x".to_string(), data_output.clone()),

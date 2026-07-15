@@ -30,10 +30,13 @@ fn default_prediction_join_key() -> PredictionJoinKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PredictionBlock {
     #[serde(default)]
     pub prediction_id: Option<String>,
     pub producer_node: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_port: Option<String>,
     pub partition: PredictionPartition,
     pub fold_id: Option<FoldId>,
     pub sample_ids: Vec<SampleId>,
@@ -849,6 +852,7 @@ mod tests {
         PredictionBlock {
             prediction_id: None,
             producer_node: producer(),
+            producer_port: None,
             partition,
             fold_id: Some(FoldId::new("fold0").unwrap()),
             sample_ids: vec![sid("s2"), sid("s1")],
@@ -861,6 +865,7 @@ mod tests {
         PredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new(producer_node).unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new(fold_id).unwrap()),
             sample_ids: samples.iter().copied().map(sid).collect(),
@@ -1322,6 +1327,7 @@ mod tests {
                 blocks.push(PredictionBlock {
                     prediction_id: None,
                     producer_node: NodeId::new(format!("model:p{producer_idx}")).unwrap(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: Some(FoldId::new(format!("fold:{fold_idx}")).unwrap()),
                     sample_ids,

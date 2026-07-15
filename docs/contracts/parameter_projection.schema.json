@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/parameter_projection.v1.schema.json",
+  "title": "DAG-ML ParameterProjection v1",
+  "description": "Immutable deep-patch projection. Public namespaces map bijectively to plan roots operator->params, fit->fit_params, control->control_params and structural->structural_params.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "nodes",
+    "requires_recompile",
+    "structural_patch_count",
+    "patches_fingerprint",
+    "projection_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/namespaced_node_parameters" }
+    },
+    "requires_recompile": { "type": "boolean" },
+    "structural_patch_count": { "type": "integer", "minimum": 0 },
+    "patches_fingerprint": { "$ref": "#/$defs/sha256" },
+    "projection_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML TCV1 SHA-256 with only projection_fingerprint omitted."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "structural_patch_count": { "const": 0 } } },
+      "then": { "properties": { "requires_recompile": { "const": false } } },
+      "else": { "properties": { "requires_recompile": { "const": true } } }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "namespaced_node_parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["params", "fit_params", "control_params", "structural_params"],
+      "properties": {
+        "params": { "type": "object" },
+        "fit_params": { "type": "object" },
+        "control_params": { "type": "object" },
+        "structural_params": { "type": "object" }
+      }
+    }
+  }
+}

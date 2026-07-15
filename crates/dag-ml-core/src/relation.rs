@@ -26,6 +26,7 @@ pub enum EntityUnitLevel {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SampleRelation {
     #[serde(default)]
     pub unit_level: EntityUnitLevel,
@@ -162,6 +163,7 @@ impl SampleRelation {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SampleRelationSet {
     #[serde(default)]
     pub records: Vec<SampleRelation>,
@@ -604,6 +606,7 @@ fn validate_unit_partitions<Unit: Ord + std::fmt::Display>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::ExternalDataPlanEnvelope;
     use crate::fold::{FoldAssignment, FoldPartitionMode};
 
     fn sid(value: &str) -> SampleId {
@@ -858,6 +861,61 @@ mod tests {
         }
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn relation_contracts_reject_unknown_fields_at_every_nesting_level() {
+        let relation = serde_json::json!({
+            "observation_id": "obs:strict",
+            "sample_id": "sample:strict"
+        });
+
+        let mut unknown_set_field = serde_json::json!({"records": [relation.clone()]});
+        unknown_set_field.as_object_mut().unwrap().insert(
+            "unexpected_contract_field".to_string(),
+            serde_json::json!(true),
+        );
+        assert!(serde_json::from_value::<SampleRelationSet>(unknown_set_field).is_err());
+
+        let mut unknown_record_field = relation.clone();
+        unknown_record_field.as_object_mut().unwrap().insert(
+            "unexpected_contract_field".to_string(),
+            serde_json::json!(true),
+        );
+        assert!(serde_json::from_value::<SampleRelation>(unknown_record_field.clone()).is_err());
+
+        let envelope = serde_json::json!({
+            "schema_version": 1,
+            "schema_fingerprint": "0".repeat(64),
+            "plan_fingerprint": "1".repeat(64),
+            "coordinator_relations": {"records": [unknown_record_field]}
+        });
+        assert!(serde_json::from_value::<ExternalDataPlanEnvelope>(envelope).is_err());
+
+        let envelope = serde_json::json!({
+            "schema_version": 1,
+            "schema_fingerprint": "0".repeat(64),
+            "plan_fingerprint": "1".repeat(64),
+            "coordinator_relations": {
+                "records": [relation.clone()],
+                "unexpected_contract_field": true
+            }
+        });
+        assert!(serde_json::from_value::<ExternalDataPlanEnvelope>(envelope).is_err());
+
+        let accepted: SampleRelationSet = serde_json::from_value(serde_json::json!({
+            "records": [{
+                "observation_id": "obs:strict",
+                "sample_id": "sample:strict",
+                "metadata": {"unexpected_contract_field": "opaque metadata remains open"},
+                "tags": ["strict"]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            accepted.records[0].metadata["unexpected_contract_field"],
+            "opaque metadata remains open"
+        );
     }
 
     #[test]

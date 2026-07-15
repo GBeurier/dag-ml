@@ -1,0 +1,447 @@
+{
+  "fixture_id": "dag-ml.conformal.metric-sets.v1",
+  "schema_version": 1,
+  "schema": "conformal_metric_set.schema.json",
+  "valid_cases": [
+    {
+      "id": "joint_max_exact_metrics",
+      "document": {
+        "schema_version": 1,
+        "metric_set_id": "metrics:standalone.joint",
+        "calibration_artifact_id": "calibration:standalone.joint",
+        "calibration_artifact_checksum": "98a7b8fc95033984bda32602227889ac6b9d92c7ccd87fa80a3b5b248d3d2dd9",
+        "predictor_binding_fingerprint": "84148104df149f366b712c5c9b34e02f38f62863b3aeef8888787ee5979905a5",
+        "point_prediction_fingerprint": "3ee2d1e6315d42c4d491424367ae7721dd57a1478c9c3b36d1db26d3dc3cfc86",
+        "conformal_prediction_block_fingerprint": "053f100aad9afa718a9bcc218577f601ef5ca83ee534212149a5339165bf4f02",
+        "truth_fingerprint": "51ee9b25614820a95e3a61893d41a585a45c2ba08c680d62fe43d70ac7ff0dbb",
+        "unit_ids_fingerprint": "0d3ec70434f3110f7a2a65b9b649e9c20852734f0836491f86af9b1128e992b0",
+        "cohort_manifest_fingerprint": "b989daea51c25e88125c1bdb32bd6465fb5098e0e7434d0e2dbcd1251114f4b8",
+        "method": "split_absolute_residual",
+        "unit_level": "physical_sample",
+        "multi_target_policy": "joint_max",
+        "records": [
+          {
+            "coverage": 0.8,
+            "target_name": null,
+            "scenario_id": null,
+            "severity": null,
+            "slice": {
+              "kind": "all",
+              "value": null
+            },
+            "fold_id": null,
+            "repeat_id": null,
+            "seed": 17,
+            "unit_ids_fingerprint": "0d3ec70434f3110f7a2a65b9b649e9c20852734f0836491f86af9b1128e992b0",
+            "sample_count": 2,
+            "measurement_status": "finite",
+            "guarantee_status": "joint_coverage",
+            "empirical_coverage": 1.0,
+            "coverage_gap": 0.19999999999999996,
+            "mean_width": 6.0,
+            "median_width": 6.0,
+            "interval_score": 6.0,
+            "set_size": null
+          },
+          {
+            "coverage": 0.9,
+            "target_name": null,
+            "scenario_id": null,
+            "severity": null,
+            "slice": {
+              "kind": "all",
+              "value": null
+            },
+            "fold_id": null,
+            "repeat_id": null,
+            "seed": 17,
+            "unit_ids_fingerprint": "0d3ec70434f3110f7a2a65b9b649e9c20852734f0836491f86af9b1128e992b0",
+            "sample_count": 2,
+            "measurement_status": "finite",
+            "guarantee_status": "joint_coverage",
+            "empirical_coverage": 1.0,
+            "coverage_gap": 0.09999999999999998,
+            "mean_width": 8.0,
+            "median_width": 8.0,
+            "interval_score": 8.0,
+            "set_size": null
+          }
+        ],
+        "metric_set_fingerprint": "b3e338c30e5eef85756f8f9c4f2f5a2231d210e04b7192550353c7800368f49a"
+      }
+    },
+    {
+      "id": "marginal_two_target_metrics",
+      "document": {
+        "schema_version": 1,
+        "metric_set_id": "metrics:standalone.marginal",
+        "calibration_artifact_id": "calibration:standalone.marginal",
+        "calibration_artifact_checksum": "b814c547f5596caed584d0d7072a257a3d5f5dd0b8dfc66a69cf1362ce468054",
+        "predictor_binding_fingerprint": "84148104df149f366b712c5c9b34e02f38f62863b3aeef8888787ee5979905a5",
+        "point_prediction_fingerprint": "3ee2d1e6315d42c4d491424367ae7721dd57a1478c9c3b36d1db26d3dc3cfc86",
+        "conformal_prediction_block_fingerprint": "a9813ac96b8c8de716eb46d19e13946fd3c7f4fb938cfcf999076839a1507c5e",
+        "truth_fingerprint": "51ee9b25614820a95e3a61893d41a585a45c2ba08c680d62fe43d70ac7ff0dbb",
+        "unit_ids_fingerprint": "0d3ec70434f3110f7a2a65b9b649e9c20852734f0836491f86af9b1128e992b0",
+        "cohort_manifest_fingerprint": "b989daea51c25e88125c1bdb32bd6465fb5098e0e7434d0e2dbcd1251114f4b8",
+        "method": "split_absolute_residual",
+        "unit_level": "physical_sample",
+        "multi_target_policy": "marginal",
+        "records": [
+          {
+            "coverage": 0.8,
+            "target_name": "moisture",
+            "scenario_id": null,
+            "severity": null,
+            "slice": {
+              "kind": "all",
+              "value": null
+            },
+            "fold_id": null,
+            "repeat_id": null,
+            "seed": 17,
+            "unit_ids_fingerprint": "0d3ec70434f3110f7a2a65b9b649e9c20852734f0836491f86af9b1128e992b0",
+            "sample_count": 2,
+            "measurement_status": "finite",
+            "guarantee_status": "marginal_coverage",
+            "empirical_coverage": 0.5,
+            "coverage_gap": -0.30000000000000004,
+            "mean_width": 4.0,
+            "median_width": 4.0,
+            "interval_score": 9.0,
+            "set_size": null
+          },
+          {
+            "coverage": 0.9,
+            "target_name": "moisture",
+            "scenario_id": null,
+            "severity": null,
+            "slice": {
+              "kind": "all",
+              "value": null
+            },
+            "fold_id": null,
+            "repeat_id": null,
+            "seed": 17,
+            "unit_ids_fingerprint": "0d3ec70434f3110f7a2a65b9b649e9c20852734f0836491f86af9b1128e992b0",
+            "sample_count": 2,
+            "measurement_status": "finite",
+            "guarantee_status": "marginal_coverage",
+            "empirical_coverage": 1.0,
+            "coverage_gap": 0.09999999999999998,
+            "mean_width": 6.0,
+            "median_width": 6.0,
+            "interval_score": 6.0,
+            "set_size": null
+          },
+          {
+            "coverage": 0.8,
+            "target_name": "protein",
+            "scenario_id": null,
+            "severity": null,
+            "slice": {
+              "kind": "all",
+              "value": null
+            },
+            "fold_id": null,
+            "repeat_id": null,
+            "seed": 17,
+            "unit_ids_fingerprint": "0d3ec70434f3110f7a2a65b9b649e9c20852734f0836491f86af9b1128e992b0",
+            "sample_count": 2,
+            "measurement_status": "finite",
+            "guarantee_status": "marginal_coverage",
+            "empirical_coverage": 1.0,
+            "coverage_gap": 0.19999999999999996,
+            "mean_width": 4.0,
+            "median_width": 4.0,
+            "interval_score": 4.0,
+            "set_size": null
+          },
+          {
+            "coverage": 0.9,
+            "target_name": "protein",
+            "scenario_id": null,
+            "severity": null,
+            "slice": {
+              "kind": "all",
+              "value": null
+            },
+            "fold_id": null,
+            "repeat_id": null,
+            "seed": 17,
+            "unit_ids_fingerprint": "0d3ec70434f3110f7a2a65b9b649e9c20852734f0836491f86af9b1128e992b0",
+            "sample_count": 2,
+            "measurement_status": "finite",
+            "guarantee_status": "marginal_coverage",
+            "empirical_coverage": 1.0,
+            "coverage_gap": 0.09999999999999998,
+            "mean_width": 6.0,
+            "median_width": 6.0,
+            "interval_score": 6.0,
+            "set_size": null
+          }
+        ],
+        "metric_set_fingerprint": "ccc2ef52e32869fba246567f4d46f46c7729efe1ccebe7da8d1cfb0222eb5cf5"
+      }
+    },
+    {
+      "id": "small_n_unbounded_metrics",
+      "document": {
+        "schema_version": 1,
+        "metric_set_id": "metrics:standalone.unbounded",
+        "calibration_artifact_id": "calibration:standalone.unbounded",
+        "calibration_artifact_checksum": "373c22d9d26d2ee534930af627a558eda1285c99fc6123461f1945e0c3a26ba6",
+        "predictor_binding_fingerprint": "84148104df149f366b712c5c9b34e02f38f62863b3aeef8888787ee5979905a5",
+        "point_prediction_fingerprint": "a4d6ddb662cb56d1e810934c28ba508531a3bf549b133f10cd9142ac1d050c2b",
+        "conformal_prediction_block_fingerprint": "fbde2e98e72d31b5fcfa28068d9af66cfef9ebfa436227fb58d339ecbec77b3d",
+        "truth_fingerprint": "2aea020ab60c51db4881c7843e53a3775a6fd69a107a69f628bb07026b9bc527",
+        "unit_ids_fingerprint": "b1056c1e8ba81226b4e23f90eaae2c6fd1c242c1633800cc2b0011c0d79049c5",
+        "cohort_manifest_fingerprint": "b989daea51c25e88125c1bdb32bd6465fb5098e0e7434d0e2dbcd1251114f4b8",
+        "method": "split_absolute_residual",
+        "unit_level": "physical_sample",
+        "multi_target_policy": "marginal",
+        "records": [
+          {
+            "coverage": 0.99,
+            "target_name": "moisture",
+            "scenario_id": null,
+            "severity": null,
+            "slice": {
+              "kind": "all",
+              "value": null
+            },
+            "fold_id": null,
+            "repeat_id": null,
+            "seed": 17,
+            "unit_ids_fingerprint": "b1056c1e8ba81226b4e23f90eaae2c6fd1c242c1633800cc2b0011c0d79049c5",
+            "sample_count": 1,
+            "measurement_status": "unbounded",
+            "guarantee_status": "unavailable",
+            "empirical_coverage": 1.0,
+            "coverage_gap": 0.010000000000000009,
+            "mean_width": null,
+            "median_width": null,
+            "interval_score": null,
+            "set_size": null
+          },
+          {
+            "coverage": 0.99,
+            "target_name": "protein",
+            "scenario_id": null,
+            "severity": null,
+            "slice": {
+              "kind": "all",
+              "value": null
+            },
+            "fold_id": null,
+            "repeat_id": null,
+            "seed": 17,
+            "unit_ids_fingerprint": "b1056c1e8ba81226b4e23f90eaae2c6fd1c242c1633800cc2b0011c0d79049c5",
+            "sample_count": 1,
+            "measurement_status": "unbounded",
+            "guarantee_status": "unavailable",
+            "empirical_coverage": 1.0,
+            "coverage_gap": 0.010000000000000009,
+            "mean_width": null,
+            "median_width": null,
+            "interval_score": null,
+            "set_size": null
+          }
+        ],
+        "metric_set_fingerprint": "53d3fcaed46ee85d5691436fdedb8aff4c11ebbdfd450fa95f4367e1c371aa14"
+      }
+    }
+  ],
+  "evidence_cases": [
+    {
+      "evidence_id": "evidence:standalone.joint",
+      "block_fingerprint": "053f100aad9afa718a9bcc218577f601ef5ca83ee534212149a5339165bf4f02",
+      "metric_set_id": "metrics:standalone.joint",
+      "point_predictions": [
+        [
+          10.0,
+          20.0
+        ],
+        [
+          11.0,
+          21.0
+        ]
+      ],
+      "point_prediction_fingerprint": "3ee2d1e6315d42c4d491424367ae7721dd57a1478c9c3b36d1db26d3dc3cfc86",
+      "truth": [
+        [
+          10.0,
+          21.0
+        ],
+        [
+          14.0,
+          21.0
+        ]
+      ],
+      "truth_fingerprint": "51ee9b25614820a95e3a61893d41a585a45c2ba08c680d62fe43d70ac7ff0dbb",
+      "evidence_fingerprint": "af131c95e121e2581396be11e907fd962e84ebb1efdecdf87f73e6b4fe305e12"
+    },
+    {
+      "evidence_id": "evidence:standalone.marginal",
+      "block_fingerprint": "a9813ac96b8c8de716eb46d19e13946fd3c7f4fb938cfcf999076839a1507c5e",
+      "metric_set_id": "metrics:standalone.marginal",
+      "point_predictions": [
+        [
+          10.0,
+          20.0
+        ],
+        [
+          11.0,
+          21.0
+        ]
+      ],
+      "point_prediction_fingerprint": "3ee2d1e6315d42c4d491424367ae7721dd57a1478c9c3b36d1db26d3dc3cfc86",
+      "truth": [
+        [
+          10.0,
+          21.0
+        ],
+        [
+          14.0,
+          21.0
+        ]
+      ],
+      "truth_fingerprint": "51ee9b25614820a95e3a61893d41a585a45c2ba08c680d62fe43d70ac7ff0dbb",
+      "evidence_fingerprint": "4f1aa0fd79d25fa99829874b3beefb1894b9706b9f2c1b8c40682d34e39dc5df"
+    },
+    {
+      "evidence_id": "evidence:standalone.unbounded",
+      "block_fingerprint": "fbde2e98e72d31b5fcfa28068d9af66cfef9ebfa436227fb58d339ecbec77b3d",
+      "metric_set_id": "metrics:standalone.unbounded",
+      "point_predictions": [
+        [
+          10.0,
+          20.0
+        ]
+      ],
+      "point_prediction_fingerprint": "a4d6ddb662cb56d1e810934c28ba508531a3bf549b133f10cd9142ac1d050c2b",
+      "truth": [
+        [
+          100.0,
+          -100.0
+        ]
+      ],
+      "truth_fingerprint": "2aea020ab60c51db4881c7843e53a3775a6fd69a107a69f628bb07026b9bc527",
+      "evidence_fingerprint": "ed3656c94e690d067e5636876882a4282e19a016641456f670b39dbc62358751"
+    }
+  ],
+  "invalid_cases": [
+    {
+      "id": "coverage_gap_mismatch",
+      "base_case": "marginal_two_target_metrics",
+      "mutations": [
+        {
+          "path": "/records/0/coverage_gap",
+          "value": 0.25
+        }
+      ],
+      "expected_error": "coverage_gap",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "marginal_target_missing",
+      "base_case": "marginal_two_target_metrics",
+      "mutations": [
+        {
+          "path": "/records/0/target_name",
+          "value": null
+        }
+      ],
+      "expected_error": "target_name",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "joint_target_must_be_null",
+      "base_case": "joint_max_exact_metrics",
+      "mutations": [
+        {
+          "path": "/records/0/target_name",
+          "value": "protein"
+        },
+        {
+          "path": "/records/1/target_name",
+          "value": "protein"
+        }
+      ],
+      "expected_error": "target_name",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "duplicate_metric_coordinate",
+      "base_case": "marginal_two_target_metrics",
+      "mutations": [
+        {
+          "path": "/records/1",
+          "value": {
+            "coverage": 0.8,
+            "target_name": "moisture",
+            "scenario_id": null,
+            "severity": null,
+            "slice": {
+              "kind": "all",
+              "value": null
+            },
+            "fold_id": null,
+            "repeat_id": null,
+            "seed": 17,
+            "unit_ids_fingerprint": "0d3ec70434f3110f7a2a65b9b649e9c20852734f0836491f86af9b1128e992b0",
+            "sample_count": 2,
+            "measurement_status": "finite",
+            "guarantee_status": "marginal_coverage",
+            "empirical_coverage": 0.5,
+            "coverage_gap": -0.30000000000000004,
+            "mean_width": 4.0,
+            "median_width": 4.0,
+            "interval_score": 9.0,
+            "set_size": null
+          }
+        }
+      ],
+      "expected_error": "duplicate",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "runtime_handle_refuses",
+      "base_case": "marginal_two_target_metrics",
+      "mutations": [
+        {
+          "path": "/metric_handle",
+          "value": 7
+        }
+      ],
+      "expected_error": "handle",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "sliced_metric_cannot_claim_formal_guarantee",
+      "base_case": "marginal_two_target_metrics",
+      "mutations": [
+        {
+          "path": "/records/3/slice",
+          "value": {
+            "kind": "group",
+            "value": "g"
+          }
+        }
+      ],
+      "expected_error": "overclaims",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "unbounded_width_must_be_null",
+      "base_case": "small_n_unbounded_metrics",
+      "mutations": [
+        {
+          "path": "/records/0/mean_width",
+          "value": 99.0
+        }
+      ],
+      "expected_error": "must be null",
+      "recompute_fingerprints": true
+    }
+  ]
+}

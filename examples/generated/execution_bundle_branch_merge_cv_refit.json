@@ -1,6 +1,6 @@
 {
   "bundle_id": "bundle:generated.branch.merge.cv.refit",
-  "schema_version": 1,
+  "schema_version": 2,
   "plan_id": "plan:generated.branch.merge.cv.refit",
   "graph_fingerprint": "0a6253653e9edf0375d279026f22d1b0c0e389f367d8a9ad1fc84cf4c809f59b",
   "campaign_fingerprint": "d35b2864593b601569b0bddd45b3115515e907b3d2085cc2c3e25d2cc79162f4",
@@ -76,7 +76,12 @@
         "id": "artifact:branch:b0.model:ridge:refit",
         "kind": "mock_model",
         "controller_id": "controller:model.mock",
-        "size_bytes": 128
+        "backend": "json",
+        "uri": "artifacts/daddc56f7cb31bc1af40e1a78cf32bd371520ea4e2d3bfd854176eda48db2684.json",
+        "content_fingerprint": "dcc2b05b79547e1842f6d27cf0292fa7481562689971f4f33446faf8877dd481",
+        "size_bytes": 128,
+        "plugin": "dagml.python_process",
+        "plugin_version": "1.0.0"
       },
       "params_fingerprint": "5f3bf651255bd175f356b47f47342573d6a3e617f87b37d4b6f35f3b33ddcf9b",
       "data_requirement_keys": [
@@ -91,7 +96,12 @@
         "id": "artifact:branch:b1.model:rf:refit",
         "kind": "mock_model",
         "controller_id": "controller:model.mock",
-        "size_bytes": 128
+        "backend": "json",
+        "uri": "artifacts/ea3c05fa8bf005a31f877be5a2de701d46a4c8e91a849c7f19ee2634c9c401c3.json",
+        "content_fingerprint": "b030a79338a175f938567db20de9ef7686e85f0fdfb21121e1ab57749da75d2a",
+        "size_bytes": 128,
+        "plugin": "dagml.python_process",
+        "plugin_version": "1.0.0"
       },
       "params_fingerprint": "693cb21e8c02f513121138dddbe13a5577fb308cb63c74dcb05ff5928b99b989",
       "data_requirement_keys": [
@@ -106,7 +116,12 @@
         "id": "artifact:merge:stack.pred_plus_original.meta:ridge:refit",
         "kind": "mock_model",
         "controller_id": "controller:model.mock",
-        "size_bytes": 128
+        "backend": "json",
+        "uri": "artifacts/9b568c6eb72a0587758375d8498e6f6e75b44c5d68318ab58b8c980200816d94.json",
+        "content_fingerprint": "c91ddcaf1ab597a7b462fad1b46a8bf269e15ddcd4b7d1d3a9045f9a9a5c63f9",
+        "size_bytes": 128,
+        "plugin": "dagml.python_process",
+        "plugin_version": "1.0.0"
       },
       "params_fingerprint": "79422a3be0aaab9e972b5297e644fdc60ea435bab8c7788b9b71cae7ed6a9c98",
       "data_requirement_keys": [
@@ -125,6 +140,7 @@
       "consumer_node": "merge:stack.pred_plus_original.meta:ridge",
       "target_port": "b0_oof",
       "partition": "validation",
+      "prediction_level": "sample",
       "fold_ids": [
         "fold:0",
         "fold:1"
@@ -146,6 +162,7 @@
       "consumer_node": "merge:stack.pred_plus_original.meta:ridge",
       "target_port": "b1_oof",
       "partition": "validation",
+      "prediction_level": "sample",
       "fold_ids": [
         "fold:0",
         "fold:1"
@@ -166,8 +183,9 @@
     {
       "requirement_key": "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
       "cache_id": "prediction-cache:branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
-      "format": "dag-ml-json-prediction-blocks-v1",
+      "format": "dag-ml-json-prediction-blocks-v2",
       "partition": "validation",
+      "prediction_level": "sample",
       "fold_ids": [
         "fold:0",
         "fold:1"
@@ -184,35 +202,38 @@
       ],
       "block_count": 2,
       "row_count": 4,
-      "content_fingerprint": "b42c63e64a52964592a71f660bac3ba5c6931b57ee60d5246fee5551fb00abca",
+      "content_fingerprint": "c56c2f4af400c50fb380b810d01ff31677149cab41cab2cba298080f0672c284",
       "blocks": [
         {
           "prediction_id": "pred:branch:b0.model:ridge:FIT_CV",
           "fold_id": "fold:0",
+          "prediction_level": "sample",
           "row_count": 2,
           "sample_ids": [
             "sample:1",
             "sample:2"
           ],
-          "content_fingerprint": "f67901b195dc29ab2b4d1ed8102d49542bf8c2adcc79b297b9c079bd313b535a"
+          "content_fingerprint": "e83777d736ae182e11d1872715c1b96469141bd00911a2cc13b8ee056ba82961"
         },
         {
           "prediction_id": "pred:branch:b0.model:ridge:FIT_CV",
           "fold_id": "fold:1",
+          "prediction_level": "sample",
           "row_count": 2,
           "sample_ids": [
             "sample:3",
             "sample:4"
           ],
-          "content_fingerprint": "ef3dcc2ebd45fef1720016a8b545edf5a2a0ca83eba061ee05588a8a4d188682"
+          "content_fingerprint": "ad291eadb6ed730ba6e808602ac139e9a13d8c47d7859151ef85daffabcdf895"
         }
       ]
     },
     {
       "requirement_key": "branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof",
       "cache_id": "prediction-cache:branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof",
-      "format": "dag-ml-json-prediction-blocks-v1",
+      "format": "dag-ml-json-prediction-blocks-v2",
       "partition": "validation",
+      "prediction_level": "sample",
       "fold_ids": [
         "fold:0",
         "fold:1"
@@ -229,27 +250,29 @@
       ],
       "block_count": 2,
       "row_count": 4,
-      "content_fingerprint": "4342d7bbe3cb55dd3adf30fb6c16b8b27cc19a51698bb7e32cca79f51444f398",
+      "content_fingerprint": "a81bd4edc4f9d31e3313fcc7c3ac14a8a969410587f6022c772c40559d9cbd49",
       "blocks": [
         {
           "prediction_id": "pred:branch:b1.model:rf:FIT_CV",
           "fold_id": "fold:0",
+          "prediction_level": "sample",
           "row_count": 2,
           "sample_ids": [
             "sample:1",
             "sample:2"
           ],
-          "content_fingerprint": "0cf1668d50428976050a26f9f21207aac985caf8d15eea5e6a18962e584fa21b"
+          "content_fingerprint": "e78f47ca251971fa9317906c978edf336a953b658def532110490f152dbe92a6"
         },
         {
           "prediction_id": "pred:branch:b1.model:rf:FIT_CV",
           "fold_id": "fold:1",
+          "prediction_level": "sample",
           "row_count": 2,
           "sample_ids": [
             "sample:3",
             "sample:4"
           ],
-          "content_fingerprint": "895092bf36baebdc05bf164167af872ef6ec75def31778ea9373e33b84831fe3"
+          "content_fingerprint": "84194bf15010a1cae81ec02f0e4b4922bf86914ad8c98adc16dc2cefc4a68aa4"
         }
       ]
     }
@@ -295,6 +318,7 @@
           "fold:0",
           "fold:1"
         ],
+        "prediction_level": "sample",
         "prediction_width": 1,
         "producer_node": "branch:b0.model:ridge",
         "sample_ids": [
@@ -313,6 +337,7 @@
           "fold:0",
           "fold:1"
         ],
+        "prediction_level": "sample",
         "prediction_width": 1,
         "producer_node": "branch:b1.model:rf",
         "sample_ids": [
@@ -331,6 +356,7 @@
           "fold:0",
           "fold:1"
         ],
+        "prediction_level": "sample",
         "prediction_width": 1,
         "producer_node": "merge:stack.pred_plus_original.meta:ridge",
         "sample_ids": [

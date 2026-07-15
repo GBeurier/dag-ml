@@ -124,7 +124,11 @@
         "supports_sample_weights",
         "supports_row_resampling",
         "supports_backend_loss_weights",
-        "supports_missing_masks"
+        "supports_missing_masks",
+        "uses_training_weights",
+        "uses_early_stopping",
+        "performs_internal_tuning",
+        "trains_aggregation"
       ]
     },
     "controller_fit_scope": {

@@ -4039,6 +4039,8 @@ fn fanout_envelope(rows: &[(&str, &str, &[&str])]) -> crate::data::ExternalDataP
         schema_fingerprint: FANOUT_FP.to_string(),
         plan_fingerprint: FANOUT_FP.to_string(),
         relation_fingerprint: Some(relations.fingerprint().unwrap()),
+        data_content_fingerprint: None,
+        target_content_fingerprint: None,
         coordinator_relations: Some(relations),
     }
 }
@@ -4224,6 +4226,8 @@ fn fan_out_requires_relations_in_envelope() {
         schema_fingerprint: FANOUT_FP.to_string(),
         plan_fingerprint: FANOUT_FP.to_string(),
         relation_fingerprint: None,
+        data_content_fingerprint: None,
+        target_content_fingerprint: None,
         coordinator_relations: None,
     };
     let error = fan_out_data_aware_branches(&spec, &envelope)
@@ -4249,6 +4253,8 @@ fn fan_out_errors_when_no_partition_values_discovered() {
         schema_fingerprint: FANOUT_FP.to_string(),
         plan_fingerprint: FANOUT_FP.to_string(),
         relation_fingerprint: Some(relations.fingerprint().unwrap()),
+        data_content_fingerprint: None,
+        target_content_fingerprint: None,
         coordinator_relations: Some(relations),
     };
     let error = fan_out_data_aware_branches(&spec, &envelope)

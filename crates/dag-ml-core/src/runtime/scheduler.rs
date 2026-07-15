@@ -44,6 +44,113 @@ pub(crate) struct MaterializedReplayArtifacts {
     pub(crate) inputs: BTreeMap<NodeId, BTreeMap<String, ArtifactInputSpec>>,
 }
 
+fn prediction_output_ports_for_node(plan: &ExecutionPlan, node_id: &NodeId) -> Result<Vec<String>> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == *node_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "node `{node_id}` is absent from the execution graph"
+            ))
+        })?;
+    let mut ports = node
+        .ports
+        .outputs
+        .iter()
+        .filter(|port| port.kind == PortKind::Prediction)
+        .map(|port| port.name.clone())
+        .collect::<Vec<_>>();
+    ports.sort();
+    Ok(ports)
+}
+
+fn normalize_prediction_result_port(
+    node_id: &NodeId,
+    block_kind: &str,
+    producer_port: &mut Option<String>,
+    prediction_ports: &[String],
+) -> Result<()> {
+    if let Some(port) = producer_port.as_ref() {
+        if port.trim().is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{node_id}` emitted {block_kind} with blank producer_port"
+            )));
+        }
+        if !prediction_ports.iter().any(|candidate| candidate == port) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{node_id}` emitted {block_kind} for undeclared or non-prediction output port `{port}`; declared prediction ports are {:?}",
+                prediction_ports
+            )));
+        }
+        return Ok(());
+    }
+    match prediction_ports {
+        [only] => {
+            *producer_port = Some(only.clone());
+            Ok(())
+        }
+        [] => Err(DagMlError::RuntimeValidation(format!(
+            "node `{node_id}` emitted {block_kind} without producer_port but declares no prediction output port"
+        ))),
+        _ => Err(DagMlError::RuntimeValidation(format!(
+            "node `{node_id}` emitted {block_kind} without producer_port but declares {} prediction output ports {:?}; multi-output controllers must emit producer_port explicitly",
+            prediction_ports.len(),
+            prediction_ports
+        ))),
+    }
+}
+
+pub(crate) fn normalize_result_prediction_ports(
+    plan: &ExecutionPlan,
+    task: &NodeTask,
+    result: &mut NodeResult,
+) -> Result<()> {
+    if result.predictions.is_empty()
+        && result.observation_predictions.is_empty()
+        && result.aggregated_predictions.is_empty()
+        && result.explanations.is_empty()
+    {
+        return Ok(());
+    }
+    let prediction_ports = prediction_output_ports_for_node(plan, &task.node_plan.node_id)?;
+    for block in &mut result.predictions {
+        normalize_prediction_result_port(
+            &task.node_plan.node_id,
+            "prediction block",
+            &mut block.producer_port,
+            &prediction_ports,
+        )?;
+    }
+    for block in &mut result.observation_predictions {
+        normalize_prediction_result_port(
+            &task.node_plan.node_id,
+            "observation prediction block",
+            &mut block.producer_port,
+            &prediction_ports,
+        )?;
+    }
+    for block in &mut result.aggregated_predictions {
+        normalize_prediction_result_port(
+            &task.node_plan.node_id,
+            "aggregated prediction block",
+            &mut block.producer_port,
+            &prediction_ports,
+        )?;
+    }
+    for block in &mut result.explanations {
+        normalize_prediction_result_port(
+            &task.node_plan.node_id,
+            "explanation block",
+            &mut block.producer_port,
+            &prediction_ports,
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub(crate) struct PhaseScopeResources<'a> {
     pub(crate) data_provider: Option<&'a dyn RuntimeDataProvider>,
@@ -393,9 +500,28 @@ impl SequentialScheduler {
                 // controller path (and before the `requires_oof` edge collection,
                 // which is a stacking contract the branch inputs do not satisfy).
                 if let Some(reduction) = merge_reduction_mode(plan, node_plan) {
-                    if let Some(result) =
+                    if let Some(mut result) =
                         reassemble_branch_merge(plan, node_plan, ctx, &scope, reduction)?
                     {
+                        let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
+                        let task = NodeTask {
+                            inner_fold_set: None,
+                            run_id: ctx.run_id.clone(),
+                            node_plan: task_node_plan.clone(),
+                            phase: scope.phase,
+                            variant_id: scope.variant_id.clone(),
+                            variant: scope.variant.clone(),
+                            fold_id: scope.fold_id.clone(),
+                            branch_path: Vec::new(),
+                            input_handles: BTreeMap::new(),
+                            data_views: BTreeMap::new(),
+                            prediction_inputs: BTreeMap::new(),
+                            artifact_inputs: BTreeMap::new(),
+                            fit_influence: FitInfluenceTask::default(),
+                            seed: None,
+                        };
+                        normalize_result_prediction_ports(plan, &task, &mut result)?;
+                        result.validate_for_task(&task)?;
                         for prediction in &result.predictions {
                             ctx.prediction_store.append(prediction.clone())?;
                         }
@@ -499,6 +625,7 @@ impl SequentialScheduler {
                 .entered();
                 let mut result = controller.invoke(&task)?;
                 record_fit_influence_diagnostic(&task, &mut result);
+                normalize_result_prediction_ports(plan, &task, &mut result)?;
                 result.validate_for_task(&task)?;
                 apply_result_prediction_aggregation(
                     plan,
@@ -991,6 +1118,11 @@ impl ParallelScheduler {
                                 .entered();
                                 let mut result = controller.invoke(&prepared_task.task)?;
                                 record_fit_influence_diagnostic(&prepared_task.task, &mut result);
+                                normalize_result_prediction_ports(
+                                    plan,
+                                    &prepared_task.task,
+                                    &mut result,
+                                )?;
                                 result.validate_for_task(&prepared_task.task)?;
                                 Ok(result)
                             }));
@@ -1058,9 +1190,28 @@ impl ParallelScheduler {
                     .node_plans
                     .get(node_id)
                     .expect("execution plan was validated");
-                if let Some(result) =
+                if let Some(mut result) =
                     reassemble_branch_merge(plan, node_plan, ctx, &scope, *reduction)?
                 {
+                    let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
+                    let task = NodeTask {
+                        inner_fold_set: None,
+                        run_id: ctx.run_id.clone(),
+                        node_plan: task_node_plan.clone(),
+                        phase: scope.phase,
+                        variant_id: scope.variant_id.clone(),
+                        variant: scope.variant.clone(),
+                        fold_id: scope.fold_id.clone(),
+                        branch_path: Vec::new(),
+                        input_handles: BTreeMap::new(),
+                        data_views: BTreeMap::new(),
+                        prediction_inputs: BTreeMap::new(),
+                        artifact_inputs: BTreeMap::new(),
+                        fit_influence: FitInfluenceTask::default(),
+                        seed: None,
+                    };
+                    normalize_result_prediction_ports(plan, &task, &mut result)?;
+                    result.validate_for_task(&task)?;
                     for prediction in &result.predictions {
                         ctx.prediction_store.append(prediction.clone())?;
                     }
@@ -1144,10 +1295,19 @@ pub(crate) fn collect_input_handles(
     let mut data_views = BTreeMap::new();
     let mut prediction_inputs = BTreeMap::new();
     let training_oof_edges = incoming_training_oof_edges(plan, node_plan, scope)?;
-    let training_oof_sources = training_oof_edges
-        .iter()
-        .map(|edge| edge.source.node_id.clone())
-        .collect::<BTreeSet<_>>();
+    // An OOF edge replaces exactly one raw producer port. Do not hide sibling
+    // outputs from the same producer: a meta-node may legally consume both an
+    // OOF prediction port and an auxiliary non-OOF port. PREDICT has no
+    // Validation-OOF input, but its raw prediction port must still be masked so
+    // only the explicit `:predict` off-fold input reaches the controller.
+    let masked_oof_source_ports = if scope.phase == Phase::Predict {
+        incoming_oof_edges(plan, node_plan)?
+    } else {
+        training_oof_edges.clone()
+    }
+    .into_iter()
+    .map(|edge| (edge.source.node_id.clone(), edge.source.port_name.clone()))
+    .collect::<BTreeSet<_>>();
     let bound_data_inputs = node_plan
         .data_bindings
         .iter()
@@ -1165,12 +1325,12 @@ pub(crate) fn collect_input_handles(
         .map(|edge| (edge.source.node_id.clone(), edge.source.port_name.clone()))
         .collect::<BTreeSet<_>>();
     for upstream in &node_plan.input_nodes {
-        if training_oof_sources.contains(upstream) {
-            continue;
-        }
         if let Some(handles) = output_handles.get(upstream) {
             for (port, handle) in handles {
                 if !declared_source_ports.contains(&(upstream.clone(), port.clone())) {
+                    continue;
+                }
+                if masked_oof_source_ports.contains(&(upstream.clone(), port.clone())) {
                     continue;
                 }
                 inputs.insert(format!("{upstream}.{port}"), handle.clone());
@@ -1411,7 +1571,9 @@ pub(crate) fn preload_replay_prediction_cache_store(
                     contract.cache.requirement_key
                 )));
             }
-            let payload = build_prediction_cache_payload(&contract.requirement, &blocks)?;
+            let mut payload = build_prediction_cache_payload(&contract.requirement, &blocks)?;
+            payload.cache_namespace_fingerprints =
+                contract.cache.cache_namespace_fingerprints.clone();
             validate_prediction_cache_payload_matches_record(&payload, &contract.cache)?;
             for block in &payload.blocks {
                 ctx.prediction_store.append(block.clone())?;
@@ -1428,8 +1590,10 @@ pub(crate) fn preload_replay_prediction_cache_store(
                     contract.cache.requirement_key
                 )));
             }
-            let payload =
+            let mut payload =
                 build_aggregated_prediction_cache_payload(&contract.requirement, &blocks)?;
+            payload.cache_namespace_fingerprints =
+                contract.cache.cache_namespace_fingerprints.clone();
             validate_prediction_cache_payload_matches_record(&payload, &contract.cache)?;
         }
     }

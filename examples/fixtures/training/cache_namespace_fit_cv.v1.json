@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "prediction_requirement_key": "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
+  "data_requirement_key": "branch:b0.model:ridge.x",
+  "producer_node_id": "branch:b0.model:ridge",
+  "source_port_name": "oof",
+  "consumer_node_id": "merge:stack.pred_plus_original.meta:ridge",
+  "target_port_name": "b0_oof",
+  "phase": "FIT_CV",
+  "params_fingerprint": "af39a185b5a846fc6bbdc703ee4a7bf3e4b7ad9a304563d6cc024a36dc6628ab",
+  "data_identity_fingerprint": "0dbdb34908ca2509902d637e1987447eaff4f7855b0ee6ca49b7f68244ca65b2",
+  "fold_id": "fold:0",
+  "trial_id": "variant:a964828b1417c6e7",
+  "seed": 9427227917191738996,
+  "namespace_fingerprint": "0f38ab2169c5f29237807521539438d5e1db3a2914a6e3060ce7b9f3f46e489c"
+}

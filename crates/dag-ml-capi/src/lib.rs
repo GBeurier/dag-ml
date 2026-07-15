@@ -36,6 +36,12 @@ use dag_ml_core::{
     PIPELINE_DSL_SCHEMA_VERSION, SELECTION_DECISION_SCHEMA_ID, SELECTION_DECISION_SCHEMA_VERSION,
     SELECTION_POLICY_SCHEMA_ID, SELECTION_POLICY_SCHEMA_VERSION,
 };
+use dag_ml_core::{
+    execute_attached_training_replay, execute_training, parse_typed_json,
+    AttachedTrainingReplayInput, BundleId, DataBinding, EnvelopeAttestedRuntimeDataProvider,
+    SampleRelationSet, TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome,
+    TrainingReplayRequest, TrainingRequest,
+};
 use serde::{de::DeserializeOwned, Serialize};
 
 pub type DagMlHandle = u64;
@@ -723,7 +729,12 @@ pub unsafe extern "C" fn dagml_graph_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<GraphSpec>(json_ptr, json_len, error_out, "graph", GraphSpec::validate)
+    clear_error(error_out);
+    match parse_external_contract_ptr(json_ptr, json_len, error_out, "graph", GraphSpec::from_json)
+    {
+        Ok(_) => DagMlStatusCode::OK,
+        Err(status) => status,
+    }
 }
 
 /// Returns the public C ABI contract for canonical `CampaignSpec` JSON.
@@ -756,13 +767,17 @@ pub unsafe extern "C" fn dagml_campaign_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<CampaignSpec>(
+    clear_error(error_out);
+    match parse_external_contract_ptr(
         json_ptr,
         json_len,
         error_out,
         "campaign",
-        CampaignSpec::validate,
-    )
+        CampaignSpec::from_json,
+    ) {
+        Ok(_) => DagMlStatusCode::OK,
+        Err(status) => status,
+    }
 }
 
 /// Returns the public C ABI contract for canonical `ExecutionPlan` JSON.
@@ -1380,7 +1395,13 @@ pub unsafe extern "C" fn dagml_graph_parallel_levels_json(
 ) -> DagMlStatusCode {
     clear_error(error_out);
     clear_owned_bytes(out_json);
-    let graph = match parse_json_ptr::<GraphSpec>(json_ptr, json_len, error_out, "graph") {
+    let graph = match parse_external_contract_ptr(
+        json_ptr,
+        json_len,
+        error_out,
+        "graph",
+        GraphSpec::from_json,
+    ) {
         Ok(graph) => graph,
         Err(status) => return status,
     };
@@ -1452,11 +1473,16 @@ pub unsafe extern "C" fn dagml_execution_plan_schedule_json(
 ) -> DagMlStatusCode {
     clear_error(error_out);
     clear_owned_bytes(out_json);
-    let plan =
-        match parse_json_ptr::<ExecutionPlan>(plan_ptr, plan_len, error_out, "execution plan") {
-            Ok(plan) => plan,
-            Err(status) => return status,
-        };
+    let plan = match parse_external_contract_ptr(
+        plan_ptr,
+        plan_len,
+        error_out,
+        "execution plan",
+        ExecutionPlan::from_json,
+    ) {
+        Ok(plan) => plan,
+        Err(status) => return status,
+    };
     let phase = match parse_phase_view(phase, error_out, "phase") {
         Ok(phase) => phase,
         Err(status) => return status,
@@ -1478,13 +1504,17 @@ pub unsafe extern "C" fn dagml_execution_plan_validate_json(
     plan_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<ExecutionPlan>(
+    clear_error(error_out);
+    match parse_external_contract_ptr(
         plan_ptr,
         plan_len,
         error_out,
         "execution plan",
-        ExecutionPlan::validate,
-    )
+        ExecutionPlan::from_json,
+    ) {
+        Ok(_) => DagMlStatusCode::OK,
+        Err(status) => status,
+    }
 }
 
 struct ExecutionPlanBuildJsonArgs {
@@ -1515,15 +1545,26 @@ unsafe fn dagml_execution_plan_build_json_impl(
     } = args;
     clear_error(error_out);
     clear_owned_bytes(out_json);
-    let graph = match parse_json_ptr::<GraphSpec>(graph_ptr, graph_len, error_out, "graph") {
+    let graph = match parse_external_contract_ptr(
+        graph_ptr,
+        graph_len,
+        error_out,
+        "graph",
+        GraphSpec::from_json,
+    ) {
         Ok(graph) => graph,
         Err(status) => return status,
     };
-    let campaign =
-        match parse_json_ptr::<CampaignSpec>(campaign_ptr, campaign_len, error_out, "campaign") {
-            Ok(campaign) => campaign,
-            Err(status) => return status,
-        };
+    let campaign = match parse_external_contract_ptr(
+        campaign_ptr,
+        campaign_len,
+        error_out,
+        "campaign",
+        CampaignSpec::from_json,
+    ) {
+        Ok(campaign) => campaign,
+        Err(status) => return status,
+    };
     let manifests = match parse_json_ptr::<Vec<ControllerManifest>>(
         controllers_ptr,
         controllers_len,
@@ -2104,13 +2145,17 @@ pub unsafe extern "C" fn dagml_execution_bundle_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<ExecutionBundle>(
+    clear_error(error_out);
+    match parse_external_contract_ptr(
         json_ptr,
         json_len,
         error_out,
         "execution bundle",
-        ExecutionBundle::validate,
-    )
+        ExecutionBundle::from_json,
+    ) {
+        Ok(_) => DagMlStatusCode::OK,
+        Err(status) => status,
+    }
 }
 
 /// Validates replay data envelopes against an `ExecutionBundle`.
@@ -2130,11 +2175,16 @@ pub unsafe extern "C" fn dagml_execution_bundle_validate_replay_envelopes_json(
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
     clear_error(error_out);
-    let bundle =
-        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
-            Ok(bundle) => bundle,
-            Err(status) => return status,
-        };
+    let bundle = match parse_external_contract_ptr(
+        bundle_ptr,
+        bundle_len,
+        error_out,
+        "bundle",
+        ExecutionBundle::from_json,
+    ) {
+        Ok(bundle) => bundle,
+        Err(status) => return status,
+    };
     let envelopes = match parse_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
         envelopes_ptr,
         envelopes_len,
@@ -2164,11 +2214,16 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_json(
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
     clear_error(error_out);
-    let bundle =
-        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
-            Ok(bundle) => bundle,
-            Err(status) => return status,
-        };
+    let bundle = match parse_external_contract_ptr(
+        bundle_ptr,
+        bundle_len,
+        error_out,
+        "bundle",
+        ExecutionBundle::from_json,
+    ) {
+        Ok(bundle) => bundle,
+        Err(status) => return status,
+    };
     let request = match parse_json_ptr::<ReplayPhaseRequest>(
         request_ptr,
         request_len,
@@ -2198,11 +2253,16 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_validate_for_bundle_json
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
     clear_error(error_out);
-    let bundle =
-        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
-            Ok(bundle) => bundle,
-            Err(status) => return status,
-        };
+    let bundle = match parse_external_contract_ptr(
+        bundle_ptr,
+        bundle_len,
+        error_out,
+        "bundle",
+        ExecutionBundle::from_json,
+    ) {
+        Ok(bundle) => bundle,
+        Err(status) => return status,
+    };
     let payload = match parse_json_ptr::<BundlePredictionCachePayloadSet>(
         payload_ptr,
         payload_len,
@@ -2525,11 +2585,16 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_with_predictio
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
     clear_error(error_out);
-    let bundle =
-        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
-            Ok(bundle) => bundle,
-            Err(status) => return status,
-        };
+    let bundle = match parse_external_contract_ptr(
+        bundle_ptr,
+        bundle_len,
+        error_out,
+        "bundle",
+        ExecutionBundle::from_json,
+    ) {
+        Ok(bundle) => bundle,
+        Err(status) => return status,
+    };
     let request = match parse_json_ptr::<ReplayPhaseRequest>(
         request_ptr,
         request_len,
@@ -2589,16 +2654,26 @@ pub unsafe extern "C" fn dagml_research_provenance_export_json(
 ) -> DagMlStatusCode {
     clear_error(error_out);
     clear_owned_bytes(out_json);
-    let plan =
-        match parse_json_ptr::<ExecutionPlan>(plan_ptr, plan_len, error_out, "execution plan") {
-            Ok(plan) => plan,
-            Err(status) => return status,
-        };
-    let bundle =
-        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
-            Ok(bundle) => bundle,
-            Err(status) => return status,
-        };
+    let plan = match parse_external_contract_ptr(
+        plan_ptr,
+        plan_len,
+        error_out,
+        "execution plan",
+        ExecutionPlan::from_json,
+    ) {
+        Ok(plan) => plan,
+        Err(status) => return status,
+    };
+    let bundle = match parse_external_contract_ptr(
+        bundle_ptr,
+        bundle_len,
+        error_out,
+        "bundle",
+        ExecutionBundle::from_json,
+    ) {
+        Ok(bundle) => bundle,
+        Err(status) => return status,
+    };
     let lineage = match parse_optional_json_ptr::<Vec<LineageRecord>>(
         lineage_ptr,
         lineage_len,
@@ -2685,16 +2760,26 @@ pub unsafe extern "C" fn dagml_openlineage_run_event_json(
 ) -> DagMlStatusCode {
     clear_error(error_out);
     clear_owned_bytes(out_json);
-    let plan =
-        match parse_json_ptr::<ExecutionPlan>(plan_ptr, plan_len, error_out, "execution plan") {
-            Ok(plan) => plan,
-            Err(status) => return status,
-        };
-    let bundle =
-        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
-            Ok(bundle) => bundle,
-            Err(status) => return status,
-        };
+    let plan = match parse_external_contract_ptr(
+        plan_ptr,
+        plan_len,
+        error_out,
+        "execution plan",
+        ExecutionPlan::from_json,
+    ) {
+        Ok(plan) => plan,
+        Err(status) => return status,
+    };
+    let bundle = match parse_external_contract_ptr(
+        bundle_ptr,
+        bundle_len,
+        error_out,
+        "bundle",
+        ExecutionBundle::from_json,
+    ) {
+        Ok(bundle) => bundle,
+        Err(status) => return status,
+    };
     let lineage = match parse_optional_json_ptr::<Vec<LineageRecord>>(
         lineage_ptr,
         lineage_len,
@@ -2787,16 +2872,26 @@ pub unsafe extern "C" fn dagml_mock_replay_execute_json(
 ) -> DagMlStatusCode {
     clear_error(error_out);
     clear_owned_bytes(out_json);
-    let plan =
-        match parse_json_ptr::<ExecutionPlan>(plan_ptr, plan_len, error_out, "execution plan") {
-            Ok(plan) => plan,
-            Err(status) => return status,
-        };
-    let bundle =
-        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
-            Ok(bundle) => bundle,
-            Err(status) => return status,
-        };
+    let plan = match parse_external_contract_ptr(
+        plan_ptr,
+        plan_len,
+        error_out,
+        "execution plan",
+        ExecutionPlan::from_json,
+    ) {
+        Ok(plan) => plan,
+        Err(status) => return status,
+    };
+    let bundle = match parse_external_contract_ptr(
+        bundle_ptr,
+        bundle_len,
+        error_out,
+        "bundle",
+        ExecutionBundle::from_json,
+    ) {
+        Ok(bundle) => bundle,
+        Err(status) => return status,
+    };
     let request = match parse_json_ptr::<ReplayPhaseRequest>(
         request_ptr,
         request_len,
@@ -2929,16 +3024,26 @@ unsafe fn dagml_replay_execute_json_impl(args: CAbiReplayExecuteArgs) -> DagMlSt
     } = args;
     clear_error(error_out);
     clear_owned_bytes(out_json);
-    let plan =
-        match parse_json_ptr::<ExecutionPlan>(plan_ptr, plan_len, error_out, "execution plan") {
-            Ok(plan) => plan,
-            Err(status) => return status,
-        };
-    let bundle =
-        match parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle") {
-            Ok(bundle) => bundle,
-            Err(status) => return status,
-        };
+    let plan = match parse_external_contract_ptr(
+        plan_ptr,
+        plan_len,
+        error_out,
+        "execution plan",
+        ExecutionPlan::from_json,
+    ) {
+        Ok(plan) => plan,
+        Err(status) => return status,
+    };
+    let bundle = match parse_external_contract_ptr(
+        bundle_ptr,
+        bundle_len,
+        error_out,
+        "bundle",
+        ExecutionBundle::from_json,
+    ) {
+        Ok(bundle) => bundle,
+        Err(status) => return status,
+    };
     let request = match parse_json_ptr::<ReplayPhaseRequest>(
         request_ptr,
         request_len,
@@ -3004,6 +3109,662 @@ unsafe fn dagml_replay_execute_json_impl(args: CAbiReplayExecuteArgs) -> DagMlSt
         Ok(summary) => write_owned_json(out_json, error_out, &summary),
         Err(error) => validation_error(error_out, error),
     }
+}
+
+/// Opaque, owning result of one native training run (`dagml_training_execute`).
+///
+/// It keeps alive every host resource the outcome's handles depend on:
+/// * the portable [`TrainingOutcome`] (serialized on demand by the getter),
+/// * the [`RuntimeControllerRegistry`], so every controller's emitted
+///   model/refit handle stays valid and each owning controller `user_data` is
+///   destroyed exactly once when the result is freed, and
+/// * the [`InMemoryArtifactStore`], so the outcome's `ArtifactId -> HandleRef`
+///   map stays coherent with those still-live controller handles.
+///
+/// Freeing it (`dagml_training_result_free`) drops the registry, which first
+/// releases each controller's tracked handles and then destroys its owned
+/// `user_data` exactly once. Passing a null pointer to the getter or the free
+/// function is a no-op; the pointer must be freed at most once.
+pub struct DagMlTrainingResult {
+    outcome: TrainingOutcome,
+    // Declaration order is the Drop order. The artifact store only maps
+    // `ArtifactId -> HandleRef` and never releases handles, so dropping it first
+    // is inert; the controller registry drops last and performs the documented
+    // "release handles, then destroy owned user_data" sequence per controller.
+    _artifact_store: InMemoryArtifactStore,
+    _controllers: RuntimeControllerRegistry,
+}
+
+/// Stateless input for [`dagml_training_execute`]. All JSON payloads are UTF-8.
+///
+/// `warnings_json` (`["..."]`) and `diagnostics_json` (`{"k": <json>}`) are
+/// optional: a null pointer (or zero length) is treated as the empty default.
+/// Every other JSON payload is required. `data_provider` is a borrowed data
+/// vtable (its `user_data` is never destroyed by this crate); controllers whose
+/// vtable advertises the owned ABI are consumed by the call.
+#[repr(C)]
+pub struct DagMlTrainingExecuteRequest {
+    pub request_json: DagMlBytesView,
+    pub outcome_id: DagMlBytesView,
+    pub run_id: DagMlBytesView,
+    pub bundle_id: DagMlBytesView,
+    pub relations_json: DagMlBytesView,
+    pub influence_json: DagMlBytesView,
+    pub envelopes_json: DagMlBytesView,
+    pub warnings_json: DagMlBytesView,
+    pub diagnostics_json: DagMlBytesView,
+    pub dataset: DagMlHandle,
+    pub data_provider: DagMlDataVTable,
+    pub data_owner_controller_id: DagMlBytesView,
+    pub controller_bindings: *const DagMlControllerBinding,
+    pub controller_binding_count: usize,
+}
+
+/// Stateless input for [`dagml_training_result_replay`]. All JSON payloads are
+/// UTF-8. `warnings_json` (`["..."]`) and `diagnostics_json` (`{"k": <json>}`)
+/// are optional. `data_provider` is borrowed for the replay call; controller and
+/// artifact handles come from the live [`DagMlTrainingResult`].
+#[repr(C)]
+pub struct DagMlTrainingReplayRequest {
+    pub replay_request_json: DagMlBytesView,
+    pub outcome_id: DagMlBytesView,
+    pub run_id: DagMlBytesView,
+    pub data_envelopes_json: DagMlBytesView,
+    pub warnings_json: DagMlBytesView,
+    pub diagnostics_json: DagMlBytesView,
+    pub dataset: DagMlHandle,
+    pub data_provider: DagMlDataVTable,
+    pub data_owner_controller_id: DagMlBytesView,
+}
+
+/// Execute native COMPILE/PLAN -> FIT_CV -> SELECT -> optional REFIT and return
+/// an opaque, owning [`DagMlTrainingResult`].
+///
+/// Ownership-transfer boundary: after the required `request` and `out_result`
+/// pointers have been accepted, as soon as the controller-bindings slice is
+/// readable (`controller_binding_count == 0`, or a non-null pointer), the call
+/// takes ownership of every *distinct* owning controller `user_data` (a vtable
+/// whose `abi_version` is at least the owned version and whose `destroy` is
+/// non-null) and consumes each exactly once. On success they are transferred
+/// into `*out_result` (a heap-owned result freed with
+/// `dagml_training_result_free`). On any failure `*out_result` is left null and
+/// each distinct owning `user_data` is destroyed exactly once before returning —
+/// including bindings whose id/vtable was rejected and bindings never reached.
+/// The borrowed data vtable and any borrowed controller vtable are never
+/// destroyed by this crate. If the bindings pointer/count contract is invalid
+/// (a null pointer with a non-zero count) the slice cannot be read and the
+/// caller retains ownership of every binding. A null `request` or `out_result`
+/// is likewise rejected before the slice can transfer ownership. Every training
+/// controller binding must provide a non-null handle `release` callback. All preflight refusals
+/// (strict-JSON/duplicate-key rejection, envelope coverage/collision, and shared
+/// owning `user_data`) happen before any controller or data callback is invoked.
+///
+/// # Safety
+/// `request` must be a valid `DagMlTrainingExecuteRequest` (or null) and every
+/// non-optional field must point at initialized memory for the given length.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_training_execute(
+    request: *const DagMlTrainingExecuteRequest,
+    out_result: *mut *mut DagMlTrainingResult,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dagml_training_execute_impl(request, out_result, error_out)
+    })) {
+        Ok(status) => status,
+        Err(_) => {
+            clear_error(error_out);
+            if !out_result.is_null() {
+                *out_result = std::ptr::null_mut();
+            }
+            set_error(
+                error_out,
+                "panic while executing native training through C ABI",
+            );
+            DagMlStatusCode::PANIC
+        }
+    }
+}
+
+unsafe fn dagml_training_execute_impl(
+    request: *const DagMlTrainingExecuteRequest,
+    out_result: *mut *mut DagMlTrainingResult,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    if out_result.is_null() {
+        set_error(error_out, "training out_result pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    *out_result = std::ptr::null_mut();
+    if request.is_null() {
+        set_error(error_out, "training request struct pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    let request = &*request;
+
+    // Take ownership of the controller bindings first. Once this succeeds every
+    // owning `user_data` is consumed exactly once by any later return: a failure
+    // drops `controllers` (release handles, then destroy), a success moves it
+    // into the result. Any address alias involving an owning `user_data` is
+    // refused here, before a wrapper is built, so each distinct owner is still
+    // destroyed exactly once without leaving a borrowed wrapper dangling.
+    let controllers = match build_training_controller_registry(
+        request.controller_bindings,
+        request.controller_binding_count,
+        error_out,
+    ) {
+        Ok(controllers) => controllers,
+        Err(status) => return status,
+    };
+
+    let training_request = match parse_training_request_view(request.request_json, error_out) {
+        Ok(training_request) => training_request,
+        Err(status) => return status,
+    };
+    let relations = match parse_strict_json_view::<SampleRelationSet>(
+        request.relations_json,
+        error_out,
+        "training relations",
+    ) {
+        Ok(relations) => relations,
+        Err(status) => return status,
+    };
+    let training_influence = match parse_strict_json_view::<TrainingInfluenceManifest>(
+        request.influence_json,
+        error_out,
+        "training influence manifest",
+    ) {
+        Ok(influence) => influence,
+        Err(status) => return status,
+    };
+    let envelopes = match parse_strict_json_view::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+        request.envelopes_json,
+        error_out,
+        "training data envelopes",
+    ) {
+        Ok(envelopes) => envelopes,
+        Err(status) => return status,
+    };
+    let warnings = match parse_optional_strict_json_view::<Vec<String>>(
+        request.warnings_json,
+        error_out,
+        "training warnings",
+    ) {
+        Ok(warnings) => warnings,
+        Err(status) => return status,
+    };
+    let diagnostics = match parse_optional_strict_json_view::<BTreeMap<String, serde_json::Value>>(
+        request.diagnostics_json,
+        error_out,
+        "training diagnostics",
+    ) {
+        Ok(diagnostics) => diagnostics,
+        Err(status) => return status,
+    };
+
+    let outcome_id = match parse_utf8_view(request.outcome_id, error_out, "training outcome id") {
+        Ok(outcome_id) => outcome_id,
+        Err(status) => return status,
+    };
+    let run_id = match parse_run_id_view(request.run_id, error_out, "training run id") {
+        Ok(run_id) => run_id,
+        Err(status) => return status,
+    };
+    let bundle_id = match parse_bundle_id_view(request.bundle_id, error_out, "training bundle id") {
+        Ok(bundle_id) => bundle_id,
+        Err(status) => return status,
+    };
+
+    let data_owner = match parse_controller_id_view(
+        request.data_owner_controller_id,
+        error_out,
+        "training data owner controller id",
+    ) {
+        Ok(data_owner) => data_owner,
+        Err(status) => return status,
+    };
+    let cabi_provider =
+        match CAbiRuntimeDataProvider::new(data_owner, request.dataset, request.data_provider) {
+            Ok(provider) => provider,
+            Err(error) => return validation_error(error_out, error),
+        };
+    // The exact runtime data bindings the request signs. The attested provider's
+    // constructor validates exact envelope coverage and rejects colliding
+    // requirement keys before any data callback can run.
+    let bindings: Vec<DataBinding> = training_request
+        .campaign
+        .data_bindings
+        .values()
+        .flatten()
+        .cloned()
+        .collect();
+    let data_provider =
+        match EnvelopeAttestedRuntimeDataProvider::new(cabi_provider, bindings, envelopes) {
+            Ok(data_provider) => data_provider,
+            Err(error) => return validation_error(error_out, error),
+        };
+
+    let mut artifact_store = InMemoryArtifactStore::new();
+    let outcome = match execute_training(TrainingExecutionInput {
+        request: &training_request,
+        outcome_id,
+        run_id,
+        bundle_id,
+        controllers: &controllers,
+        data_provider: &data_provider,
+        relations: &relations,
+        training_influence: &training_influence,
+        artifact_store: &mut artifact_store,
+        warnings,
+        diagnostics,
+    }) {
+        Ok(outcome) => outcome,
+        Err(error) => return validation_error(error_out, error),
+    };
+
+    // Success: move the outcome, the populated artifact store, and the still-live
+    // controller registry into the opaque result. `data_provider` (and its
+    // borrowed data vtable) is dropped here, releasing only ephemeral data-view
+    // handles the outcome never references.
+    let result = Box::new(DagMlTrainingResult {
+        outcome,
+        _artifact_store: artifact_store,
+        _controllers: controllers,
+    });
+    *out_result = Box::into_raw(result);
+    DagMlStatusCode::OK
+}
+
+/// Serialize the outcome owned by `result` into freshly allocated JSON bytes
+/// (release them with `dagml_owned_bytes_free`). A null `result` is rejected
+/// without touching the returned buffer.
+///
+/// # Safety
+/// `result` must be a live pointer returned by `dagml_training_execute` (or
+/// null); `out_json`/`error_out` must be valid or null.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_training_result_outcome_json(
+    result: *const DagMlTrainingResult,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        if result.is_null() {
+            set_error(error_out, "training result pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let result = &*result;
+        write_owned_json(out_json, error_out, &result.outcome)
+    })) {
+        Ok(status) => status,
+        Err(_) => {
+            clear_error(error_out);
+            clear_owned_bytes(out_json);
+            set_error(
+                error_out,
+                "panic while reading native training outcome JSON",
+            );
+            DagMlStatusCode::PANIC
+        }
+    }
+}
+
+/// Execute an attached PREDICT/EXPLAIN replay from a live
+/// [`DagMlTrainingResult`] and serialize the resulting `TrainingReplayOutcome`
+/// JSON into freshly allocated bytes (release them with
+/// `dagml_owned_bytes_free`).
+///
+/// # Safety
+/// `result` must be a live pointer returned by `dagml_training_execute`;
+/// `request` must be a valid [`DagMlTrainingReplayRequest`] and every
+/// non-optional field must point at initialized memory for the given length.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_training_result_replay(
+    result: *const DagMlTrainingResult,
+    request: *const DagMlTrainingReplayRequest,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dagml_training_result_replay_impl(result, request, out_json, error_out)
+    })) {
+        Ok(status) => status,
+        Err(_) => {
+            clear_error(error_out);
+            clear_owned_bytes(out_json);
+            set_error(error_out, "panic while executing native training replay");
+            DagMlStatusCode::PANIC
+        }
+    }
+}
+
+unsafe fn dagml_training_result_replay_impl(
+    result: *const DagMlTrainingResult,
+    request: *const DagMlTrainingReplayRequest,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    if result.is_null() {
+        set_error(error_out, "training result pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    if request.is_null() {
+        set_error(error_out, "training replay request struct pointer is null");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
+    let result = &*result;
+    let request = &*request;
+
+    let replay_request =
+        match parse_training_replay_request_view(request.replay_request_json, error_out) {
+            Ok(replay_request) => replay_request,
+            Err(status) => return status,
+        };
+    let data_envelopes = match parse_strict_json_view::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+        request.data_envelopes_json,
+        error_out,
+        "training replay data envelopes",
+    ) {
+        Ok(envelopes) => envelopes,
+        Err(status) => return status,
+    };
+    let warnings = match parse_optional_strict_json_view::<Vec<String>>(
+        request.warnings_json,
+        error_out,
+        "training replay warnings",
+    ) {
+        Ok(warnings) => warnings,
+        Err(status) => return status,
+    };
+    let diagnostics = match parse_optional_strict_json_view::<BTreeMap<String, serde_json::Value>>(
+        request.diagnostics_json,
+        error_out,
+        "training replay diagnostics",
+    ) {
+        Ok(diagnostics) => diagnostics,
+        Err(status) => return status,
+    };
+    let outcome_id =
+        match parse_utf8_view(request.outcome_id, error_out, "training replay outcome id") {
+            Ok(outcome_id) => outcome_id,
+            Err(status) => return status,
+        };
+    let run_id = match parse_run_id_view(request.run_id, error_out, "training replay run id") {
+        Ok(run_id) => run_id,
+        Err(status) => return status,
+    };
+    let data_owner = match parse_controller_id_view(
+        request.data_owner_controller_id,
+        error_out,
+        "training replay data owner controller id",
+    ) {
+        Ok(data_owner) => data_owner,
+        Err(status) => return status,
+    };
+    let data_provider =
+        match CAbiRuntimeDataProvider::new(data_owner, request.dataset, request.data_provider) {
+            Ok(provider) => provider,
+            Err(error) => return validation_error(error_out, error),
+        };
+    let outcome = match execute_attached_training_replay(AttachedTrainingReplayInput {
+        source: &result.outcome,
+        request: &replay_request,
+        outcome_id,
+        run_id,
+        controllers: &result._controllers,
+        data_provider: &data_provider,
+        artifact_store: &result._artifact_store,
+        data_envelopes: &data_envelopes,
+        warnings,
+        diagnostics,
+    }) {
+        Ok(outcome) => outcome,
+        Err(error) => return validation_error(error_out, error),
+    };
+    write_owned_json(out_json, error_out, &outcome)
+}
+
+/// Free an opaque [`DagMlTrainingResult`]. Passing null is a no-op; the pointer
+/// must be freed at most once.
+///
+/// # Safety
+/// `result` must be null or a pointer returned by `dagml_training_execute` that
+/// has not already been freed.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_training_result_free(result: *mut DagMlTrainingResult) {
+    if result.is_null() {
+        return;
+    }
+    // Host `release`/`destroy` callbacks run during this drop; contain any panic
+    // so it cannot unwind across the C ABI boundary.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop(Box::from_raw(result));
+    }));
+}
+
+/// Strictly parse the self-fingerprinted training request through its existing
+/// `from_json`, which verifies the TCV1 fingerprint before validation.
+unsafe fn parse_training_request_view(
+    view: DagMlBytesView,
+    error_out: *mut DagMlString,
+) -> Result<TrainingRequest, DagMlStatusCode> {
+    let raw = parse_utf8_view(view, error_out, "training request")?;
+    TrainingRequest::from_json(&raw).map_err(|error| validation_error(error_out, error))
+}
+
+/// Strictly parse the self-fingerprinted training replay request through its
+/// existing `from_json`, which verifies the TCV1 fingerprint before validation.
+unsafe fn parse_training_replay_request_view(
+    view: DagMlBytesView,
+    error_out: *mut DagMlString,
+) -> Result<TrainingReplayRequest, DagMlStatusCode> {
+    let raw = parse_utf8_view(view, error_out, "training replay request")?;
+    TrainingReplayRequest::from_json(&raw).map_err(|error| validation_error(error_out, error))
+}
+
+/// Strictly parse a required JSON payload: reject duplicate/NFC-colliding object
+/// keys via TCV1 before serde so `BTreeMap`/struct deserialization can never
+/// silently drop a shadowed key.
+unsafe fn parse_strict_json_view<T>(
+    view: DagMlBytesView,
+    error_out: *mut DagMlString,
+    label: &str,
+) -> Result<T, DagMlStatusCode>
+where
+    T: DeserializeOwned + Serialize,
+{
+    let raw = parse_utf8_view(view, error_out, label)?;
+    if let Err(error) = parse_typed_json(&raw) {
+        set_error(
+            error_out,
+            format!("{label} is not strict canonical JSON: {error}"),
+        );
+        return Err(DagMlStatusCode::VALIDATION_ERROR);
+    }
+    dag_ml_core::deserialize_external_contract(&raw, label, DagMlError::RuntimeValidation)
+        .map_err(|error| validation_error(error_out, error))
+}
+
+/// Like [`parse_strict_json_view`], but a null pointer or zero length yields the
+/// type's default (used for the optional warnings/diagnostics payloads).
+unsafe fn parse_optional_strict_json_view<T: DeserializeOwned + Serialize + Default>(
+    view: DagMlBytesView,
+    error_out: *mut DagMlString,
+    label: &str,
+) -> Result<T, DagMlStatusCode> {
+    if view.ptr.is_null() || view.len == 0 {
+        return Ok(T::default());
+    }
+    parse_strict_json_view::<T>(view, error_out, label)
+}
+
+unsafe fn parse_run_id_view(
+    view: DagMlBytesView,
+    error_out: *mut DagMlString,
+    label: &str,
+) -> Result<RunId, DagMlStatusCode> {
+    let raw = parse_utf8_view(view, error_out, label)?;
+    RunId::new(raw).map_err(|error| validation_error(error_out, error))
+}
+
+unsafe fn parse_bundle_id_view(
+    view: DagMlBytesView,
+    error_out: *mut DagMlString,
+    label: &str,
+) -> Result<BundleId, DagMlStatusCode> {
+    let raw = parse_utf8_view(view, error_out, label)?;
+    BundleId::new(raw).map_err(|error| validation_error(error_out, error))
+}
+
+/// One distinct owning controller `user_data` held in escrow: the raw pointer
+/// and the `destroy` callback that must run for it exactly once.
+struct EscrowedOwner {
+    user_data: *mut c_void,
+    destroy: unsafe extern "C" fn(*mut c_void),
+}
+
+/// Transactional RAII escrow over every *distinct* owning controller `user_data`
+/// in an accepted bindings slice.
+///
+/// Constructing it is the ownership-transfer boundary: from that point the call
+/// owns each distinct owning `user_data` and this guard destroys each exactly
+/// once when dropped (any early return, including a panic unwinding through the
+/// builder), unless a successfully built `CAbiRuntimeController` wrapper has
+/// `disarm`ed it — the wrapper's own `Drop` then destroys it instead. Owners are
+/// deduplicated by address solely so a rejected alias is destroyed exactly once;
+/// any repeated address involving an owner is refused. Borrowed vtables (ABI
+/// below the owned version, or a null `destroy`) are never recorded or destroyed.
+struct OwningControllerEscrow {
+    pending: BTreeMap<usize, EscrowedOwner>,
+}
+
+impl OwningControllerEscrow {
+    /// Record every distinct owning `user_data` in `bindings`. Returns the escrow
+    /// plus whether an address is shared by multiple bindings and at least one
+    /// of them owns it. Such borrowed/owned or owned/owned aliasing could make one
+    /// wrapper use the address after another wrapper destroyed it.
+    fn from_bindings(bindings: &[DagMlControllerBinding]) -> (Self, bool) {
+        let mut pending = BTreeMap::new();
+        let mut ownership_by_address = BTreeMap::<usize, bool>::new();
+        let mut aliased_owner = false;
+        for binding in bindings {
+            let user_data = binding.vtable.user_data;
+            let address = user_data as usize;
+            let owning = binding.vtable.abi_version >= DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION
+                && binding.vtable.destroy.is_some();
+            match ownership_by_address.entry(address) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(owning);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if *entry.get() || owning {
+                        aliased_owner = true;
+                    }
+                    *entry.get_mut() |= owning;
+                }
+            }
+            if owning {
+                let destroy = binding
+                    .vtable
+                    .destroy
+                    .expect("owning controller vtable has destroy");
+                pending
+                    .entry(address)
+                    .or_insert(EscrowedOwner { user_data, destroy });
+            }
+        }
+        (Self { pending }, aliased_owner)
+    }
+
+    /// Hand a `user_data` over to the wrapper that now owns it, so this escrow no
+    /// longer destroys it. A no-op for pointers it never held (borrowed vtables).
+    fn disarm(&mut self, user_data: *mut c_void) {
+        self.pending.remove(&(user_data as usize));
+    }
+}
+
+impl Drop for OwningControllerEscrow {
+    fn drop(&mut self) {
+        for (_, owner) in std::mem::take(&mut self.pending) {
+            unsafe { (owner.destroy)(owner.user_data) };
+        }
+    }
+}
+
+/// Build a controller registry that takes ownership of every *distinct* owning
+/// `user_data` in the bindings slice and consumes each exactly once on every
+/// return.
+///
+/// If the pointer/count contract itself is invalid (`count > 0` with a null
+/// pointer) the slice cannot be read and the caller retains ownership of every
+/// binding — nothing is escrowed or destroyed. Otherwise an
+/// [`OwningControllerEscrow`] takes ownership up front: any repeated address
+/// involving an owning `user_data` is refused before any wrapper or callback
+/// (the escrow still destroys each distinct owner once); an invalid controller id, an invalid
+/// vtable, or a later failing binding leaves its (and every not-yet-built
+/// binding's) owner to the escrow; a successfully built wrapper `disarm`s its
+/// owner and thereafter owns the destroy. Borrowed vtables are never destroyed.
+unsafe fn build_training_controller_registry(
+    controller_bindings: *const DagMlControllerBinding,
+    controller_binding_count: usize,
+    error_out: *mut DagMlString,
+) -> Result<RuntimeControllerRegistry, DagMlStatusCode> {
+    if controller_binding_count > 0 && controller_bindings.is_null() {
+        // The slice is unreadable: the caller still owns every binding it meant
+        // to pass, so we must not fabricate or drop any owner here.
+        set_error(error_out, "controller bindings pointer is null");
+        return Err(DagMlStatusCode::INVALID_ARGUMENT);
+    }
+    let bindings = if controller_binding_count == 0 {
+        &[][..]
+    } else {
+        slice::from_raw_parts(controller_bindings, controller_binding_count)
+    };
+
+    // Ownership-transfer boundary: `escrow` now owns every distinct owning
+    // `user_data` and destroys each exactly once on any early return below.
+    let (mut escrow, aliased_owner) = OwningControllerEscrow::from_bindings(bindings);
+    if aliased_owner {
+        set_error(
+            error_out,
+            "controller bindings alias a user_data address involving an owning vtable; refusing a configuration that could use-after-free or double-destroy",
+        );
+        return Err(DagMlStatusCode::VALIDATION_ERROR);
+    }
+
+    let mut registry = RuntimeControllerRegistry::new();
+    for binding in bindings {
+        let owning = binding.vtable.abi_version >= DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION
+            && binding.vtable.destroy.is_some();
+        if binding.vtable.release.is_none() {
+            return Err(validation_error(
+                error_out,
+                DagMlError::RuntimeValidation(
+                    "native training controller vtable is missing release callback".to_string(),
+                ),
+            ));
+        }
+        let controller_id =
+            parse_controller_id_view(binding.controller_id, error_out, "controller id")?;
+        let controller = CAbiRuntimeController::new(controller_id, binding.vtable)
+            .map_err(|error| validation_error(error_out, error))?;
+        // The wrapper now owns this owning vtable — its `Drop` destroys the
+        // `user_data`, whether it is registered or dropped by a failed
+        // `register`. Hand the pointer over so the escrow no longer holds it.
+        if owning {
+            escrow.disarm(binding.vtable.user_data);
+        }
+        registry
+            .register(Box::new(controller))
+            .map_err(|error| validation_error(error_out, error))?;
+    }
+    // Every owning `user_data` was transferred to a wrapper; the escrow is empty.
+    Ok(registry)
 }
 
 unsafe fn clear_error(error_out: *mut DagMlString) {
@@ -3097,7 +3858,7 @@ unsafe fn validate_json<T>(
     validate: impl FnOnce(&T) -> dag_ml_core::Result<()>,
 ) -> DagMlStatusCode
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Serialize,
 {
     clear_error(error_out);
     let value = match parse_json_ptr::<T>(json_ptr, json_len, error_out, label) {
@@ -3117,17 +3878,42 @@ unsafe fn parse_json_ptr<T>(
     label: &str,
 ) -> Result<T, DagMlStatusCode>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Serialize,
 {
     if json_ptr.is_null() {
         set_error(error_out, format!("{label} json pointer is null"));
         return Err(DagMlStatusCode::INVALID_ARGUMENT);
     }
-    let json = slice::from_raw_parts(json_ptr, json_len);
-    serde_json::from_slice::<T>(json).map_err(|error| {
-        set_error(error_out, format!("failed to parse {label} JSON: {error}"));
+    let bytes = slice::from_raw_parts(json_ptr, json_len);
+    let json = std::str::from_utf8(bytes).map_err(|error| {
+        set_error(error_out, format!("failed to parse {label} UTF-8: {error}"));
         DagMlStatusCode::VALIDATION_ERROR
-    })
+    })?;
+    dag_ml_core::deserialize_external_contract(json, label, DagMlError::RuntimeValidation)
+        .map_err(|error| validation_error(error_out, error))
+}
+
+/// Parse one public object-only JSON contract through its dedicated core
+/// boundary reader. Unlike bare serde deserialization, these readers reject the
+/// positional sequence representation that derive-generated struct visitors
+/// accept internally.
+unsafe fn parse_external_contract_ptr<T>(
+    json_ptr: *const u8,
+    json_len: usize,
+    error_out: *mut DagMlString,
+    label: &str,
+    parse: impl FnOnce(&str) -> dag_ml_core::Result<T>,
+) -> Result<T, DagMlStatusCode> {
+    if json_ptr.is_null() {
+        set_error(error_out, format!("{label} json pointer is null"));
+        return Err(DagMlStatusCode::INVALID_ARGUMENT);
+    }
+    let bytes = slice::from_raw_parts(json_ptr, json_len);
+    let json = std::str::from_utf8(bytes).map_err(|error| {
+        set_error(error_out, format!("failed to parse {label} UTF-8: {error}"));
+        DagMlStatusCode::VALIDATION_ERROR
+    })?;
+    parse(json).map_err(|error| validation_error(error_out, error))
 }
 
 unsafe fn parse_pipeline_dsl_ptr(
@@ -3152,7 +3938,7 @@ unsafe fn parse_optional_json_ptr<T>(
     label: &str,
 ) -> Result<Option<T>, DagMlStatusCode>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Serialize,
 {
     if json_ptr.is_null() && json_len == 0 {
         return Ok(None);
@@ -3168,7 +3954,13 @@ unsafe fn select_validated_prediction_cache_payload(
     requirement_key: DagMlBytesView,
     error_out: *mut DagMlString,
 ) -> Result<(BundlePredictionCachePayloadSet, usize), DagMlStatusCode> {
-    let bundle = parse_json_ptr::<ExecutionBundle>(bundle_ptr, bundle_len, error_out, "bundle")?;
+    let bundle = parse_external_contract_ptr(
+        bundle_ptr,
+        bundle_len,
+        error_out,
+        "bundle",
+        ExecutionBundle::from_json,
+    )?;
     let payload_set = parse_json_ptr::<BundlePredictionCachePayloadSet>(
         payload_ptr,
         payload_len,
@@ -3970,21 +4762,27 @@ impl CAbiRuntimeController {
 
     fn track_result_handles(&self, result: &NodeResult) -> dag_ml_core::Result<()> {
         if self.vtable.release.is_none() {
+            // Legacy/generic replay controllers may expose borrowed handles.
+            // Native training rejects this vtable shape during its registry
+            // preflight, before constructing this wrapper.
+            return Ok(());
+        }
+        let result_handles = result
+            .outputs
+            .values()
+            .chain(result.artifact_handles.values())
+            .filter(|handle| handle.owner_controller == self.id && handle.handle != 0)
+            .map(|handle| handle.handle)
+            .collect::<BTreeSet<_>>();
+        if result_handles.is_empty() {
             return Ok(());
         }
         let mut handles = self.live_handles.lock().map_err(|_| {
             DagMlError::RuntimeValidation("controller handle registry is poisoned".to_string())
         })?;
-        for handle in result
-            .outputs
-            .values()
-            .chain(result.artifact_handles.values())
-        {
-            if handle.owner_controller == self.id
-                && handle.handle != 0
-                && !handles.contains(&handle.handle)
-            {
-                handles.push(handle.handle);
+        for handle in result_handles {
+            if !handles.contains(&handle) {
+                handles.push(handle);
             }
         }
         Ok(())
@@ -4015,7 +4813,7 @@ impl CAbiRuntimeController {
         result_label: &str,
     ) -> dag_ml_core::Result<ResultT>
     where
-        ResultT: for<'de> serde::Deserialize<'de>,
+        ResultT: DeserializeOwned + Serialize,
     {
         let invoke = self.vtable.invoke.ok_or_else(|| {
             DagMlError::RuntimeValidation("controller vtable is missing invoke".to_string())
@@ -4039,11 +4837,22 @@ impl CAbiRuntimeController {
         }
         let data = unsafe { slice::from_raw_parts(out_json.ptr, out_json.len) }.to_vec();
         unsafe { release_bytes(self.vtable.user_data, out_json) };
-        serde_json::from_slice::<ResultT>(&data).map_err(|error| {
+        let raw = std::str::from_utf8(&data).map_err(|error| {
             DagMlError::RuntimeValidation(format!(
                 "controller invoke returned invalid {result_label} JSON for {task_label}: {error}"
             ))
-        })
+        })?;
+        parse_typed_json(raw).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "controller invoke returned non-strict {result_label} JSON for {task_label}: {error}"
+            ))
+        })?;
+        dag_ml_core::deserialize_external_contract(raw, result_label, DagMlError::RuntimeValidation)
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                "controller invoke returned invalid {result_label} JSON for {task_label}: {error}"
+            ))
+            })
     }
 }
 
@@ -4768,6 +5577,7 @@ impl RuntimeController for CapiMockController {
             vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: prediction_partition_for_phase(task.phase),
                 fold_id: if task.phase == Phase::FitCv {
                     task.fold_id.clone()
@@ -4785,6 +5595,7 @@ impl RuntimeController for CapiMockController {
             Vec::new()
         };
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "out".to_string(),
@@ -5034,6 +5845,7 @@ mod tests {
             vec![PredictionBlock {
                 prediction_id: Some(format!("prediction:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: PredictionPartition::Final,
                 fold_id: None,
                 sample_ids: sample_ids.clone(),
@@ -5044,6 +5856,7 @@ mod tests {
             Vec::new()
         };
         let result = NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "out".to_string(),
@@ -5338,6 +6151,7 @@ mod tests {
             seed: Some(42),
         };
         let result = NodeResult {
+            schema_version: None,
             node_id: node_id.clone(),
             outputs: BTreeMap::from([(
                 "out".to_string(),
@@ -5961,6 +6775,7 @@ mod tests {
         let blocks = vec![PredictionBlock {
             prediction_id: Some("prediction:model:base.fold0".to_string()),
             producer_node: requirement.producer_node.clone(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: requirement.sample_ids.clone(),
@@ -6031,6 +6846,7 @@ mod tests {
         let blocks = vec![AggregatedPredictionBlock {
             prediction_id: Some("prediction:model:base.target.fold0".to_string()),
             producer_node: requirement.producer_node.clone(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             level: PredictionLevel::Target,
@@ -6103,6 +6919,7 @@ mod tests {
         let blocks = vec![PredictionBlock {
             prediction_id: Some("prediction:model:base.fold0".to_string()),
             producer_node: requirement.producer_node.clone(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: requirement.sample_ids.clone(),
@@ -6161,6 +6978,7 @@ mod tests {
         let blocks = vec![PredictionBlock {
             prediction_id: Some("prediction:model:base.fold0".to_string()),
             producer_node: requirement.producer_node.clone(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: requirement.sample_ids.clone(),
@@ -7915,6 +8733,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some("prediction:model:multi.fold0".to_string()),
                 producer_node: requirement.producer_node.clone(),
+                producer_port: Some("pred".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:0").unwrap()),
                 sample_ids: vec![
@@ -7927,6 +8746,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some("prediction:model:multi.fold1".to_string()),
                 producer_node: requirement.producer_node.clone(),
+                producer_port: Some("pred".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:1").unwrap()),
                 sample_ids: vec![
@@ -8395,7 +9215,11 @@ mod tests {
         let message = unsafe { CStr::from_ptr(error.ptr) }
             .to_string_lossy()
             .into_owned();
-        assert!(message.contains("failed to parse execution bundle JSON"));
+        assert!(
+            message.contains(r#""code":"serialization_error""#)
+                && message.contains("missing field `plan_id`"),
+            "unexpected validation error: {message}"
+        );
         unsafe { dagml_string_free(error) };
     }
 
@@ -8458,6 +9282,37 @@ mod tests {
         assert_eq!(plan.node_plans.len(), plan.graph_plan.graph.nodes.len());
         assert_eq!(plan.controller_manifests.len(), 2);
         unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn c_execution_plan_boundaries_reject_positional_struct_sequences() {
+        let mut plan: serde_json::Value =
+            serde_json::from_slice(&fixture_plan_json()).expect("fixture plan JSON");
+        plan["campaign"]["leakage_policy"] = serde_json::json!([]);
+        let json = serde_json::to_vec(&plan).unwrap();
+
+        let mut error = DagMlString::default();
+        let status =
+            unsafe { dagml_execution_plan_validate_json(json.as_ptr(), json.len(), &mut error) };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(error_message(&error).contains("must use a JSON object"));
+        unsafe { dagml_string_free(error) };
+
+        let mut out = DagMlOwnedBytes::default();
+        let mut schedule_error = DagMlString::default();
+        let status = unsafe {
+            dagml_execution_plan_schedule_json(
+                json.as_ptr(),
+                json.len(),
+                bytes_view(b"PREDICT"),
+                &mut out,
+                &mut schedule_error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(out.ptr.is_null());
+        assert!(error_message(&schedule_error).contains("must use a JSON object"));
+        unsafe { dagml_string_free(schedule_error) };
     }
 
     fn fixture_plan_json() -> Vec<u8> {

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/cohort_manifest.v1.schema.json",
+  "title": "DAG-ML CohortManifest v1",
+  "description": "Canonical statistical cohort with physical-sample identity, verifiable sample-to-origin/group/source relations, target order and content/relation fingerprints. Roles remain distinct from execution phases and prediction partitions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "role",
+    "exchangeability_unit",
+    "physical_sample_ids",
+    "origin_sample_ids",
+    "group_ids",
+    "source_ids",
+    "unit_relations",
+    "target_names",
+    "relation_fingerprint",
+    "content_fingerprint",
+    "manifest_fingerprint",
+    "axes_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "role": { "$ref": "#/$defs/data_cohort_role" },
+    "exchangeability_unit": { "const": "physical_sample" },
+    "physical_sample_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" },
+      "description": "Sorted unique physical SampleId values, never effective/augmented row ids."
+    },
+    "origin_sample_ids": { "$ref": "#/$defs/optional_sorted_identifiers" },
+    "group_ids": { "$ref": "#/$defs/optional_sorted_identifiers" },
+    "source_ids": { "$ref": "#/$defs/optional_sorted_identifiers" },
+    "unit_relations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/unit_relation" },
+      "description": "Exactly one record per physical_sample_ids entry in the same order. Group/source slice membership is derived from these records, never inferred from flat set membership."
+    },
+    "target_names": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/non_empty_string" },
+      "description": "Semantic target order, matched exactly against output bindings."
+    },
+    "relation_fingerprint": { "$ref": "#/$defs/sha256" },
+    "content_fingerprint": { "$ref": "#/$defs/sha256" },
+    "manifest_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "TCV1 SHA-256 of this manifest with manifest_fingerprint omitted."
+    },
+    "axes_fingerprint": {
+      "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "data_cohort_role": {
+      "enum": ["development", "calibration", "external_test", "production"]
+    },
+    "optional_sorted_identifiers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" },
+      "description": "Lexicographically sorted unique identifiers."
+    },
+    "unit_relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["physical_sample_id", "origin_sample_id", "group_ids", "source_ids"],
+      "properties": {
+        "physical_sample_id": { "$ref": "#/$defs/identifier" },
+        "origin_sample_id": {
+          "anyOf": [{ "$ref": "#/$defs/identifier" }, { "type": "null" }]
+        },
+        "group_ids": { "$ref": "#/$defs/optional_sorted_identifiers" },
+        "source_ids": { "$ref": "#/$defs/optional_sorted_identifiers" }
+      }
+    }
+  }
+}

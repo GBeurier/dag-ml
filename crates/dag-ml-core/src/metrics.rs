@@ -34,6 +34,18 @@ pub enum RegressionMetricKind {
 }
 
 impl RegressionMetricKind {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "mse" => Some(Self::Mse),
+            "rmse" => Some(Self::Rmse),
+            "mae" => Some(Self::Mae),
+            "r2" => Some(Self::R2),
+            "accuracy" => Some(Self::Accuracy),
+            "balanced_accuracy" => Some(Self::BalancedAccuracy),
+            _ => None,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Mse => "mse",
@@ -51,9 +63,39 @@ impl RegressionMetricKind {
             Self::R2 | Self::Accuracy | Self::BalancedAccuracy => MetricObjective::Maximize,
         }
     }
+
+    /// Resolve and validate the canonical metric/objective/output-kind matrix
+    /// shared by training request projection, native execution, and standalone
+    /// outcome verification.
+    pub fn resolve_for_prediction_kind(
+        name: &str,
+        objective: MetricObjective,
+        prediction_kind: crate::training::PredictionKind,
+    ) -> Result<Self> {
+        let metric = Self::from_name(name).ok_or_else(|| {
+            DagMlError::CampaignValidation(format!("unsupported native selection metric `{name}`"))
+        })?;
+        let kind_compatible = match prediction_kind {
+            crate::training::PredictionKind::RegressionPoint => {
+                matches!(metric, Self::Mse | Self::Rmse | Self::Mae | Self::R2)
+            }
+            crate::training::PredictionKind::ClassLabel => {
+                matches!(metric, Self::Accuracy | Self::BalancedAccuracy)
+            }
+            crate::training::PredictionKind::ClassProbability
+            | crate::training::PredictionKind::DecisionScore => false,
+        };
+        if objective != metric.objective() || !kind_compatible {
+            return Err(DagMlError::CampaignValidation(format!(
+                "selection metric `{name}` with objective {objective:?} is not supported for {prediction_kind:?} output"
+            )));
+        }
+        Ok(metric)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegressionTargetBlock {
     pub level: PredictionLevel,
     pub unit_ids: Vec<PredictionUnitId>,
@@ -184,6 +226,8 @@ pub struct RegressionMetricReport {
     #[serde(default)]
     pub prediction_id: Option<String>,
     pub producer_node: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_port: Option<String>,
     /// Variant this score belongs to — distinguishes per-variant candidates when a generated
     /// campaign scores several variants, so native SELECT can pick the best. Skipped (None) for
     /// single-variant runs, so existing fixtures/fingerprints are byte-identical.
@@ -271,6 +315,12 @@ impl RegressionMetricReport {
                 serde_json::json!(prediction_id),
             );
         }
+        if let Some(producer_port) = self.producer_port {
+            metadata.insert(
+                "producer_port".to_string(),
+                serde_json::json!(producer_port),
+            );
+        }
         if let Some(fold_id) = self.fold_id {
             metadata.insert("fold_id".to_string(), serde_json::json!(fold_id));
         }
@@ -322,6 +372,7 @@ pub fn score_regression_prediction_block(
             origin: PredictionReportOrigin {
                 prediction_id: predictions.prediction_id.clone(),
                 producer_node: predictions.producer_node.clone(),
+                producer_port: predictions.producer_port.clone(),
                 partition: predictions.partition.clone(),
                 fold_id: predictions.fold_id.clone(),
             },
@@ -347,6 +398,7 @@ pub fn score_regression_aggregated_block(
             origin: PredictionReportOrigin {
                 prediction_id: predictions.prediction_id.clone(),
                 producer_node: predictions.producer_node.clone(),
+                producer_port: predictions.producer_port.clone(),
                 partition: predictions.partition.clone(),
                 fold_id: predictions.fold_id.clone(),
             },
@@ -356,11 +408,13 @@ pub fn score_regression_aggregated_block(
     )
 }
 
-/// Current on-disk schema version for [`ScoreSet`].
-pub const SCORE_SET_SCHEMA_VERSION: u32 = 1;
+/// Current on-disk schema version for newly written [`ScoreSet`] documents.
+pub const SCORE_SET_SCHEMA_VERSION: u32 = 2;
+pub const LEGACY_SCORE_SET_SCHEMA_VERSION: u32 = 1;
+pub const MIN_READABLE_SCORE_SET_SCHEMA_VERSION: u32 = 1;
 
 fn default_score_set_schema_version() -> u32 {
-    SCORE_SET_SCHEMA_VERSION
+    LEGACY_SCORE_SET_SCHEMA_VERSION
 }
 
 /// A persisted collection of per-block regression metric reports — the native, cross-language
@@ -371,9 +425,11 @@ fn default_score_set_schema_version() -> u32 {
 /// every partition (train / validation / test / final). This is the score half of "dag-ml owns
 /// prediction/score persistence natively" — the Python (or any host) `RunResult` reads these
 /// scalars by identity, with no recomputation.
-/// Identity of a score report within a [`ScoreSet`] — unique per variant, partition, fold and level.
+/// Identity of a score report within a [`ScoreSet`] — unique per producer port, variant,
+/// partition, fold and level.
 type ScoreReportKey = (
     NodeId,
+    Option<String>,
     Option<VariantId>,
     PredictionPartition,
     Option<FoldId>,
@@ -394,7 +450,9 @@ pub struct ScoreSet {
 impl ScoreSet {
     /// Validate the version, plan id, every report, and report-key uniqueness.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version == 0 || self.schema_version > SCORE_SET_SCHEMA_VERSION {
+        if self.schema_version < MIN_READABLE_SCORE_SET_SCHEMA_VERSION
+            || self.schema_version > SCORE_SET_SCHEMA_VERSION
+        {
             return Err(DagMlError::OofValidation(format!(
                 "score set schema version {} is unsupported (current {SCORE_SET_SCHEMA_VERSION})",
                 self.schema_version
@@ -408,8 +466,27 @@ impl ScoreSet {
         let mut seen: BTreeSet<ScoreReportKey> = BTreeSet::new();
         for report in &self.reports {
             report.validate()?;
+            match (self.schema_version, report.producer_port.as_deref()) {
+                (LEGACY_SCORE_SET_SCHEMA_VERSION, Some(_)) => {
+                    return Err(DagMlError::OofValidation(
+                        "score set V1 reports must not carry producer_port".to_string(),
+                    ));
+                }
+                (SCORE_SET_SCHEMA_VERSION, Some(port)) if port.trim().is_empty() => {
+                    return Err(DagMlError::OofValidation(
+                        "score set V2 report has an empty producer_port".to_string(),
+                    ));
+                }
+                (SCORE_SET_SCHEMA_VERSION, None) => {
+                    return Err(DagMlError::OofValidation(
+                        "score set V2 requires producer_port on every report".to_string(),
+                    ));
+                }
+                _ => {}
+            }
             let key = (
                 report.producer_node.clone(),
+                report.producer_port.clone(),
                 report.variant_id.clone(),
                 report.partition.clone(),
                 report.fold_id.clone(),
@@ -417,8 +494,12 @@ impl ScoreSet {
             );
             if !seen.insert(key) {
                 return Err(DagMlError::OofValidation(format!(
-                    "score set has a duplicate report for node `{}` partition {:?} fold {:?} level {:?}",
-                    report.producer_node, report.partition, report.fold_id, report.level
+                    "score set has a duplicate report for node `{}` port {:?} partition {:?} fold {:?} level {:?}",
+                    report.producer_node,
+                    report.producer_port,
+                    report.partition,
+                    report.fold_id,
+                    report.level
                 )));
             }
         }
@@ -430,6 +511,7 @@ impl ScoreSet {
 struct PredictionReportOrigin {
     prediction_id: Option<String>,
     producer_node: NodeId,
+    producer_port: Option<String>,
     partition: PredictionPartition,
     fold_id: Option<FoldId>,
 }
@@ -531,6 +613,7 @@ fn score_regression_rows(
     let report = RegressionMetricReport {
         prediction_id: predictions.origin.prediction_id,
         producer_node: predictions.origin.producer_node,
+        producer_port: predictions.origin.producer_port,
         variant_id: None,
         variant_label: None,
         partition: predictions.origin.partition,
@@ -690,6 +773,7 @@ fn prediction_level_name(level: PredictionLevel) -> &'static str {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegressionTargetRecord {
     pub producer_node: NodeId,
+    pub producer_port: Option<String>,
     /// Variant that produced the scored block — lets the cross-fold OOF average be computed
     /// per-variant (for native SELECT) without tagging every PredictionBlock with a variant.
     pub variant_id: Option<VariantId>,
@@ -708,6 +792,7 @@ pub struct RegressionTargetRecord {
 /// a corrupted reference — that is refused rather than keeping whichever value happened to be first.
 fn combine_validation_targets(
     producer: &NodeId,
+    producer_port: &Option<String>,
     records: &[RegressionTargetRecord],
 ) -> Result<RegressionTargetBlock> {
     let mut seen: BTreeMap<PredictionUnitId, Vec<f64>> = BTreeMap::new();
@@ -715,7 +800,9 @@ fn combine_validation_targets(
     let mut values = Vec::new();
     let mut target_names = Vec::new();
     for record in records {
-        if &record.producer_node != producer || record.partition != PredictionPartition::Validation
+        if &record.producer_node != producer
+            || &record.producer_port != producer_port
+            || record.partition != PredictionPartition::Validation
         {
             continue;
         }
@@ -770,12 +857,13 @@ pub struct CrossFoldValidation {
     pub oof_averages: Vec<OofAverageBlock>,
 }
 
-/// Score the cross-fold OOF average per producer: concatenate each producer's per-fold VALIDATION
-/// predictions into one block and score it against the combined `y_true`. Yields one report per
-/// producer with `fold_id = "avg"` — nirs4all's `cv_best_score` row — plus, additively, the per-sample
-/// OOF average block + `y_true` each report was computed from (so the host can fill the `(validation,
-/// avg)` row's per-sample y_pred, not only the scalar). The per-fold join is identity-keyed; producers
-/// with a single fold are skipped (nothing to ensemble).
+/// Score the cross-fold OOF average per producer port: concatenate each `(producer_node,
+/// producer_port)` pair's per-fold VALIDATION predictions into one block and score it against the
+/// matching combined `y_true`. Yields one report per producer port with `fold_id = "avg"` —
+/// nirs4all's `cv_best_score` row — plus, additively, the per-sample OOF average block + `y_true`
+/// each report was computed from (so the host can fill the `(validation, avg)` row's per-sample
+/// y_pred, not only the scalar). The per-fold join is identity-keyed; producer ports with a single
+/// fold are skipped (nothing to ensemble).
 ///
 /// `partition_mode` mirrors the campaign [`FoldPartitionMode`]:
 /// under `Partition` (KFold) the per-producer OOF must be unique (each sample scored exactly once);
@@ -788,24 +876,22 @@ pub fn cross_fold_validation_reports(
     metrics: &[RegressionMetricKind],
     partition_mode: FoldPartitionMode,
 ) -> Result<CrossFoldValidation> {
-    let mut producers: Vec<NodeId> = Vec::new();
-    let mut by_producer: BTreeMap<NodeId, Vec<PredictionBlock>> = BTreeMap::new();
+    let mut producers: Vec<(NodeId, Option<String>)> = Vec::new();
+    let mut by_producer: BTreeMap<(NodeId, Option<String>), Vec<PredictionBlock>> = BTreeMap::new();
     for block in prediction_blocks {
         if block.partition != PredictionPartition::Validation {
             continue;
         }
-        if !by_producer.contains_key(&block.producer_node) {
-            producers.push(block.producer_node.clone());
+        let key = (block.producer_node.clone(), block.producer_port.clone());
+        if !by_producer.contains_key(&key) {
+            producers.push(key.clone());
         }
-        by_producer
-            .entry(block.producer_node.clone())
-            .or_default()
-            .push(block.clone());
+        by_producer.entry(key).or_default().push(block.clone());
     }
     let mut reports = Vec::new();
     let mut oof_averages = Vec::new();
-    for producer in &producers {
-        let blocks = &by_producer[producer];
+    for (producer, producer_port) in &producers {
+        let blocks = &by_producer[&(producer.clone(), producer_port.clone())];
         if blocks.len() < 2 {
             continue;
         }
@@ -820,7 +906,7 @@ pub fn cross_fold_validation_reports(
         // within-fold uniqueness still holds via `validate_content`.
         let block_refs = blocks.iter().collect::<Vec<_>>();
         validate_producer_oof_coverage(producer, &block_refs, partition_mode, None)?;
-        let targets = combine_validation_targets(producer, target_records)?;
+        let targets = combine_validation_targets(producer, producer_port, target_records)?;
         if targets.unit_ids.is_empty() {
             // No y_true was emitted for this producer (e.g. mock controllers) — nothing to score.
             continue;
@@ -860,6 +946,7 @@ fn oof_average_block(
     let predictions = AggregatedPredictionBlock {
         prediction_id: None,
         producer_node: average.producer_node.clone(),
+        producer_port: average.producer_port.clone(),
         partition: average.partition.clone(),
         fold_id: average.fold_id.clone(),
         level: PredictionLevel::Sample,
@@ -1000,6 +1087,7 @@ mod tests {
         let predictions = PredictionBlock {
             prediction_id: Some("pred:sample".to_string()),
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             sample_ids: vec![sid("sample:1"), sid("sample:2")],
@@ -1043,6 +1131,7 @@ mod tests {
         let predictions = AggregatedPredictionBlock {
             prediction_id: Some("pred:target".to_string()),
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             level: PredictionLevel::Target,
@@ -1074,6 +1163,7 @@ mod tests {
         let group_predictions = AggregatedPredictionBlock {
             prediction_id: Some("pred:group".to_string()),
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             level: PredictionLevel::Group,
@@ -1102,6 +1192,7 @@ mod tests {
         let predictions = AggregatedPredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             level: PredictionLevel::Target,
@@ -1171,6 +1262,7 @@ mod tests {
         let mut predictions = PredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             sample_ids: vec![sid("sample:1")],
@@ -1205,6 +1297,7 @@ mod tests {
         let exact_predictions = PredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new("model:exact").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             sample_ids: vec![sid("sample:1"), sid("sample:2")],
@@ -1240,6 +1333,7 @@ mod tests {
         RegressionMetricReport {
             prediction_id: None,
             producer_node: NodeId::new("model:compat.0").unwrap(),
+            producer_port: None,
             variant_id: None,
             variant_label: None,
             partition,
@@ -1252,10 +1346,22 @@ mod tests {
         }
     }
 
+    fn score_report_for_port(
+        port: Option<&str>,
+        partition: PredictionPartition,
+        fold: Option<&str>,
+        rmse: f64,
+    ) -> RegressionMetricReport {
+        RegressionMetricReport {
+            producer_port: port.map(ToString::to_string),
+            ..score_report(partition, fold, rmse)
+        }
+    }
+
     #[test]
     fn score_set_round_trips_validates_and_rejects_duplicates() {
         let set = ScoreSet {
-            schema_version: SCORE_SET_SCHEMA_VERSION,
+            schema_version: LEGACY_SCORE_SET_SCHEMA_VERSION,
             plan_id: "plan:demo".to_string(),
             selection_metric: Some("rmse".to_string()),
             reports: vec![
@@ -1273,17 +1379,47 @@ mod tests {
         // schema_version defaults when omitted (forward-compatible read).
         let parsed: ScoreSet =
             serde_json::from_value(serde_json::json!({"plan_id": "p", "reports": []})).unwrap();
-        assert_eq!(parsed.schema_version, SCORE_SET_SCHEMA_VERSION);
+        assert_eq!(parsed.schema_version, LEGACY_SCORE_SET_SCHEMA_VERSION);
 
-        // Duplicate (producer_node, partition, fold_id, level) is rejected.
-        let dup = ScoreSet {
+        // Sibling ports of the same node are distinct score identities.
+        let siblings = ScoreSet {
+            schema_version: SCORE_SET_SCHEMA_VERSION,
             reports: vec![
-                score_report(PredictionPartition::Test, Some("final"), 1.0),
-                score_report(PredictionPartition::Test, Some("final"), 2.0),
+                score_report_for_port(Some("pred"), PredictionPartition::Test, Some("final"), 1.0),
+                score_report_for_port(Some("aux"), PredictionPartition::Test, Some("final"), 2.0),
+            ],
+            ..set.clone()
+        };
+        siblings.validate().unwrap();
+
+        // Duplicate (producer_node, producer_port, partition, fold_id, level) is rejected.
+        let dup = ScoreSet {
+            schema_version: SCORE_SET_SCHEMA_VERSION,
+            reports: vec![
+                score_report_for_port(Some("pred"), PredictionPartition::Test, Some("final"), 1.0),
+                score_report_for_port(Some("pred"), PredictionPartition::Test, Some("final"), 2.0),
             ],
             ..set.clone()
         };
         assert!(dup.validate().is_err());
+
+        // Families are all-or-nothing: V1 forbids ports; V2 requires them.
+        let legacy_with_port = ScoreSet {
+            reports: vec![score_report_for_port(
+                Some("pred"),
+                PredictionPartition::Test,
+                Some("final"),
+                1.0,
+            )],
+            ..set.clone()
+        };
+        assert!(legacy_with_port.validate().is_err());
+        let v2_without_port = ScoreSet {
+            schema_version: SCORE_SET_SCHEMA_VERSION,
+            reports: vec![score_report(PredictionPartition::Test, Some("final"), 1.0)],
+            ..set.clone()
+        };
+        assert!(v2_without_port.validate().is_err());
 
         // Empty plan_id is rejected.
         let blank = ScoreSet {
@@ -1308,6 +1444,7 @@ mod tests {
         let predictions = PredictionBlock {
             prediction_id: Some("pred:classif".to_string()),
             producer_node: NodeId::new("model:rf").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             sample_ids: (0..10).map(|i| sid(&format!("s{i}"))).collect(),
@@ -1375,6 +1512,7 @@ mod tests {
         let fold_block = |fold: &str, ids: &[usize], preds: &[f64]| PredictionBlock {
             prediction_id: Some(format!("pred:{fold}")),
             producer_node: model.clone(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new(fold).unwrap()),
             sample_ids: ids.iter().map(|i| sid(&format!("s{i}"))).collect(),
@@ -1383,6 +1521,7 @@ mod tests {
         };
         let target_record = |fold: &str, ids: &[usize], trues: &[f64]| RegressionTargetRecord {
             producer_node: model.clone(),
+            producer_port: None,
             variant_id: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new(fold).unwrap()),

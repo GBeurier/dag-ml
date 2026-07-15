@@ -1,0 +1,137 @@
+{
+  "fixture_id": "dag-ml.conformal.decision-blocks.v1",
+  "schema_version": 1,
+  "schema": "decision_block.schema.json",
+  "valid_cases": [
+    {
+      "id": "accept_and_refer",
+      "document": {
+        "schema_version": 1,
+        "block_id": "decision:external.application.v1",
+        "policy_id": "policy:application.review.v1",
+        "policy_fingerprint": "0f7ce0c907a6e02f3bc4fc38696bbb11126d323df33c7d011e2fe743cca215c6",
+        "predictor_binding_fingerprint": "bb73f1c18f17a6eaa522e121509914a85b7cc532f0ddec19c18b5fe1e6d62fb3",
+        "cohort_manifest_fingerprint": "b989daea51c25e88125c1bdb32bd6465fb5098e0e7434d0e2dbcd1251114f4b8",
+        "conformal_block_fingerprint": "7377481c07b9feffe1f77fea11a4253684f456cedb8c7b126d4480326b9abf67",
+        "domain_assessment_fingerprint": "345752aff8f1eb15612c8dea77841e32fda9b65d80cf395f18795cdd49aa3771",
+        "thresholds": [
+          {
+            "name": "allowed_actions",
+            "operator": "in",
+            "value": [
+              "accept",
+              "refer"
+            ],
+            "unit": null
+          },
+          {
+            "name": "max_interval_width",
+            "operator": "lte",
+            "value": 6.0,
+            "unit": "percent"
+          }
+        ],
+        "unit_level": "physical_sample",
+        "unit_ids": [
+          "sample:ext.01",
+          "sample:ext.02"
+        ],
+        "decisions": [
+          {
+            "unit_id": "sample:ext.01",
+            "action": "accept",
+            "reasons": [
+              "within_policy"
+            ]
+          },
+          {
+            "unit_id": "sample:ext.02",
+            "action": "refer",
+            "reasons": [
+              "out_of_support"
+            ]
+          }
+        ],
+        "block_fingerprint": "d478ecdf6afb09a8703fb1184b3c1419843601d20a1d965dfc7f999610561017"
+      }
+    }
+  ],
+  "invalid_cases": [
+    {
+      "id": "decision_identity_mismatch",
+      "base_case": "accept_and_refer",
+      "mutations": [
+        {
+          "path": "/decisions/0/unit_id",
+          "value": "sample:ext.02"
+        }
+      ],
+      "expected_error": "align",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "numeric_threshold_requires_number",
+      "base_case": "accept_and_refer",
+      "mutations": [
+        {
+          "path": "/thresholds/1/value",
+          "value": "6"
+        }
+      ],
+      "expected_error": "finite numeric",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "membership_threshold_requires_array",
+      "base_case": "accept_and_refer",
+      "mutations": [
+        {
+          "path": "/thresholds/0/value",
+          "value": "accept"
+        }
+      ],
+      "expected_error": "array",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "domain_score_is_not_decision",
+      "base_case": "accept_and_refer",
+      "mutations": [
+        {
+          "path": "/domain_score",
+          "value": 0.7
+        }
+      ],
+      "expected_error": "domain_score",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "runtime_handle_refuses",
+      "base_case": "accept_and_refer",
+      "mutations": [
+        {
+          "path": "/policy_handle",
+          "value": "opaque"
+        }
+      ],
+      "expected_error": "handle",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "decision_without_evidence_refuses",
+      "base_case": "accept_and_refer",
+      "mutations": [
+        {
+          "path": "/conformal_block_fingerprint",
+          "value": null
+        },
+        {
+          "path": "/domain_assessment_fingerprint",
+          "value": null
+        }
+      ],
+      "expected_error": "evidence",
+      "recompute_fingerprints": true
+    }
+  ]
+}
