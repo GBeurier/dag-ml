@@ -1498,6 +1498,7 @@ fn oof_cache_namespace_fingerprints(
             requirement.consumer_node.clone(),
             requirement.target_port.clone(),
             producer_plan.params_fingerprint.clone(),
+            producer_plan.training_loss_fingerprint(Phase::FitCv)?,
             identity.identity_fingerprint.clone(),
             fold_id,
             selected_variant_id.to_string(),
@@ -2164,6 +2165,17 @@ impl TrainingOutcome {
                 || record.params_fingerprint != plan.params_fingerprint
             {
                 return contract_error("training outcome lineage does not match node plan");
+            }
+            let expected_losses = plan
+                .training_losses_for_phase(record.phase)
+                .collect::<Vec<_>>();
+            if record.loss_attestations.len() != expected_losses.len() {
+                return contract_error(
+                    "training outcome lineage loss attestations do not match node plan",
+                );
+            }
+            for (attestation, role) in record.loss_attestations.iter().zip(expected_losses) {
+                attestation.validate_against(role, &record.node_id, record.phase)?;
             }
             let key = (record.phase, record.fold_id.clone(), record.node_id.clone());
             if coordinates.insert(key, record).is_some() {

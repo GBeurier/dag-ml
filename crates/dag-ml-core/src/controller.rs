@@ -35,6 +35,9 @@ pub enum ControllerCapability {
     SupportsRowResampling,
     SupportsBackendLossWeights,
     SupportsMissingMasks,
+    SupportsConfigurableLoss,
+    SupportsCustomLoss,
+    SupportsDifferentiableLoss,
     /// Controller actively consumes non-uniform training influence, distinct
     /// from merely supporting a weighting API.
     UsesTrainingWeights,
@@ -273,6 +276,30 @@ impl ControllerManifest {
         {
             return Err(DagMlError::ControllerValidation(format!(
                 "controller `{}` trains aggregation without aggregates_predictions",
+                self.controller_id
+            )));
+        }
+        if self
+            .capabilities
+            .contains(&ControllerCapability::SupportsCustomLoss)
+            && !self
+                .capabilities
+                .contains(&ControllerCapability::SupportsConfigurableLoss)
+        {
+            return Err(DagMlError::ControllerValidation(format!(
+                "controller `{}` supports custom loss without configurable loss",
+                self.controller_id
+            )));
+        }
+        if self
+            .capabilities
+            .contains(&ControllerCapability::SupportsDifferentiableLoss)
+            && !self
+                .capabilities
+                .contains(&ControllerCapability::SupportsConfigurableLoss)
+        {
+            return Err(DagMlError::ControllerValidation(format!(
+                "controller `{}` supports differentiable loss without configurable loss",
                 self.controller_id
             )));
         }
@@ -900,6 +927,27 @@ mod tests {
     }
 
     #[test]
+    fn manifest_requires_configurable_loss_for_specialized_loss_capabilities() {
+        for capability in [
+            ControllerCapability::SupportsCustomLoss,
+            ControllerCapability::SupportsDifferentiableLoss,
+        ] {
+            let mut manifest = manifest("controller:loss", NodeKind::Model, 0);
+            manifest.capabilities.insert(capability);
+            assert!(manifest
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("without configurable loss"));
+
+            manifest
+                .capabilities
+                .insert(ControllerCapability::SupportsConfigurableLoss);
+            manifest.validate().unwrap();
+        }
+    }
+
+    #[test]
     fn manifest_validates_model_input_spec_data_requirements() {
         let mut manifest = manifest("controller:data-aware", NodeKind::Model, 0);
         manifest.data_requirements = Some(json!({
@@ -980,6 +1028,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|capability| capability.as_str() == Some("aggregates_predictions")));
+        assert!(schema["$defs"]["controller_capability"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability.as_str() == Some("supports_custom_loss")));
         assert!(schema["properties"]
             .as_object()
             .unwrap()

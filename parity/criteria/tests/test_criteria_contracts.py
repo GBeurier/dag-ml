@@ -31,6 +31,7 @@ SCHEMA_IDS = {
     "metric_spec": "https://github.com/GBeurier/dag-ml/schemas/metric_spec.v1.schema.json",
     "implementation_descriptor": "https://github.com/GBeurier/dag-ml/schemas/implementation_descriptor.v1.schema.json",
     "training_loss_role": "https://github.com/GBeurier/dag-ml/schemas/training_loss_role.v1.schema.json",
+    "loss_execution_attestation": "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json",
     "metric_role": "https://github.com/GBeurier/dag-ml/schemas/metric_role.v1.schema.json",
     "metric_evaluation_task": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_task.v1.schema.json",
     "metric_evaluation_result": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_result.v1.schema.json",
@@ -41,6 +42,7 @@ VALID_CONTRACTS = {
     "loss_implementation": "implementation_descriptor",
     "metric_implementation": "implementation_descriptor",
     "training_loss_role": "training_loss_role",
+    "loss_execution_attestation": "loss_execution_attestation",
     "metric_role": "metric_role",
 }
 
@@ -71,6 +73,7 @@ def test_positive_fingerprints_are_frozen_tcv1_values() -> None:
         ("metric_spec", "spec_fingerprint"),
         ("loss_implementation", "descriptor_fingerprint"),
         ("metric_implementation", "descriptor_fingerprint"),
+        ("loss_execution_attestation", "attestation_fingerprint"),
     ):
         assert valid[key][field] == fingerprint_without(valid[key], field), key
 
@@ -87,6 +90,7 @@ def test_required_negative_fixture_cases_are_rejected() -> None:
         "loss_unknown_task",
         "loss_unversioned_id",
         "loss_weighted_without_weight_input",
+        "loss_attestation_wrong_phase",
         "metric_without_objective",
         "selection_metric_skips_missing_values",
     }
@@ -94,6 +98,7 @@ def test_required_negative_fixture_cases_are_rejected() -> None:
         "loss_c1_control_id",
         "loss_leading_zero_version",
         "loss_uppercase_callable_payload",
+        "loss_attestation_wrong_phase",
     }
     for case in cases:
         errors = schema_errors(case["contract"], case["document"])

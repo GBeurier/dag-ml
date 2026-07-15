@@ -357,6 +357,7 @@ impl RuntimeController for TrainingController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -1901,6 +1902,7 @@ fn identifiers_controllers_diagnostics_and_store_are_prevalidated() {
             plugin_version: None,
         },
         params_fingerprint: "a".repeat(64),
+        training_loss_fingerprint: None,
         data_requirement_keys: Vec::new(),
         prediction_requirement_keys: Vec::new(),
     };
@@ -2392,6 +2394,7 @@ fn standalone_contract_readers_reject_serde_positional_struct_wires() {
             ("controller_id", serde_json::Value::Null),
             ("artifact", serde_json::Value::Null),
             ("params_fingerprint", serde_json::Value::Null),
+            ("training_loss_fingerprint", serde_json::Value::Null),
             ("data_requirement_keys", serde_json::json!([])),
             ("prediction_requirement_keys", serde_json::json!([])),
         ],

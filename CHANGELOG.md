@@ -20,6 +20,15 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   validates provider identity, finite values, scope and coverage, and reduces
   results before native score persistence. This additive contract publication
   does not change the public C ABI.
+- Training requests can now attach resolved loss roles to predictor nodes for
+  `FIT_CV` and `REFIT`. Controller manifests advertise configurable, custom and
+  differentiable-loss support; node tasks transport the resolved descriptor;
+  node results must attest the exact semantic, implementation, parameters and
+  reduction executed. Loss identity is included in candidate-cache, refit
+  artifact, materialization, lineage and provenance validation, so replay
+  refuses stale models trained under a different objective. Existing requests
+  without configured losses remain wire-compatible, and the public C ABI is
+  unchanged.
 - ADR-20 and W0 JSON contracts for conformal calibration ownership,
   `ParameterPatch`, `OutputBinding`, `TrainingInfluenceManifest`, complete
   `TrainingOutcome`/`ReplayOutcome` payloads, and the existing execution-bundle

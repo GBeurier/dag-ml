@@ -45,7 +45,7 @@
     },
     {
       "path": "docs/contracts/controller_manifest.schema.json",
-      "sha256": "e2af2cf1203655e11bf28555a5288cc162aa158c3e194967570e1082bf788f58",
+      "sha256": "5d69f9c76b2f085b90bdb1d7515cfb6db2f72b3f25c1b3ce60c78d1b62479464",
       "kind": "schema_dependency"
     },
     {
@@ -60,12 +60,12 @@
     },
     {
       "path": "docs/contracts/execution_bundle.schema.json",
-      "sha256": "3a0f66ee65c27a35809e2e8ce485c368c7f5042e55c100502e531ba83a1761bf",
+      "sha256": "eefa7a9bd99023901a6b9246223cbaf0bcf9c04247374976173648c96e345871",
       "kind": "schema_dependency"
     },
     {
       "path": "docs/contracts/execution_plan.schema.json",
-      "sha256": "f56e7e65ebe6c328728c719d09f4b2266d707e7e4680ac91ceb7bd2ee7ebdf60",
+      "sha256": "f7edb22a7fd7468bfb685a99f790a1a954159cb5058e4ffdbd03f471bf85ea95",
       "kind": "schema_dependency"
     },
     {
@@ -74,8 +74,23 @@
       "kind": "schema_dependency"
     },
     {
+      "path": "docs/contracts/implementation_descriptor.schema.json",
+      "sha256": "7fc37cd6dda7f7fcdb778facd691a5b27e64c825051965dd0948cfdb09092210",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/loss_execution_attestation.schema.json",
+      "sha256": "d3997aa28a9a785ac42ad328509ba001136fd5796b473a5246e2bc96b2577028",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/loss_spec.schema.json",
+      "sha256": "18a6cfc7bf74c42927ce3ba60d31b5c6bc8e5dd447b7c96a011ab26b3e282954",
+      "kind": "schema_dependency"
+    },
+    {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "6fb4a3856e3ec070b5bb49511ce10b4c21273cd030ecad04719248a5ce98686f",
+      "sha256": "9767857e353664e8ac0200d8347218d99fef11bb937e9b4515f0efc4960abc93",
       "kind": "schema_dependency"
     },
     {
@@ -124,13 +139,18 @@
       "kind": "schema"
     },
     {
+      "path": "docs/contracts/training_loss_role.schema.json",
+      "sha256": "078886aa7f622c05c86aa22b4eaeaeeff857e2ad68da1137f62fe4f1510d02e3",
+      "kind": "schema_dependency"
+    },
+    {
       "path": "docs/contracts/training_outcome.schema.json",
       "sha256": "cf9223520d6aa089beaf661934a520f65fcda6c882a9ff99c250a83bd3efe2eb",
       "kind": "schema"
     },
     {
       "path": "docs/contracts/training_request.schema.json",
-      "sha256": "363ee1009772115b84d11b9e3b9db37ef00d5255958e097b9d8b24349b6be6a9",
+      "sha256": "5d922ce91465b3478c51f324ee8924e6acf51cd532eead0e3cdd8a00deb790f9",
       "kind": "schema_dependency"
     },
     {
@@ -408,5 +428,5 @@
       ]
     }
   ],
-  "pack_checksum": "405dc143e35a9836ba23ce1f68151cbc77e5e2bd550ff1e0c04c12da0b002403"
+  "pack_checksum": "127f786ed82af03e11e04cc24714c5ec4722e85fbd5f2753d37a603ab6ca07ca"
 }

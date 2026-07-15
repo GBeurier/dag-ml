@@ -525,6 +525,7 @@ fn build_prov_jsonld(
                 "dagml:plugin": record.artifact.plugin,
                 "dagml:plugin_version": record.artifact.plugin_version,
                 "dagml:params_fingerprint": record.params_fingerprint,
+                "dagml:training_loss_fingerprint": record.training_loss_fingerprint,
                 "dagml:data_requirement_keys": record.data_requirement_keys,
                 "dagml:prediction_requirement_keys": record.prediction_requirement_keys,
             }),
@@ -619,6 +620,7 @@ fn build_prov_jsonld(
                 "dagml:seed": record.seed,
                 "dagml:unsafe_flags": record.unsafe_flags,
                 "dagml:metrics": record.metrics,
+                "dagml:loss_attestations": record.loss_attestations,
             }),
         );
     }
@@ -1485,6 +1487,7 @@ mod tests {
             seed: Some(42),
             unsafe_flags: BTreeSet::new(),
             metrics: BTreeMap::new(),
+            loss_attestations: Vec::new(),
         }
     }
 

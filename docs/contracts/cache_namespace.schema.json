@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/GBeurier/dag-ml/schemas/cache_namespace.v1.schema.json",
   "title": "DAG-ML CacheNamespace v1",
-  "description": "FIT_CV-only candidate prediction-block cache identity. It binds parameter, complete data identity, producer/source, consumer/target, fold, trial and seed so requirement-key reuse cannot cross candidates or datasets.",
+  "description": "FIT_CV-only candidate prediction-block cache identity. It binds parameters, the resolved training-loss set, complete data identity, producer/source, consumer/target, fold, trial and seed so requirement-key reuse cannot cross candidates, objectives or datasets.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -31,6 +31,7 @@
     "target_port_name": { "$ref": "#/$defs/non_empty_string" },
     "phase": { "const": "FIT_CV" },
     "params_fingerprint": { "$ref": "#/$defs/sha256" },
+    "training_loss_fingerprint": { "$ref": "#/$defs/sha256" },
     "data_identity_fingerprint": {
       "$ref": "#/$defs/sha256",
       "description": "TrainingDataIdentity.identity_fingerprint, covering schema/plan/relation/data/targets."

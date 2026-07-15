@@ -21,6 +21,7 @@ use crate::controller::{
     ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
     ControllerRegistry, RngPolicy,
 };
+use crate::criteria::TrainingLossRoleReference;
 use crate::data::{
     DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider, SOURCE_INDEX_METADATA_KEY,
 };
@@ -114,6 +115,7 @@ impl RuntimeController for VariantProbeController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -195,6 +197,7 @@ impl RuntimeController for ShapeDataController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -277,6 +280,7 @@ impl RuntimeController for DataViewProbeController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -402,6 +406,7 @@ impl RuntimeController for MockController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -571,6 +576,7 @@ impl RuntimeController for ReplayMockController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -733,6 +739,7 @@ impl RuntimeController for OofEdgeController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -850,6 +857,7 @@ impl RuntimeController for CaptureOofValuesController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -954,6 +962,7 @@ impl RuntimeController for ExpectedRefitOofController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -1077,6 +1086,7 @@ impl RuntimeController for GroupAggregatedOofController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -1371,6 +1381,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -2396,6 +2407,7 @@ fn replay_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBundle {
                 plugin_version: None,
             },
             params_fingerprint: model_plan.params_fingerprint.clone(),
+            training_loss_fingerprint: model_plan.training_loss_fingerprint(Phase::Refit).unwrap(),
             data_requirement_keys: vec!["model:base.x".to_string()],
             prediction_requirement_keys: Vec::new(),
         }],
@@ -2561,6 +2573,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
                     seed: task.seed,
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
                 },
             })
         }
@@ -2721,6 +2734,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
                     seed: task.seed,
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
                 },
             })
         }
@@ -4523,6 +4537,7 @@ fn portable_artifact_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBun
                 plugin_version: Some("1.0.0".to_string()),
             },
             params_fingerprint: model_plan.params_fingerprint.clone(),
+            training_loss_fingerprint: model_plan.training_loss_fingerprint(Phase::Refit).unwrap(),
             data_requirement_keys: vec!["model:base.x".to_string()],
             prediction_requirement_keys: Vec::new(),
         }],
@@ -4738,6 +4753,7 @@ fn file_artifact_payload_store_validates_payloads_and_materializes_handles() {
             controller_id: artifact.controller_id.clone(),
             artifact: artifact.artifact.clone(),
             params_fingerprint: artifact.params_fingerprint.clone(),
+            training_loss_fingerprint: artifact.training_loss_fingerprint.clone(),
         })
         .unwrap();
     assert_eq!(handle.kind, HandleKind::Artifact);
@@ -6062,6 +6078,7 @@ fn campaign_refit_captures_emitted_artifact_handles() {
             controller_id: artifact.controller_id.clone(),
             artifact: artifact.artifact.clone(),
             params_fingerprint: artifact.params_fingerprint.clone(),
+            training_loss_fingerprint: artifact.training_loss_fingerprint.clone(),
         })
         .unwrap();
     assert_eq!(
@@ -6187,6 +6204,17 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
         fit_influence,
         seed: Some(7),
     }
+}
+
+fn runtime_custom_loss_role(node_id: NodeId) -> TrainingLossRoleReference {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../examples/fixtures/criteria/criteria_contracts.v1.json"
+    ))
+    .unwrap();
+    let mut role: TrainingLossRoleReference =
+        serde_json::from_value(fixture["valid"]["training_loss_role"].clone()).unwrap();
+    role.node_id = node_id;
+    role
 }
 
 #[test]
@@ -6372,6 +6400,46 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         .unwrap_err()
         .to_string()
         .contains("output `out`"));
+
+    let mut loss_task = task.clone();
+    let loss_role = runtime_custom_loss_role(loss_task.node_plan.node_id.clone());
+    loss_task.node_plan.training_losses = vec![loss_role.clone()];
+    let missing_attestation = controller.invoke(&loss_task).unwrap();
+    assert!(missing_attestation
+        .validate_for_task(&loss_task)
+        .unwrap_err()
+        .to_string()
+        .contains("loss attestations"));
+
+    let mut attested = missing_attestation;
+    attested.lineage.loss_attestations =
+        vec![LossExecutionAttestation::for_role(&loss_role, Phase::FitCv).unwrap()];
+    attested.validate_for_task(&loss_task).unwrap();
+
+    let mut refit_task = loss_task.clone();
+    refit_task.phase = Phase::Refit;
+    let mut refit_result = controller.invoke(&refit_task).unwrap();
+    refit_result.lineage.loss_attestations =
+        vec![LossExecutionAttestation::for_role(&loss_role, Phase::Refit).unwrap()];
+    refit_result.validate_for_task(&refit_task).unwrap();
+    refit_result.lineage.loss_attestations = attested.lineage.loss_attestations.clone();
+    assert!(refit_result
+        .validate_for_task(&refit_task)
+        .unwrap_err()
+        .to_string()
+        .contains("does not match"));
+
+    let mut mismatched = attested;
+    mismatched.lineage.loss_attestations[0].semantic_fingerprint = "0".repeat(64);
+    mismatched.lineage.loss_attestations[0].attestation_fingerprint =
+        mismatched.lineage.loss_attestations[0]
+            .compute_fingerprint()
+            .unwrap();
+    assert!(mismatched
+        .validate_for_task(&loss_task)
+        .unwrap_err()
+        .to_string()
+        .contains("does not match"));
 }
 
 #[test]
@@ -6786,6 +6854,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
             seed: task.seed,
             unsafe_flags: BTreeSet::new(),
             metrics: BTreeMap::new(),
+            loss_attestations: Vec::new(),
         },
     };
 
@@ -6902,6 +6971,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
             seed: task.seed,
             unsafe_flags: BTreeSet::new(),
             metrics: BTreeMap::new(),
+            loss_attestations: Vec::new(),
         },
     };
 
@@ -7028,6 +7098,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         seed: task.seed,
         unsafe_flags: BTreeSet::new(),
         metrics: BTreeMap::new(),
+        loss_attestations: Vec::new(),
     };
     let base_result = |level: PredictionLevel, unit: PredictionUnitId| NodeResult {
         schema_version: None,
@@ -7634,33 +7705,31 @@ fn in_memory_artifact_store_resolves_bundle_artifacts() {
     };
     store.register(artifact, handle.clone()).unwrap();
 
-    let resolved = store
-        .materialize(&ArtifactMaterializationRequest {
-            run_id: RunId::new("run:replay.artifacts").unwrap(),
-            bundle_id: bundle.bundle_id.clone(),
-            node_id: artifact.node_id.clone(),
-            phase: Phase::Predict,
-            variant_id: bundle.selected_variant_id.clone(),
-            controller_id: artifact.controller_id.clone(),
-            artifact: artifact.artifact.clone(),
-            params_fingerprint: artifact.params_fingerprint.clone(),
-        })
-        .unwrap();
+    let request = ArtifactMaterializationRequest {
+        run_id: RunId::new("run:replay.artifacts").unwrap(),
+        bundle_id: bundle.bundle_id.clone(),
+        node_id: artifact.node_id.clone(),
+        phase: Phase::Predict,
+        variant_id: bundle.selected_variant_id.clone(),
+        controller_id: artifact.controller_id.clone(),
+        artifact: artifact.artifact.clone(),
+        params_fingerprint: artifact.params_fingerprint.clone(),
+        training_loss_fingerprint: artifact.training_loss_fingerprint.clone(),
+    };
+    let resolved = store.materialize(&request).unwrap();
 
     assert_eq!(resolved, handle);
     assert_eq!(store.len(), 1);
-    assert!(InMemoryArtifactStore::new()
-        .materialize(&ArtifactMaterializationRequest {
-            run_id: RunId::new("run:replay.artifacts").unwrap(),
-            bundle_id: bundle.bundle_id.clone(),
-            node_id: artifact.node_id.clone(),
-            phase: Phase::Predict,
-            variant_id: bundle.selected_variant_id.clone(),
-            controller_id: artifact.controller_id.clone(),
-            artifact: artifact.artifact.clone(),
-            params_fingerprint: artifact.params_fingerprint.clone(),
-        })
-        .is_err());
+
+    let mut wrong_loss = request.clone();
+    wrong_loss.training_loss_fingerprint = Some("f".repeat(64));
+    assert!(store
+        .materialize(&wrong_loss)
+        .unwrap_err()
+        .to_string()
+        .contains("training loss fingerprint"));
+
+    assert!(InMemoryArtifactStore::new().materialize(&request).is_err());
 }
 
 #[test]
@@ -7957,6 +8026,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
             seed: None,
             unsafe_flags: BTreeSet::new(),
             metrics: BTreeMap::new(),
+            loss_attestations: Vec::new(),
         },
     };
 
@@ -8267,6 +8337,7 @@ impl RuntimeController for VariantScoringController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -8442,6 +8513,7 @@ impl RuntimeController for MultiPortVariantScoringController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -9593,6 +9665,7 @@ impl RuntimeController for BranchScopeRecordingController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -9689,6 +9762,7 @@ impl RuntimeController for OverlapEmittingController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -10327,6 +10401,7 @@ impl RuntimeController for SilentBranchController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -10490,6 +10565,7 @@ impl RuntimeController for ScoringBranchController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -11221,6 +11297,7 @@ impl RuntimeController for FusionBranchController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -11670,6 +11747,7 @@ impl RuntimeController for ProbaBranchController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -11934,6 +12012,7 @@ impl RuntimeController for OffFoldScoringController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -12274,6 +12353,7 @@ impl RuntimeController for OffFoldDuplicationController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -12755,6 +12835,7 @@ impl RuntimeController for DuplicateSampleBranchController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -12901,6 +12982,7 @@ impl RuntimeController for StackingOffFoldController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -13157,6 +13239,7 @@ impl RuntimeController for OperatorScoringController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
