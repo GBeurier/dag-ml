@@ -412,6 +412,22 @@ impl RuntimeController for MockController {
     }
 }
 
+struct LossRequirementEchoController {
+    inner: MockController,
+}
+
+impl RuntimeController for LossRequirementEchoController {
+    fn controller_id(&self) -> &ControllerId {
+        self.inner.controller_id()
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let mut result = self.inner.invoke(task)?;
+        result.lineage.loss_attestations = task.required_loss_attestations.clone();
+        Ok(result)
+    }
+}
+
 struct ReplayMockController {
     id: ControllerId,
     handle: u64,
@@ -6482,6 +6498,105 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         .unwrap_err()
         .to_string()
         .contains("loss execution requirements"));
+
+    let mut tampered_requirements = loss_task.clone();
+    tampered_requirements.required_loss_attestations[0].reduction =
+        crate::criteria::LossReduction::Sum;
+    tampered_requirements.required_loss_attestations[0].attestation_fingerprint =
+        tampered_requirements.required_loss_attestations[0]
+            .compute_fingerprint()
+            .unwrap();
+    assert!(controller
+        .invoke(&tampered_requirements)
+        .unwrap()
+        .validate_for_task(&tampered_requirements)
+        .unwrap_err()
+        .to_string()
+        .contains("loss execution requirements"));
+
+    assert!(
+        NodeTask::required_loss_attestations_for(&loss_task.node_plan, Phase::Predict)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn scheduler_populates_native_loss_execution_requirements() {
+    let mut controller_manifests = ControllerRegistry::new();
+    controller_manifests
+        .register(controller_manifest(
+            "controller:transform",
+            NodeKind::Transform,
+        ))
+        .unwrap();
+    let mut model_manifest = controller_manifest("controller:model", NodeKind::Model);
+    model_manifest
+        .supported_phases
+        .extend([Phase::FitCv, Phase::Refit]);
+    model_manifest.capabilities.extend([
+        ControllerCapability::NeedsPythonGil,
+        ControllerCapability::SupportsConfigurableLoss,
+        ControllerCapability::SupportsCustomLoss,
+        ControllerCapability::SupportsDifferentiableLoss,
+    ]);
+    controller_manifests.register(model_manifest).unwrap();
+    let mut plan = build_execution_plan(
+        "plan:loss.requirements.scheduler",
+        simple_graph(),
+        CampaignSpec {
+            inner_cv: None,
+            id: "campaign:loss.requirements.scheduler".to_string(),
+            root_seed: Some(17),
+            leakage_policy: Default::default(),
+            aggregation_policy: Default::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        },
+        &controller_manifests,
+    )
+    .unwrap();
+    let model_id = NodeId::new("model:pls").unwrap();
+    let role = runtime_custom_loss_role(model_id.clone());
+    plan.node_plans.get_mut(&model_id).unwrap().training_losses = vec![role.clone()];
+    plan.validate().unwrap();
+
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(LossRequirementEchoController {
+            inner: MockController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 2,
+                emit_prediction: false,
+            },
+        }))
+        .unwrap();
+    let mut context = RunContext::new(
+        RunId::new("run:loss.requirements.scheduler").unwrap(),
+        Some(17),
+    );
+    let results = SequentialScheduler
+        .execute_campaign_phase(&plan, &controllers, &mut context, Phase::FitCv)
+        .unwrap();
+    let model_result = results
+        .iter()
+        .find(|result| result.node_id == model_id)
+        .unwrap();
+    assert_eq!(
+        model_result.lineage.loss_attestations,
+        vec![LossExecutionAttestation::for_role(&role, Phase::FitCv).unwrap()]
+    );
 }
 
 #[test]

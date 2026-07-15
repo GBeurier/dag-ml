@@ -13133,6 +13133,35 @@ def validate_node_task(value: Any, label: str) -> None:
             == implementation.get("descriptor_fingerprint"),
             f"{requirement_label}.descriptor_fingerprint mismatch",
         )
+        require(
+            attestation.get("semantic_fingerprint")
+            == spec.get("spec_fingerprint"),
+            f"{requirement_label}.semantic_fingerprint mismatch",
+        )
+        require(
+            attestation.get("implementation_fingerprint")
+            == implementation.get("implementation_fingerprint"),
+            f"{requirement_label}.implementation_fingerprint mismatch",
+        )
+        require(
+            attestation.get("effective_parameters") == spec.get("parameters"),
+            f"{requirement_label}.effective_parameters mismatch",
+        )
+        require(
+            attestation.get("reduction") == spec.get("reduction"),
+            f"{requirement_label}.reduction mismatch",
+        )
+        require(
+            attestation.get("attestation_fingerprint")
+            == dagml_tcv1_sha256(
+                {
+                    key: field_value
+                    for key, field_value in attestation.items()
+                    if key != "attestation_fingerprint"
+                }
+            ),
+            f"{requirement_label}.attestation_fingerprint mismatch",
+        )
 
 
 def validate_node_result(value: Any, label: str) -> None:
