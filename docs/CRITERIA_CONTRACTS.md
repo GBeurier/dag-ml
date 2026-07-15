@@ -59,6 +59,13 @@ training phases, and emits the common execution attestation. Registries reject
 JSON serialization. Every browser main thread or worker must register its own
 local callback before execution or replay.
 
+The R binding exposes `dagml_local_implementation_registry()`. It retains R
+functions for `binding:r` descriptors, keeps loss and metric resolution paths
+separate, and invokes active training losses directly in `FIT_CV` and `REFIT`.
+Its training invocation consumes the native `NodeTask` requirement and returns
+that attestation only after the R function succeeds; the binding never computes
+TCV1 fingerprints or writes a function into DAG JSON.
+
 `TrainingRequest.training_losses` is the authoritative pipeline assignment.
 Each role targets a node and an optional controller-local output/head and lists
 the exact training phases where it applies. The resolved roles travel inside
