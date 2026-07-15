@@ -328,9 +328,11 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         &input.run_id,
         Some(input.request.options.seed),
         selection_metric,
-        &selection_producer,
-        Some(selection_producer_port.as_str()),
-        metric_level,
+        (
+            &selection_producer,
+            Some(selection_producer_port.as_str()),
+            metric_level,
+        ),
         |candidate_plan, candidate_ctx| {
             scheduler
                 .fit_cv(
@@ -2224,11 +2226,13 @@ impl BoundTrainingOutput {
             validate_bound_block(
                 plan,
                 &self.binding,
-                &block.producer_node,
-                &block.producer_port,
-                &block.partition,
-                block.fold_id.as_ref(),
-                &block.target_names,
+                BoundBlockRef {
+                    producer: &block.producer_node,
+                    producer_port: &block.producer_port,
+                    partition: &block.partition,
+                    fold_id: block.fold_id.as_ref(),
+                    target_names: &block.target_names,
+                },
                 &expected_names,
             )?;
         }
@@ -2237,11 +2241,13 @@ impl BoundTrainingOutput {
             validate_bound_block(
                 plan,
                 &self.binding,
-                &block.producer_node,
-                &block.producer_port,
-                &block.partition,
-                block.fold_id.as_ref(),
-                &block.target_names,
+                BoundBlockRef {
+                    producer: &block.producer_node,
+                    producer_port: &block.producer_port,
+                    partition: &block.partition,
+                    fold_id: block.fold_id.as_ref(),
+                    target_names: &block.target_names,
+                },
                 &expected_names,
             )?;
         }
@@ -2255,11 +2261,13 @@ impl BoundTrainingOutput {
             validate_bound_block(
                 plan,
                 &self.binding,
-                &block.producer_node,
-                &block.producer_port,
-                &block.partition,
-                block.fold_id.as_ref(),
-                &block.target_names,
+                BoundBlockRef {
+                    producer: &block.producer_node,
+                    producer_port: &block.producer_port,
+                    partition: &block.partition,
+                    fold_id: block.fold_id.as_ref(),
+                    target_names: &block.target_names,
+                },
                 &expected_names,
             )?;
         }
@@ -2282,36 +2290,40 @@ impl BoundTrainingOutput {
     }
 }
 
+struct BoundBlockRef<'a> {
+    producer: &'a NodeId,
+    producer_port: &'a Option<String>,
+    partition: &'a PredictionPartition,
+    fold_id: Option<&'a crate::ids::FoldId>,
+    target_names: &'a [String],
+}
+
 fn validate_bound_block(
     plan: &ExecutionPlan,
     binding: &OutputBinding,
-    producer: &NodeId,
-    producer_port: &Option<String>,
-    partition: &PredictionPartition,
-    fold_id: Option<&crate::ids::FoldId>,
-    target_names: &[String],
+    block: BoundBlockRef<'_>,
     expected_names: &[String],
 ) -> Result<()> {
-    if producer != &binding.node_id
+    if block.producer != &binding.node_id
         || !producer_port_matches_graph_output(
             plan,
             &binding.node_id,
             &binding.port_name,
-            producer_port,
+            block.producer_port,
         )
-        || target_names != expected_names
+        || block.target_names != expected_names
     {
         return contract_error(
             "bound prediction producer, producer_port or target order does not match output binding",
         );
     }
     if binding.prediction_source == PredictionSource::FinalRefit
-        && (partition != &PredictionPartition::Final || fold_id.is_some())
+        && (block.partition != &PredictionPartition::Final || block.fold_id.is_some())
     {
         return contract_error("final_refit output blocks must use final partition without fold");
     }
     if binding.prediction_source == PredictionSource::CvEnsemble
-        && (!is_cv_ensemble_partition(partition) || fold_id.is_none())
+        && (!is_cv_ensemble_partition(block.partition) || block.fold_id.is_none())
     {
         return contract_error(
             "cv_ensemble output blocks must use validation partition with a fold id",

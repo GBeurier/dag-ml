@@ -18,7 +18,7 @@ use crate::fold::{FoldSet, NestedCvSpec};
 use crate::generation::{
     enumerate_variants, generation_spec_fingerprint, GenerationSpec, VariantPlan,
 };
-use crate::graph::{GraphSpec, NodeKind, NodeSpec};
+use crate::graph::{GraphSpec, NodeKind, NodeSpec, PortKind};
 use crate::ids::{ControllerId, FoldId, NodeId, VariantId};
 use crate::phase::Phase;
 use crate::policy::{AggregationPolicy, DataModelShapePlan, LeakageUnitPolicy};
@@ -488,6 +488,32 @@ impl ExecutionPlan {
 
     fn validate_oof_controller_capabilities(&self) -> Result<()> {
         for edge in &self.graph_plan.graph.edges {
+            if edge.contract.kind != PortKind::Prediction {
+                continue;
+            }
+            let target_plan = self.node_plans.get(&edge.target.node_id).ok_or_else(|| {
+                DagMlError::Planning(format!(
+                    "prediction edge target node `{}` has no node plan",
+                    edge.target.node_id
+                ))
+            })?;
+            let target_fits = matches!(
+                target_plan.fit_scope,
+                ControllerFitScope::FoldTrain | ControllerFitScope::FullTrain
+            ) && target_plan
+                .supported_phases
+                .iter()
+                .any(|phase| matches!(phase, Phase::FitCv | Phase::Refit));
+            if target_fits && !edge.contract.requires_oof {
+                return Err(DagMlError::Planning(format!(
+                    "prediction edge `{}.{}` -> `{}.{}` enters fitting controller `{}` and must require OOF",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name,
+                    target_plan.controller_id
+                )));
+            }
             if !edge.contract.requires_oof {
                 continue;
             }
@@ -510,12 +536,6 @@ impl ExecutionPlan {
                     source_plan.controller_id
                 )));
             }
-            let target_plan = self.node_plans.get(&edge.target.node_id).ok_or_else(|| {
-                DagMlError::Planning(format!(
-                    "OOF edge target node `{}` has no node plan",
-                    edge.target.node_id
-                ))
-            })?;
             if !target_plan
                 .controller_capabilities
                 .contains(&ControllerCapability::ConsumesOofPredictions)
@@ -2674,6 +2694,47 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("consumes_oof_predictions"));
+    }
+
+    #[test]
+    fn planning_refuses_raw_prediction_sibling_port_into_fitting_node() {
+        let mut graph = oof_graph();
+        graph.id = "g:oof.raw-sibling".to_string();
+        let base = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.as_str() == "model:base")
+            .unwrap();
+        base.ports.outputs.push(port("aux", PortKind::Prediction));
+        let meta = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.as_str() == "model:meta")
+            .unwrap();
+        meta.ports.inputs.push(port("aux", PortKind::Prediction));
+        graph.edges.push(EdgeSpec {
+            source: PortRef {
+                node_id: NodeId::new("model:base").unwrap(),
+                port_name: "aux".to_string(),
+            },
+            target: PortRef {
+                node_id: NodeId::new("model:meta").unwrap(),
+                port_name: "aux".to_string(),
+            },
+            contract: EdgeContract::new(PortKind::Prediction, None),
+        });
+
+        let error = build_execution_plan(
+            "plan:oof.raw-sibling",
+            graph,
+            campaign("campaign:oof.raw-sibling"),
+            &registry(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("enters fitting controller"));
+        assert!(error.contains("must require OOF"));
     }
 
     #[test]

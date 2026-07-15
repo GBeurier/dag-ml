@@ -21,6 +21,13 @@ use crate::error::{DagMlError, Result as DagMlResult};
 /// Domain separator prepended to every TCV1 value before hashing.
 pub const TCV1_PREFIX: &[u8] = b"DAGML-TCV1\0";
 
+/// Unicode data version frozen by the TCV1 normalization contract.
+pub const TCV1_UNICODE_VERSION: (u8, u8, u8) = (17, 0, 0);
+
+const _: () = assert!(unicode_normalization::UNICODE_VERSION.0 == TCV1_UNICODE_VERSION.0);
+const _: () = assert!(unicode_normalization::UNICODE_VERSION.1 == TCV1_UNICODE_VERSION.1);
+const _: () = assert!(unicode_normalization::UNICODE_VERSION.2 == TCV1_UNICODE_VERSION.2);
+
 const MAX_NESTING_DEPTH: usize = 128;
 
 /// An integer parsed without passing through binary64.
@@ -719,6 +726,11 @@ where
     T: DeserializeOwned + Serialize,
     F: Fn(String) -> DagMlError,
 {
+    parse_typed_json(json).map_err(|error| {
+        shape_error(format!(
+            "{label} is not a strict TCV1 JSON document: {error}"
+        ))
+    })?;
     let raw: serde_json::Value = serde_json::from_str(json)?;
     deserialize_external_value(raw, label, shape_error)
 }
@@ -748,6 +760,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use serde::{Deserialize, Serialize};
     use serde_json::json;
 
     use super::*;
@@ -768,6 +781,83 @@ mod tests {
         let value = parse(input);
         assert_eq!(hex(&tcv1_preimage(&value).unwrap()), expected_preimage);
         assert_eq!(tcv1_sha256(&value).unwrap(), expected_sha256);
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct GoldenFixture {
+        tcv1_vectors: Vec<GoldenVector>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct GoldenVector {
+        id: String,
+        document_json: String,
+        equivalent_json: Option<String>,
+        expected_preimage_hex: String,
+        expected_sha256: String,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
+    struct ExternalFixture {
+        schema_version: u64,
+        values: Vec<u64>,
+    }
+
+    #[test]
+    fn production_tcv1_matches_every_committed_golden_vector() {
+        let fixture: GoldenFixture = serde_json::from_str(include_str!(
+            "../../../parity/canonical/golden/tcv1_jcs_cross_language.v1.json"
+        ))
+        .expect("valid committed TCV1 golden fixture");
+
+        for vector in fixture.tcv1_vectors {
+            assert_vector(
+                &vector.document_json,
+                &vector.expected_preimage_hex,
+                &vector.expected_sha256,
+            );
+            if let Some(equivalent) = vector.equivalent_json {
+                assert_eq!(
+                    tcv1_preimage(&parse(&vector.document_json)).unwrap(),
+                    tcv1_preimage(&parse(&equivalent)).unwrap(),
+                    "{}",
+                    vector.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn external_contract_boundary_is_strict_and_shape_preserving() {
+        let value: ExternalFixture = deserialize_external_contract(
+            r#"{"schema_version":1,"values":[2,3]}"#,
+            "fixture",
+            DagMlError::RuntimeValidation,
+        )
+        .expect("object-form contract is valid");
+        assert_eq!(
+            value,
+            ExternalFixture {
+                schema_version: 1,
+                values: vec![2, 3],
+            }
+        );
+
+        let duplicate = deserialize_external_contract::<ExternalFixture, _>(
+            r#"{"schema_version":1,"schema_version":2,"values":[]}"#,
+            "fixture",
+            DagMlError::RuntimeValidation,
+        )
+        .unwrap_err();
+        assert!(duplicate.to_string().contains("duplicate JSON object key"));
+
+        let positional = deserialize_external_contract::<ExternalFixture, _>(
+            r#"[1,[]]"#,
+            "fixture",
+            DagMlError::RuntimeValidation,
+        )
+        .unwrap_err();
+        assert!(positional.to_string().contains("must use a JSON object"));
     }
 
     #[test]

@@ -491,14 +491,13 @@ pub fn select_best_variant_outcome_by_cv_for_target<F>(
     run_id: &RunId,
     root_seed: Option<u64>,
     selection_metric: RegressionMetricKind,
-    score_target: &NodeId,
-    score_target_port: Option<&str>,
-    score_target_level: PredictionLevel,
+    score_target: (&NodeId, Option<&str>, PredictionLevel),
     mut run_single_variant_fit_cv: F,
 ) -> Result<Option<VariantSelectionOutcome>>
 where
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
 {
+    let (score_target, score_target_port, score_target_level) = score_target;
     plan.validate()?;
     if !plan.node_plans.contains_key(score_target) {
         return Err(DagMlError::RuntimeValidation(format!(
