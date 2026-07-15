@@ -86,6 +86,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   remains binding-neutral; native Rust conformal kernels now consume its
   semantics, while public C/Python/WASM conformal bindings are still pending.
 
+### Fixed
+
+- The Python in-process bridge now rejects unknown selection-metric names
+  instead of silently selecting RMSE. The accepted compatibility names remain
+  `rmse`, `accuracy`, and `balanced_accuracy`.
+
 ## [0.2.0] - 2026-06-15
 
 ### Added
