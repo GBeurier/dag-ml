@@ -210,6 +210,34 @@ class LocalImplementationRegistryTests(unittest.TestCase):
                 self.binding_fixture["tasks"]["FIT_CV"], 2.0, 5.0
             )
 
+    def test_explicit_identity_reconstructs_reference_in_new_registry(self) -> None:
+        first_registry = dag_ml.LocalImplementationRegistry()
+        second_registry = dag_ml.LocalImplementationRegistry()
+
+        def first_callback(target: float, prediction: float) -> float:
+            return abs(prediction - target)
+
+        def second_callback(target: float, prediction: float) -> float:
+            return abs(prediction - target)
+
+        identity = {
+            "registry_key": "loss:python:reconstructed-absolute-error",
+            "implementation_fingerprint": "c" * 64,
+        }
+
+        first_reference = first_registry.register_local_loss(
+            self.loss["spec"], first_callback, **identity
+        )
+        second_reference = second_registry.register_local_loss(
+            self.loss["spec"], second_callback, **identity
+        )
+
+        self.assertEqual(second_reference, first_reference)
+        self.assertIs(second_registry.resolve_loss(second_reference), second_callback)
+        self.assertIsNot(
+            second_registry.resolve_loss(second_reference), first_callback
+        )
+
     def test_typed_metric_task_executes_and_native_code_builds_result(self) -> None:
         registry = dag_ml.LocalImplementationRegistry()
         task = self.binding_fixture["metric_task"]
