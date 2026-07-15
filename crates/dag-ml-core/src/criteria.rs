@@ -987,11 +987,9 @@ fn validate_versioned_id(label: &str, value: &str) -> Result<()> {
         return contract_error(format!("{label} id `{value}` is not versioned"));
     };
     if base.is_empty()
-        || version
-            .parse::<u32>()
-            .ok()
-            .filter(|version| *version > 0)
-            .is_none()
+        || version.is_empty()
+        || version.starts_with('0')
+        || !version.bytes().all(|byte| byte.is_ascii_digit())
         || base.contains('@')
     {
         return contract_error(format!(
@@ -1230,6 +1228,23 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("fingerprint mismatch"));
+    }
+
+    #[test]
+    fn versioned_ids_are_canonical_decimal_without_an_artificial_width_limit() {
+        let mut leading_zero = custom_loss();
+        leading_zero.loss_id = "example.loss.asymmetric@01".to_string();
+        leading_zero.spec_fingerprint = leading_zero.compute_fingerprint().unwrap();
+        assert!(leading_zero
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("positive `@<version>` suffix"));
+
+        let mut large_version = custom_loss();
+        large_version.loss_id = "example.loss.asymmetric@4294967296".to_string();
+        large_version.spec_fingerprint = large_version.compute_fingerprint().unwrap();
+        large_version.validate().unwrap();
     }
 
     #[test]

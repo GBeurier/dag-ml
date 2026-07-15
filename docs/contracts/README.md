@@ -5,32 +5,6 @@ DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
 validator: it checks fingerprints, campaign fold membership, OOF boundaries and
 leakage policies before any controller receives a handle.
 
-## Loss and Metric Contracts v1
-
-Schemas: `loss_spec.schema.json`, `metric_spec.schema.json`,
-`implementation_descriptor.schema.json`, `training_loss_role.schema.json` and
-`metric_role.schema.json`.
-
-Canonical fixture: `examples/fixtures/criteria/criteria_contracts.v1.json`
-
-Conformance pack: `criteria_conformance_pack.v1.json`
-
-Native owner: `dag_ml_core::criteria`
-
-`LossSpec` defines optimizer-objective semantics; `MetricSpec` defines
-evaluation semantics and objective direction. Pipeline roles remain separate,
-so selection, reporting, early stopping and training cannot silently exchange
-meanings. Both specs reference the same generic implementation-descriptor
-shape, which carries only provider identity, capabilities and lifecycle. Local
-callbacks are resolved through opaque registry keys; executable code and import
-instructions are forbidden in canonical JSON.
-
-These are new standalone v1 contracts, not fields added to an existing wire
-shape, so there is no previous-version read window. Future incompatible changes
-publish new schema ids and Rust readers. The L1 publication is additive and
-does not add or modify a C ABI symbol, macro or struct layout; C callback
-registration is intentionally deferred to roadmap L5.
-
 ## Heterogeneous Multi-Source Vocabulary and Evolution
 
 The heterogeneous multi-source repetitions roadmap

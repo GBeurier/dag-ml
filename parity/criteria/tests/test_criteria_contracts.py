@@ -73,14 +73,24 @@ def test_required_negative_fixture_cases_are_rejected() -> None:
         "host_local_descriptor_without_registry_key",
         "loss_mismatched_fingerprint",
         "loss_nested_callable_payload",
+        "loss_c1_control_id",
+        "loss_leading_zero_version",
+        "loss_uppercase_callable_payload",
         "loss_unknown_task",
         "loss_unversioned_id",
         "loss_weighted_without_weight_input",
         "metric_without_objective",
         "selection_metric_skips_missing_values",
     }
+    schema_required = {
+        "loss_c1_control_id",
+        "loss_leading_zero_version",
+        "loss_uppercase_callable_payload",
+    }
     for case in cases:
         errors = schema_errors(case["contract"], case["document"])
+        if case["id"] in schema_required:
+            assert errors, f"schema accepted parity case {case['id']}"
         try:
             VALIDATORS[case["contract"]](case["document"])
         except (CriteriaContractError, KeyError):
@@ -96,6 +106,14 @@ def test_nested_executable_payload_is_rejected_semantically_case_insensitively()
     document["spec_fingerprint"] = fingerprint_without(document, "spec_fingerprint")
     with pytest.raises(CriteriaContractError, match="CallAble"):
         VALIDATORS["loss_spec"](document)
+
+
+def test_large_decimal_version_is_accepted_by_schema_and_semantics() -> None:
+    document = load(FIXTURE)["valid"]["loss_spec"]
+    document["loss_id"] = "example.loss.asymmetric@4294967296"
+    document["spec_fingerprint"] = fingerprint_without(document, "spec_fingerprint")
+    assert schema_errors("loss_spec", document) == []
+    VALIDATORS["loss_spec"](document)
 
 
 def test_conformance_pack_is_exact_and_self_fingerprinted() -> None:

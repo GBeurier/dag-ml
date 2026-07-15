@@ -16,57 +16,65 @@
     },
     {
       "path": "crates/dag-ml-core/src/criteria.rs",
-      "sha256": "9c249df0acd70ba75771c252e7bf3abd3a802ca2c29f9770d3fd8be8ac99b089",
+      "sha256": "a5466469d5fe1ff265da5947111a7b62d19c9cc61f7c152b2a957e08d14ce43b",
       "kind": "rust_contract"
     },
     {
+      "path": "docs/CRITERIA_CONTRACTS.md",
+      "sha256": "617eba106d316eb8627ba2a65beaeb93be53404fefe6fee2ff4d41545bc0699a",
+      "kind": "contract_documentation"
+    },
+    {
       "path": "docs/contracts/implementation_descriptor.schema.json",
-      "sha256": "2fa2a5d3458608b555edfff003090b25b02b0009b747038cdecd19338df8a1ef",
+      "sha256": "7fc37cd6dda7f7fcdb778facd691a5b27e64c825051965dd0948cfdb09092210",
       "kind": "schema"
     },
     {
       "path": "docs/contracts/loss_spec.schema.json",
-      "sha256": "ec0a5751ee44fbb87fe25cc60940edfd44819ec02b6e1c311dd06fd33965a62f",
+      "sha256": "18a6cfc7bf74c42927ce3ba60d31b5c6bc8e5dd447b7c96a011ab26b3e282954",
       "kind": "schema"
     },
     {
       "path": "docs/contracts/metric_role.schema.json",
-      "sha256": "39c80ccf13a48a25d0b07c39b5995b1248656d026829c0133922a7d0cae08428",
+      "sha256": "b530ee58934571d0e82373f16ae92f86b6521c308479bef80d86040b4946f5a5",
       "kind": "schema"
     },
     {
       "path": "docs/contracts/metric_spec.schema.json",
-      "sha256": "36fb55482e48d054e903f656ac55a3ce5f970cae839efbdba4f2b46301fa91ce",
+      "sha256": "ca64494b8b17f04eccdd200c1bfc70c3d7cd43c6756c7b655e91f049378462dd",
       "kind": "schema"
     },
     {
       "path": "docs/contracts/training_loss_role.schema.json",
-      "sha256": "02b84e483728a62bf4398666d17b1b0ce3077608136b676f369488767dbadac6",
+      "sha256": "078886aa7f622c05c86aa22b4eaeaeeff857e2ad68da1137f62fe4f1510d02e3",
       "kind": "schema"
     },
     {
       "path": "examples/fixtures/criteria/criteria_contracts.v1.json",
-      "sha256": "45501a3ad397743a0e5b00924330a68caf2b449389b39d5a540a2d5b03c01439",
+      "sha256": "07284ac6c366c87ffc23af805410f79cd1d4875f2449fcb3dc2c4c3e45c1e5be",
       "kind": "fixture"
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "457e62d476cf286a7470dccff10b4be77dea39cff45cd96418101c4e3e09f29f",
+      "sha256": "fa49a24c622004a5ead0baf574ebbd287004e1be0c3d950b69ae59c5e4d11771",
       "kind": "generator"
     },
     {
       "path": "parity/criteria/oracle.py",
-      "sha256": "67d26914ed8330cc664dcfc28b6cd6481de3e3cde6285bf51ab83a1695775e1a",
+      "sha256": "3ab5835a5304fddd587d81f6a6fac65f6417eadadbef3ee5855b3f175a1e9294",
       "kind": "independent_validator"
     },
     {
       "path": "parity/criteria/tests/test_criteria_contracts.py",
-      "sha256": "c3486ac6a1b682212b06859ab85ba00931e3a182abf9722b807113d7f6ea0227",
+      "sha256": "0234d794fd23f1cc9cc09a5005923a4e59f625fa32b4710032937aafdb79fdc0",
       "kind": "parity_test"
     }
   ],
   "required_negative_cases": [
     "loss_unversioned_id",
+    "loss_leading_zero_version",
+    "loss_c1_control_id",
+    "loss_uppercase_callable_payload",
     "loss_unknown_task",
     "loss_nested_callable_payload",
     "loss_weighted_without_weight_input",
@@ -75,5 +83,5 @@
     "host_local_descriptor_without_registry_key",
     "selection_metric_skips_missing_values"
   ],
-  "pack_checksum": "eb838cb556e32e6f261d00cf05788955a79c78967b1025edda7918eab9e3e2b4"
+  "pack_checksum": "67f1f72bf8b5a0c73bd8ae9380d3c45ab300bc2f221056a0e57e8c54711a1e3f"
 }
