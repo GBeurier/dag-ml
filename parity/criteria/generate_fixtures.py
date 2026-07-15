@@ -21,6 +21,7 @@ ARTIFACTS = {
     "crates/dag-ml-cli/src/main.rs": "cli_validator",
     "crates/dag-ml-cli/tests/cli_contracts.rs": "cli_test",
     "crates/dag-ml-core/src/criteria.rs": "rust_contract",
+    "docs/CRITERIA_CONTRACTS.md": "contract_documentation",
     "docs/contracts/implementation_descriptor.schema.json": "schema",
     "docs/contracts/loss_spec.schema.json": "schema",
     "docs/contracts/metric_role.schema.json": "schema",
@@ -39,7 +40,9 @@ def load(path: Path) -> dict[str, Any]:
 
 
 def write(path: Path, document: dict[str, Any]) -> None:
-    path.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(document, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
 
 
 def sha256(path: Path) -> str:

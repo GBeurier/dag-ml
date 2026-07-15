@@ -85,7 +85,7 @@
   "$defs": {
     "versioned_id": {
       "type": "string",
-      "pattern": "^[^@\\s\\u0000-\\u001f\\u007f]+@[1-9][0-9]*$"
+      "pattern": "^[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+@[1-9][0-9]*$"
     },
     "sha256": {
       "type": "string",
@@ -114,17 +114,7 @@
       "type": "object",
       "propertyNames": {
         "not": {
-          "enum": [
-            "bytecode",
-            "callable",
-            "code",
-            "function_source",
-            "import_path",
-            "module_path",
-            "pickle",
-            "serialized_callable",
-            "source_code"
-          ]
+          "pattern": "^(?:[bB][yY][tT][eE][cC][oO][dD][eE]|[cC][aA][lL][lL][aA][bB][lL][eE]|[cC][oO][dD][eE]|[fF][uU][nN][cC][tT][iI][oO][nN]_[sS][oO][uU][rR][cC][eE]|[iI][mM][pP][oO][rR][tT]_[pP][aA][tT][hH]|[mM][oO][dD][uU][lL][eE]_[pP][aA][tT][hH]|[pP][iI][cC][kK][lL][eE]|[sS][eE][rR][iI][aA][lL][iI][zZ][eE][dD]_[cC][aA][lL][lL][aA][bB][lL][eE]|[sS][oO][uU][rR][cC][eE]_[cC][oO][dD][eE])$"
         }
       },
       "additionalProperties": { "$ref": "#/$defs/parameter_value" }

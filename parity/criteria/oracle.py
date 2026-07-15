@@ -23,7 +23,8 @@ FORBIDDEN_EXECUTABLE_KEYS = {
     "serialized_callable",
     "source_code",
 }
-VERSIONED_ID = re.compile(r"^[^@\s\x00-\x1f\x7f]+@[1-9][0-9]*$")
+VERSIONED_ID = re.compile(r"^[^@\s\x00-\x1f\x7f-\x9f]+@[1-9][0-9]*$")
+TOKEN = re.compile(r"^[^\s\x00-\x1f\x7f-\x9f]+$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -109,9 +110,17 @@ def validate_implementation_descriptor(document: dict[str, Any]) -> None:
     for field in ("semantic_fingerprint", "implementation_fingerprint"):
         value = document.get(field)
         require(isinstance(value, str) and SHA256.fullmatch(value) is not None, field)
+    for field in ("provider_id", "binding_id", "implementation_version"):
+        value = document.get(field)
+        require(isinstance(value, str) and TOKEN.fullmatch(value) is not None, field)
     portability = document.get("portability")
     replayability = document.get("replayability")
     registry_key = document.get("registry_key")
+    if registry_key is not None:
+        require(
+            isinstance(registry_key, str) and TOKEN.fullmatch(registry_key) is not None,
+            "registry_key",
+        )
     if portability == "host_local":
         require(bool(registry_key), "host_local registry_key")
         require(replayability != "detached", "host_local replayability")

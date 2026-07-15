@@ -96,11 +96,11 @@
   "$defs": {
     "versioned_id": {
       "type": "string",
-      "pattern": "^[^@\\s\\u0000-\\u001f\\u007f]+@[1-9][0-9]*$"
+      "pattern": "^[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+@[1-9][0-9]*$"
     },
     "token": {
       "type": "string",
-      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f]+$"
     },
     "sha256": {
       "type": "string",
