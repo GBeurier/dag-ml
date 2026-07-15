@@ -186,7 +186,7 @@
     },
     {
       "path": "crates/dag-ml-py/tests/test_training_result.py",
-      "sha256": "41d9575748f454cab0ed7e9e0c6ca823f07ba2d372e6be620b1eb095c7188e7c",
+      "sha256": "e68cf5fd9e3d4f7d9b29839890db38bcd384bb97d3357dfc8e3790a6c5a0d638",
       "kind": "python_binding_test"
     },
     {
@@ -529,5 +529,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "c604cc416d7be151cf94ec91cf9ee1bcd3cd86a31e506d0ee6996a17a485fc52"
+  "pack_checksum": "acf0faf06e3673c3376170d8ae641b4939a18cc7ef432b11d331a70087949c66"
 }

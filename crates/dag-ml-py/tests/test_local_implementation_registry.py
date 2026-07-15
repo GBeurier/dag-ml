@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import pickle
 import unittest
+import weakref
 from copy import deepcopy
 from pathlib import Path
 
@@ -24,8 +26,7 @@ class LocalImplementationRegistryTests(unittest.TestCase):
         cls.loss = cls.role["loss"]
         cls.binding_fixture = json.loads(
             (
-                REPO
-                / "examples/fixtures/criteria/python_local_implementations.v1.json"
+                REPO / "examples/fixtures/criteria/python_local_implementations.v1.json"
             ).read_text()
         )
 
@@ -48,10 +49,31 @@ class LocalImplementationRegistryTests(unittest.TestCase):
 
     def test_registry_is_explicitly_process_local(self) -> None:
         registry = dag_ml.LocalImplementationRegistry()
-        registry.register_loss(self.loss, lambda target, prediction: prediction - target)
+        registry.register_loss(
+            self.loss, lambda target, prediction: prediction - target
+        )
 
         with self.assertRaisesRegex(TypeError, "cannot be serialized"):
             pickle.dumps(registry)
+
+    def test_registry_retains_and_clear_releases_python_callable(self) -> None:
+        registry = dag_ml.LocalImplementationRegistry()
+
+        class LocalLoss:
+            def __call__(self, target: float, prediction: float) -> float:
+                return prediction - target
+
+        implementation = LocalLoss()
+        reference = weakref.ref(implementation)
+        registry.register_loss(self.loss, implementation)
+        del implementation
+        gc.collect()
+        self.assertIsNotNone(reference())
+
+        registry.clear()
+        gc.collect()
+        self.assertIsNone(reference())
+        self.assertEqual(len(registry), 0)
 
     def test_attestation_matches_refit_role(self) -> None:
         attestation = dag_ml.loss_execution_attestation(self.role, "REFIT")
@@ -149,7 +171,8 @@ class LocalImplementationRegistryTests(unittest.TestCase):
 
         non_finite = dag_ml.LocalImplementationRegistry()
         non_finite.register_metric(
-            self.binding_fixture["metric_reference"], lambda _task: [{"value": float("nan")}]
+            self.binding_fixture["metric_reference"],
+            lambda _task: [{"value": float("nan")}],
         )
         with self.assertRaises(dag_ml.DagMlRuntimeError):
             non_finite.evaluate_metric(task)
