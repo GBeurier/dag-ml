@@ -1,0 +1,227 @@
+{
+  "schema_version": 1,
+  "outcome_id": "replay:outcome.explain",
+  "run_id": "run:replay.explain",
+  "source_training_outcome": {
+    "outcome_id": "training:estimator.refit.explain",
+    "outcome_fingerprint": "ceae01c20a3e875b642be51638cf778ea07f682ab5427436e74e9924120e1dcf",
+    "training_request_fingerprint": "2e3fb0f9419ec83630fbe969bf5fa70e6f2951adf6cec86a34223fdadadafdc6",
+    "effective_plan_fingerprint": "27f7b32c42bc9289e24c6e8ff7b6414656d5768d8ecb7a7b6d4b3e0df722921b",
+    "execution_bundle_id": "bundle:estimator.contract",
+    "execution_bundle_fingerprint": "5023df3d8339a04fccac5b0b2e7017f9adadc3a68ec29f97c022ea68682be1ef",
+    "output_binding_fingerprints": [
+      "c8d90368ab9e3a2a6ed03f729fdbda2521a42e429bd88d2334d86f6b55214c4f"
+    ],
+    "training_influence_fingerprint": "cf8f6ce4dbf07b81621d4baf62fca07e218936da8a85d444a91e74e302f485dd",
+    "data_identities_fingerprint": "fcf7bfdd9e2252a130c1afd9744d12004f3bb22668c600864552bb3ff6d4b063"
+  },
+  "replay_request_id": "replay:request.explain",
+  "replay_request_fingerprint": "64b4e546f1440bd44336d4a48f8c6df87e2e02f0e55b3da1fa3482897d7390ad",
+  "input_data_identities": [
+    {
+      "requirement_key": "branch:b0.model:ridge.x",
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "relation_fingerprint": "937c7086921a73803c0c924e9c6bafc34937b4ee49b4a15b5d699d358516a761",
+      "data_content_fingerprint": "4b371f19bfdf6289d298330c0aceac21c250442ca26dece316e378ca6dc0e32d",
+      "target_content_fingerprint": "f35e0a07d7166b6eb7d08622c50257163aee1bf7883fae4648a750693dd94e1c",
+      "identity_fingerprint": "ec77c2a8492fe0be3dbeb6bc0610a974cb5c081433f01b474d35a53245469bf7"
+    },
+    {
+      "requirement_key": "branch:b1.augment:noise.x",
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "relation_fingerprint": "937c7086921a73803c0c924e9c6bafc34937b4ee49b4a15b5d699d358516a761",
+      "data_content_fingerprint": "9e4c3cef5d48080a6df1778ad9075776f18ed6f968df1ee726269bd3ae0a3018",
+      "target_content_fingerprint": "aecb439c0a4aef6af6f9e1d152e13df3f9340f541eb7a2c3e40a4c7022906c08",
+      "identity_fingerprint": "3186012a1452386502575309773cc58dd530ab41ea599d4b5efc6bb384100c37"
+    },
+    {
+      "requirement_key": "merge:stack.pred_plus_original.meta:ridge.x_original",
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "relation_fingerprint": "937c7086921a73803c0c924e9c6bafc34937b4ee49b4a15b5d699d358516a761",
+      "data_content_fingerprint": "3d9f9a91845c63fbc7b17b2fc7ca028579bf99640e555fb81123e8fcff144e1c",
+      "target_content_fingerprint": "00759321617244b45c8d7afcfcff5b979618155f8ab960a8e8eff0f24a3046f1",
+      "identity_fingerprint": "2fba846f52ebaa0055b961fec26531f3fef2b6421d64af5d609eb913ae472364"
+    }
+  ],
+  "bundle_id": "bundle:estimator.contract",
+  "plan_id": "plan:fixture.execution.branch_merge",
+  "phase": "EXPLAIN",
+  "result_count": 4,
+  "lineage_record_count": 4,
+  "prediction_block_count": 1,
+  "observation_prediction_block_count": 0,
+  "aggregated_prediction_block_count": 0,
+  "explanation_block_count": 1,
+  "controller_count": 2,
+  "prediction_cache_store": false,
+  "outputs": [
+    {
+      "binding": {
+        "schema_version": 1,
+        "binding_id": "output:meta.final",
+        "node_id": "merge:stack.pred_plus_original.meta:ridge",
+        "port_name": "oof",
+        "prediction_level": "sample",
+        "unit_level": "physical_sample",
+        "prediction_kind": "regression_point",
+        "prediction_source": "final_refit",
+        "refit_strategy": "refit_one",
+        "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+        "target_names": [
+          "protein"
+        ],
+        "target_units": [
+          "percent"
+        ],
+        "class_labels": [
+          []
+        ],
+        "output_order": "target_order",
+        "target_space": "raw",
+        "binding_fingerprint": "c8d90368ab9e3a2a6ed03f729fdbda2521a42e429bd88d2334d86f6b55214c4f"
+      },
+      "predictions": [
+        {
+          "prediction_id": "prediction:replay.explain.point",
+          "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+          "producer_port": "oof",
+          "partition": "final",
+          "fold_id": null,
+          "sample_ids": [
+            "sample:prod.1",
+            "sample:prod.2"
+          ],
+          "values": [
+            [
+              2.4
+            ],
+            [
+              3.1
+            ]
+          ],
+          "target_names": [
+            "protein"
+          ]
+        }
+      ],
+      "observation_predictions": [],
+      "aggregated_predictions": [],
+      "schema_version": 2
+    }
+  ],
+  "explanations": [
+    {
+      "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+      "producer_port": "oof",
+      "method": "shap",
+      "target_name": "protein",
+      "payload": {
+        "feature_names": [
+          "feature:1",
+          "feature:2"
+        ],
+        "values": [
+          [
+            0.2,
+            -0.1
+          ],
+          [
+            0.3,
+            0.05
+          ]
+        ]
+      }
+    }
+  ],
+  "lineage": [
+    {
+      "record_id": "lineage:replay.explain.0",
+      "run_id": "run:replay.explain",
+      "node_id": "branch:b0.model:ridge",
+      "phase": "EXPLAIN",
+      "controller_id": "controller:model.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:a964828b1417c6e7",
+      "fold_id": null,
+      "branch_path": [],
+      "input_lineage": [],
+      "artifact_refs": [],
+      "params_fingerprint": "af39a185b5a846fc6bbdc703ee4a7bf3e4b7ad9a304563d6cc024a36dc6628ab",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": null,
+      "unsafe_flags": [],
+      "metrics": {}
+    },
+    {
+      "record_id": "lineage:replay.explain.1",
+      "run_id": "run:replay.explain",
+      "node_id": "branch:b1.augment:noise",
+      "phase": "EXPLAIN",
+      "controller_id": "controller:augmentation.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:a964828b1417c6e7",
+      "fold_id": null,
+      "branch_path": [],
+      "input_lineage": [],
+      "artifact_refs": [],
+      "params_fingerprint": "33d2aa022dffa4cf09394b0edc178bf379bab06c569e00b7260fb5c546f433c6",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": null,
+      "unsafe_flags": [],
+      "metrics": {}
+    },
+    {
+      "record_id": "lineage:replay.explain.2",
+      "run_id": "run:replay.explain",
+      "node_id": "branch:b1.model:rf",
+      "phase": "EXPLAIN",
+      "controller_id": "controller:model.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:a964828b1417c6e7",
+      "fold_id": null,
+      "branch_path": [],
+      "input_lineage": [
+        "lineage:replay.explain.1"
+      ],
+      "artifact_refs": [],
+      "params_fingerprint": "825b0d7229d08dad92ad5f81443063e14bdeb3e03ef3ca294c81c156711b7924",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": null,
+      "unsafe_flags": [],
+      "metrics": {}
+    },
+    {
+      "record_id": "lineage:replay.explain.3",
+      "run_id": "run:replay.explain",
+      "node_id": "merge:stack.pred_plus_original.meta:ridge",
+      "phase": "EXPLAIN",
+      "controller_id": "controller:model.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:a964828b1417c6e7",
+      "fold_id": null,
+      "branch_path": [],
+      "input_lineage": [
+        "lineage:replay.explain.0",
+        "lineage:replay.explain.2"
+      ],
+      "artifact_refs": [],
+      "params_fingerprint": "e7fcc53de2b14105e7e7f5b943b3eb32811c5ac79ad70f10fee4de31137921d2",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": null,
+      "unsafe_flags": [],
+      "metrics": {}
+    }
+  ],
+  "warnings": [],
+  "diagnostics": {
+    "contract_fixture": true
+  },
+  "outcome_fingerprint": "3ab805244a30bd09e4e9bd742c7e8730245da7c95b776f332a28f6702f6be1e0"
+}

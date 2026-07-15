@@ -1331,6 +1331,17 @@ pub struct DataBinding {
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
+/// Return the stable wire key used to bind one node input to its external
+/// data requirement.
+///
+/// The `node.input` spelling is part of the V1 JSON contract. Because both
+/// coordinates may themselves contain `.`, callers that index more than one
+/// binding must still reject distinct coordinates that render to the same
+/// key instead of silently overwriting one of them.
+pub fn data_binding_requirement_key(node_id: &NodeId, input_name: &str) -> String {
+    format!("{node_id}.{input_name}")
+}
+
 impl DataBinding {
     pub fn validate(&self) -> Result<()> {
         self.view_policy.validate()?;
@@ -1487,6 +1498,16 @@ pub struct ExternalDataPlanEnvelope {
     pub plan_fingerprint: String,
     #[serde(default)]
     pub relation_fingerprint: Option<String>,
+    /// Optional additive identity of the concrete feature/input content. Legacy
+    /// V1 envelopes omit it; W1 training requests bind it through
+    /// `TrainingDataIdentity` before candidate caches are reusable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_content_fingerprint: Option<String>,
+    /// Optional additive identity of the concrete target content. It may be
+    /// absent for prediction-only envelopes but is mandatory at the W1
+    /// training boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_content_fingerprint: Option<String>,
     #[serde(default)]
     pub coordinator_relations: Option<SampleRelationSet>,
 }
@@ -1508,6 +1529,12 @@ impl ExternalDataPlanEnvelope {
                     "relation_fingerprint requires coordinator_relations".to_string(),
                 ));
             }
+        }
+        if let Some(data_content_fingerprint) = &self.data_content_fingerprint {
+            validate_fingerprint("data content", data_content_fingerprint)?;
+        }
+        if let Some(target_content_fingerprint) = &self.target_content_fingerprint {
+            validate_fingerprint("target content", target_content_fingerprint)?;
         }
         if let Some(relations) = &self.coordinator_relations {
             relations.validate()?;
@@ -1764,6 +1791,31 @@ impl RuntimeDataProvider for InMemoryDataProvider {
         };
         self.view_records.borrow_mut().insert(handle.handle, record);
         Ok(handle)
+    }
+
+    fn training_data_identity(
+        &self,
+        binding: &DataBinding,
+    ) -> Result<Option<crate::training::TrainingDataIdentity>> {
+        let envelope = self
+            .envelopes
+            .get(&DataEnvelopeKey::from_binding(binding))
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "no external data-plan envelope registered for binding `{}` on `{}`",
+                    binding.input_name, binding.node_id
+                ))
+            })?;
+        binding.validate_envelope(envelope)?;
+        if envelope.relation_fingerprint.is_none()
+            || envelope.data_content_fingerprint.is_none()
+            || envelope.target_content_fingerprint.is_none()
+        {
+            return Ok(None);
+        }
+        Ok(Some(
+            crate::training::TrainingDataIdentity::from_binding_envelope(binding, envelope)?,
+        ))
     }
 
     fn coordinator_relations(&self, binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
@@ -2028,6 +2080,50 @@ mod tests {
             EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
         );
         binding().validate_envelope(&envelope).unwrap();
+        assert!(envelope.data_content_fingerprint.is_none());
+        assert!(envelope.target_content_fingerprint.is_none());
+    }
+
+    #[test]
+    fn external_data_envelope_content_identity_is_additive_and_validated() {
+        let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        envelope.data_content_fingerprint = Some("a".repeat(64));
+        envelope.target_content_fingerprint = Some("b".repeat(64));
+        envelope.validate().unwrap();
+
+        envelope.data_content_fingerprint = Some("not-a-fingerprint".to_string());
+        assert!(envelope
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("data content fingerprint"));
+    }
+
+    #[test]
+    fn in_memory_provider_attests_complete_training_identity() {
+        let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        envelope.data_content_fingerprint = Some("a".repeat(64));
+        envelope.target_content_fingerprint = Some("b".repeat(64));
+        let provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider").unwrap(),
+            envelope,
+        )
+        .unwrap();
+
+        let identity = provider
+            .training_data_identity(&binding())
+            .unwrap()
+            .expect("content-aware envelope must attest training identity");
+        identity.validate().unwrap();
+        assert_eq!(identity.requirement_key, "model:base.x");
+        assert_eq!(identity.data_content_fingerprint, "a".repeat(64));
+        assert_eq!(identity.target_content_fingerprint, "b".repeat(64));
     }
 
     #[test]

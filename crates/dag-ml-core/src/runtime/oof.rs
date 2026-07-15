@@ -53,6 +53,164 @@ pub(crate) fn incoming_training_oof_edges<'a>(
     incoming_oof_edges(plan, node_plan)
 }
 
+/// Validate that a graph edge's source port is a prediction output. Stored block
+/// provenance itself is checked by [`prediction_block_matches_edge_source_port`]
+/// and [`aggregated_prediction_block_matches_edge_source_port`], which can use
+/// the R1 `producer_port` field while preserving the legacy single-port fallback.
+pub(crate) fn validate_oof_source_port_provenance(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+) -> Result<()> {
+    let source = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == edge.source.node_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "OOF edge source node `{}` is absent from the execution graph",
+                edge.source.node_id
+            ))
+        })?;
+    let mut prediction_ports = source
+        .ports
+        .outputs
+        .iter()
+        .filter(|port| port.kind == PortKind::Prediction)
+        .map(|port| port.name.as_str())
+        .collect::<Vec<_>>();
+    prediction_ports.sort_unstable();
+    if !prediction_ports
+        .iter()
+        .any(|port| *port == edge.source.port_name)
+    {
+        return Err(DagMlError::OofValidation(format!(
+            "OOF edge source `{}.{}` is not a declared Prediction output; declared prediction ports are {:?}",
+            edge.source.node_id,
+            edge.source.port_name,
+            prediction_ports
+        )));
+    }
+    Ok(())
+}
+
+fn legacy_absent_port_matches_single_prediction_output(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    block_kind: &str,
+) -> Result<bool> {
+    let source = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == edge.source.node_id)
+        .ok_or_else(|| {
+            DagMlError::OofValidation(format!(
+                "OOF edge source node `{}` is absent from the execution graph",
+                edge.source.node_id
+            ))
+        })?;
+    let mut prediction_ports = source
+        .ports
+        .outputs
+        .iter()
+        .filter(|port| port.kind == PortKind::Prediction)
+        .map(|port| port.name.as_str())
+        .collect::<Vec<_>>();
+    prediction_ports.sort_unstable();
+    if prediction_ports.len() == 1 {
+        return Ok(prediction_ports[0] == edge.source.port_name);
+    }
+    Err(DagMlError::OofValidation(format!(
+        "cannot bind legacy {block_kind} without producer_port to `{}.{}`: producer `{}` exposes {} Prediction output ports {:?}; multi-output producers must store producer_port explicitly",
+        edge.source.node_id,
+        edge.source.port_name,
+        edge.source.node_id,
+        prediction_ports.len(),
+        prediction_ports
+    )))
+}
+
+pub(crate) fn producer_port_matches_edge_source_port(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    producer_node: &NodeId,
+    producer_port: Option<&str>,
+    block_kind: &str,
+) -> Result<bool> {
+    match producer_port {
+        Some(port) if port.trim().is_empty() => Err(DagMlError::OofValidation(format!(
+            "{block_kind} from `{producer_node}` has blank producer_port"
+        ))),
+        Some(port) => Ok(port == edge.source.port_name),
+        None => legacy_absent_port_matches_single_prediction_output(plan, edge, block_kind),
+    }
+}
+
+pub(crate) fn prediction_block_matches_edge_source_port(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    block: &PredictionBlock,
+) -> Result<bool> {
+    producer_port_matches_edge_source_port(
+        plan,
+        edge,
+        &block.producer_node,
+        block.producer_port.as_deref(),
+        "prediction block",
+    )
+}
+
+pub(crate) fn aggregated_prediction_block_matches_edge_source_port(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    block: &AggregatedPredictionBlock,
+) -> Result<bool> {
+    producer_port_matches_edge_source_port(
+        plan,
+        edge,
+        &block.producer_node,
+        block.producer_port.as_deref(),
+        "aggregated prediction block",
+    )
+}
+
+pub(crate) fn filter_prediction_blocks_for_edge_source_port<'a>(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    blocks: impl IntoIterator<Item = &'a PredictionBlock>,
+) -> Result<Vec<&'a PredictionBlock>> {
+    blocks
+        .into_iter()
+        .filter_map(
+            |block| match prediction_block_matches_edge_source_port(plan, edge, block) {
+                Ok(true) => Some(Ok(block)),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
+        .collect()
+}
+
+pub(crate) fn filter_aggregated_prediction_blocks_for_edge_source_port<'a>(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    blocks: impl IntoIterator<Item = &'a AggregatedPredictionBlock>,
+) -> Result<Vec<&'a AggregatedPredictionBlock>> {
+    blocks
+        .into_iter()
+        .filter_map(|block| {
+            match aggregated_prediction_block_matches_edge_source_port(plan, edge, block) {
+                Ok(true) => Some(Ok(block)),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect()
+}
+
 /// The base producer's off-fold (test / predict) predictions delivered to a
 /// stacking meta-node as a SEPARATE prediction input in REFIT / PREDICT, so the
 /// host meta-model can predict from them. This is the prediction-stacking analogue
@@ -78,13 +236,21 @@ pub(crate) fn collect_off_fold_prediction_input(
     ctx: &RunContext,
     scope: &PhaseScope,
 ) -> Result<Option<CollectedPredictionInput>> {
+    validate_oof_source_port_provenance(plan, edge)?;
     let expected_partition = expected_off_fold_partition(scope.phase);
-    let blocks: Vec<&PredictionBlock> = ctx
+    let raw_blocks: Vec<&PredictionBlock> = ctx
         .prediction_store
         .find(Some(&edge.source.node_id), Some(&expected_partition), None)
         .into_iter()
         .filter(|block| block.fold_id.is_none())
         .collect();
+    let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, raw_blocks.clone())?;
+    if !raw_blocks.is_empty() && blocks.is_empty() {
+        return Err(DagMlError::OofValidation(format!(
+            "meta node `{}` found off-fold ({expected_partition:?}) blocks for producer `{}` but none for source port `{}`",
+            edge.target.node_id, edge.source.node_id, edge.source.port_name
+        )));
+    }
     if blocks.is_empty() {
         return Ok(None);
     }
@@ -148,6 +314,7 @@ pub(crate) fn collect_oof_prediction_input(
     scope: &PhaseScope,
     resources: &PhaseScopeResources<'_>,
 ) -> Result<Option<CollectedPredictionInput>> {
+    validate_oof_source_port_provenance(plan, edge)?;
     if scope.phase == Phase::Refit {
         if let Some(contract) = replay_prediction_cache_contract_for_edge(resources, edge) {
             if contract.requirement.prediction_level != PredictionLevel::Sample {
@@ -326,6 +493,7 @@ pub(crate) fn validate_fit_cv_oof_edge<'a>(
         Some(&PredictionPartition::Validation),
         Some(fold_id),
     );
+    let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
     if blocks.is_empty() {
         return Err(missing_oof_edge_error(edge, Some(fold_id)));
     }
@@ -352,6 +520,7 @@ pub(crate) fn validate_refit_oof_edge<'a>(
         Some(&PredictionPartition::Validation),
         None,
     );
+    let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
     // No validation OOF at all, under the default full-coverage policy, means the CV phase was never
     // run for this producer (e.g. a direct REFIT without a prior FIT_CV). Report it as a missing-OOF
     // edge — matching `validate_fit_cv_oof_edge` and `validate_refit_aggregated_oof_edge`, which both
@@ -425,6 +594,7 @@ pub(crate) fn validate_fit_cv_aggregated_oof_edge<'a>(
         Some(fold_id),
         Some(prediction_level),
     );
+    let blocks = filter_aggregated_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
     if blocks.is_empty() {
         return Err(missing_oof_edge_error(edge, Some(fold_id)));
     }
@@ -457,6 +627,7 @@ pub(crate) fn validate_refit_aggregated_oof_edge<'a>(
         None,
         Some(prediction_level),
     );
+    let blocks = filter_aggregated_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
     if blocks.is_empty() {
         return Err(missing_oof_edge_error(edge, None));
     }
@@ -483,7 +654,7 @@ pub(crate) fn validate_aggregated_blocks_basic(
     for block in blocks {
         block.validate_shape()?;
         if block.partition != PredictionPartition::Validation {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` selected non-validation aggregated predictions",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -492,7 +663,7 @@ pub(crate) fn validate_aggregated_blocks_basic(
             )));
         }
         if block.level != prediction_level {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` selected {:?} aggregated predictions, expected {:?}",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -532,7 +703,7 @@ pub(crate) fn prediction_input_spec(
         for (sample_id, row) in block.sample_ids.iter().zip(block.values.iter()) {
             let rows = rows_by_sample.entry(sample_id).or_default();
             if !allow_cross_fold_duplicates && !rows.is_empty() {
-                return Err(DagMlError::RuntimeValidation(format!(
+                return Err(DagMlError::OofValidation(format!(
                     "edge `{}.{}` -> `{}.{}` has duplicate OOF prediction for sample `{sample_id}`",
                     edge.source.node_id,
                     edge.source.port_name,
@@ -550,7 +721,7 @@ pub(crate) fn prediction_input_spec(
             block.target_names.clone()
         };
         if prediction_width.is_some_and(|expected| expected != width) {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` OOF prediction width is not stable across folds",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -562,7 +733,7 @@ pub(crate) fn prediction_input_spec(
             .as_ref()
             .is_some_and(|expected| expected != &block_target_names)
         {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` OOF target names are not stable across folds",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -584,7 +755,7 @@ pub(crate) fn prediction_input_spec(
                 .get(sample_id)
                 .map(|rows| average_prediction_rows(rows, prediction_width.unwrap_or_default()))
                 .ok_or_else(|| {
-                    DagMlError::RuntimeValidation(format!(
+                    DagMlError::OofValidation(format!(
                         "edge `{}.{}` -> `{}.{}` has no OOF prediction row for sample `{sample_id}`",
                         edge.source.node_id,
                         edge.source.port_name,
@@ -658,7 +829,7 @@ pub(crate) fn aggregated_prediction_input_spec(
             block.target_names.clone()
         };
         if prediction_width.is_some_and(|expected| expected != width) {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` aggregated OOF prediction width is not stable across folds",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -670,7 +841,7 @@ pub(crate) fn aggregated_prediction_input_spec(
             .as_ref()
             .is_some_and(|expected| expected != &block_target_names)
         {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` aggregated OOF target names are not stable across folds",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -722,7 +893,7 @@ pub(crate) fn prediction_input_spec_from_requirement(
 }
 
 pub(crate) fn missing_oof_edge_error(edge: &EdgeSpec, fold_id: Option<&FoldId>) -> DagMlError {
-    DagMlError::RuntimeValidation(format!(
+    DagMlError::OofValidation(format!(
         "edge `{}.{}` -> `{}.{}` requires OOF validation predictions from `{}`{}",
         edge.source.node_id,
         edge.source.port_name,
@@ -772,7 +943,7 @@ pub(crate) fn validate_oof_blocks_match_fold(
         .iter()
         .find(|fold| &fold.fold_id == fold_id)
         .ok_or_else(|| {
-            DagMlError::RuntimeValidation(format!(
+            DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` references unknown fold `{fold_id}`",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -787,7 +958,7 @@ pub(crate) fn validate_oof_blocks_match_fold(
         .cloned()
         .collect::<BTreeSet<_>>();
     if actual != expected {
-        return Err(DagMlError::RuntimeValidation(format!(
+        return Err(DagMlError::OofValidation(format!(
             "edge `{}.{}` -> `{}.{}` OOF predictions do not match validation samples for fold `{fold_id}`",
             edge.source.node_id,
             edge.source.port_name,
@@ -812,7 +983,7 @@ pub(crate) fn validate_oof_blocks_cover_fold_set(
     let mut all_samples = BTreeSet::new();
     for block in blocks {
         let fold_id = block.fold_id.as_ref().ok_or_else(|| {
-            DagMlError::RuntimeValidation(format!(
+            DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` has OOF predictions without a fold id",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -821,7 +992,7 @@ pub(crate) fn validate_oof_blocks_cover_fold_set(
             ))
         })?;
         let fold = folds.get(fold_id).ok_or_else(|| {
-            DagMlError::RuntimeValidation(format!(
+            DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` references unknown fold `{fold_id}`",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -836,7 +1007,7 @@ pub(crate) fn validate_oof_blocks_cover_fold_set(
             .cloned()
             .collect::<BTreeSet<_>>();
         if block_samples != expected {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` OOF predictions do not match validation samples for fold `{fold_id}`",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -854,7 +1025,7 @@ pub(crate) fn validate_oof_blocks_cover_fold_set(
             if !all_samples.insert(sample_id.clone())
                 && fold_set.partition_mode == FoldPartitionMode::Partition
             {
-                return Err(DagMlError::RuntimeValidation(format!(
+                return Err(DagMlError::OofValidation(format!(
                     "edge `{}.{}` -> `{}.{}` has duplicate OOF prediction for sample `{sample_id}`",
                     edge.source.node_id,
                     edge.source.port_name,
@@ -866,7 +1037,7 @@ pub(crate) fn validate_oof_blocks_cover_fold_set(
     }
     let expected_all = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
     if all_samples != expected_all {
-        return Err(DagMlError::RuntimeValidation(format!(
+        return Err(DagMlError::OofValidation(format!(
             "edge `{}.{}` -> `{}.{}` OOF predictions do not cover the refit sample universe",
             edge.source.node_id, edge.source.port_name, edge.target.node_id, edge.target.port_name
         )));
@@ -887,7 +1058,7 @@ pub(crate) fn validate_aggregated_oof_blocks_match_fold(
         .iter()
         .find(|fold| &fold.fold_id == fold_id)
         .ok_or_else(|| {
-            DagMlError::RuntimeValidation(format!(
+            DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` references unknown fold `{fold_id}`",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -898,7 +1069,7 @@ pub(crate) fn validate_aggregated_oof_blocks_match_fold(
     validate_aggregated_fold_unit_safety(edge, relations, prediction_level, fold)?;
     for block in blocks {
         if block.fold_id.as_ref() != Some(fold_id) {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` selected aggregated OOF predictions outside fold `{fold_id}`",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -915,7 +1086,7 @@ pub(crate) fn validate_aggregated_oof_blocks_match_fold(
         &fold.validation_sample_ids,
     )?;
     if actual != expected {
-        return Err(DagMlError::RuntimeValidation(format!(
+        return Err(DagMlError::OofValidation(format!(
             "edge `{}.{}` -> `{}.{}` aggregated OOF predictions do not match {:?} validation units for fold `{fold_id}`",
             edge.source.node_id,
             edge.source.port_name,
@@ -942,7 +1113,7 @@ pub(crate) fn validate_aggregated_oof_blocks_cover_fold_set(
     let mut blocks_by_fold = BTreeMap::<FoldId, Vec<&AggregatedPredictionBlock>>::new();
     for block in blocks {
         let fold_id = block.fold_id.as_ref().ok_or_else(|| {
-            DagMlError::RuntimeValidation(format!(
+            DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` has aggregated OOF predictions without a fold id",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -951,7 +1122,7 @@ pub(crate) fn validate_aggregated_oof_blocks_cover_fold_set(
             ))
         })?;
         if !folds.contains_key(fold_id) {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` references unknown fold `{fold_id}`",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -966,7 +1137,7 @@ pub(crate) fn validate_aggregated_oof_blocks_cover_fold_set(
     }
     for fold_id in folds.keys() {
         if !blocks_by_fold.contains_key(fold_id) {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` is missing aggregated OOF predictions for fold `{fold_id}`",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -988,7 +1159,7 @@ pub(crate) fn validate_aggregated_oof_blocks_cover_fold_set(
             &fold.validation_sample_ids,
         )?;
         if fold_units != expected {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` aggregated OOF predictions do not match {:?} validation units for fold `{fold_id}`",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -1005,7 +1176,7 @@ pub(crate) fn validate_aggregated_oof_blocks_cover_fold_set(
             if !all_units.insert(unit_id.clone())
                 && fold_set.partition_mode == FoldPartitionMode::Partition
             {
-                return Err(DagMlError::RuntimeValidation(format!(
+                return Err(DagMlError::OofValidation(format!(
                     "edge `{}.{}` -> `{}.{}` has duplicate aggregated OOF prediction for unit `{unit_id}`",
                     edge.source.node_id,
                     edge.source.port_name,
@@ -1023,7 +1194,7 @@ pub(crate) fn validate_aggregated_oof_blocks_cover_fold_set(
         &fold_set.sample_ids,
     )?;
     if all_units != expected_all {
-        return Err(DagMlError::RuntimeValidation(format!(
+        return Err(DagMlError::OofValidation(format!(
             "edge `{}.{}` -> `{}.{}` aggregated OOF predictions do not cover the refit {:?} unit universe",
             edge.source.node_id,
             edge.source.port_name,
@@ -1054,7 +1225,7 @@ pub(crate) fn validate_aggregated_fold_unit_safety(
         &fold.validation_sample_ids,
     )?;
     if let Some(unit_id) = train_units.intersection(&validation_units).next() {
-        return Err(DagMlError::RuntimeValidation(format!(
+        return Err(DagMlError::OofValidation(format!(
             "edge `{}.{}` -> `{}.{}` fold `{}` has {:?} unit `{unit_id}` in both train and validation partitions",
             edge.source.node_id,
             edge.source.port_name,
@@ -1074,7 +1245,7 @@ pub(crate) fn collect_unique_oof_samples(
     let mut samples = BTreeSet::new();
     for block in blocks {
         if block.partition != PredictionPartition::Validation {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` selected non-validation predictions",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -1084,7 +1255,7 @@ pub(crate) fn collect_unique_oof_samples(
         }
         for sample_id in &block.sample_ids {
             if !samples.insert(sample_id.clone()) {
-                return Err(DagMlError::RuntimeValidation(format!(
+                return Err(DagMlError::OofValidation(format!(
                     "edge `{}.{}` -> `{}.{}` has duplicate OOF prediction for sample `{sample_id}`",
                     edge.source.node_id,
                     edge.source.port_name,
@@ -1106,7 +1277,7 @@ pub(crate) fn collect_unique_aggregated_oof_units(
     for block in blocks {
         block.validate_shape()?;
         if block.partition != PredictionPartition::Validation {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` selected non-validation aggregated predictions",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -1115,7 +1286,7 @@ pub(crate) fn collect_unique_aggregated_oof_units(
             )));
         }
         if block.level != prediction_level {
-            return Err(DagMlError::RuntimeValidation(format!(
+            return Err(DagMlError::OofValidation(format!(
                 "edge `{}.{}` -> `{}.{}` selected {:?} aggregated predictions, expected {:?}",
                 edge.source.node_id,
                 edge.source.port_name,
@@ -1127,7 +1298,7 @@ pub(crate) fn collect_unique_aggregated_oof_units(
         }
         for unit_id in &block.unit_ids {
             if !unit_ids.insert(unit_id.clone()) {
-                return Err(DagMlError::RuntimeValidation(format!(
+                return Err(DagMlError::OofValidation(format!(
                     "edge `{}.{}` -> `{}.{}` has duplicate aggregated OOF prediction for unit `{unit_id}`",
                     edge.source.node_id,
                     edge.source.port_name,
@@ -1165,7 +1336,7 @@ pub(crate) fn prediction_unit_for_sample(
             .cloned()
             .map(PredictionUnitId::Target)
             .ok_or_else(|| {
-                DagMlError::RuntimeValidation(format!(
+                DagMlError::OofValidation(format!(
                     "edge `{}.{}` -> `{}.{}` needs target-level OOF predictions but sample `{sample_id}` has no target relation",
                     edge.source.node_id,
                     edge.source.port_name,
@@ -1178,7 +1349,7 @@ pub(crate) fn prediction_unit_for_sample(
             .cloned()
             .map(PredictionUnitId::Group)
             .ok_or_else(|| {
-                DagMlError::RuntimeValidation(format!(
+                DagMlError::OofValidation(format!(
                     "edge `{}.{}` -> `{}.{}` needs group-level OOF predictions but sample `{sample_id}` has no group relation",
                     edge.source.node_id,
                     edge.source.port_name,
@@ -1186,7 +1357,7 @@ pub(crate) fn prediction_unit_for_sample(
                     edge.target.port_name
                 ))
             }),
-        PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(format!(
+        PredictionLevel::Observation => Err(DagMlError::OofValidation(format!(
             "edge `{}.{}` -> `{}.{}` cannot consume observation-level OOF predictions from sample folds",
             edge.source.node_id, edge.source.port_name, edge.target.node_id, edge.target.port_name
         ))),

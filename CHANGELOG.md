@@ -9,7 +9,58 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+
+- ADR-20 and W0 JSON contracts for conformal calibration ownership,
+  `ParameterPatch`, `OutputBinding`, `TrainingInfluenceManifest`, complete
+  `TrainingOutcome`/`ReplayOutcome` payloads, and the existing execution-bundle
+  and portable prediction-cache wire shapes.
+- Canonical refit, no-refit, predict, class-probability, explain and conformal
+  fixtures with TCV1 fingerprints, exact finite-sample rank/float-token
+  goldens, leakage and stale-predictor refusals, and cross-contract semantic
+  validation. The refit and no-refit fixtures retain a positive two-branch
+  portable OOF cache, validated with an offline Draft 2020-12 registry and
+  native-equivalent plan/requirement/cache/payload cross-links. Estimator
+  validation now closes transitively over the predictor graph: selected variant
+  leaf patches, per-node/per-fold FIT_CV lineage, per-node REFIT lineage,
+  fit/selection influence, capability-driven artifacts and conformal predictor
+  data/artifact bindings must agree exactly. This initial W0 fixture slice was
+  contract-only; the same Unreleased line now also includes the native Rust
+  conformal surface below.
+- Native Rust split-conformal regression contracts and exact kernels for
+  finite-sample ranks, marginal/joint calibration, tagged unbounded intervals,
+  interval application and metrics. Public C, Python and WASM conformal
+  bindings remain future work.
+- Portable W0.6 contracts and positive/negative fixtures for four-role cohort
+  manifests, identity-aligned conformal prediction blocks, conformal-specific
+  metrics, domain assessments, explicit application decisions and three-mode
+  robustness reports. They separate exchangeability assumptions, predictor
+  state, calibrator state and coverage guarantees; bind recalibration to full
+  calibration artifacts and disjoint identity closures; and require exact
+  severity-zero/all-slice baselines, metric coordinates and provenance.
+  Structural replacements now resolve against the baseline predictor closure
+  and carry distinct plan, graph and selected-variant identities; recalibration
+  diagnostics bind the exact scenario, binary64 severity and calibration input.
+  The production point-only fixture uses label-free prediction-mean shift and
+  explicitly carries no conformal evidence.
+- Fixture-only numeric evidence now closes point predictions, interval
+  midpoints, truth and conformal metrics one-to-one for marginal, joint and
+  small-sample unbounded cases. Independent validators reconstruct empirical
+  coverage, gap, mean/median width and Winkler score, and re-fingerprinted truth
+  and translated-midpoint attacks fail at the intended numeric invariant. The
+  resolved report matrix now contains 18 exact result/block/metric coordinates,
+  while an additional valid structural case demonstrates explicit calibrator
+  invalidation.
+- Versioned conformal/robustness conformance pack with path-traversal refusal,
+  sorted unique artifact paths, file-byte SHA-256 values and an omit-self TCV1
+  checksum. The pack includes transitive calibration/output/influence
+  contracts, exact rank and regression-metric reconstruction goldens, the
+  independent Python semantic oracle, a frozen Philox4x32-10 counter oracle,
+  and a locked isolated Rust oracle that proves TCV1 and restricted RFC
+  8785/JCS remain distinct. CI runs the contract validator, conformal, RNG and
+  cross-language Python suites, and the Rust oracle. The portable wire layer
+  remains binding-neutral; native Rust conformal kernels now consume its
+  semantics, while public C/Python/WASM conformal bindings are still pending.
 
 ## [0.2.0] - 2026-06-15
 

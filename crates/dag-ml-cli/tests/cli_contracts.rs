@@ -1020,7 +1020,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_cv_refit_bundle_json.contains("prediction_requirements")
             && branch_merge_cv_refit_bundle_json.contains("prediction_caches")
             && branch_merge_cv_refit_bundle_json.contains("prediction_requirement_keys")
-            && branch_merge_cv_refit_bundle_json.contains("dag-ml-json-prediction-blocks-v1")
+            && branch_merge_cv_refit_bundle_json.contains("dag-ml-json-prediction-blocks-v2")
             && branch_merge_cv_refit_bundle_json.contains(
                 "prediction-cache:branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof"
             )
@@ -1070,7 +1070,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             .expect("branch/merge prediction cache payload was written");
     assert!(
         branch_merge_prediction_cache_json.contains("\"bundle_id\": \"bundle:cli.branch.merge.cv.refit\"")
-            && branch_merge_prediction_cache_json.contains("\"schema_version\": 1")
+            && branch_merge_prediction_cache_json.contains("\"schema_version\": 2")
+            && branch_merge_prediction_cache_json.contains("dag-ml-json-prediction-blocks-v2")
+            && branch_merge_prediction_cache_json.contains("\"producer_port\": \"oof\"")
             && branch_merge_prediction_cache_json.contains("\"caches\"")
             && branch_merge_prediction_cache_json.contains("\"blocks\"")
             && branch_merge_prediction_cache_json.contains("\"values\"")
@@ -1174,7 +1176,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     assert!(
         dsl_branch_merge_prediction_cache_json
             .contains("\"bundle_id\": \"bundle:cli.dsl.branch.merge.cv.refit\"")
-            && dsl_branch_merge_prediction_cache_json.contains("\"schema_version\": 1")
+            && dsl_branch_merge_prediction_cache_json.contains("\"schema_version\": 2")
+            && dsl_branch_merge_prediction_cache_json.contains("dag-ml-json-prediction-blocks-v2")
+            && dsl_branch_merge_prediction_cache_json.contains("\"producer_port\": \"oof\"")
             && dsl_branch_merge_prediction_cache_json.contains("prediction-cache:branch:b0")
             && dsl_branch_merge_prediction_cache_json.contains("prediction-cache:branch:b1"),
         "unexpected DSL branch/merge prediction cache payload JSON: {}",

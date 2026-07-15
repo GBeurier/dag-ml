@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "nodes": {
+    "model:base": {
+      "params": {
+        "n_estimators": 100
+      },
+      "fit_params": {},
+      "control_params": {},
+      "structural_params": {}
+    }
+  },
+  "requires_recompile": false,
+  "structural_patch_count": 0,
+  "patches_fingerprint": "cea5f239e81001721b763cebf40cd71bca04972c51313fba335e0a96d7e81979",
+  "projection_fingerprint": "9eff58f693db68df88c00637e38e860472099a90e9c8a271ed350fdcf67ca837"
+}

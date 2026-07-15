@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/domain_assessment_block.v1.schema.json",
+  "title": "DAG-ML DomainAssessmentBlock v1",
+  "description": "Predictor-support and OOD diagnostics. It carries no conformal coverage claim and no accept/reject action.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "block_id",
+    "predictor_binding_fingerprint",
+    "cohort_manifest_fingerprint",
+    "assessment_policy_id",
+    "assessment_policy_fingerprint",
+    "unit_level",
+    "unit_ids",
+    "assessments",
+    "block_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "block_id": { "$ref": "#/$defs/identifier" },
+    "predictor_binding_fingerprint": { "$ref": "#/$defs/sha256" },
+    "cohort_manifest_fingerprint": { "$ref": "#/$defs/sha256" },
+    "assessment_policy_id": { "$ref": "#/$defs/identifier" },
+    "assessment_policy_fingerprint": { "$ref": "#/$defs/sha256" },
+    "unit_level": { "const": "physical_sample" },
+    "unit_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "assessments": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/domain_assessment" }
+    },
+    "block_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML TCV1 SHA-256 with block_fingerprint omitted."
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json#/$defs/identifier"
+    },
+    "non_empty_string": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json#/$defs/non_empty_string"
+    },
+    "sha256": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json#/$defs/sha256"
+    },
+    "domain_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit_id", "status", "methods", "reasons"],
+      "properties": {
+        "unit_id": { "$ref": "#/$defs/identifier" },
+        "status": { "enum": ["in_support", "out_of_support", "unknown"] },
+        "methods": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["method_id", "kind", "score", "threshold", "supported"],
+            "properties": {
+              "method_id": { "$ref": "#/$defs/identifier" },
+              "kind": { "enum": ["feature_support", "leverage", "density_ratio", "custom_host"] },
+              "score": {
+                "anyOf": [
+                  { "type": "number", "x-dagml-json-token-type": "binary64-float" },
+                  { "type": "null" }
+                ]
+              },
+              "threshold": {
+                "anyOf": [
+                  { "type": "number", "x-dagml-json-token-type": "binary64-float" },
+                  { "type": "null" }
+                ]
+              },
+              "supported": { "anyOf": [{ "type": "boolean" }, { "type": "null" }] }
+            }
+          }
+        },
+        "reasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    }
+  }
+}

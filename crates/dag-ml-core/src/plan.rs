@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::campaign::stable_json_fingerprint;
+use crate::canonical::deserialize_external_contract;
 use crate::controller::{
     ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
     ControllerRegistry, RngPolicy,
@@ -84,6 +85,14 @@ pub struct CampaignSpec {
 }
 
 impl CampaignSpec {
+    /// Parse the published object-only campaign JSON representation and validate it.
+    pub fn from_json(json: &str) -> Result<Self> {
+        let campaign: Self =
+            deserialize_external_contract(json, "campaign", DagMlError::CampaignValidation)?;
+        campaign.validate()?;
+        Ok(campaign)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.id.trim().is_empty() {
             return Err(DagMlError::CampaignValidation(
@@ -236,9 +245,27 @@ pub struct PhaseExecutionSchedule {
 }
 
 impl ExecutionPlan {
+    /// Parse and validate an external execution-plan JSON document.
+    ///
+    /// Serde's derived struct visitors also accept positional JSON arrays. That
+    /// representation is an implementation detail, is not part of the published
+    /// object-only JSON Schema, and would otherwise make standalone Rust readers
+    /// more permissive than the C, Python and validation-oracle boundaries. The
+    /// container-shape comparison keeps legitimate serde defaults and BTree
+    /// ordering normalization, while refusing a sequence wherever the typed wire
+    /// representation is an object (and vice versa).
+    pub fn from_json(json: &str) -> Result<Self> {
+        let plan: Self =
+            deserialize_external_contract(json, "execution plan", DagMlError::Planning)?;
+        plan.validate()?;
+        Ok(plan)
+    }
+
     pub fn validate(&self) -> Result<()> {
         self.graph_plan.graph.validate()?;
         self.campaign.validate()?;
+        // Retain the historical parallel-levels compatibility: an empty cached
+        // level list is allowed (recomputed on demand), a present one must match.
         if !self.graph_plan.parallel_levels.is_empty()
             && self.graph_plan.parallel_levels != self.graph_plan.graph.parallel_levels()?
         {
@@ -246,15 +273,115 @@ impl ExecutionPlan {
                 "graph plan parallel levels do not match graph".to_string(),
             ));
         }
-        if self.node_plans.len() != self.graph_plan.graph.nodes.len() {
+
+        // Every controller manifest must be self-valid and keyed by its own id,
+        // so a forged registry entry cannot masquerade under another id or ship
+        // an internally inconsistent contract that later checks trust.
+        for (controller_id, manifest) in &self.controller_manifests {
+            manifest.validate()?;
+            if controller_id != &manifest.controller_id {
+                return Err(DagMlError::Planning(format!(
+                    "controller manifest keyed `{controller_id}` declares id `{}`",
+                    manifest.controller_id
+                )));
+            }
+        }
+
+        // Fail-closed embedded-fingerprint verification. Recompute each embedded
+        // fingerprint from the canonical content — exactly as `build_execution_plan`
+        // does at construction — and require exact equality with the serialized
+        // top-level field. Without this a caller could mutate embedded
+        // graph/campaign/manifest content, retain the stale fingerprint strings,
+        // and re-sign the outer plan/outcome/package: the bundle layer only compares
+        // fingerprint STRINGS, so the embedded content is the sole source of truth
+        // here and its serialized fingerprint field must never be trusted on its own.
+        // Structural validation above runs first so recomputation is over
+        // well-formed content.
+        let recomputed_graph_fingerprint = stable_json_fingerprint(&self.graph_plan.graph)?;
+        if recomputed_graph_fingerprint != self.graph_fingerprint {
             return Err(DagMlError::Planning(
-                "execution plan node count does not match graph".to_string(),
+                "execution plan graph_fingerprint does not match the embedded graph".to_string(),
             ));
         }
-        for node_id in &self.graph_plan.topological_order {
-            let plan = self.node_plans.get(node_id).ok_or_else(|| {
-                DagMlError::Planning(format!("missing node plan for `{node_id}`"))
-            })?;
+        let recomputed_campaign_fingerprint = stable_json_fingerprint(&self.campaign)?;
+        if recomputed_campaign_fingerprint != self.campaign_fingerprint {
+            return Err(DagMlError::Planning(
+                "execution plan campaign_fingerprint does not match the embedded campaign"
+                    .to_string(),
+            ));
+        }
+        let recomputed_controller_fingerprint =
+            stable_json_fingerprint(&self.controller_manifests)?;
+        if recomputed_controller_fingerprint != self.controller_fingerprint {
+            return Err(DagMlError::Planning(
+                "execution plan controller_fingerprint does not match the embedded controller manifests"
+                    .to_string(),
+            ));
+        }
+
+        // The node-plan map must key each plan by its own node id and cover
+        // exactly the graph node-id set — no missing, extra or mis-keyed plan.
+        // A bare length check is insufficient: it would accept a duplicated key
+        // masking a missing node.
+        let graph_node_ids = self
+            .graph_plan
+            .graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        for (node_id, plan) in &self.node_plans {
+            if node_id != &plan.node_id {
+                return Err(DagMlError::Planning(format!(
+                    "node plan keyed `{node_id}` declares node_id `{}`",
+                    plan.node_id
+                )));
+            }
+        }
+        let plan_node_ids = self.node_plans.keys().cloned().collect::<BTreeSet<_>>();
+        if plan_node_ids != graph_node_ids {
+            return Err(DagMlError::Planning(
+                "execution plan node_plans do not exactly cover the graph node-id set".to_string(),
+            ));
+        }
+
+        // The cached topological order must be exactly the graph's canonical
+        // order, so a forged or stale order cannot omit a node from phase
+        // scheduling. Per-node validation below iterates `node_plans` directly
+        // and therefore no longer depends on this order for completeness.
+        if self.graph_plan.topological_order != self.graph_plan.graph.topological_order()? {
+            return Err(DagMlError::Planning(
+                "execution plan topological_order does not match the graph".to_string(),
+            ));
+        }
+
+        let graph_nodes_by_id = self
+            .graph_plan
+            .graph
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), node))
+            .collect::<BTreeMap<_, _>>();
+        for (node_id, plan) in &self.node_plans {
+            let graph_node = graph_nodes_by_id
+                .get(node_id)
+                .expect("node_plans keys equal graph node ids");
+            // The plan's own node kind must match the graph node, and its
+            // adjacency must be exactly the graph's upstream/downstream sets so a
+            // forged plan cannot manufacture or trim the predictor closure that
+            // replay derivation walks through `input_nodes`.
+            if plan.kind != graph_node.kind {
+                return Err(DagMlError::Planning(format!(
+                    "node plan `{node_id}` kind does not match graph node kind"
+                )));
+            }
+            if plan.input_nodes != self.graph_plan.graph.upstream_nodes(node_id)
+                || plan.output_nodes != self.graph_plan.graph.downstream_nodes(node_id)
+            {
+                return Err(DagMlError::Planning(format!(
+                    "node plan `{node_id}` input/output adjacency does not match the graph"
+                )));
+            }
             let manifest = self
                 .controller_manifests
                 .get(&plan.controller_id)
@@ -264,24 +391,20 @@ impl ExecutionPlan {
                         plan.controller_id
                     ))
                 })?;
-            if manifest.operator_kind != plan.kind {
-                return Err(DagMlError::Planning(format!(
-                    "node `{node_id}` planned with incompatible controller `{}`",
-                    manifest.controller_id
-                )));
-            }
-            if plan.controller_capabilities != manifest.capabilities {
-                return Err(DagMlError::Planning(format!(
-                    "node `{node_id}` controller capabilities do not match manifest `{}`",
-                    manifest.controller_id
-                )));
-            }
-            if plan.fit_scope != manifest.fit_scope
-                || plan.rng_policy != manifest.rng_policy
-                || plan.artifact_policy != manifest.artifact_policy
+            // Every capability-bearing field the plan copies from its manifest
+            // must match exactly. `supported_phases` and `controller_version` are
+            // load-bearing for replay-phase truthfulness, so they are enforced
+            // alongside kind, capabilities and the policy triple.
+            if manifest.operator_kind != plan.kind
+                || manifest.controller_version != plan.controller_version
+                || manifest.supported_phases != plan.supported_phases
+                || manifest.capabilities != plan.controller_capabilities
+                || manifest.fit_scope != plan.fit_scope
+                || manifest.rng_policy != plan.rng_policy
+                || manifest.artifact_policy != plan.artifact_policy
             {
                 return Err(DagMlError::Planning(format!(
-                    "node `{node_id}` controller policy fields do not match manifest `{}`",
+                    "node `{node_id}` node plan does not match controller manifest `{}`",
                     manifest.controller_id
                 )));
             }
@@ -294,13 +417,6 @@ impl ExecutionPlan {
                 }
                 binding.validate()?;
             }
-            let graph_node = self
-                .graph_plan
-                .graph
-                .nodes
-                .iter()
-                .find(|node| &node.id == node_id)
-                .expect("topological node exists in graph");
             validate_data_binding_requirements(node_id, plan, manifest, graph_node)?;
             let actual_params_fingerprint = stable_json_fingerprint(&plan.params)?;
             if actual_params_fingerprint != plan.params_fingerprint {
@@ -308,13 +424,9 @@ impl ExecutionPlan {
                     "node plan `{node_id}` params fingerprint does not match params"
                 )));
             }
-        }
-        // Validate every node-local inner_cv over ALL node plans (not just the
-        // cached topological order): a hand-loaded ExecutionPlan JSON with a
-        // stale/tampered order could omit a FIT_CV node from that order while
-        // still scheduling it via parallel levels, so a malformed inner_cv must
-        // be refused here rather than deferred to FIT_CV fold building.
-        for (node_id, plan) in &self.node_plans {
+            // Validate every node-local inner_cv while iterating ALL node plans
+            // (not the cached order), so a stale/tampered order cannot defer a
+            // malformed inner_cv to FIT_CV fold building.
             if let Some(inner_cv) = &plan.inner_cv {
                 inner_cv.validate().map_err(|error| {
                     DagMlError::Planning(format!(
@@ -1208,6 +1320,37 @@ mod tests {
     use crate::fold::FoldPartitionMode;
 
     #[test]
+    fn params_fingerprint_pins_serde_json_binary64_spelling() {
+        let params = BTreeMap::from([
+            (
+                "scope".to_string(),
+                serde_json::Value::String("train_only".to_string()),
+            ),
+            ("std".to_string(), serde_json::Value::from(1e-7_f64)),
+        ]);
+        assert_eq!(
+            stable_json_fingerprint(&params).unwrap(),
+            "3f417903752f65005bc9b69bcd23dfcf3ede2cda010e4f1ead6090a1a407b851"
+        );
+
+        // Pin both fixed/scientific cutovers and special finite spellings used
+        // by the independent Python serde encoder.
+        for (value, expected) in [
+            (1e-7_f64, "1e-7"),
+            (1e-6_f64, "1e-6"),
+            (1e-5_f64, "0.00001"),
+            (1e20_f64, "1e+20"),
+            (1e21_f64, "1e+21"),
+            (-0.0_f64, "-0.0"),
+            (0.1_f64, "0.1"),
+            (2.0_f64, "2.0"),
+            (f64::from_bits(1), "5e-324"),
+        ] {
+            assert_eq!(serde_json::to_string(&value).unwrap(), expected);
+        }
+    }
+
+    #[test]
     fn inner_cv_is_declarable_at_campaign_and_node_level() {
         // Campaign-level (global) declaration round-trips through JSON.
         let campaign_json = r#"{"id":"c","root_seed":null,"inner_cv":{"kind":"kfold","n_splits":3,"shuffle":false,"seed":5}}"#;
@@ -1274,6 +1417,275 @@ mod tests {
         assert!(matches!(error, DagMlError::Planning(_)));
         assert!(error.to_string().contains("invalid inner_cv"));
         assert!(error.to_string().contains("at least two splits"));
+    }
+
+    fn hardening_plan() -> ExecutionPlan {
+        let campaign = CampaignSpec {
+            inner_cv: None,
+            id: "campaign:harden".to_string(),
+            root_seed: Some(7),
+            leakage_policy: LeakageUnitPolicy::default(),
+            aggregation_policy: AggregationPolicy::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+        build_execution_plan("plan:harden", graph(), campaign, &registry()).unwrap()
+    }
+
+    #[test]
+    fn execution_plan_external_reader_rejects_positional_struct_sequences() {
+        let plan = hardening_plan();
+        let mut wire = serde_json::to_value(&plan).unwrap();
+        wire["campaign"]["leakage_policy"] = serde_json::json!([]);
+
+        // Serde's derived struct visitor accepts this internal positional form,
+        // and the resulting typed plan is otherwise semantically valid.
+        let permissive: ExecutionPlan = serde_json::from_value(wire.clone()).unwrap();
+        permissive.validate().unwrap();
+
+        // The published standalone JSON boundary is object-only and refuses it.
+        let error = ExecutionPlan::from_json(&serde_json::to_string(&wire).unwrap()).unwrap_err();
+        assert!(error.to_string().contains("must use a JSON object"));
+        assert!(error.to_string().contains("campaign.leakage_policy"));
+    }
+
+    #[test]
+    fn execution_plan_external_reader_preserves_typed_serde_compatibility() {
+        let plan = hardening_plan();
+        let mut wire = serde_json::to_value(&plan).unwrap();
+        wire["graph_plan"]
+            .as_object_mut()
+            .unwrap()
+            .remove("parallel_levels");
+        wire["graph_plan"]["graph"]
+            .as_object_mut()
+            .unwrap()
+            .insert("forward_compatible".to_string(), serde_json::json!(true));
+
+        let parsed = ExecutionPlan::from_json(&serde_json::to_string(&wire).unwrap()).unwrap();
+        assert!(parsed.graph_plan.parallel_levels.is_empty());
+        assert_eq!(parsed.graph_plan.graph, plan.graph_plan.graph);
+    }
+
+    #[test]
+    fn validate_rejects_manifest_keyed_under_foreign_controller_id() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        plan.controller_manifests
+            .get_mut(&ControllerId::new("controller:model").unwrap())
+            .unwrap()
+            .controller_id = ControllerId::new("controller:imposter").unwrap();
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error.to_string().contains("declares id"));
+    }
+
+    #[test]
+    fn validate_rejects_node_plan_keyed_under_foreign_node_id() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        plan.node_plans
+            .get_mut(&NodeId::new("model:pls").unwrap())
+            .unwrap()
+            .node_id = NodeId::new("transform:snv").unwrap();
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error.to_string().contains("declares node_id"));
+    }
+
+    #[test]
+    fn validate_rejects_node_plans_not_covering_graph_node_set() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        // Re-key an existing plan under a node id absent from the graph. The
+        // count is unchanged, so only an exact set check catches the mismatch.
+        let mut ghost = plan
+            .node_plans
+            .remove(&NodeId::new("model:pls").unwrap())
+            .unwrap();
+        let bogus = NodeId::new("model:ghost").unwrap();
+        ghost.node_id = bogus.clone();
+        plan.node_plans.insert(bogus, ghost);
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("do not exactly cover the graph node-id set"));
+    }
+
+    #[test]
+    fn validate_rejects_topological_order_that_omits_a_node() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        // A forged order that drops `model:pls` must not let it skip per-node
+        // validation or phase scheduling.
+        plan.graph_plan.topological_order = vec![NodeId::new("transform:snv").unwrap()];
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("topological_order does not match"));
+    }
+
+    #[test]
+    fn validate_rejects_node_plan_kind_that_differs_from_graph_node() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        plan.node_plans
+            .get_mut(&NodeId::new("model:pls").unwrap())
+            .unwrap()
+            .kind = NodeKind::Transform;
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("kind does not match graph node kind"));
+    }
+
+    #[test]
+    fn validate_rejects_forged_input_adjacency() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        // Trimming `model:pls`'s real upstream would shrink the predictor closure
+        // replay derivation walks through `input_nodes`.
+        plan.node_plans
+            .get_mut(&NodeId::new("model:pls").unwrap())
+            .unwrap()
+            .input_nodes = vec![];
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("adjacency does not match the graph"));
+    }
+
+    #[test]
+    fn validate_rejects_node_plan_supported_phases_that_diverge_from_manifest() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        // Injecting EXPLAIN into the node plan without the manifest backing it is
+        // exactly the forgery that could otherwise manufacture an EXPLAIN replay.
+        plan.node_plans
+            .get_mut(&NodeId::new("model:pls").unwrap())
+            .unwrap()
+            .supported_phases
+            .insert(Phase::Explain);
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("does not match controller manifest"));
+    }
+
+    #[test]
+    fn validate_rejects_node_plan_controller_version_that_diverges_from_manifest() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        plan.node_plans
+            .get_mut(&NodeId::new("model:pls").unwrap())
+            .unwrap()
+            .controller_version = "9.9.9".to_string();
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("does not match controller manifest"));
+    }
+
+    #[test]
+    fn validate_rejects_stale_graph_fingerprint_after_graph_mutation() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        // Mutate embedded graph content but RETAIN the stale graph_fingerprint —
+        // exactly the tamper a caller would attempt before re-signing the outer
+        // plan (whose bundle layer only compares fingerprint strings). Validation
+        // must recompute from content and refuse.
+        plan.graph_plan
+            .graph
+            .metadata
+            .insert("tampered".to_string(), serde_json::json!(true));
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("graph_fingerprint does not match"));
+    }
+
+    #[test]
+    fn validate_rejects_forged_graph_fingerprint_field() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        // Direct fingerprint-field forgery with unchanged content is refused: the
+        // recomputation from canonical content is the source of truth.
+        plan.graph_fingerprint = "sha256:forged".to_string();
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("graph_fingerprint does not match"));
+    }
+
+    #[test]
+    fn validate_rejects_stale_campaign_fingerprint_after_campaign_mutation() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        // Mutate embedded campaign content, keep the stale campaign_fingerprint.
+        plan.campaign
+            .metadata
+            .insert("tampered".to_string(), serde_json::json!("x"));
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("campaign_fingerprint does not match"));
+    }
+
+    #[test]
+    fn validate_rejects_forged_campaign_fingerprint_field() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        plan.campaign_fingerprint = "sha256:forged".to_string();
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("campaign_fingerprint does not match"));
+    }
+
+    #[test]
+    fn validate_rejects_stale_controller_fingerprint_after_manifest_mutation() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        // `priority` is embedded in the controller fingerprint but is NOT copied
+        // into any NodePlan, so only the recomputed controller_fingerprint — never
+        // a node-plan cross-copy check — can catch this manifest mutation. Keeping
+        // the stale fingerprint string models an outer re-sign that leaves the
+        // embedded string untouched.
+        plan.controller_manifests
+            .get_mut(&ControllerId::new("controller:model").unwrap())
+            .unwrap()
+            .priority = 7;
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("controller_fingerprint does not match"));
+    }
+
+    #[test]
+    fn validate_rejects_forged_controller_fingerprint_field() {
+        let mut plan = hardening_plan();
+        plan.validate().unwrap();
+        plan.controller_fingerprint = "sha256:forged".to_string();
+        let error = plan.validate().unwrap_err();
+        assert!(matches!(error, DagMlError::Planning(_)));
+        assert!(error
+            .to_string()
+            .contains("controller_fingerprint does not match"));
     }
 
     #[test]
@@ -2176,6 +2588,8 @@ mod tests {
             plan_fingerprint: "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d"
                 .to_string(),
             relation_fingerprint: None,
+            data_content_fingerprint: None,
+            target_content_fingerprint: None,
             coordinator_relations: Some(SampleRelationSet {
                 records: vec![{
                     let mut relation = SampleRelation::new(

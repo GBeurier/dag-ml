@@ -1,0 +1,374 @@
+{
+  "fixture_id": "dag-ml.robustness-counter.philox4x32-10.v1",
+  "schema_version": 1,
+  "profile": {
+    "counter_profile": "dagml-robustness-counter.v1",
+    "algorithm": "philox4x32-10",
+    "algorithm_version": 1,
+    "portable_integer_range": "0..2^53-1",
+    "key_derivation": "uint64-seed-as-two-little-endian-u32",
+    "key_word_mapping": "key[0]=seed low 32 bits; key[1]=seed bits 32..63",
+    "counter_fields": [
+      "scenario_fingerprint",
+      "severity_binary64",
+      "unit_id",
+      "target_kind",
+      "target_id",
+      "draw_index"
+    ],
+    "counter_derivation": "sha256-tcv1-first128",
+    "counter_preimage": "DAGML-TCV1 NUL-prefixed exact counter_fields payload",
+    "counter_word_order": "four consecutive big-endian u32 words",
+    "text_normalization": "TCV1 NFC",
+    "negative_zero": "severity binary64 -0 canonicalizes to +0",
+    "target_semantics": "source/node require non-empty target_id; global requires empty target_id"
+  },
+  "philox_known_answer_vectors": [
+    {
+      "id": "random123_zero",
+      "counter_words_hex": ["00000000", "00000000", "00000000", "00000000"],
+      "key_words_hex": ["00000000", "00000000"],
+      "output_words_hex": ["6627e8d5", "e169c58d", "bc57ac4c", "9b00dbd8"]
+    },
+    {
+      "id": "random123_all_ones",
+      "counter_words_hex": ["ffffffff", "ffffffff", "ffffffff", "ffffffff"],
+      "key_words_hex": ["ffffffff", "ffffffff"],
+      "output_words_hex": ["408f276d", "41c83b0e", "a20bc7c6", "6d5451fd"]
+    },
+    {
+      "id": "random123_pi_constants",
+      "counter_words_hex": ["243f6a88", "85a308d3", "13198a2e", "03707344"],
+      "key_words_hex": ["a4093822", "299f31d0"],
+      "output_words_hex": ["d16cfe09", "94fdcceb", "5001e420", "24126ea1"]
+    }
+  ],
+  "vectors": [
+    {
+      "id": "source_draw_0",
+      "input": {
+        "seed": 17,
+        "scenario_fingerprint": "eb4fc2c5bcd7d9dc6fa6e36e1ad6f8eb2f3415087d62b0eecfb9102ef8723476",
+        "severity": 0.01,
+        "unit_id": "physical:sample-001",
+        "target_kind": "source",
+        "target_id": "nir",
+        "draw_index": 0
+      },
+      "expected": {
+        "profile": "dagml-robustness-counter.v1",
+        "normalized_payload": [
+          "eb4fc2c5bcd7d9dc6fa6e36e1ad6f8eb2f3415087d62b0eecfb9102ef8723476",
+          0.01,
+          "physical:sample-001",
+          "source",
+          "nir",
+          0
+        ],
+        "tcv1_preimage_hex": "4441474d4c2d544356310041000000000000000653000000000000004065623466633263356263643764396463366661366533366531616436663865623266333431353038376436326230656563666239313032656638373233343736443f847ae147ae147b530000000000000013706879736963616c3a73616d706c652d303031530000000000000006736f757263655300000000000000036e697249000000000000000130",
+        "counter_sha256": "8c8a558dc2964772d58298fd0a3ba95b9d562bc93d028ada25575f5ab90ba449",
+        "counter_128_hex": "8c8a558dc2964772d58298fd0a3ba95b",
+        "counter_words": [2357876109, 3264628594, 3582105853, 171682139],
+        "counter_words_hex": ["8c8a558d", "c2964772", "d58298fd", "0a3ba95b"],
+        "key_words": [17, 0],
+        "key_words_hex": ["00000011", "00000000"],
+        "output_words": [620926620, 3914133965, 4135761424, 2548672639],
+        "output_words_hex": ["2502969c", "e94cf1cd", "f682b610", "97e9a87f"],
+        "output_128_hex": "2502969ce94cf1cdf682b61097e9a87f"
+      }
+    },
+    {
+      "id": "source_draw_1",
+      "input": {
+        "seed": 17,
+        "scenario_fingerprint": "eb4fc2c5bcd7d9dc6fa6e36e1ad6f8eb2f3415087d62b0eecfb9102ef8723476",
+        "severity": 0.01,
+        "unit_id": "physical:sample-001",
+        "target_kind": "source",
+        "target_id": "nir",
+        "draw_index": 1
+      },
+      "expected": {
+        "profile": "dagml-robustness-counter.v1",
+        "normalized_payload": [
+          "eb4fc2c5bcd7d9dc6fa6e36e1ad6f8eb2f3415087d62b0eecfb9102ef8723476",
+          0.01,
+          "physical:sample-001",
+          "source",
+          "nir",
+          1
+        ],
+        "tcv1_preimage_hex": "4441474d4c2d544356310041000000000000000653000000000000004065623466633263356263643764396463366661366533366531616436663865623266333431353038376436326230656563666239313032656638373233343736443f847ae147ae147b530000000000000013706879736963616c3a73616d706c652d303031530000000000000006736f757263655300000000000000036e697249000000000000000131",
+        "counter_sha256": "512a2f9a624dec72cc071bae5682f38fa9363ab6c7ef2b449c6ce99857bd61e1",
+        "counter_128_hex": "512a2f9a624dec72cc071bae5682f38f",
+        "counter_words": [1361719194, 1649273970, 3423017902, 1451422607],
+        "counter_words_hex": ["512a2f9a", "624dec72", "cc071bae", "5682f38f"],
+        "key_words": [17, 0],
+        "key_words_hex": ["00000011", "00000000"],
+        "output_words": [2422779610, 369599019, 650869429, 3046420121],
+        "output_words_hex": ["9068aeda", "1607a22b", "26cb7ab5", "b594ae99"],
+        "output_128_hex": "9068aeda1607a22b26cb7ab5b594ae99"
+      }
+    },
+    {
+      "id": "node_unicode_nfc",
+      "input": {
+        "seed": 9007199254740991,
+        "scenario_fingerprint": "1d965bedae0be50d4431c49dccd25dcb32a89e8bf1bcbc7d4c648d6325529fb9",
+        "severity": 1.0,
+        "unit_id": "sample:é:α",
+        "target_kind": "node",
+        "target_id": "model:pls",
+        "draw_index": 7
+      },
+      "equivalent_input": {
+        "seed": 9007199254740991,
+        "scenario_fingerprint": "1d965bedae0be50d4431c49dccd25dcb32a89e8bf1bcbc7d4c648d6325529fb9",
+        "severity": 1.0,
+        "unit_id": "sample:é:α",
+        "target_kind": "node",
+        "target_id": "model:pls",
+        "draw_index": 7
+      },
+      "expected": {
+        "profile": "dagml-robustness-counter.v1",
+        "normalized_payload": [
+          "1d965bedae0be50d4431c49dccd25dcb32a89e8bf1bcbc7d4c648d6325529fb9",
+          1.0,
+          "sample:é:α",
+          "node",
+          "model:pls",
+          7
+        ],
+        "tcv1_preimage_hex": "4441474d4c2d544356310041000000000000000653000000000000004031643936356265646165306265353064343433316334396463636432356463623332613839653862663162636263376434633634386436333235353239666239443ff000000000000053000000000000000c73616d706c653ac3a93aceb15300000000000000046e6f64655300000000000000096d6f64656c3a706c7349000000000000000137",
+        "counter_sha256": "852a0ba061030e7b7e30c9486ad5184ff49c13dc415cd562ef60876bab6b313d",
+        "counter_128_hex": "852a0ba061030e7b7e30c9486ad5184f",
+        "counter_words": [2234125216, 1627590267, 2117126472, 1792350287],
+        "counter_words_hex": ["852a0ba0", "61030e7b", "7e30c948", "6ad5184f"],
+        "key_words": [4294967295, 2097151],
+        "key_words_hex": ["ffffffff", "001fffff"],
+        "output_words": [3933271271, 2765971700, 3324180802, 2291633203],
+        "output_words_hex": ["ea70f4e7", "a4dd60f4", "c622f942", "88978c33"],
+        "output_128_hex": "ea70f4e7a4dd60f4c622f94288978c33"
+      }
+    },
+    {
+      "id": "global_negative_zero",
+      "input": {
+        "seed": 4294967296,
+        "scenario_fingerprint": "7af89ce7324754a39f163d2f367ccf57fb7cdd8dedd9a103c8fc40ccbc329c5e",
+        "severity": -0.0,
+        "unit_id": "global-unit:🌐",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": 42
+      },
+      "equivalent_input": {
+        "seed": 4294967296,
+        "scenario_fingerprint": "7af89ce7324754a39f163d2f367ccf57fb7cdd8dedd9a103c8fc40ccbc329c5e",
+        "severity": 0.0,
+        "unit_id": "global-unit:🌐",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": 42
+      },
+      "expected": {
+        "profile": "dagml-robustness-counter.v1",
+        "normalized_payload": [
+          "7af89ce7324754a39f163d2f367ccf57fb7cdd8dedd9a103c8fc40ccbc329c5e",
+          0.0,
+          "global-unit:🌐",
+          "global",
+          "",
+          42
+        ],
+        "tcv1_preimage_hex": "4441474d4c2d544356310041000000000000000653000000000000004037616638396365373332343735346133396631363364326633363763636635376662376364643864656464396131303363386663343063636263333239633565440000000000000000530000000000000010676c6f62616c2d756e69743af09f8c90530000000000000006676c6f62616c5300000000000000004900000000000000023432",
+        "counter_sha256": "1f9f61bd8e45ca93ebbed357b9fdc5b80004219d2db4ee7ca3e83dff7e9fab40",
+        "counter_128_hex": "1f9f61bd8e45ca93ebbed357b9fdc5b8",
+        "counter_words": [530538941, 2386938515, 3955151703, 3120416184],
+        "counter_words_hex": ["1f9f61bd", "8e45ca93", "ebbed357", "b9fdc5b8"],
+        "key_words": [0, 1],
+        "key_words_hex": ["00000000", "00000001"],
+        "output_words": [1219722305, 805522853, 2627940434, 2484190186],
+        "output_words_hex": ["48b37c41", "30034da5", "9ca33052", "9411bbea"],
+        "output_128_hex": "48b37c4130034da59ca330529411bbea"
+      }
+    }
+  ],
+  "invalid_vectors": [
+    {
+      "id": "boolean_seed_refuses",
+      "input": {
+        "seed": true,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0.0,
+        "unit_id": "unit:1",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": 0
+      },
+      "error_contains": "seed must be an integer"
+    },
+    {
+      "id": "seed_above_portable_range_refuses",
+      "input": {
+        "seed": 9007199254740992,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0.0,
+        "unit_id": "unit:1",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": 0
+      },
+      "error_contains": "seed must be in 0..2^53-1"
+    },
+    {
+      "id": "negative_seed_refuses",
+      "input": {
+        "seed": -1,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0.0,
+        "unit_id": "unit:1",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": 0
+      },
+      "error_contains": "seed must be in 0..2^53-1"
+    },
+    {
+      "id": "uppercase_fingerprint_refuses",
+      "input": {
+        "seed": 0,
+        "scenario_fingerprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "severity": 0.0,
+        "unit_id": "unit:1",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": 0
+      },
+      "error_contains": "64 lowercase hexadecimal"
+    },
+    {
+      "id": "integer_severity_refuses",
+      "input": {
+        "seed": 0,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0,
+        "unit_id": "unit:1",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": 0
+      },
+      "error_contains": "severity must be represented as binary64"
+    },
+    {
+      "id": "negative_severity_refuses",
+      "input": {
+        "seed": 0,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": -0.01,
+        "unit_id": "unit:1",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": 0
+      },
+      "error_contains": "severity must be non-negative"
+    },
+    {
+      "id": "empty_unit_refuses",
+      "input": {
+        "seed": 0,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0.0,
+        "unit_id": "",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": 0
+      },
+      "error_contains": "unit_id must be non-empty"
+    },
+    {
+      "id": "surrogate_unit_refuses",
+      "input": {
+        "seed": 0,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0.0,
+        "unit_id": "__SYNTHESIZE_UNPAIRED_HIGH_SURROGATE_D800__",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": 0
+      },
+      "input_synthesis": {
+        "field": "unit_id",
+        "operation": "unpaired_utf16_high_surrogate",
+        "code_unit": 55296
+      },
+      "error_contains": "surrogate code point"
+    },
+    {
+      "id": "unknown_target_kind_refuses",
+      "input": {
+        "seed": 0,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0.0,
+        "unit_id": "unit:1",
+        "target_kind": "pipeline",
+        "target_id": "pipeline:1",
+        "draw_index": 0
+      },
+      "error_contains": "target_kind must be source, node, or global"
+    },
+    {
+      "id": "source_without_target_refuses",
+      "input": {
+        "seed": 0,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0.0,
+        "unit_id": "unit:1",
+        "target_kind": "source",
+        "target_id": "",
+        "draw_index": 0
+      },
+      "error_contains": "source target_id must be non-empty"
+    },
+    {
+      "id": "global_with_target_refuses",
+      "input": {
+        "seed": 0,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0.0,
+        "unit_id": "unit:1",
+        "target_kind": "global",
+        "target_id": "source:nir",
+        "draw_index": 0
+      },
+      "error_contains": "global target_id must be empty"
+    },
+    {
+      "id": "negative_draw_index_refuses",
+      "input": {
+        "seed": 0,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0.0,
+        "unit_id": "unit:1",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": -1
+      },
+      "error_contains": "draw_index must be in 0..2^53-1"
+    },
+    {
+      "id": "boolean_draw_index_refuses",
+      "input": {
+        "seed": 0,
+        "scenario_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "severity": 0.0,
+        "unit_id": "unit:1",
+        "target_kind": "global",
+        "target_id": "",
+        "draw_index": false
+      },
+      "error_contains": "draw_index must be an integer"
+    }
+  ]
+}

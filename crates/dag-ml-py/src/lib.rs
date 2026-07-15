@@ -11,14 +11,18 @@ use pyo3::types::{PyAny, PyType};
 use serde::de::DeserializeOwned;
 
 mod in_process;
+mod training;
 
 use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
-    parse_pipeline_dsl_json, CampaignSpec, ControllerManifest, ControllerRegistry,
+    parse_pipeline_dsl_json, CacheNamespace, CampaignSpec, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
-    FoldSet, GraphSpec, HostControllerSpec,
+    FoldSet, GraphSpec, HostControllerSpec, ParameterProjection, PortablePredictorPackage,
+    SampleRelationSet,
+    TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
+    TrainingRequest,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -69,12 +73,16 @@ fn contract_manifest_json() -> PyResult<String> {
 
 #[pyfunction]
 fn validate_graph_json(json: &str) -> PyResult<()> {
-    validate_json::<GraphSpec>(json, GraphSpec::validate)
+    GraphSpec::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
 }
 
 #[pyfunction]
 fn validate_campaign_json(json: &str) -> PyResult<()> {
-    validate_json::<CampaignSpec>(json, CampaignSpec::validate)
+    CampaignSpec::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
 }
 
 #[pyfunction]
@@ -113,12 +121,93 @@ fn validate_pipeline_dsl_json(json: &str) -> PyResult<()> {
 
 #[pyfunction]
 fn validate_execution_plan_json(json: &str) -> PyResult<()> {
-    validate_json::<ExecutionPlan>(json, ExecutionPlan::validate)
+    ExecutionPlan::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
 }
 
 #[pyfunction]
 fn validate_execution_bundle_json(json: &str) -> PyResult<()> {
-    validate_json::<ExecutionBundle>(json, ExecutionBundle::validate)
+    ExecutionBundle::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_training_request_json(json: &str) -> PyResult<()> {
+    TrainingRequest::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn sample_relation_set_fingerprint_json(json: &str) -> PyResult<String> {
+    let relations = serde_json::from_str::<SampleRelationSet>(json).map_err(py_serde_error)?;
+    relations.fingerprint().map_err(py_core_error)
+}
+
+#[pyfunction]
+fn sign_training_request_json(json: &str) -> PyResult<String> {
+    let mut request = serde_json::from_str::<TrainingRequest>(json).map_err(py_serde_error)?;
+    request.request_fingerprint = request.compute_fingerprint().map_err(py_core_error)?;
+    request.validate().map_err(py_core_error)?;
+    serde_json::to_string(&request).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn project_training_request_json(json: &str) -> PyResult<String> {
+    let request = TrainingRequest::from_json(json).map_err(py_core_error)?;
+    let projection = request.project().map_err(py_core_error)?;
+    serde_json::to_string(&projection).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn validate_training_contract_projection_json(json: &str) -> PyResult<()> {
+    TrainingContractProjection::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_parameter_projection_json(json: &str) -> PyResult<()> {
+    ParameterProjection::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_cache_namespace_json(json: &str) -> PyResult<()> {
+    CacheNamespace::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_portable_predictor_package_json(json: &str) -> PyResult<()> {
+    PortablePredictorPackage::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_training_outcome_json(json: &str) -> PyResult<()> {
+    TrainingOutcome::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_training_replay_request_json(json: &str) -> PyResult<()> {
+    TrainingReplayRequest::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_training_replay_outcome_json(json: &str) -> PyResult<()> {
+    TrainingReplayOutcome::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
 }
 
 #[pyfunction]
@@ -250,6 +339,35 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(validate_pipeline_dsl_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_execution_plan_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_execution_bundle_json, module)?)?;
+    module.add_function(wrap_pyfunction!(validate_training_request_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        sample_relation_set_fingerprint_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(sign_training_request_json, module)?)?;
+    module.add_function(wrap_pyfunction!(project_training_request_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_training_contract_projection_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_parameter_projection_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(validate_cache_namespace_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_portable_predictor_package_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(validate_training_outcome_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_training_replay_request_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_training_replay_outcome_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(validate_fold_set_json, module)?)?;
     module.add_function(wrap_pyfunction!(fold_set_fingerprint_json, module)?)?;
     module.add_function(wrap_pyfunction!(compile_pipeline_dsl_graph_json, module)?)?;
@@ -272,6 +390,12 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         in_process::run_cv_refit_in_process,
         module
     )?)?;
+    module.add_class::<training::TrainingResult>()?;
+    module.add_function(wrap_pyfunction!(training::execute_training_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        training::execute_loaded_predictor_replay_json,
+        module
+    )?)?;
     Ok(())
 }
 
@@ -289,7 +413,15 @@ fn contract_manifest() -> serde_json::Value {
             {"id": "pipeline_dsl", "version": 1},
             {"id": "execution_plan", "version": 1},
             {"id": "execution_bundle", "version": 1},
-            {"id": "fold_set", "version": 1}
+            {"id": "fold_set", "version": 1},
+            {"id": "training_request", "version": 1},
+            {"id": "training_contract_projection", "version": 1},
+            {"id": "parameter_projection", "version": 1},
+            {"id": "cache_namespace", "version": 1},
+            {"id": "portable_predictor_package", "version": 1},
+            {"id": "training_outcome", "version": 1},
+            {"id": "training_replay_request", "version": 1},
+            {"id": "training_replay_outcome", "version": 1}
         ],
         "capabilities": [
             "validate_json_contracts",
@@ -300,6 +432,12 @@ fn contract_manifest() -> serde_json::Value {
             "derive_controller_manifest_registry_from_host_specs",
             "build_execution_plan",
             "fold_set_fingerprint",
+            "project_training_request",
+            "validate_portable_predictor_package",
+            "execute_training",
+            "execute_training_replay",
+            "execute_loaded_predictor_replay",
+            "owning_training_result",
             "structured_error_descriptors"
         ],
         "shared": {
@@ -317,6 +455,17 @@ fn contract_manifest() -> serde_json::Value {
             "validate_pipeline_dsl_json",
             "validate_execution_plan_json",
             "validate_execution_bundle_json",
+            "validate_training_request_json",
+            "sample_relation_set_fingerprint_json",
+            "sign_training_request_json",
+            "project_training_request_json",
+            "validate_training_contract_projection_json",
+            "validate_parameter_projection_json",
+            "validate_cache_namespace_json",
+            "validate_portable_predictor_package_json",
+            "validate_training_outcome_json",
+            "validate_training_replay_request_json",
+            "validate_training_replay_outcome_json",
             "validate_fold_set_json",
             "fold_set_fingerprint_json",
             "compile_pipeline_dsl_graph_json",
@@ -325,7 +474,10 @@ fn contract_manifest() -> serde_json::Value {
             "build_execution_plan_json",
             "canonical_operator_variant_label",
             "canonical_operator_variant_value_json",
-            "run_cv_refit_in_process"
+            "run_cv_refit_in_process",
+            "TrainingResult",
+            "execute_training_json",
+            "execute_loaded_predictor_replay_json"
         ],
         "wasm_exports": [
             "dag_ml_version",
@@ -641,6 +793,83 @@ mod tests {
     }
 
     #[test]
+    fn w10_training_contract_bindings_validate_and_project_fixtures() {
+        Python::initialize();
+        let request = include_str!(
+            "../../../examples/fixtures/training/training_request_active_influence.v1.json"
+        );
+        validate_training_request_json(request).expect("training request validates");
+        let projection = project_training_request_json(request).expect("training request projects");
+        validate_training_contract_projection_json(&projection)
+            .expect("native training projection validates");
+        let projection_value: serde_json::Value = serde_json::from_str(&projection).unwrap();
+        assert_eq!(
+            projection_value["request_id"],
+            "training:fixture.active_influence"
+        );
+        let mut unknown_graph_field = projection_value.clone();
+        unknown_graph_field["plan"]["graph_plan"]["graph"]["unknown_projection_field"] =
+            serde_json::json!(true);
+        let error = validate_training_contract_projection_json(
+            &serde_json::to_string(&unknown_graph_field).unwrap(),
+        )
+        .expect_err("unknown nested graph fields are rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("plan.graph_plan.graph.unknown_projection_field"),
+            "{error}"
+        );
+        validate_parameter_projection_json(include_str!(
+            "../../../examples/fixtures/training/parameter_projection_empty.v1.json"
+        ))
+        .expect("parameter projection validates");
+        let duplicate_parameter_projection =
+            include_str!("../../../examples/fixtures/training/parameter_projection_empty.v1.json")
+                .replacen(
+                    "\"schema_version\": 1",
+                    "\"schema_version\": 1, \"schema_version\": 1",
+                    1,
+                );
+        assert!(validate_parameter_projection_json(&duplicate_parameter_projection).is_err());
+        let nfc_projection = projection.replacen('{', "{\"é\":1,\"e\\u0301\":2,", 1);
+        assert!(validate_training_contract_projection_json(&nfc_projection).is_err());
+        validate_cache_namespace_json(include_str!(
+            "../../../examples/fixtures/training/cache_namespace_fit_cv.v1.json"
+        ))
+        .expect("cache namespace validates");
+        validate_portable_predictor_package_json(include_str!(
+            "../../../examples/fixtures/training/portable_predictor_package.v1.json"
+        ))
+        .expect("portable predictor package validates");
+        validate_training_outcome_json(include_str!(
+            "../../../examples/fixtures/training/training_outcome_refit.v1.json"
+        ))
+        .expect("training outcome validates");
+
+        Python::attach(|py| {
+            let module = PyModule::new(py, "_dag_ml_test").unwrap();
+            _dag_ml(py, &module).unwrap();
+            for export in [
+                "validate_training_request_json",
+                "project_training_request_json",
+                "validate_training_contract_projection_json",
+                "validate_parameter_projection_json",
+                "validate_cache_namespace_json",
+                "validate_portable_predictor_package_json",
+                "validate_training_outcome_json",
+                "execute_training_json",
+                "TrainingResult",
+            ] {
+                assert!(
+                    module.getattr(export).is_ok(),
+                    "missing Python export {export}"
+                );
+            }
+        });
+    }
+
+    #[test]
     fn contract_manifest_declares_binding_surface() {
         let manifest =
             serde_json::from_str::<serde_json::Value>(&contract_manifest_json().unwrap()).unwrap();
@@ -654,6 +883,18 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("derive_controller_manifest_json")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("project_training_request_json")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("execute_training_json")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("owning_training_result")));
         assert!(manifest["wasm_exports"]
             .as_array()
             .unwrap()

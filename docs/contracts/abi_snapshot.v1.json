@@ -5,7 +5,7 @@
   "headers": [
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "96914365a099fdced0cfb44177dc9a50244f6b545a03ecb89dce35d95855be8e"
+      "sha256": "8a047091ec381258d69e7511c7f219047a01f6e785e6ace3bfb2984dea940787"
     }
   ]
 }

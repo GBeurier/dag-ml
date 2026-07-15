@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "binding_id": "output:meta.final",
+  "node_id": "merge:stack.pred_plus_original.meta:ridge",
+  "port_name": "oof",
+  "prediction_level": "sample",
+  "unit_level": "physical_sample",
+  "prediction_kind": "regression_point",
+  "prediction_source": "final_refit",
+  "refit_strategy": "refit_one",
+  "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+  "target_names": [
+    "protein"
+  ],
+  "target_units": [
+    "percent"
+  ],
+  "class_labels": [
+    []
+  ],
+  "output_order": "target_order",
+  "target_space": "raw",
+  "binding_fingerprint": "c8d90368ab9e3a2a6ed03f729fdbda2521a42e429bd88d2334d86f6b55214c4f"
+}

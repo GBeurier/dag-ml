@@ -1,0 +1,117 @@
+{
+  "fixture_id": "dag-ml.conformal.oracle.split-absolute-residual.v1",
+  "schema_version": 1,
+  "numeric_version": "split_absolute_residual.v1",
+  "cases": [
+    {
+      "id": "even_n_multi_coverage",
+      "residuals": [0.4, 1.0, 0.2, 1.8, 0.6, 1.2, 0.8, 2.0, 0.1, 1.6, 0.3, 1.4, 0.5, 1.9, 0.7, 1.1, 0.9, 1.3, 1.5, 1.7],
+      "coverages": [0.9, 0.95],
+      "multi_target_policy": "marginal",
+      "small_sample_policy": "error",
+      "expected": [
+        {"coverage": 0.9, "rank": 19, "values": [{"status": "finite", "value": 1.9}]},
+        {"coverage": 0.95, "rank": 20, "values": [{"status": "finite", "value": 2.0}]}
+      ]
+    },
+    {
+      "id": "odd_n_ties_not_interpolated",
+      "residuals": [1.0, 0.0, 2.0, 0.5, 1.0, 2.0, 0.0, 1.0, 0.5],
+      "coverages": [0.5, 0.8],
+      "multi_target_policy": "marginal",
+      "small_sample_policy": "error",
+      "expected": [
+        {"coverage": 0.5, "rank": 5, "values": [{"status": "finite", "value": 1.0}]},
+        {"coverage": 0.8, "rank": 8, "values": [{"status": "finite", "value": 2.0}]}
+      ]
+    },
+    {
+      "id": "small_n_unbounded",
+      "residuals": [0.2, 0.4, 0.6],
+      "coverages": [0.95],
+      "multi_target_policy": "marginal",
+      "small_sample_policy": "unbounded",
+      "expected": [
+        {"coverage": 0.95, "rank": 4, "values": [{"status": "unbounded"}]}
+      ]
+    },
+    {
+      "id": "small_n_error",
+      "residuals": [0.2, 0.4, 0.6],
+      "coverages": [0.95],
+      "multi_target_policy": "marginal",
+      "small_sample_policy": "error",
+      "expected_error": "rank 4 exceeds calibration size 3"
+    },
+    {
+      "id": "multi_target_marginal",
+      "residuals": [[0.1, 1.0], [0.2, 2.0], [0.3, 3.0], [0.4, 4.0], [0.5, 5.0]],
+      "coverages": [0.5, 0.8],
+      "multi_target_policy": "marginal",
+      "small_sample_policy": "error",
+      "expected": [
+        {
+          "coverage": 0.5,
+          "rank": 3,
+          "values": [{"status": "finite", "value": 0.3}, {"status": "finite", "value": 3.0}]
+        },
+        {
+          "coverage": 0.8,
+          "rank": 5,
+          "values": [{"status": "finite", "value": 0.5}, {"status": "finite", "value": 5.0}]
+        }
+      ]
+    },
+    {
+      "id": "multi_target_joint_max",
+      "residuals": [[0.1, 1.0], [0.2, 2.0], [0.3, 3.0], [0.4, 4.0], [0.5, 5.0]],
+      "coverages": [0.5, 0.8],
+      "multi_target_policy": "joint_max",
+      "small_sample_policy": "error",
+      "expected": [
+        {"coverage": 0.5, "rank": 3, "values": [{"status": "finite", "value": 3.0}]},
+        {"coverage": 0.8, "rank": 5, "values": [{"status": "finite", "value": 5.0}]}
+      ]
+    },
+    {
+      "id": "shortest_decimal_rank",
+      "residuals": [24.0, 23.0, 22.0, 21.0, 20.0, 19.0, 18.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+      "coverages": [0.28],
+      "multi_target_policy": "marginal",
+      "small_sample_policy": "error",
+      "expected": [
+        {"coverage": 0.28, "rank": 7, "values": [{"status": "finite", "value": 7.0}]}
+      ]
+    }
+  ],
+  "tcv1_vectors": [
+    {
+      "id": "map_key_order",
+      "value": {"z": 1, "a": 2},
+      "equivalent_value": {"a": 2, "z": 1},
+      "expected_preimage_hex": "4441474d4c2d54435631004f000000000000000253000000000000000161490000000000000001325300000000000000017a49000000000000000131",
+      "expected_sha256": "5441a8df23725b4a60e16316f3034a7ec8b25b853ce75600fa71dda19c8a16e1"
+    },
+    {
+      "id": "unicode_nfc",
+      "value": "é",
+      "equivalent_value": "é",
+      "expected_preimage_hex": "4441474d4c2d5443563100530000000000000002c3a9",
+      "expected_sha256": "a4af538cebb2c18fed88a1ad4245509500d201e68802a217e4e8500ef61c0e86"
+    },
+    {
+      "id": "negative_zero",
+      "value": -0.0,
+      "equivalent_value": 0.0,
+      "expected_preimage_hex": "4441474d4c2d5443563100440000000000000000",
+      "expected_sha256": "c01f83d2f6a8e96eb7f50c4794eef0dbae68ad4d20ed116af013ae5cd4ffa49d"
+    },
+    {
+      "id": "utf8_key_order_differs_from_utf16",
+      "value": {"": 1, "𐀀": 2},
+      "equivalent_value": {"𐀀": 2, "": 1},
+      "expected_preimage_hex": "4441474d4c2d54435631004f0000000000000002530000000000000003ee808049000000000000000131530000000000000004f090808049000000000000000132",
+      "expected_sha256": "7c212789a6d362b8a34e8c271d5fe003c2026a828712eef6469610eedda79bc7"
+    }
+  ]
+}

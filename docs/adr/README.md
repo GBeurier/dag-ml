@@ -23,6 +23,8 @@ Phase 0 of the nirs4all integration roadmap closes the load-bearing decisions be
 | 17 | [Feature flag / cutover / rollback](ADR-17-cutover-rollback.md) | accepted | E, F |
 | 18 | [Licensing](ADR-18-licensing.md) | proposed | C, D, all releases |
 | 19 | [Multi-source unit vocabulary & derived-combo decision](ADR-19-multisource-unit-vocabulary.md) | accepted | multi-source roadmap |
+| 20 | [Native conformal calibration ownership and identity boundary](ADR-20-conformal-calibration-ownership.md) | accepted | conformal W0-W4 |
+| 21 | [Public training replay ownership and port-explicit wire evolution](ADR-21-forward-replay-ownership.md) | accepted | replay D4-D9 |
 
 ADR-19 onward extends the registry for feature roadmaps that build on this
 Phase-0 baseline; ADR-19 freezes the unit vocabulary and migration posture for
@@ -56,4 +58,6 @@ ADR-16-artifact-security
 ADR-17-cutover-rollback
 ADR-18-licensing
 ADR-19-multisource-unit-vocabulary
+ADR-20-conformal-calibration-ownership
+ADR-21-forward-replay-ownership
 ```

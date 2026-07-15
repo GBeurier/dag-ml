@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/prediction_cache_payload_set.v2.schema.json",
+  "title": "DAG-ML BundlePredictionCachePayloadSet v2",
+  "description": "Portable validation-OOF payloads paired with one ExecutionBundle v2 prediction-cache manifest. Every prediction block uses NodeResult v2 and therefore carries producer_port.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bundle_id",
+    "schema_version",
+    "caches"
+  ],
+  "properties": {
+    "bundle_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "caches": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/cache_payload"
+      },
+      "default": []
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "prediction_level": {
+      "enum": [
+        "observation",
+        "sample",
+        "target",
+        "group"
+      ]
+    },
+    "cache_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirement_key",
+        "cache_id",
+        "cache_namespace_fingerprints",
+        "format",
+        "partition",
+        "block_count",
+        "row_count",
+        "content_fingerprint"
+      ],
+      "properties": {
+        "requirement_key": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "cache_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "cache_namespace_fingerprints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sha256"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "format": {
+          "const": "dag-ml-json-prediction-blocks-v2"
+        },
+        "partition": {
+          "const": "validation"
+        },
+        "prediction_level": {
+          "$ref": "#/$defs/prediction_level",
+          "default": "sample"
+        },
+        "block_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "row_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "blocks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v2.schema.json#/$defs/prediction_block"
+          }
+        },
+        "aggregated_blocks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v2.schema.json#/$defs/aggregated_prediction_block"
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "prediction_level": {
+              "const": "sample"
+            },
+            "blocks": {
+              "minItems": 1
+            },
+            "aggregated_blocks": {
+              "maxItems": 0
+            }
+          }
+        },
+        {
+          "properties": {
+            "prediction_level": {
+              "enum": [
+                "observation",
+                "target",
+                "group"
+              ]
+            },
+            "blocks": {
+              "maxItems": 0
+            },
+            "aggregated_blocks": {
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}

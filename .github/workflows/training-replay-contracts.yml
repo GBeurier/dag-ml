@@ -1,0 +1,25 @@
+name: Training replay contracts
+
+on:
+  push:
+    branches: [main, 'rc/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  training-replay-contracts:
+    name: D4 training replay contract closure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install contract test dependencies
+        run: python -m pip install -r scripts/requirements-contracts.txt pytest
+      - name: Validate retained training authority
+        run: python scripts/validate_contracts.py
+      - name: Validate training replay schemas, semantics and pack
+        run: python scripts/validate_training_replay_contracts.py
+      - name: Run independent replay oracle and migration tests
+        run: python -m pytest parity/training/tests -q
