@@ -894,7 +894,7 @@ def test_standalone_joint_max_metrics_are_exact_and_unsliced() -> None:
         assert record["empirical_coverage"] == 1.0
 
 
-def test_oracle_has_stdlib_only_imports_and_no_production_dependency() -> None:
+def test_oracle_has_restricted_imports_and_no_production_dependency() -> None:
     source_path = ROOT / "parity" / "conformal" / "oracle.py"
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     imported_roots: set[str] = set()
@@ -915,7 +915,7 @@ def test_oracle_has_stdlib_only_imports_and_no_production_dependency() -> None:
         "pathlib",
         "struct",
         "typing",
-        "unicodedata",
+        "unicodedata2",
     }
 
 
