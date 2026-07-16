@@ -174,6 +174,25 @@ class LocalImplementationRegistryTests(unittest.TestCase):
             self.assertEqual(invocation["attestation"]["phase"], phase)
         self.assertEqual(calls, [(2.0, 5.0), (2.0, 5.0)])
 
+    def test_native_task_loss_can_be_bound_once(self) -> None:
+        registry = dag_ml.LocalImplementationRegistry()
+
+        def asymmetric_loss(target: float, prediction: float) -> float:
+            return (prediction - target) ** 2
+
+        registry.register_loss(self.binding_fixture["loss_reference"], asymmetric_loss)
+        binding = registry.bind_training_loss(
+            self.binding_fixture["tasks"]["FIT_CV"]
+        )
+        registry.clear()
+
+        self.assertEqual(binding["invoke"](2.0, 5.0), 9.0)
+        self.assertEqual(binding["required_attestation"]["phase"], "FIT_CV")
+        self.assertEqual(
+            binding["required_attestation"]["loss_id"],
+            self.binding_fixture["loss_reference"]["spec"]["loss_id"],
+        )
+
     def test_failed_loss_does_not_return_an_attestation(self) -> None:
         registry = dag_ml.LocalImplementationRegistry()
 
