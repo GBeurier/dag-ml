@@ -50,6 +50,15 @@ function assertPackageMetadata(expectedVersion) {
   if (!dts.includes("export class LocalImplementationRegistry")) {
     throw new Error("WASM TypeScript declarations are missing LocalImplementationRegistry");
   }
+  if (!dts.includes("bind_training_loss(")) {
+    throw new Error("WASM TypeScript declarations are missing task-level loss binding");
+  }
+  if (!dts.includes("export class TrainingLossBinding")) {
+    throw new Error("WASM TypeScript declarations are missing TrainingLossBinding");
+  }
+  if (!dts.includes("bind_training_loss(node_task_json: string, role_index: number): TrainingLossBinding")) {
+    throw new Error("WASM task-level loss binding has a weak TypeScript return type");
+  }
 }
 
 function parseErrorDescriptor(error) {
@@ -128,26 +137,135 @@ try {
   }
 }
 for (const phase of ["FIT_CV", "REFIT"]) {
-  const resolved = implementations.resolve_training_loss(trainingLossRoleJson, phase);
+  const requiredAttestation = JSON.parse(
+    dagMl.loss_execution_attestation_json(trainingLossRoleJson, phase),
+  );
+  const task = {
+    run_id: `run:javascript-local-${phase.toLowerCase()}`,
+    node_plan: {
+      node_id: "model:custom",
+      kind: "model",
+      controller_id: "controller:javascript-local",
+      controller_version: "1.0.0",
+      supported_phases: ["FIT_CV", "REFIT"],
+      controller_capabilities: [
+        "deterministic",
+        "supports_configurable_loss",
+        "supports_custom_loss",
+        "supports_differentiable_loss",
+      ],
+      training_losses: [localImplementations.training_loss_role],
+      fit_scope: "fold_train",
+      rng_policy: "uses_core_seed",
+      artifact_policy: "serializable",
+      input_nodes: [],
+      output_nodes: [],
+      shape_plan: null,
+      data_bindings: [],
+      params: {},
+      params_fingerprint: "0".repeat(64),
+    },
+    phase,
+    variant_id: null,
+    variant: null,
+    fold_id: phase === "FIT_CV" ? "fold:0" : null,
+    branch_path: [],
+    input_handles: {},
+    data_views: {},
+    prediction_inputs: {},
+    artifact_inputs: {},
+    required_loss_attestations: [requiredAttestation],
+    seed: 42,
+  };
+  const binding = implementations.bind_training_loss(
+    JSON.stringify(task),
+    0,
+  );
+  const resolved = binding.invoke;
   if (resolved(4, 1.5) !== 5) {
     throw new Error(`JavaScript custom loss returned the wrong value during ${phase}`);
   }
-  const attestation = JSON.parse(
-    dagMl.loss_execution_attestation_json(trainingLossRoleJson, phase),
-  );
-  if (attestation.phase !== phase) {
+  const attestation = JSON.parse(binding.required_attestation_json);
+  if (
+    attestation.phase !== phase ||
+    attestation.attestation_fingerprint !== requiredAttestation.attestation_fingerprint
+  ) {
     throw new Error(`JavaScript custom loss attestation drifted during ${phase}`);
+  }
+  binding.free();
+  const tamperedTask = structuredClone(task);
+  tamperedTask.required_loss_attestations[0].loss_id = "example.loss.tampered@1";
+  try {
+    implementations.bind_training_loss(JSON.stringify(tamperedTask), 0);
+    throw new Error("JavaScript registry bound a tampered NodeTask loss requirement");
+  } catch (error) {
+    if (!String(error).includes("do not match")) {
+      throw error;
+    }
   }
 }
 if (lossCalls.length !== 2) {
   throw new Error("JavaScript custom loss was not invoked for FIT_CV and REFIT");
 }
 try {
-  implementations.resolve_training_loss(trainingLossRoleJson, "PREDICT");
-  throw new Error("JavaScript custom loss resolved during PREDICT");
+  const predictTask = {
+    run_id: "run:javascript-local-predict",
+    node_plan: {
+      node_id: "model:custom",
+      kind: "model",
+      controller_id: "controller:javascript-local",
+      controller_version: "1.0.0",
+      supported_phases: ["FIT_CV", "REFIT", "PREDICT"],
+      controller_capabilities: ["supports_configurable_loss", "supports_custom_loss"],
+      training_losses: [localImplementations.training_loss_role],
+      fit_scope: "fold_train",
+      rng_policy: "uses_core_seed",
+      artifact_policy: "serializable",
+      input_nodes: [],
+      output_nodes: [],
+      shape_plan: null,
+      data_bindings: [],
+      params: {},
+      params_fingerprint: "0".repeat(64),
+    },
+    phase: "PREDICT",
+    variant_id: null,
+    variant: null,
+    fold_id: null,
+    branch_path: [],
+    input_handles: {},
+    data_views: {},
+    prediction_inputs: {},
+    artifact_inputs: {},
+    required_loss_attestations: [],
+    seed: 42,
+  };
+  implementations.bind_training_loss(JSON.stringify(predictTask), 0);
+  throw new Error("JavaScript custom loss bound during PREDICT");
 } catch (error) {
-  if (!String(error).includes("does not apply to phase Predict")) {
+  if (!String(error).includes("FIT_CV or REFIT")) {
     throw error;
+  }
+}
+for (const invalidRoleIndex of [
+  -1,
+  0.5,
+  Number.NaN,
+  Number.POSITIVE_INFINITY,
+  2 ** 53,
+  null,
+  false,
+  "0",
+  undefined,
+  {},
+]) {
+  try {
+    implementations.bind_training_loss("{}", invalidRoleIndex);
+    throw new Error(`JavaScript registry accepted invalid role index ${invalidRoleIndex}`);
+  } catch (error) {
+    if (!String(error).includes("non-negative safe integer")) {
+      throw error;
+    }
   }
 }
 
