@@ -32,6 +32,8 @@ pub struct ArtifactInputSpec {
     pub controller_id: ControllerId,
     pub artifact: ArtifactRef,
     pub params_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub training_loss_fingerprint: Option<String>,
     #[serde(default)]
     pub data_requirement_keys: Vec<String>,
     #[serde(default)]
@@ -46,6 +48,7 @@ impl ArtifactInputSpec {
             controller_id: record.controller_id.clone(),
             artifact: record.artifact.clone(),
             params_fingerprint: record.params_fingerprint.clone(),
+            training_loss_fingerprint: record.training_loss_fingerprint.clone(),
             data_requirement_keys: record.data_requirement_keys.clone(),
             prediction_requirement_keys: record.prediction_requirement_keys.clone(),
         })
@@ -500,6 +503,22 @@ impl NodeResult {
                 self.lineage.params_fingerprint,
                 task.node_plan.params_fingerprint
             )));
+        }
+        let expected_losses = task
+            .node_plan
+            .training_losses_for_phase(task.phase)
+            .collect::<Vec<_>>();
+        if self.lineage.loss_attestations.len() != expected_losses.len() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` returned {} loss attestations for {} resolved losses in phase {:?}",
+                task.node_plan.node_id,
+                self.lineage.loss_attestations.len(),
+                expected_losses.len(),
+                task.phase
+            )));
+        }
+        for (attestation, role) in self.lineage.loss_attestations.iter().zip(expected_losses) {
+            attestation.validate_against(role, &task.node_plan.node_id, task.phase)?;
         }
         task.fit_influence.validate()?;
         for diagnostic in &self.fit_influence_diagnostics {

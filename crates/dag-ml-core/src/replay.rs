@@ -538,6 +538,12 @@ impl RuntimeArtifactStore for LoadedPredictorArtifactStore<'_> {
                 request.artifact.id
             )));
         }
+        if record.training_loss_fingerprint != request.training_loss_fingerprint {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` training loss fingerprint does not match package bundle record",
+                request.artifact.id
+            )));
+        }
         let handle = self
             .predictor
             .artifact(&request.artifact.id)

@@ -211,6 +211,9 @@
         "params_fingerprint": {
           "$ref": "#/$defs/sha256"
         },
+        "training_loss_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
         "data_requirement_keys": {
           "type": "array",
           "uniqueItems": true,

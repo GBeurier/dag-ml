@@ -5644,6 +5644,7 @@ impl RuntimeController for CapiMockController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -5897,6 +5898,7 @@ mod tests {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         };
         if result.validate_for_task(&task).is_err() {
@@ -6128,6 +6130,7 @@ mod tests {
                     ControllerCapability::Deterministic,
                     ControllerCapability::ThreadSafe,
                 ]),
+                training_losses: Vec::new(),
                 fit_scope: ControllerFitScope::FoldTrain,
                 rng_policy: RngPolicy::UsesCoreSeed,
                 artifact_policy: ArtifactPolicy::Serializable,
@@ -6188,6 +6191,7 @@ mod tests {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
             },
         };
         result.validate_for_task(&task).unwrap();
@@ -6287,6 +6291,7 @@ mod tests {
                 plugin_version: None,
             },
             params_fingerprint: "params:artifact-fixture".to_string(),
+            training_loss_fingerprint: None,
         }
     }
 

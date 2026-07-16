@@ -207,6 +207,9 @@
         "supports_row_resampling",
         "supports_backend_loss_weights",
         "supports_missing_masks",
+        "supports_configurable_loss",
+        "supports_custom_loss",
+        "supports_differentiable_loss",
         "uses_training_weights",
         "uses_early_stopping",
         "performs_internal_tuning",
@@ -360,6 +363,12 @@
           "type": "array",
           "items": {
             "type": "object"
+          }
+        },
+        "training_losses": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/training_loss_role.v1.schema.json"
           }
         },
         "params": {
@@ -555,6 +564,9 @@
           "$ref": "#/$defs/artifact_ref"
         },
         "params_fingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "training_loss_fingerprint": {
           "$ref": "#/$defs/fingerprint"
         },
         "data_requirement_keys": {
