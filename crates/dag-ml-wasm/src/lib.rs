@@ -15,11 +15,12 @@ use std::collections::BTreeMap;
 
 use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
-    compile_pipeline_dsl_with_generation_and_controller_registry, fold_set_fingerprint,
-    parse_pipeline_dsl_json, select_candidate, select_candidate_groups, CampaignSpec,
-    CandidateScore, ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError,
-    ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec, HostControllerSpec, KFoldSpec, SampleId,
-    SelectionPolicy, StratifiedKFoldSpec,
+    compile_pipeline_dsl_with_generation_and_controller_registry, deserialize_external_contract,
+    fold_set_fingerprint, parse_pipeline_dsl_json, select_candidate, select_candidate_groups,
+    CampaignSpec, CandidateScore, ControllerManifest, ControllerRegistry,
+    DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec,
+    HostControllerSpec, KFoldSpec, SampleId, SelectionPolicy, StratifiedKFoldSpec,
+    TrainingLossRoleReference,
 };
 use dag_ml_core::{
     ControllerId, NodeResult, NodeTask, Phase, Result as CoreResult, RunContext, RunId,
@@ -220,6 +221,35 @@ pub fn build_execution_plan_json(
     serde_json::to_string(&plan).map_err(js_serde_error)
 }
 
+/// Build an execution plan and lower an explicit set of native training-loss
+/// roles into its node plans. The supplied set replaces every node's roles.
+#[wasm_bindgen]
+pub fn build_execution_plan_with_training_losses_json(
+    plan_id: &str,
+    graph_json: &str,
+    campaign_json: &str,
+    controller_manifests_json: &str,
+    training_loss_roles_json: &str,
+) -> Result<String, JsValue> {
+    let graph = parse_and_validate::<GraphSpec>(graph_json, GraphSpec::validate)?;
+    let campaign = parse_and_validate::<CampaignSpec>(campaign_json, CampaignSpec::validate)?;
+    let registry = controller_registry_from_json(controller_manifests_json)?;
+    let roles = training_loss_roles_from_json(training_loss_roles_json).map_err(js_core_error)?;
+    let plan = build_execution_plan(plan_id.to_string(), graph, campaign, &registry)
+        .map_err(js_core_error)?
+        .with_training_losses(roles)
+        .map_err(js_core_error)?;
+    serde_json::to_string(&plan).map_err(js_serde_error)
+}
+
+fn training_loss_roles_from_json(json: &str) -> CoreResult<Vec<TrainingLossRoleReference>> {
+    deserialize_external_contract(
+        json,
+        "training loss roles",
+        CoreDagMlError::CampaignValidation,
+    )
+}
+
 fn validate_json<T>(
     json: &str,
     validate: impl FnOnce(&T) -> dag_ml_core::Result<()>,
@@ -289,6 +319,8 @@ fn contract_manifest() -> serde_json::Value {
             "derive_controller_manifest_from_host_spec",
             "derive_controller_manifest_registry_from_host_specs",
             "build_execution_plan",
+            "bind_training_losses_to_execution_plan",
+            "execute_execution_plan_phase",
             "fold_set_fingerprint",
             "process_local_implementation_registry",
             "loss_execution_attestation",
@@ -334,12 +366,14 @@ fn contract_manifest() -> serde_json::Value {
             "compile_pipeline_dsl_artifact_json",
             "compile_pipeline_dsl_artifact_with_controllers_json",
             "build_execution_plan_json",
+            "build_execution_plan_with_training_losses_json",
             "kfold_split_json",
             "stratified_kfold_split_json",
             "select_candidates_json",
             "LocalImplementationRegistry",
             "loss_execution_attestation_json",
-            "execute_campaign_phase_json"
+            "execute_campaign_phase_json",
+            "execute_execution_plan_phase_json"
         ]
     })
 }
@@ -362,9 +396,11 @@ fn js_core_error(error: CoreDagMlError) -> JsValue {
 /// A [`RuntimeController`] backed by a synchronous JavaScript callback.
 ///
 /// `invoke` serializes the `NodeTask` to JSON, calls
-/// `js_invoke(controller_id, task_json)` and parses the returned `NodeResult`
-/// JSON. The host (JS) resolves feature matrices and fitted models out-of-band
-/// — the core never sees them.
+/// `js_invoke(controller_id, task_json, exact_seed)` and parses the returned
+/// `NodeResult` JSON. `exact_seed` is a decimal string (or `null`) because a JS
+/// number cannot losslessly represent every native `u64`. The host (JS)
+/// resolves feature matrices and fitted models out-of-band — the core never
+/// sees them.
 struct JsRuntimeController {
     id: ControllerId,
     js_invoke: js_sys::Function,
@@ -384,12 +420,17 @@ impl RuntimeController for JsRuntimeController {
 
     fn invoke(&self, task: &NodeTask) -> CoreResult<NodeResult> {
         let task_json = serde_json::to_string(task).map_err(CoreDagMlError::Serialization)?;
+        let exact_seed = task
+            .seed
+            .map(|seed| JsValue::from_str(&seed.to_string()))
+            .unwrap_or(JsValue::NULL);
         let returned = self
             .js_invoke
-            .call2(
+            .call3(
                 &JsValue::NULL,
                 &JsValue::from_str(self.id.as_str()),
                 &JsValue::from_str(&task_json),
+                &exact_seed,
             )
             .map_err(|err| {
                 CoreDagMlError::RuntimeValidation(format!(
@@ -403,7 +444,19 @@ impl RuntimeController for JsRuntimeController {
                 self.id
             ))
         })?;
-        serde_json::from_str::<NodeResult>(&result_json).map_err(CoreDagMlError::Serialization)
+        let mut result = serde_json::from_str::<NodeResult>(&result_json)
+            .map_err(CoreDagMlError::Serialization)?;
+        if let Some(returned_seed) = result.lineage.seed {
+            if Some(returned_seed) != task.seed {
+                return Err(CoreDagMlError::RuntimeValidation(format!(
+                    "JS controller `{}` returned lineage seed {returned_seed}, expected {:?}; use the exact-seed callback argument or return null for bridge injection",
+                    self.id, task.seed
+                )));
+            }
+        } else {
+            result.lineage.seed = task.seed;
+        }
+        Ok(result)
     }
 }
 
@@ -418,14 +471,57 @@ fn parse_phase(phase: &str) -> Result<Phase, JsValue> {
     }
 }
 
+fn execute_plan_phase(
+    plan: &ExecutionPlan,
+    trusted_manifests: &ControllerRegistry,
+    run_id: &str,
+    root_seed: u32,
+    phase: Phase,
+    js_invoke: &js_sys::Function,
+) -> CoreResult<Vec<NodeResult>> {
+    validate_runtime_controller_manifests(plan, trusted_manifests)?;
+    let mut controllers = RuntimeControllerRegistry::new();
+    for manifest in plan.controller_manifests.values() {
+        controllers.register(Box::new(JsRuntimeController {
+            id: manifest.controller_id.clone(),
+            js_invoke: js_invoke.clone(),
+        }))?;
+    }
+
+    let run = RunId::new(run_id)?;
+    let mut ctx = RunContext::new(run, Some(u64::from(root_seed)));
+    SequentialScheduler.execute_campaign_phase(plan, &controllers, &mut ctx, phase)
+}
+
+fn validate_runtime_controller_manifests(
+    plan: &ExecutionPlan,
+    trusted_manifests: &ControllerRegistry,
+) -> CoreResult<()> {
+    for (controller_id, embedded_manifest) in &plan.controller_manifests {
+        let trusted_manifest = trusted_manifests.get(controller_id).ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(format!(
+                "execution plan controller `{controller_id}` is absent from the trusted runtime manifests"
+            ))
+        })?;
+        if trusted_manifest != embedded_manifest {
+            return Err(CoreDagMlError::RuntimeValidation(format!(
+                "execution plan controller `{controller_id}` does not match the trusted runtime manifest"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Execute one phase of a campaign with the in-process [`SequentialScheduler`],
 /// invoking host operators through the supplied JS callback.
 ///
 /// - `graph_json` / `campaign_json` / `controller_manifests_json`: the same
 ///   inputs as [`build_execution_plan_json`]. The campaign's
 ///   `split_invocation.fold_set` drives the FIT_CV fold loop.
-/// - `js_invoke`: `(controllerId: string, taskJson: string) => nodeResultJson: string`,
-///   **synchronous** (no `await` across this boundary).
+/// - `js_invoke`: `(controllerId: string, taskJson: string, exactSeed: string | null)
+///   => nodeResultJson: string`, **synchronous** (no `await` across this boundary).
+///   A callback may return `lineage.seed: null`; the bridge injects the native
+///   `u64` from the task before scheduler validation.
 ///
 /// Returns the phase's `Vec<NodeResult>` as JSON (predictions + lineage).
 #[wasm_bindgen]
@@ -442,32 +538,43 @@ pub fn execute_campaign_phase_json(
 ) -> Result<String, JsValue> {
     let graph = parse_and_validate::<GraphSpec>(graph_json, GraphSpec::validate)?;
     let campaign = parse_and_validate::<CampaignSpec>(campaign_json, CampaignSpec::validate)?;
-    let manifests = serde_json::from_str::<Vec<ControllerManifest>>(controller_manifests_json)
-        .map_err(js_serde_error)?;
-
-    let mut registry = ControllerRegistry::new();
-    for manifest in &manifests {
-        registry.register(manifest.clone()).map_err(js_core_error)?;
-    }
+    let registry = controller_registry_from_json(controller_manifests_json)?;
     let plan = build_execution_plan(plan_id.to_string(), graph, campaign, &registry)
         .map_err(js_core_error)?;
 
-    let mut controllers = RuntimeControllerRegistry::new();
-    for manifest in &manifests {
-        controllers
-            .register(Box::new(JsRuntimeController {
-                id: manifest.controller_id.clone(),
-                js_invoke: js_invoke.clone(),
-            }))
-            .map_err(js_core_error)?;
-    }
-
-    let run = RunId::new(run_id).map_err(js_core_error)?;
-    let mut ctx = RunContext::new(run, Some(u64::from(root_seed)));
     let phase = parse_phase(phase)?;
-    let results = SequentialScheduler
-        .execute_campaign_phase(&plan, &controllers, &mut ctx, phase)
+    let results = execute_plan_phase(&plan, &registry, run_id, root_seed, phase, js_invoke)
         .map_err(js_core_error)?;
+    serde_json::to_string(&results).map_err(js_serde_error)
+}
+
+/// Execute one phase from a previously built and validated execution plan.
+///
+/// Unlike [`execute_campaign_phase_json`], this preserves native training-loss
+/// roles already lowered into `NodePlan.training_losses`. Every embedded
+/// controller manifest must exactly match the independently supplied trusted
+/// runtime registry before any callback is dispatched.
+#[wasm_bindgen]
+pub fn execute_execution_plan_phase_json(
+    execution_plan_json: &str,
+    trusted_controller_manifests_json: &str,
+    run_id: &str,
+    root_seed: u32,
+    phase: &str,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let plan = ExecutionPlan::from_json(execution_plan_json).map_err(js_core_error)?;
+    let trusted_manifests = controller_registry_from_json(trusted_controller_manifests_json)?;
+    let phase = parse_phase(phase)?;
+    let results = execute_plan_phase(
+        &plan,
+        &trusted_manifests,
+        run_id,
+        root_seed,
+        phase,
+        js_invoke,
+    )
+    .map_err(js_core_error)?;
     serde_json::to_string(&results).map_err(js_serde_error)
 }
 
@@ -523,5 +630,27 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("derive_controller_manifest_list_json")));
+    }
+
+    #[test]
+    fn training_loss_role_list_rejects_positional_structs() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/criteria/javascript_local_implementations.v1.json"
+        ))
+        .unwrap();
+        let role = fixture["training_loss_role"].clone();
+        let valid = serde_json::to_string(&serde_json::json!([role.clone()])).unwrap();
+        assert_eq!(training_loss_roles_from_json(&valid).unwrap().len(), 1);
+
+        let positional = serde_json::json!([[
+            role["schema_version"].clone(),
+            role["node_id"].clone(),
+            role.get("output_id")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            role["phases"].clone(),
+            role["loss"].clone()
+        ]]);
+        assert!(training_loss_roles_from_json(&positional.to_string()).is_err());
     }
 }

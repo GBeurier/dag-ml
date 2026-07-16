@@ -287,6 +287,39 @@ impl ExecutionPlan {
         Ok(plan)
     }
 
+    /// Replace the plan's training-loss roles with a validated canonical set.
+    ///
+    /// Roles are grouped by their declared node and sorted by output/phase so
+    /// every binding produces the same `NodeTask` requirement order. Nodes not
+    /// present in `roles` are explicitly left without a configurable loss.
+    pub fn with_training_losses(mut self, roles: Vec<TrainingLossRoleReference>) -> Result<Self> {
+        self.validate()?;
+        let mut roles_by_node = BTreeMap::<NodeId, Vec<TrainingLossRoleReference>>::new();
+        for role in roles {
+            role.validate()?;
+            if !self.node_plans.contains_key(&role.node_id) {
+                return Err(DagMlError::Planning(format!(
+                    "training loss references unknown plan node `{}`",
+                    role.node_id
+                )));
+            }
+            roles_by_node
+                .entry(role.node_id.clone())
+                .or_default()
+                .push(role);
+        }
+        for node_roles in roles_by_node.values_mut() {
+            node_roles.sort_by(|left, right| {
+                (&left.output_id, &left.phases).cmp(&(&right.output_id, &right.phases))
+            });
+        }
+        for (node_id, node_plan) in &mut self.node_plans {
+            node_plan.training_losses = roles_by_node.remove(node_id).unwrap_or_default();
+        }
+        self.validate()?;
+        Ok(self)
+    }
+
     pub fn validate(&self) -> Result<()> {
         self.graph_plan.graph.validate()?;
         self.campaign.validate()?;
@@ -2226,6 +2259,87 @@ mod tests {
             inner_cv: None,
             metadata: BTreeMap::new(),
         }
+    }
+
+    fn custom_loss_role(node_id: &str, output_id: &str) -> TrainingLossRoleReference {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/criteria/javascript_local_implementations.v1.json"
+        ))
+        .unwrap();
+        let mut role: TrainingLossRoleReference =
+            serde_json::from_value(fixture["training_loss_role"].clone()).unwrap();
+        role.node_id = NodeId::new(node_id).unwrap();
+        role.output_id = Some(output_id.to_string());
+        role
+    }
+
+    #[test]
+    fn execution_plan_lowers_training_losses_in_canonical_order() {
+        let mut loss_registry = ControllerRegistry::new();
+        loss_registry
+            .register(manifest("controller:transform", NodeKind::Transform))
+            .unwrap();
+        let mut model_manifest = manifest("controller:model", NodeKind::Model);
+        model_manifest.capabilities.extend([
+            ControllerCapability::SupportsConfigurableLoss,
+            ControllerCapability::SupportsCustomLoss,
+            ControllerCapability::SupportsDifferentiableLoss,
+        ]);
+        loss_registry.register(model_manifest).unwrap();
+
+        let plan = build_execution_plan(
+            "plan:training-loss-lowering",
+            graph(),
+            campaign("campaign:training-loss-lowering"),
+            &loss_registry,
+        )
+        .unwrap();
+        let role_b = custom_loss_role("model:pls", "b");
+        let role_a = custom_loss_role("model:pls", "a");
+        let bound = plan
+            .clone()
+            .with_training_losses(vec![role_b, role_a.clone()])
+            .unwrap();
+        let model = bound
+            .node_plans
+            .get(&NodeId::new("model:pls").unwrap())
+            .unwrap();
+        assert_eq!(
+            model
+                .training_losses
+                .iter()
+                .map(|role| role.output_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("a"), Some("b")]
+        );
+
+        let cleared = bound.with_training_losses(Vec::new()).unwrap();
+        assert!(cleared
+            .node_plans
+            .values()
+            .all(|node| node.training_losses.is_empty()));
+
+        let mut unknown = role_a.clone();
+        unknown.node_id = NodeId::new("model:unknown").unwrap();
+        assert!(plan
+            .clone()
+            .with_training_losses(vec![unknown])
+            .unwrap_err()
+            .to_string()
+            .contains("unknown plan node"));
+
+        let incapable = build_execution_plan(
+            "plan:training-loss-incapable",
+            graph(),
+            campaign("campaign:training-loss-incapable"),
+            &registry(),
+        )
+        .unwrap();
+        assert!(incapable
+            .with_training_losses(vec![role_a])
+            .unwrap_err()
+            .to_string()
+            .contains("does not support configurable loss"));
     }
 
     #[test]
