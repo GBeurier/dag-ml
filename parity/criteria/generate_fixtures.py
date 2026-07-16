@@ -22,6 +22,9 @@ JAVASCRIPT_FIXTURE = (
     ROOT / "examples/fixtures/criteria/javascript_local_implementations.v1.json"
 )
 C_FIXTURE = ROOT / "examples/fixtures/criteria/c_local_implementations.v1.json"
+PYTHON_FIXTURE = (
+    ROOT / "examples/fixtures/criteria/python_local_implementations.v1.json"
+)
 R_FIXTURE = ROOT / "bindings/r/inst/extdata/r_local_implementations.v1.json"
 MATLAB_FIXTURE = ROOT / "bindings/matlab/fixtures/matlab_local_implementations.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
@@ -32,12 +35,14 @@ ARTIFACTS = {
     "bindings/r/R/local_implementation_registry.R": "r_local_registry",
     "bindings/r/inst/extdata/r_local_implementations.v1.json": "fixture",
     "bindings/r/tests/local_implementation_registry.R": "r_binding_test",
+    "examples/fixtures/criteria/python_local_implementations.v1.json": "fixture",
     "crates/dag-ml-cli/src/main.rs": "cli_validator",
     "crates/dag-ml-cli/tests/cli_contracts.rs": "cli_test",
     "crates/dag-ml-core/src/criteria.rs": "rust_contract",
     "crates/dag-ml-core/src/implementation_registry.rs": "rust_local_registry",
     "crates/dag-ml-core/src/metric_provider.rs": "rust_provider_contract",
     "crates/dag-ml-core/src/metrics.rs": "native_metric_adapter",
+    "crates/dag-ml-core/src/runtime/artifact.rs": "rust_lineage_contract",
     "crates/dag-ml-capi/include/dag_ml.h": "c_abi_header",
     "crates/dag-ml-capi/src/local_implementation.rs": "c_local_registry",
     "crates/dag-ml-capi/tests/local_implementations.rs": "c_binding_test",
@@ -49,6 +54,7 @@ ARTIFACTS = {
     "crates/dag-ml-wasm/src/local_implementation.rs": "javascript_local_registry",
     "crates/dag-ml-wasm/src/lib.rs": "javascript_binding",
     "docs/CRITERIA_CONTRACTS.md": "contract_documentation",
+    "docs/contracts/early_stopping_record.schema.json": "schema",
     "docs/contracts/implementation_descriptor.schema.json": "schema",
     "docs/contracts/loss_execution_attestation.schema.json": "schema",
     "docs/contracts/loss_spec.schema.json": "schema",
@@ -56,6 +62,7 @@ ARTIFACTS = {
     "docs/contracts/metric_evaluation_task.schema.json": "schema",
     "docs/contracts/metric_role.schema.json": "schema",
     "docs/contracts/metric_spec.schema.json": "schema",
+    "docs/contracts/node_result.schema.json": "schema",
     "docs/contracts/training_loss_role.schema.json": "schema",
     "examples/fixtures/criteria/c_local_implementations.v1.json": "fixture",
     "examples/fixtures/criteria/criteria_contracts.v1.json": "fixture",
@@ -68,9 +75,7 @@ ARTIFACTS = {
 }
 
 
-def loss_attestation(
-    role: dict[str, Any], phase: str
-) -> dict[str, Any]:
+def loss_attestation(role: dict[str, Any], phase: str) -> dict[str, Any]:
     loss = role["loss"]
     spec = loss["spec"]
     implementation = loss["implementation"]
@@ -81,9 +86,7 @@ def loss_attestation(
         "phase": phase,
         "loss_id": spec["loss_id"],
         "semantic_fingerprint": spec["spec_fingerprint"],
-        "implementation_fingerprint": implementation[
-            "implementation_fingerprint"
-        ],
+        "implementation_fingerprint": implementation["implementation_fingerprint"],
         "descriptor_fingerprint": implementation["descriptor_fingerprint"],
         "effective_parameters": copy.deepcopy(spec["parameters"]),
         "reduction": spec["reduction"],
@@ -96,7 +99,11 @@ def loss_attestation(
 
 
 def build_host_language_fixture(
-    valid: dict[str, Any], *, language: str, binding_id: str
+    valid: dict[str, Any],
+    *,
+    language: str,
+    binding_id: str,
+    extra_capabilities: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     loss_implementation = copy.deepcopy(valid["loss_implementation"])
     loss_implementation.update(
@@ -106,7 +113,9 @@ def build_host_language_fixture(
             "implementation_fingerprint": hashlib.sha256(
                 f"dagml.{language}.asymmetric-loss.v1".encode()
             ).hexdigest(),
-            "capabilities": ["deterministic", "differentiable"],
+            "capabilities": sorted(
+                {"deterministic", "differentiable", *extra_capabilities}
+            ),
             "registry_key": f"loss:{language}:asymmetric",
             "descriptor_fingerprint": "",
         }
@@ -139,6 +148,9 @@ def build_host_language_fixture(
             "registry_key": f"metric:{language}:bias",
             "descriptor_fingerprint": "",
         }
+    )
+    metric_implementation["capabilities"] = sorted(
+        {*metric_implementation["capabilities"], *extra_capabilities}
     )
     metric_implementation["descriptor_fingerprint"] = fingerprint_without(
         metric_implementation, "descriptor_fingerprint"
@@ -272,9 +284,7 @@ def build_javascript_fixture(valid: dict[str, Any]) -> dict[str, Any]:
     loss_spec = copy.deepcopy(valid["loss_spec"])
     # JavaScript JSON.stringify cannot retain an integer-valued binary64 token.
     loss_spec["parameters"] = {"over_weight": 1, "under_weight": 2}
-    loss_spec["spec_fingerprint"] = fingerprint_without(
-        loss_spec, "spec_fingerprint"
-    )
+    loss_spec["spec_fingerprint"] = fingerprint_without(loss_spec, "spec_fingerprint")
     loss_implementation = copy.deepcopy(valid["loss_implementation"])
     loss_implementation.update(
         {
@@ -452,9 +462,15 @@ def main() -> None:
     fixture = load(FIXTURE)
     valid = fixture["valid"]
     for key in ("loss_spec", "metric_spec"):
-        valid[key]["spec_fingerprint"] = fingerprint_without(valid[key], "spec_fingerprint")
-    valid["loss_implementation"]["semantic_fingerprint"] = valid["loss_spec"]["spec_fingerprint"]
-    valid["metric_implementation"]["semantic_fingerprint"] = valid["metric_spec"]["spec_fingerprint"]
+        valid[key]["spec_fingerprint"] = fingerprint_without(
+            valid[key], "spec_fingerprint"
+        )
+    valid["loss_implementation"]["semantic_fingerprint"] = valid["loss_spec"][
+        "spec_fingerprint"
+    ]
+    valid["metric_implementation"]["semantic_fingerprint"] = valid["metric_spec"][
+        "spec_fingerprint"
+    ]
     for key in ("loss_implementation", "metric_implementation"):
         valid[key]["descriptor_fingerprint"] = fingerprint_without(
             valid[key], "descriptor_fingerprint"
@@ -480,8 +496,10 @@ def main() -> None:
         "reduction": valid["loss_spec"]["reduction"],
         "attestation_fingerprint": "",
     }
-    valid["loss_execution_attestation"]["attestation_fingerprint"] = fingerprint_without(
-        valid["loss_execution_attestation"], "attestation_fingerprint"
+    valid["loss_execution_attestation"]["attestation_fingerprint"] = (
+        fingerprint_without(
+            valid["loss_execution_attestation"], "attestation_fingerprint"
+        )
     )
     wrong_phase = copy.deepcopy(valid["loss_execution_attestation"])
     wrong_phase["phase"] = "PREDICT"
@@ -503,6 +521,72 @@ def main() -> None:
         "spec": valid["metric_spec"],
         "implementation": valid["metric_implementation"],
     }
+    early_stopping_role = copy.deepcopy(valid["metric_role"])
+    early_stopping_role.update(
+        {"role_id": "early-stopping:bias", "role": "early_stopping"}
+    )
+    valid["early_stopping_record"] = {
+        "schema_version": 1,
+        "node_id": valid["training_loss_role"]["node_id"],
+        "phase": "FIT_CV",
+        "fold_id": "fold:0",
+        "metric_role": early_stopping_role,
+        "best_iteration": 3,
+        "observed_iterations": 5,
+        "best_value": 0.125,
+        "stopped_early": True,
+        "record_fingerprint": "",
+    }
+    valid["early_stopping_record"]["record_fingerprint"] = fingerprint_without(
+        valid["early_stopping_record"], "record_fingerprint"
+    )
+    wrong_stopping_role = copy.deepcopy(valid["early_stopping_record"])
+    wrong_stopping_role["metric_role"]["role"] = "selection"
+    wrong_stopping_role["record_fingerprint"] = fingerprint_without(
+        wrong_stopping_role, "record_fingerprint"
+    )
+    invalid_iteration = copy.deepcopy(valid["early_stopping_record"])
+    invalid_iteration["best_iteration"] = invalid_iteration["observed_iterations"]
+    invalid_iteration["record_fingerprint"] = fingerprint_without(
+        invalid_iteration, "record_fingerprint"
+    )
+    wrong_stopping_scope = copy.deepcopy(valid["early_stopping_record"])
+    wrong_stopping_scope["phase"] = "REFIT"
+    wrong_stopping_scope["record_fingerprint"] = fingerprint_without(
+        wrong_stopping_scope, "record_fingerprint"
+    )
+    tampered_stopping_record = copy.deepcopy(valid["early_stopping_record"])
+    tampered_stopping_record["best_value"] = 0.5
+    early_stopping_case_ids = {
+        "early_stopping_selection_role",
+        "early_stopping_invalid_iteration",
+        "early_stopping_refit_with_fold",
+        "early_stopping_tampered_fingerprint",
+    }
+    fixture["invalid"] = [
+        case for case in fixture["invalid"] if case["id"] not in early_stopping_case_ids
+    ] + [
+        {
+            "id": "early_stopping_selection_role",
+            "contract": "early_stopping_record",
+            "document": wrong_stopping_role,
+        },
+        {
+            "id": "early_stopping_invalid_iteration",
+            "contract": "early_stopping_record",
+            "document": invalid_iteration,
+        },
+        {
+            "id": "early_stopping_refit_with_fold",
+            "contract": "early_stopping_record",
+            "document": wrong_stopping_scope,
+        },
+        {
+            "id": "early_stopping_tampered_fingerprint",
+            "contract": "early_stopping_record",
+            "document": tampered_stopping_record,
+        },
+    ]
     write(FIXTURE, fixture)
     provider_fixture = build_provider_fixture(valid)
     write(PROVIDER_FIXTURE, provider_fixture)
@@ -510,9 +594,20 @@ def main() -> None:
     write(JAVASCRIPT_FIXTURE, javascript_fixture)
     c_fixture = build_c_fixture(valid)
     write(C_FIXTURE, c_fixture)
-    r_fixture = build_host_language_fixture(
-        valid, language="r", binding_id="binding:r"
+    python_fixture = build_host_language_fixture(
+        valid,
+        language="python",
+        binding_id="binding:python",
+        extra_capabilities=("needs_gil",),
     )
+    python_metric_task = copy.deepcopy(provider_fixture["valid"]["task"])
+    python_metric_task["metric"] = copy.deepcopy(python_fixture["metric_reference"])
+    python_metric_task["task_fingerprint"] = fingerprint_without(
+        python_metric_task, "task_fingerprint"
+    )
+    python_fixture["metric_task"] = python_metric_task
+    write(PYTHON_FIXTURE, python_fixture)
+    r_fixture = build_host_language_fixture(valid, language="r", binding_id="binding:r")
     write(R_FIXTURE, r_fixture)
     matlab_fixture = build_host_language_fixture(
         valid, language="matlab", binding_id="binding:matlab"
@@ -529,8 +624,7 @@ def main() -> None:
             for path, kind in sorted(ARTIFACTS.items())
         ],
         "required_negative_cases": [
-            case["id"]
-            for case in fixture["invalid"] + provider_fixture["invalid"]
+            case["id"] for case in fixture["invalid"] + provider_fixture["invalid"]
         ],
         "runtime_only_negative_cases": ["provider_result_non_finite"],
         "pack_checksum": "",

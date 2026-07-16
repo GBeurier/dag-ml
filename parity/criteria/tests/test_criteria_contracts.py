@@ -27,6 +27,9 @@ FIXTURE = ROOT / "examples/fixtures/criteria/criteria_contracts.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
 PROVIDER_FIXTURE = ROOT / "examples/fixtures/criteria/metric_provider_contracts.v1.json"
 R_FIXTURE = ROOT / "bindings/r/inst/extdata/r_local_implementations.v1.json"
+PYTHON_FIXTURE = (
+    ROOT / "examples/fixtures/criteria/python_local_implementations.v1.json"
+)
 MATLAB_FIXTURE = ROOT / "bindings/matlab/fixtures/matlab_local_implementations.v1.json"
 SCHEMA_IDS = {
     "loss_spec": "https://github.com/GBeurier/dag-ml/schemas/loss_spec.v1.schema.json",
@@ -35,6 +38,7 @@ SCHEMA_IDS = {
     "training_loss_role": "https://github.com/GBeurier/dag-ml/schemas/training_loss_role.v1.schema.json",
     "loss_execution_attestation": "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json",
     "metric_role": "https://github.com/GBeurier/dag-ml/schemas/metric_role.v1.schema.json",
+    "early_stopping_record": "https://github.com/GBeurier/dag-ml/schemas/early_stopping_record.v1.schema.json",
     "metric_evaluation_task": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_task.v1.schema.json",
     "metric_evaluation_result": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_result.v1.schema.json",
     "node_task": "https://github.com/GBeurier/dag-ml/schemas/node_task.v1.schema.json",
@@ -47,6 +51,7 @@ VALID_CONTRACTS = {
     "training_loss_role": "training_loss_role",
     "loss_execution_attestation": "loss_execution_attestation",
     "metric_role": "metric_role",
+    "early_stopping_record": "early_stopping_record",
 }
 
 
@@ -77,6 +82,7 @@ def test_positive_fingerprints_are_frozen_tcv1_values() -> None:
         ("loss_implementation", "descriptor_fingerprint"),
         ("metric_implementation", "descriptor_fingerprint"),
         ("loss_execution_attestation", "attestation_fingerprint"),
+        ("early_stopping_record", "record_fingerprint"),
     ):
         assert valid[key][field] == fingerprint_without(valid[key], field), key
 
@@ -96,12 +102,18 @@ def test_required_negative_fixture_cases_are_rejected() -> None:
         "loss_attestation_wrong_phase",
         "metric_without_objective",
         "selection_metric_skips_missing_values",
+        "early_stopping_selection_role",
+        "early_stopping_invalid_iteration",
+        "early_stopping_refit_with_fold",
+        "early_stopping_tampered_fingerprint",
     }
     schema_required = {
         "loss_c1_control_id",
         "loss_leading_zero_version",
         "loss_uppercase_callable_payload",
         "loss_attestation_wrong_phase",
+        "early_stopping_selection_role",
+        "early_stopping_refit_with_fold",
     }
     for case in cases:
         errors = schema_errors(case["contract"], case["document"])
@@ -116,7 +128,9 @@ def test_required_negative_fixture_cases_are_rejected() -> None:
         assert errors or semantic_rejected, case["id"]
 
 
-def test_nested_executable_payload_is_rejected_semantically_case_insensitively() -> None:
+def test_nested_executable_payload_is_rejected_semantically_case_insensitively() -> (
+    None
+):
     document = load(FIXTURE)["valid"]["loss_spec"]
     document["parameters"] = {"nested": [{"CallAble": "not serialized code"}]}
     document["spec_fingerprint"] = fingerprint_without(document, "spec_fingerprint")
@@ -132,14 +146,18 @@ def test_large_decimal_version_is_accepted_by_schema_and_semantics() -> None:
     VALIDATORS["loss_spec"](document)
 
 
-def test_metric_provider_fixture_has_independent_task_result_and_refusal_parity() -> None:
+def test_metric_provider_fixture_has_independent_task_result_and_refusal_parity() -> (
+    None
+):
     fixture = load(PROVIDER_FIXTURE)
     task = fixture["valid"]["task"]
     result = fixture["valid"]["result"]
     assert schema_errors("metric_evaluation_task", task) == []
     assert schema_errors("metric_evaluation_result", result) == []
     VALIDATORS["metric_evaluation_task"](task)
-    assert validate_metric_evaluation_result(result, task) == fixture["valid"]["aggregate"]
+    assert (
+        validate_metric_evaluation_result(result, task) == fixture["valid"]["aggregate"]
+    )
 
     for case in fixture["invalid"]:
         errors = schema_errors(case["contract"], case["document"])
@@ -160,7 +178,7 @@ def test_metric_provider_fixture_has_independent_task_result_and_refusal_parity(
         validate_metric_evaluation_result(nonfinite, task)
 
 
-@pytest.mark.parametrize("fixture_path", [R_FIXTURE, MATLAB_FIXTURE])
+@pytest.mark.parametrize("fixture_path", [PYTHON_FIXTURE, R_FIXTURE, MATLAB_FIXTURE])
 def test_host_local_registry_fixture_uses_native_node_task_requirements(
     fixture_path: Path,
 ) -> None:
@@ -189,6 +207,10 @@ def test_host_local_registry_fixture_uses_native_node_task_requirements(
         assert requirement["attestation_fingerprint"] == fingerprint_without(
             requirement, "attestation_fingerprint"
         )
+    if fixture_path == PYTHON_FIXTURE:
+        metric_task = fixture["metric_task"]
+        assert schema_errors("metric_evaluation_task", metric_task) == []
+        VALIDATORS["metric_evaluation_task"](metric_task)
 
 
 def test_conformance_pack_is_exact_and_self_fingerprinted() -> None:

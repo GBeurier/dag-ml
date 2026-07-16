@@ -1,17 +1,39 @@
 //! Python-owned process-local loss and metric implementations.
 
+use std::collections::BTreeSet;
+
 use dag_ml_core::{
     deserialize_external_contract, DagMlError as CoreDagMlError, ImplementationCapability,
-    ImplementationDescriptor, LocalImplementationRegistry, LossExecutionAttestation, LossReference,
-    MetricReference, Phase, PortabilityClass, TrainingLossRoleReference,
+    ImplementationDescriptor, ImplementationSemanticKind, LocalImplementationRegistry,
+    LossCapability, LossExecutionAttestation, LossReference, LossSpec, MetricCapability,
+    MetricEvaluationResult, MetricEvaluationTask, MetricEvaluationValue, MetricReference,
+    MetricSpec, NodeTask, Phase, PortabilityClass, ReplayabilityClass,
+    TrainingLossRoleReference,
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
+use pythonize::{depythonize, pythonize};
+use serde::{Deserialize, Serialize};
 
 use crate::py_core_error;
 
 const PYTHON_BINDING_ID: &str = "binding:python";
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HostLocalRegistrationOptions {
+    provider_id: String,
+    implementation_version: String,
+    implementation_fingerprint: String,
+    registry_key: String,
+    #[serde(default)]
+    supported_controller_families: BTreeSet<String>,
+    #[serde(default)]
+    runtime_requirements: BTreeSet<String>,
+    #[serde(default)]
+    capabilities: BTreeSet<ImplementationCapability>,
+}
 
 #[pyclass(name = "LocalImplementationRegistry")]
 pub(crate) struct PyLocalImplementationRegistry {
@@ -55,6 +77,78 @@ impl PyLocalImplementationRegistry {
             .map_err(py_core_error)
     }
 
+    fn register_host_local_loss(
+        &mut self,
+        py: Python<'_>,
+        loss_spec_json: &str,
+        options_json: &str,
+        implementation: Py<PyAny>,
+    ) -> PyResult<String> {
+        ensure_callable(py, &implementation)?;
+        let mut spec: LossSpec = deserialize_external_contract(
+            loss_spec_json,
+            "Python host-local loss spec",
+            CoreDagMlError::CampaignValidation,
+        )
+        .map_err(py_core_error)?;
+        if spec.spec_fingerprint.is_empty() {
+            spec.spec_fingerprint = spec.compute_fingerprint().map_err(py_core_error)?;
+        }
+        spec.validate().map_err(py_core_error)?;
+        let mut options = parse_host_local_options(options_json)?;
+        add_loss_required_capabilities(&spec, &mut options.capabilities);
+        let reference = LossReference {
+            implementation: host_local_descriptor(
+                ImplementationSemanticKind::Loss,
+                &spec.loss_id,
+                &spec.spec_fingerprint,
+                options,
+            )?,
+            spec,
+        };
+        reference.validate().map_err(py_core_error)?;
+        self.registry
+            .register_loss(&reference, implementation)
+            .map_err(py_core_error)?;
+        serde_json::to_string(&reference).map_err(crate::py_serde_error)
+    }
+
+    fn register_host_local_metric(
+        &mut self,
+        py: Python<'_>,
+        metric_spec_json: &str,
+        options_json: &str,
+        implementation: Py<PyAny>,
+    ) -> PyResult<String> {
+        ensure_callable(py, &implementation)?;
+        let mut spec: MetricSpec = deserialize_external_contract(
+            metric_spec_json,
+            "Python host-local metric spec",
+            CoreDagMlError::CampaignValidation,
+        )
+        .map_err(py_core_error)?;
+        if spec.spec_fingerprint.is_empty() {
+            spec.spec_fingerprint = spec.compute_fingerprint().map_err(py_core_error)?;
+        }
+        spec.validate().map_err(py_core_error)?;
+        let mut options = parse_host_local_options(options_json)?;
+        add_metric_required_capabilities(&spec, &mut options.capabilities);
+        let reference = MetricReference {
+            implementation: host_local_descriptor(
+                ImplementationSemanticKind::Metric,
+                &spec.metric_id,
+                &spec.spec_fingerprint,
+                options,
+            )?,
+            spec,
+        };
+        reference.validate().map_err(py_core_error)?;
+        self.registry
+            .register_metric(&reference, implementation)
+            .map_err(py_core_error)?;
+        serde_json::to_string(&reference).map_err(crate::py_serde_error)
+    }
+
     fn resolve_loss(&self, py: Python<'_>, loss_reference_json: &str) -> PyResult<Py<PyAny>> {
         let loss = parse_loss_reference(loss_reference_json)?;
         validate_python_descriptor(&loss.implementation)?;
@@ -87,6 +181,77 @@ impl PyLocalImplementationRegistry {
             .resolve_metric(&metric)
             .map(|implementation| implementation.clone_ref(py))
             .map_err(py_core_error)
+    }
+
+    fn resolve_task_training_loss(
+        &self,
+        py: Python<'_>,
+        node_task_json: &str,
+        role_index: usize,
+    ) -> PyResult<(Py<PyAny>, String)> {
+        let task = parse_node_task(node_task_json)?;
+        if !matches!(task.phase, Phase::FitCv | Phase::Refit) {
+            return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+                "training loss phase must be FIT_CV or REFIT".to_string(),
+            )));
+        }
+        task.validate_required_loss_attestations()
+            .map_err(py_core_error)?;
+        let roles = task
+            .node_plan
+            .training_losses_for_phase(task.phase)
+            .collect::<Vec<_>>();
+        let role = roles.get(role_index).ok_or_else(|| {
+            py_core_error(CoreDagMlError::RuntimeValidation(format!(
+                "role_index {role_index} is outside the active training loss range"
+            )))
+        })?;
+        validate_python_descriptor(&role.loss.implementation)?;
+        let implementation = self
+            .registry
+            .resolve_loss(&role.loss)
+            .map(|implementation| implementation.clone_ref(py))
+            .map_err(py_core_error)?;
+        let attestation = task
+            .required_loss_attestations
+            .get(role_index)
+            .expect("validated loss requirements match active roles");
+        let attestation_json = serde_json::to_string(attestation).map_err(crate::py_serde_error)?;
+        Ok((implementation, attestation_json))
+    }
+
+    fn evaluate_metric(&self, py: Python<'_>, metric_task_json: &str) -> PyResult<String> {
+        let task = MetricEvaluationTask::from_json(metric_task_json).map_err(py_core_error)?;
+        validate_python_descriptor(&task.metric.implementation)?;
+        let implementation = self
+            .registry
+            .resolve_metric(&task.metric)
+            .map_err(py_core_error)?;
+        let task_object = pythonize(py, &task).map_err(|error| {
+            py_core_error(CoreDagMlError::RuntimeValidation(format!(
+                "Python metric task conversion failed: {error}"
+            )))
+        })?;
+        let callback_result = implementation
+            .bind(py)
+            .call1((task_object,))
+            .map_err(|error| {
+                py_core_error(CoreDagMlError::RuntimeValidation(format!(
+                    "Python metric callback raised an exception: {error}"
+                )))
+            })?;
+        let values: Vec<MetricEvaluationValue> = depythonize(&callback_result).map_err(|error| {
+            py_core_error(CoreDagMlError::RuntimeValidation(format!(
+                "Python metric callback result conversion failed: {error}"
+            )))
+        })?;
+        let result = MetricEvaluationResult::for_task(&task, values).map_err(py_core_error)?;
+        let aggregate = result.aggregate_for_task(&task).map_err(py_core_error)?;
+        serde_json::to_string(&serde_json::json!({
+            "result": result,
+            "aggregate": aggregate,
+        }))
+        .map_err(crate::py_serde_error)
     }
 
     fn unregister_loss(&mut self, loss_reference_json: &str) -> PyResult<Py<PyAny>> {
@@ -163,12 +328,111 @@ fn parse_training_loss_role(json: &str) -> PyResult<TrainingLossRoleReference> {
     Ok(role)
 }
 
+fn parse_node_task(json: &str) -> PyResult<NodeTask> {
+    deserialize_external_contract(json, "node task", CoreDagMlError::RuntimeValidation)
+        .map_err(py_core_error)
+}
+
 fn parse_phase(phase: &str) -> PyResult<Phase> {
     serde_json::from_value(serde_json::Value::String(phase.to_string())).map_err(|_| {
         py_core_error(CoreDagMlError::CampaignValidation(format!(
             "unsupported training loss phase `{phase}`"
         )))
     })
+}
+
+fn parse_host_local_options(json: &str) -> PyResult<HostLocalRegistrationOptions> {
+    deserialize_external_contract(
+        json,
+        "Python host-local registration options",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)
+}
+
+fn host_local_descriptor(
+    semantic_kind: ImplementationSemanticKind,
+    semantic_id: &str,
+    semantic_fingerprint: &str,
+    mut options: HostLocalRegistrationOptions,
+) -> PyResult<ImplementationDescriptor> {
+    options
+        .capabilities
+        .insert(ImplementationCapability::NeedsGil);
+    ImplementationDescriptor::new(
+        semantic_kind,
+        semantic_id,
+        semantic_fingerprint,
+        options.provider_id,
+        PYTHON_BINDING_ID,
+        options.implementation_version,
+        options.implementation_fingerprint,
+        options.supported_controller_families,
+        options.runtime_requirements,
+        options.capabilities,
+        PortabilityClass::HostLocal,
+        ReplayabilityClass::RegistryRequired,
+        Some(options.registry_key),
+    )
+    .map_err(py_core_error)
+}
+
+fn add_loss_required_capabilities(
+    spec: &LossSpec,
+    capabilities: &mut BTreeSet<ImplementationCapability>,
+) {
+    for (required, capability) in [
+        (
+            spec.capabilities.contains(&LossCapability::Differentiable),
+            ImplementationCapability::Differentiable,
+        ),
+        (
+            spec.capabilities
+                .contains(&LossCapability::DistributedReduction),
+            ImplementationCapability::DistributedReduction,
+        ),
+        (
+            spec.capabilities
+                .contains(&LossCapability::SupportsMissingMask),
+            ImplementationCapability::SupportsMissingMask,
+        ),
+        (
+            spec.capabilities
+                .contains(&LossCapability::SupportsSampleWeights),
+            ImplementationCapability::SupportsSampleWeights,
+        ),
+    ] {
+        if required {
+            capabilities.insert(capability);
+        }
+    }
+}
+
+fn add_metric_required_capabilities(
+    spec: &MetricSpec,
+    capabilities: &mut BTreeSet<ImplementationCapability>,
+) {
+    for (required, capability) in [
+        (
+            spec.capabilities
+                .contains(&MetricCapability::DistributedReduction),
+            ImplementationCapability::DistributedReduction,
+        ),
+        (
+            spec.capabilities
+                .contains(&MetricCapability::SupportsMissingMask),
+            ImplementationCapability::SupportsMissingMask,
+        ),
+        (
+            spec.capabilities
+                .contains(&MetricCapability::SupportsSampleWeights),
+            ImplementationCapability::SupportsSampleWeights,
+        ),
+    ] {
+        if required {
+            capabilities.insert(capability);
+        }
+    }
 }
 
 fn ensure_callable(py: Python<'_>, implementation: &Py<PyAny>) -> PyResult<()> {

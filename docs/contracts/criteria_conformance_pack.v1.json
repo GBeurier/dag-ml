@@ -51,7 +51,7 @@
     },
     {
       "path": "crates/dag-ml-cli/src/main.rs",
-      "sha256": "494f4f300f1fb086cac1c1fa132c72fc9a36fc49c3ad221f0e7cd96c61ebd330",
+      "sha256": "60f88a26a457a28b9ea230da321518b2b93b8f60c80dcba775e1f6a69fbd51a9",
       "kind": "cli_validator"
     },
     {
@@ -61,17 +61,17 @@
     },
     {
       "path": "crates/dag-ml-core/src/criteria.rs",
-      "sha256": "6f3e456f3512340fe3849925b6033529bcd5d29e0543c1dbbfe3dbdce1c6c149",
+      "sha256": "7b8b8d4f212ae53eb464ecd2e4eb350b50dbc56626f4994f14b80b842b1371a3",
       "kind": "rust_contract"
     },
     {
       "path": "crates/dag-ml-core/src/implementation_registry.rs",
-      "sha256": "7a2207a0b2c365d05de2d83b623784ec724ca8b622f31135e4d167f0fa89c52d",
+      "sha256": "d2f825b3257ffca01852f25f2ed4e78f6692552baaebd56c187d024b90536845",
       "kind": "rust_local_registry"
     },
     {
       "path": "crates/dag-ml-core/src/metric_provider.rs",
-      "sha256": "d5bf4fd72a8f682352d3a29b89370a7d1e79ae0a3f06e416041359fcd0c2b505",
+      "sha256": "703cc2ed989045c002c37419598f95b9a940c03f3b8f3c246ba1423c793b0947",
       "kind": "rust_provider_contract"
     },
     {
@@ -80,23 +80,28 @@
       "kind": "native_metric_adapter"
     },
     {
+      "path": "crates/dag-ml-core/src/runtime/artifact.rs",
+      "sha256": "d2a36d3f16b48d6dbecc705ff690924bd3c250e11487206a2331ee2549c0871f",
+      "kind": "rust_lineage_contract"
+    },
+    {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "9ed56d7a5112c34b6343d28352fb638e2f28aa9217f952c3565c23155f34ad79",
+      "sha256": "b321135f6879b4ead7989b2a4f68f718f3247077b6172ac45bf52f4cb9fc7e03",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "517c54ae4e18316ba2d9fe39c5da2c56aede2fba29e5fe0ca3f51665ca65c1ca",
+      "sha256": "af97a148293261b67695775e87920b79b96cfa85d180ec380fc395e818962cad",
       "kind": "python_types"
     },
     {
       "path": "crates/dag-ml-py/src/local_implementation.rs",
-      "sha256": "3db63cd8280c1029ac4a7b8c753bf4ed64209e66ddf2c2b7fc7d7b42272cff9e",
+      "sha256": "5d6ddd85bcfbc070052bd80f7d4eaeb285470357e8fd5358b7290ff6aa75365f",
       "kind": "python_local_registry"
     },
     {
       "path": "crates/dag-ml-py/tests/test_local_implementation_registry.py",
-      "sha256": "f9f47d5fe859d9cb5d43cb938fa0c3b462d3ea89e49b773558ae6b8328f66280",
+      "sha256": "999360fa6c6c4eb40b5e70f26bca807f24c6def4f7a48db4315f43815f04618c",
       "kind": "python_binding_test"
     },
     {
@@ -116,8 +121,13 @@
     },
     {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "603065afb14ecf1c5230e06bcf737b83010b9f319f0ff1a3d17c028a18131fae",
+      "sha256": "c90fae57a79311d894745e1a542d994c8f32906804fde9984f6cef1e61d2dfd0",
       "kind": "contract_documentation"
+    },
+    {
+      "path": "docs/contracts/early_stopping_record.schema.json",
+      "sha256": "2dc069c82b533bc3bfeba88833fd22ec36f24ad1219e1d76f2bee68f5af22710",
+      "kind": "schema"
     },
     {
       "path": "docs/contracts/implementation_descriptor.schema.json",
@@ -155,6 +165,11 @@
       "kind": "schema"
     },
     {
+      "path": "docs/contracts/node_result.schema.json",
+      "sha256": "fa4c7629141a671eb5c7d5848e031b4f01e76f96b457a4d3bc960af1809e31f1",
+      "kind": "schema"
+    },
+    {
       "path": "docs/contracts/training_loss_role.schema.json",
       "sha256": "078886aa7f622c05c86aa22b4eaeaeeff857e2ad68da1137f62fe4f1510d02e3",
       "kind": "schema"
@@ -166,7 +181,7 @@
     },
     {
       "path": "examples/fixtures/criteria/criteria_contracts.v1.json",
-      "sha256": "3b32a2d754253a4162bb230e0ca1ab79baa9c5ce1cb59fbd5f3617aa6eb9a032",
+      "sha256": "b2328be3ec466399f450d23368370fae5cc962e225c0a870171859fc86ea33cc",
       "kind": "fixture"
     },
     {
@@ -180,18 +195,23 @@
       "kind": "fixture"
     },
     {
+      "path": "examples/fixtures/criteria/python_local_implementations.v1.json",
+      "sha256": "c2c8376f11e23c837b239900dd2ae02750578d1c6a0edd82a36584048200dbbf",
+      "kind": "fixture"
+    },
+    {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "9beb897a7d5fa839371e34978f725f351db3b389e2941430153faf8ec3871cb2",
+      "sha256": "160b42ae67cb27e0078814e9c988602bd73b74e8a5c2d66904eee334ac8a556d",
       "kind": "generator"
     },
     {
       "path": "parity/criteria/oracle.py",
-      "sha256": "225def2c85c761ddb7bba1caab1acdaceee6369f602afc59aa1abd1f38b21e66",
+      "sha256": "0aac8777ec6cb8017c1dc290302dd958b5ce8d2d84077e0efddc293e31383a51",
       "kind": "independent_validator"
     },
     {
       "path": "parity/criteria/tests/test_criteria_contracts.py",
-      "sha256": "3307a803998004d744fa0be050ab1f540ccc028541251f0ce3f40c39a2610261",
+      "sha256": "a7b7f9ae7df5c46251020eefd39af95226e7c5d91a45d2b76baa372d43fb472e",
       "kind": "parity_test"
     },
     {
@@ -213,6 +233,10 @@
     "host_local_descriptor_without_registry_key",
     "selection_metric_skips_missing_values",
     "loss_attestation_wrong_phase",
+    "early_stopping_selection_role",
+    "early_stopping_invalid_iteration",
+    "early_stopping_refit_with_fold",
+    "early_stopping_tampered_fingerprint",
     "custom_metric_without_objective",
     "provider_result_wrong_scope",
     "provider_result_wrong_coverage",
@@ -221,5 +245,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "08caa82ccb75df046348b3a224ea933e5088b5884ff2d3dd9cf7e09c379bb6a4"
+  "pack_checksum": "7482174f0bccc277215ef701b263388af51791768880394ad4191d2820c2e542"
 }

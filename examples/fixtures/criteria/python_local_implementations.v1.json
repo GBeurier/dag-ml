@@ -1,0 +1,525 @@
+{
+  "profile": "dagml.python-local-implementations.v1",
+  "canonicalization": "TCV1-unicode-17.0.0",
+  "loss_reference": {
+    "spec": {
+      "schema_version": 1,
+      "loss_id": "example.loss.asymmetric@1",
+      "kind": "custom",
+      "task_kinds": [
+        "regression"
+      ],
+      "prediction_kinds": [
+        "regression_point"
+      ],
+      "objective": "minimize",
+      "reduction": "mean",
+      "required_inputs": [
+        "target",
+        "prediction"
+      ],
+      "capabilities": [
+        "differentiable"
+      ],
+      "parameters": {
+        "over_weight": 1.0,
+        "under_weight": 2.0
+      },
+      "spec_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0"
+    },
+    "implementation": {
+      "schema_version": 1,
+      "semantic_kind": "loss",
+      "semantic_id": "example.loss.asymmetric@1",
+      "semantic_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0",
+      "provider_id": "provider:python-local",
+      "binding_id": "binding:python",
+      "implementation_version": "1.0.0",
+      "implementation_fingerprint": "4ca9836bde4fbd24059ea7ba05dcae23664fbe8e32039a9b1818de7ec4f83bc3",
+      "supported_controller_families": [],
+      "runtime_requirements": [],
+      "capabilities": [
+        "deterministic",
+        "differentiable",
+        "needs_gil"
+      ],
+      "portability": "host_local",
+      "replayability": "registry_required",
+      "registry_key": "loss:python:asymmetric",
+      "descriptor_fingerprint": "c99b01ea31d3b87a886abf449f208e5359bd6d5359a397682dbe6f77192f74c8"
+    }
+  },
+  "foreign_loss_reference": {
+    "spec": {
+      "schema_version": 1,
+      "loss_id": "example.loss.asymmetric@1",
+      "kind": "custom",
+      "task_kinds": [
+        "regression"
+      ],
+      "prediction_kinds": [
+        "regression_point"
+      ],
+      "objective": "minimize",
+      "reduction": "mean",
+      "required_inputs": [
+        "target",
+        "prediction"
+      ],
+      "capabilities": [
+        "differentiable"
+      ],
+      "parameters": {
+        "over_weight": 1.0,
+        "under_weight": 2.0
+      },
+      "spec_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0"
+    },
+    "implementation": {
+      "schema_version": 1,
+      "semantic_kind": "loss",
+      "semantic_id": "example.loss.asymmetric@1",
+      "semantic_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0",
+      "provider_id": "provider:foreign-local",
+      "binding_id": "binding:foreign",
+      "implementation_version": "1.0.0",
+      "implementation_fingerprint": "4ca9836bde4fbd24059ea7ba05dcae23664fbe8e32039a9b1818de7ec4f83bc3",
+      "supported_controller_families": [],
+      "runtime_requirements": [],
+      "capabilities": [
+        "deterministic",
+        "differentiable",
+        "needs_gil"
+      ],
+      "portability": "host_local",
+      "replayability": "registry_required",
+      "registry_key": "loss:foreign:asymmetric",
+      "descriptor_fingerprint": "9573ce3289bcb03b0c75c7ebff98064d7ddd56897277628c545be30b19db9d88"
+    }
+  },
+  "training_loss_role": {
+    "schema_version": 1,
+    "node_id": "model:custom",
+    "output_id": "prediction",
+    "phases": [
+      "FIT_CV",
+      "REFIT"
+    ],
+    "loss": {
+      "spec": {
+        "schema_version": 1,
+        "loss_id": "example.loss.asymmetric@1",
+        "kind": "custom",
+        "task_kinds": [
+          "regression"
+        ],
+        "prediction_kinds": [
+          "regression_point"
+        ],
+        "objective": "minimize",
+        "reduction": "mean",
+        "required_inputs": [
+          "target",
+          "prediction"
+        ],
+        "capabilities": [
+          "differentiable"
+        ],
+        "parameters": {
+          "over_weight": 1.0,
+          "under_weight": 2.0
+        },
+        "spec_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0"
+      },
+      "implementation": {
+        "schema_version": 1,
+        "semantic_kind": "loss",
+        "semantic_id": "example.loss.asymmetric@1",
+        "semantic_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0",
+        "provider_id": "provider:python-local",
+        "binding_id": "binding:python",
+        "implementation_version": "1.0.0",
+        "implementation_fingerprint": "4ca9836bde4fbd24059ea7ba05dcae23664fbe8e32039a9b1818de7ec4f83bc3",
+        "supported_controller_families": [],
+        "runtime_requirements": [],
+        "capabilities": [
+          "deterministic",
+          "differentiable",
+          "needs_gil"
+        ],
+        "portability": "host_local",
+        "replayability": "registry_required",
+        "registry_key": "loss:python:asymmetric",
+        "descriptor_fingerprint": "c99b01ea31d3b87a886abf449f208e5359bd6d5359a397682dbe6f77192f74c8"
+      }
+    }
+  },
+  "metric_reference": {
+    "spec": {
+      "schema_version": 1,
+      "metric_id": "example.metric.bias@1",
+      "kind": "custom",
+      "task_kinds": [
+        "regression"
+      ],
+      "prediction_kinds": [
+        "regression_point"
+      ],
+      "objective": "minimize",
+      "supported_levels": [
+        "sample"
+      ],
+      "decomposition": "global",
+      "reduction": "global",
+      "required_inputs": [
+        "target",
+        "prediction"
+      ],
+      "capabilities": [],
+      "parameters": {},
+      "spec_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006"
+    },
+    "implementation": {
+      "schema_version": 1,
+      "semantic_kind": "metric",
+      "semantic_id": "example.metric.bias@1",
+      "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+      "provider_id": "provider:python-local",
+      "binding_id": "binding:python",
+      "implementation_version": "1.0.0",
+      "implementation_fingerprint": "2dae6a0cfe36d7928afea12f2a19f4f6a808d6707a7544f66f1d6279e9247dfa",
+      "supported_controller_families": [],
+      "runtime_requirements": [],
+      "capabilities": [
+        "deterministic",
+        "needs_gil"
+      ],
+      "portability": "host_local",
+      "replayability": "registry_required",
+      "registry_key": "metric:python:bias",
+      "descriptor_fingerprint": "e7b9f852e285d6ff193a0e38fb1bb61daff3e07e830336fdf030c4c5b82e8074"
+    }
+  },
+  "tasks": {
+    "FIT_CV": {
+      "run_id": "run:python-local-fit_cv",
+      "node_plan": {
+        "node_id": "model:custom",
+        "kind": "model",
+        "controller_id": "controller:python-local",
+        "controller_version": "1.0.0",
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT"
+        ],
+        "controller_capabilities": [
+          "deterministic",
+          "supports_configurable_loss",
+          "supports_custom_loss",
+          "supports_differentiable_loss"
+        ],
+        "training_losses": [
+          {
+            "schema_version": 1,
+            "node_id": "model:custom",
+            "output_id": "prediction",
+            "phases": [
+              "FIT_CV",
+              "REFIT"
+            ],
+            "loss": {
+              "spec": {
+                "schema_version": 1,
+                "loss_id": "example.loss.asymmetric@1",
+                "kind": "custom",
+                "task_kinds": [
+                  "regression"
+                ],
+                "prediction_kinds": [
+                  "regression_point"
+                ],
+                "objective": "minimize",
+                "reduction": "mean",
+                "required_inputs": [
+                  "target",
+                  "prediction"
+                ],
+                "capabilities": [
+                  "differentiable"
+                ],
+                "parameters": {
+                  "over_weight": 1.0,
+                  "under_weight": 2.0
+                },
+                "spec_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0"
+              },
+              "implementation": {
+                "schema_version": 1,
+                "semantic_kind": "loss",
+                "semantic_id": "example.loss.asymmetric@1",
+                "semantic_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0",
+                "provider_id": "provider:python-local",
+                "binding_id": "binding:python",
+                "implementation_version": "1.0.0",
+                "implementation_fingerprint": "4ca9836bde4fbd24059ea7ba05dcae23664fbe8e32039a9b1818de7ec4f83bc3",
+                "supported_controller_families": [],
+                "runtime_requirements": [],
+                "capabilities": [
+                  "deterministic",
+                  "differentiable",
+                  "needs_gil"
+                ],
+                "portability": "host_local",
+                "replayability": "registry_required",
+                "registry_key": "loss:python:asymmetric",
+                "descriptor_fingerprint": "c99b01ea31d3b87a886abf449f208e5359bd6d5359a397682dbe6f77192f74c8"
+              }
+            }
+          }
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {},
+        "params_fingerprint": "0d2b42560a63108d754b5d13b8b6b98b65ec1f1376fa006d4fc0da785cd1a92b"
+      },
+      "phase": "FIT_CV",
+      "variant_id": null,
+      "variant": null,
+      "fold_id": "fold:0",
+      "branch_path": [],
+      "input_handles": {},
+      "data_views": {},
+      "prediction_inputs": {},
+      "artifact_inputs": {},
+      "required_loss_attestations": [
+        {
+          "schema_version": 1,
+          "node_id": "model:custom",
+          "output_id": "prediction",
+          "phase": "FIT_CV",
+          "loss_id": "example.loss.asymmetric@1",
+          "semantic_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0",
+          "implementation_fingerprint": "4ca9836bde4fbd24059ea7ba05dcae23664fbe8e32039a9b1818de7ec4f83bc3",
+          "descriptor_fingerprint": "c99b01ea31d3b87a886abf449f208e5359bd6d5359a397682dbe6f77192f74c8",
+          "effective_parameters": {
+            "over_weight": 1.0,
+            "under_weight": 2.0
+          },
+          "reduction": "mean",
+          "attestation_fingerprint": "4cd52592e0de47a9b367d747ccc723f64ad8dc4b9d1eb80e70416d656a7724c2"
+        }
+      ],
+      "seed": 42
+    },
+    "REFIT": {
+      "run_id": "run:python-local-refit",
+      "node_plan": {
+        "node_id": "model:custom",
+        "kind": "model",
+        "controller_id": "controller:python-local",
+        "controller_version": "1.0.0",
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT"
+        ],
+        "controller_capabilities": [
+          "deterministic",
+          "supports_configurable_loss",
+          "supports_custom_loss",
+          "supports_differentiable_loss"
+        ],
+        "training_losses": [
+          {
+            "schema_version": 1,
+            "node_id": "model:custom",
+            "output_id": "prediction",
+            "phases": [
+              "FIT_CV",
+              "REFIT"
+            ],
+            "loss": {
+              "spec": {
+                "schema_version": 1,
+                "loss_id": "example.loss.asymmetric@1",
+                "kind": "custom",
+                "task_kinds": [
+                  "regression"
+                ],
+                "prediction_kinds": [
+                  "regression_point"
+                ],
+                "objective": "minimize",
+                "reduction": "mean",
+                "required_inputs": [
+                  "target",
+                  "prediction"
+                ],
+                "capabilities": [
+                  "differentiable"
+                ],
+                "parameters": {
+                  "over_weight": 1.0,
+                  "under_weight": 2.0
+                },
+                "spec_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0"
+              },
+              "implementation": {
+                "schema_version": 1,
+                "semantic_kind": "loss",
+                "semantic_id": "example.loss.asymmetric@1",
+                "semantic_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0",
+                "provider_id": "provider:python-local",
+                "binding_id": "binding:python",
+                "implementation_version": "1.0.0",
+                "implementation_fingerprint": "4ca9836bde4fbd24059ea7ba05dcae23664fbe8e32039a9b1818de7ec4f83bc3",
+                "supported_controller_families": [],
+                "runtime_requirements": [],
+                "capabilities": [
+                  "deterministic",
+                  "differentiable",
+                  "needs_gil"
+                ],
+                "portability": "host_local",
+                "replayability": "registry_required",
+                "registry_key": "loss:python:asymmetric",
+                "descriptor_fingerprint": "c99b01ea31d3b87a886abf449f208e5359bd6d5359a397682dbe6f77192f74c8"
+              }
+            }
+          }
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {},
+        "params_fingerprint": "0d2b42560a63108d754b5d13b8b6b98b65ec1f1376fa006d4fc0da785cd1a92b"
+      },
+      "phase": "REFIT",
+      "variant_id": null,
+      "variant": null,
+      "fold_id": null,
+      "branch_path": [],
+      "input_handles": {},
+      "data_views": {},
+      "prediction_inputs": {},
+      "artifact_inputs": {},
+      "required_loss_attestations": [
+        {
+          "schema_version": 1,
+          "node_id": "model:custom",
+          "output_id": "prediction",
+          "phase": "REFIT",
+          "loss_id": "example.loss.asymmetric@1",
+          "semantic_fingerprint": "cf661225cc7137ab5ef9b87871ed5736a8479dd21587b7e17150c442b1e43eb0",
+          "implementation_fingerprint": "4ca9836bde4fbd24059ea7ba05dcae23664fbe8e32039a9b1818de7ec4f83bc3",
+          "descriptor_fingerprint": "c99b01ea31d3b87a886abf449f208e5359bd6d5359a397682dbe6f77192f74c8",
+          "effective_parameters": {
+            "over_weight": 1.0,
+            "under_weight": 2.0
+          },
+          "reduction": "mean",
+          "attestation_fingerprint": "54850b3918913661f6ccb0f8251bedb8feb4019ce28ae33903301d02e0c3664b"
+        }
+      ],
+      "seed": 42
+    }
+  },
+  "metric_task": {
+    "schema_version": 1,
+    "request_id": "metric-request:bias",
+    "metric": {
+      "spec": {
+        "schema_version": 1,
+        "metric_id": "example.metric.bias@1",
+        "kind": "custom",
+        "task_kinds": [
+          "regression"
+        ],
+        "prediction_kinds": [
+          "regression_point"
+        ],
+        "objective": "minimize",
+        "supported_levels": [
+          "sample"
+        ],
+        "decomposition": "global",
+        "reduction": "global",
+        "required_inputs": [
+          "target",
+          "prediction"
+        ],
+        "capabilities": [],
+        "parameters": {},
+        "spec_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006"
+      },
+      "implementation": {
+        "schema_version": 1,
+        "semantic_kind": "metric",
+        "semantic_id": "example.metric.bias@1",
+        "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+        "provider_id": "provider:python-local",
+        "binding_id": "binding:python",
+        "implementation_version": "1.0.0",
+        "implementation_fingerprint": "2dae6a0cfe36d7928afea12f2a19f4f6a808d6707a7544f66f1d6279e9247dfa",
+        "supported_controller_families": [],
+        "runtime_requirements": [],
+        "capabilities": [
+          "deterministic",
+          "needs_gil"
+        ],
+        "portability": "host_local",
+        "replayability": "registry_required",
+        "registry_key": "metric:python:bias",
+        "descriptor_fingerprint": "e7b9f852e285d6ff193a0e38fb1bb61daff3e07e830336fdf030c4c5b82e8074"
+      }
+    },
+    "task_kind": "regression",
+    "prediction_kind": "regression_point",
+    "scope": {
+      "producer_node": "model:custom",
+      "producer_port": "prediction",
+      "prediction_id": "prediction:validation",
+      "partition": "validation",
+      "fold_id": "fold:0",
+      "level": "sample"
+    },
+    "unit_ids": [
+      {
+        "level": "sample",
+        "id": "sample:0"
+      },
+      {
+        "level": "sample",
+        "id": "sample:1"
+      }
+    ],
+    "predictions": [
+      [
+        2.0
+      ],
+      [
+        5.0
+      ]
+    ],
+    "targets": [
+      [
+        1.0
+      ],
+      [
+        3.0
+      ]
+    ],
+    "output_ids": [
+      "target"
+    ],
+    "task_fingerprint": "9bd89aeff289c58efad9fe525057312c88aa3b99018918c8b32b4b55db0a806a"
+  }
+}

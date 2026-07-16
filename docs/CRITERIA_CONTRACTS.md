@@ -8,6 +8,7 @@ The native owner is `dag_ml_core::criteria`. The published v1 wire family is:
 - `docs/contracts/training_loss_role.schema.json`;
 - `docs/contracts/loss_execution_attestation.schema.json`;
 - `docs/contracts/metric_role.schema.json`;
+- `docs/contracts/early_stopping_record.schema.json`;
 - `docs/contracts/metric_evaluation_task.schema.json`;
 - `docs/contracts/metric_evaluation_result.schema.json`.
 
@@ -51,6 +52,19 @@ semantic resolution paths. Python-local descriptors must use
 implementations remain native catalog entries. The registry itself is not
 serializable. A detached worker or replay process must explicitly register the
 same descriptor before resolving its opaque `registry_key`.
+
+`register_local_loss` and `register_local_metric` are convenience methods for
+direct Python callables. They accept a semantic spec with an existing
+fingerprint or no `spec_fingerprint`; Rust signs an unsigned spec, constructs
+and fingerprints the `host_local`/`registry_required` descriptor, adds the
+mandatory `needs_gil` capability plus every implementation capability required
+by the semantic spec, and registers the callable atomically. When
+the caller omits implementation identity, Python generates opaque random
+process-local identifiers. Those identifiers deliberately make no claim about
+callable source equivalence and cannot support detached replay; callers that
+need reproducible reconstruction must supply a stable implementation
+fingerprint and registry key, then explicitly register the equivalent callable
+in the new process.
 
 The WASM binding exposes the same primitive as a JavaScript
 `LocalImplementationRegistry`. It retains `Function` objects for
@@ -99,6 +113,19 @@ its local function, then copies the corresponding native-produced template to
 `NodeResult.lineage.loss_attestations` only after execution succeeds. The core
 recomputes and verifies both the task requirements and the returned lineage, so
 R, MATLAB and other process adapters do not implement canonical fingerprinting.
+
+`NodeResult.lineage.early_stopping_records` stores controller-reported stopping
+outcomes separately from `ScoreSet`. Each fingerprinted record is scoped to one
+`FIT_CV` fold or one fold-free `REFIT` task and embeds the exact
+`MetricRoleReference` used by the controller. That role must be
+`early_stopping`, must monitor the validation partition and cannot use the
+reporting-only missing-value skip policy. The record captures the zero-based
+best iteration, total observed iterations, finite best value and whether the
+controller stopped early. It does not create another metric evaluator: the
+controller reports the outcome of the same typed metric implementation selected
+by the pipeline, while DAG-ML validates identity, scope and fingerprint. Final
+OOF/reporting scores, selection decisions and tuning observations retain their
+own contracts and lifecycles.
 
 The semantic contracts are standalone v1 contracts. The controller-protocol
 integration adds only defaulted/optional fields to existing v1 JSON shapes, so

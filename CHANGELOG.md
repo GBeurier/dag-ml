@@ -29,6 +29,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   refuses stale models trained under a different objective. Existing requests
   without configured losses remain wire-compatible, and the public C ABI is
   unchanged.
+- Controller results can now attach fingerprinted `EarlyStoppingRecord` lineage
+  evidence scoped to one `FIT_CV` fold or `REFIT` task and its exact
+  `early_stopping` metric role. These optional records remain separate from
+  `ScoreSet`, selection and tuning contracts. Existing results deserialize with
+  an empty record list, schemas and conformance packs are updated additively,
+  and the public C ABI is unchanged.
 - ADR-20 and W0 JSON contracts for conformal calibration ownership,
   `ParameterPatch`, `OutputBinding`, `TrainingInfluenceManifest`, complete
   `TrainingOutcome`/`ReplayOutcome` payloads, and the existing execution-bundle
@@ -79,6 +85,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   cross-language Python suites, and the Rust oracle. The portable wire layer
   remains binding-neutral; native Rust conformal kernels now consume its
   semantics, while public C/Python/WASM conformal bindings are still pending.
+
+### Fixed
+
+- The Python in-process bridge now rejects unknown selection-metric names
+  instead of silently selecting RMSE. The accepted compatibility names remain
+  `rmse`, `accuracy`, and `balanced_accuracy`.
 
 ## [0.2.0] - 2026-06-15
 

@@ -2417,6 +2417,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
             unsafe_flags: BTreeSet::new(),
             metrics: BTreeMap::new(),
             loss_attestations: Vec::new(),
+            early_stopping_records: Vec::new(),
         },
     };
     result.validate_for_task(&task).unwrap();

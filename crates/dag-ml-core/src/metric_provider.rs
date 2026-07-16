@@ -338,6 +338,11 @@ impl MetricEvaluationResult {
         Ok(())
     }
 
+    pub fn aggregate_for_task(&self, task: &MetricEvaluationTask) -> Result<f64> {
+        self.validate_against(task)?;
+        self.reduce(task)
+    }
+
     fn reduce(&self, task: &MetricEvaluationTask) -> Result<f64> {
         let value = match task.metric.spec.reduction {
             MetricReduction::Global => self.values[0].value,
@@ -399,8 +404,7 @@ impl MetricProviderRegistry {
         task.validate()?;
         let provider = self.providers.resolve_metric(&task.metric)?;
         let result = provider.evaluate(task)?;
-        result.validate_against(task)?;
-        let aggregate = result.reduce(task)?;
+        let aggregate = result.aggregate_for_task(task)?;
         Ok(ValidatedMetricEvaluation { result, aggregate })
     }
 }

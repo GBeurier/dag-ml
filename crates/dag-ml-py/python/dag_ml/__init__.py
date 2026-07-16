@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import secrets
+from collections.abc import Iterable
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -182,6 +184,72 @@ class LocalImplementationRegistry:
     def register_metric(self, metric_reference: Any, implementation: Any) -> None:
         self._native.register_metric(_coerce_json(metric_reference), implementation)
 
+    def register_local_loss(
+        self,
+        loss_spec: Any,
+        implementation: Any,
+        *,
+        registry_key: str | None = None,
+        provider_id: str = "provider:python-local",
+        implementation_version: str = "0+local",
+        implementation_fingerprint: str | None = None,
+        supported_controller_families: Iterable[str] = (),
+        runtime_requirements: Iterable[str] = (),
+        capabilities: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        """Register a callable and return its native host-local loss reference."""
+
+        options = _host_local_registration_options(
+            "loss",
+            registry_key=registry_key,
+            provider_id=provider_id,
+            implementation_version=implementation_version,
+            implementation_fingerprint=implementation_fingerprint,
+            supported_controller_families=supported_controller_families,
+            runtime_requirements=runtime_requirements,
+            capabilities=capabilities,
+        )
+        return json.loads(
+            self._native.register_host_local_loss(
+                _unsigned_spec_json(loss_spec, "loss"),
+                _coerce_json(options),
+                implementation,
+            )
+        )
+
+    def register_local_metric(
+        self,
+        metric_spec: Any,
+        implementation: Any,
+        *,
+        registry_key: str | None = None,
+        provider_id: str = "provider:python-local",
+        implementation_version: str = "0+local",
+        implementation_fingerprint: str | None = None,
+        supported_controller_families: Iterable[str] = (),
+        runtime_requirements: Iterable[str] = (),
+        capabilities: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        """Register a callable and return its native host-local metric reference."""
+
+        options = _host_local_registration_options(
+            "metric",
+            registry_key=registry_key,
+            provider_id=provider_id,
+            implementation_version=implementation_version,
+            implementation_fingerprint=implementation_fingerprint,
+            supported_controller_families=supported_controller_families,
+            runtime_requirements=runtime_requirements,
+            capabilities=capabilities,
+        )
+        return json.loads(
+            self._native.register_host_local_metric(
+                _unsigned_spec_json(metric_spec, "metric"),
+                _coerce_json(options),
+                implementation,
+            )
+        )
+
     def resolve_loss(self, loss_reference: Any) -> Any:
         return self._native.resolve_loss(_coerce_json(loss_reference))
 
@@ -192,6 +260,49 @@ class LocalImplementationRegistry:
 
     def resolve_metric(self, metric_reference: Any) -> Any:
         return self._native.resolve_metric(_coerce_json(metric_reference))
+
+    def bind_training_loss(
+        self,
+        node_task: Any,
+        *,
+        role_index: int = 0,
+    ) -> dict[str, Any]:
+        """Resolve one native-required local loss once for a training task."""
+
+        implementation, attestation_json = self._native.resolve_task_training_loss(
+            _coerce_json(node_task), role_index
+        )
+
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return implementation(*args, **kwargs)
+            except Exception as error:
+                raise DagMlRuntimeError(
+                    f"Python training loss callback raised an exception: {error}"
+                ) from error
+
+        return {
+            "invoke": invoke,
+            "required_attestation": json.loads(attestation_json),
+        }
+
+    def invoke_training_loss(
+        self,
+        node_task: Any,
+        *args: Any,
+        role_index: int = 0,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Execute one native-required local loss and return its attestation."""
+
+        binding = self.bind_training_loss(node_task, role_index=role_index)
+        value = binding["invoke"](*args, **kwargs)
+        return {"value": value, "attestation": binding["required_attestation"]}
+
+    def evaluate_metric(self, metric_task: Any) -> dict[str, Any]:
+        """Execute a local metric for a native typed evaluation task."""
+
+        return json.loads(self._native.evaluate_metric(_coerce_json(metric_task)))
 
     def unregister_loss(self, loss_reference: Any) -> Any:
         return self._native.unregister_loss(_coerce_json(loss_reference))
@@ -212,13 +323,49 @@ class LocalImplementationRegistry:
         raise TypeError("DAG-ML local implementation registries cannot be serialized")
 
 
+def _unsigned_spec_json(value: Any, semantic_kind: str) -> str:
+    document = json.loads(_coerce_json(value))
+    if not isinstance(document, dict):
+        raise TypeError(f"local {semantic_kind} spec must be a JSON object")
+    document.setdefault("spec_fingerprint", "")
+    return _coerce_json(document)
+
+
+def _host_local_registration_options(
+    semantic_kind: str,
+    *,
+    registry_key: str | None,
+    provider_id: str,
+    implementation_version: str,
+    implementation_fingerprint: str | None,
+    supported_controller_families: Iterable[str],
+    runtime_requirements: Iterable[str],
+    capabilities: Iterable[str],
+) -> dict[str, Any]:
+    return {
+        "provider_id": provider_id,
+        "implementation_version": implementation_version,
+        "implementation_fingerprint": (
+            secrets.token_hex(32)
+            if implementation_fingerprint is None
+            else implementation_fingerprint
+        ),
+        "registry_key": (
+            f"{semantic_kind}:python-local:{secrets.token_hex(16)}"
+            if registry_key is None
+            else registry_key
+        ),
+        "supported_controller_families": sorted(set(supported_controller_families)),
+        "runtime_requirements": sorted(set(runtime_requirements)),
+        "capabilities": sorted(set(capabilities)),
+    }
+
+
 def loss_execution_attestation(training_loss_role: Any, phase: str) -> dict[str, Any]:
     """Build the exact lineage attestation for an executed loss role."""
 
     return json.loads(
-        _native_loss_execution_attestation_json(
-            _coerce_json(training_loss_role), phase
-        )
+        _native_loss_execution_attestation_json(_coerce_json(training_loss_role), phase)
     )
 
 

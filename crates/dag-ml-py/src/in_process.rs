@@ -170,15 +170,16 @@ impl RuntimeController for PyOperatorController {
     }
 }
 
-/// Map the host's selection-metric string to the core metric kind. Mirrors the
-/// CLI's `--selection-metric` (`rmse` | `accuracy` | `balanced_accuracy`); anything
-/// else defaults to RMSE, exactly like the CLI's clap default. `balanced_accuracy`
-/// matches nirs4all's default classification ranking metric.
-fn parse_selection_metric(metric: &str) -> RegressionMetricKind {
+/// Map the host's explicit selection metric to the core metric kind.
+/// `balanced_accuracy` matches nirs4all's default classification ranking metric.
+fn parse_selection_metric(metric: &str) -> Result<RegressionMetricKind, CoreDagMlError> {
     match metric {
-        "accuracy" => RegressionMetricKind::Accuracy,
-        "balanced_accuracy" => RegressionMetricKind::BalancedAccuracy,
-        _ => RegressionMetricKind::Rmse,
+        "rmse" => Ok(RegressionMetricKind::Rmse),
+        "accuracy" => Ok(RegressionMetricKind::Accuracy),
+        "balanced_accuracy" => Ok(RegressionMetricKind::BalancedAccuracy),
+        _ => Err(CoreDagMlError::CampaignValidation(format!(
+            "unsupported in-process selection metric `{metric}`; expected rmse, accuracy or balanced_accuracy"
+        ))),
     }
 }
 
@@ -516,8 +517,8 @@ fn surface_loser_validation_frames(
 ///   relations + the DSL fold set drive `data_views` production.
 /// * `controller_manifests_json` — the controller manifest list.
 /// * `op_callback` — the host bridge running one [`NodeTask`] (`run_node`).
-/// * `selection_metric` — `rmse` | `accuracy`, used only for native multi-variant
-///   SELECT (ignored for single-variant plans).
+/// * `selection_metric` — `rmse` | `accuracy` | `balanced_accuracy`, used only
+///   for native multi-variant SELECT (validated even for single-variant plans).
 ///
 /// Returns a JSON object `{ "node_results": [...], "scores": <ScoreSet|null> }`.
 /// `scores` is byte-identical to the subprocess bundle's `scores`, so the host
@@ -531,7 +532,7 @@ pub fn run_cv_refit_in_process(
     op_callback: Py<PyAny>,
     selection_metric: &str,
 ) -> PyResult<String> {
-    let metric = parse_selection_metric(selection_metric);
+    let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
 
     // 1. Read the envelope first (the CLI reads it before the plan so data-aware
     //    branch fan-out can discover partition values from coordinator relations).
@@ -726,6 +727,20 @@ mod tests {
     // model onto the winner + loser reports through the in-process resolution path.
     const CHOICE0_LABEL: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const CHOICE1_LABEL: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    #[test]
+    fn in_process_selection_metric_rejects_unknown_names() {
+        assert_eq!(
+            parse_selection_metric("rmse").unwrap(),
+            RegressionMetricKind::Rmse
+        );
+        assert_eq!(
+            parse_selection_metric("balanced_accuracy").unwrap(),
+            RegressionMetricKind::BalancedAccuracy
+        );
+        let error = parse_selection_metric("rms").unwrap_err().to_string();
+        assert!(error.contains("unsupported in-process selection metric `rms`"));
+    }
 
     #[test]
     fn in_process_callback_result_preserves_closed_object_shapes() {
@@ -937,6 +952,7 @@ mod tests {
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
                 },
             })
         }
