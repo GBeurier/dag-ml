@@ -4226,8 +4226,7 @@ impl RuntimeController for CliMockController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics,
-                loss_attestations: task.required_loss_attestations.clone(),
-                early_stopping_records: Vec::new(),
+                loss_attestations: Vec::new(),
             },
         })
     }
@@ -5673,8 +5672,7 @@ mod tests {
                     seed: task.seed,
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
-                    loss_attestations: task.required_loss_attestations.clone(),
-                    early_stopping_records: Vec::new(),
+                    loss_attestations: Vec::new(),
                 },
             })
         }
