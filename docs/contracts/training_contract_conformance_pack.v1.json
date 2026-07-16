@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "3a14788da7ee58d2f91ac056cd9b24903ed47ead96ff1a1b007ef7d3fa96e75f",
+      "sha256": "c10bdecea293e0ad483c2b1af3689cc6e1cb7254377388dcd9b86ccf0e558275",
       "kind": "ci_gate"
     },
     {
@@ -16,17 +16,17 @@
     },
     {
       "path": "crates/dag-ml-capi/src/lib.rs",
-      "sha256": "013f4636d86a1e74ef7064499ceac574e10530a6dcddd40926b0c70fe1d6a181",
+      "sha256": "b80062ea302f4beae4561bb50f0de1f8ea623f402b7d0bf6167c79bb722a3457",
       "kind": "c_training_binding"
     },
     {
       "path": "crates/dag-ml-capi/tests/c_conformance.rs",
-      "sha256": "b734f1c8a6b5ed1c5479ae7c8df60b5c8aff1ed7620f19eb75a1b37767f19f49",
+      "sha256": "967200c13ccd0fe102670606a5b7035ccf88454aecb26abca92dceccdfc4bac0",
       "kind": "c_binding_test"
     },
     {
       "path": "crates/dag-ml-capi/tests/training_execute.rs",
-      "sha256": "07c0160d98dcc99eeb62de8e0eb4832b3e16ea7c443e3bb00e676d3ffd7356f4",
+      "sha256": "bb3a6fdd6655ff8dde389c7b6ea1b5fad87f9634a2eb24f6cacb575cabe129e6",
       "kind": "c_training_test"
     },
     {
@@ -504,5 +504,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "6f951456e81b060e18cd2f5ff6f7bb2fbf82f9bed486947ad8cfa6e9541a15f1"
+  "pack_checksum": "122599626313d9eb0990e824a342c8c81fcadb77d9f5843e70cb55e545792ef3"
 }
