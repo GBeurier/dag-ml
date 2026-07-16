@@ -54,6 +54,36 @@ pub(crate) fn merge_reduction_mode(
     }
 }
 
+fn native_merge_prediction_edge<'a>(
+    plan: &'a ExecutionPlan,
+    node_plan: &NodePlan,
+    branch_id: &NodeId,
+) -> Result<&'a EdgeSpec> {
+    let edges = plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            edge.source.node_id == *branch_id
+                && edge.target.node_id == node_plan.node_id
+                && edge.contract.kind == PortKind::Prediction
+        })
+        .collect::<Vec<_>>();
+    match edges.as_slice() {
+        [edge] => Ok(edge),
+        [] => Err(DagMlError::OofValidation(format!(
+            "merge node `{}` has no prediction edge from branch `{branch_id}`",
+            node_plan.node_id
+        ))),
+        _ => Err(DagMlError::OofValidation(format!(
+            "merge node `{}` has {} prediction edges from branch `{branch_id}`; native merge reduction requires a single source port",
+            node_plan.node_id,
+            edges.len()
+        ))),
+    }
+}
+
 /// Reassemble the native cross-branch reduction `node_plan` performs (concat or
 /// late-fusion averaging), dispatching on the decoded [`MergeReduction`]. Both
 /// schedulers call this for any node `merge_reduction_mode` matched, so the
@@ -74,7 +104,7 @@ pub(crate) fn reassemble_branch_merge(
     // untouched, so the FIT_CV meta-features stay Validation-only (the leakage
     // invariant): the test/predict reassembly only ever reads non-fold blocks.
     if scope.phase != Phase::FitCv {
-        return reassemble_branch_merge_off_fold(node_plan, ctx, scope, reduction);
+        return reassemble_branch_merge_off_fold(plan, node_plan, ctx, scope, reduction);
     }
     match reduction {
         MergeReduction::Concat => reassemble_separation_merge(plan, node_plan, ctx, scope),
@@ -118,6 +148,7 @@ pub(crate) fn expected_off_fold_partition(phase: Phase) -> PredictionPartition {
 /// touched, and a Validation block (whether OOF or accidentally off-fold) is
 /// never reassembled here.
 pub(crate) fn reassemble_branch_merge_off_fold(
+    plan: &ExecutionPlan,
     node_plan: &NodePlan,
     ctx: &RunContext,
     scope: &PhaseScope,
@@ -142,12 +173,14 @@ pub(crate) fn reassemble_branch_merge_off_fold(
     let mut target_block_names: Option<Vec<String>> = None;
 
     for branch_id in &node_plan.input_nodes {
+        let edge = native_merge_prediction_edge(plan, node_plan, branch_id)?;
         let blocks: Vec<&PredictionBlock> = ctx
             .prediction_store
             .find(Some(branch_id), Some(&expected_partition), None)
             .into_iter()
             .filter(|block| block.fold_id.is_none())
             .collect();
+        let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
         if blocks.is_empty() {
             continue;
         }
@@ -181,6 +214,13 @@ pub(crate) fn reassemble_branch_merge_off_fold(
                 || record.fold_id.is_some()
                 || record.partition != expected_partition
                 || record.variant_id != variant_id
+                || !producer_port_matches_edge_source_port(
+                    plan,
+                    edge,
+                    &record.producer_node,
+                    record.producer_port.as_deref(),
+                    "regression target record",
+                )?
             {
                 continue;
             }
@@ -261,6 +301,7 @@ pub(crate) fn reassemble_branch_merge_off_fold(
             node_plan.node_id
         )),
         producer_node: node_plan.node_id.clone(),
+        producer_port: None,
         partition,
         fold_id: None,
         sample_ids,
@@ -293,6 +334,7 @@ pub(crate) fn reassemble_branch_merge_off_fold(
     };
 
     Ok(Some(NodeResult {
+        schema_version: None,
         node_id: node_plan.node_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![merged],
@@ -362,6 +404,7 @@ pub(crate) fn reassemble_off_fold_concat(
     Ok(PredictionBlock {
         prediction_id: None,
         producer_node: merge_node.clone(),
+        producer_port: None,
         partition: first.partition.clone(),
         fold_id: None,
         sample_ids,
@@ -460,11 +503,13 @@ pub(crate) fn reassemble_separation_merge(
     let mut width: Option<usize> = None;
 
     for branch_id in &node_plan.input_nodes {
+        let edge = native_merge_prediction_edge(plan, node_plan, branch_id)?;
         let blocks = ctx.prediction_store.find(
             Some(branch_id),
             Some(&PredictionPartition::Validation),
             Some(&fold_id),
         );
+        let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
         if blocks.is_empty() {
             // The branch had an empty partition ∩ fold (skipped, no OOF block).
             // That is legitimate for a sparse partition; coverage is rechecked
@@ -531,6 +576,13 @@ pub(crate) fn reassemble_separation_merge(
                 || record.partition != PredictionPartition::Validation
                 || record.fold_id.as_ref() != Some(&fold_id)
                 || record.variant_id != variant_id
+                || !producer_port_matches_edge_source_port(
+                    plan,
+                    edge,
+                    &record.producer_node,
+                    record.producer_port.as_deref(),
+                    "regression target record",
+                )?
             {
                 continue;
             }
@@ -612,6 +664,7 @@ pub(crate) fn reassemble_separation_merge(
             node_plan.node_id
         )),
         producer_node: node_plan.node_id.clone(),
+        producer_port: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(fold_id.clone()),
         sample_ids,
@@ -644,6 +697,7 @@ pub(crate) fn reassemble_separation_merge(
     };
 
     Ok(Some(NodeResult {
+        schema_version: None,
         node_id: node_plan.node_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![merged],
@@ -729,11 +783,13 @@ pub(crate) fn reassemble_fusion_merge(
     let mut target_block_names: Option<Vec<String>> = None;
 
     for branch_id in &node_plan.input_nodes {
+        let edge = native_merge_prediction_edge(plan, node_plan, branch_id)?;
         let blocks = ctx.prediction_store.find(
             Some(branch_id),
             Some(&PredictionPartition::Validation),
             Some(&fold_id),
         );
+        let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
         if blocks.is_empty() {
             // Modelless / sparse branch: no OOF block this fold. Coverage is
             // rechecked against the full fold validation set below.
@@ -767,6 +823,13 @@ pub(crate) fn reassemble_fusion_merge(
                 || record.partition != PredictionPartition::Validation
                 || record.fold_id.as_ref() != Some(&fold_id)
                 || record.variant_id != variant_id
+                || !producer_port_matches_edge_source_port(
+                    plan,
+                    edge,
+                    &record.producer_node,
+                    record.producer_port.as_deref(),
+                    "regression target record",
+                )?
             {
                 continue;
             }
@@ -858,6 +921,7 @@ pub(crate) fn reassemble_fusion_merge(
             node_plan.node_id
         )),
         producer_node: node_plan.node_id.clone(),
+        producer_port: None,
         partition: PredictionPartition::Validation,
         fold_id: Some(fold_id.clone()),
         sample_ids,
@@ -890,6 +954,7 @@ pub(crate) fn reassemble_fusion_merge(
     };
 
     Ok(Some(NodeResult {
+        schema_version: None,
         node_id: node_plan.node_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![merged],

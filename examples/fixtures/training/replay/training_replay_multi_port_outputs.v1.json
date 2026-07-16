@@ -1,0 +1,1159 @@
+{
+  "schema_version": 1,
+  "effective_plan": {
+    "id": "plan:fixture.execution.branch_merge",
+    "graph_plan": {
+      "graph": {
+        "id": "dsl-branch-merge-executable",
+        "interface": {
+          "inputs": [
+            {
+              "name": "x",
+              "kind": "data",
+              "representation": "tabular_numeric",
+              "cardinality": "one",
+              "description": ""
+            }
+          ],
+          "outputs": [
+            {
+              "name": "prediction",
+              "kind": "prediction",
+              "representation": null,
+              "cardinality": "one",
+              "description": ""
+            }
+          ]
+        },
+        "nodes": [
+          {
+            "id": "branch:b0.model:ridge",
+            "kind": "model",
+            "operator": {
+              "type": "Ridge"
+            },
+            "params": {
+              "alpha": 0.3
+            },
+            "ports": {
+              "inputs": [
+                {
+                  "name": "x",
+                  "kind": "data",
+                  "representation": "tabular_numeric",
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "oof",
+                  "kind": "prediction",
+                  "representation": null,
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ]
+            },
+            "metadata": {
+              "dsl_branch": "b0",
+              "dsl_branch_mode": "duplication"
+            },
+            "seed_label": "branch:b0"
+          },
+          {
+            "id": "branch:b1.augment:noise",
+            "kind": "augmentation",
+            "operator": {
+              "type": "GaussianNoise"
+            },
+            "params": {
+              "scope": "train_only",
+              "std": 0.01
+            },
+            "ports": {
+              "inputs": [
+                {
+                  "name": "x",
+                  "kind": "data",
+                  "representation": "tabular_numeric",
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "x_out",
+                  "kind": "data",
+                  "representation": "tabular_numeric",
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ]
+            },
+            "metadata": {
+              "dsl_branch": "b1",
+              "dsl_branch_mode": "duplication"
+            },
+            "seed_label": "branch:b1.augment"
+          },
+          {
+            "id": "branch:b1.model:rf",
+            "kind": "model",
+            "operator": {
+              "type": "RandomForestRegressor"
+            },
+            "params": {
+              "n_estimators": 64
+            },
+            "ports": {
+              "inputs": [
+                {
+                  "name": "x",
+                  "kind": "data",
+                  "representation": "tabular_numeric",
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "oof",
+                  "kind": "prediction",
+                  "representation": null,
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ]
+            },
+            "metadata": {
+              "dsl_branch": "b1",
+              "dsl_branch_mode": "duplication"
+            },
+            "seed_label": "branch:b1"
+          },
+          {
+            "id": "merge:stack.pred_plus_original.meta:ridge",
+            "kind": "model",
+            "operator": {
+              "type": "RidgeMetaStacker"
+            },
+            "params": {
+              "alpha": 0.2
+            },
+            "ports": {
+              "inputs": [
+                {
+                  "name": "b0_oof",
+                  "kind": "prediction",
+                  "representation": null,
+                  "cardinality": "one",
+                  "description": ""
+                },
+                {
+                  "name": "b1_oof",
+                  "kind": "prediction",
+                  "representation": null,
+                  "cardinality": "one",
+                  "description": ""
+                },
+                {
+                  "name": "x_original",
+                  "kind": "data",
+                  "representation": "tabular_numeric",
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "oof",
+                  "kind": "prediction",
+                  "representation": null,
+                  "cardinality": "one",
+                  "description": ""
+                },
+                {
+                  "name": "alternate_prediction",
+                  "kind": "prediction",
+                  "representation": null,
+                  "cardinality": "one",
+                  "description": "D5a-C explicit multi-port fixture"
+                }
+              ]
+            },
+            "metadata": {
+              "merge_mode": "predictions_plus_original"
+            },
+            "seed_label": "merge:stack"
+          }
+        ],
+        "edges": [
+          {
+            "source": {
+              "node_id": "branch:b1.augment:noise",
+              "port_name": "x_out"
+            },
+            "target": {
+              "node_id": "branch:b1.model:rf",
+              "port_name": "x"
+            },
+            "contract": {
+              "kind": "data",
+              "representation": "tabular_numeric",
+              "requires_oof": false,
+              "requires_fold_alignment": true,
+              "propagates_lineage": true
+            }
+          },
+          {
+            "source": {
+              "node_id": "branch:b0.model:ridge",
+              "port_name": "oof"
+            },
+            "target": {
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "port_name": "b0_oof"
+            },
+            "contract": {
+              "kind": "prediction",
+              "representation": null,
+              "requires_oof": true,
+              "requires_fold_alignment": true,
+              "propagates_lineage": true
+            }
+          },
+          {
+            "source": {
+              "node_id": "branch:b1.model:rf",
+              "port_name": "oof"
+            },
+            "target": {
+              "node_id": "merge:stack.pred_plus_original.meta:ridge",
+              "port_name": "b1_oof"
+            },
+            "contract": {
+              "kind": "prediction",
+              "representation": null,
+              "requires_oof": true,
+              "requires_fold_alignment": true,
+              "propagates_lineage": true
+            }
+          }
+        ],
+        "search_space_fingerprint": "77b9ec07501659b5f620e8815278b621dc8bd1bf5daa59c194d4cd1eb2bcdd2c",
+        "metadata": {
+          "demo": "executable branch/merge DSL with coordinated variants and heterogeneous merge"
+        }
+      },
+      "topological_order": [
+        "branch:b0.model:ridge",
+        "branch:b1.augment:noise",
+        "branch:b1.model:rf",
+        "merge:stack.pred_plus_original.meta:ridge"
+      ],
+      "parallel_levels": [
+        [
+          "branch:b0.model:ridge",
+          "branch:b1.augment:noise"
+        ],
+        [
+          "branch:b1.model:rf"
+        ],
+        [
+          "merge:stack.pred_plus_original.meta:ridge"
+        ]
+      ]
+    },
+    "campaign": {
+      "id": "campaign:dsl.branch.merge.executable",
+      "root_seed": 12345,
+      "leakage_policy": {
+        "split_unit": "sample",
+        "forbid_origin_cross_fold": true,
+        "allow_observation_split_with_shared_target": false,
+        "require_group_ids": false,
+        "unsafe_flags": []
+      },
+      "aggregation_policy": {
+        "aggregation_level": "sample",
+        "method": "mean",
+        "weights": "none",
+        "emit_parallel_metrics": true,
+        "selection_metric_level": "sample",
+        "store_raw_predictions": true,
+        "store_aggregated_predictions": true
+      },
+      "split_invocation": {
+        "id": "split:outer",
+        "controller_id": null,
+        "leakage_policy": {
+          "split_unit": "sample",
+          "forbid_origin_cross_fold": true,
+          "allow_observation_split_with_shared_target": false,
+          "require_group_ids": false,
+          "unsafe_flags": []
+        },
+        "params": {
+          "kind": "kfold",
+          "n_splits": 2,
+          "shuffle": false
+        },
+        "fold_set": {
+          "id": "outer",
+          "sample_ids": [
+            "sample:1",
+            "sample:2",
+            "sample:3",
+            "sample:4"
+          ],
+          "folds": [
+            {
+              "fold_id": "fold:0",
+              "train_sample_ids": [
+                "sample:3",
+                "sample:4"
+              ],
+              "validation_sample_ids": [
+                "sample:1",
+                "sample:2"
+              ],
+              "metadata": {}
+            },
+            {
+              "fold_id": "fold:1",
+              "train_sample_ids": [
+                "sample:1",
+                "sample:2"
+              ],
+              "validation_sample_ids": [
+                "sample:3",
+                "sample:4"
+              ],
+              "metadata": {}
+            }
+          ],
+          "sample_groups": {}
+        }
+      },
+      "generation": {
+        "strategy": "cartesian",
+        "dimensions": [
+          {
+            "name": "stack_profile",
+            "choices": [
+              {
+                "label": "linear_stack",
+                "value": {
+                  "branch:b0.model:ridge": {
+                    "alpha": 0.1
+                  },
+                  "branch:b1.model:rf": {
+                    "max_depth": 4,
+                    "n_estimators": 64
+                  },
+                  "merge:stack.pred_plus_original.meta:ridge": {
+                    "alpha": 0.05
+                  }
+                },
+                "param_overrides": [
+                  {
+                    "node_id": "branch:b0.model:ridge",
+                    "params": {
+                      "alpha": 0.1
+                    }
+                  },
+                  {
+                    "node_id": "branch:b1.model:rf",
+                    "params": {
+                      "max_depth": 4,
+                      "n_estimators": 64
+                    }
+                  },
+                  {
+                    "node_id": "merge:stack.pred_plus_original.meta:ridge",
+                    "params": {
+                      "alpha": 0.05
+                    }
+                  }
+                ]
+              },
+              {
+                "label": "robust_stack",
+                "value": {
+                  "branch:b0.model:ridge": {
+                    "alpha": 1.0
+                  },
+                  "branch:b1.model:rf": {
+                    "max_depth": 8,
+                    "n_estimators": 128
+                  },
+                  "merge:stack.pred_plus_original.meta:ridge": {
+                    "alpha": 0.5
+                  }
+                },
+                "param_overrides": [
+                  {
+                    "node_id": "branch:b0.model:ridge",
+                    "params": {
+                      "alpha": 1.0
+                    }
+                  },
+                  {
+                    "node_id": "branch:b1.model:rf",
+                    "params": {
+                      "max_depth": 8,
+                      "n_estimators": 128
+                    }
+                  },
+                  {
+                    "node_id": "merge:stack.pred_plus_original.meta:ridge",
+                    "params": {
+                      "alpha": 0.5
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "max_variants": 2
+      },
+      "shape_plans": {
+        "branch:b1.augment:noise": {
+          "node_id": "branch:b1.augment:noise",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": null,
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "none",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        }
+      },
+      "data_bindings": {
+        "branch:b0.model:ridge": [
+          {
+            "node_id": "branch:b0.model:ridge",
+            "input_name": "x",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+            "output_representation": "tabular_numeric",
+            "feature_set_id": "x",
+            "source_ids": [
+              "nir"
+            ],
+            "require_relations": true,
+            "view_policy": {
+              "fit_partition": "fold_train",
+              "predict_partition": "fold_validation",
+              "include_augmented_train": true,
+              "include_augmented_validation": false,
+              "include_excluded": false,
+              "require_sample_ids": true
+            },
+            "metadata": {}
+          }
+        ],
+        "branch:b1.augment:noise": [
+          {
+            "node_id": "branch:b1.augment:noise",
+            "input_name": "x",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+            "output_representation": "tabular_numeric",
+            "feature_set_id": "x",
+            "source_ids": [
+              "nir"
+            ],
+            "require_relations": true,
+            "view_policy": {
+              "fit_partition": "fold_train",
+              "predict_partition": "fold_validation",
+              "include_augmented_train": true,
+              "include_augmented_validation": false,
+              "include_excluded": false,
+              "require_sample_ids": true
+            },
+            "metadata": {}
+          }
+        ],
+        "merge:stack.pred_plus_original.meta:ridge": [
+          {
+            "node_id": "merge:stack.pred_plus_original.meta:ridge",
+            "input_name": "x_original",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+            "output_representation": "tabular_numeric",
+            "feature_set_id": "x",
+            "source_ids": [
+              "nir"
+            ],
+            "require_relations": true,
+            "view_policy": {
+              "fit_partition": "fold_train",
+              "predict_partition": "fold_validation",
+              "include_augmented_train": true,
+              "include_augmented_validation": false,
+              "include_excluded": false,
+              "require_sample_ids": true
+            },
+            "metadata": {
+              "merge_input": "original_features"
+            }
+          }
+        ]
+      },
+      "metadata": {}
+    },
+    "node_plans": {
+      "branch:b0.model:ridge": {
+        "node_id": "branch:b0.model:ridge",
+        "kind": "model",
+        "controller_id": "controller:model.mock",
+        "controller_version": "0.1.0",
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "controller_capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "emits_predictions",
+          "consumes_oof_predictions",
+          "emits_artifacts",
+          "stateful",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [
+          "merge:stack.pred_plus_original.meta:ridge"
+        ],
+        "shape_plan": null,
+        "data_bindings": [
+          {
+            "node_id": "branch:b0.model:ridge",
+            "input_name": "x",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+            "output_representation": "tabular_numeric",
+            "feature_set_id": "x",
+            "source_ids": [
+              "nir"
+            ],
+            "require_relations": true,
+            "view_policy": {
+              "fit_partition": "fold_train",
+              "predict_partition": "fold_validation",
+              "include_augmented_train": true,
+              "include_augmented_validation": false,
+              "include_excluded": false,
+              "require_sample_ids": true
+            },
+            "metadata": {}
+          }
+        ],
+        "params": {
+          "alpha": 0.1
+        },
+        "params_fingerprint": "af39a185b5a846fc6bbdc703ee4a7bf3e4b7ad9a304563d6cc024a36dc6628ab"
+      },
+      "branch:b1.augment:noise": {
+        "node_id": "branch:b1.augment:noise",
+        "kind": "augmentation",
+        "controller_id": "controller:augmentation.mock",
+        "controller_version": "0.1.0",
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "controller_capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [
+          "branch:b1.model:rf"
+        ],
+        "shape_plan": {
+          "node_id": "branch:b1.augment:noise",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": null,
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "none",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        },
+        "data_bindings": [
+          {
+            "node_id": "branch:b1.augment:noise",
+            "input_name": "x",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+            "output_representation": "tabular_numeric",
+            "feature_set_id": "x",
+            "source_ids": [
+              "nir"
+            ],
+            "require_relations": true,
+            "view_policy": {
+              "fit_partition": "fold_train",
+              "predict_partition": "fold_validation",
+              "include_augmented_train": true,
+              "include_augmented_validation": false,
+              "include_excluded": false,
+              "require_sample_ids": true
+            },
+            "metadata": {}
+          }
+        ],
+        "params": {
+          "scope": "train_only",
+          "std": 0.01
+        },
+        "params_fingerprint": "33d2aa022dffa4cf09394b0edc178bf379bab06c569e00b7260fb5c546f433c6"
+      },
+      "branch:b1.model:rf": {
+        "node_id": "branch:b1.model:rf",
+        "kind": "model",
+        "controller_id": "controller:model.mock",
+        "controller_version": "0.1.0",
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "controller_capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "emits_predictions",
+          "consumes_oof_predictions",
+          "emits_artifacts",
+          "stateful",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [
+          "branch:b1.augment:noise"
+        ],
+        "output_nodes": [
+          "merge:stack.pred_plus_original.meta:ridge"
+        ],
+        "shape_plan": null,
+        "data_bindings": [],
+        "params": {
+          "max_depth": 4,
+          "n_estimators": 64
+        },
+        "params_fingerprint": "825b0d7229d08dad92ad5f81443063e14bdeb3e03ef3ca294c81c156711b7924"
+      },
+      "merge:stack.pred_plus_original.meta:ridge": {
+        "node_id": "merge:stack.pred_plus_original.meta:ridge",
+        "kind": "model",
+        "controller_id": "controller:model.mock",
+        "controller_version": "0.1.0",
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "controller_capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "emits_predictions",
+          "consumes_oof_predictions",
+          "emits_artifacts",
+          "stateful",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [
+          "branch:b0.model:ridge",
+          "branch:b1.model:rf"
+        ],
+        "output_nodes": [],
+        "shape_plan": null,
+        "data_bindings": [
+          {
+            "node_id": "merge:stack.pred_plus_original.meta:ridge",
+            "input_name": "x_original",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+            "output_representation": "tabular_numeric",
+            "feature_set_id": "x",
+            "source_ids": [
+              "nir"
+            ],
+            "require_relations": true,
+            "view_policy": {
+              "fit_partition": "fold_train",
+              "predict_partition": "fold_validation",
+              "include_augmented_train": true,
+              "include_augmented_validation": false,
+              "include_excluded": false,
+              "require_sample_ids": true
+            },
+            "metadata": {
+              "merge_input": "original_features"
+            }
+          }
+        ],
+        "params": {
+          "alpha": 0.05
+        },
+        "params_fingerprint": "e7fcc53de2b14105e7e7f5b943b3eb32811c5ac79ad70f10fee4de31137921d2"
+      }
+    },
+    "controller_manifests": {
+      "controller:augmentation.mock": {
+        "controller_id": "controller:augmentation.mock",
+        "controller_version": "0.1.0",
+        "operator_kind": "augmentation",
+        "priority": 0,
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "input_ports": [
+          {
+            "name": "x",
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "output_ports": [
+          {
+            "name": "x_out",
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "data_requirements": null,
+        "capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable"
+      },
+      "controller:model.mock": {
+        "controller_id": "controller:model.mock",
+        "controller_version": "0.1.0",
+        "operator_kind": "model",
+        "priority": 0,
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "input_ports": [
+          {
+            "name": "x",
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "output_ports": [
+          {
+            "name": "oof",
+            "kind": "prediction",
+            "representation": null,
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "data_requirements": null,
+        "capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "emits_predictions",
+          "consumes_oof_predictions",
+          "emits_artifacts",
+          "stateful",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable"
+      }
+    },
+    "variants": [
+      {
+        "variant_id": "variant:a964828b1417c6e7",
+        "choices": {
+          "stack_profile": {
+            "label": "linear_stack",
+            "value": {
+              "branch:b0.model:ridge": {
+                "alpha": 0.1
+              },
+              "branch:b1.model:rf": {
+                "max_depth": 4,
+                "n_estimators": 64
+              },
+              "merge:stack.pred_plus_original.meta:ridge": {
+                "alpha": 0.05
+              }
+            },
+            "param_overrides": [
+              {
+                "node_id": "branch:b0.model:ridge",
+                "params": {
+                  "alpha": 0.1
+                }
+              },
+              {
+                "node_id": "branch:b1.model:rf",
+                "params": {
+                  "max_depth": 4,
+                  "n_estimators": 64
+                }
+              },
+              {
+                "node_id": "merge:stack.pred_plus_original.meta:ridge",
+                "params": {
+                  "alpha": 0.05
+                }
+              }
+            ]
+          }
+        },
+        "fingerprint": "a964828b1417c6e7c1262a7ee9c670a96e14488e793edc87afbd457f8c76265e",
+        "seed": 9427227917191738996
+      },
+      {
+        "variant_id": "variant:0b9d3467abc21f41",
+        "choices": {
+          "stack_profile": {
+            "label": "robust_stack",
+            "value": {
+              "branch:b0.model:ridge": {
+                "alpha": 1.0
+              },
+              "branch:b1.model:rf": {
+                "max_depth": 8,
+                "n_estimators": 128
+              },
+              "merge:stack.pred_plus_original.meta:ridge": {
+                "alpha": 0.5
+              }
+            },
+            "param_overrides": [
+              {
+                "node_id": "branch:b0.model:ridge",
+                "params": {
+                  "alpha": 1.0
+                }
+              },
+              {
+                "node_id": "branch:b1.model:rf",
+                "params": {
+                  "max_depth": 8,
+                  "n_estimators": 128
+                }
+              },
+              {
+                "node_id": "merge:stack.pred_plus_original.meta:ridge",
+                "params": {
+                  "alpha": 0.5
+                }
+              }
+            ]
+          }
+        },
+        "fingerprint": "0b9d3467abc21f414b01cf6dd1e9d2de9f95fa1288e34acad6c66e3db1ce4757",
+        "seed": 18257700902469358065
+      }
+    ],
+    "fold_set": {
+      "id": "outer",
+      "sample_ids": [
+        "sample:1",
+        "sample:2",
+        "sample:3",
+        "sample:4"
+      ],
+      "folds": [
+        {
+          "fold_id": "fold:0",
+          "train_sample_ids": [
+            "sample:3",
+            "sample:4"
+          ],
+          "validation_sample_ids": [
+            "sample:1",
+            "sample:2"
+          ],
+          "metadata": {}
+        },
+        {
+          "fold_id": "fold:1",
+          "train_sample_ids": [
+            "sample:1",
+            "sample:2"
+          ],
+          "validation_sample_ids": [
+            "sample:3",
+            "sample:4"
+          ],
+          "metadata": {}
+        }
+      ],
+      "sample_groups": {}
+    },
+    "graph_fingerprint": "5ff380e69dad7b2f67725483afd8b917b3d2bcde7190c4cfa952b6c227d773d5",
+    "campaign_fingerprint": "0778413bc8e3069ef4c2148cb17a5e15ec8ffbc38ca588d2146c6d2aee713c05",
+    "controller_fingerprint": "03fce82bb64a7c1820c70146b0489d6ed649e90d922e392d6eb9309eba829897"
+  },
+  "outputs": [
+    {
+      "binding": {
+        "schema_version": 1,
+        "binding_id": "output:meta.alternate",
+        "node_id": "merge:stack.pred_plus_original.meta:ridge",
+        "port_name": "alternate_prediction",
+        "prediction_level": "sample",
+        "unit_level": "physical_sample",
+        "prediction_kind": "regression_point",
+        "prediction_source": "final_refit",
+        "refit_strategy": "refit_one",
+        "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+        "target_names": [
+          "protein"
+        ],
+        "target_units": [
+          "percent"
+        ],
+        "class_labels": [
+          []
+        ],
+        "output_order": "target_order",
+        "target_space": "raw",
+        "binding_fingerprint": "24a7ac4ab6f83ab559d6b51be3917d7653d3cadb45f6f4d56a6627d922d0a2ed"
+      },
+      "predictions": [
+        {
+          "prediction_id": "prediction:replay.final",
+          "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+          "producer_port": "alternate_prediction",
+          "partition": "final",
+          "fold_id": null,
+          "sample_ids": [
+            "sample:prod.1",
+            "sample:prod.2"
+          ],
+          "values": [
+            [
+              12.4
+            ],
+            [
+              13.1
+            ]
+          ],
+          "target_names": [
+            "protein"
+          ]
+        }
+      ],
+      "observation_predictions": [],
+      "aggregated_predictions": [
+        {
+          "prediction_id": "prediction:replay.final.sample",
+          "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+          "producer_port": "alternate_prediction",
+          "partition": "final",
+          "fold_id": null,
+          "level": "sample",
+          "unit_ids": [
+            {
+              "level": "sample",
+              "id": "sample:prod.1"
+            },
+            {
+              "level": "sample",
+              "id": "sample:prod.2"
+            }
+          ],
+          "values": [
+            [
+              12.4
+            ],
+            [
+              13.1
+            ]
+          ],
+          "target_names": [
+            "protein"
+          ]
+        }
+      ],
+      "schema_version": 2
+    },
+    {
+      "binding": {
+        "schema_version": 1,
+        "binding_id": "output:meta.final",
+        "node_id": "merge:stack.pred_plus_original.meta:ridge",
+        "port_name": "oof",
+        "prediction_level": "sample",
+        "unit_level": "physical_sample",
+        "prediction_kind": "regression_point",
+        "prediction_source": "final_refit",
+        "refit_strategy": "refit_one",
+        "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+        "target_names": [
+          "protein"
+        ],
+        "target_units": [
+          "percent"
+        ],
+        "class_labels": [
+          []
+        ],
+        "output_order": "target_order",
+        "target_space": "raw",
+        "binding_fingerprint": "c8d90368ab9e3a2a6ed03f729fdbda2521a42e429bd88d2334d86f6b55214c4f"
+      },
+      "predictions": [
+        {
+          "prediction_id": "prediction:replay.final",
+          "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+          "producer_port": "oof",
+          "partition": "final",
+          "fold_id": null,
+          "sample_ids": [
+            "sample:prod.1",
+            "sample:prod.2"
+          ],
+          "values": [
+            [
+              2.4
+            ],
+            [
+              3.1
+            ]
+          ],
+          "target_names": [
+            "protein"
+          ]
+        }
+      ],
+      "observation_predictions": [],
+      "aggregated_predictions": [
+        {
+          "prediction_id": "prediction:replay.final.sample",
+          "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+          "producer_port": "oof",
+          "partition": "final",
+          "fold_id": null,
+          "level": "sample",
+          "unit_ids": [
+            {
+              "level": "sample",
+              "id": "sample:prod.1"
+            },
+            {
+              "level": "sample",
+              "id": "sample:prod.2"
+            }
+          ],
+          "values": [
+            [
+              2.4
+            ],
+            [
+              3.1
+            ]
+          ],
+          "target_names": [
+            "protein"
+          ]
+        }
+      ],
+      "schema_version": 2
+    }
+  ]
+}

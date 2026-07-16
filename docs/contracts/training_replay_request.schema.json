@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/training_replay_request.v1.schema.json",
+  "title": "DAG-ML Training Replay — ReplayRequest v1",
+  "description": "Public ReplayRequest for the training-owned forward-replay contract, bound to one completed TrainingOutcome. V1 deliberately exposes only PREDICT and EXPLAIN; REFIT remains a separate low-level ReplayPhaseRequest operation until the public retraining contract is frozen.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "source_outcome_fingerprint",
+    "phase",
+    "data_envelope_keys",
+    "output_binding_ids",
+    "request_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "request_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "source_outcome_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "Exact TrainingOutcome.outcome_fingerprint authorized as replay source."
+    },
+    "phase": {
+      "enum": ["PREDICT", "EXPLAIN"]
+    },
+    "data_envelope_keys": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      },
+      "description": "Strictly sorted exact node_id.input_name keys for the externally supplied coordinator data-envelope map."
+    },
+    "output_binding_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "description": "Strictly sorted explicit subset of source TrainingOutcome output binding ids requested from replay."
+    },
+    "request_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML TCV1 SHA-256 of this complete request with only request_fingerprint omitted."
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "fixture_id": "dag-ml.conformal.regression-metrics.v1",
+  "schema_version": 1,
+  "numeric_version": "split_absolute_residual.metrics.v1",
+  "definitions": {
+    "coverage": "Marginal counts each target independently; joint_max counts a unit only when every target is inside its interval.",
+    "width": "Marginal aggregates target cells; joint_max aggregates every unit/target cell.",
+    "interval_score": "Mean two-sided Winkler score with alpha = 1 - coverage; joint_max aggregates every unit/target cell.",
+    "unbounded": "A null/null endpoint covers its cell but makes width and interval score unavailable."
+  },
+  "cases": [
+    {
+      "id": "marginal_two_target_exact_reconstruction",
+      "multi_target_policy": "marginal",
+      "truth": [[10.0, 21.0], [14.0, 21.0]],
+      "interval": {
+        "coverage": 0.8,
+        "lower": [[8.0, 18.0], [9.0, 19.0]],
+        "upper": [[12.0, 22.0], [13.0, 23.0]]
+      },
+      "expected": [
+        {
+          "target_index": 0,
+          "measurement_status": "finite",
+          "empirical_coverage": 0.5,
+          "coverage_gap": -0.30000000000000004,
+          "mean_width": 4.0,
+          "median_width": 4.0,
+          "interval_score": 9.0
+        },
+        {
+          "target_index": 1,
+          "measurement_status": "finite",
+          "empirical_coverage": 1.0,
+          "coverage_gap": 0.19999999999999996,
+          "mean_width": 4.0,
+          "median_width": 4.0,
+          "interval_score": 4.0
+        }
+      ]
+    },
+    {
+      "id": "joint_max_two_target_exact_reconstruction",
+      "multi_target_policy": "joint_max",
+      "truth": [[10.0, 21.0], [14.0, 21.0]],
+      "interval": {
+        "coverage": 0.8,
+        "lower": [[8.0, 18.0], [9.0, 19.0]],
+        "upper": [[12.0, 22.0], [13.0, 23.0]]
+      },
+      "expected": [
+        {
+          "target_index": null,
+          "measurement_status": "finite",
+          "empirical_coverage": 0.5,
+          "coverage_gap": -0.30000000000000004,
+          "mean_width": 4.0,
+          "median_width": 4.0,
+          "interval_score": 6.5
+        }
+      ]
+    },
+    {
+      "id": "small_n_unbounded_exact_reconstruction",
+      "multi_target_policy": "marginal",
+      "truth": [[1.0], [2.0], [3.0]],
+      "interval": {
+        "coverage": 0.95,
+        "lower": [[null], [null], [null]],
+        "upper": [[null], [null], [null]]
+      },
+      "expected": [
+        {
+          "target_index": 0,
+          "measurement_status": "unbounded",
+          "empirical_coverage": 1.0,
+          "coverage_gap": 0.050000000000000044,
+          "mean_width": null,
+          "median_width": null,
+          "interval_score": null
+        }
+      ]
+    }
+  ]
+}

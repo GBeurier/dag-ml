@@ -41,12 +41,16 @@ pub fn contract_manifest_json() -> Result<String, JsValue> {
 
 #[wasm_bindgen]
 pub fn validate_graph_json(json: &str) -> Result<(), JsValue> {
-    validate_json::<GraphSpec>(json, GraphSpec::validate)
+    GraphSpec::from_json(json)
+        .map(|_| ())
+        .map_err(js_core_error)
 }
 
 #[wasm_bindgen]
 pub fn validate_campaign_json(json: &str) -> Result<(), JsValue> {
-    validate_json::<CampaignSpec>(json, CampaignSpec::validate)
+    CampaignSpec::from_json(json)
+        .map(|_| ())
+        .map_err(js_core_error)
 }
 
 #[wasm_bindgen]
@@ -87,12 +91,16 @@ pub fn validate_pipeline_dsl_json(json: &str) -> Result<(), JsValue> {
 
 #[wasm_bindgen]
 pub fn validate_execution_plan_json(json: &str) -> Result<(), JsValue> {
-    validate_json::<ExecutionPlan>(json, ExecutionPlan::validate)
+    ExecutionPlan::from_json(json)
+        .map(|_| ())
+        .map_err(js_core_error)
 }
 
 #[wasm_bindgen]
 pub fn validate_execution_bundle_json(json: &str) -> Result<(), JsValue> {
-    validate_json::<ExecutionBundle>(json, ExecutionBundle::validate)
+    ExecutionBundle::from_json(json)
+        .map(|_| ())
+        .map_err(js_core_error)
 }
 
 #[wasm_bindgen]

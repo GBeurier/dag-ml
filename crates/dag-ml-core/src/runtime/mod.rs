@@ -31,8 +31,8 @@ pub(crate) use crate::bundle::{
 pub(crate) use crate::campaign::stable_json_fingerprint;
 pub(crate) use crate::controller::{capabilities_support_fit_influence, ControllerCapability};
 pub(crate) use crate::data::{
-    DataBinding, DataRequestPartition, ExternalDataPlanEnvelope, RepresentationCompatibilityReport,
-    RepresentationPlan, RepresentationReplayManifest,
+    data_binding_requirement_key, DataBinding, DataRequestPartition, ExternalDataPlanEnvelope,
+    RepresentationCompatibilityReport, RepresentationPlan, RepresentationReplayManifest,
 };
 pub(crate) use crate::error::{DagMlError, Result};
 pub(crate) use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
@@ -62,7 +62,7 @@ pub(crate) use crate::policy::{
 pub(crate) use crate::relation::SampleRelationSet;
 pub(crate) use crate::rng::SeedContext;
 pub(crate) use crate::selection::{
-    select_candidate, CandidateScore, SelectionMetric, SelectionPolicy,
+    select_candidate, CandidateScore, SelectionDecision, SelectionMetric, SelectionPolicy,
 };
 
 mod artifact;
@@ -352,6 +352,18 @@ pub struct VariantSelection {
     pub variant_validation_predictions: Vec<VariantValidationPredictions>,
 }
 
+/// Extended result of native variant selection.
+///
+/// The historical [`VariantSelection`] remains source-compatible for callers
+/// that construct or destructure it. Training orchestration uses this additive
+/// result to retain the exact [`SelectionDecision`] produced by the one and
+/// only ranking pass.
+#[derive(Clone, Debug)]
+pub struct VariantSelectionOutcome {
+    pub selection: VariantSelection,
+    pub decision: SelectionDecision,
+}
+
 /// One scored variant's VALIDATION (OOF) predictions, captured from its transient FIT_CV
 /// [`RunContext`] and re-tagged with the variant's id + content fingerprint so a host can fill that
 /// variant's per-sample prediction rows. REPORT-grade output paired with
@@ -412,8 +424,34 @@ pub fn select_best_variant_by_cv<F>(
     run_id: &RunId,
     root_seed: Option<u64>,
     selection_metric: RegressionMetricKind,
-    mut run_single_variant_fit_cv: F,
+    run_single_variant_fit_cv: F,
 ) -> Result<Option<VariantSelection>>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
+    Ok(select_best_variant_outcome_by_cv(
+        plan,
+        run_id,
+        root_seed,
+        selection_metric,
+        run_single_variant_fit_cv,
+    )?
+    .map(|outcome| outcome.selection))
+}
+
+/// Select the best plan variant and retain the exact decision produced by the
+/// shared native ranking pass.
+///
+/// This is the training-operation counterpart of
+/// [`select_best_variant_by_cv`]. It does not perform an additional SELECT;
+/// the legacy helper simply projects this result back to its historical type.
+pub fn select_best_variant_outcome_by_cv<F>(
+    plan: &ExecutionPlan,
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    selection_metric: RegressionMetricKind,
+    mut run_single_variant_fit_cv: F,
+) -> Result<Option<VariantSelectionOutcome>>
 where
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
 {
@@ -431,6 +469,7 @@ where
         root_seed,
         selection_metric,
         plan_oof_partition_mode(plan),
+        None,
         |variant| {
             Ok(ExecutionPlan {
                 variants: vec![variant.clone()],
@@ -439,6 +478,45 @@ where
         },
         // Param-variant SELECT (Mechanism A) has no operator-variant content fingerprint, so reports
         // carry `variant_id` only (no `variant_label`) — exactly the pre-Phase-5 shape.
+        |_variant| Ok(None),
+        &mut run_single_variant_fit_cv,
+    )
+}
+
+/// Select a plan variant using only the cross-fold OOF average emitted by one
+/// explicitly resolved score-target producer. All producers' validation
+/// reports remain retained in the returned outcome for audit.
+pub fn select_best_variant_outcome_by_cv_for_target<F>(
+    plan: &ExecutionPlan,
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    selection_metric: RegressionMetricKind,
+    score_target: (&NodeId, Option<&str>, PredictionLevel),
+    mut run_single_variant_fit_cv: F,
+) -> Result<Option<VariantSelectionOutcome>>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
+    let (score_target, score_target_port, score_target_level) = score_target;
+    plan.validate()?;
+    if !plan.node_plans.contains_key(score_target) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "native SELECT score target `{score_target}` is absent from plan"
+        )));
+    }
+    score_and_rank_variants_by_cv(
+        &plan.variants,
+        run_id,
+        root_seed,
+        selection_metric,
+        plan_oof_partition_mode(plan),
+        Some((score_target, score_target_port, score_target_level)),
+        |variant| {
+            Ok(ExecutionPlan {
+                variants: vec![variant.clone()],
+                ..plan.clone()
+            })
+        },
         |_variant| Ok(None),
         &mut run_single_variant_fit_cv,
     )
@@ -498,12 +576,13 @@ where
     // Map each enumerated variant back to its operator choice (the choice's `active_subsequence`
     // keys `active_nodes`) via `operator_variant_active_subsequence`. The model is a single operator
     // dimension, so each variant carries exactly one choice.
-    score_and_rank_variants_by_cv(
+    Ok(score_and_rank_variants_by_cv(
         &variants,
         run_id,
         root_seed,
         selection_metric,
         plan_oof_partition_mode(union_plan),
+        None,
         |variant| {
             let active_subsequence = operator_variant_active_subsequence(model, variant)?;
             let active_nodes = model.active_nodes.get(active_subsequence).ok_or_else(|| {
@@ -522,7 +601,8 @@ where
             Ok(model.variant_labels.get(active_subsequence).cloned())
         },
         &mut run_single_variant_fit_cv,
-    )
+    )?
+    .map(|outcome| outcome.selection))
 }
 
 /// Resolve the `active_subsequence` (choice key) of an enumerated operator variant against its
@@ -603,10 +683,11 @@ fn score_and_rank_variants_by_cv<M, L, F>(
     root_seed: Option<u64>,
     selection_metric: RegressionMetricKind,
     partition_mode: FoldPartitionMode,
+    score_target: Option<(&NodeId, Option<&str>, PredictionLevel)>,
     mut make_variant_plan: M,
     mut resolve_variant_label: L,
     run_single_variant_fit_cv: &mut F,
-) -> Result<Option<VariantSelection>>
+) -> Result<Option<VariantSelectionOutcome>>
 where
     M: FnMut(&VariantPlan) -> Result<ExecutionPlan>,
     L: FnMut(&VariantPlan) -> Result<Option<String>>,
@@ -669,6 +750,12 @@ where
             .iter()
             .filter(|report| {
                 report.partition == PredictionPartition::Validation
+                    && score_target.is_none_or(|(target, target_port, level)| {
+                        &report.producer_node == target
+                            && target_port
+                                .is_none_or(|port| report.producer_port.as_deref() == Some(port))
+                            && report.level == level
+                    })
                     && report
                         .fold_id
                         .as_ref()
@@ -738,13 +825,17 @@ where
         reduction_id: None,
     };
     let decision = select_candidate(&policy, &candidates)?;
-    let selected_variant_id = VariantId::new(decision.selected_candidate_id).map_err(|error| {
-        DagMlError::RuntimeValidation(format!("selected variant id is invalid: {error}"))
-    })?;
-    Ok(Some(VariantSelection {
-        selected_variant_id,
-        validation_reports: variant_validation_reports,
-        variant_validation_predictions,
+    let selected_variant_id =
+        VariantId::new(decision.selected_candidate_id.clone()).map_err(|error| {
+            DagMlError::RuntimeValidation(format!("selected variant id is invalid: {error}"))
+        })?;
+    Ok(Some(VariantSelectionOutcome {
+        selection: VariantSelection {
+            selected_variant_id,
+            validation_reports: variant_validation_reports,
+            variant_validation_predictions,
+        },
+        decision,
     }))
 }
 
@@ -776,6 +867,7 @@ fn capture_variant_validation_predictions(
         }
         let Some(record) = ctx.regression_target_records.iter().find(|record| {
             record.producer_node == block.producer_node
+                && record.producer_port == block.producer_port
                 && record.partition == PredictionPartition::Validation
                 && record.fold_id == block.fold_id
         }) else {
@@ -843,6 +935,7 @@ mod explain_contract_tests {
     fn block(method: &str) -> ExplanationBlock {
         ExplanationBlock {
             producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
             method: method.to_string(),
             target_name: Some("y".to_string()),
             payload: serde_json::json!({"feature_importance": [0.5, 0.3, 0.2]}),

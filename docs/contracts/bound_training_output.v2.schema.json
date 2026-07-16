@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/bound_training_output.v2.schema.json",
+  "title": "DAG-ML BoundTrainingOutput v2",
+  "description": "Versioned bound output. OutputBinding remains the unchanged v1 identity contract; every emitted block uses NodeResult v2 and therefore carries producer_port.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "binding",
+    "predictions",
+    "observation_predictions",
+    "aggregated_predictions"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 2 },
+    "binding": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/output_binding.v1.schema.json"
+    },
+    "predictions": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v2.schema.json#/$defs/prediction_block"
+      }
+    },
+    "observation_predictions": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v2.schema.json#/$defs/observation_prediction_block"
+      }
+    },
+    "aggregated_predictions": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v2.schema.json#/$defs/aggregated_prediction_block"
+      }
+    }
+  },
+  "anyOf": [
+    { "properties": { "predictions": { "minItems": 1 } } },
+    { "properties": { "observation_predictions": { "minItems": 1 } } },
+    { "properties": { "aggregated_predictions": { "minItems": 1 } } }
+  ]
+}

@@ -1,19 +1,21 @@
 {
   "bundle_id": "bundle:generated.branch.merge.cv.refit",
-  "schema_version": 1,
+  "schema_version": 2,
   "caches": [
     {
       "requirement_key": "branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
       "cache_id": "prediction-cache:branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof",
-      "format": "dag-ml-json-prediction-blocks-v1",
+      "format": "dag-ml-json-prediction-blocks-v2",
       "partition": "validation",
+      "prediction_level": "sample",
       "block_count": 2,
       "row_count": 4,
-      "content_fingerprint": "b42c63e64a52964592a71f660bac3ba5c6931b57ee60d5246fee5551fb00abca",
+      "content_fingerprint": "c56c2f4af400c50fb380b810d01ff31677149cab41cab2cba298080f0672c284",
       "blocks": [
         {
           "prediction_id": "pred:branch:b0.model:ridge:FIT_CV",
           "producer_node": "branch:b0.model:ridge",
+          "producer_port": "oof",
           "partition": "validation",
           "fold_id": "fold:0",
           "sample_ids": [
@@ -35,6 +37,7 @@
         {
           "prediction_id": "pred:branch:b0.model:ridge:FIT_CV",
           "producer_node": "branch:b0.model:ridge",
+          "producer_port": "oof",
           "partition": "validation",
           "fold_id": "fold:1",
           "sample_ids": [
@@ -58,15 +61,17 @@
     {
       "requirement_key": "branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof",
       "cache_id": "prediction-cache:branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof",
-      "format": "dag-ml-json-prediction-blocks-v1",
+      "format": "dag-ml-json-prediction-blocks-v2",
       "partition": "validation",
+      "prediction_level": "sample",
       "block_count": 2,
       "row_count": 4,
-      "content_fingerprint": "4342d7bbe3cb55dd3adf30fb6c16b8b27cc19a51698bb7e32cca79f51444f398",
+      "content_fingerprint": "a81bd4edc4f9d31e3313fcc7c3ac14a8a969410587f6022c772c40559d9cbd49",
       "blocks": [
         {
           "prediction_id": "pred:branch:b1.model:rf:FIT_CV",
           "producer_node": "branch:b1.model:rf",
+          "producer_port": "oof",
           "partition": "validation",
           "fold_id": "fold:0",
           "sample_ids": [
@@ -88,6 +93,7 @@
         {
           "prediction_id": "pred:branch:b1.model:rf:FIT_CV",
           "producer_node": "branch:b1.model:rf",
+          "producer_port": "oof",
           "partition": "validation",
           "fold_id": "fold:1",
           "sample_ids": [

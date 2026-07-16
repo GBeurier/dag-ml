@@ -177,6 +177,7 @@ impl FitInfluenceTask {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FitInfluenceDiagnostic {
     pub requested_policy: FitInfluencePolicy,
     pub effective_policy: FitInfluencePolicy,
@@ -215,6 +216,16 @@ impl FitInfluenceDiagnostic {
                 self.row_weight_count,
                 task.fit_influence.row_weights.len()
             )));
+        }
+        if self.fallback_used == task.fit_influence.warnings.is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "fit influence diagnostic fallback_used does not match task warnings".to_string(),
+            ));
+        }
+        if self.warnings != task.fit_influence.warnings {
+            return Err(DagMlError::RuntimeValidation(
+                "fit influence diagnostic warnings do not match task warnings".to_string(),
+            ));
         }
         if self
             .warnings
@@ -341,9 +352,12 @@ impl VariantExecutionSpec {
 /// (e.g. per-feature importances); the core does not interpret it. Explanations
 /// are only valid in the `EXPLAIN` phase.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExplanationBlock {
     /// Node whose model the explanation describes (must equal the producing node).
     pub producer_node: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_port: Option<String>,
     /// Stable explanation method identifier, e.g. `shap`, `permutation_importance`.
     pub method: String,
     /// Optional target/output name the explanation pertains to.
@@ -375,7 +389,10 @@ impl ExplanationBlock {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
     pub node_id: NodeId,
     #[serde(default)]
     pub outputs: BTreeMap<String, HandleRef>,

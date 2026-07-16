@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/replay_outcome.v1.schema.json",
+  "title": "DAG-ML ReplayOutcome v1",
+  "description": "Portable replay result carrying actual bound predictions or explanations. Legacy ReplayExecutionSummary counters remain top-level for additive compatibility.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "outcome_id",
+    "run_id",
+    "bundle_id",
+    "plan_id",
+    "phase",
+    "result_count",
+    "lineage_record_count",
+    "prediction_block_count",
+    "aggregated_prediction_block_count",
+    "explanation_block_count",
+    "controller_count",
+    "prediction_cache_store",
+    "outputs",
+    "explanations",
+    "lineage",
+    "warnings",
+    "diagnostics",
+    "outcome_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "outcome_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "bundle_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "plan_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "phase": {
+      "enum": ["REFIT", "PREDICT", "EXPLAIN"]
+    },
+    "result_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "lineage_record_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "prediction_block_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "aggregated_prediction_block_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "explanation_block_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "controller_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "prediction_cache_store": {
+      "type": "boolean"
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/output_binding.v1.schema.json#/$defs/bound_output"
+      }
+    },
+    "explanations": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/explanation_block"
+      }
+    },
+    "lineage": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/lineage_record"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true
+    },
+    "outcome_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML TCV1 SHA-256 of this complete outcome with only outcome_fingerprint omitted."
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

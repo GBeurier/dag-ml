@@ -13,8 +13,8 @@ max last-touch commit time over the Rust tree (core + py crate sources and their
 manifests / lockfile). The mtime is reported only as informational context.
 
 Exit codes:
-  0  fresh, OR skipped gracefully (not a git repo / missing .so / no commit history)
-  1  stale: the tracked .so was last committed before newer Rust sources
+  0  fresh, paired dirty Rust + dirty .so, OR skipped gracefully
+  1  stale committed history, or dirty/untracked Rust with an unchanged .so
 
 Run ``python3 scripts/check_so_freshness.py --self-test`` to exercise both branches.
 """
@@ -160,6 +160,38 @@ def rust_paths(repo: Path) -> list[str]:
     return paths
 
 
+def dirty_paths(repo: Path, paths: list[str]) -> list[str]:
+    """Return tracked modifications and untracked files under ``paths``."""
+
+    if not paths:
+        return []
+    result = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            *paths,
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    dirty: list[str] = []
+    for line in result.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        relative = line[3:]
+        if " -> " in relative:
+            relative = relative.rsplit(" -> ", maxsplit=1)[1]
+        dirty.append(relative)
+    return dirty
+
+
 def newest_rust_commit(repo: Path, paths: list[str]) -> tuple[int, str] | None:
     """Return (timestamp, path) of the most recently committed Rust source."""
     best: tuple[int, str] | None = None
@@ -188,6 +220,27 @@ def check(repo: Path) -> int:
         return 0
 
     paths = rust_paths(repo)
+    dirty_rust = dirty_paths(repo, paths)
+    dirty_so = bool(dirty_paths(repo, [SO_RELATIVE]))
+    if dirty_rust and not dirty_so:
+        listing = "\n".join(f"  - {path}" for path in dirty_rust)
+        print(
+            f"{NOTICE} STALE — compiled Rust inputs are dirty or untracked while "
+            f"{SO_RELATIVE} is unchanged.\n"
+            f"  Dirty Rust inputs:\n{listing}\n"
+            "  Remediation: rebuild the tracked extension with `maturin develop --release`, "
+            "then run a public source-tree import smoke.",
+            file=sys.stderr,
+        )
+        return 1
+    if dirty_rust and dirty_so:
+        print(
+            f"{NOTICE} paired dirty state — {len(dirty_rust)} compiled Rust input(s) and "
+            f"{SO_RELATIVE} are modified; commit-time freshness is inapplicable. "
+            "Require the public source-tree import smoke before accepting this worktree."
+        )
+        return 0
+
     newest = newest_rust_commit(repo, paths)
     if newest is None:
         print(f"{NOTICE} skip — no committed Rust sources found to compare against.")
@@ -277,6 +330,23 @@ def self_test() -> int:
         code = check(repo)
         if code != 1:
             failures.append(f"STALE case expected exit 1, got {code}")
+
+    # Case 3: DIRTY — uncommitted Rust requires a paired rebuilt extension.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        scaffold(repo)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "initial with so", ts=1_000_000)
+        (repo / "crates/dag-ml-core/src/lib.rs").write_text(
+            "pub fn dirty_change() {}\n", encoding="utf-8"
+        )
+        code = check(repo)
+        if code != 1:
+            failures.append(f"DIRTY Rust-only case expected exit 1, got {code}")
+        (repo / SO_RELATIVE).write_bytes(b"\x7fELF dirty rebuild")
+        code = check(repo)
+        if code != 0:
+            failures.append(f"DIRTY paired case expected exit 0, got {code}")
 
     if failures:
         for line in failures:

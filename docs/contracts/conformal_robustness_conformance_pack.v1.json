@@ -1,0 +1,412 @@
+{
+  "pack_id": "dag-ml.conformal-robustness-conformance.v1",
+  "schema_version": 1,
+  "hash_algorithm": "sha256-file-bytes",
+  "fingerprint_profile": "DAGML-TCV1",
+  "canonical_profiles": [
+    {
+      "id": "DAGML-TCV1",
+      "object_key_order": "utf8",
+      "unicode_normalization": "NFC",
+      "number_profile": "typed integer-or-binary64"
+    },
+    {
+      "id": "RFC8785-JCS-restricted",
+      "object_key_order": "utf16",
+      "unicode_normalization": "none",
+      "number_profile": "integer-and-tagged-binary64-labels"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "docs/contracts/campaign_spec.schema.json",
+      "sha256": "3f40f734122b842da1c0ee8e2e0ddace9e58f02cdfcd2cf631cda13ffa4aa869",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/cohort_manifest.schema.json",
+      "sha256": "067d4202c7399a85cd4f6eee14797c2a554eaa8aec90e34dc5c5cfe1b332bebc",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/conformal_calibration.schema.json",
+      "sha256": "01d63ab1c29dcedda25e24be70374936c368b5ba9395beb57803fa60143b4f7f",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/conformal_metric_set.schema.json",
+      "sha256": "d296fc73a567039cc481903a1f3d6162368d6ecaa241f0634d3189934f59ed6f",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/conformal_prediction_block.schema.json",
+      "sha256": "6f76bfde1dadbfdd0422ef6d408092736ef35c04d1ab913e1f629abd4ab0ac38",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/controller_manifest.schema.json",
+      "sha256": "e2af2cf1203655e11bf28555a5288cc162aa158c3e194967570e1082bf788f58",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/decision_block.schema.json",
+      "sha256": "b1ab7884e18c1d35b33474775979dbc3323adda8a82f6ffb7e6577fd31bf5bbd",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/domain_assessment_block.schema.json",
+      "sha256": "e9de62bee803449b7875dba85cfc6ae7b424839c14a6e16e239b762716fbf55c",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/execution_bundle.schema.json",
+      "sha256": "3a0f66ee65c27a35809e2e8ce485c368c7f5042e55c100502e531ba83a1761bf",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/execution_plan.schema.json",
+      "sha256": "f56e7e65ebe6c328728c719d09f4b2266d707e7e4680ac91ceb7bd2ee7ebdf60",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/graph_spec.schema.json",
+      "sha256": "fbe8ee5ab1c7c5692c259bc007cbaf4067970bac309be3daf8a7a88768fa4168",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/node_result.schema.json",
+      "sha256": "6fb4a3856e3ec070b5bb49511ce10b4c21273cd030ecad04719248a5ce98686f",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/output_binding.schema.json",
+      "sha256": "5b3cf6c841ff0d2b8fc36cdd61240f63a12f507f2721e02322a159b6217cfbc2",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/parameter_patch.schema.json",
+      "sha256": "6e1a62e7fe25b68c577d59f6de6940f1924b30e0f539c86c47aad88f4d1bda0e",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/prediction_cache_payload_set.schema.json",
+      "sha256": "d4147d75da2ce3354d17f58b01687bb1f3dc421290805bb673c039a73b71ac2e",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/robustness_report.schema.json",
+      "sha256": "e45fda8c19c46fb2eab55f4b412c31e2603682e3d5f6685c8e71870f5d0f2a62",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/robustness_scenario_spec.schema.json",
+      "sha256": "46755ced414164a699c44248f05aad007ef176dea50c9475569506fa7b512eb0",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/score_set.schema.json",
+      "sha256": "b0122078a2812760688e71be449e7492c1ae9dd38d8aeb51211bc51eb1e87622",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/selection_decision.schema.json",
+      "sha256": "7f1d955a2dda4111c86cc76d196ae3fb81dc82304e7b8a0238c43334b0bd133b",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/selection_policy.schema.json",
+      "sha256": "a6196da912f5775ddd319698649adf04f7e91406f504a8669c8c3d5c2caf99e4",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/training_influence_manifest.schema.json",
+      "sha256": "79cb45a4c1cc79a1ecd74b9bcd23f6a69dd8f9d6dd03675f6339a3c9574bdfbf",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/training_outcome.schema.json",
+      "sha256": "cf9223520d6aa089beaf661934a520f65fcda6c882a9ff99c250a83bd3efe2eb",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/training_request.schema.json",
+      "sha256": "363ee1009772115b84d11b9e3b9db37ef00d5255958e097b9d8b24349b6be6a9",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "examples/fixtures/conformal/calibration_artifacts.v1.json",
+      "sha256": "df9f0c9c2b90b11c5b785cffbef78e41824579b0563aa077edba9a8b4769f2f7",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/conformal/cohort_manifest_roles.v1.json",
+      "sha256": "92b59dd36a432911f54666df88139b26656ee3652c2af32e8567cb1956809ba1",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/conformal/conformal_metric_sets.v1.json",
+      "sha256": "209b18a870456c0066cb19e16089c92dda6d7f2effefe3b26b077b1527d40e93",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/conformal/conformal_prediction_blocks.v1.json",
+      "sha256": "370e6de3b69863a1a1649aa534254b1087e88b4d73b4810e9b380147c9edab5c",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/conformal/decision_blocks.v1.json",
+      "sha256": "34c956d3d6307faf4391ea3acb67789c23d6bbea09642c06128d488852cb0cdf",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/conformal/domain_assessment_blocks.v1.json",
+      "sha256": "3dd6c7357374224a61becd8b2d2ef32d3c2d2a1a242624bdf59858fbfd37afa8",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/conformal/split_absolute_residual_physical_sample.v1.json",
+      "sha256": "0bc1c9eae597d40fd6789ca310ab8de32f01727d539a233ed83fd92a3eb849dc",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/estimator/output_binding_regression_final_refit.v1.json",
+      "sha256": "282b7f02228be555c1e57d6c4c8883af062643550da4385b9c25f5f91e11cd4a",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/estimator/parameter_patch_operator_alpha.v1.json",
+      "sha256": "ee8dce9ec70da25b2e5eb6be259078242f10073a3ecaf2842cee7f5986e01e20",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/estimator/training_outcome_no_refit.v1.json",
+      "sha256": "45657124b51bdab72201a3b1e482cea25c5e2d6364da63185d7b0c4142c78a71",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/estimator/training_outcome_refit.v1.json",
+      "sha256": "eefeb752d8d4484a253abef038fabbefcf481c5a31f5ac32388b8120e14c7999",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/robustness/robustness_reports.v1.json",
+      "sha256": "66858b0e27ef787a76652244de12f7b58eb78c044e0756d19c6d709f7ca51e40",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/robustness/robustness_scenarios.v1.json",
+      "sha256": "4c673c48865a9f497c681aeb6d9035b72d21ca1dcacdf9a1d91fe64b650aa655",
+      "kind": "fixture"
+    },
+    {
+      "path": "parity/canonical/README.md",
+      "sha256": "1898d913e7f747090abce7ff157d6158e1785b66aa464d120f245e2fa7921eac",
+      "kind": "documentation"
+    },
+    {
+      "path": "parity/canonical/golden/tcv1_jcs_cross_language.v1.json",
+      "sha256": "7ce376f6a222874ee440d7b1ff14413ed9ab12111eee0e9fe39500813c219e68",
+      "kind": "golden"
+    },
+    {
+      "path": "parity/canonical/rust-oracle/.gitignore",
+      "sha256": "306fd52e74fca6746e12acc750f232de15e71da917756a1270d74c91f5eb7368",
+      "kind": "configuration"
+    },
+    {
+      "path": "parity/canonical/rust-oracle/Cargo.lock",
+      "sha256": "e2bbd4af5e708da9244bad744b100073abb9604fcd4c88f48623264c821cbd00",
+      "kind": "oracle_source"
+    },
+    {
+      "path": "parity/canonical/rust-oracle/Cargo.toml",
+      "sha256": "799d6a1783491e6bd04189a655db423f1b9d21b659483855fb097ce3f8de5e1d",
+      "kind": "oracle_source"
+    },
+    {
+      "path": "parity/canonical/rust-oracle/src/lib.rs",
+      "sha256": "5e0dc032777100258a4daeff343628b86a7b70bb4dab2138a4d241717df40171",
+      "kind": "oracle_source"
+    },
+    {
+      "path": "parity/canonical/rust-oracle/src/main.rs",
+      "sha256": "325bb366178e845723fce7b30adf0aa6184dcc490e08494d9a5cad90703f3ab2",
+      "kind": "oracle_source"
+    },
+    {
+      "path": "parity/canonical/tests/test_rust_oracle_parity.py",
+      "sha256": "1e3c1f9a65f7ca62c3e57c00193453772624174d265f50adda6ed3d209a0ae2b",
+      "kind": "test"
+    },
+    {
+      "path": "parity/conformal/generate_fixtures.py",
+      "sha256": "11c4e8267534c9b444ffd1ec38c5534d98c4fea0d86d2da1ed2698ed897e914e",
+      "kind": "generator"
+    },
+    {
+      "path": "parity/conformal/golden/regression_conformal_metrics.v1.json",
+      "sha256": "41acf71a7f2a1cca899231d381bc3476ce507f1fc3d82e8a30722205d66f4a44",
+      "kind": "golden"
+    },
+    {
+      "path": "parity/conformal/golden/split_absolute_residual.v1.json",
+      "sha256": "8f765c3f40924b7535757f4720b31151ed73ff068169eae6175d9cc946c308a8",
+      "kind": "golden"
+    },
+    {
+      "path": "parity/conformal/oracle.py",
+      "sha256": "ef8d9062969fd4f885eb0fa7a90c710f178763cfd006b424e860771bf14668be",
+      "kind": "test_oracle"
+    },
+    {
+      "path": "parity/conformal/tests/test_conformal_robustness_contracts.py",
+      "sha256": "39a0d03aecfb319793808981c2cef812eb9f5a9a02d51fe707dd449c0e576f36",
+      "kind": "test"
+    },
+    {
+      "path": "parity/robustness_rng/golden/philox4x32_10_counter.v1.json",
+      "sha256": "774597fcb4919ba95b806bc186491c6bff206150eded7d9fd8e6e345e6b759d9",
+      "kind": "golden"
+    },
+    {
+      "path": "parity/robustness_rng/oracle.py",
+      "sha256": "ca283e62e4aa5f6e0647372aaa58426df412effb5ceabfc152aaf8a1b47634dc",
+      "kind": "test_oracle"
+    },
+    {
+      "path": "parity/robustness_rng/tests/test_robustness_rng_contract.py",
+      "sha256": "097dd0ebf509126922ea0607256eb9c62e632312a7487b72d7b4a073b79e35fe",
+      "kind": "test"
+    },
+    {
+      "path": "parity/schema_dependencies.py",
+      "sha256": "066d4e64dea2c314e0a1ef00b7e0da317ff49f2e9543e0172ad3741338669a5e",
+      "kind": "schema_dependency_resolver"
+    }
+  ],
+  "conformance_cases": [
+    {
+      "id": "cohort_roles_and_leakage",
+      "fixture": "examples/fixtures/conformal/cohort_manifest_roles.v1.json",
+      "invariants": [
+        "four_canonical_roles",
+        "no_runtime_handle",
+        "physical_sample_unit",
+        "sample_origin_disjointness"
+      ]
+    },
+    {
+      "id": "conformal_metrics_by_slice",
+      "fixture": "examples/fixtures/conformal/conformal_metric_sets.v1.json",
+      "invariants": [
+        "coverage_gap",
+        "midpoint_reconstruction",
+        "numeric_evidence_reconstruction",
+        "separate_from_score_set",
+        "slice_coordinates",
+        "target_policy"
+      ]
+    },
+    {
+      "id": "cross_language_tcv1_restricted_jcs",
+      "fixture": "parity/canonical/golden/tcv1_jcs_cross_language.v1.json",
+      "invariants": [
+        "cross_language_digest_identity",
+        "jcs_utf16_key_order",
+        "profile_separation",
+        "tcv1_utf8_key_order"
+      ]
+    },
+    {
+      "id": "domain_and_decision_separation",
+      "fixture": "examples/fixtures/conformal/domain_assessment_blocks.v1.json",
+      "invariants": [
+        "identity_alignment",
+        "no_coverage_claim",
+        "no_decision_action"
+      ]
+    },
+    {
+      "id": "exact_rank_and_multi_target_oracle",
+      "fixture": "parity/conformal/golden/split_absolute_residual.v1.json",
+      "invariants": [
+        "joint_max",
+        "marginal",
+        "shortest_binary64_token",
+        "small_n_policy",
+        "tcv1_utf8_key_order",
+        "ties"
+      ]
+    },
+    {
+      "id": "explicit_application_decisions",
+      "fixture": "examples/fixtures/conformal/decision_blocks.v1.json",
+      "invariants": [
+        "identity_alignment",
+        "no_domain_score",
+        "policy_binding"
+      ]
+    },
+    {
+      "id": "multi_target_nested_intervals",
+      "fixture": "examples/fixtures/conformal/conformal_prediction_blocks.v1.json",
+      "invariants": [
+        "bound_nesting",
+        "coverage_order",
+        "no_domain_conflation",
+        "output_binding_ref",
+        "target_order"
+      ]
+    },
+    {
+      "id": "regression_conformal_metric_reconstruction",
+      "fixture": "parity/conformal/golden/regression_conformal_metrics.v1.json",
+      "invariants": [
+        "coverage_reconstruction",
+        "interval_score_reconstruction",
+        "joint_and_marginal",
+        "unbounded_metrics",
+        "width_reconstruction"
+      ]
+    },
+    {
+      "id": "robustness_group_source_report",
+      "fixture": "examples/fixtures/robustness/robustness_reports.v1.json",
+      "invariants": [
+        "calibrator_invalidation",
+        "confidence_interval_order",
+        "exact_18_coordinate_matrix",
+        "exact_severity_zero_baseline",
+        "group_slice",
+        "metric_unavailable_accounting",
+        "point_only_production",
+        "predictor_reuse",
+        "slice_value_completeness",
+        "source_slice"
+      ]
+    },
+    {
+      "id": "robustness_philox_counter_profile",
+      "fixture": "parity/robustness_rng/golden/philox4x32_10_counter.v1.json",
+      "invariants": [
+        "binary64_severity",
+        "counter_tcv1_sha256",
+        "philox4x32_10_known_answers",
+        "portable_seed_key_words",
+        "target_identity"
+      ]
+    },
+    {
+      "id": "three_robustness_modes",
+      "fixture": "examples/fixtures/robustness/robustness_scenarios.v1.json",
+      "invariants": [
+        "clean_frozen",
+        "matched_recalibration",
+        "philox_counter_rng",
+        "severity_zero",
+        "structural_refit"
+      ]
+    }
+  ],
+  "pack_checksum": "c32977f90d33d1d6c6ef20e050d691fcbe16e7d0ce92c89744ec6ccbdd7a1cb4"
+}

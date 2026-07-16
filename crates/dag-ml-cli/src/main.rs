@@ -11,10 +11,8 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use dag_ml_core::{
-    build_aggregated_prediction_cache_payload, build_aggregated_prediction_cache_record,
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
-    build_openlineage_run_event_from_package_files, build_prediction_cache_payload,
-    build_prediction_cache_record, build_research_provenance_package,
+    build_openlineage_run_event_from_package_files, build_research_provenance_package,
     compile_operator_variant_models, compile_pipeline_dsl,
     compile_pipeline_dsl_with_controller_registry, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, oof_campaign_fingerprint,
@@ -24,18 +22,19 @@ use dag_ml_core::{
     select_best_variant_by_cv, select_candidate, select_candidate_groups, validate_oof_campaign,
     validate_research_provenance_package_files, AggregatedPredictionBlock, ArtifactId, BundleId,
     BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
-    BundlePredictionRequirement, BundleReplayExecution, CampaignSpec, CandidateScore,
-    ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
-    DataRequestPartition, ExecutionBundle, ExplanationBlock, ExternalDataPlanEnvelope,
-    FileArtifactManifestStore, FileArtifactPayloadStore, FilePredictionCacheStore, GraphSpec,
-    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
-    MetricObjective, NodeId, NodeResult, NodeTask, OofCampaign, OperatorVariantModel,
-    ParallelScheduler, Phase, PipelineDslSpec, PredictionBlock, PredictionLevel,
-    PredictionPartition, PredictionUnitId, RefitArtifactRecord, RegressionMetricKind,
-    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage,
-    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
-    RuntimeDataProvider, RuntimePredictionCacheStore, SampleId, ScoreSet, SelectionDecision,
-    SelectionMetric, SelectionPolicy, SequentialScheduler, VariantId, SCORE_SET_SCHEMA_VERSION,
+    BundlePredictionRequirement, BundleReplayExecution, CacheNamespace, CampaignSpec,
+    CandidateScore, ColumnarPredictionCacheStore, ControllerId, ControllerManifest,
+    ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle, ExplanationBlock,
+    ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
+    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
+    InMemoryDataProvider, LineageId, LineageRecord, MetricObjective, NodeId, NodeResult, NodeTask,
+    OofCampaign, OperatorVariantModel, ParallelScheduler, Phase, PipelineDslSpec,
+    PortablePredictorPackage, PredictionBlock, PredictionLevel, PredictionPartition,
+    PredictionUnitId, RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport,
+    RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId,
+    RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
+    RuntimePredictionCacheStore, SampleId, ScoreSet, SelectionDecision, SelectionMetric,
+    SelectionPolicy, SequentialScheduler, TrainingRequest, VariantId, SCORE_SET_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -219,6 +218,24 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     ValidateGraph {
+        path: PathBuf,
+    },
+    /// Strictly parse, fingerprint and semantically validate a W1 TrainingRequest.
+    ValidateTrainingRequest {
+        path: PathBuf,
+    },
+    /// Validate a W1 TrainingRequest and emit its immutable contract projection.
+    ProjectTrainingRequest {
+        path: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Strictly validate a persisted W1 PortablePredictorPackage.
+    ValidatePortablePredictorPackage {
+        path: PathBuf,
+    },
+    /// Strictly validate a FIT_CV-only W1 cache namespace.
+    ValidateCacheNamespace {
         path: PathBuf,
     },
     /// Walk `<dir>/*.controller.yaml` files, deserialize each into a
@@ -862,14 +879,47 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::ValidateGraph { path } => {
-            let data = std::fs::read(&path)
-                .with_context(|| format!("failed to read graph JSON at {}", path.display()))?;
-            let graph: GraphSpec = serde_json::from_slice(&data)
-                .with_context(|| format!("failed to parse graph JSON at {}", path.display()))?;
-            graph
-                .validate()
-                .with_context(|| format!("invalid graph at {}", path.display()))?;
+            let graph = read_external_contract(&path, "graph", GraphSpec::from_json)?;
             println!("valid graph: {}", graph.id);
+        }
+        Command::ValidateTrainingRequest { path } => {
+            let json = std::fs::read_to_string(&path).with_context(|| {
+                format!("failed to read training request JSON at {}", path.display())
+            })?;
+            let request = TrainingRequest::from_json(&json)
+                .with_context(|| format!("invalid training request at {}", path.display()))?;
+            println!("valid training request: {}", request.request_id);
+        }
+        Command::ProjectTrainingRequest { path, output } => {
+            let json = std::fs::read_to_string(&path).with_context(|| {
+                format!("failed to read training request JSON at {}", path.display())
+            })?;
+            let request = TrainingRequest::from_json(&json)
+                .with_context(|| format!("invalid training request at {}", path.display()))?;
+            let projection = request.project().with_context(|| {
+                format!("failed to project training request at {}", path.display())
+            })?;
+            emit_json(output.as_ref(), &projection, "training contract projection")?;
+        }
+        Command::ValidatePortablePredictorPackage { path } => {
+            let json = std::fs::read_to_string(&path).with_context(|| {
+                format!(
+                    "failed to read portable predictor package at {}",
+                    path.display()
+                )
+            })?;
+            let package = PortablePredictorPackage::from_json(&json).with_context(|| {
+                format!("invalid portable predictor package at {}", path.display())
+            })?;
+            println!("valid portable predictor package: {}", package.package_id);
+        }
+        Command::ValidateCacheNamespace { path } => {
+            let json = std::fs::read_to_string(&path).with_context(|| {
+                format!("failed to read cache namespace JSON at {}", path.display())
+            })?;
+            let namespace = CacheNamespace::from_json(&json)
+                .with_context(|| format!("invalid cache namespace at {}", path.display()))?;
+            println!("valid cache namespace: {}", namespace.namespace_fingerprint);
         }
         Command::ValidateControllersYaml { dir } => {
             let manifests = dag_ml_core::controller_registry::load_yaml_manifests_from_dir(&dir)
@@ -1020,8 +1070,8 @@ fn main() -> Result<()> {
             node,
             input,
         } => {
-            let campaign_spec: CampaignSpec = read_json(&campaign, "campaign")?;
-            campaign_spec.validate()?;
+            let campaign_spec =
+                read_external_contract(&campaign, "campaign", CampaignSpec::from_json)?;
             let node_id = NodeId::new(node)?;
             let envelope: ExternalDataPlanEnvelope =
                 read_json(&envelope, "external data-plan envelope")?;
@@ -1050,8 +1100,9 @@ fn main() -> Result<()> {
             scheduler,
             scheduler_workers,
         } => {
-            let graph_spec: GraphSpec = read_json(&graph, "graph")?;
-            let campaign_spec: CampaignSpec = read_json(&campaign, "campaign")?;
+            let graph_spec = read_external_contract(&graph, "graph", GraphSpec::from_json)?;
+            let campaign_spec =
+                read_external_contract(&campaign, "campaign", CampaignSpec::from_json)?;
             let registry = controller_registry_from_path(&controllers)?;
             let plan = build_execution_plan(plan_id, graph_spec, campaign_spec, &registry)
                 .with_context(|| "failed to build execution plan")?;
@@ -1093,8 +1144,9 @@ fn main() -> Result<()> {
             scheduler,
             scheduler_workers,
         } => {
-            let graph_spec: GraphSpec = read_json(&graph, "graph")?;
-            let campaign_spec: CampaignSpec = read_json(&campaign, "campaign")?;
+            let graph_spec = read_external_contract(&graph, "graph", GraphSpec::from_json)?;
+            let campaign_spec =
+                read_external_contract(&campaign, "campaign", CampaignSpec::from_json)?;
             if campaign_spec.inner_cv.is_none() {
                 bail!("run-mock-nested-cv requires a campaign with an `inner_cv` policy");
             }
@@ -1831,7 +1883,8 @@ fn main() -> Result<()> {
             plan_id,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             bundle
                 .validate_against_plan(&plan)
                 .with_context(|| "execution bundle does not match plan")?;
@@ -1901,7 +1954,8 @@ fn main() -> Result<()> {
             );
         }
         Command::ValidatePredictionCache { bundle, payload } => {
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let payload: BundlePredictionCachePayloadSet =
                 read_json(&payload, "prediction cache payload set")?;
             payload
@@ -1918,7 +1972,8 @@ fn main() -> Result<()> {
             payload,
             output_dir,
         } => {
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let payload: BundlePredictionCachePayloadSet =
                 read_json(&payload, "prediction cache payload set")?;
             let manifest =
@@ -1932,7 +1987,8 @@ fn main() -> Result<()> {
             );
         }
         Command::ValidatePredictionCacheStore { bundle, store_dir } => {
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let store = validate_file_prediction_cache_store(&bundle, &store_dir)?;
             println!(
                 "valid prediction cache store: bundle={}, cache(s)={}, dir={}",
@@ -1942,7 +1998,8 @@ fn main() -> Result<()> {
             );
         }
         Command::ExportArtifactManifest { bundle, output_dir } => {
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let manifest = FileArtifactManifestStore::write(&output_dir, &bundle)
                 .with_context(|| "failed to export artifact manifest")?;
             println!(
@@ -1956,7 +2013,8 @@ fn main() -> Result<()> {
             bundle,
             manifest_dir,
         } => {
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let store = validate_file_artifact_manifest_store(&bundle, &manifest_dir)?;
             println!(
                 "valid artifact manifest: bundle={}, artifact(s)={}, dir={}",
@@ -1970,7 +2028,8 @@ fn main() -> Result<()> {
             source_dir,
             output_dir,
         } => {
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let store =
                 FileArtifactPayloadStore::write_from_source(&output_dir, &source_dir, &bundle)
                     .with_context(|| "failed to export artifact payload store")?;
@@ -1982,7 +2041,8 @@ fn main() -> Result<()> {
             );
         }
         Command::ValidateArtifactPayloadStore { bundle, store_dir } => {
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let store = validate_file_artifact_payload_store(&bundle, &store_dir)?;
             println!(
                 "valid artifact payload store: bundle={}, artifact(s)={}, dir={}",
@@ -2004,7 +2064,8 @@ fn main() -> Result<()> {
             plan_id,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let lineage_records: Vec<LineageRecord> = lineage
                 .as_ref()
                 .map(|path| read_json(path, "lineage record list"))
@@ -2094,7 +2155,8 @@ fn main() -> Result<()> {
             scheduler_workers,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let replay_request: ReplayPhaseRequest =
                 read_json(&replay_request, "replay phase request")?;
             let prediction_cache_payloads =
@@ -2177,7 +2239,8 @@ fn main() -> Result<()> {
             score_output,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
-            let bundle: ExecutionBundle = read_json(&bundle, "execution bundle")?;
+            let bundle =
+                read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let replay_request: ReplayPhaseRequest =
                 read_json(&replay_request, "replay phase request")?;
             let prediction_cache_payloads =
@@ -2269,7 +2332,8 @@ struct RegressionScoreCliOutput {
     pub candidate_score: Option<CandidateScore>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct BundleBuildSpec {
     pub bundle_id: BundleId,
     #[serde(default)]
@@ -3127,123 +3191,11 @@ fn oof_prediction_requirements(
     blocks: &[PredictionBlock],
     aggregated_blocks: &[AggregatedPredictionBlock],
 ) -> Result<Vec<BundlePredictionRequirement>> {
-    let mut requirements = Vec::new();
-    for edge in plan
-        .graph_plan
-        .graph
-        .edges
-        .iter()
-        .filter(|edge| edge.contract.requires_oof)
-    {
-        let prediction_level = oof_prediction_level_for_edge(plan, &edge.source.node_id)?;
-        match prediction_level {
-            PredictionLevel::Sample => {
-                let edge_blocks = blocks
-                    .iter()
-                    .filter(|block| {
-                        block.producer_node == edge.source.node_id
-                            && block.partition == PredictionPartition::Validation
-                    })
-                    .collect::<Vec<_>>();
-                if edge_blocks.is_empty() {
-                    bail!(
-                        "OOF prediction requirement `{}` -> `{}` has no validation sample blocks",
-                        edge.source.node_id,
-                        edge.target.node_id
-                    );
-                }
-                let summary = summarize_oof_blocks(&edge.source.node_id, &edge_blocks)?;
-                requirements.push(BundlePredictionRequirement {
-                    producer_node: edge.source.node_id.clone(),
-                    source_port: edge.source.port_name.clone(),
-                    consumer_node: edge.target.node_id.clone(),
-                    target_port: edge.target.port_name.clone(),
-                    partition: PredictionPartition::Validation,
-                    prediction_level,
-                    fold_ids: summary
-                        .fold_ids
-                        .into_iter()
-                        .map(dag_ml_core::FoldId::new)
-                        .collect::<dag_ml_core::Result<Vec<_>>>()?,
-                    sample_ids: summary
-                        .sample_ids
-                        .into_iter()
-                        .map(SampleId::new)
-                        .collect::<dag_ml_core::Result<Vec<_>>>()?,
-                    unit_ids: Vec::new(),
-                    prediction_width: summary.prediction_width.unwrap_or_default(),
-                    target_names: summary.target_names.unwrap_or_default(),
-                });
-            }
-            PredictionLevel::Target | PredictionLevel::Group => {
-                let edge_blocks = aggregated_blocks
-                    .iter()
-                    .filter(|block| {
-                        block.producer_node == edge.source.node_id
-                            && block.partition == PredictionPartition::Validation
-                            && block.level == prediction_level
-                    })
-                    .collect::<Vec<_>>();
-                if edge_blocks.is_empty() {
-                    bail!(
-                        "OOF prediction requirement `{}` -> `{}` has no validation {:?} blocks",
-                        edge.source.node_id,
-                        edge.target.node_id,
-                        prediction_level
-                    );
-                }
-                let summary = summarize_aggregated_oof_blocks(
-                    &edge.source.node_id,
-                    prediction_level,
-                    &edge_blocks,
-                )?;
-                requirements.push(BundlePredictionRequirement {
-                    producer_node: edge.source.node_id.clone(),
-                    source_port: edge.source.port_name.clone(),
-                    consumer_node: edge.target.node_id.clone(),
-                    target_port: edge.target.port_name.clone(),
-                    partition: PredictionPartition::Validation,
-                    prediction_level,
-                    fold_ids: summary
-                        .fold_ids
-                        .into_iter()
-                        .map(dag_ml_core::FoldId::new)
-                        .collect::<dag_ml_core::Result<Vec<_>>>()?,
-                    unit_ids: summary.unit_ids.into_iter().collect(),
-                    sample_ids: Vec::new(),
-                    prediction_width: summary.prediction_width.unwrap_or_default(),
-                    target_names: summary.target_names.unwrap_or_default(),
-                });
-            }
-            PredictionLevel::Observation => {
-                bail!(
-                    "OOF prediction requirement `{}` -> `{}` cannot be captured at observation level; aggregate before refit",
-                    edge.source.node_id,
-                    edge.target.node_id
-                );
-            }
-        }
-    }
-    requirements.sort_by_key(BundlePredictionRequirement::key);
-    for requirement in &requirements {
-        requirement.validate()?;
-    }
-    Ok(requirements)
-}
-
-fn oof_prediction_level_for_edge(
-    plan: &dag_ml_core::ExecutionPlan,
-    source_node: &NodeId,
-) -> Result<PredictionLevel> {
-    let source_plan = plan
-        .node_plans
-        .get(source_node)
-        .with_context(|| format!("OOF edge source `{source_node}` has no node plan"))?;
-    Ok(source_plan
-        .shape_plan
-        .as_ref()
-        .map(|shape_plan| shape_plan.aggregation_policy.aggregation_level)
-        .unwrap_or(PredictionLevel::Sample))
+    Ok(dag_ml_core::build_oof_prediction_requirements(
+        plan,
+        blocks,
+        aggregated_blocks,
+    )?)
 }
 
 fn oof_prediction_caches(
@@ -3251,19 +3203,7 @@ fn oof_prediction_caches(
     blocks: &[PredictionBlock],
     aggregated_blocks: &[AggregatedPredictionBlock],
 ) -> dag_ml_core::Result<Vec<BundlePredictionCacheRecord>> {
-    requirements
-        .iter()
-        .map(|requirement| match requirement.prediction_level {
-            PredictionLevel::Sample => build_prediction_cache_record(requirement, blocks),
-            PredictionLevel::Target | PredictionLevel::Group => {
-                build_aggregated_prediction_cache_record(requirement, aggregated_blocks)
-            }
-            PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(format!(
-                "prediction cache requirement `{}` cannot use observation-level predictions",
-                requirement.key()
-            ))),
-        })
-        .collect()
+    dag_ml_core::build_oof_prediction_cache_records(requirements, blocks, aggregated_blocks)
 }
 
 fn oof_prediction_cache_payloads(
@@ -3271,19 +3211,7 @@ fn oof_prediction_cache_payloads(
     blocks: &[PredictionBlock],
     aggregated_blocks: &[AggregatedPredictionBlock],
 ) -> dag_ml_core::Result<Vec<BundlePredictionCachePayload>> {
-    requirements
-        .iter()
-        .map(|requirement| match requirement.prediction_level {
-            PredictionLevel::Sample => build_prediction_cache_payload(requirement, blocks),
-            PredictionLevel::Target | PredictionLevel::Group => {
-                build_aggregated_prediction_cache_payload(requirement, aggregated_blocks)
-            }
-            PredictionLevel::Observation => Err(DagMlError::RuntimeValidation(format!(
-                "prediction cache requirement `{}` cannot use observation-level predictions",
-                requirement.key()
-            ))),
-        })
-        .collect()
+    dag_ml_core::build_oof_prediction_cache_payloads(requirements, blocks, aggregated_blocks)
 }
 
 #[derive(Default)]
@@ -3416,93 +3344,6 @@ fn oof_prediction_summary(
         },
     ));
     Ok(output)
-}
-
-fn summarize_oof_blocks(
-    producer_node: &NodeId,
-    blocks: &[&PredictionBlock],
-) -> Result<OofPredictionSummary> {
-    let mut summary = OofPredictionSummary::default();
-    for block in blocks {
-        let width = block.validate_shape()?;
-        summary.block_count += 1;
-        if let Some(fold_id) = &block.fold_id {
-            summary.fold_ids.insert(fold_id.to_string());
-        }
-        summary
-            .sample_ids
-            .extend(block.sample_ids.iter().map(ToString::to_string));
-        if summary
-            .prediction_width
-            .is_some_and(|expected| expected != width)
-        {
-            bail!("OOF prediction requirement for `{producer_node}` has inconsistent prediction width");
-        }
-        summary.prediction_width = Some(width);
-        let target_names = if block.target_names.is_empty() {
-            (0..width).map(|index| format!("p{index}")).collect()
-        } else {
-            block.target_names.clone()
-        };
-        if summary
-            .target_names
-            .as_ref()
-            .is_some_and(|expected| expected != &target_names)
-        {
-            bail!("OOF prediction requirement for `{producer_node}` has inconsistent target names");
-        }
-        summary.target_names = Some(target_names);
-    }
-    Ok(summary)
-}
-
-fn summarize_aggregated_oof_blocks(
-    producer_node: &NodeId,
-    prediction_level: PredictionLevel,
-    blocks: &[&AggregatedPredictionBlock],
-) -> Result<AggregatedOofPredictionSummary> {
-    let mut summary = AggregatedOofPredictionSummary::default();
-    for block in blocks {
-        let width = block.validate_shape()?;
-        if block.level != prediction_level {
-            bail!(
-                "OOF aggregated prediction requirement for `{producer_node}` selected {:?} block, expected {:?}",
-                block.level,
-                prediction_level
-            );
-        }
-        summary.block_count += 1;
-        summary.prediction_level = Some(block.level);
-        if let Some(fold_id) = &block.fold_id {
-            summary.fold_ids.insert(fold_id.to_string());
-        }
-        summary.unit_ids.extend(block.unit_ids.iter().cloned());
-        if summary
-            .prediction_width
-            .is_some_and(|expected| expected != width)
-        {
-            bail!(
-                "OOF aggregated prediction requirement for `{producer_node}` has inconsistent prediction width"
-            );
-        }
-        summary.prediction_width = Some(width);
-        let target_names = if block.target_names.is_empty() {
-            (0..width).map(|index| format!("p{index}")).collect()
-        } else {
-            block.target_names.clone()
-        };
-        if summary
-            .target_names
-            .as_ref()
-            .is_some_and(|expected| expected != &target_names)
-        {
-            bail!(
-                "OOF aggregated prediction requirement for `{producer_node}` has inconsistent target names"
-            );
-        }
-        summary.target_names = Some(target_names);
-    }
-    Ok(summary)
 }
 
 struct CliMockController {
@@ -4249,6 +4090,7 @@ impl RuntimeController for CliMockController {
             vec![PredictionBlock {
                 prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 partition: prediction_partition_for_phase(task.phase),
                 fold_id: if task.phase == Phase::FitCv {
                     task.fold_id.clone()
@@ -4304,6 +4146,7 @@ impl RuntimeController for CliMockController {
         {
             vec![ExplanationBlock {
                 producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
                 method: "mock_feature_importance".to_string(),
                 target_name: Some("y".to_string()),
                 payload: serde_json::json!({
@@ -4324,6 +4167,7 @@ impl RuntimeController for CliMockController {
             );
         }
         Ok(NodeResult {
+            schema_version: None,
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("out".to_string(), output)]),
             predictions,
@@ -4811,8 +4655,8 @@ fn build_plan_from_paths(
     controllers: &PathBuf,
     plan_id: String,
 ) -> Result<dag_ml_core::ExecutionPlan> {
-    let graph_spec: GraphSpec = read_json(graph, "graph")?;
-    let campaign_spec: CampaignSpec = read_json(campaign, "campaign")?;
+    let graph_spec = read_external_contract(graph, "graph", GraphSpec::from_json)?;
+    let campaign_spec = read_external_contract(campaign, "campaign", CampaignSpec::from_json)?;
     let registry = controller_registry_from_path(controllers)?;
     build_execution_plan(plan_id, graph_spec, campaign_spec, &registry)
         .with_context(|| "failed to build execution plan")
@@ -5139,11 +4983,24 @@ fn validate_file_artifact_payload_store(
     Ok(store)
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf, label: &str) -> Result<T> {
-    let data = std::fs::read(path)
+fn read_json<T>(path: &PathBuf, label: &str) -> Result<T>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let json = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {label} JSON at {}", path.display()))?;
-    serde_json::from_slice(&data)
+    dag_ml_core::deserialize_external_contract(&json, label, DagMlError::RuntimeValidation)
         .with_context(|| format!("failed to parse {label} JSON at {}", path.display()))
+}
+
+fn read_external_contract<T>(
+    path: &PathBuf,
+    label: &str,
+    parse: impl FnOnce(&str) -> dag_ml_core::Result<T>,
+) -> Result<T> {
+    let json = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {label} JSON at {}", path.display()))?;
+    parse(&json).with_context(|| format!("failed to parse {label} JSON at {}", path.display()))
 }
 
 fn read_pipeline_dsl_json(path: &PathBuf) -> Result<PipelineDslSpec> {
@@ -5503,6 +5360,7 @@ mod tests {
             AggregatedPredictionBlock {
                 prediction_id: Some("pred:group:fold0".to_string()),
                 producer_node: producer.clone(),
+                producer_port: Some("pred".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(dag_ml_core::FoldId::new("fold:0").unwrap()),
                 level: PredictionLevel::Group,
@@ -5513,6 +5371,7 @@ mod tests {
             AggregatedPredictionBlock {
                 prediction_id: Some("pred:group:fold1".to_string()),
                 producer_node: producer,
+                producer_port: Some("pred".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(dag_ml_core::FoldId::new("fold:1").unwrap()),
                 level: PredictionLevel::Group,
@@ -5691,6 +5550,7 @@ mod tests {
                         predictions.push(PredictionBlock {
                             prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                             producer_node: task.node_plan.node_id.clone(),
+                            producer_port: None,
                             partition: PredictionPartition::Validation,
                             fold_id: task.fold_id.clone(),
                             sample_ids: vec![sample_id.clone()],
@@ -5708,6 +5568,7 @@ mod tests {
                     predictions.push(PredictionBlock {
                         prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                         producer_node: task.node_plan.node_id.clone(),
+                        producer_port: None,
                         partition: prediction_partition_for_phase(task.phase),
                         fold_id: None,
                         sample_ids: vec![SampleId::new("s1").unwrap()],
@@ -5747,6 +5608,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>();
 
             Ok(NodeResult {
+                schema_version: None,
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([
                     ("x".to_string(), data_output.clone()),

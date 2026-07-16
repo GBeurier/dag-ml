@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "envelopes": {
+    "branch:b0.model:ridge.x": {
+      "schema_version": 1,
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "relation_fingerprint": "937c7086921a73803c0c924e9c6bafc34937b4ee49b4a15b5d699d358516a761",
+      "plan": {
+        "id": "nir-to-tabular",
+        "steps": [
+          {
+            "kind": "materialize",
+            "source_id": "nir",
+            "adapter_id": null,
+            "input_representation": null,
+            "output_representation": "signal_1d",
+            "fit_scope": "stateless",
+            "requires_user_choice": false,
+            "metadata": {
+              "output": "src:nir"
+            }
+          },
+          {
+            "kind": "adapt",
+            "source_id": "nir",
+            "adapter_id": "spectra.flatten",
+            "input_representation": "signal_1d",
+            "output_representation": "tabular_numeric",
+            "fit_scope": "stateless",
+            "requires_user_choice": false,
+            "metadata": {
+              "input": "src:nir",
+              "output": "step:adapt:0"
+            }
+          },
+          {
+            "kind": "join",
+            "source_id": null,
+            "adapter_id": null,
+            "input_representation": "tabular_numeric",
+            "output_representation": "tabular_numeric",
+            "fit_scope": "stateless",
+            "requires_user_choice": false,
+            "metadata": {
+              "inputs": [
+                "step:adapt:0"
+              ],
+              "output": "port:X"
+            }
+          }
+        ],
+        "output_representation": "tabular_numeric",
+        "issues": []
+      },
+      "coordinator_relations": {
+        "records": [
+          {
+            "observation_id": "obs:prod.1",
+            "sample_id": "sample:prod.1",
+            "target_id": "target:prod.1",
+            "group_id": "group:production",
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+          },
+          {
+            "observation_id": "obs:prod.2",
+            "sample_id": "sample:prod.2",
+            "target_id": "target:prod.2",
+            "group_id": "group:production",
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+          }
+        ]
+      },
+      "metadata": {
+        "contract_fixture": "replay_input_envelopes.v1",
+        "feature_set_id": "x",
+        "requirement_key": "branch:b0.model:ridge.x"
+      },
+      "data_content_fingerprint": "4b371f19bfdf6289d298330c0aceac21c250442ca26dece316e378ca6dc0e32d",
+      "target_content_fingerprint": "f35e0a07d7166b6eb7d08622c50257163aee1bf7883fae4648a750693dd94e1c"
+    },
+    "branch:b1.augment:noise.x": {
+      "schema_version": 1,
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "relation_fingerprint": "937c7086921a73803c0c924e9c6bafc34937b4ee49b4a15b5d699d358516a761",
+      "plan": {
+        "id": "nir-to-tabular",
+        "steps": [
+          {
+            "kind": "materialize",
+            "source_id": "nir",
+            "adapter_id": null,
+            "input_representation": null,
+            "output_representation": "signal_1d",
+            "fit_scope": "stateless",
+            "requires_user_choice": false,
+            "metadata": {
+              "output": "src:nir"
+            }
+          },
+          {
+            "kind": "adapt",
+            "source_id": "nir",
+            "adapter_id": "spectra.flatten",
+            "input_representation": "signal_1d",
+            "output_representation": "tabular_numeric",
+            "fit_scope": "stateless",
+            "requires_user_choice": false,
+            "metadata": {
+              "input": "src:nir",
+              "output": "step:adapt:0"
+            }
+          },
+          {
+            "kind": "join",
+            "source_id": null,
+            "adapter_id": null,
+            "input_representation": "tabular_numeric",
+            "output_representation": "tabular_numeric",
+            "fit_scope": "stateless",
+            "requires_user_choice": false,
+            "metadata": {
+              "inputs": [
+                "step:adapt:0"
+              ],
+              "output": "port:X"
+            }
+          }
+        ],
+        "output_representation": "tabular_numeric",
+        "issues": []
+      },
+      "coordinator_relations": {
+        "records": [
+          {
+            "observation_id": "obs:prod.1",
+            "sample_id": "sample:prod.1",
+            "target_id": "target:prod.1",
+            "group_id": "group:production",
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+          },
+          {
+            "observation_id": "obs:prod.2",
+            "sample_id": "sample:prod.2",
+            "target_id": "target:prod.2",
+            "group_id": "group:production",
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+          }
+        ]
+      },
+      "metadata": {
+        "contract_fixture": "replay_input_envelopes.v1",
+        "feature_set_id": "x",
+        "requirement_key": "branch:b1.augment:noise.x"
+      },
+      "data_content_fingerprint": "9e4c3cef5d48080a6df1778ad9075776f18ed6f968df1ee726269bd3ae0a3018",
+      "target_content_fingerprint": "aecb439c0a4aef6af6f9e1d152e13df3f9340f541eb7a2c3e40a4c7022906c08"
+    },
+    "merge:stack.pred_plus_original.meta:ridge.x_original": {
+      "schema_version": 1,
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "relation_fingerprint": "937c7086921a73803c0c924e9c6bafc34937b4ee49b4a15b5d699d358516a761",
+      "plan": {
+        "id": "nir-to-tabular",
+        "steps": [
+          {
+            "kind": "materialize",
+            "source_id": "nir",
+            "adapter_id": null,
+            "input_representation": null,
+            "output_representation": "signal_1d",
+            "fit_scope": "stateless",
+            "requires_user_choice": false,
+            "metadata": {
+              "output": "src:nir"
+            }
+          },
+          {
+            "kind": "adapt",
+            "source_id": "nir",
+            "adapter_id": "spectra.flatten",
+            "input_representation": "signal_1d",
+            "output_representation": "tabular_numeric",
+            "fit_scope": "stateless",
+            "requires_user_choice": false,
+            "metadata": {
+              "input": "src:nir",
+              "output": "step:adapt:0"
+            }
+          },
+          {
+            "kind": "join",
+            "source_id": null,
+            "adapter_id": null,
+            "input_representation": "tabular_numeric",
+            "output_representation": "tabular_numeric",
+            "fit_scope": "stateless",
+            "requires_user_choice": false,
+            "metadata": {
+              "inputs": [
+                "step:adapt:0"
+              ],
+              "output": "port:X"
+            }
+          }
+        ],
+        "output_representation": "tabular_numeric",
+        "issues": []
+      },
+      "coordinator_relations": {
+        "records": [
+          {
+            "observation_id": "obs:prod.1",
+            "sample_id": "sample:prod.1",
+            "target_id": "target:prod.1",
+            "group_id": "group:production",
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+          },
+          {
+            "observation_id": "obs:prod.2",
+            "sample_id": "sample:prod.2",
+            "target_id": "target:prod.2",
+            "group_id": "group:production",
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+          }
+        ]
+      },
+      "metadata": {
+        "contract_fixture": "replay_input_envelopes.v1",
+        "feature_set_id": "x",
+        "requirement_key": "merge:stack.pred_plus_original.meta:ridge.x_original"
+      },
+      "data_content_fingerprint": "3d9f9a91845c63fbc7b17b2fc7ca028579bf99640e555fb81123e8fcff144e1c",
+      "target_content_fingerprint": "00759321617244b45c8d7afcfcff5b979618155f8ab960a8e8eff0f24a3046f1"
+    }
+  }
+}

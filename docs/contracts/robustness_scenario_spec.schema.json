@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/robustness_scenario_spec.v1.schema.json",
+  "title": "DAG-ML RobustnessScenarioSpec v1",
+  "description": "Versioned robustness/generalization scenario with counter-derived RNG and explicit predictor/calibration reuse policy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "mode",
+    "cohort_role",
+    "source_ids",
+    "node_ids",
+    "perturbation",
+    "severities",
+    "zero_severity_semantics",
+    "rng",
+    "split_id",
+    "environment_id",
+    "slice_by",
+    "metrics",
+    "requires_refit",
+    "requires_recalibration",
+    "scenario_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "scenario_id": { "$ref": "#/$defs/identifier" },
+    "mode": { "enum": ["clean_frozen", "matched_recalibration", "structural_refit"] },
+    "cohort_role": { "enum": ["external_test", "production"] },
+    "source_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "node_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "perturbation": { "$ref": "#/$defs/perturbation" },
+    "severities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "number",
+        "minimum": 0,
+        "x-dagml-json-token-type": "binary64-float"
+      },
+      "description": "Strictly increasing and begins at zero so the baseline is identity-checkable."
+    },
+    "zero_severity_semantics": {
+      "const": "identity",
+      "description": "Severity 0 must leave inputs, predictor and calibration artifact unchanged."
+    },
+    "rng": { "$ref": "#/$defs/rng_derivation" },
+    "split_id": { "$ref": "#/$defs/identifier" },
+    "environment_id": { "$ref": "#/$defs/identifier" },
+    "slice_by": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["group", "source", "environment", "target"] }
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/non_empty_string" }
+    },
+    "requires_refit": { "type": "boolean" },
+    "requires_recalibration": { "type": "boolean" },
+    "scenario_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML TCV1 SHA-256 with scenario_fingerprint omitted."
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json#/$defs/identifier"
+    },
+    "non_empty_string": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json#/$defs/non_empty_string"
+    },
+    "sha256": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/conformal_calibration.v1.schema.json#/$defs/sha256"
+    },
+    "perturbation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "parameters"],
+      "properties": {
+        "kind": {
+          "enum": ["identity", "gaussian_noise", "ordered_axis_shift", "source_dropout", "node_replacement", "custom_host"]
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Strict JSON parameters interpreted by the owning host perturbation operator. Runtime or fitted-object handles are forbidden semantically."
+        }
+      }
+    },
+    "rng_derivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "algorithm_version",
+        "counter_profile",
+        "counter_derivation",
+        "counter_fields",
+        "key_derivation",
+        "target_kind",
+        "seed"
+      ],
+      "properties": {
+        "algorithm": { "const": "philox4x32-10" },
+        "algorithm_version": { "type": "integer", "const": 1 },
+        "counter_profile": { "const": "dagml-robustness-counter.v1" },
+        "counter_derivation": { "const": "sha256-tcv1-first128" },
+        "counter_fields": {
+          "const": [
+            "scenario_fingerprint",
+            "severity_binary64",
+            "unit_id",
+            "target_kind",
+            "target_id",
+            "draw_index"
+          ]
+        },
+        "key_derivation": { "const": "uint64-seed-as-two-little-endian-u32" },
+        "target_kind": { "enum": ["source", "node", "global"] },
+        "seed": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      }
+    }
+  }
+}

@@ -28,10 +28,13 @@ const DEFAULT_ROBUST_TRIM_FRACTION: f64 = 0.1;
 const DEFAULT_HOTELLING_T2_THRESHOLD: f64 = 5.023_886;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservationPredictionBlock {
     #[serde(default)]
     pub prediction_id: Option<String>,
     pub producer_node: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_port: Option<String>,
     pub partition: PredictionPartition,
     pub fold_id: Option<FoldId>,
     pub observation_ids: Vec<ObservationId>,
@@ -43,7 +46,12 @@ pub struct ObservationPredictionBlock {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "level", content = "id")]
+#[serde(
+    rename_all = "snake_case",
+    tag = "level",
+    content = "id",
+    deny_unknown_fields
+)]
 pub enum PredictionUnitId {
     Sample(SampleId),
     Target(TargetId),
@@ -71,10 +79,13 @@ impl fmt::Display for PredictionUnitId {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AggregatedPredictionBlock {
     #[serde(default)]
     pub prediction_id: Option<String>,
     pub producer_node: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_port: Option<String>,
     pub partition: PredictionPartition,
     pub fold_id: Option<FoldId>,
     pub level: PredictionLevel,
@@ -238,6 +249,7 @@ pub enum AggregationControllerInput {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AggregationControllerResult {
     #[serde(default = "default_aggregation_controller_result_schema_version")]
     pub schema_version: u32,
@@ -248,7 +260,7 @@ pub struct AggregationControllerResult {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "output_kind", rename_all = "snake_case")]
+#[serde(tag = "output_kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AggregationControllerOutput {
     Sample { block: PredictionBlock },
     Unit { block: AggregatedPredictionBlock },
@@ -807,6 +819,7 @@ pub fn aggregate_observation_predictions(
             .as_ref()
             .map(|prediction_id| format!("{prediction_id}:sample_agg")),
         producer_node: block.producer_node.clone(),
+        producer_port: block.producer_port.clone(),
         partition: block.partition.clone(),
         fold_id: block.fold_id.clone(),
         sample_ids: requested_sample_order.to_vec(),
@@ -881,6 +894,7 @@ pub fn aggregate_sample_predictions_by_unit(
         let aggregated = AggregatedPredictionBlock {
             prediction_id: block.prediction_id.clone(),
             producer_node: block.producer_node.clone(),
+            producer_port: None,
             partition: block.partition.clone(),
             fold_id: block.fold_id.clone(),
             level: PredictionLevel::Sample,
@@ -986,6 +1000,7 @@ pub fn aggregate_sample_predictions_by_unit(
             .as_ref()
             .map(|prediction_id| format!("{prediction_id}:{suffix}")),
         producer_node: block.producer_node.clone(),
+        producer_port: None,
         partition: block.partition.clone(),
         fold_id: block.fold_id.clone(),
         level: requested_level,
@@ -1378,6 +1393,7 @@ pub fn reduce_predictions_across_folds(
     Ok(PredictionBlock {
         prediction_id: None,
         producer_node: first.producer_node.clone(),
+        producer_port: first.producer_port.clone(),
         partition: first.partition.clone(),
         fold_id: Some(FoldId::new(fold_label)?),
         sample_ids: order,
@@ -1475,6 +1491,7 @@ pub fn reduce_predictions_across_branches(
     Ok(PredictionBlock {
         prediction_id: None,
         producer_node: merge_node.clone(),
+        producer_port: None,
         partition: first.partition.clone(),
         fold_id: first.fold_id.clone(),
         sample_ids: order,
@@ -1601,6 +1618,60 @@ mod tests {
     }
 
     #[test]
+    fn aggregation_controller_result_and_output_are_closed_in_serde_and_schema() {
+        let document = serde_json::json!({
+            "schema_version": AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+            "task_id": "aggregation:strict",
+            "output": {
+                "output_kind": "sample",
+                "block": {
+                    "prediction_id": null,
+                    "producer_node": "model:strict",
+                    "partition": "validation",
+                    "fold_id": "fold:0",
+                    "sample_ids": ["sample:1"],
+                    "values": [[1.0]],
+                    "target_names": ["y"]
+                }
+            }
+        });
+        serde_json::from_value::<AggregationControllerResult>(document.clone())
+            .expect("valid aggregation controller result decodes");
+
+        for (label, pointer) in [("result", ""), ("output", "/output")] {
+            let mut tampered = document.clone();
+            tampered
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(
+                    "unexpected_contract_field".to_string(),
+                    serde_json::json!(true),
+                );
+            let error = serde_json::from_value::<AggregationControllerResult>(tampered)
+                .expect_err("unknown aggregation contract field must be rejected");
+            assert!(
+                error.to_string().contains("unexpected_contract_field"),
+                "{label} returned an unexpected error: {error}"
+            );
+        }
+
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/aggregation_controller_result.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(schema["additionalProperties"].as_bool(), Some(false));
+        for definition in ["sample_output", "unit_output"] {
+            assert_eq!(
+                schema["$defs"][definition]["additionalProperties"].as_bool(),
+                Some(false),
+                "aggregation schema definition `{definition}` must be closed"
+            );
+        }
+    }
+
+    #[test]
     fn validates_custom_observation_aggregation_controller_result() {
         let reduction_plan = ReductionPlan {
             role: crate::policy::ReductionRole::FinalOutput,
@@ -1624,6 +1695,7 @@ mod tests {
                 block: ObservationPredictionBlock {
                     prediction_id: Some("prediction:model.fold0".to_string()),
                     producer_node: NodeId::new("model:pls").unwrap(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: Some(FoldId::new("fold:0").unwrap()),
                     observation_ids: vec![oid("obs:1"), oid("obs:2"), oid("obs:3")],
@@ -1651,6 +1723,7 @@ mod tests {
                 block: PredictionBlock {
                     prediction_id: Some("prediction:model.fold0:custom_sample_agg".to_string()),
                     producer_node: NodeId::new("model:pls").unwrap(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: Some(FoldId::new("fold:0").unwrap()),
                     sample_ids: vec![sid("sample:1"), sid("sample:2")],
@@ -1683,6 +1756,7 @@ mod tests {
                 block: ObservationPredictionBlock {
                     prediction_id: None,
                     producer_node: NodeId::new("model:pls").unwrap(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: None,
                     observation_ids: vec![oid("obs:1")],
@@ -1704,6 +1778,7 @@ mod tests {
                 block: PredictionBlock {
                     prediction_id: None,
                     producer_node: NodeId::new("model:pls").unwrap(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: None,
                     sample_ids: vec![sid("sample:1")],
@@ -1730,6 +1805,7 @@ mod tests {
                 block: ObservationPredictionBlock {
                     prediction_id: None,
                     producer_node: NodeId::new("model:pls").unwrap(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: None,
                     observation_ids: vec![oid("obs:1"), oid("obs:2")],
@@ -1751,6 +1827,7 @@ mod tests {
                 block: PredictionBlock {
                     prediction_id: None,
                     producer_node: NodeId::new("model:pls").unwrap(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: None,
                     sample_ids: vec![sid("sample:2"), sid("sample:1")],
@@ -1776,6 +1853,7 @@ mod tests {
                 block: PredictionBlock {
                     prediction_id: Some("prediction:model.fold0".to_string()),
                     producer_node: NodeId::new("model:pls").unwrap(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: Some(FoldId::new("fold:0").unwrap()),
                     sample_ids: vec![sid("sample:1"), sid("sample:2"), sid("sample:3")],
@@ -1805,6 +1883,7 @@ mod tests {
                 block: AggregatedPredictionBlock {
                     prediction_id: Some("prediction:model.fold0:custom_group_agg".to_string()),
                     producer_node: NodeId::new("model:pls").unwrap(),
+                    producer_port: None,
                     partition: PredictionPartition::Validation,
                     fold_id: Some(FoldId::new("fold:0").unwrap()),
                     level: PredictionLevel::Group,
@@ -1826,6 +1905,7 @@ mod tests {
         let block = ObservationPredictionBlock {
             prediction_id: Some("pred:oof".to_string()),
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             observation_ids: vec![oid("obs:1a"), oid("obs:1b"), oid("obs:2a")],
@@ -1871,6 +1951,7 @@ mod tests {
         let block = ObservationPredictionBlock {
             prediction_id: Some("pred:combo".to_string()),
             producer_node: NodeId::new("model:combo").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             observation_ids: vec![oid("obs:s1.combo"), oid("obs:s2.combo")],
@@ -1904,6 +1985,7 @@ mod tests {
         let block = ObservationPredictionBlock {
             prediction_id: Some("pred:robust".to_string()),
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             observation_ids: observations
@@ -1949,6 +2031,7 @@ mod tests {
         let block = ObservationPredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             observation_ids: vec![oid("obs:1")],
@@ -1985,6 +2068,7 @@ mod tests {
         let base_block = ObservationPredictionBlock {
             prediction_id: Some("pred:oof".to_string()),
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             observation_ids: vec![
@@ -2056,6 +2140,7 @@ mod tests {
         let block = ObservationPredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             observation_ids: vec![oid("obs:1a"), oid("obs:1b")],
@@ -2110,6 +2195,7 @@ mod tests {
         let block = PredictionBlock {
             prediction_id: Some("pred:sample".to_string()),
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: vec![sid("sample:1"), sid("sample:2"), sid("sample:3")],
@@ -2163,6 +2249,7 @@ mod tests {
         let block = PredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             sample_ids: vec![sid("sample:1")],
@@ -2195,6 +2282,7 @@ mod tests {
         let block = ObservationPredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             observation_ids: vec![oid("obs:missing")],
@@ -2218,6 +2306,7 @@ mod tests {
         let block = |fold: &str, rows: &[(&str, f64)]| PredictionBlock {
             prediction_id: None,
             producer_node: node.clone(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new(fold).unwrap()),
             sample_ids: rows.iter().map(|(s, _)| sid(s)).collect(),
@@ -2277,6 +2366,7 @@ mod tests {
         let block = ObservationPredictionBlock {
             prediction_id: Some("pred:t2".to_string()),
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             observation_ids: observations
@@ -2321,6 +2411,7 @@ mod tests {
         let small_block = ObservationPredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             observation_ids: vec![oid("obs:1a"), oid("obs:1b")],
@@ -2351,6 +2442,7 @@ mod tests {
         let constant_block = ObservationPredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             observation_ids: observations
@@ -2389,6 +2481,7 @@ mod tests {
         let block = PredictionBlock {
             prediction_id: Some("pred:sample".to_string()),
             producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: vec![
@@ -2426,6 +2519,7 @@ mod tests {
         let branch = |producer: &str, rows: &[(&str, f64)]| PredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new(producer).unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: rows.iter().map(|(s, _)| sid(s)).collect(),
@@ -2489,6 +2583,7 @@ mod tests {
         let branch = |producer: &str, rows: &[(&str, [f64; 2])]| PredictionBlock {
             prediction_id: None,
             producer_node: NodeId::new(producer).unwrap(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: None,
             sample_ids: rows.iter().map(|(s, _)| sid(s)).collect(),
@@ -2563,6 +2658,7 @@ mod tests {
         let block = |fold: &str, rows: &[(&str, f64)]| PredictionBlock {
             prediction_id: None,
             producer_node: node.clone(),
+            producer_port: None,
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new(fold).unwrap()),
             sample_ids: rows.iter().map(|(s, _)| sid(s)).collect(),
