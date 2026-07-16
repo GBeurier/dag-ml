@@ -2354,6 +2354,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
                 ControllerCapability::Deterministic,
                 ControllerCapability::ThreadSafe,
             ]),
+            training_losses: Vec::new(),
             fit_scope: ControllerFitScope::FoldTrain,
             rng_policy: RngPolicy::UsesCoreSeed,
             artifact_policy: ArtifactPolicy::Serializable,
