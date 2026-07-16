@@ -153,7 +153,12 @@ fn sample_relation_set_fingerprint_json(json: &str) -> PyResult<String> {
 
 #[pyfunction]
 fn sign_training_request_json(json: &str) -> PyResult<String> {
-    let mut request = TrainingRequest::from_json(json).map_err(py_core_error)?;
+    let mut request: TrainingRequest = dag_ml_core::deserialize_external_contract(
+        json,
+        "training request",
+        dag_ml_core::DagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
     request.request_fingerprint = request.compute_fingerprint().map_err(py_core_error)?;
     request.validate().map_err(py_core_error)?;
     serde_json::to_string(&request).map_err(py_serde_error)
