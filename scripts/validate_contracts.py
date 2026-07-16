@@ -570,6 +570,10 @@ NODE_TASK_SCHEMA_ID = (
 NODE_RESULT_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json"
 )
+LOSS_EXECUTION_ATTESTATION_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "loss_execution_attestation.v1.schema.json"
+)
 PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "process_adapter_description.v1.schema.json"
@@ -10398,6 +10402,14 @@ def validate_node_task_schema(schema: Any, label: str) -> None:
     require(
         "fit_influence" in properties, f"{label} NodeTask schema misses fit_influence"
     )
+    loss_requirements = properties.get("required_loss_attestations")
+    require(
+        isinstance(loss_requirements, dict)
+        and loss_requirements.get("type") == "array"
+        and loss_requirements.get("items", {}).get("$ref")
+        == LOSS_EXECUTION_ATTESTATION_SCHEMA_ID,
+        f"{label} NodeTask loss execution requirement schema mismatch",
+    )
     require(
         defs.get("handle_kind", {}).get("enum")
         == ["data", "data_view", "model", "artifact", "prediction", "relation"],
@@ -13072,6 +13084,84 @@ def validate_node_task(value: Any, label: str) -> None:
     fit_influence = value.get("fit_influence")
     if fit_influence is not None:
         validate_fit_influence_task(fit_influence, f"{label}.fit_influence")
+    requirements = value.get("required_loss_attestations", [])
+    require(
+        isinstance(requirements, list),
+        f"{label}.required_loss_attestations must be an array",
+    )
+    roles = node_plan.get("training_losses", [])
+    require(
+        isinstance(roles, list),
+        f"{label}.node_plan.training_losses must be an array",
+    )
+    active_roles = [
+        role
+        for role in roles
+        if isinstance(role, dict) and value.get("phase") in role.get("phases", [])
+    ]
+    require(
+        len(requirements) == len(active_roles),
+        f"{label}.required_loss_attestations count mismatch",
+    )
+    for index, (attestation, role) in enumerate(zip(requirements, active_roles)):
+        requirement_label = f"{label}.required_loss_attestations[{index}]"
+        require(
+            isinstance(attestation, dict),
+            f"{requirement_label} must be an object",
+        )
+        require(
+            attestation.get("node_id") == node_plan.get("node_id"),
+            f"{requirement_label}.node_id mismatch",
+        )
+        require(
+            attestation.get("output_id") == role.get("output_id"),
+            f"{requirement_label}.output_id mismatch",
+        )
+        require(
+            attestation.get("phase") == value.get("phase"),
+            f"{requirement_label}.phase mismatch",
+        )
+        loss = role.get("loss", {})
+        implementation = loss.get("implementation", {}) if isinstance(loss, dict) else {}
+        spec = loss.get("spec", {}) if isinstance(loss, dict) else {}
+        require(
+            attestation.get("loss_id") == spec.get("loss_id"),
+            f"{requirement_label}.loss_id mismatch",
+        )
+        require(
+            attestation.get("descriptor_fingerprint")
+            == implementation.get("descriptor_fingerprint"),
+            f"{requirement_label}.descriptor_fingerprint mismatch",
+        )
+        require(
+            attestation.get("semantic_fingerprint")
+            == spec.get("spec_fingerprint"),
+            f"{requirement_label}.semantic_fingerprint mismatch",
+        )
+        require(
+            attestation.get("implementation_fingerprint")
+            == implementation.get("implementation_fingerprint"),
+            f"{requirement_label}.implementation_fingerprint mismatch",
+        )
+        require(
+            attestation.get("effective_parameters") == spec.get("parameters"),
+            f"{requirement_label}.effective_parameters mismatch",
+        )
+        require(
+            attestation.get("reduction") == spec.get("reduction"),
+            f"{requirement_label}.reduction mismatch",
+        )
+        require(
+            attestation.get("attestation_fingerprint")
+            == dagml_tcv1_sha256(
+                {
+                    key: field_value
+                    for key, field_value in attestation.items()
+                    if key != "attestation_fingerprint"
+                }
+            ),
+            f"{requirement_label}.attestation_fingerprint mismatch",
+        )
 
 
 def validate_node_result(value: Any, label: str) -> None:
@@ -13528,6 +13618,34 @@ def validate_dag_ml_training_header(header: str, label: str) -> None:
         require(
             field in header,
             f"{label} DagMlTrainingExecuteRequest must expose `{field}`",
+        )
+
+
+def validate_dag_ml_local_implementation_header(header: str, label: str) -> None:
+    require(
+        "#define DAG_ML_LOCAL_IMPLEMENTATION_VTABLE_ABI_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_LOCAL_IMPLEMENTATION_VTABLE_ABI_VERSION=1",
+    )
+    for symbol in (
+        "typedef struct DagMlLocalImplementationRegistry",
+        "typedef struct DagMlLocalImplementationVTable",
+        "dagml_local_implementation_registry_create",
+        "dagml_local_implementation_registry_register_loss",
+        "dagml_local_implementation_registry_register_metric",
+        "dagml_local_implementation_registry_invoke_loss",
+        "dagml_local_implementation_registry_invoke_training_loss",
+        "dagml_local_implementation_registry_invoke_metric",
+        "dagml_local_implementation_registry_unregister_loss",
+        "dagml_local_implementation_registry_unregister_metric",
+        "dagml_local_implementation_registry_descriptors_json",
+        "dagml_local_implementation_registry_clear",
+        "dagml_local_implementation_registry_free",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
+    for callback in ("invoke", "release_bytes", "retain", "release"):
+        require(
+            callback in header,
+            f"{label} local implementation vtable must expose `{callback}`",
         )
 
 
@@ -19148,6 +19266,7 @@ def main(argv: list[str] | None = None) -> int:
         validate_dag_ml_campaign_header(local_header, "dag-ml")
         validate_dag_ml_execution_plan_header(local_header, "dag-ml")
         validate_dag_ml_training_header(local_header, "dag-ml")
+        validate_dag_ml_local_implementation_header(local_header, "dag-ml")
         validate_dag_ml_data_shape_header(local_header, "dag-ml")
         validate_dag_ml_data_output_provenance_header(local_header, "dag-ml")
         validate_dag_ml_selection_header(local_header, "dag-ml")

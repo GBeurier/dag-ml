@@ -11,6 +11,7 @@ use pyo3::types::{PyAny, PyType};
 use serde::de::DeserializeOwned;
 
 mod in_process;
+mod local_implementation;
 mod training;
 
 use dag_ml_core::{
@@ -20,9 +21,8 @@ use dag_ml_core::{
     parse_pipeline_dsl_json, CacheNamespace, CampaignSpec, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
     FoldSet, GraphSpec, HostControllerSpec, ParameterProjection, PortablePredictorPackage,
-    SampleRelationSet,
-    TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
-    TrainingRequest,
+    SampleRelationSet, TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome,
+    TrainingReplayRequest, TrainingRequest,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -400,6 +400,11 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         in_process::run_cv_refit_in_process,
         module
     )?)?;
+    module.add_class::<local_implementation::PyLocalImplementationRegistry>()?;
+    module.add_function(wrap_pyfunction!(
+        local_implementation::loss_execution_attestation_json,
+        module
+    )?)?;
     module.add_class::<training::TrainingResult>()?;
     module.add_function(wrap_pyfunction!(training::execute_training_json, module)?)?;
     module.add_function(wrap_pyfunction!(
@@ -448,6 +453,8 @@ fn contract_manifest() -> serde_json::Value {
             "execute_training_replay",
             "execute_loaded_predictor_replay",
             "owning_training_result",
+            "process_local_implementation_registry",
+            "loss_execution_attestation",
             "structured_error_descriptors"
         ],
         "shared": {
@@ -485,6 +492,8 @@ fn contract_manifest() -> serde_json::Value {
             "canonical_operator_variant_label",
             "canonical_operator_variant_value_json",
             "run_cv_refit_in_process",
+            "LocalImplementationRegistry",
+            "loss_execution_attestation_json",
             "TrainingResult",
             "execute_training_json",
             "execute_loaded_predictor_replay_json"
@@ -596,18 +605,15 @@ mod tests {
     #[test]
     fn fingerprint_and_signing_helpers_reject_duplicate_json_keys() {
         Python::initialize();
-        let relation_error = sample_relation_set_fingerprint_json(
-            r#"{"records":[],"records":[]}"#,
-        )
-        .expect_err("duplicate relation-set keys must be rejected");
+        let relation_error = sample_relation_set_fingerprint_json(r#"{"records":[],"records":[]}"#)
+            .expect_err("duplicate relation-set keys must be rejected");
         assert!(relation_error
             .to_string()
             .contains("duplicate JSON object key"));
 
-        let request_error = sign_training_request_json(
-            r#"{"schema_version":1,"schema_version":1}"#,
-        )
-        .expect_err("duplicate training-request keys must be rejected");
+        let request_error =
+            sign_training_request_json(r#"{"schema_version":1,"schema_version":1}"#)
+                .expect_err("duplicate training-request keys must be rejected");
         assert!(request_error
             .to_string()
             .contains("duplicate JSON object key"));
@@ -620,32 +626,32 @@ mod tests {
         let validation_err =
             validate_graph_json(r#"{"id":"","interface":{},"nodes":[],"edges":[]}"#)
                 .expect_err("invalid graph should fail");
-        // Malformed JSON -> "compatibility" -> DagMlCompatibilityError.
-        let compat_err = validate_graph_json("{").expect_err("malformed JSON should fail");
+        // Graph parsing errors retain the graph-validation category supplied by GraphSpec.
+        let malformed_graph_err = validate_graph_json("{").expect_err("malformed JSON should fail");
         Python::attach(|py| {
             let validation_value = validation_err.value(py);
             assert!(validation_value.is_instance_of::<DagMlValidationError>());
             assert!(validation_value.is_instance_of::<DagMlError>());
             assert!(!validation_value.is_instance_of::<DagMlCompatibilityError>());
 
-            let compat_value = compat_err.value(py);
-            assert!(compat_value.is_instance_of::<DagMlCompatibilityError>());
-            assert!(compat_value.is_instance_of::<DagMlError>());
+            let malformed_graph_value = malformed_graph_err.value(py);
+            assert!(malformed_graph_value.is_instance_of::<DagMlValidationError>());
+            assert!(malformed_graph_value.is_instance_of::<DagMlError>());
             assert_eq!(
-                compat_value
+                malformed_graph_value
                     .getattr("category")
                     .unwrap()
                     .extract::<String>()
                     .unwrap(),
-                "compatibility"
+                "validation"
             );
             assert_eq!(
-                compat_value
+                malformed_graph_value
                     .getattr("code")
                     .unwrap()
                     .extract::<String>()
                     .unwrap(),
-                "serialization_error"
+                "graph_validation"
             );
         });
     }

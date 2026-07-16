@@ -18,6 +18,7 @@ const REQUIRED_DTS_EXPORTS = [
   "derive_controller_manifest_json",
   "derive_controller_manifest_list_json",
   "fold_set_fingerprint_json",
+  "loss_execution_attestation_json",
   "validate_fold_set_json",
 ];
 
@@ -46,6 +47,9 @@ function assertPackageMetadata(expectedVersion) {
       throw new Error(`WASM TypeScript declarations are missing ${exportName}()`);
     }
   }
+  if (!dts.includes("export class LocalImplementationRegistry")) {
+    throw new Error("WASM TypeScript declarations are missing LocalImplementationRegistry");
+  }
 }
 
 function parseErrorDescriptor(error) {
@@ -65,7 +69,18 @@ const sharedFoldSetJson = fs.readFileSync(
   path.join(repo, "examples", "fixtures", "shared", "fold_set_cv_partition.json"),
   "utf8",
 );
-
+const localImplementations = JSON.parse(
+  fs.readFileSync(
+    path.join(
+      repo,
+      "examples",
+      "fixtures",
+      "criteria",
+      "javascript_local_implementations.v1.json",
+    ),
+    "utf8",
+  ),
+);
 dagMl.validate_pipeline_dsl_json(dslJson);
 const manifest = JSON.parse(dagMl.contract_manifest_json());
 if (manifest.crate !== "dag-ml") {
@@ -84,9 +99,84 @@ if (!manifest.wasm_exports.includes("derive_controller_manifest_json")) {
 if (!manifest.capabilities.includes("structured_error_descriptors")) {
   throw new Error("contract manifest is missing structured error capability");
 }
+if (!manifest.capabilities.includes("process_local_implementation_registry")) {
+  throw new Error("contract manifest is missing local implementation capability");
+}
 if (manifest.shared.fold_set_fixture_fingerprint !== SHARED_FOLD_SET_FINGERPRINT) {
   throw new Error("contract manifest shared fold fingerprint drifted");
 }
+
+const implementations = new dagMl.LocalImplementationRegistry();
+const lossReferenceJson = JSON.stringify(localImplementations.loss_reference);
+const trainingLossRoleJson = JSON.stringify(localImplementations.training_loss_role);
+const metricReferenceJson = JSON.stringify(localImplementations.metric_reference);
+const lossCalls = [];
+const asymmetricLoss = (target, prediction) => {
+  lossCalls.push([target, prediction]);
+  return prediction >= target ? prediction - target : 2 * (target - prediction);
+};
+implementations.register_loss(lossReferenceJson, asymmetricLoss);
+try {
+  implementations.register_loss(
+    JSON.stringify(localImplementations.foreign_loss_reference),
+    asymmetricLoss,
+  );
+  throw new Error("JavaScript registry accepted a Python binding descriptor");
+} catch (error) {
+  if (!String(error).includes("binding:javascript")) {
+    throw error;
+  }
+}
+for (const phase of ["FIT_CV", "REFIT"]) {
+  const resolved = implementations.resolve_training_loss(trainingLossRoleJson, phase);
+  if (resolved(4, 1.5) !== 5) {
+    throw new Error(`JavaScript custom loss returned the wrong value during ${phase}`);
+  }
+  const attestation = JSON.parse(
+    dagMl.loss_execution_attestation_json(trainingLossRoleJson, phase),
+  );
+  if (attestation.phase !== phase) {
+    throw new Error(`JavaScript custom loss attestation drifted during ${phase}`);
+  }
+}
+if (lossCalls.length !== 2) {
+  throw new Error("JavaScript custom loss was not invoked for FIT_CV and REFIT");
+}
+try {
+  implementations.resolve_training_loss(trainingLossRoleJson, "PREDICT");
+  throw new Error("JavaScript custom loss resolved during PREDICT");
+} catch (error) {
+  if (!String(error).includes("does not apply to phase Predict")) {
+    throw error;
+  }
+}
+
+const biasMetric = (targets, predictions) =>
+  predictions.reduce((sum, prediction, index) => sum + prediction - targets[index], 0) /
+  predictions.length;
+implementations.register_metric(metricReferenceJson, biasMetric);
+const resolvedMetric = implementations.resolve_metric(metricReferenceJson);
+if (resolvedMetric([1, 3], [2, 5]) !== 1.5) {
+  throw new Error("JavaScript custom metric returned the wrong value");
+}
+if (implementations.size !== 2 || JSON.parse(implementations.descriptors_json()).length !== 2) {
+  throw new Error("JavaScript local implementation registry has wrong descriptor coverage");
+}
+try {
+  JSON.stringify(implementations);
+  throw new Error("JavaScript local implementation registry was serialized");
+} catch (error) {
+  if (!String(error).includes("cannot be serialized")) {
+    throw error;
+  }
+}
+implementations.unregister_metric(metricReferenceJson);
+implementations.unregister_loss(lossReferenceJson);
+if (implementations.size !== 0) {
+  throw new Error("JavaScript local implementation registry did not unregister callbacks");
+}
+implementations.free();
+
 const artifact = JSON.parse(dagMl.compile_pipeline_dsl_artifact_json(dslJson));
 if (!artifact.campaign_template) {
   throw new Error("compiled artifact is missing campaign_template");

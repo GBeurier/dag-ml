@@ -44,6 +44,10 @@ use dag_ml_core::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
+mod local_implementation;
+
+pub use local_implementation::*;
+
 pub type DagMlHandle = u64;
 pub const DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION: u32 = 2;
 pub const DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION: u32 = 3;
@@ -6150,6 +6154,7 @@ mod tests {
             data_views: BTreeMap::new(),
             prediction_inputs: BTreeMap::new(),
             artifact_inputs: BTreeMap::new(),
+            required_loss_attestations: Vec::new(),
             fit_influence: dag_ml_core::FitInfluenceTask::default(),
             seed: Some(42),
         };

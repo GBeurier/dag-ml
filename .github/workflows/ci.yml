@@ -336,6 +336,32 @@ jobs:
           python scripts/smoke_python_bindings.py
           python scripts/smoke_python_integration.py external/dag-ml-data
 
+  r-bindings:
+    name: R bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: r-lib/actions/setup-r@v2
+      - name: Install R dependencies
+        run: Rscript -e 'install.packages("jsonlite", repos = "https://cloud.r-project.org")'
+      - name: Build R source package
+        run: |
+          mkdir -p target/r
+          cd target/r
+          R CMD build ../../bindings/r
+      - name: Check R source package
+        run: R CMD check --no-manual target/r/dagml_*.tar.gz
+
+  matlab-octave-bindings:
+    name: MATLAB/Octave bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install GNU Octave
+        run: sudo apt-get update && sudo apt-get install --yes octave
+      - name: Test local implementation registry
+        run: octave --no-gui --quiet --eval "addpath('bindings/matlab/tests'); local_implementation_registry"
+
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}
     needs: contract-lockstep
