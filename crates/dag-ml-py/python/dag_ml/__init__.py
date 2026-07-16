@@ -261,6 +261,31 @@ class LocalImplementationRegistry:
     def resolve_metric(self, metric_reference: Any) -> Any:
         return self._native.resolve_metric(_coerce_json(metric_reference))
 
+    def bind_training_loss(
+        self,
+        node_task: Any,
+        *,
+        role_index: int = 0,
+    ) -> dict[str, Any]:
+        """Resolve one native-required local loss once for a training task."""
+
+        implementation, attestation_json = self._native.resolve_task_training_loss(
+            _coerce_json(node_task), role_index
+        )
+
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return implementation(*args, **kwargs)
+            except Exception as error:
+                raise DagMlRuntimeError(
+                    f"Python training loss callback raised an exception: {error}"
+                ) from error
+
+        return {
+            "invoke": invoke,
+            "required_attestation": json.loads(attestation_json),
+        }
+
     def invoke_training_loss(
         self,
         node_task: Any,
@@ -270,16 +295,9 @@ class LocalImplementationRegistry:
     ) -> dict[str, Any]:
         """Execute one native-required local loss and return its attestation."""
 
-        implementation, attestation_json = self._native.resolve_task_training_loss(
-            _coerce_json(node_task), role_index
-        )
-        try:
-            value = implementation(*args, **kwargs)
-        except Exception as error:
-            raise DagMlRuntimeError(
-                f"Python training loss callback raised an exception: {error}"
-            ) from error
-        return {"value": value, "attestation": json.loads(attestation_json)}
+        binding = self.bind_training_loss(node_task, role_index=role_index)
+        value = binding["invoke"](*args, **kwargs)
+        return {"value": value, "attestation": binding["required_attestation"]}
 
     def evaluate_metric(self, metric_task: Any) -> dict[str, Any]:
         """Execute a local metric for a native typed evaluation task."""
