@@ -16,6 +16,8 @@ jobs:
   contract-lockstep:
     name: Shared contract lockstep
     runs-on: ubuntu-latest
+    outputs:
+      peer-ref: ${{ steps.peer.outputs.ref }}
     env:
       DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
     steps:
@@ -94,15 +96,8 @@ jobs:
   msrv:
     name: MSRV Rust
     runs-on: ubuntu-latest
-    env:
-      DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
     steps:
       - uses: actions/checkout@v7
-      - name: Checkout dag-ml-data contract peer
-        uses: actions/checkout@v7
-        with:
-          repository: GBeurier/dag-ml-data
-          path: external/dag-ml-data
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_MSRV }}
@@ -114,6 +109,7 @@ jobs:
 
   rust:
     name: Rust
+    needs: contract-lockstep
     runs-on: ubuntu-latest
     env:
       DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
@@ -129,6 +125,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
+          ref: ${{ needs.contract-lockstep.outputs.peer-ref }}
           path: external/dag-ml-data
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -300,6 +297,7 @@ jobs:
 
   python-bindings:
     name: Python bindings ${{ matrix.python-version }}
+    needs: contract-lockstep
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -311,6 +309,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
+          ref: ${{ needs.contract-lockstep.outputs.peer-ref }}
           path: external/dag-ml-data
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v6
@@ -339,6 +338,7 @@ jobs:
 
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}
+    needs: contract-lockstep
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -350,6 +350,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
+          ref: ${{ needs.contract-lockstep.outputs.peer-ref }}
           path: external/dag-ml-data
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v6
