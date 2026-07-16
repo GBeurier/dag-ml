@@ -111,7 +111,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/plan.rs",
-      "sha256": "e544fb7aacbf46b743af1944e91c92901317465816cf1af0b26b201a134694d6",
+      "sha256": "f997979bc34d8b6334db2f573d70bbed463b09690b0af3136a39d2e759b8fc42",
       "kind": "native_plan_validator"
     },
     {
@@ -191,7 +191,7 @@
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "b1f03e721452937382b613b45b824cc2f08c395c45a5b5bc423f25feacb7664f",
+      "sha256": "8a35243ee4b5158cd8b22951f266177887abe1a98d42be0c84e814be0aab1c81",
       "kind": "wasm_binding"
     },
     {
@@ -529,5 +529,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "d6c300e68fa3d86284b80658e89e8d5e06bbfac8dd88659a3ed019aec7a5974e"
+  "pack_checksum": "4f1b437c980500b6cd287a539dd70fddf9137653325bee5b0809581a6f27b93c"
 }

@@ -76,6 +76,43 @@ requirements exactly match its active roles. A controller may copy the returned
 attestation into `NodeResult.lineage.loss_attestations` only after `loss(...)`
 returns successfully.
 
+For scheduler execution, lower the roles into the native plan and execute that
+plan rather than rebuilding a loss-free campaign plan:
+
+```js
+const planJson = build_execution_plan_with_training_losses_json(
+  planId,
+  JSON.stringify(graph),
+  JSON.stringify(campaign),
+  JSON.stringify(controllerManifests),
+  JSON.stringify(trainingLossRoles),
+);
+
+const resultsJson = execute_execution_plan_phase_json(
+  planJson,
+  JSON.stringify(controllerManifests),
+  runId,
+  rootSeed,
+  "FIT_CV",
+  (controllerId, taskJson, exactSeed) =>
+    controller.invoke(controllerId, taskJson, exactSeed),
+);
+```
+
+The native lowerer replaces all plan loss roles, groups them by node and sorts
+them canonically before validating controller capabilities. At execution, every
+manifest embedded in the plan must exactly match the independently supplied
+trusted controller registry before any callback runs. The scheduler then checks
+that each callback result contains exactly the task's required loss attestations
+in the same order.
+
+The callback's `exactSeed` argument is a decimal string (or `null`), avoiding
+precision loss for native `u64` seeds beyond JavaScript's safe-integer range.
+The callback may set `NodeResult.lineage.seed` to `null`; the WASM bridge then
+injects the authoritative native seed before scheduler validation. The returned
+`resultsJson` still contains native numeric `u64` values; use a lossless JSON
+integer parser, or preserve the raw JSON, when inspecting lineage seeds exactly.
+
 JavaScript-local descriptors use `binding:javascript` and a `host_local` or
 `portable_registered` lifecycle. A Web Worker must populate its own registry;
 functions are not cloned, posted, or embedded in replay artifacts. Resolution
