@@ -166,7 +166,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "ea4729d4f9f6144150ab1c104b8323851d123b702562de54771124240c1ecc86",
+      "sha256": "deaa7ea8cadad29c1e56bd73f882e9f51a7f77ce933559131406f34a5f23dc83",
       "kind": "python_binding"
     },
     {
@@ -484,5 +484,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "d8cbfda7e230c7ec8da8ea6c8ee7fbe6d713504c4ad80dc8e471a1044604ceab"
+  "pack_checksum": "fd1584c2cd60d566d743cf398e9859dbf3550e50a37e8e0f04013f1ae1f1c86f"
 }
