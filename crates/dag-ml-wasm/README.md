@@ -57,6 +57,25 @@ const attestation = JSON.parse(
 );
 ```
 
+Controllers should bind from the native `NodeTask` rather than resolving a
+role and constructing lineage independently:
+
+```js
+const binding = implementations.bind_training_loss(
+  JSON.stringify(nodeTask),
+  0,
+);
+const loss = binding.invoke;
+const value = loss(target, prediction);
+const requiredAttestation = JSON.parse(binding.required_attestation_json);
+binding.free();
+```
+
+The role index is zero-based. Binding validates that the task's ordered loss
+requirements exactly match its active roles. A controller may copy the returned
+attestation into `NodeResult.lineage.loss_attestations` only after `loss(...)`
+returns successfully.
+
 JavaScript-local descriptors use `binding:javascript` and a `host_local` or
 `portable_registered` lifecycle. A Web Worker must populate its own registry;
 functions are not cloned, posted, or embedded in replay artifacts. Resolution
