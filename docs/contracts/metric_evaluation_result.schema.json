@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_result.v1.schema.json",
+  "title": "DAG-ML MetricEvaluationResult v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "semantic_id",
+    "semantic_fingerprint",
+    "implementation_fingerprint",
+    "descriptor_fingerprint",
+    "scope",
+    "values",
+    "result_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "request_id": { "$ref": "#/$defs/token" },
+    "semantic_id": { "$ref": "#/$defs/versioned_id" },
+    "semantic_fingerprint": { "$ref": "#/$defs/sha256" },
+    "implementation_fingerprint": { "$ref": "#/$defs/sha256" },
+    "descriptor_fingerprint": { "$ref": "#/$defs/sha256" },
+    "scope": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_task.v1.schema.json#/$defs/scope"
+    },
+    "values": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/value" }
+    },
+    "result_fingerprint": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value"],
+      "properties": {
+        "unit_id": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/metric_evaluation_task.v1.schema.json#/$defs/unit_id"
+        },
+        "output_id": { "$ref": "#/$defs/token" },
+        "value": { "type": "number" }
+      }
+    },
+    "versioned_id": {
+      "type": "string",
+      "pattern": "^[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+@[1-9][0-9]*$"
+    },
+    "token": {
+      "type": "string",
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

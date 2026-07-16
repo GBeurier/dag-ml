@@ -22,6 +22,7 @@ wire nirs4all directly.
 | Map nirs4all parity capabilities | [Capability matrix](CAPABILITY_MATRIX.md) |
 | Inspect shared contracts | [Contract manifests](contracts/README.md) |
 | Use native training/fine-tuning contracts | [Training contracts](TRAINING_CONTRACTS.md) |
+| Define loss, metric and provider contracts | [Loss and metric contracts](CRITERIA_CONTRACTS.md) |
 | Review public training replay syntax and migration | [Training replay contracts](TRAINING_REPLAY_CONTRACTS.md) |
 | Review conformal/robustness W0 contracts | [Conformal contract foundation](contracts/README.md#conformal-prediction-and-robustness-foundation-v1) |
 | Review conformal ownership and lifecycle modes | [ADR-20](adr/ADR-20-conformal-calibration-ownership.md) |
@@ -92,6 +93,7 @@ CAPABILITY_MATRIX
 :hidden:
 
 contracts/README
+CRITERIA_CONTRACTS
 TRAINING_CONTRACTS
 TRAINING_REPLAY_CONTRACTS
 adr/README

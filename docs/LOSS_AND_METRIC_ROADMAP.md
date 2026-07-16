@@ -63,7 +63,7 @@ cross-repository criteria. The authoritative evidence is:
 | Criterion | Owning repository | Closing evidence |
 | --- | --- | --- |
 | semantic specs, planning, attestation, cache/replay and native metrics | `dag-ml` | full dag-ml gate listed after L2 |
-| custom metric provider contract and typed evaluation task | score-provider work in `dag-ml` | provider-targeted tests plus the full dag-ml gate; branch, commit and PR recorded in L0 |
+| custom metric provider contract and typed evaluation task | native contract work in `dag-ml` | provider-targeted tests plus the full dag-ml gate |
 | Python registry transport | `dag-ml` (`dag-ml-py`) | targeted binding tests plus full dag-ml gate |
 | Python TensorFlow/PyTorch controllers and legacy API migration | `nirs4all` | Ruff, mypy, unit/integration tests and examples gate listed after L4 |
 | Rust closure and C ABI callback | `dag-ml` | core/C ABI targeted tests plus full dag-ml gate |
@@ -74,47 +74,32 @@ The cross-language rows are tracked-but-external from dag-ml's perspective.
 Their owning repository must publish its own reviewed PR and green gate before
 the ecosystem criterion can be marked complete.
 
-## Ownership and concurrent dependencies
+## Ownership and integrated dependencies
 
-A concurrent agent is implementing a score provider. Until that work lands, the
-following ownership boundary prevents duplicate or conflicting abstractions.
+The announced score-provider agent completed without publishing a branch,
+commit, PR or implementation artifact. A repository, ref and worktree audit on
+2026-07-15 found no `MetricSpec`, provider registry, implementation descriptor
+or typed custom-metric evaluation task. The user then explicitly transferred
+that scope to this native DAG-ML effort. L1 therefore owns the generic provider
+contract for both metrics and losses; there is no concurrent source boundary.
 
-**Dependency state at roadmap authoring**: the score-provider work is active but
-has no published branch or commit available in this worktree. Metric-contract
-implementation is therefore **blocked**. L0 must replace this paragraph with the
-exact branch/commit/PR and a checked-in API map before any metric-related L1/L2
-source or shared-schema edit begins. Loss-only contract design may proceed
-because it does not define metric provider execution.
+The completed training/runtime/TCV1 work was preserved at checkpoint `3097da5`
+and integrated on `agent/loss-runtime-integration` at `87785fc` in draft PR #20.
+Loss and metric fingerprints use `dag_ml_core::canonical` directly:
+`parse_typed_json`, `validate_typed_serde_value`, `tcv1_sha256`,
+`TypedCanonicalValue::fingerprint_without` and
+`deserialize_external_contract`. TCV1 normalization is frozen to Unicode 17.
+No second canonicalizer may be introduced.
 
-The active dag-ml checkout separately contains an unpublished TCV1
-canonicalization implementation as part of concurrent training/runtime work.
-L0 must also record that work's branch, commit or PR and canonicalization API
-before L1 source work computes or validates fingerprints. Loss work must consume
-that API and must not copy the dirty checkout or create a second canonical JSON
-or fingerprint implementation.
-
-| Surface | Loss roadmap ownership | Score-provider ownership | Integration rule |
-| --- | --- | --- | --- |
-| Training objective semantics | `LossSpec`, loss implementation descriptor, reduction and required inputs | none | loss work leads |
-| Metric semantics and provider execution | metric role requirements only | `MetricSpec`, metric implementation descriptor, provider registry/dispatch, typed evaluation task and score result | consume the landed provider API; do not create parallel types |
-| Built-in scoring | no semantic rewrite | native metric calculation | preserve core ownership |
-| `ControllerCapability` | loss-specific capabilities | metric-provider capabilities | additive merge after provider review |
-| `NodeTask` / `NodeResult` | fit loss resolution and attestation | metric task/result fields | update once, with both contracts represented |
-| Contract schemas | loss-specific schemas initially | score-provider schemas | shared schemas change only after branch comparison |
-| C ABI callbacks | loss callback and lifecycle | metric callback if required | share lifecycle/versioning conventions |
-
-Before editing a shared surface, the implementer must inspect the current branch,
-the score-provider branch or worktree, and the target diff. If the provider API
-already supplies a generic implementation descriptor, the loss work extends it
-instead of creating `LossImplementationDescriptor` in parallel.
-
-The loss roadmap does not create `MetricSpec` or
-`MetricImplementationDescriptor`. Their authoritative definitions and typed
-custom-metric evaluation task must land with the score-provider work. If that
-work does not provide them, L0 must record an explicit ownership amendment and
-receive independent review before L1 resumes. A shared implementation descriptor
-is preferred only if it can represent loss and metric semantics without moving
-objective direction into the provider descriptor.
+| Surface | Native contract ownership | Integration rule |
+| --- | --- | --- |
+| Training objective semantics | `LossSpec`, reduction, required inputs and loss role references | backend-neutral core contract |
+| Metric semantics and provider execution | `MetricSpec`, provider registry/dispatch, typed evaluation task and score result | one provider path for built-in and local custom metrics |
+| Implementation identity | one generic implementation descriptor used by loss and metric refs | semantic objective/direction stays in the spec, not the descriptor |
+| Built-in scoring | existing native metric calculation | adapt behind `MetricSpec`; do not duplicate numerics |
+| `ControllerCapability`, `NodeTask`, `NodeResult` | loss application and metric evaluation protocols | evolve shared surfaces once with explicit versioning |
+| Contract schemas | loss, metric, role and implementation schemas | one conformance family and TCV1 profile |
+| Binding callbacks | language-local loss and metric registries | share lifecycle and error conventions; never serialize code |
 
 ## Contract model
 
@@ -133,11 +118,9 @@ objective direction into the provider descriptor.
 - capability requirements such as differentiability and distributed reduction;
 - canonical spec fingerprint.
 
-The score-provider-owned `MetricSpec` contains the equivalent metric semantics,
-plus objective direction, supported unit levels and decomposition/reduction
-behavior. It does not encode whether the metric is used for selection, reporting
-or another policy. This roadmap consumes that contract after its provider branch
-lands; it does not define a competing wire type.
+`MetricSpec` contains the equivalent metric semantics, plus objective direction,
+supported unit levels and decomposition/reduction behavior. It does not encode
+whether the metric is used for selection, reporting or another policy.
 
 ### Implementation descriptors
 
@@ -200,16 +183,15 @@ complete.
 - inventory every current training-loss, selection, reporting, early-stopping
   and tuning default by controller and language;
 - record every unknown-name fallback and every duplicated metric implementation;
-- map concurrent score-provider types and reserve shared integration points;
-- map the concurrent training/TCV1 artifact and reserve its canonicalization API;
+- record the score-provider ownership transfer and the absence of an artifact;
+- map the integrated training/TCV1 artifact and canonicalization API;
 - add focused characterization tests for current defaults before behavior changes.
 
 **Acceptance evidence**:
 
 - inventory links each default to source and a characterization test;
-- the score-provider branch/commit/PR and API map are recorded in this roadmap;
-- the training/TCV1 branch/commit/PR and canonicalization API are recorded;
-- no source changes overlap the active score-provider worktree;
+- the score-provider ownership amendment is independently reviewed;
+- the training/TCV1 branch, commit, PR and canonicalization API are recorded;
 - independent documentation review confirms ownership and terminology.
 
 ### L1 - Native loss contracts and metric integration gate
@@ -226,15 +208,10 @@ complete.
 - versioned built-in loss catalog descriptors without importing ML frameworks;
 - compile-time default-resolution contract.
 
-Fingerprint-related L1 source work remains blocked until the training/TCV1
-artifact identified in L0 is published. Contract design can continue, but no
-provisional canonicalizer or incompatible fingerprint format may be committed.
-
-Metric work in this batch is integration-only and remains blocked until the
-score-provider artifact identified in L0 lands. Once unblocked, L1 consumes its
-`MetricSpec`, metric implementation descriptor and typed evaluation task, adds
-pipeline-role references, and verifies that native aggregation, selection and
-score persistence consume provider results without duplication.
+L1 defines `MetricSpec`, the generic implementation descriptor, provider
+registry contract and typed metric evaluation task alongside loss contracts.
+Native aggregation, selection and score persistence consume provider results
+without adding a second scoring path.
 
 **Required negative cases**:
 
@@ -245,7 +222,7 @@ score persistence consume provider results without duplication.
 - callable/code payload present in canonical JSON;
 - mismatched embedded fingerprint.
 
-The score-provider contract must independently test a custom metric without an
+The generic provider protocol must independently test a custom metric without an
 objective, non-finite provider output, wrong scope/coverage and mismatched
 provider fingerprint before metric integration is accepted here.
 
@@ -260,8 +237,7 @@ wire shape where possible, explicit version/read-window decision, updated schema
 and fixtures, conformance-pack entry, CHANGELOG note and C ABI decision.
 
 **Independent review focus**: backend neutrality, schema evolution, canonical
-fingerprints, absence of executable code, compatibility with the score-provider
-descriptor.
+fingerprints, absence of executable code and one shared provider descriptor.
 
 ### L2 - Controller resolution and attestation protocol
 
@@ -277,7 +253,7 @@ descriptor.
 - explicit `controller_internal` and `not_configurable` modes;
 - early-stopping record distinct from final OOF scoring.
 
-L2 also integrates the score-provider-owned typed custom-metric task and verifies
+L2 integrates the typed custom-metric task and verifies
 finite values, scope, sample coverage and implementation fingerprint before
 native aggregation or selection. L2 does not implement a second provider path.
 
@@ -309,8 +285,8 @@ python3 scripts/validate_contracts.py
 ```
 
 **Independent review focus**: lifecycle invariants, spoof-resistant attestation,
-cache/replay correctness, no feature-buffer or tensor crossing, score-provider
-merge quality.
+cache/replay correctness, no feature-buffer or tensor crossing, and one generic
+provider protocol.
 
 ### L3 - Python reference binding
 
@@ -464,7 +440,7 @@ review note with:
 - reviewed commit SHA and scope;
 - findings ordered by severity with file/line references;
 - contract and backward-compatibility assessment;
-- concurrency assessment against the score-provider branch;
+- assessment that loss and metric execution share one provider abstraction;
 - tests inspected or rerun;
 - explicit `approved`, `approved_with_followups` or `changes_requested` result.
 
@@ -507,6 +483,5 @@ draft until their required dag-ml contract version is available. No PR may claim
 cross-language custom-loss completion before every local-binding acceptance test
 listed above is green.
 
-The loss-only L1 branch may publish while the score-provider dependency is
-unpublished. Metric-related contract, task, schema or provider work may not be
-committed on that branch until L0 names and reviews the provider artifact.
+L1 publishes loss and metric semantic contracts together because the previously
+announced score-provider effort produced no integration artifact.

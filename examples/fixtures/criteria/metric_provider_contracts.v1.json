@@ -1,0 +1,286 @@
+{
+  "profile": "dagml.metric-provider.contracts.v1",
+  "canonicalization": "TCV1-unicode-17.0.0",
+  "valid": {
+    "task": {
+      "schema_version": 1,
+      "request_id": "metric-request:bias",
+      "metric": {
+        "spec": {
+          "schema_version": 1,
+          "metric_id": "example.metric.bias@1",
+          "kind": "custom",
+          "task_kinds": [
+            "regression"
+          ],
+          "prediction_kinds": [
+            "regression_point"
+          ],
+          "objective": "minimize",
+          "supported_levels": [
+            "sample"
+          ],
+          "decomposition": "global",
+          "reduction": "global",
+          "required_inputs": [
+            "target",
+            "prediction"
+          ],
+          "capabilities": [],
+          "parameters": {},
+          "spec_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006"
+        },
+        "implementation": {
+          "schema_version": 1,
+          "semantic_kind": "metric",
+          "semantic_id": "example.metric.bias@1",
+          "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+          "provider_id": "provider:rust-local",
+          "binding_id": "binding:rust",
+          "implementation_version": "1.0.0",
+          "implementation_fingerprint": "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+          "supported_controller_families": [],
+          "runtime_requirements": [],
+          "capabilities": [
+            "deterministic"
+          ],
+          "portability": "host_local",
+          "replayability": "registry_required",
+          "registry_key": "metric:run-123:bias",
+          "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077"
+        }
+      },
+      "task_kind": "regression",
+      "prediction_kind": "regression_point",
+      "scope": {
+        "producer_node": "model:custom",
+        "producer_port": "prediction",
+        "prediction_id": "prediction:validation",
+        "partition": "validation",
+        "fold_id": "fold:0",
+        "level": "sample"
+      },
+      "unit_ids": [
+        {
+          "level": "sample",
+          "id": "sample:0"
+        },
+        {
+          "level": "sample",
+          "id": "sample:1"
+        }
+      ],
+      "predictions": [
+        [
+          2.0
+        ],
+        [
+          5.0
+        ]
+      ],
+      "targets": [
+        [
+          1.0
+        ],
+        [
+          3.0
+        ]
+      ],
+      "output_ids": [
+        "target"
+      ],
+      "task_fingerprint": "b49dc3751e0c2a30489eee92a995384ab366bc1cc628e613b1bcea3633657430"
+    },
+    "result": {
+      "schema_version": 1,
+      "request_id": "metric-request:bias",
+      "semantic_id": "example.metric.bias@1",
+      "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+      "implementation_fingerprint": "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+      "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077",
+      "scope": {
+        "producer_node": "model:custom",
+        "producer_port": "prediction",
+        "prediction_id": "prediction:validation",
+        "partition": "validation",
+        "fold_id": "fold:0",
+        "level": "sample"
+      },
+      "values": [
+        {
+          "value": 1.5
+        }
+      ],
+      "result_fingerprint": "183392e42edb031021d6ba1b25d6019509597d955b29cbb6d9b3c4a695c631f4"
+    },
+    "aggregate": 1.5
+  },
+  "invalid": [
+    {
+      "id": "custom_metric_without_objective",
+      "contract": "metric_evaluation_task",
+      "document": {
+        "schema_version": 1,
+        "request_id": "metric-request:bias",
+        "metric": {
+          "spec": {
+            "schema_version": 1,
+            "metric_id": "example.metric.bias@1",
+            "kind": "custom",
+            "task_kinds": [
+              "regression"
+            ],
+            "prediction_kinds": [
+              "regression_point"
+            ],
+            "supported_levels": [
+              "sample"
+            ],
+            "decomposition": "global",
+            "reduction": "global",
+            "required_inputs": [
+              "target",
+              "prediction"
+            ],
+            "capabilities": [],
+            "parameters": {},
+            "spec_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006"
+          },
+          "implementation": {
+            "schema_version": 1,
+            "semantic_kind": "metric",
+            "semantic_id": "example.metric.bias@1",
+            "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+            "provider_id": "provider:rust-local",
+            "binding_id": "binding:rust",
+            "implementation_version": "1.0.0",
+            "implementation_fingerprint": "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+            "supported_controller_families": [],
+            "runtime_requirements": [],
+            "capabilities": [
+              "deterministic"
+            ],
+            "portability": "host_local",
+            "replayability": "registry_required",
+            "registry_key": "metric:run-123:bias",
+            "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077"
+          }
+        },
+        "task_kind": "regression",
+        "prediction_kind": "regression_point",
+        "scope": {
+          "producer_node": "model:custom",
+          "producer_port": "prediction",
+          "prediction_id": "prediction:validation",
+          "partition": "validation",
+          "fold_id": "fold:0",
+          "level": "sample"
+        },
+        "unit_ids": [
+          {
+            "level": "sample",
+            "id": "sample:0"
+          },
+          {
+            "level": "sample",
+            "id": "sample:1"
+          }
+        ],
+        "predictions": [
+          [
+            2.0
+          ],
+          [
+            5.0
+          ]
+        ],
+        "targets": [
+          [
+            1.0
+          ],
+          [
+            3.0
+          ]
+        ],
+        "output_ids": [
+          "target"
+        ],
+        "task_fingerprint": "b49dc3751e0c2a30489eee92a995384ab366bc1cc628e613b1bcea3633657430"
+      }
+    },
+    {
+      "id": "provider_result_wrong_scope",
+      "contract": "metric_evaluation_result",
+      "document": {
+        "schema_version": 1,
+        "request_id": "metric-request:bias",
+        "semantic_id": "example.metric.bias@1",
+        "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+        "implementation_fingerprint": "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+        "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077",
+        "scope": {
+          "producer_node": "model:custom",
+          "producer_port": "prediction",
+          "prediction_id": "prediction:validation",
+          "partition": "test",
+          "fold_id": "fold:0",
+          "level": "sample"
+        },
+        "values": [
+          {
+            "value": 1.5
+          }
+        ],
+        "result_fingerprint": "89b5cee0f5efbe5df74773e7bbcf9f5ba141911b5bd948214d4a6bb4b6766699"
+      }
+    },
+    {
+      "id": "provider_result_wrong_coverage",
+      "contract": "metric_evaluation_result",
+      "document": {
+        "schema_version": 1,
+        "request_id": "metric-request:bias",
+        "semantic_id": "example.metric.bias@1",
+        "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+        "implementation_fingerprint": "4991854599d650fd613dfd02b10d90a649ad7fec85f20a027d5e7b2a553f628b",
+        "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077",
+        "scope": {
+          "producer_node": "model:custom",
+          "producer_port": "prediction",
+          "prediction_id": "prediction:validation",
+          "partition": "validation",
+          "fold_id": "fold:0",
+          "level": "sample"
+        },
+        "values": [],
+        "result_fingerprint": "97147dc7cd9e7572f87f4d9430542c0f0834c7d18694c58b430ef79c9f34f6fb"
+      }
+    },
+    {
+      "id": "provider_result_mismatched_implementation_fingerprint",
+      "contract": "metric_evaluation_result",
+      "document": {
+        "schema_version": 1,
+        "request_id": "metric-request:bias",
+        "semantic_id": "example.metric.bias@1",
+        "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+        "implementation_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+        "descriptor_fingerprint": "33f6d7946a6eebd21b4e6b6578a78643eaaca8ba7725aaf3f6d84fd8d3b13077",
+        "scope": {
+          "producer_node": "model:custom",
+          "producer_port": "prediction",
+          "prediction_id": "prediction:validation",
+          "partition": "validation",
+          "fold_id": "fold:0",
+          "level": "sample"
+        },
+        "values": [
+          {
+            "value": 1.5
+          }
+        ],
+        "result_fingerprint": "676653f80194b5aa75b2cb8043662c2c8d27db2e6017564ada07a709526b129c"
+      }
+    }
+  ]
+}

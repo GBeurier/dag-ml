@@ -1,0 +1,119 @@
+{
+  "pack_id": "dag-ml.criteria-conformance.v1",
+  "schema_version": 1,
+  "hash_algorithm": "sha256-file-bytes",
+  "fingerprint_profile": "DAGML-TCV1-unicode-17.0.0",
+  "artifacts": [
+    {
+      "path": "crates/dag-ml-cli/src/main.rs",
+      "sha256": "9278c608571b098fde52f2d6507dc5dd7150938a78fe9de7276e47413bd884a4",
+      "kind": "cli_validator"
+    },
+    {
+      "path": "crates/dag-ml-cli/tests/cli_contracts.rs",
+      "sha256": "43f1f2d584826c37fdba9d7c2b9b6974a29ebe6347054b0d936bfb7b9561efae",
+      "kind": "cli_test"
+    },
+    {
+      "path": "crates/dag-ml-core/src/criteria.rs",
+      "sha256": "cacd70df9e57a2f04a98f6f83b4eeb62aa90b768e0edca6306b596de83359e56",
+      "kind": "rust_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/src/metric_provider.rs",
+      "sha256": "73f997881c015e429b75e30a9e0f8092ec10569ccb63d01116c8715e6b16f14c",
+      "kind": "rust_provider_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/src/metrics.rs",
+      "sha256": "2fd5b10eaa6f198e450ea1a84d954b6a44c95facd7a87700a7d6b958e880b78a",
+      "kind": "native_metric_adapter"
+    },
+    {
+      "path": "docs/CRITERIA_CONTRACTS.md",
+      "sha256": "8e0ee62145503c49881eae583c1988f9c1fbb17bd227fe04c7585ae973441f85",
+      "kind": "contract_documentation"
+    },
+    {
+      "path": "docs/contracts/implementation_descriptor.schema.json",
+      "sha256": "7fc37cd6dda7f7fcdb778facd691a5b27e64c825051965dd0948cfdb09092210",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/loss_spec.schema.json",
+      "sha256": "18a6cfc7bf74c42927ce3ba60d31b5c6bc8e5dd447b7c96a011ab26b3e282954",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/metric_evaluation_result.schema.json",
+      "sha256": "9e965989e878d34a63f7ef4d76e33e79927362b96a322c517932df15c4a9190c",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/metric_evaluation_task.schema.json",
+      "sha256": "72e7405eebb3a78e5489b31a61187d15ef81c2dcc3fbcba5ac4b70a0d52bd13a",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/metric_role.schema.json",
+      "sha256": "b530ee58934571d0e82373f16ae92f86b6521c308479bef80d86040b4946f5a5",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/metric_spec.schema.json",
+      "sha256": "d463d99eab6b2399aecefdab92b0e0a7912e9e85cc09710015b9167393ca3523",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/training_loss_role.schema.json",
+      "sha256": "078886aa7f622c05c86aa22b4eaeaeeff857e2ad68da1137f62fe4f1510d02e3",
+      "kind": "schema"
+    },
+    {
+      "path": "examples/fixtures/criteria/criteria_contracts.v1.json",
+      "sha256": "07284ac6c366c87ffc23af805410f79cd1d4875f2449fcb3dc2c4c3e45c1e5be",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/criteria/metric_provider_contracts.v1.json",
+      "sha256": "940eb1961335e600568bc03e74b9ef71751f8e6b5429a95c32e39af344d4a725",
+      "kind": "fixture"
+    },
+    {
+      "path": "parity/criteria/generate_fixtures.py",
+      "sha256": "5d420161c10293d7f594d176ad38e39d064dda1f19e69572ee2262e4c5032ad6",
+      "kind": "generator"
+    },
+    {
+      "path": "parity/criteria/oracle.py",
+      "sha256": "03508d1815c897a31423ec46eef611757b00ba45a353b256b646f45833e7ddbc",
+      "kind": "independent_validator"
+    },
+    {
+      "path": "parity/criteria/tests/test_criteria_contracts.py",
+      "sha256": "457d485773542c815132a1bd62725f462ed141e43dfb72f8678dd0b8e8aa1fbb",
+      "kind": "parity_test"
+    }
+  ],
+  "required_negative_cases": [
+    "loss_unversioned_id",
+    "loss_leading_zero_version",
+    "loss_c1_control_id",
+    "loss_uppercase_callable_payload",
+    "loss_unknown_task",
+    "loss_nested_callable_payload",
+    "loss_weighted_without_weight_input",
+    "loss_mismatched_fingerprint",
+    "metric_without_objective",
+    "host_local_descriptor_without_registry_key",
+    "selection_metric_skips_missing_values",
+    "custom_metric_without_objective",
+    "provider_result_wrong_scope",
+    "provider_result_wrong_coverage",
+    "provider_result_mismatched_implementation_fingerprint"
+  ],
+  "runtime_only_negative_cases": [
+    "provider_result_non_finite"
+  ],
+  "pack_checksum": "ee34c0acb4960e86a26ee6ffd53e95c9c6fb79f0e5ea019d2c58940db8ae8e7b"
+}
