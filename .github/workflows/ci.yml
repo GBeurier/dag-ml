@@ -364,7 +364,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Install GNU Octave
-        run: sudo apt-get update && sudo apt-get install --yes octave liboctave-dev
+        run: sudo apt-get update && sudo apt-get install --yes octave octave-dev
       - name: Build native task-binding bridges
         run: |
           cargo build -p dag-ml-capi --release
