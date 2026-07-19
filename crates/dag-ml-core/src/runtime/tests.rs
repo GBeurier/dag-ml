@@ -21,7 +21,7 @@ use crate::controller::{
     ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
     ControllerRegistry, RngPolicy,
 };
-use crate::criteria::TrainingLossRoleReference;
+use crate::criteria::{ImplementationCapability, TrainingLossRoleReference};
 use crate::data::{
     DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider, SOURCE_INDEX_METADATA_KEY,
 };
@@ -37,6 +37,7 @@ use crate::graph::{
 use crate::ids::{
     ArtifactId, ControllerId, FoldId, GroupId, NodeId, ObservationId, SampleId, TargetId,
 };
+use crate::implementation_registry::LocalImplementationRegistry;
 use crate::oof::{PredictionBlock, PredictionPartition, STACKING_OOF_REFIT_CONTRACT_METADATA_KEY};
 use crate::plan::{build_execution_plan, CampaignSpec, SplitInvocation};
 use crate::policy::{
@@ -476,6 +477,37 @@ impl RuntimeController for LossRequirementEchoController {
     fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
         let mut result = self.inner.invoke(task)?;
         result.lineage.loss_attestations = task.required_loss_attestations.clone();
+        Ok(result)
+    }
+}
+
+type RustLossFn = Arc<dyn Fn(f64, f64) -> f64 + Send + Sync>;
+type RustLossCalls = Arc<Mutex<Vec<(Phase, Option<FoldId>, f64)>>>;
+
+struct RustLocalLossController {
+    inner: MockController,
+    registry: Arc<Mutex<LocalImplementationRegistry<RustLossFn>>>,
+    calls: RustLossCalls,
+}
+
+impl RuntimeController for RustLocalLossController {
+    fn controller_id(&self) -> &ControllerId {
+        self.inner.controller_id()
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let (role, attestation) = task.training_loss_binding(0)?;
+        let loss = {
+            let registry = self.registry.lock().unwrap();
+            Arc::clone(registry.resolve_loss(&role.loss)?)
+        };
+        let value = loss(2.0, 5.5);
+        self.calls
+            .lock()
+            .unwrap()
+            .push((task.phase, task.fold_id.clone(), value));
+        let mut result = self.inner.invoke(task)?;
+        result.lineage.loss_attestations = vec![attestation.clone()];
         Ok(result)
     }
 }
@@ -6294,6 +6326,22 @@ fn runtime_custom_loss_role(node_id: NodeId) -> TrainingLossRoleReference {
     role
 }
 
+fn runtime_rust_custom_loss_role(node_id: NodeId) -> TrainingLossRoleReference {
+    let mut role = runtime_custom_loss_role(node_id);
+    role.loss.implementation.provider_id = "provider:rust-local".to_string();
+    role.loss.implementation.binding_id = "binding:rust".to_string();
+    role.loss.implementation.implementation_fingerprint = "2".repeat(64);
+    role.loss.implementation.registry_key = Some("loss:run-123:asymmetric-rust".to_string());
+    role.loss
+        .implementation
+        .capabilities
+        .remove(&ImplementationCapability::NeedsGil);
+    role.loss.implementation.descriptor_fingerprint =
+        role.loss.implementation.compute_fingerprint().unwrap();
+    role.validate().unwrap();
+    role
+}
+
 #[test]
 fn fit_influence_strict_requires_weight_support() {
     let error = resolve_fit_influence_task(
@@ -6704,6 +6752,108 @@ fn scheduler_populates_native_loss_execution_requirements() {
         model_result.lineage.loss_attestations,
         vec![LossExecutionAttestation::for_role(&role, Phase::FitCv).unwrap()]
     );
+}
+
+#[test]
+fn scheduler_executes_rust_local_loss_before_attesting() {
+    let mut controller_manifests = ControllerRegistry::new();
+    let mut transform_manifest = controller_manifest("controller:transform", NodeKind::Transform);
+    transform_manifest
+        .supported_phases
+        .extend([Phase::FitCv, Phase::Refit]);
+    controller_manifests.register(transform_manifest).unwrap();
+    let mut model_manifest = controller_manifest("controller:model", NodeKind::Model);
+    model_manifest
+        .supported_phases
+        .extend([Phase::FitCv, Phase::Refit]);
+    model_manifest.capabilities.extend([
+        ControllerCapability::SupportsConfigurableLoss,
+        ControllerCapability::SupportsCustomLoss,
+        ControllerCapability::SupportsDifferentiableLoss,
+    ]);
+    controller_manifests.register(model_manifest).unwrap();
+    let mut plan = build_execution_plan(
+        "plan:loss.rust.scheduler",
+        simple_graph(),
+        CampaignSpec {
+            inner_cv: None,
+            id: "campaign:loss.rust.scheduler".to_string(),
+            root_seed: Some(23),
+            leakage_policy: Default::default(),
+            aggregation_policy: Default::default(),
+            split_invocation: None,
+            generation: Default::default(),
+            shape_plans: BTreeMap::new(),
+            data_bindings: BTreeMap::new(),
+            branch_view_plans: Vec::new(),
+            metadata: BTreeMap::new(),
+        },
+        &controller_manifests,
+    )
+    .unwrap();
+    let model_id = NodeId::new("model:pls").unwrap();
+    let role = runtime_rust_custom_loss_role(model_id.clone());
+    plan.node_plans.get_mut(&model_id).unwrap().training_losses = vec![role.clone()];
+    plan.validate().unwrap();
+
+    let registry = Arc::new(Mutex::new(LocalImplementationRegistry::<RustLossFn>::new()));
+    let loss: RustLossFn = Arc::new(|target, prediction| (prediction - target).abs());
+    registry
+        .lock()
+        .unwrap()
+        .register_loss(&role.loss, loss)
+        .unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(RustLocalLossController {
+            inner: MockController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 2,
+                emit_prediction: false,
+            },
+            registry: Arc::clone(&registry),
+            calls: Arc::clone(&calls),
+        }))
+        .unwrap();
+
+    let mut context = RunContext::new(RunId::new("run:loss.rust.scheduler").unwrap(), Some(23));
+    let fit_results = SequentialScheduler
+        .execute_campaign_phase(&plan, &controllers, &mut context, Phase::FitCv)
+        .unwrap();
+    let refit_results = SequentialScheduler
+        .execute_campaign_phase(&plan, &controllers, &mut context, Phase::Refit)
+        .unwrap();
+
+    let expected_fit = LossExecutionAttestation::for_role(&role, Phase::FitCv).unwrap();
+    let expected_refit = LossExecutionAttestation::for_role(&role, Phase::Refit).unwrap();
+    let model_fit = fit_results
+        .iter()
+        .find(|result| result.node_id == model_id)
+        .unwrap();
+    let model_refit = refit_results
+        .iter()
+        .find(|result| result.node_id == model_id)
+        .unwrap();
+    assert_eq!(model_fit.lineage.loss_attestations, vec![expected_fit]);
+    assert_eq!(model_refit.lineage.loss_attestations, vec![expected_refit]);
+
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].0, Phase::FitCv);
+    assert_eq!(calls[0].1, None);
+    assert!((calls[0].2 - 3.5).abs() < f64::EPSILON);
+    assert_eq!(calls[1].0, Phase::Refit);
+    assert_eq!(calls[1].1, None);
+    assert!((calls[1].2 - 3.5).abs() < f64::EPSILON);
 }
 
 #[test]
