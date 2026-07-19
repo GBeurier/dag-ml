@@ -65,6 +65,27 @@ error <- tryCatch(
 )
 stopifnot(inherits(error, "error"), calls == 2L)
 
+phase_error <- tryCatch(
+  dagml_execute_execution_plan_phase(
+    execution_plan = "{}",
+    trusted_controller_manifests = list(),
+    run_id = "run:r-phase",
+    root_seed = 1,
+    phase = "FIT_CV",
+    controllers = list(
+      "controller:r-local" = function(controller_id, task_json) {
+        stop("unexpected callback")
+      }
+    ),
+    native_library = ""
+  ),
+  error = identity
+)
+stopifnot(
+  inherits(phase_error, "error"),
+  grepl("DAGML_NATIVE_LIBRARY", conditionMessage(phase_error))
+)
+
 error <- tryCatch(
   registry$register_loss(fixture$foreign_loss_reference, asymmetric_loss),
   error = identity
