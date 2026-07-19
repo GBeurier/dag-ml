@@ -188,7 +188,11 @@ Registration accepts a complete `LossReference` or `MetricReference` plus a v1
 `DagMlLocalImplementationVTable`; descriptor resolution remains exact and loss
 and metric semantic paths remain distinct. `invoke_training_loss` accepts only
 `FIT_CV` or `REFIT` and returns a native execution attestation after the host
-callback succeeds.
+callback succeeds. Controllers should prefer
+`dagml_local_implementation_registry_invoke_task_training_loss`: it selects a
+zero-based active role from the exact native `NodeTask`, verifies that the
+task's ordered requirements match its plan, and returns that task-owned
+attestation only after callback success.
 
 The invocation request and result are strict JSON but intentionally
 binding-defined: feature and autodiff tensors remain host-owned, so R, MATLAB,

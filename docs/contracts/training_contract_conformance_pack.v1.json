@@ -11,7 +11,7 @@
     },
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "3eb97a478d3748bdeee4961eea577994ed5c3b93d307b3c76870e97b65cf0b04",
+      "sha256": "f6631e0da30f37c1f65974555b110a08dda9f0fff2991b15746ccc2389c25afb",
       "kind": "c_abi_header"
     },
     {
@@ -21,7 +21,7 @@
     },
     {
       "path": "crates/dag-ml-capi/src/local_implementation.rs",
-      "sha256": "7a6752331305057cdf19f1da40daf951f210a1d8001b59dda89baf5826833a2f",
+      "sha256": "4001fcfd2c2b21a446fc777b4778341faff52586e7ecb540bdef45c8e571880b",
       "kind": "c_local_registry"
     },
     {
@@ -31,7 +31,7 @@
     },
     {
       "path": "crates/dag-ml-capi/tests/local_implementations.rs",
-      "sha256": "5799dd73005307d0e97ea326fc191c96f10c5f3c4f3c8d7b58c25b6f1c52fa9f",
+      "sha256": "e4242c2fc6ac6daeae21354ce45346b8a0ae5a10cda088707c1b5f285c0b155c",
       "kind": "c_local_registry_test"
     },
     {
@@ -131,7 +131,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/task.rs",
-      "sha256": "6b973fd66e52d76f0626890a22fb0fc83b4c2a5d8b91315ccc3cd008729b61ac",
+      "sha256": "e3a1b14bbcec7ccf406b2334c236f49e162b0e689d2605e0be86cd629c439390",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -206,7 +206,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "a26375959cc1583d55021799fce4ff2371219ad33acba3325e6cb3e02d6d209f",
+      "sha256": "09d66bd63c73ffb239efbe4310a6d71a3937350f0d6604900c3491dffb11330d",
       "kind": "c_abi_snapshot"
     },
     {
@@ -529,5 +529,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "4f1b437c980500b6cd287a539dd70fddf9137653325bee5b0809581a6f27b93c"
+  "pack_checksum": "38231fdbe5d13055e74a90124387a5462b2ac1fccd78e96914386e69442cbd5e"
 }

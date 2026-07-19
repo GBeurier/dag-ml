@@ -36,17 +36,17 @@
     },
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "3eb97a478d3748bdeee4961eea577994ed5c3b93d307b3c76870e97b65cf0b04",
+      "sha256": "f6631e0da30f37c1f65974555b110a08dda9f0fff2991b15746ccc2389c25afb",
       "kind": "c_abi_header"
     },
     {
       "path": "crates/dag-ml-capi/src/local_implementation.rs",
-      "sha256": "7a6752331305057cdf19f1da40daf951f210a1d8001b59dda89baf5826833a2f",
+      "sha256": "4001fcfd2c2b21a446fc777b4778341faff52586e7ecb540bdef45c8e571880b",
       "kind": "c_local_registry"
     },
     {
       "path": "crates/dag-ml-capi/tests/local_implementations.rs",
-      "sha256": "5799dd73005307d0e97ea326fc191c96f10c5f3c4f3c8d7b58c25b6f1c52fa9f",
+      "sha256": "e4242c2fc6ac6daeae21354ce45346b8a0ae5a10cda088707c1b5f285c0b155c",
       "kind": "c_binding_test"
     },
     {
@@ -106,17 +106,17 @@
     },
     {
       "path": "crates/dag-ml-wasm/README.md",
-      "sha256": "a88922910ca4948834532dbe2c891f70134b35fe26f2c6e3cce974aaf8dbe946",
+      "sha256": "6996cdcaf65f3cd0a934941482091ce83e1390a5ab57616e5727d289b0ac02e4",
       "kind": "javascript_binding_documentation"
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "b1f03e721452937382b613b45b824cc2f08c395c45a5b5bc423f25feacb7664f",
+      "sha256": "8a35243ee4b5158cd8b22951f266177887abe1a98d42be0c84e814be0aab1c81",
       "kind": "javascript_binding"
     },
     {
       "path": "crates/dag-ml-wasm/src/local_implementation.rs",
-      "sha256": "c7fb3901f1c553eaca4bbf517d5f326910d61d9118224f4009a07081ba8e450d",
+      "sha256": "1f22a60a9c74269fc5f2994c14cec31b3a3f9b356a7ab2f1a5c7fdd8096dcff1",
       "kind": "javascript_local_registry"
     },
     {
@@ -176,7 +176,7 @@
     },
     {
       "path": "examples/fixtures/criteria/c_local_implementations.v1.json",
-      "sha256": "59eeb1c47cb4d6ef3549f0a863d66f5e34edbfc321982bbc81d07d2924723190",
+      "sha256": "90306b34b2cee6a565430aec6df388f5c31c39d405633ee5b9887d8d4cfe50f5",
       "kind": "fixture"
     },
     {
@@ -201,7 +201,7 @@
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "160b42ae67cb27e0078814e9c988602bd73b74e8a5c2d66904eee334ac8a556d",
+      "sha256": "3c9349f584ebcc932d511d69770d068b7dfbdfc1865f8a5d107aa8b4a82de7d0",
       "kind": "generator"
     },
     {
@@ -216,7 +216,7 @@
     },
     {
       "path": "scripts/smoke_wasm_bindings.cjs",
-      "sha256": "842ab82795cb1e23a968b34fafeef1c79bd9cbcac77aed5c0b4196d4ddf3a3f1",
+      "sha256": "2df35e993d63e0af4e9ea466f9a682910c03da1f8c9a1c9d772e9ccd54466197",
       "kind": "javascript_binding_test"
     }
   ],
@@ -245,5 +245,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "7482174f0bccc277215ef701b263388af51791768880394ad4191d2820c2e542"
+  "pack_checksum": "c348447c706f0e82ab9d9a391273f95e25408dd13603e33ccf7482312036a81b"
 }
