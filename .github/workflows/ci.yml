@@ -341,9 +341,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
       - uses: r-lib/actions/setup-r@v2
       - name: Install R dependencies
         run: Rscript -e 'install.packages("jsonlite", repos = "https://cloud.r-project.org")'
+      - name: Build DAG-ML C ABI
+        run: cargo build -p dag-ml-capi --release
       - name: Build R source package
         run: |
           mkdir -p target/r
@@ -351,16 +354,26 @@ jobs:
           R CMD build ../../bindings/r
       - name: Check R source package
         run: R CMD check --no-manual target/r/dagml_*.tar.gz
+        env:
+          DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
 
   matlab-octave-bindings:
     name: MATLAB/Octave bindings
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install GNU Octave
-        run: sudo apt-get update && sudo apt-get install --yes octave
+        run: sudo apt-get update && sudo apt-get install --yes octave liboctave-dev
+      - name: Build native task-binding bridges
+        run: |
+          cargo build -p dag-ml-capi --release
+          mkoctfile --mex bindings/matlab/native/task_training_loss_binding.c \
+            -o bindings/matlab/+dagml/taskTrainingLossBindingNative.mex
       - name: Test local implementation registry
         run: octave --no-gui --quiet --eval "addpath('bindings/matlab/tests'); local_implementation_registry"
+        env:
+          DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
 
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}

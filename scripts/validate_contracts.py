@@ -13645,6 +13645,8 @@ def validate_dag_ml_local_implementation_header(header: str, label: str) -> None
         "dagml_local_implementation_registry_register_metric",
         "dagml_local_implementation_registry_invoke_loss",
         "dagml_local_implementation_registry_invoke_training_loss",
+        "dagml_local_implementation_registry_invoke_task_training_loss",
+        "dagml_node_task_training_loss_binding",
         "dagml_local_implementation_registry_invoke_metric",
         "dagml_local_implementation_registry_unregister_loss",
         "dagml_local_implementation_registry_unregister_metric",

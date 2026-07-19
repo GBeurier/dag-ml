@@ -192,7 +192,15 @@ callback succeeds. Controllers should prefer
 `dagml_local_implementation_registry_invoke_task_training_loss`: it selects a
 zero-based active role from the exact native `NodeTask`, verifies that the
 task's ordered requirements match its plan, and returns that task-owned
-attestation only after callback success.
+attestation only after callback success. Host runtimes that cannot route their
+native arrays through the generic C callback use
+`dagml_node_task_training_loss_binding` instead. It performs the same native
+task validation and returns the exact role and task-owned attestation without
+invoking a callback; the binding then resolves and executes its process-local
+function on host-owned values. R and MATLAB/Octave pass the exact `NodeTask`
+JSON emitted by DAG-ML to this validation-only boundary; they do not rebuild
+the task from host objects whose scalar and single-element-array shapes may be
+ambiguous.
 
 The invocation request and result are strict JSON but intentionally
 binding-defined: feature and autodiff tensors remain host-owned, so R, MATLAB,
