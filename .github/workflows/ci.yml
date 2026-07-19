@@ -353,7 +353,16 @@ jobs:
           cd target/r
           R CMD build ../../bindings/r
       - name: Check R source package
-        run: R CMD check --no-manual target/r/dagml_*.tar.gz
+        run: |
+          if ! R CMD check --no-manual target/r/dagml_*.tar.gz; then
+            for log in dagml.Rcheck/00install.out dagml.Rcheck/00check.log; do
+              if [ -f "$log" ]; then
+                printf '\n===== %s =====\n' "$log"
+                sed -n '1,240p' "$log"
+              fi
+            done
+            exit 1
+          fi
         env:
           DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
 

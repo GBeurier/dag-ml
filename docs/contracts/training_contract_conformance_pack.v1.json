@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "1904520787756a602927481dc970bd3514941d2c7b835eb59a95a1154e8c023c",
+      "sha256": "55d83a98e9884a5c2591f7fb7e4a40333cf6f6c8f9767f422289c1122b3cbc6d",
       "kind": "ci_gate"
     },
     {
@@ -529,5 +529,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "6a5b357c5e96d537ce5acb0e829108cedb3be6aa36ce3e1a59be6864b75c893f"
+  "pack_checksum": "0219e3fc2c60ea786d0e6e266d19b0b2368b3400e654b2ac672f0d90877d228a"
 }
