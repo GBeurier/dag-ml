@@ -139,15 +139,57 @@ static int expect_ok(DagMlStatusCode status, DagMlString error, const char *labe
     return 0;
 }
 
+static int expect_task_loss_rejected(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlBytesView task,
+    size_t role_index,
+    DagMlBytesView request,
+    const CallbackState *state,
+    unsigned expected_callbacks,
+    const char *label
+) {
+    DagMlOwnedBytes result = {0};
+    DagMlOwnedBytes attestation = {0};
+    DagMlString error = {0};
+    DagMlStatusCode status =
+        dagml_local_implementation_registry_invoke_task_training_loss(
+            registry,
+            task,
+            role_index,
+            request,
+            &result,
+            &attestation,
+            &error);
+    int rejected = status != DAG_ML_STATUS_OK &&
+        !result.ptr && !attestation.ptr && error.ptr &&
+        state->calls == expected_callbacks &&
+        state->byte_releases == expected_callbacks;
+    if (!rejected) {
+        fprintf(stderr, "%s reached the callback or retained output bytes\n", label);
+    }
+    if (result.ptr) {
+        dagml_owned_bytes_free(result);
+    }
+    if (attestation.ptr) {
+        dagml_owned_bytes_free(attestation);
+    }
+    free_error(error);
+    return rejected;
+}
+
 int main(int argc, char **argv) {
-    if (argc != 5) {
-        fprintf(stderr, "expected loss, role, metric, and foreign fixture paths\n");
+    if (argc != 9) {
+        fprintf(stderr, "expected loss, role, metric, foreign loss, FIT_CV, REFIT, PREDICT, and stale task fixture paths\n");
         return 2;
     }
     Buffer loss = read_file(argv[1]);
     Buffer role = read_file(argv[2]);
     Buffer metric = read_file(argv[3]);
     Buffer foreign_loss = read_file(argv[4]);
+    Buffer fit_cv_task = read_file(argv[5]);
+    Buffer refit_task = read_file(argv[6]);
+    Buffer predict_task = read_file(argv[7]);
+    Buffer stale_task = read_file(argv[8]);
 
     CallbackState loss_state = {0, 0, 0, 0, 0, "{\"value\":5.0}"};
     CallbackState metric_state = {0, 0, 0, 0, 0, "{\"value\":1.5}"};
@@ -216,6 +258,70 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    Buffer tasks[] = { fit_cv_task, refit_task };
+    for (size_t index = 0; index < 2; index++) {
+        DagMlOwnedBytes result = {0};
+        DagMlOwnedBytes attestation = {0};
+        status = dagml_local_implementation_registry_invoke_task_training_loss(
+            registry,
+            buffer_view(tasks[index]),
+            0,
+            text_view(request),
+            &result,
+            &attestation,
+            &error);
+        if (!expect_ok(status, error, phases[index]) ||
+            !contains_bytes(result.ptr, result.len, "\"value\":5.0") ||
+            !contains_bytes(attestation.ptr, attestation.len, phases[index])) {
+            return 2;
+        }
+        dagml_owned_bytes_free(result);
+        dagml_owned_bytes_free(attestation);
+    }
+    if (loss_state.calls != 4 || loss_state.byte_releases != 4) {
+        fprintf(stderr, "task-bound loss callback/release count mismatch\n");
+        return 2;
+    }
+
+    if (!expect_task_loss_rejected(
+            registry, buffer_view(fit_cv_task), 1, text_view(request),
+            &loss_state, 4, "invalid task role index") ||
+        !expect_task_loss_rejected(
+            registry, buffer_view(predict_task), 0, text_view(request),
+            &loss_state, 4, "PREDICT task") ||
+        !expect_task_loss_rejected(
+            registry, buffer_view(stale_task), 0, text_view(request),
+            &loss_state, 4, "stale task") ||
+        !expect_task_loss_rejected(
+            registry, text_view("{"), 0, text_view(request),
+            &loss_state, 4, "malformed task JSON")) {
+        return 2;
+    }
+
+    DagMlBytesView null_task = {0};
+    if (!expect_task_loss_rejected(
+            registry, null_task, 0, text_view(request),
+            &loss_state, 4, "null task JSON")) {
+        return 2;
+    }
+
+    DagMlOwnedBytes null_output_attestation = {0};
+    status = dagml_local_implementation_registry_invoke_task_training_loss(
+        registry,
+        buffer_view(fit_cv_task),
+        0,
+        text_view(request),
+        NULL,
+        &null_output_attestation,
+        &error);
+    if (status == DAG_ML_STATUS_OK || null_output_attestation.ptr ||
+        loss_state.calls != 4 || loss_state.byte_releases != 4) {
+        fprintf(stderr, "null task-loss output pointer reached the callback\n");
+        return 2;
+    }
+    free_error(error);
+    error = (DagMlString){0};
+
     DagMlOwnedBytes refused_result = {0};
     DagMlOwnedBytes refused_attestation = {0};
     status = dagml_local_implementation_registry_invoke_training_loss(
@@ -227,7 +333,7 @@ int main(int argc, char **argv) {
         &refused_attestation,
         &error);
     if (status == DAG_ML_STATUS_OK || refused_result.ptr || refused_attestation.ptr ||
-        loss_state.calls != 2) {
+        loss_state.calls != 4) {
         fprintf(stderr, "PREDICT was not refused before callback invocation\n");
         return 2;
     }
@@ -249,6 +355,26 @@ int main(int argc, char **argv) {
     dagml_owned_bytes_free(metric_result);
 
     loss_state.fail = 1;
+    DagMlOwnedBytes failed_task_result = {0};
+    DagMlOwnedBytes failed_task_attestation = {0};
+    status = dagml_local_implementation_registry_invoke_task_training_loss(
+        registry,
+        buffer_view(fit_cv_task),
+        0,
+        text_view(request),
+        &failed_task_result,
+        &failed_task_attestation,
+        &error);
+    if (status == DAG_ML_STATUS_OK || failed_task_result.ptr ||
+        failed_task_attestation.ptr || !error.ptr ||
+        !strstr(error.ptr, "local failure") ||
+        loss_state.calls != 5 || loss_state.byte_releases != 5) {
+        fprintf(stderr, "task loss callback error retained output or attestation bytes\n");
+        return 2;
+    }
+    free_error(error);
+    error = (DagMlString){0};
+
     DagMlOwnedBytes failed_result = {0};
     status = dagml_local_implementation_registry_invoke_loss(
         registry,
@@ -258,7 +384,7 @@ int main(int argc, char **argv) {
         &error);
     if (status == DAG_ML_STATUS_OK || failed_result.ptr ||
         !error.ptr || !strstr(error.ptr, "local failure") ||
-        loss_state.calls != 3 || loss_state.byte_releases != 3) {
+        loss_state.calls != 6 || loss_state.byte_releases != 6) {
         fprintf(stderr, "callback error was not propagated and released exactly once\n");
         return 2;
     }
@@ -320,6 +446,10 @@ int main(int argc, char **argv) {
     free(role.ptr);
     free(metric.ptr);
     free(foreign_loss.ptr);
+    free(fit_cv_task.ptr);
+    free(refit_task.ptr);
+    free(predict_task.ptr);
+    free(stale_task.ptr);
     return 0;
 }
 "#;
@@ -335,6 +465,11 @@ fn c_program_invokes_local_loss_and_metric_with_exact_lifecycle() {
     let fixture: serde_json::Value =
         serde_json::from_slice(&fs::read(&fixture_path).expect("read generated C fixture"))
             .expect("parse generated C fixture");
+    let mut predict_task = fixture["tasks"]["FIT_CV"].clone();
+    predict_task["phase"] = serde_json::Value::String("PREDICT".to_string());
+    predict_task["required_loss_attestations"] = serde_json::Value::Array(Vec::new());
+    let mut stale_task = fixture["tasks"]["FIT_CV"].clone();
+    stale_task["required_loss_attestations"] = serde_json::Value::Array(Vec::new());
 
     let target_debug = std::env::current_exe()
         .expect("current test exe path")
@@ -358,6 +493,10 @@ fn c_program_invokes_local_loss_and_metric_with_exact_lifecycle() {
         ("role.json", &fixture["training_loss_role"]),
         ("metric.json", &fixture["metric_reference"]),
         ("foreign_loss.json", &fixture["foreign_loss_reference"]),
+        ("fit_cv_task.json", &fixture["tasks"]["FIT_CV"]),
+        ("refit_task.json", &fixture["tasks"]["REFIT"]),
+        ("predict_task.json", &predict_task),
+        ("stale_task.json", &stale_task),
     ];
     for (name, document) in documents {
         fs::write(temp.join(name), serde_json::to_vec(document).unwrap())
@@ -394,6 +533,10 @@ fn c_program_invokes_local_loss_and_metric_with_exact_lifecycle() {
         .arg(temp.join("role.json"))
         .arg(temp.join("metric.json"))
         .arg(temp.join("foreign_loss.json"))
+        .arg(temp.join("fit_cv_task.json"))
+        .arg(temp.join("refit_task.json"))
+        .arg(temp.join("predict_task.json"))
+        .arg(temp.join("stale_task.json"))
         .output()
         .expect("run C local implementation executable");
     assert!(

@@ -99,32 +99,15 @@ impl LocalImplementationRegistry {
     ) -> Result<TrainingLossBinding, JsValue> {
         let role_index = parse_role_index(role_index).map_err(js_core_error)?;
         let task = parse_node_task(node_task_json)?;
-        if !matches!(task.phase, Phase::FitCv | Phase::Refit) {
-            return Err(js_core_error(CoreDagMlError::RuntimeValidation(
-                "training loss phase must be FIT_CV or REFIT".to_string(),
-            )));
-        }
-        task.validate_required_loss_attestations()
+        let (role, attestation) = task
+            .training_loss_binding(role_index)
             .map_err(js_core_error)?;
-        let roles = task
-            .node_plan
-            .training_losses_for_phase(task.phase)
-            .collect::<Vec<_>>();
-        let role = roles.get(role_index).ok_or_else(|| {
-            js_core_error(CoreDagMlError::RuntimeValidation(format!(
-                "role_index {role_index} is outside the active training loss range"
-            )))
-        })?;
         validate_javascript_descriptor(&role.loss.implementation)?;
         let implementation = self
             .registry
             .resolve_loss(&role.loss)
             .cloned()
             .map_err(js_core_error)?;
-        let attestation = task
-            .required_loss_attestations
-            .get(role_index)
-            .expect("validated loss requirements match active roles");
         let attestation_json = serde_json::to_string(attestation).map_err(js_serde_error)?;
         Ok(TrainingLossBinding {
             implementation,
