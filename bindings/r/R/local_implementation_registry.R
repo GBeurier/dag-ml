@@ -129,6 +129,142 @@
   )
 }
 
+.dagml_json_text <- function(value, label) {
+  if (is.character(value) && length(value) == 1L && !is.na(value)) {
+    return(value)
+  }
+  tryCatch(
+    jsonlite::toJSON(
+      value,
+      auto_unbox = TRUE,
+      null = "null",
+      digits = NA
+    ),
+    error = function(error) {
+      .dagml_stop(sprintf(
+        "%s must be JSON text or a JSON-serializable R value: %s",
+        label,
+        conditionMessage(error)
+      ))
+    }
+  )
+}
+
+.dagml_node_result_json <- function(value, task) {
+  if (is.character(value) && length(value) == 1L && !is.na(value)) {
+    result <- jsonlite::fromJSON(value, simplifyVector = FALSE)
+  } else {
+    result <- value
+  }
+  if (!is.list(result)) {
+    .dagml_stop("controller callback must return NodeResult JSON text or a list")
+  }
+  if (is.null(result$lineage) || !is.list(result$lineage)) {
+    .dagml_stop("controller callback NodeResult must contain lineage")
+  }
+  if (is.null(result$lineage$seed)) {
+    result$lineage$seed <- task$seed
+  }
+  .dagml_json_text(result, "NodeResult")
+}
+
+.dagml_controller_callbacks <- function(controllers) {
+  if (is.environment(controllers)) {
+    controllers <- as.list(controllers, all.names = TRUE)
+  }
+  if (!is.list(controllers)) {
+    .dagml_stop("controllers must be a named list or environment of functions")
+  }
+  controller_ids <- names(controllers)
+  if (is.null(controller_ids) || length(controller_ids) != length(controllers) ||
+      any(is.na(controller_ids)) || any(!nzchar(trimws(controller_ids))) ||
+      anyDuplicated(controller_ids)) {
+    .dagml_stop("controllers must be named by unique controller ids")
+  }
+  for (index in seq_along(controllers)) {
+    if (!is.function(controllers[[index]])) {
+      .dagml_stop("controller callbacks must be functions")
+    }
+  }
+  callbacks <- lapply(controllers, function(callback) {
+    force(callback)
+    function(controller_id, task_json) {
+      task <- jsonlite::fromJSON(task_json, simplifyVector = FALSE)
+      .dagml_node_result_json(callback(controller_id, task_json), task)
+    }
+  })
+  list(ids = unname(controller_ids), callbacks = callbacks)
+}
+
+#' Execute One ExecutionPlan Phase Through Native DAG-ML
+#'
+#' Runs the native sequential scheduler for one phase and dispatches each
+#' `NodeTask` to a process-local R callback. The callback can close over a
+#' `dagml_local_implementation_registry()` and call `invoke_training_loss()`
+#' with the exact `task_json` to execute host-local custom losses.
+#'
+#' @param execution_plan ExecutionPlan JSON text, or a JSON-serializable R value.
+#' @param trusted_controller_manifests ControllerManifest list JSON text, or a
+#'   JSON-serializable R value. The native core refuses execution if these do not
+#'   exactly match the manifests embedded in `execution_plan`.
+#' @param run_id DAG-ML run id for the phase execution.
+#' @param root_seed Non-negative safe integer root seed.
+#' @param phase ABI phase name such as `FIT_CV` or `REFIT`.
+#' @param controllers Named list or environment of callbacks keyed by
+#'   `controller_id`. Each callback receives `(controller_id, task_json)` and
+#'   returns NodeResult JSON text or a JSON-serializable list.
+#' @param native_library Path to the DAG-ML C ABI shared library. Defaults to
+#'   `DAGML_NATIVE_LIBRARY`.
+#' @return A list of decoded NodeResult objects.
+#' @export
+dagml_execute_execution_plan_phase <- function(
+  execution_plan,
+  trusted_controller_manifests,
+  run_id,
+  root_seed,
+  phase,
+  controllers,
+  native_library = Sys.getenv("DAGML_NATIVE_LIBRARY", unset = "")
+) {
+  run_id <- .dagml_scalar_text(run_id, "run_id")
+  phase <- .dagml_scalar_text(phase, "phase")
+  if (!phase %in% c("FIT_CV", "SELECT", "REFIT", "PREDICT", "EXPLAIN")) {
+    .dagml_stop("phase must be FIT_CV, SELECT, REFIT, PREDICT, or EXPLAIN")
+  }
+  if (!is.numeric(root_seed) || length(root_seed) != 1L ||
+      is.na(root_seed) || !is.finite(root_seed) ||
+      root_seed != floor(root_seed) || root_seed < 0 ||
+      root_seed > 9007199254740991) {
+    .dagml_stop("root_seed must be a non-negative safe integer")
+  }
+  if (!is.character(native_library) || length(native_library) != 1L ||
+      is.na(native_library)) {
+    .dagml_stop("native_library must be scalar text")
+  }
+  if (!nzchar(native_library)) {
+    .dagml_stop(paste(
+      "native DAG-ML library path is required; pass native_library",
+      "or set DAGML_NATIVE_LIBRARY"
+    ))
+  }
+  resolved <- .dagml_controller_callbacks(controllers)
+  result_json <- .Call(
+    C_dagml_execute_execution_plan_phase_native,
+    .dagml_json_text(execution_plan, "execution_plan"),
+    .dagml_json_text(
+      trusted_controller_manifests,
+      "trusted_controller_manifests"
+    ),
+    run_id,
+    as.double(root_seed),
+    phase,
+    resolved$ids,
+    resolved$callbacks,
+    native_library
+  )
+  jsonlite::fromJSON(result_json, simplifyVector = FALSE)
+}
+
 #' Create a process-local R implementation registry
 #'
 #' The registry retains R functions without serializing them. Losses and metrics

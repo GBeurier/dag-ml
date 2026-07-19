@@ -374,11 +374,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install GNU Octave
         run: sudo apt-get update && sudo apt-get install --yes octave octave-dev
-      - name: Build native task-binding bridges
+      - name: Build native MATLAB/Octave bridges
         run: |
           cargo build -p dag-ml-capi --release
           mkoctfile --mex bindings/matlab/native/task_training_loss_binding.c \
             -o bindings/matlab/+dagml/taskTrainingLossBindingNative.mex
+          mkoctfile --mex bindings/matlab/native/execution_plan_phase.c \
+            -o bindings/matlab/+dagml/executeExecutionPlanPhaseNative.mex
       - name: Test local implementation registry
         run: octave --no-gui --quiet --eval "addpath('bindings/matlab/tests'); local_implementation_registry"
         env:

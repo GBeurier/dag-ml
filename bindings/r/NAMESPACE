@@ -1,2 +1,3 @@
 useDynLib(dagml, .registration = TRUE, .fixes = "C_")
+export(dagml_execute_execution_plan_phase)
 export(dagml_local_implementation_registry)

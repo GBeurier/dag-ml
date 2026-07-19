@@ -6,17 +6,17 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "55d83a98e9884a5c2591f7fb7e4a40333cf6f6c8f9767f422289c1122b3cbc6d",
+      "sha256": "d257590e5618f5600b41ae769ca07afccd5fdde7e40ed8b0ccc98bbf1a998426",
       "kind": "ci_gate"
     },
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "de7541c3d8cc7372745ca43fe6d013a371a81e8a86986ca294e375ceb08697bc",
+      "sha256": "49e4c54cac3e0ea416537feb94e68fdb3bf6049ea424c26d407ef46d68ab8e36",
       "kind": "c_abi_header"
     },
     {
       "path": "crates/dag-ml-capi/src/lib.rs",
-      "sha256": "1de8f7f5113828668a6bdcbf9c292f934f9c741eaa634188243e601f574deb7a",
+      "sha256": "5fef9b1ea8cc648cd3b073a6a656c7207c793e922277397607fb2b3c5f26b4a4",
       "kind": "c_training_binding"
     },
     {
@@ -206,7 +206,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "1bd520b0b430162225487a4a70ea92a0356e4026f97cd4c2cd7d336f09cfc9cf",
+      "sha256": "8c3cc1925082feec45b3fdefd04043df44b277c75e4bcba24434311f573640c1",
       "kind": "c_abi_snapshot"
     },
     {
@@ -456,7 +456,7 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "f40ddbc67b87a7810bfec67938c31e5efc85ba8e742784d7ff2a923b261ffc10",
+      "sha256": "acf9dfe7342abbb398ae30d09c8724a3d6ec9031e9b37b9fa8c641884f63e0f3",
       "kind": "production_validator"
     }
   ],
@@ -529,5 +529,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "0219e3fc2c60ea786d0e6e266d19b0b2368b3400e654b2ac672f0d90877d228a"
+  "pack_checksum": "f1c99afbd979f492b1b89e8f509b9f77297f8d4337231ad8e5fc4165d4a7d364"
 }
