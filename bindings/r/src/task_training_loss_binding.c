@@ -86,10 +86,10 @@ static void dagml_require_scalar_string(SEXP value, const char *label) {
     }
 }
 
-static char *dagml_copy_error(DagMlString error) {
+static char *dagml_copy_error(DagMlString native_error) {
     const char *fallback = "DAG-ML native training loss binding failed without an error message";
-    size_t len = error.ptr ? error.len : strlen(fallback);
-    const char *source = error.ptr ? error.ptr : fallback;
+    size_t len = native_error.ptr ? native_error.len : strlen(fallback);
+    const char *source = native_error.ptr ? native_error.ptr : fallback;
     char *message = (char *)R_alloc(len + 1, sizeof(char));
     memcpy(message, source, len);
     message[len] = '\0';
@@ -141,22 +141,22 @@ SEXP dagml_task_training_loss_binding_native(
     DagMlBytesView task_view = {(const uint8_t *)task, (size_t)LENGTH(STRING_ELT(task_json, 0))};
     DagMlOwnedBytes role = {0};
     DagMlOwnedBytes attestation = {0};
-    DagMlString error = {0};
+    DagMlString native_error = {0};
     DagMlStatusCode status = bind_task(
-        task_view, (size_t)index, &role, &attestation, &error);
+        task_view, (size_t)index, &role, &attestation, &native_error);
 
     if (status != DAG_ML_STATUS_OK) {
-        char *message = dagml_copy_error(error);
+        char *message = dagml_copy_error(native_error);
         if (role.ptr) free_bytes(role);
         if (attestation.ptr) free_bytes(attestation);
-        if (error.ptr) free_string(error);
+        if (native_error.ptr) free_string(native_error);
         dagml_close_library(library);
         Rf_error("DAG-ML native training loss binding failed: %s", message);
     }
     if (!role.ptr || !attestation.ptr || role.len > INT_MAX || attestation.len > INT_MAX) {
         if (role.ptr) free_bytes(role);
         if (attestation.ptr) free_bytes(attestation);
-        if (error.ptr) free_string(error);
+        if (native_error.ptr) free_string(native_error);
         dagml_close_library(library);
         Rf_error("DAG-ML native training loss binding returned invalid output bytes");
     }
@@ -172,7 +172,7 @@ SEXP dagml_task_training_loss_binding_native(
         Rf_mkCharLenCE((const char *)attestation.ptr, (int)attestation.len, CE_UTF8));
     free_bytes(role);
     free_bytes(attestation);
-    if (error.ptr) free_string(error);
+    if (native_error.ptr) free_string(native_error);
     dagml_close_library(library);
 
     SEXP names = PROTECT(Rf_allocVector(STRSXP, 2));
