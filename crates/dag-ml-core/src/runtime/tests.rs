@@ -6484,6 +6484,14 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
     loss_task.node_plan.training_losses = vec![loss_role.clone()];
     loss_task.required_loss_attestations =
         NodeTask::required_loss_attestations_for(&loss_task.node_plan, loss_task.phase).unwrap();
+    let (bound_role, bound_attestation) = loss_task.training_loss_binding(0).unwrap();
+    assert_eq!(bound_role, &loss_role);
+    assert_eq!(bound_attestation, &loss_task.required_loss_attestations[0]);
+    assert!(loss_task
+        .training_loss_binding(1)
+        .unwrap_err()
+        .to_string()
+        .contains("outside the active training loss range"));
     assert_eq!(
         serde_json::to_value(&loss_task).unwrap()["required_loss_attestations"],
         serde_json::to_value(&loss_task.required_loss_attestations).unwrap()
@@ -6511,6 +6519,35 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         multi_output_task.phase,
     )
     .unwrap();
+    let (bound_second_role, bound_second_attestation) =
+        multi_output_task.training_loss_binding(1).unwrap();
+    assert_eq!(bound_second_role, &second_role);
+    assert_eq!(
+        bound_second_attestation,
+        &multi_output_task.required_loss_attestations[1]
+    );
+
+    let mut refit_only_role = loss_role.clone();
+    refit_only_role.output_id = Some("refit-only".to_string());
+    refit_only_role.phases = BTreeSet::from([Phase::Refit]);
+    let mut fit_only_role = loss_role.clone();
+    fit_only_role.output_id = Some("fit-only".to_string());
+    fit_only_role.phases = BTreeSet::from([Phase::FitCv]);
+    let mut phase_filtered_task = loss_task.clone();
+    phase_filtered_task.node_plan.training_losses = vec![refit_only_role, fit_only_role.clone()];
+    phase_filtered_task.required_loss_attestations = NodeTask::required_loss_attestations_for(
+        &phase_filtered_task.node_plan,
+        phase_filtered_task.phase,
+    )
+    .unwrap();
+    let (bound_fit_role, bound_fit_attestation) =
+        phase_filtered_task.training_loss_binding(0).unwrap();
+    assert_eq!(bound_fit_role, &fit_only_role);
+    assert_eq!(
+        bound_fit_attestation,
+        &phase_filtered_task.required_loss_attestations[0]
+    );
+
     let mut reversed = controller.invoke(&multi_output_task).unwrap();
     reversed.lineage.loss_attestations = vec![
         LossExecutionAttestation::for_role(&second_role, Phase::FitCv).unwrap(),
@@ -6551,6 +6588,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
 
     let mut stale_requirements = loss_task.clone();
     stale_requirements.required_loss_attestations.clear();
+    assert!(stale_requirements.training_loss_binding(0).is_err());
     assert!(controller
         .invoke(&stale_requirements)
         .unwrap()
@@ -6566,6 +6604,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         tampered_requirements.required_loss_attestations[0]
             .compute_fingerprint()
             .unwrap();
+    assert!(tampered_requirements.training_loss_binding(0).is_err());
     assert!(controller
         .invoke(&tampered_requirements)
         .unwrap()
@@ -6579,6 +6618,14 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
             .unwrap()
             .is_empty()
     );
+    let mut predict_task = loss_task;
+    predict_task.phase = Phase::Predict;
+    predict_task.required_loss_attestations.clear();
+    assert!(predict_task
+        .training_loss_binding(0)
+        .unwrap_err()
+        .to_string()
+        .contains("FIT_CV or REFIT"));
 }
 
 #[test]

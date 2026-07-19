@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use dag_ml_core::{
     deserialize_external_contract, DagMlError, ImplementationDescriptor,
     LocalImplementationRegistry as CoreLocalImplementationRegistry, LossExecutionAttestation,
-    LossReference, MetricReference, Phase, PortabilityClass, TrainingLossRoleReference,
+    LossReference, MetricReference, NodeTask, Phase, PortabilityClass, TrainingLossRoleReference,
 };
 
 use super::{
@@ -291,49 +291,57 @@ pub unsafe extern "C" fn dagml_local_implementation_registry_invoke_training_los
     out_attestation_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_result_json);
-    clear_owned_bytes(out_attestation_json);
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if out_result_json.is_null() || out_attestation_json.is_null() {
-            set_error(error_out, "training loss output pointer is null");
-            return DagMlStatusCode::INVALID_ARGUMENT;
-        }
-        let result = (|| -> dag_ml_core::Result<(Vec<u8>, Vec<u8>)> {
-            let registry = registry_ref(registry)?;
-            let role = parse_training_loss_role(training_loss_role_json)?;
-            validate_local_descriptor(registry, &role.loss.implementation)?;
-            let phase = parse_phase_for_registry(phase)?;
-            let attestation = LossExecutionAttestation::for_role(&role, phase)?;
-            validate_invocation_json(request_json)?;
-            let callback = registry_lock(registry)?.resolve_loss(&role.loss)?.clone();
-            let result = callback.invoke(request_json)?;
-            let attestation = serde_json::to_vec(&attestation).map_err(|error| {
-                DagMlError::RuntimeValidation(format!(
-                    "failed to serialize loss execution attestation: {error}"
-                ))
-            })?;
-            Ok((result, attestation))
-        })();
-        match result {
-            Ok((result, attestation)) => {
-                write_owned_vec(out_result_json, result);
-                write_owned_vec(out_attestation_json, attestation);
-                DagMlStatusCode::OK
-            }
-            Err(error) => validation_error(error_out, error),
-        }
-    })) {
-        Ok(status) => status,
-        Err(_) => {
-            clear_owned_bytes(out_result_json);
-            clear_owned_bytes(out_attestation_json);
-            panic_status(
-                error_out,
-                "panic while invoking training loss through C ABI",
-            )
-        }
-    }
+    training_invocation_boundary(out_result_json, out_attestation_json, error_out, || {
+        let registry = registry_ref(registry)?;
+        let role = parse_training_loss_role(training_loss_role_json)?;
+        validate_local_descriptor(registry, &role.loss.implementation)?;
+        let phase = parse_phase_for_registry(phase)?;
+        let attestation = LossExecutionAttestation::for_role(&role, phase)?;
+        validate_invocation_json(request_json)?;
+        let callback = registry_lock(registry)?.resolve_loss(&role.loss)?.clone();
+        let result = callback.invoke(request_json)?;
+        let attestation = serde_json::to_vec(&attestation).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to serialize loss execution attestation: {error}"
+            ))
+        })?;
+        Ok((result, attestation))
+    })
+}
+
+/// Resolves and invokes one active loss directly from an exact native
+/// `NodeTask`, returning the task-owned attestation only after callback success.
+///
+/// `role_index` is zero-based within the task's phase-filtered loss roles.
+///
+/// # Safety
+///
+/// Both output pointers must be writable. Both outputs are DAG-ML-owned bytes.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_local_implementation_registry_invoke_task_training_loss(
+    registry: *mut DagMlLocalImplementationRegistry,
+    node_task_json: DagMlBytesView,
+    role_index: usize,
+    request_json: DagMlBytesView,
+    out_result_json: *mut DagMlOwnedBytes,
+    out_attestation_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    training_invocation_boundary(out_result_json, out_attestation_json, error_out, || {
+        let registry = registry_ref(registry)?;
+        let task = parse_node_task(node_task_json)?;
+        let (role, attestation) = task.training_loss_binding(role_index)?;
+        validate_local_descriptor(registry, &role.loss.implementation)?;
+        validate_invocation_json(request_json)?;
+        let callback = registry_lock(registry)?.resolve_loss(&role.loss)?.clone();
+        let result = callback.invoke(request_json)?;
+        let attestation = serde_json::to_vec(attestation).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to serialize task loss execution attestation: {error}"
+            ))
+        })?;
+        Ok((result, attestation))
+    })
 }
 
 /// Invokes a registered local metric with an opaque, strict JSON request.
@@ -532,6 +540,11 @@ fn parse_training_loss_role(
     TrainingLossRoleReference::from_json(json)
 }
 
+fn parse_node_task(view: DagMlBytesView) -> dag_ml_core::Result<NodeTask> {
+    let json = unsafe { view_json(view, "node task") }?;
+    deserialize_external_contract(json, "node task", DagMlError::RuntimeValidation)
+}
+
 unsafe fn view_json<'a>(view: DagMlBytesView, label: &str) -> dag_ml_core::Result<&'a str> {
     if view.ptr.is_null() {
         return Err(DagMlError::RuntimeValidation(format!(
@@ -610,6 +623,41 @@ unsafe fn invocation_boundary(
             panic_status(
                 error_out,
                 &format!("panic during local implementation {label} through C ABI"),
+            )
+        }
+    }
+}
+
+unsafe fn training_invocation_boundary(
+    out_result_json: *mut DagMlOwnedBytes,
+    out_attestation_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+    operation: impl FnOnce() -> dag_ml_core::Result<(Vec<u8>, Vec<u8>)>,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_result_json);
+    clear_owned_bytes(out_attestation_json);
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if out_result_json.is_null() || out_attestation_json.is_null() {
+            set_error(error_out, "training loss output pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        match operation() {
+            Ok((result, attestation)) => {
+                write_owned_vec(out_result_json, result);
+                write_owned_vec(out_attestation_json, attestation);
+                DagMlStatusCode::OK
+            }
+            Err(error) => validation_error(error_out, error),
+        }
+    })) {
+        Ok(status) => status,
+        Err(_) => {
+            clear_owned_bytes(out_result_json);
+            clear_owned_bytes(out_attestation_json);
+            panic_status(
+                error_out,
+                "panic while invoking training loss through C ABI",
             )
         }
     }
