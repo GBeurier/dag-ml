@@ -36,7 +36,7 @@
     },
     {
       "path": "bindings/r/src/task_training_loss_binding.c",
-      "sha256": "37d6b5890dec62f86ef3c2701d8796f0dc2a8deb48f881989d3ce997eb4c19a1",
+      "sha256": "5f636581a913b56a826e68b610f977142f14e49624ebcda79d651a3ef9eb3343",
       "kind": "r_native_bridge"
     },
     {
@@ -255,5 +255,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "8efe93f249a50645e6d18a7bcada8778fd8b7790dc1b28320da291f5fb3e3e00"
+  "pack_checksum": "159db3ca412caef3dd4f6494e3d238b4f4833cd6db381cba0178b4f4d3da8108"
 }
