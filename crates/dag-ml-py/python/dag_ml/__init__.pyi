@@ -233,6 +233,21 @@ def build_execution_plan(
     campaign: Any,
     controller_manifests: Any,
 ) -> ExecutionPlan: ...
+def run_cv_refit_in_process(
+    dsl: Any,
+    envelope: Any,
+    controller_manifests: Any,
+    op_callback: Any,
+    selection_metric: str = "rmse",
+) -> dict[str, Any]: ...
+def run_cv_refit_in_process_with_training_losses(
+    dsl: Any,
+    envelope: Any,
+    controller_manifests: Any,
+    training_loss_roles: Any,
+    op_callback: Any,
+    selection_metric: str = "rmse",
+) -> dict[str, Any]: ...
 def sign_training_request(request: Any) -> TrainingRequest: ...
 def project_training_request(request: Any) -> TrainingContractProjection: ...
 def execute_training_json(
