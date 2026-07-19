@@ -4,10 +4,17 @@ classdef LocalImplementationRegistry < handle
     properties (Access = private)
         BindingId = 'binding:matlab'
         Entries
+        NativeLibrary
     end
 
     methods
-        function self = LocalImplementationRegistry()
+        function self = LocalImplementationRegistry(nativeLibrary)
+            if nargin < 1
+                nativeLibrary = getenv('DAGML_NATIVE_LIBRARY');
+            end
+            self.NativeLibrary = ...
+                dagml.LocalImplementationRegistry.optionalScalarText( ...
+                nativeLibrary, 'native library');
             self.Entries = containers.Map('KeyType', 'char', 'ValueType', 'any');
         end
 
@@ -54,45 +61,27 @@ classdef LocalImplementationRegistry < handle
             if nargin < 3 || isempty(roleIndex)
                 roleIndex = 1;
             end
-            if ~isstruct(task) || ~isscalar(task) || ~isfield(task, 'node_plan') || ...
-                    ~isstruct(task.node_plan) || ~isscalar(task.node_plan)
-                error('dagml:LocalImplementationRegistry:InvalidTask', ...
-                    'Training loss invocation requires a DAG-ML NodeTask.');
-            end
-
-            phase = dagml.LocalImplementationRegistry.scalarText(task.phase, 'task phase');
-            if ~any(strcmp(phase, {'FIT_CV', 'REFIT'}))
-                error('dagml:LocalImplementationRegistry:InvalidPhase', ...
-                    'Training loss phase must be FIT_CV or REFIT.');
-            end
-
-            roles = dagml.LocalImplementationRegistry.collection(task.node_plan, 'training_losses');
-            activeRoles = {};
-            for index = 1:numel(roles)
-                if dagml.LocalImplementationRegistry.roleApplies(roles{index}, phase)
-                    activeRoles{end + 1} = roles{index}; %#ok<AGROW>
-                end
-            end
-            requirements = dagml.LocalImplementationRegistry.collection( ...
-                task, 'required_loss_attestations');
-            if numel(activeRoles) ~= numel(requirements)
-                error('dagml:LocalImplementationRegistry:RequirementCount', ...
-                    'Task loss execution requirement count does not match active roles.');
-            end
             if ~isnumeric(roleIndex) || ~isscalar(roleIndex) || ...
                     ~isfinite(roleIndex) || fix(roleIndex) ~= roleIndex || ...
-                    roleIndex < 1 || roleIndex > numel(activeRoles)
+                    roleIndex < 1 || roleIndex > flintmax
                 error('dagml:LocalImplementationRegistry:RoleIndex', ...
-                    'roleIndex is outside the active training loss range.');
+                    'roleIndex must be a positive safe integer.');
             end
-
-            role = activeRoles{roleIndex};
-            requirement = requirements{roleIndex};
-            dagml.LocalImplementationRegistry.validateRequirement(task, role, requirement);
-            implementation = self.resolveTrainingLoss(role, phase);
+            if isempty(self.NativeLibrary)
+                error('dagml:LocalImplementationRegistry:NativeLibrary', ...
+                    ['Native DAG-ML library path is required; pass it to the ' ...
+                    'constructor or set DAGML_NATIVE_LIBRARY.']);
+            end
+            taskJSON = dagml.LocalImplementationRegistry.nodeTaskJSON(task);
+            [roleJSON, attestationJSON] = ...
+                dagml.taskTrainingLossBindingNative( ...
+                taskJSON, roleIndex - 1, self.NativeLibrary);
+            role = jsondecode(roleJSON);
+            requiredAttestation = jsondecode(attestationJSON);
+            implementation = self.resolveImplementation(role.loss, 'loss');
 
             value = implementation(varargin{:});
-            attestation = requirement;
+            attestation = requiredAttestation;
         end
 
         function implementation = unregisterLoss(self, lossReference)
@@ -237,22 +226,20 @@ classdef LocalImplementationRegistry < handle
             end
         end
 
-        function result = collection(value, field)
-            if ~isstruct(value) || ~isscalar(value) || ~isfield(value, field) || ...
-                    isempty(value.(field))
-                result = {};
-                return;
-            end
-            raw = value.(field);
-            if iscell(raw)
-                result = reshape(raw, 1, []);
-            elseif isstruct(raw)
-                result = arrayfun(@(item) item, raw, 'UniformOutput', false);
-                result = reshape(result, 1, []);
+        function result = optionalScalarText(value, label)
+            if ischar(value) && (isrow(value) || isempty(value))
+                result = value;
+            elseif isstring(value) && isscalar(value)
+                result = char(value);
             else
-                error('dagml:LocalImplementationRegistry:InvalidCollection', ...
-                    '%s must be an array of objects.', field);
+                error('dagml:LocalImplementationRegistry:InvalidText', ...
+                    '%s must be scalar text.', label);
             end
+        end
+
+        function result = nodeTaskJSON(task)
+            result = dagml.LocalImplementationRegistry.scalarText( ...
+                task, 'NodeTask JSON');
         end
 
         function result = roleApplies(role, phase)
@@ -276,57 +263,6 @@ classdef LocalImplementationRegistry < handle
                 error('dagml:LocalImplementationRegistry:InvalidRole', ...
                     'Training loss role phases must be text values.');
             end
-        end
-
-        function validateRequirement(task, role, requirement)
-            if ~isstruct(requirement) || ~isscalar(requirement)
-                error('dagml:LocalImplementationRegistry:InvalidRequirement', ...
-                    'Loss execution requirement must be an object.');
-            end
-            if ~isfield(role, 'loss') || ~isstruct(role.loss) || ...
-                    ~isfield(role.loss, 'spec') || ~isfield(role.loss, 'implementation')
-                error('dagml:LocalImplementationRegistry:InvalidRole', ...
-                    'Training loss role contains an invalid loss reference.');
-            end
-            if ~isfield(role, 'node_id') || ...
-                    ~dagml.LocalImplementationRegistry.sameJSONValue( ...
-                    role.node_id, task.node_plan.node_id)
-                error('dagml:LocalImplementationRegistry:NodeMismatch', ...
-                    'Training loss role node_id does not match the task node.');
-            end
-            if ~isfield(requirement, 'schema_version') || ...
-                    ~dagml.LocalImplementationRegistry.sameJSONValue( ...
-                    requirement.schema_version, 1)
-                error('dagml:LocalImplementationRegistry:SchemaVersion', ...
-                    'Loss execution requirement schema_version must be 1.');
-            end
-
-            spec = role.loss.spec;
-            implementation = role.loss.implementation;
-            expectedFields = { ...
-                'node_id', task.node_plan.node_id; ...
-                'output_id', role.output_id; ...
-                'phase', task.phase; ...
-                'loss_id', spec.loss_id; ...
-                'semantic_fingerprint', spec.spec_fingerprint; ...
-                'implementation_fingerprint', implementation.implementation_fingerprint; ...
-                'descriptor_fingerprint', implementation.descriptor_fingerprint; ...
-                'effective_parameters', spec.parameters; ...
-                'reduction', spec.reduction ...
-            };
-            for index = 1:size(expectedFields, 1)
-                field = expectedFields{index, 1};
-                if ~isfield(requirement, field) || ...
-                        ~dagml.LocalImplementationRegistry.sameJSONValue( ...
-                        requirement.(field), expectedFields{index, 2})
-                    error('dagml:LocalImplementationRegistry:RequirementMismatch', ...
-                        ['Loss execution requirement field ''%s'' does not match ' ...
-                        'the training role.'], field);
-                end
-            end
-            dagml.LocalImplementationRegistry.requiredText( ...
-                requirement, 'attestation_fingerprint', ...
-                'loss execution requirement attestation_fingerprint');
         end
 
         function result = sameJSONValue(left, right)

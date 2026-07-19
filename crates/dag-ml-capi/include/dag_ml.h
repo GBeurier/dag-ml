@@ -369,6 +369,17 @@ void dagml_f64_tensor_free(DagMlF64Tensor value);
 void dagml_f64_columnar_tensor_free(DagMlF64ColumnarTensor value);
 void dagml_f32_tensor_free(DagMlF32Tensor value);
 void dagml_f32_columnar_tensor_free(DagMlF32ColumnarTensor value);
+/* Select one zero-based, phase-filtered training-loss role from an exact
+ * NodeTask. This validation-only entry point returns the native role and the
+ * task-owned attestation without invoking a host callback, so runtimes can
+ * keep tensors and executable functions local. Both outputs are released with
+ * dagml_owned_bytes_free. */
+DagMlStatusCode dagml_node_task_training_loss_binding(
+    DagMlBytesView node_task_json,
+    size_t role_index,
+    DagMlOwnedBytes *out_training_loss_role_json,
+    DagMlOwnedBytes *out_attestation_json,
+    DagMlString *error_out);
 /* Local callbacks are resolved by the complete validated loss/metric
  * descriptor, not only by registry_key. invoke_training_loss accepts only
  * FIT_CV/REFIT and emits a DAG-ML-owned attestation after callback success.

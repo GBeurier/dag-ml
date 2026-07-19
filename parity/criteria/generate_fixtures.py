@@ -30,9 +30,11 @@ MATLAB_FIXTURE = ROOT / "bindings/matlab/fixtures/matlab_local_implementations.v
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
 ARTIFACTS = {
     "bindings/matlab/+dagml/LocalImplementationRegistry.m": "matlab_local_registry",
+    "bindings/matlab/native/task_training_loss_binding.c": "matlab_native_bridge",
     "bindings/matlab/fixtures/matlab_local_implementations.v1.json": "fixture",
     "bindings/matlab/tests/local_implementation_registry.m": "matlab_binding_test",
     "bindings/r/R/local_implementation_registry.R": "r_local_registry",
+    "bindings/r/src/task_training_loss_binding.c": "r_native_bridge",
     "bindings/r/inst/extdata/r_local_implementations.v1.json": "fixture",
     "bindings/r/tests/local_implementation_registry.R": "r_binding_test",
     "examples/fixtures/criteria/python_local_implementations.v1.json": "fixture",
@@ -153,6 +155,7 @@ def build_host_language_fixture(
     language: str,
     binding_id: str,
     extra_capabilities: tuple[str, ...] = (),
+    include_task_json: bool = False,
 ) -> dict[str, Any]:
     loss_implementation = copy.deepcopy(valid["loss_implementation"])
     loss_implementation.update(
@@ -211,15 +214,43 @@ def build_host_language_fixture(
 
     role = copy.deepcopy(valid["training_loss_role"])
     role["loss"] = copy.deepcopy(loss_reference)
-    return {
+    tasks = build_local_training_tasks(role, language=language)
+
+    fixture: dict[str, Any] = {
         "profile": f"dagml.{language}-local-implementations.v1",
         "canonicalization": "TCV1-unicode-17.0.0",
         "loss_reference": loss_reference,
         "foreign_loss_reference": foreign_loss_reference,
         "training_loss_role": role,
         "metric_reference": metric_reference,
-        "tasks": build_local_training_tasks(role, language=language),
+        "tasks": tasks,
     }
+    if include_task_json:
+        invalid_tasks = {
+            "predict": copy.deepcopy(tasks["FIT_CV"]),
+            "tampered_attestation": copy.deepcopy(tasks["FIT_CV"]),
+            "wrong_attestation_schema": copy.deepcopy(tasks["FIT_CV"]),
+            "missing_attestation": copy.deepcopy(tasks["FIT_CV"]),
+        }
+        invalid_tasks["predict"]["phase"] = "PREDICT"
+        invalid_tasks["tampered_attestation"]["required_loss_attestations"][0][
+            "implementation_fingerprint"
+        ] = "tampered"
+        invalid_tasks["wrong_attestation_schema"]["required_loss_attestations"][0][
+            "schema_version"
+        ] = 2
+        invalid_tasks["missing_attestation"]["required_loss_attestations"] = []
+
+        def encode(value: dict[str, Any]) -> str:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+        fixture["task_json"] = {
+            phase: encode(task) for phase, task in tasks.items()
+        }
+        fixture["invalid_task_json"] = {
+            name: encode(task) for name, task in invalid_tasks.items()
+        }
+    return fixture
 
 
 def build_c_fixture(valid: dict[str, Any]) -> dict[str, Any]:
@@ -613,10 +644,15 @@ def main() -> None:
     )
     python_fixture["metric_task"] = python_metric_task
     write(PYTHON_FIXTURE, python_fixture)
-    r_fixture = build_host_language_fixture(valid, language="r", binding_id="binding:r")
+    r_fixture = build_host_language_fixture(
+        valid, language="r", binding_id="binding:r", include_task_json=True
+    )
     write(R_FIXTURE, r_fixture)
     matlab_fixture = build_host_language_fixture(
-        valid, language="matlab", binding_id="binding:matlab"
+        valid,
+        language="matlab",
+        binding_id="binding:matlab",
+        include_task_json=True,
     )
     write(MATLAB_FIXTURE, matlab_fixture)
 

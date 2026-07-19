@@ -19,11 +19,13 @@ phases = {'FIT_CV', 'REFIT'};
 for index = 1:numel(phases)
     phase = phases{index};
     [value, attestation] = registry.invokeTrainingLoss( ...
-        fixture.tasks.(phase), 1, [2, 4], [5, 3]);
+        fixture.task_json.(phase), 1, [2, 4], [5, 3]);
     assert(abs(value - 5.5) < eps);
     assert(strcmp(attestation.phase, phase));
     assert(strcmp(attestation.descriptor_fingerprint, ...
         fixture.loss_reference.implementation.descriptor_fingerprint));
+    assert(isequal(attestation, ...
+        fixture.tasks.(phase).required_loss_attestations));
 end
 assert(DAGML_TEST_LOSS_CALLS == 2);
 
@@ -31,10 +33,8 @@ metricValue = registry.invokeMetric( ...
     fixture.metric_reference, [2, 4], [5, 3]);
 assert(abs(metricValue - 1) < eps);
 
-predictTask = fixture.tasks.FIT_CV;
-predictTask.phase = 'PREDICT';
 assertThrows(@() registry.invokeTrainingLoss( ...
-    predictTask, 1, 2, 5), 'FIT_CV or REFIT');
+    fixture.invalid_task_json.predict, 1, 2, 5), 'FIT_CV or REFIT');
 assert(DAGML_TEST_LOSS_CALLS == 2);
 
 assertThrows(@() registry.registerLoss( ...
@@ -56,30 +56,44 @@ drifted = fixture.loss_reference;
 drifted.implementation.implementation_version = '2.0.0';
 assertThrows(@() registry.resolveLoss(drifted), 'does not match');
 
-tamperedTask = fixture.tasks.FIT_CV;
-tamperedTask.required_loss_attestations.implementation_fingerprint = 'tampered';
 assertThrows(@() registry.invokeTrainingLoss( ...
-    tamperedTask, 1, 2, 5), 'implementation_fingerprint');
+    fixture.invalid_task_json.tampered_attestation, 1, 2, 5), ...
+    'requirements that do not match');
 assert(DAGML_TEST_LOSS_CALLS == 2);
 
-wrongSchemaTask = fixture.tasks.FIT_CV;
-wrongSchemaTask.required_loss_attestations.schema_version = 2;
 assertThrows(@() registry.invokeTrainingLoss( ...
-    wrongSchemaTask, 1, 2, 5), 'schema_version');
+    fixture.invalid_task_json.wrong_attestation_schema, 1, 2, 5), ...
+    'requirements that do not match');
 assert(DAGML_TEST_LOSS_CALLS == 2);
 
-missingRequirementTask = fixture.tasks.FIT_CV;
-missingRequirementTask.required_loss_attestations = struct([]);
 assertThrows(@() registry.invokeTrainingLoss( ...
-    missingRequirementTask, 1, 2, 5), 'count does not match');
+    fixture.invalid_task_json.missing_attestation, 1, 2, 5), ...
+    'requirements that do not match');
 assertThrows(@() registry.invokeTrainingLoss( ...
-    fixture.tasks.FIT_CV, 2, 2, 5), 'outside the active');
+    fixture.task_json.FIT_CV, 2, 2, 5), 'outside the active');
+assert(DAGML_TEST_LOSS_CALLS == 2);
+
+withoutNative = dagml.LocalImplementationRegistry('');
+withoutNative.registerLoss(fixture.loss_reference, @asymmetricLoss);
+assertThrows(@() withoutNative.invokeTrainingLoss( ...
+    fixture.task_json.FIT_CV, 1, 2, 5), 'DAGML_NATIVE_LIBRARY');
+assert(DAGML_TEST_LOSS_CALLS == 2);
+
+invalidNative = dagml.LocalImplementationRegistry('/dagml/does/not/exist');
+invalidNative.registerLoss(fixture.loss_reference, @asymmetricLoss);
+assertThrows(@() invalidNative.invokeTrainingLoss( ...
+    fixture.task_json.FIT_CV, 1, 2, 5), ...
+    'Failed to load DAG-ML native library');
+assert(DAGML_TEST_LOSS_CALLS == 2);
+
+assertThrows(@() registry.invokeTrainingLoss( ...
+    fixture.tasks.FIT_CV, 1, 2, 5), 'NodeTask JSON');
 assert(DAGML_TEST_LOSS_CALLS == 2);
 
 failing = dagml.LocalImplementationRegistry();
 failing.registerLoss(fixture.loss_reference, @failingLoss);
 assertThrows(@() failing.invokeTrainingLoss( ...
-    fixture.tasks.FIT_CV, 1, 2, 5), 'local failure');
+    fixture.task_json.FIT_CV, 1, 2, 5), 'local failure');
 
 assertThrows(@() registry.toJSON(), 'cannot be serialized');
 assertThrows(@() registry.saveobj(), 'cannot be serialized');

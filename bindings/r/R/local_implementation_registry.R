@@ -106,58 +106,50 @@
   is.character(phases) && phase %in% phases
 }
 
-.dagml_validate_requirement <- function(task, role, requirement) {
-  if (!is.list(requirement)) {
-    .dagml_stop("loss execution requirement must be an object")
+.dagml_task_training_loss_binding <- function(task, role_index, native_library) {
+  if (!nzchar(native_library)) {
+    .dagml_stop(paste(
+      "native DAG-ML library path is required; pass native_library",
+      "or set DAGML_NATIVE_LIBRARY"
+    ))
   }
-  loss <- role$loss
-  if (!is.list(loss) || !is.list(loss$spec) || !is.list(loss$implementation)) {
-    .dagml_stop("training loss role contains an invalid loss reference")
-  }
-  if (!.dagml_same_json_value(role$node_id, task$node_plan$node_id)) {
-    .dagml_stop("training loss role node_id does not match the task node")
-  }
-  if (!.dagml_same_json_value(requirement$schema_version, 1)) {
-    .dagml_stop("loss execution requirement schema_version must be 1")
-  }
-  expected <- list(
-    node_id = task$node_plan$node_id,
-    output_id = role$output_id,
-    phase = task$phase,
-    loss_id = loss$spec$loss_id,
-    semantic_fingerprint = loss$spec$spec_fingerprint,
-    implementation_fingerprint = loss$implementation$implementation_fingerprint,
-    descriptor_fingerprint = loss$implementation$descriptor_fingerprint,
-    effective_parameters = loss$spec$parameters,
-    reduction = loss$spec$reduction
+  task_json <- .dagml_scalar_text(task, "NodeTask JSON")
+  native <- .Call(
+    C_dagml_task_training_loss_binding_native,
+    task_json,
+    as.double(role_index - 1L),
+    native_library
   )
-  for (field in names(expected)) {
-    if (!.dagml_same_json_value(requirement[[field]], expected[[field]])) {
-      .dagml_stop(sprintf(
-        "loss execution requirement field '%s' does not match the training role",
-        field
-      ))
-    }
-  }
-  .dagml_scalar_text(
-    requirement$attestation_fingerprint,
-    "loss execution requirement attestation_fingerprint"
+  list(
+    role = jsonlite::fromJSON(native[["role_json"]], simplifyVector = FALSE),
+    attestation = jsonlite::fromJSON(
+      native[["attestation_json"]],
+      simplifyVector = FALSE
+    )
   )
-  invisible(requirement)
 }
 
 #' Create a process-local R implementation registry
 #'
 #' The registry retains R functions without serializing them. Losses and metrics
 #' use separate resolution paths. `invoke_training_loss()` accepts a native
-#' DAG-ML `NodeTask`, executes the selected local loss, and returns its native
-#' attestation only after the function succeeds.
+#' DAG-ML `NodeTask` JSON, executes the selected local loss, and returns its
+#' native attestation only after the function succeeds.
 #'
+#' @param native_library Path to the DAG-ML C ABI shared library. Defaults to
+#'   the `DAGML_NATIVE_LIBRARY` environment variable and is required only for
+#'   task-bound training-loss invocation.
 #' @return An environment with registration, resolution, invocation,
 #'   unregistration, inspection, and lifecycle methods.
 #' @export
-dagml_local_implementation_registry <- function() {
+dagml_local_implementation_registry <- function(
+  native_library = Sys.getenv("DAGML_NATIVE_LIBRARY", unset = "")
+) {
   binding_id <- "binding:r"
+  if (!is.character(native_library) || length(native_library) != 1L ||
+      is.na(native_library)) {
+    .dagml_stop("native_library must be scalar text")
+  }
   entries <- new.env(hash = TRUE, parent = emptyenv())
   api <- new.env(parent = emptyenv())
 
@@ -237,36 +229,20 @@ dagml_local_implementation_registry <- function() {
     do.call(resolve(metric_reference, "metric"), list(...), envir = parent.frame())
   }
   api$invoke_training_loss <- function(task, role_index = 1L, ...) {
-    if (!is.list(task) || !is.list(task$node_plan)) {
-      .dagml_stop("training loss invocation requires a DAG-ML NodeTask")
-    }
-    phase <- .dagml_scalar_text(task$phase, "task phase")
-    if (!phase %in% c("FIT_CV", "REFIT")) {
-      .dagml_stop("training loss phase must be FIT_CV or REFIT")
-    }
-    roles <- task$node_plan$training_losses
-    if (is.null(roles)) roles <- list()
-    active_roles <- Filter(
-      function(role) .dagml_role_applies(role, phase),
-      roles
-    )
-    requirements <- task$required_loss_attestations
-    if (is.null(requirements)) requirements <- list()
-    if (length(active_roles) != length(requirements)) {
-      .dagml_stop("task loss execution requirement count does not match active roles")
-    }
     if (!is.numeric(role_index) || length(role_index) != 1L ||
         is.na(role_index) || !is.finite(role_index) ||
-        role_index != as.integer(role_index) ||
-        role_index < 1L || role_index > length(active_roles)) {
-      .dagml_stop("role_index is outside the active training loss range")
+        role_index != floor(role_index) || role_index < 1 ||
+        role_index > 9007199254740992) {
+      .dagml_stop("role_index must be a positive integer")
     }
-    role <- active_roles[[as.integer(role_index)]]
-    requirement <- requirements[[as.integer(role_index)]]
-    .dagml_validate_requirement(task, role, requirement)
-    implementation <- api$resolve_training_loss(role, phase)
+    binding <- .dagml_task_training_loss_binding(
+      task,
+      role_index,
+      native_library
+    )
+    implementation <- resolve(binding$role$loss, "loss")
     value <- do.call(implementation, list(...), envir = parent.frame())
-    list(value = value, attestation = requirement)
+    list(value = value, attestation = binding$attestation)
   }
   api$unregister_loss <- function(loss_reference) {
     unregister(loss_reference, "loss")

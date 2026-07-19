@@ -1,1 +1,2 @@
+useDynLib(dagml, .registration = TRUE, .fixes = "C_")
 export(dagml_local_implementation_registry)

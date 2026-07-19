@@ -76,16 +76,19 @@ local callback before execution or replay.
 The R binding exposes `dagml_local_implementation_registry()`. It retains R
 functions for `binding:r` descriptors, keeps loss and metric resolution paths
 separate, and invokes active training losses directly in `FIT_CV` and `REFIT`.
-Its training invocation consumes the native `NodeTask` requirement and returns
-that attestation only after the R function succeeds; the binding never computes
-TCV1 fingerprints or writes a function into DAG JSON.
+Its compiled bridge asks the C ABI to select the active role and task-owned
+attestation from the exact native `NodeTask` JSON, then invokes the R function
+on R-owned values. The attestation is exposed only after the function succeeds;
+the binding never computes TCV1 fingerprints or writes a function into DAG
+JSON.
 
 The MATLAB/Octave binding exposes `dagml.LocalImplementationRegistry`. It
 retains local `function_handle` objects for `binding:matlab` descriptors and
 uses the same separate loss and metric paths. `invokeTrainingLoss` validates a
-native `NodeTask` requirement for `FIT_CV` or `REFIT`, executes the selected
-function, and exposes the native-produced attestation only after success. Each
-MATLAB process, parallel worker, or Octave process owns an independent registry.
+native `NodeTask` JSON through the C ABI MEX bridge, executes the selected
+function on MATLAB-owned values, and exposes the task-owned attestation only
+after success. Each MATLAB process, parallel worker, or Octave process owns an
+independent registry.
 
 `TrainingRequest.training_losses` is the authoritative pipeline assignment.
 Each role targets a node and an optional controller-local output/head and lists
@@ -138,7 +141,9 @@ registry is scoped to an explicit binding identity (`binding:c`, `binding:r`,
 balanced optional `retain`/`release` hooks, and copies callback-owned result
 JSON before invoking its required `release_bytes` hook. Training-loss
 invocation is limited to `FIT_CV` and `REFIT` and returns the common attestation
-only after callback success. Host exceptions must be caught by the language
-trampoline and returned as `DAG_ML_STATUS_PANIC`; no unwind may cross the C
-boundary. Each process or worker owns a separate registry and must register its
-local runtime objects.
+only after callback success. The validation-only
+`dagml_node_task_training_loss_binding` entry point returns the exact active role
+and task-owned attestation without routing host tensors through JSON; R and
+MATLAB use it before executing their local functions. Host exceptions must be
+caught by callback trampolines; no unwind may cross the C boundary. Each process
+or worker owns a separate registry and must register its local runtime objects.
