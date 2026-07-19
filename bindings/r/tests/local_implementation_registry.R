@@ -29,7 +29,7 @@ stopifnot(length(registry$descriptors()) == 2L)
 
 for (phase in c("FIT_CV", "REFIT")) {
   invocation <- registry$invoke_training_loss(
-    fixture$tasks[[phase]],
+    fixture$task_json[[phase]],
     target = c(2, 4),
     prediction = c(5, 3)
   )
@@ -39,6 +39,10 @@ for (phase in c("FIT_CV", "REFIT")) {
     invocation$attestation$descriptor_fingerprint,
     fixture$loss_reference$implementation$descriptor_fingerprint
   ))
+  stopifnot(isTRUE(all.equal(
+    invocation$attestation,
+    fixture$tasks[[phase]]$required_loss_attestations[[1]]
+  )))
 }
 stopifnot(calls == 2L)
 
@@ -51,11 +55,9 @@ stopifnot(isTRUE(all.equal(
   1
 )))
 
-predict_task <- fixture$tasks$FIT_CV
-predict_task$phase <- "PREDICT"
 error <- tryCatch(
   registry$invoke_training_loss(
-    predict_task,
+    fixture$invalid_task_json$predict,
     target = 2,
     prediction = 5
   ),
@@ -101,45 +103,51 @@ drifted$implementation$implementation_version <- "2.0.0"
 error <- tryCatch(registry$resolve_loss(drifted), error = identity)
 stopifnot(inherits(error, "error"))
 
-tampered <- fixture$tasks$FIT_CV
-tampered$required_loss_attestations[[1]]$implementation_fingerprint <- "tampered"
 error <- tryCatch(
-  registry$invoke_training_loss(tampered, target = 2, prediction = 5),
+  registry$invoke_training_loss(
+    fixture$invalid_task_json$tampered_attestation,
+    target = 2,
+    prediction = 5
+  ),
   error = identity
 )
 stopifnot(
   inherits(error, "error"),
-  grepl("implementation_fingerprint", conditionMessage(error)),
-  calls == 2L
-)
-
-wrong_schema <- fixture$tasks$FIT_CV
-wrong_schema$required_loss_attestations[[1]]$schema_version <- 2
-error <- tryCatch(
-  registry$invoke_training_loss(wrong_schema, target = 2, prediction = 5),
-  error = identity
-)
-stopifnot(
-  inherits(error, "error"),
-  grepl("schema_version", conditionMessage(error)),
-  calls == 2L
-)
-
-missing_requirement <- fixture$tasks$FIT_CV
-missing_requirement$required_loss_attestations <- list()
-error <- tryCatch(
-  registry$invoke_training_loss(missing_requirement, target = 2, prediction = 5),
-  error = identity
-)
-stopifnot(
-  inherits(error, "error"),
-  grepl("count does not match", conditionMessage(error)),
+  grepl("requirements that do not match", conditionMessage(error)),
   calls == 2L
 )
 
 error <- tryCatch(
   registry$invoke_training_loss(
-    fixture$tasks$FIT_CV,
+    fixture$invalid_task_json$wrong_attestation_schema,
+    target = 2,
+    prediction = 5
+  ),
+  error = identity
+)
+stopifnot(
+  inherits(error, "error"),
+  grepl("requirements that do not match", conditionMessage(error)),
+  calls == 2L
+)
+
+error <- tryCatch(
+  registry$invoke_training_loss(
+    fixture$invalid_task_json$missing_attestation,
+    target = 2,
+    prediction = 5
+  ),
+  error = identity
+)
+stopifnot(
+  inherits(error, "error"),
+  grepl("requirements that do not match", conditionMessage(error)),
+  calls == 2L
+)
+
+error <- tryCatch(
+  registry$invoke_training_loss(
+    fixture$task_json$FIT_CV,
     role_index = 2L,
     target = 2,
     prediction = 5
@@ -152,11 +160,59 @@ stopifnot(
   calls == 2L
 )
 
+without_native <- dagml_local_implementation_registry(native_library = "")
+without_native$register_loss(fixture$loss_reference, asymmetric_loss)
+error <- tryCatch(
+  without_native$invoke_training_loss(
+    fixture$task_json$FIT_CV,
+    target = 2,
+    prediction = 5
+  ),
+  error = identity
+)
+stopifnot(
+  inherits(error, "error"),
+  grepl("DAGML_NATIVE_LIBRARY", conditionMessage(error)),
+  calls == 2L
+)
+
+invalid_native <- dagml_local_implementation_registry(
+  native_library = "/dagml/does/not/exist"
+)
+invalid_native$register_loss(fixture$loss_reference, asymmetric_loss)
+error <- tryCatch(
+  invalid_native$invoke_training_loss(
+    fixture$task_json$FIT_CV,
+    target = 2,
+    prediction = 5
+  ),
+  error = identity
+)
+stopifnot(
+  inherits(error, "error"),
+  grepl("failed to load DAG-ML native library", conditionMessage(error)),
+  calls == 2L
+)
+
+error <- tryCatch(
+  registry$invoke_training_loss(
+    fixture$tasks$FIT_CV,
+    target = 2,
+    prediction = 5
+  ),
+  error = identity
+)
+stopifnot(
+  inherits(error, "error"),
+  grepl("NodeTask JSON", conditionMessage(error)),
+  calls == 2L
+)
+
 failing <- dagml_local_implementation_registry()
 failing$register_loss(fixture$loss_reference, function(...) stop("local failure"))
 error <- tryCatch(
   failing$invoke_training_loss(
-    fixture$tasks$FIT_CV,
+    fixture$task_json$FIT_CV,
     target = 2,
     prediction = 5
   ),

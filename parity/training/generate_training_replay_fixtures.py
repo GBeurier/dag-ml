@@ -43,8 +43,8 @@ PACK_PATH = (
     ROOT / "docs" / "contracts" / "training_replay_contract_conformance_pack.v1.json"
 )
 BASE_PACK_ID = "dag-ml.training-contracts.v1"
-BASE_PACK_SHA256 = "7e14c32803bf3dd306a3efe9770eb300cbc869c306e8ee633fea11d52dbbb5ff"
-BASE_PACK_CHECKSUM = "38231fdbe5d13055e74a90124387a5462b2ac1fccd78e96914386e69442cbd5e"
+BASE_PACK_SHA256 = "5244f8d72196bd2f702d5461c2c416f6fff3ad84c428bf8a7d0272d71ddb79be"
+BASE_PACK_CHECKSUM = "0219e3fc2c60ea786d0e6e266d19b0b2368b3400e654b2ac672f0d90877d228a"
 serde_json_sha256 = _serde_sha256
 LEGACY_AUTHORITY_SHA256 = {
     "docs/contracts/replay_outcome.schema.json": "c57279e8c76e4e2467af0eca5eb59804a2f7bb97bec6cce9d8b23975f223c36a",

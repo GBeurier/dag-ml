@@ -6,47 +6,57 @@
   "artifacts": [
     {
       "path": "bindings/matlab/+dagml/LocalImplementationRegistry.m",
-      "sha256": "756fe1d4038c1d9235572720dbdc18dee1f117875dc05051a42f05c33f69dcaf",
+      "sha256": "9466cc9f28db3381a4a1d7b5970509d56acbe6b6275b2d2742fdac2570bd4cd8",
       "kind": "matlab_local_registry"
     },
     {
       "path": "bindings/matlab/fixtures/matlab_local_implementations.v1.json",
-      "sha256": "650a47caed9653b8f01a3af2248f1bffa6a7d077c9f8f19e0d3f1926703893ae",
+      "sha256": "630f9ab1860dd60945c62cd2d081208d07bcfe8d0446ce55a0ec9ab00f39f7f5",
       "kind": "fixture"
     },
     {
+      "path": "bindings/matlab/native/task_training_loss_binding.c",
+      "sha256": "a224a071947086afbc56d376087552bb6d18f4a39c56495b62792ec7735d8bdb",
+      "kind": "matlab_native_bridge"
+    },
+    {
       "path": "bindings/matlab/tests/local_implementation_registry.m",
-      "sha256": "218837e0640c9d32103883da8d7523643df65c38c6f0b6c8ed86579f7499ea58",
+      "sha256": "bf40c9d3759d65436ee143dd5d363f485c8ba284aa8f52178528b90bda76e5eb",
       "kind": "matlab_binding_test"
     },
     {
       "path": "bindings/r/R/local_implementation_registry.R",
-      "sha256": "edee3d7b0b57cb7e9ee63def8dc7739d27ee66b348511bb62a3531f9aa641efe",
+      "sha256": "eb27bb3ad194822f2c1f441e9a024702c0322e47a1d43ccd7415fab76626124c",
       "kind": "r_local_registry"
     },
     {
       "path": "bindings/r/inst/extdata/r_local_implementations.v1.json",
-      "sha256": "16c248630f13789ca16737e773a6c2e167bc9197c655e276e62daa44fd358d48",
+      "sha256": "c43dae5ee791f7dc078f35de34faa1b5a7475ec8a6368b245de9bdd170cd6961",
       "kind": "fixture"
     },
     {
+      "path": "bindings/r/src/task_training_loss_binding.c",
+      "sha256": "e04b4e902668f5cad89d57c3f04450ceee7b3d7d22685078c7e947f9d7485a1b",
+      "kind": "r_native_bridge"
+    },
+    {
       "path": "bindings/r/tests/local_implementation_registry.R",
-      "sha256": "2cc6268ef4a186add6e159ed52506f7502ffd9d130226de66fcdd21a4adcb660",
+      "sha256": "81fdd7c415993b94119785fd787efff4e702f2fb907ec4dccef3beb6bd9095d4",
       "kind": "r_binding_test"
     },
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "f6631e0da30f37c1f65974555b110a08dda9f0fff2991b15746ccc2389c25afb",
+      "sha256": "de7541c3d8cc7372745ca43fe6d013a371a81e8a86986ca294e375ceb08697bc",
       "kind": "c_abi_header"
     },
     {
       "path": "crates/dag-ml-capi/src/local_implementation.rs",
-      "sha256": "4001fcfd2c2b21a446fc777b4778341faff52586e7ecb540bdef45c8e571880b",
+      "sha256": "bafc1888e57e26452b9c669a40ad2037e2e98b482a9b4482366207d807879f32",
       "kind": "c_local_registry"
     },
     {
       "path": "crates/dag-ml-capi/tests/local_implementations.rs",
-      "sha256": "e4242c2fc6ac6daeae21354ce45346b8a0ae5a10cda088707c1b5f285c0b155c",
+      "sha256": "73cbb8655e8c0dde2fceb8994c88c68e0ceb487d0cfc7a66e0e9ad2ad302d63d",
       "kind": "c_binding_test"
     },
     {
@@ -121,7 +131,7 @@
     },
     {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "c90fae57a79311d894745e1a542d994c8f32906804fde9984f6cef1e61d2dfd0",
+      "sha256": "d85cfa3916902a49670bb57d7ad0317f5bd8ed376603e00e55d397e7ed19502b",
       "kind": "contract_documentation"
     },
     {
@@ -201,7 +211,7 @@
     },
     {
       "path": "parity/criteria/generate_fixtures.py",
-      "sha256": "3c9349f584ebcc932d511d69770d068b7dfbdfc1865f8a5d107aa8b4a82de7d0",
+      "sha256": "7eba3e9887879d2812430cff1ec4785adcd6d88fafb957f14bdce3782336073e",
       "kind": "generator"
     },
     {
@@ -245,5 +255,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "c348447c706f0e82ab9d9a391273f95e25408dd13603e33ccf7482312036a81b"
+  "pack_checksum": "38b9fe97a9fa1e6f3f04c1c28c790f6bab4b6e22e78bf71be4d801bfef0128f1"
 }

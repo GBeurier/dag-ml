@@ -177,6 +177,31 @@ static int expect_task_loss_rejected(
     return rejected;
 }
 
+static int expect_task_binding_rejected(
+    DagMlBytesView task,
+    size_t role_index,
+    const char *label
+) {
+    DagMlOwnedBytes role = {0};
+    DagMlOwnedBytes attestation = {0};
+    DagMlString error = {0};
+    DagMlStatusCode status = dagml_node_task_training_loss_binding(
+        task, role_index, &role, &attestation, &error);
+    int rejected = status != DAG_ML_STATUS_OK &&
+        !role.ptr && !attestation.ptr && error.ptr;
+    if (!rejected) {
+        fprintf(stderr, "%s retained binding output bytes\n", label);
+    }
+    if (role.ptr) {
+        dagml_owned_bytes_free(role);
+    }
+    if (attestation.ptr) {
+        dagml_owned_bytes_free(attestation);
+    }
+    free_error(error);
+    return rejected;
+}
+
 int main(int argc, char **argv) {
     if (argc != 9) {
         fprintf(stderr, "expected loss, role, metric, foreign loss, FIT_CV, REFIT, PREDICT, and stale task fixture paths\n");
@@ -260,6 +285,22 @@ int main(int argc, char **argv) {
 
     Buffer tasks[] = { fit_cv_task, refit_task };
     for (size_t index = 0; index < 2; index++) {
+        DagMlOwnedBytes bound_role = {0};
+        DagMlOwnedBytes bound_attestation = {0};
+        status = dagml_node_task_training_loss_binding(
+            buffer_view(tasks[index]),
+            0,
+            &bound_role,
+            &bound_attestation,
+            &error);
+        if (!expect_ok(status, error, phases[index]) ||
+            !contains_bytes(bound_role.ptr, bound_role.len, "loss:c:asymmetric") ||
+            !contains_bytes(bound_attestation.ptr, bound_attestation.len, phases[index])) {
+            return 2;
+        }
+        dagml_owned_bytes_free(bound_role);
+        dagml_owned_bytes_free(bound_attestation);
+
         DagMlOwnedBytes result = {0};
         DagMlOwnedBytes attestation = {0};
         status = dagml_local_implementation_registry_invoke_task_training_loss(
@@ -282,6 +323,37 @@ int main(int argc, char **argv) {
         fprintf(stderr, "task-bound loss callback/release count mismatch\n");
         return 2;
     }
+
+    if (!expect_task_binding_rejected(
+            buffer_view(fit_cv_task), 1, "invalid binding role index") ||
+        !expect_task_binding_rejected(
+            buffer_view(predict_task), 0, "PREDICT binding task") ||
+        !expect_task_binding_rejected(
+            buffer_view(stale_task), 0, "stale binding task") ||
+        !expect_task_binding_rejected(
+            text_view("{"), 0, "malformed binding task JSON")) {
+        return 2;
+    }
+
+    DagMlBytesView null_binding_task = {0};
+    if (!expect_task_binding_rejected(
+            null_binding_task, 0, "null binding task JSON")) {
+        return 2;
+    }
+
+    DagMlOwnedBytes null_binding_attestation = {0};
+    status = dagml_node_task_training_loss_binding(
+        buffer_view(fit_cv_task),
+        0,
+        NULL,
+        &null_binding_attestation,
+        &error);
+    if (status == DAG_ML_STATUS_OK || null_binding_attestation.ptr) {
+        fprintf(stderr, "null binding output pointer retained output bytes\n");
+        return 2;
+    }
+    free_error(error);
+    error = (DagMlString){0};
 
     if (!expect_task_loss_rejected(
             registry, buffer_view(fit_cv_task), 1, text_view(request),
