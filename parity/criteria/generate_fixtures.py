@@ -98,6 +98,55 @@ def loss_attestation(role: dict[str, Any], phase: str) -> dict[str, Any]:
     return attestation
 
 
+def build_local_training_tasks(
+    role: dict[str, Any], *, language: str
+) -> dict[str, Any]:
+    node_plan = {
+        "node_id": role["node_id"],
+        "kind": "model",
+        "controller_id": f"controller:{language}-local",
+        "controller_version": "1.0.0",
+        "supported_phases": ["FIT_CV", "REFIT"],
+        "controller_capabilities": [
+            "deterministic",
+            "supports_configurable_loss",
+            "supports_custom_loss",
+            "supports_differentiable_loss",
+        ],
+        "training_losses": [copy.deepcopy(role)],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [],
+        "shape_plan": None,
+        "data_bindings": [],
+        "params": {},
+        "params_fingerprint": hashlib.sha256(
+            f"dagml.{language}.local-task.params.v1".encode()
+        ).hexdigest(),
+    }
+
+    tasks: dict[str, Any] = {}
+    for phase in ("FIT_CV", "REFIT"):
+        tasks[phase] = {
+            "run_id": f"run:{language}-local-{phase.lower()}",
+            "node_plan": copy.deepcopy(node_plan),
+            "phase": phase,
+            "variant_id": None,
+            "variant": None,
+            "fold_id": "fold:0" if phase == "FIT_CV" else None,
+            "branch_path": [],
+            "input_handles": {},
+            "data_views": {},
+            "prediction_inputs": {},
+            "artifact_inputs": {},
+            "required_loss_attestations": [loss_attestation(role, phase)],
+            "seed": 42,
+        }
+    return tasks
+
+
 def build_host_language_fixture(
     valid: dict[str, Any],
     *,
@@ -162,50 +211,6 @@ def build_host_language_fixture(
 
     role = copy.deepcopy(valid["training_loss_role"])
     role["loss"] = copy.deepcopy(loss_reference)
-    node_plan = {
-        "node_id": role["node_id"],
-        "kind": "model",
-        "controller_id": f"controller:{language}-local",
-        "controller_version": "1.0.0",
-        "supported_phases": ["FIT_CV", "REFIT"],
-        "controller_capabilities": [
-            "deterministic",
-            "supports_configurable_loss",
-            "supports_custom_loss",
-            "supports_differentiable_loss",
-        ],
-        "training_losses": [copy.deepcopy(role)],
-        "fit_scope": "fold_train",
-        "rng_policy": "uses_core_seed",
-        "artifact_policy": "serializable",
-        "input_nodes": [],
-        "output_nodes": [],
-        "shape_plan": None,
-        "data_bindings": [],
-        "params": {},
-        "params_fingerprint": hashlib.sha256(
-            f"dagml.{language}.local-task.params.v1".encode()
-        ).hexdigest(),
-    }
-
-    tasks: dict[str, Any] = {}
-    for phase in ("FIT_CV", "REFIT"):
-        tasks[phase] = {
-            "run_id": f"run:{language}-local-{phase.lower()}",
-            "node_plan": copy.deepcopy(node_plan),
-            "phase": phase,
-            "variant_id": None,
-            "variant": None,
-            "fold_id": "fold:0" if phase == "FIT_CV" else None,
-            "branch_path": [],
-            "input_handles": {},
-            "data_views": {},
-            "prediction_inputs": {},
-            "artifact_inputs": {},
-            "required_loss_attestations": [loss_attestation(role, phase)],
-            "seed": 42,
-        }
-
     return {
         "profile": f"dagml.{language}-local-implementations.v1",
         "canonicalization": "TCV1-unicode-17.0.0",
@@ -213,7 +218,7 @@ def build_host_language_fixture(
         "foreign_loss_reference": foreign_loss_reference,
         "training_loss_role": role,
         "metric_reference": metric_reference,
-        "tasks": tasks,
+        "tasks": build_local_training_tasks(role, language=language),
     }
 
 
@@ -277,6 +282,7 @@ def build_c_fixture(valid: dict[str, Any]) -> dict[str, Any]:
         "foreign_loss_reference": foreign_loss_reference,
         "training_loss_role": role,
         "metric_reference": metric_reference,
+        "tasks": build_local_training_tasks(role, language="c"),
     }
 
 

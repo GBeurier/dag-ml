@@ -403,6 +403,14 @@ DagMlStatusCode dagml_local_implementation_registry_invoke_training_loss(
     DagMlOwnedBytes *out_result_json,
     DagMlOwnedBytes *out_attestation_json,
     DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_invoke_task_training_loss(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlBytesView node_task_json,
+    size_t role_index,
+    DagMlBytesView request_json,
+    DagMlOwnedBytes *out_result_json,
+    DagMlOwnedBytes *out_attestation_json,
+    DagMlString *error_out);
 DagMlStatusCode dagml_local_implementation_registry_invoke_metric(
     DagMlLocalImplementationRegistry *registry,
     DagMlBytesView metric_reference_json,

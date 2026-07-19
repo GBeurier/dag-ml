@@ -1,5 +1,6 @@
 // Auto-split from the former monolithic `runtime.rs` (pure refactor).
 use super::*;
+use crate::TrainingLossRoleReference;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PredictionInputSpec {
@@ -115,6 +116,41 @@ impl NodeTask {
             )));
         }
         Ok(())
+    }
+
+    /// Return one active training-loss role and its exact native attestation.
+    ///
+    /// The index addresses losses after filtering the node plan for the task's
+    /// phase. This keeps host bindings from reconstructing role ordering or
+    /// trusting controller-supplied attestation fields.
+    pub fn training_loss_binding(
+        &self,
+        role_index: usize,
+    ) -> Result<(&TrainingLossRoleReference, &LossExecutionAttestation)> {
+        if !matches!(self.phase, Phase::FitCv | Phase::Refit) {
+            return Err(DagMlError::RuntimeValidation(
+                "training loss phase must be FIT_CV or REFIT".to_string(),
+            ));
+        }
+        self.validate_required_loss_attestations()?;
+        let role = self
+            .node_plan
+            .training_losses_for_phase(self.phase)
+            .nth(role_index)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "role_index {role_index} is outside the active training loss range"
+                ))
+            })?;
+        let attestation = self
+            .required_loss_attestations
+            .get(role_index)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "validated training loss role has no matching attestation".to_string(),
+                )
+            })?;
+        Ok((role, attestation))
     }
 }
 
