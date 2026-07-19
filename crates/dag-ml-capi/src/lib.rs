@@ -1497,6 +1497,66 @@ pub unsafe extern "C" fn dagml_execution_plan_schedule_json(
     }
 }
 
+/// Executes one phase from a previously built and validated `ExecutionPlan`.
+///
+/// The scheduler remains native: DAG-ML validates the execution plan, compares
+/// its embedded controller manifests against the independently supplied trusted
+/// runtime manifest list, dispatches `NodeTask` JSON through the supplied
+/// controller vtables, and validates every returned `NodeResult`.
+///
+/// This JSON-returning helper is intended for language bindings and
+/// conformance smokes that keep operator state local to the host callback. Long
+/// lived native handle ownership still belongs to the opaque training/replay
+/// APIs that retain their controller registries.
+///
+/// # Safety
+///
+/// Input JSON and output ownership follow `dagml_execution_plan_build_json`.
+/// `run_id` and `phase` must point to UTF-8 bytes. `controller_bindings` must
+/// point to `controller_binding_count` readable entries when the count is
+/// non-zero. Returned bytes must be released with `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_execution_plan_execute_phase_json(
+    plan_ptr: *const u8,
+    plan_len: usize,
+    trusted_controllers_ptr: *const u8,
+    trusted_controllers_len: usize,
+    run_id: DagMlBytesView,
+    root_seed: u64,
+    phase: DagMlBytesView,
+    controller_bindings: *const DagMlControllerBinding,
+    controller_binding_count: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dagml_execution_plan_execute_phase_json_impl(ExecutionPlanExecutePhaseJsonArgs {
+            plan_ptr,
+            plan_len,
+            trusted_controllers_ptr,
+            trusted_controllers_len,
+            run_id,
+            root_seed,
+            phase,
+            controller_bindings,
+            controller_binding_count,
+            out_json,
+            error_out,
+        })
+    })) {
+        Ok(status) => status,
+        Err(_) => {
+            clear_error(error_out);
+            clear_owned_bytes(out_json);
+            set_error(
+                error_out,
+                "panic while executing execution plan phase through C ABI",
+            );
+            DagMlStatusCode::PANIC
+        }
+    }
+}
+
 /// Validates a canonical JSON `ExecutionPlan`.
 ///
 /// # Safety
@@ -1529,6 +1589,20 @@ struct ExecutionPlanBuildJsonArgs {
     controllers_ptr: *const u8,
     controllers_len: usize,
     plan_id: DagMlBytesView,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+}
+
+struct ExecutionPlanExecutePhaseJsonArgs {
+    plan_ptr: *const u8,
+    plan_len: usize,
+    trusted_controllers_ptr: *const u8,
+    trusted_controllers_len: usize,
+    run_id: DagMlBytesView,
+    root_seed: u64,
+    phase: DagMlBytesView,
+    controller_bindings: *const DagMlControllerBinding,
+    controller_binding_count: usize,
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 }
@@ -1592,6 +1666,73 @@ unsafe fn dagml_execution_plan_build_json_impl(
     }
 }
 
+unsafe fn dagml_execution_plan_execute_phase_json_impl(
+    args: ExecutionPlanExecutePhaseJsonArgs,
+) -> DagMlStatusCode {
+    let ExecutionPlanExecutePhaseJsonArgs {
+        plan_ptr,
+        plan_len,
+        trusted_controllers_ptr,
+        trusted_controllers_len,
+        run_id,
+        root_seed,
+        phase,
+        controller_bindings,
+        controller_binding_count,
+        out_json,
+        error_out,
+    } = args;
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let plan = match parse_external_contract_ptr(
+        plan_ptr,
+        plan_len,
+        error_out,
+        "execution plan",
+        ExecutionPlan::from_json,
+    ) {
+        Ok(plan) => plan,
+        Err(status) => return status,
+    };
+    let trusted_manifests = match parse_json_ptr::<Vec<ControllerManifest>>(
+        trusted_controllers_ptr,
+        trusted_controllers_len,
+        error_out,
+        "trusted controller manifests",
+    ) {
+        Ok(manifests) => manifests,
+        Err(status) => return status,
+    };
+    let trusted_registry = match controller_registry_from_manifests(trusted_manifests) {
+        Ok(registry) => registry,
+        Err(error) => return validation_error(error_out, error),
+    };
+    if let Err(error) = validate_execution_plan_controller_manifests(&plan, &trusted_registry) {
+        return validation_error(error_out, error);
+    }
+    let run = match parse_run_id_view(run_id, error_out, "run id") {
+        Ok(run) => run,
+        Err(status) => return status,
+    };
+    let phase = match parse_phase_view(phase, error_out, "phase") {
+        Ok(phase) => phase,
+        Err(status) => return status,
+    };
+    let controllers = match build_phase_controller_registry(
+        controller_bindings,
+        controller_binding_count,
+        error_out,
+    ) {
+        Ok(controllers) => controllers,
+        Err(status) => return status,
+    };
+    let mut context = RunContext::new(run, Some(root_seed));
+    match SequentialScheduler.execute_campaign_phase(&plan, &controllers, &mut context, phase) {
+        Ok(results) => write_owned_json(out_json, error_out, &results),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
 fn controller_registry_from_manifests(
     manifests: Vec<ControllerManifest>,
 ) -> dag_ml_core::Result<ControllerRegistry> {
@@ -1600,6 +1741,64 @@ fn controller_registry_from_manifests(
         registry.register(manifest)?;
     }
     Ok(registry)
+}
+
+unsafe fn build_phase_controller_registry(
+    controller_bindings: *const DagMlControllerBinding,
+    controller_binding_count: usize,
+    error_out: *mut DagMlString,
+) -> Result<RuntimeControllerRegistry, DagMlStatusCode> {
+    if controller_binding_count > 0 && controller_bindings.is_null() {
+        set_error(error_out, "controller bindings pointer is null");
+        return Err(DagMlStatusCode::INVALID_ARGUMENT);
+    }
+    let bindings = if controller_binding_count == 0 {
+        &[][..]
+    } else {
+        slice::from_raw_parts(controller_bindings, controller_binding_count)
+    };
+    let mut registry = RuntimeControllerRegistry::new();
+    for binding in bindings {
+        if binding.vtable.abi_version >= DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION
+            || binding.vtable.release.is_some()
+            || binding.vtable.destroy.is_some()
+        {
+            return Err(validation_error(
+                error_out,
+                DagMlError::RuntimeValidation(
+                    "execution plan phase JSON accepts only borrowed controller vtables without release/destroy callbacks; use the opaque training/replay APIs for long-lived native handles"
+                        .to_string(),
+                ),
+            ));
+        }
+        let controller_id =
+            parse_controller_id_view(binding.controller_id, error_out, "controller id")?;
+        let controller = CAbiRuntimeController::new(controller_id, binding.vtable)
+            .map_err(|error| validation_error(error_out, error))?;
+        registry
+            .register(Box::new(controller))
+            .map_err(|error| validation_error(error_out, error))?;
+    }
+    Ok(registry)
+}
+
+fn validate_execution_plan_controller_manifests(
+    plan: &ExecutionPlan,
+    trusted_registry: &ControllerRegistry,
+) -> dag_ml_core::Result<()> {
+    for (controller_id, embedded_manifest) in &plan.controller_manifests {
+        let trusted_manifest = trusted_registry.get(controller_id).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "execution plan controller `{controller_id}` is absent from the trusted runtime manifests"
+            ))
+        })?;
+        if trusted_manifest != embedded_manifest {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "execution plan controller `{controller_id}` does not match the trusted runtime manifest"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Returns the public C ABI contract for canonical `SelectionPolicy` JSON.
@@ -5923,6 +6122,129 @@ mod tests {
         DagMlStatusCode::OK
     }
 
+    unsafe extern "C" fn phase_controller_invoke_stub(
+        user_data: *mut c_void,
+        task_json: DagMlBytesView,
+        out_result_json: *mut DagMlOwnedBytes,
+    ) -> DagMlStatusCode {
+        if user_data.is_null() || task_json.ptr.is_null() || out_result_json.is_null() {
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let state = &mut *(user_data.cast::<ControllerStub>());
+        state.task_json = slice::from_raw_parts(task_json.ptr, task_json.len).to_vec();
+        let task = match serde_json::from_slice::<NodeTask>(&state.task_json) {
+            Ok(task) => task,
+            Err(_) => return DagMlStatusCode::VALIDATION_ERROR,
+        };
+        state
+            .task_node_ids
+            .push(task.node_plan.node_id.as_str().to_string());
+        state.invocation_count += 1;
+
+        let (output_port, handle_kind) = match task.node_plan.kind {
+            NodeKind::Model | NodeKind::Tuner => ("oof", HandleKind::Prediction),
+            _ => ("x_out", HandleKind::Data),
+        };
+        let sample_ids = match task.fold_id.as_ref().map(FoldId::as_str) {
+            Some("fold:0") => vec![SampleId::new("sample:1").unwrap()],
+            Some("fold:1") => vec![SampleId::new("sample:2").unwrap()],
+            _ => vec![SampleId::new("sample:full").unwrap()],
+        };
+        let predictions = if handle_kind == HandleKind::Prediction {
+            vec![PredictionBlock {
+                prediction_id: Some(format!(
+                    "prediction:{}:{}:{}",
+                    task.node_plan.node_id,
+                    task.phase.as_str(),
+                    task.fold_id.as_ref().map(FoldId::as_str).unwrap_or("full")
+                )),
+                producer_node: task.node_plan.node_id.clone(),
+                producer_port: Some(output_port.to_string()),
+                partition: if task.phase == Phase::FitCv {
+                    PredictionPartition::Validation
+                } else {
+                    PredictionPartition::Final
+                },
+                fold_id: if task.phase == Phase::FitCv {
+                    task.fold_id.clone()
+                } else {
+                    None
+                },
+                sample_ids,
+                values: vec![vec![state.invocation_count as f64]],
+                target_names: vec!["y".to_string()],
+            }]
+        } else {
+            Vec::new()
+        };
+        let result = NodeResult {
+            schema_version: None,
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([(
+                output_port.to_string(),
+                HandleRef {
+                    handle: state.invocation_count as DagMlHandle,
+                    kind: handle_kind,
+                    owner_controller: task.node_plan.controller_id.clone(),
+                },
+            )]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets: Vec::new(),
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{}:{}:{}",
+                    task.node_plan.node_id,
+                    task.phase.as_str(),
+                    task.variant_id
+                        .as_ref()
+                        .map(VariantId::as_str)
+                        .unwrap_or("base"),
+                    task.fold_id.as_ref().map(FoldId::as_str).unwrap_or("full")
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: task.node_plan.controller_id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+                loss_attestations: task.required_loss_attestations.clone(),
+                early_stopping_records: Vec::new(),
+            },
+        };
+        if result.validate_for_task(&task).is_err() {
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+        let mut data = match serde_json::to_vec(&result) {
+            Ok(data) => data,
+            Err(_) => return DagMlStatusCode::VALIDATION_ERROR,
+        };
+        *out_result_json = DagMlOwnedBytes {
+            ptr: data.as_mut_ptr(),
+            len: data.len(),
+            capacity: data.capacity(),
+        };
+        std::mem::forget(data);
+        DagMlStatusCode::OK
+    }
+
     unsafe extern "C" fn controller_invoke_error_stub(
         user_data: *mut c_void,
         task_json: DagMlBytesView,
@@ -8018,6 +8340,183 @@ mod tests {
     }
 
     #[test]
+    fn executes_execution_plan_phase_over_abi() {
+        let plan = fixture_phase_plan_json();
+        let manifests = fixture_phase_controller_manifests_json();
+        let run_id = b"run:cabi.phase";
+        let phase = b"FIT_CV";
+        let mut transform_state = ControllerStub::default();
+        let mut model_state = ControllerStub::default();
+        let bindings = [
+            DagMlControllerBinding {
+                controller_id: bytes_view(b"controller:transform.mock"),
+                vtable: DagMlControllerVTable {
+                    abi_version: DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION,
+                    user_data: (&mut transform_state as *mut ControllerStub).cast::<c_void>(),
+                    clone_with: None,
+                    describe: None,
+                    fit: None,
+                    predict: None,
+                    invoke: Some(phase_controller_invoke_stub),
+                    release_bytes: Some(controller_release_bytes_stub),
+                    release: None,
+                    destroy: None,
+                },
+            },
+            DagMlControllerBinding {
+                controller_id: bytes_view(b"controller:model.mock"),
+                vtable: DagMlControllerVTable {
+                    abi_version: DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION,
+                    user_data: (&mut model_state as *mut ControllerStub).cast::<c_void>(),
+                    clone_with: None,
+                    describe: None,
+                    fit: None,
+                    predict: None,
+                    invoke: Some(phase_controller_invoke_stub),
+                    release_bytes: Some(controller_release_bytes_stub),
+                    release: None,
+                    destroy: None,
+                },
+            },
+        ];
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_execution_plan_execute_phase_json(
+                plan.as_ptr(),
+                plan.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                bytes_view(run_id),
+                17,
+                bytes_view(phase),
+                bindings.as_ptr(),
+                bindings.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        assert!(error.ptr.is_null());
+        assert!(!out.ptr.is_null());
+        let json = unsafe { slice::from_raw_parts(out.ptr, out.len) };
+        let results: Vec<NodeResult> = serde_json::from_slice(json).unwrap();
+        assert_eq!(results.len(), 8);
+        assert_eq!(transform_state.invocation_count, 4);
+        assert_eq!(model_state.invocation_count, 4);
+        assert!(results.iter().all(|result| result.lineage.seed.is_some()));
+        let model_result = results
+            .iter()
+            .find(|result| result.node_id.as_str() == "model:base")
+            .expect("model result");
+        assert!(
+            !model_result.lineage.loss_attestations.is_empty(),
+            "model phase result should carry required loss attestations"
+        );
+        assert!(
+            results
+                .iter()
+                .all(|result| result.lineage.metrics.is_empty()),
+            "phase bridge must keep metrics separate from loss attestations"
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn execution_plan_phase_refuses_untrusted_manifests_before_callbacks() {
+        let plan = fixture_phase_plan_json();
+        let manifests = b"[]";
+        let mut transform_state = ControllerStub::default();
+        let binding = DagMlControllerBinding {
+            controller_id: bytes_view(b"controller:transform.mock"),
+            vtable: DagMlControllerVTable {
+                abi_version: DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION,
+                user_data: (&mut transform_state as *mut ControllerStub).cast::<c_void>(),
+                clone_with: None,
+                describe: None,
+                fit: None,
+                predict: None,
+                invoke: Some(phase_controller_invoke_stub),
+                release_bytes: Some(controller_release_bytes_stub),
+                release: None,
+                destroy: None,
+            },
+        };
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_execution_plan_execute_phase_json(
+                plan.as_ptr(),
+                plan.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                bytes_view(b"run:cabi.phase"),
+                17,
+                bytes_view(b"FIT_CV"),
+                &binding,
+                1,
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(out.ptr.is_null());
+        assert!(error_message(&error).contains("absent from the trusted runtime manifests"));
+        assert_eq!(transform_state.invocation_count, 0);
+        unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn execution_plan_phase_refuses_releasing_vtables_before_callbacks() {
+        let plan = fixture_phase_plan_json();
+        let manifests = fixture_phase_controller_manifests_json();
+        let mut transform_state = ControllerStub::default();
+        let binding = DagMlControllerBinding {
+            controller_id: bytes_view(b"controller:transform.mock"),
+            vtable: DagMlControllerVTable {
+                abi_version: DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION,
+                user_data: (&mut transform_state as *mut ControllerStub).cast::<c_void>(),
+                clone_with: None,
+                describe: None,
+                fit: None,
+                predict: None,
+                invoke: Some(phase_controller_invoke_stub),
+                release_bytes: Some(controller_release_bytes_stub),
+                release: Some(controller_release_stub),
+                destroy: None,
+            },
+        };
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+
+        let status = unsafe {
+            dagml_execution_plan_execute_phase_json(
+                plan.as_ptr(),
+                plan.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                bytes_view(b"run:cabi.phase"),
+                17,
+                bytes_view(b"FIT_CV"),
+                &binding,
+                1,
+                &mut out,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(out.ptr.is_null());
+        assert!(error_message(&error).contains("borrowed controller vtables"));
+        assert_eq!(transform_state.invocation_count, 0);
+        unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
     fn selects_grouped_candidates_over_abi() {
         let policy = include_bytes!("../../../examples/fixtures/bundle/selection_policy_rmse.json");
         let decision =
@@ -9344,6 +9843,58 @@ mod tests {
         }
         let plan = build_execution_plan("plan:cli.bundle", graph, campaign, &registry).unwrap();
         serde_json::to_vec(&plan).unwrap()
+    }
+
+    fn fixture_phase_plan_json() -> Vec<u8> {
+        let graph: GraphSpec =
+            serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
+        let mut campaign: CampaignSpec = serde_json::from_str(include_str!(
+            "../../../examples/campaign_oof_generation.json"
+        ))
+        .unwrap();
+        campaign.data_bindings.clear();
+        let manifests = fixture_phase_controller_manifests();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        let plan = build_execution_plan("plan:cabi.phase", graph, campaign, &registry).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/criteria/criteria_contracts.v1.json"
+        ))
+        .unwrap();
+        let mut loss_role: dag_ml_core::TrainingLossRoleReference =
+            serde_json::from_value(fixture["valid"]["training_loss_role"].clone()).unwrap();
+        loss_role.node_id = NodeId::new("model:base").unwrap();
+        let plan = plan.with_training_losses(vec![loss_role]).unwrap();
+        serde_json::to_vec(&plan).unwrap()
+    }
+
+    fn fixture_phase_controller_manifests() -> Vec<ControllerManifest> {
+        let mut manifests: Vec<ControllerManifest> =
+            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
+                .unwrap();
+        for manifest in &mut manifests {
+            if manifest.controller_id.as_str() == "controller:model.mock" {
+                manifest
+                    .capabilities
+                    .insert(dag_ml_core::ControllerCapability::SupportsConfigurableLoss);
+                manifest
+                    .capabilities
+                    .insert(dag_ml_core::ControllerCapability::SupportsCustomLoss);
+                manifest
+                    .capabilities
+                    .insert(dag_ml_core::ControllerCapability::SupportsDifferentiableLoss);
+                manifest
+                    .capabilities
+                    .insert(dag_ml_core::ControllerCapability::NeedsPythonGil);
+            }
+        }
+        manifests
+    }
+
+    fn fixture_phase_controller_manifests_json() -> Vec<u8> {
+        serde_json::to_vec(&fixture_phase_controller_manifests()).unwrap()
     }
 
     fn fixture_branch_merge_plan_json() -> Vec<u8> {

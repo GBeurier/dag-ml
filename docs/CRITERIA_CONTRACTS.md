@@ -90,6 +90,15 @@ function on MATLAB-owned values, and exposes the task-owned attestation only
 after success. Each MATLAB process, parallel worker, or Octave process owns an
 independent registry.
 
+R `dagml_execute_execution_plan_phase()` and MATLAB
+`dagml.executeExecutionPlanPhase()` are thin phase-execution bridges over
+`dagml_execution_plan_execute_phase_json`. The scheduler remains native:
+DAG-ML validates the plan, checks trusted runtime manifests, emits exact
+`NodeTask` JSON, and validates returned `NodeResult` JSON. The language
+callback stays local and may close over its own implementation registry; loss
+callbacks still resolve through the loss path, while metrics continue to use
+the distinct metric path.
+
 `TrainingRequest.training_losses` is the authoritative pipeline assignment.
 Each role targets a node and an optional controller-local output/head and lists
 the exact training phases where it applies. The resolved roles travel inside

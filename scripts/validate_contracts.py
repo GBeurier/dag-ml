@@ -13598,6 +13598,7 @@ def validate_dag_ml_execution_plan_header(header: str, label: str) -> None:
         "dagml_execution_plan_contract_json",
         "dagml_execution_plan_build_json",
         "dagml_execution_plan_schedule_json",
+        "dagml_execution_plan_execute_phase_json",
         "dagml_execution_plan_validate_json",
     ):
         require(symbol in header, f"{label} header must expose `{symbol}`")
