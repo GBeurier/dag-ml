@@ -48,7 +48,7 @@ use dag_ml_core::{
     DagMlError as CoreDagMlError, ExecutionPlan, ExternalDataPlanEnvelope, InMemoryArtifactStore,
     InMemoryDataProvider, NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
     RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    ScoreSet, SequentialScheduler, VariantId, VariantValidationPredictions,
+    ScoreSet, SequentialScheduler, TrainingLossRoleReference, VariantId, VariantValidationPredictions,
     SCORE_SET_SCHEMA_VERSION,
 };
 
@@ -532,6 +532,55 @@ pub fn run_cv_refit_in_process(
     op_callback: Py<PyAny>,
     selection_metric: &str,
 ) -> PyResult<String> {
+    run_cv_refit_in_process_impl(
+        py,
+        dsl_json,
+        envelope_json,
+        controller_manifests_json,
+        None,
+        op_callback,
+        selection_metric,
+    )
+}
+
+/// Run a CV + refit campaign IN-PROCESS after binding native training-loss
+/// role references into the execution plan.
+///
+/// This is the same scheduler path as [`run_cv_refit_in_process`], with one
+/// additional native step: the supplied roles replace `NodePlan.training_losses`
+/// via [`ExecutionPlan::with_training_losses`] before any `NodeTask` is built.
+/// The roles remain contract data; process-local callable resolution still
+/// happens in the host callback that receives the exact native `NodeTask`.
+#[pyfunction]
+pub fn run_cv_refit_in_process_with_training_losses(
+    py: Python<'_>,
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    training_loss_roles_json: &str,
+    op_callback: Py<PyAny>,
+    selection_metric: &str,
+) -> PyResult<String> {
+    run_cv_refit_in_process_impl(
+        py,
+        dsl_json,
+        envelope_json,
+        controller_manifests_json,
+        Some(training_loss_roles_json),
+        op_callback,
+        selection_metric,
+    )
+}
+
+fn run_cv_refit_in_process_impl(
+    py: Python<'_>,
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    training_loss_roles_json: Option<&str>,
+    op_callback: Py<PyAny>,
+    selection_metric: &str,
+) -> PyResult<String> {
     let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
 
     // 1. Read the envelope first (the CLI reads it before the plan so data-aware
@@ -565,13 +614,18 @@ pub fn run_cv_refit_in_process(
     // default in-process binding to native operator-SELECT, mirroring CLI Mechanism A.
     let operator_variant_models =
         compile_operator_variant_models(&dsl_spec).map_err(py_core_error)?;
-    let plan = build_execution_plan(
+    let mut plan = build_execution_plan(
         format!("plan:{}", dsl_spec.id),
         compiled.graph,
         compiled.campaign_template,
         &controller_registry,
     )
     .map_err(py_core_error)?;
+    if let Some(training_loss_roles_json) = training_loss_roles_json {
+        let roles: Vec<TrainingLossRoleReference> =
+            serde_json::from_str(training_loss_roles_json).map_err(py_serde_error)?;
+        plan = plan.with_training_losses(roles).map_err(py_core_error)?;
+    }
 
     // 3. Build the SAME Rust data provider the CLI uses
     //    (`data_provider_for_training_envelope`): validate the envelope relations
