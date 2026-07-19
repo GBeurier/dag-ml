@@ -28,8 +28,10 @@ from pathlib import Path
 # Tracked extension binary, relative to the repo root.
 SO_RELATIVE = "crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so"
 
-# Rust sources that compile into the .so: the py crate, its only path dependency
-# (dag-ml-core), their Cargo manifests, and the workspace manifest + lockfile.
+# Rust sources that compile into the release .so: the py crate, its only path
+# dependency (dag-ml-core), their Cargo manifests, and the workspace manifest +
+# lockfile. Unit-test modules under src are deliberately excluded: they compile
+# only for test harnesses and cannot change the release extension bits.
 RUST_DIRS = (
     "crates/dag-ml-core/src",
     "crates/dag-ml-py/src",
@@ -41,6 +43,7 @@ RUST_FILES = (
     "Cargo.lock",
 )
 RUST_SUFFIX = ".rs"
+TEST_ONLY_RUST_FILENAMES = {"tests.rs"}
 
 NOTICE = "check_so_freshness:"
 
@@ -152,6 +155,8 @@ def rust_paths(repo: Path) -> list[str]:
             continue
         for path in sorted(root.rglob(f"*{RUST_SUFFIX}")):
             if any(part in {"target", "__pycache__"} for part in path.parts):
+                continue
+            if path.name in TEST_ONLY_RUST_FILENAMES:
                 continue
             paths.append(path.relative_to(repo).as_posix())
     for relative in RUST_FILES:
@@ -294,6 +299,7 @@ def self_test() -> int:
         (repo / "crates/dag-ml-py/src").mkdir(parents=True)
         (repo / "crates/dag-ml-py/python/dag_ml").mkdir(parents=True)
         (repo / "crates/dag-ml-core/src/lib.rs").write_text("// core\n", encoding="utf-8")
+        (repo / "crates/dag-ml-core/src/tests.rs").write_text("// tests\n", encoding="utf-8")
         (repo / "crates/dag-ml-py/src/lib.rs").write_text("// py\n", encoding="utf-8")
         for name in ("crates/dag-ml-core/Cargo.toml", "crates/dag-ml-py/Cargo.toml", "Cargo.toml"):
             (repo / name).write_text("# cargo\n", encoding="utf-8")
@@ -347,6 +353,19 @@ def self_test() -> int:
         code = check(repo)
         if code != 0:
             failures.append(f"DIRTY paired case expected exit 0, got {code}")
+
+    # Case 4: TEST-ONLY — changes in cfg(test) modules do not require a .so rebuild.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        scaffold(repo)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "initial with so", ts=1_000_000)
+        (repo / "crates/dag-ml-core/src/tests.rs").write_text(
+            "fn dirty_test_only_change() {}\n", encoding="utf-8"
+        )
+        code = check(repo)
+        if code != 0:
+            failures.append(f"TEST-ONLY dirty case expected exit 0, got {code}")
 
     if failures:
         for line in failures:
