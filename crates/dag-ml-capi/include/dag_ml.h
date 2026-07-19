@@ -500,6 +500,26 @@ DagMlStatusCode dagml_execution_plan_schedule_json(
     DagMlBytesView phase,
     DagMlOwnedBytes *out_json,
     DagMlString *error_out);
+/* Execute one phase from a previously built ExecutionPlan through native
+ * SequentialScheduler. The embedded plan manifests must exactly match the
+ * trusted controller manifest list before any controller callback is invoked.
+ * This JSON-returning entry point is intended for local binding callbacks and
+ * conformance smokes. Controller vtables must be borrowed and must not expose
+ * release/destroy callbacks, because no opaque result retains the registry;
+ * long-lived native handles should use the opaque training/replay APIs that
+ * retain controller registries. */
+DagMlStatusCode dagml_execution_plan_execute_phase_json(
+    const uint8_t *plan_ptr,
+    size_t plan_len,
+    const uint8_t *trusted_controllers_ptr,
+    size_t trusted_controllers_len,
+    DagMlBytesView run_id,
+    uint64_t root_seed,
+    DagMlBytesView phase,
+    const DagMlControllerBinding *controller_bindings,
+    size_t controller_binding_count,
+    DagMlOwnedBytes *out_json,
+    DagMlString *error_out);
 DagMlStatusCode dagml_execution_plan_validate_json(
     const uint8_t *plan_ptr,
     size_t plan_len,

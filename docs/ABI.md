@@ -202,6 +202,20 @@ JSON emitted by DAG-ML to this validation-only boundary; they do not rebuild
 the task from host objects whose scalar and single-element-array shapes may be
 ambiguous.
 
+`dagml_execution_plan_execute_phase_json` is the C ABI counterpart of the
+binding-level phase scheduler surface. It accepts a validated `ExecutionPlan`,
+an independently supplied trusted controller-manifest list, a run id/root seed,
+one phase, and controller vtables. DAG-ML refuses execution before dispatch when
+any embedded plan manifest is absent from, or differs from, the trusted runtime
+manifests. It then runs the native sequential scheduler, emits exact `NodeTask`
+JSON to the host callbacks, and validates each returned `NodeResult`. This
+JSON-returning helper is meant for local binding callbacks and conformance
+smokes. Its controller vtables must be borrowed and must not expose
+release/destroy callbacks, because the function returns JSON rather than an
+opaque object that keeps the registry alive. Workflows that need long-lived
+native handles must use the opaque training/replay APIs that keep controller
+registries alive.
+
 The invocation request and result are strict JSON but intentionally
 binding-defined: feature and autodiff tensors remain host-owned, so R, MATLAB,
 C, or another native controller can pass handles or its own local task shape

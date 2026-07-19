@@ -10,6 +10,11 @@
       "kind": "matlab_local_registry"
     },
     {
+      "path": "bindings/matlab/+dagml/executeExecutionPlanPhase.m",
+      "sha256": "360c7fbb2d7a72680404ecbdb745d609fb13ba1b51006cad335823c8b707cb0f",
+      "kind": "matlab_phase_scheduler"
+    },
+    {
       "path": "bindings/matlab/fixtures/matlab_local_implementations.v1.json",
       "sha256": "630f9ab1860dd60945c62cd2d081208d07bcfe8d0446ce55a0ec9ab00f39f7f5",
       "kind": "fixture"
@@ -20,13 +25,18 @@
       "kind": "matlab_native_bridge"
     },
     {
+      "path": "bindings/matlab/native/execution_plan_phase.c",
+      "sha256": "2b17bb8147eee99268d5b9b62a16ce72e9a5125a1a991329b5ca935d75c9ff75",
+      "kind": "matlab_phase_native_bridge"
+    },
+    {
       "path": "bindings/matlab/tests/local_implementation_registry.m",
-      "sha256": "bf40c9d3759d65436ee143dd5d363f485c8ba284aa8f52178528b90bda76e5eb",
+      "sha256": "259110efc1479508cbcbe0ce43443384090cf986350999c98b4269c73a7e2f32",
       "kind": "matlab_binding_test"
     },
     {
       "path": "bindings/r/R/local_implementation_registry.R",
-      "sha256": "eb27bb3ad194822f2c1f441e9a024702c0322e47a1d43ccd7415fab76626124c",
+      "sha256": "75cbe0648f10a32a762cc3d6e23113e0d9c1cfee5da8383d0798ebcf019dc400",
       "kind": "r_local_registry"
     },
     {
@@ -36,17 +46,17 @@
     },
     {
       "path": "bindings/r/src/task_training_loss_binding.c",
-      "sha256": "e04b4e902668f5cad89d57c3f04450ceee7b3d7d22685078c7e947f9d7485a1b",
+      "sha256": "7ca655dd206ffa08aaa9bbe423e367bb2921e8db457ae95fa947dd0a808bca59",
       "kind": "r_native_bridge"
     },
     {
       "path": "bindings/r/tests/local_implementation_registry.R",
-      "sha256": "81fdd7c415993b94119785fd787efff4e702f2fb907ec4dccef3beb6bd9095d4",
+      "sha256": "07374175b1e46f5245a6d98557c99c6521b7d05205ac5ceea4f4524cfbd5adf0",
       "kind": "r_binding_test"
     },
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "de7541c3d8cc7372745ca43fe6d013a371a81e8a86986ca294e375ceb08697bc",
+      "sha256": "49e4c54cac3e0ea416537feb94e68fdb3bf6049ea424c26d407ef46d68ab8e36",
       "kind": "c_abi_header"
     },
     {
@@ -255,5 +265,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "38b9fe97a9fa1e6f3f04c1c28c790f6bab4b6e22e78bf71be4d801bfef0128f1"
+  "pack_checksum": "46a5732c3fdfc0281aaa077e2d757310f0cc8b3cfd2185b2e5cf8a6f8de68899"
 }
