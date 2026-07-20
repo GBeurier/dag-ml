@@ -502,6 +502,11 @@ impl RuntimeController for RustLocalLossController {
             Arc::clone(registry.resolve_loss(&role.loss)?)
         };
         let value = loss(2.0, 5.5);
+        if !value.is_finite() {
+            return Err(DagMlError::RuntimeValidation(
+                "Rust local training loss returned a non-finite scalar".to_string(),
+            ));
+        }
         self.calls
             .lock()
             .unwrap()
@@ -6854,6 +6859,50 @@ fn scheduler_executes_rust_local_loss_before_attesting() {
     assert_eq!(calls[1].0, Phase::Refit);
     assert_eq!(calls[1].1, None);
     assert!((calls[1].2 - 3.5).abs() < f64::EPSILON);
+
+    let nonfinite_registry = Arc::new(Mutex::new(LocalImplementationRegistry::<RustLossFn>::new()));
+    let nonfinite_loss: RustLossFn = Arc::new(|_, _| f64::NAN);
+    nonfinite_registry
+        .lock()
+        .unwrap()
+        .register_loss(&role.loss, nonfinite_loss)
+        .unwrap();
+    let nonfinite_calls = Arc::new(Mutex::new(Vec::new()));
+    let mut nonfinite_controllers = RuntimeControllerRegistry::new();
+    nonfinite_controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    nonfinite_controllers
+        .register(Box::new(RustLocalLossController {
+            inner: MockController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 2,
+                emit_prediction: false,
+            },
+            registry: Arc::clone(&nonfinite_registry),
+            calls: Arc::clone(&nonfinite_calls),
+        }))
+        .unwrap();
+    let mut nonfinite_context =
+        RunContext::new(RunId::new("run:loss.rust.nonfinite").unwrap(), Some(23));
+    let error = SequentialScheduler
+        .execute_campaign_phase(
+            &plan,
+            &nonfinite_controllers,
+            &mut nonfinite_context,
+            Phase::FitCv,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("non-finite scalar"),
+        "unexpected non-finite loss error: {error}"
+    );
+    assert!(nonfinite_calls.lock().unwrap().is_empty());
 }
 
 #[test]
