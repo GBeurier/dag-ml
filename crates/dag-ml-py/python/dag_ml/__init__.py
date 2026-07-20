@@ -37,6 +37,8 @@ from ._dag_ml import (
     fold_set_fingerprint_json,
     loss_execution_attestation_json as _native_loss_execution_attestation_json,
     project_training_request_json,
+    run_cv_refit_in_process as _native_run_cv_refit_in_process,
+    run_cv_refit_in_process_with_training_losses as _native_run_cv_refit_in_process_with_training_losses,
     sample_relation_set_fingerprint_json,
     sign_training_request_json as _native_sign_training_request_json,
     validate_campaign_json,
@@ -101,6 +103,8 @@ _FACADE_EXPORTS = [
     "execute_training_json",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
+    "run_cv_refit_in_process",
+    "run_cv_refit_in_process_with_training_losses",
 ]
 
 
@@ -757,6 +761,48 @@ def build_execution_plan(
     )
 
 
+def run_cv_refit_in_process(
+    dsl: Any,
+    envelope: Any,
+    controller_manifests: Any,
+    op_callback: Any,
+    selection_metric: str = "rmse",
+) -> dict[str, Any]:
+    """Run a CV+refit campaign in-process and return the native payload."""
+
+    return json.loads(
+        _native_run_cv_refit_in_process(
+            _coerce_json(dsl),
+            _coerce_json(envelope),
+            _coerce_json(controller_manifests),
+            op_callback,
+            selection_metric,
+        )
+    )
+
+
+def run_cv_refit_in_process_with_training_losses(
+    dsl: Any,
+    envelope: Any,
+    controller_manifests: Any,
+    training_loss_roles: Any,
+    op_callback: Any,
+    selection_metric: str = "rmse",
+) -> dict[str, Any]:
+    """Run a CV+refit campaign in-process after binding training-loss roles."""
+
+    return json.loads(
+        _native_run_cv_refit_in_process_with_training_losses(
+            _coerce_json(dsl),
+            _coerce_json(envelope),
+            _coerce_json(controller_manifests),
+            _coerce_json(training_loss_roles),
+            op_callback,
+            selection_metric,
+        )
+    )
+
+
 def project_training_request(request: Any) -> TrainingContractProjection:
     """Validate and project a W1 training request through dag-ml-core."""
 
@@ -961,6 +1007,8 @@ __all__ = [
     "execute_training_json",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
+    "run_cv_refit_in_process",
+    "run_cv_refit_in_process_with_training_losses",
     "fan_out_data_aware_branches",
     "fan_out_data_aware_branches_json",
     "fold_set_fingerprint_json",

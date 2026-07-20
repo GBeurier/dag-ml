@@ -48,6 +48,20 @@ class LocalImplementationRegistryTests(unittest.TestCase):
             self.loss["implementation"]["descriptor_fingerprint"],
         )
 
+    def test_python_binding_exports_training_loss_aware_in_process_scheduler(self) -> None:
+        import dag_ml._dag_ml as native
+
+        manifest = json.loads(dag_ml.contract_manifest_json())
+
+        self.assertIn(
+            "run_cv_refit_in_process_with_training_losses",
+            manifest["python_exports"],
+        )
+        self.assertTrue(
+            callable(getattr(native, "run_cv_refit_in_process_with_training_losses"))
+        )
+        self.assertTrue(callable(dag_ml.run_cv_refit_in_process_with_training_losses))
+
     def test_convenience_registration_builds_native_host_local_references(self) -> None:
         registry = dag_ml.LocalImplementationRegistry()
 
