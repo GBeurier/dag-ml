@@ -5817,7 +5817,7 @@ fn published_node_task_and_result_schemas_declare_current_contracts() {
         .any(|field| field.as_str() == Some("lineage")));
     assert_eq!(
         task_schema["$defs"]["artifact_ref"]["additionalProperties"].as_bool(),
-        Some(false)
+        Some(true)
     );
     assert_eq!(result_schema["additionalProperties"].as_bool(), Some(false));
     for definition in [
@@ -5830,7 +5830,6 @@ fn published_node_task_and_result_schemas_declare_current_contracts() {
         "explanation_block",
         "prediction_unit_id",
         "shape_delta",
-        "artifact_ref",
         "lineage_record",
     ] {
         assert_eq!(
@@ -5839,6 +5838,10 @@ fn published_node_task_and_result_schemas_declare_current_contracts() {
             "node-result schema definition `{definition}` must be closed"
         );
     }
+    assert_eq!(
+        result_schema["$defs"]["artifact_ref"]["additionalProperties"].as_bool(),
+        Some(true)
+    );
 }
 
 #[test]
@@ -5974,7 +5977,6 @@ fn node_result_deserialization_rejects_unknown_contract_fields_but_keeps_opaque_
         ),
         ("explanation block", "/explanations/0"),
         ("shape delta", "/shape_deltas/0"),
-        ("artifact ref", "/artifacts/0"),
         ("fit influence diagnostic", "/fit_influence_diagnostics/0"),
         ("regression target block", "/regression_targets/0"),
         (
@@ -5997,6 +5999,11 @@ fn node_result_deserialization_rejects_unknown_contract_fields_but_keeps_opaque_
             "{label} returned an unexpected error: {error}"
         );
     }
+
+    let mut legacy_artifact = document;
+    legacy_artifact["artifacts"][0]["host_metadata"] = json!({"legacy": true});
+    serde_json::from_value::<NodeResult>(legacy_artifact)
+        .expect("artifact extensions remain readable for legacy workspaces");
 }
 
 #[test]

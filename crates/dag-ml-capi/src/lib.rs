@@ -6468,7 +6468,6 @@ mod tests {
                 data_bindings: Vec::new(),
                 params: BTreeMap::new(),
                 params_fingerprint: "params:controller-fixture".to_string(),
-                training_losses: Vec::new(),
             },
             phase: Phase::FitCv,
             variant_id: Some(VariantId::new("variant:controller").unwrap()),

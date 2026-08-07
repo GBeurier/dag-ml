@@ -2364,7 +2364,6 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
             data_bindings: Vec::new(),
             params: BTreeMap::new(),
             params_fingerprint: "params:c-conformance".to_string(),
-            training_losses: Vec::new(),
         },
         phase: Phase::FitCv,
         variant_id: Some(VariantId::new("variant:c-conformance").unwrap()),
