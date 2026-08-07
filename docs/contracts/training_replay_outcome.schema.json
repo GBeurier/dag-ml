@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/training_replay_outcome.v1.schema.json",
+  "title": "DAG-ML Training Replay — ReplayOutcome v1",
+  "description": "Public ReplayOutcome for the training-owned forward-replay contract, bound transitively to one TrainingOutcomeRef, one ReplayRequest and exact new-cohort data identities. Historical ReplayExecutionSummary counters remain top-level, while ReplayPhaseRequest/ReplayExecutionSummary remain the low-level phase API.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "outcome_id",
+    "run_id",
+    "source_training_outcome",
+    "replay_request_id",
+    "replay_request_fingerprint",
+    "input_data_identities",
+    "bundle_id",
+    "plan_id",
+    "phase",
+    "result_count",
+    "lineage_record_count",
+    "prediction_block_count",
+    "observation_prediction_block_count",
+    "aggregated_prediction_block_count",
+    "explanation_block_count",
+    "controller_count",
+    "prediction_cache_store",
+    "outputs",
+    "explanations",
+    "lineage",
+    "warnings",
+    "diagnostics",
+    "outcome_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "outcome_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "source_training_outcome": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/portable_predictor_package.v1.schema.json#/$defs/training_outcome_ref",
+      "description": "Complete transplant-resistant reference to the TrainingOutcome that authorized this replay."
+    },
+    "replay_request_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "replay_request_fingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "input_data_identities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/training_request.v1.schema.json#/$defs/training_data_identity"
+      },
+      "description": "Strictly sorted exact identities attested from the current replay envelopes. Schema/plan remain source-compatible while relation, data-content and target-content fingerprints identify the current cohort."
+    },
+    "bundle_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "plan_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "phase": {
+      "enum": ["PREDICT", "EXPLAIN"]
+    },
+    "result_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "lineage_record_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "prediction_block_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of sample PredictionBlock payloads only."
+    },
+    "observation_prediction_block_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "aggregated_prediction_block_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "explanation_block_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "controller_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of distinct controller ids represented by replay lineage."
+    },
+    "prediction_cache_store": {
+      "type": "boolean",
+      "const": false,
+      "description": "Public PREDICT/EXPLAIN replay never creates or persists a training cache."
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/bound_training_output.v2.schema.json"
+      },
+      "description": "Strictly sorted by binding_id and exactly covers emitted requested outputs."
+    },
+    "explanations": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v2.schema.json#/$defs/explanation_block"
+      }
+    },
+    "lineage": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/lineage_record"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true
+    },
+    "outcome_fingerprint": {
+      "$ref": "#/$defs/sha256",
+      "description": "DAG-ML TCV1 SHA-256 of this complete outcome with only outcome_fingerprint omitted."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "phase": { "const": "PREDICT" } },
+        "required": ["phase"]
+      },
+      "then": {
+        "properties": {
+          "outputs": { "minItems": 1 },
+          "explanations": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "phase": { "const": "EXPLAIN" } },
+        "required": ["phase"]
+      },
+      "then": {
+        "properties": {
+          "explanations": { "minItems": 1 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

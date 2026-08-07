@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "replay:request.explain",
+  "source_outcome_fingerprint": "ceae01c20a3e875b642be51638cf778ea07f682ab5427436e74e9924120e1dcf",
+  "phase": "EXPLAIN",
+  "data_envelope_keys": [
+    "branch:b0.model:ridge.x",
+    "branch:b1.augment:noise.x",
+    "merge:stack.pred_plus_original.meta:ridge.x_original"
+  ],
+  "output_binding_ids": [
+    "output:meta.final"
+  ],
+  "request_fingerprint": "64b4e546f1440bd44336d4a48f8c6df87e2e02f0e55b3da1fa3482897d7390ad"
+}

@@ -48,7 +48,7 @@ use dag_ml_core::{
     DagMlError as CoreDagMlError, ExecutionPlan, ExternalDataPlanEnvelope, InMemoryArtifactStore,
     InMemoryDataProvider, NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
     RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    ScoreSet, SequentialScheduler, VariantId, VariantValidationPredictions,
+    ScoreSet, SequentialScheduler, TrainingLossRoleReference, VariantId, VariantValidationPredictions,
     SCORE_SET_SCHEMA_VERSION,
 };
 
@@ -71,10 +71,16 @@ fn to_py_object<T: serde::Serialize>(
 /// Deserialize a Python object returned by a callback directly into a
 /// `dag-ml-core` value with `depythonize` (`PyObject` -> serde data model),
 /// skipping any JSON *string* step.
-fn from_py_object<T: serde::de::DeserializeOwned>(
-    obj: &Bound<'_, PyAny>,
-) -> Result<T, CoreDagMlError> {
-    depythonize(obj).map_err(pythonize_error)
+fn from_py_object<T>(obj: &Bound<'_, PyAny>) -> Result<T, CoreDagMlError>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let raw: serde_json::Value = depythonize(obj).map_err(pythonize_error)?;
+    dag_ml_core::deserialize_external_value(
+        raw,
+        "in-process callback result",
+        CoreDagMlError::RuntimeValidation,
+    )
 }
 
 /// Map a `pythonize`/`depythonize` conversion failure to a structured core error.
@@ -114,7 +120,7 @@ fn call_py_bridge<Req, Resp>(
 ) -> Result<Resp, CoreDagMlError>
 where
     Req: serde::Serialize,
-    Resp: serde::de::DeserializeOwned,
+    Resp: serde::de::DeserializeOwned + serde::Serialize,
 {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         Python::attach(|py| -> Result<Resp, CoreDagMlError> {
@@ -164,15 +170,16 @@ impl RuntimeController for PyOperatorController {
     }
 }
 
-/// Map the host's selection-metric string to the core metric kind. Mirrors the
-/// CLI's `--selection-metric` (`rmse` | `accuracy` | `balanced_accuracy`); anything
-/// else defaults to RMSE, exactly like the CLI's clap default. `balanced_accuracy`
-/// matches nirs4all's default classification ranking metric.
-fn parse_selection_metric(metric: &str) -> RegressionMetricKind {
+/// Map the host's explicit selection metric to the core metric kind.
+/// `balanced_accuracy` matches nirs4all's default classification ranking metric.
+fn parse_selection_metric(metric: &str) -> Result<RegressionMetricKind, CoreDagMlError> {
     match metric {
-        "accuracy" => RegressionMetricKind::Accuracy,
-        "balanced_accuracy" => RegressionMetricKind::BalancedAccuracy,
-        _ => RegressionMetricKind::Rmse,
+        "rmse" => Ok(RegressionMetricKind::Rmse),
+        "accuracy" => Ok(RegressionMetricKind::Accuracy),
+        "balanced_accuracy" => Ok(RegressionMetricKind::BalancedAccuracy),
+        _ => Err(CoreDagMlError::CampaignValidation(format!(
+            "unsupported in-process selection metric `{metric}`; expected rmse, accuracy or balanced_accuracy"
+        ))),
     }
 }
 
@@ -180,7 +187,7 @@ fn parse_selection_metric(metric: &str) -> RegressionMetricKind {
 /// per controller the plan references, all backed by the SAME host `op_callback`
 /// (the host dispatches by node kind inside `run_node`, exactly as the subprocess
 /// adapter does).
-fn build_runtime_controllers(
+pub(crate) fn build_runtime_controllers(
     py: Python<'_>,
     plan: &ExecutionPlan,
     op_callback: &Py<PyAny>,
@@ -510,8 +517,8 @@ fn surface_loser_validation_frames(
 ///   relations + the DSL fold set drive `data_views` production.
 /// * `controller_manifests_json` — the controller manifest list.
 /// * `op_callback` — the host bridge running one [`NodeTask`] (`run_node`).
-/// * `selection_metric` — `rmse` | `accuracy`, used only for native multi-variant
-///   SELECT (ignored for single-variant plans).
+/// * `selection_metric` — `rmse` | `accuracy` | `balanced_accuracy`, used only
+///   for native multi-variant SELECT (validated even for single-variant plans).
 ///
 /// Returns a JSON object `{ "node_results": [...], "scores": <ScoreSet|null> }`.
 /// `scores` is byte-identical to the subprocess bundle's `scores`, so the host
@@ -525,7 +532,56 @@ pub fn run_cv_refit_in_process(
     op_callback: Py<PyAny>,
     selection_metric: &str,
 ) -> PyResult<String> {
-    let metric = parse_selection_metric(selection_metric);
+    run_cv_refit_in_process_impl(
+        py,
+        dsl_json,
+        envelope_json,
+        controller_manifests_json,
+        None,
+        op_callback,
+        selection_metric,
+    )
+}
+
+/// Run a CV + refit campaign IN-PROCESS after binding native training-loss
+/// role references into the execution plan.
+///
+/// This is the same scheduler path as [`run_cv_refit_in_process`], with one
+/// additional native step: the supplied roles replace `NodePlan.training_losses`
+/// via [`ExecutionPlan::with_training_losses`] before any `NodeTask` is built.
+/// The roles remain contract data; process-local callable resolution still
+/// happens in the host callback that receives the exact native `NodeTask`.
+#[pyfunction]
+pub fn run_cv_refit_in_process_with_training_losses(
+    py: Python<'_>,
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    training_loss_roles_json: &str,
+    op_callback: Py<PyAny>,
+    selection_metric: &str,
+) -> PyResult<String> {
+    run_cv_refit_in_process_impl(
+        py,
+        dsl_json,
+        envelope_json,
+        controller_manifests_json,
+        Some(training_loss_roles_json),
+        op_callback,
+        selection_metric,
+    )
+}
+
+fn run_cv_refit_in_process_impl(
+    py: Python<'_>,
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    training_loss_roles_json: Option<&str>,
+    op_callback: Py<PyAny>,
+    selection_metric: &str,
+) -> PyResult<String> {
+    let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
 
     // 1. Read the envelope first (the CLI reads it before the plan so data-aware
     //    branch fan-out can discover partition values from coordinator relations).
@@ -558,13 +614,18 @@ pub fn run_cv_refit_in_process(
     // default in-process binding to native operator-SELECT, mirroring CLI Mechanism A.
     let operator_variant_models =
         compile_operator_variant_models(&dsl_spec).map_err(py_core_error)?;
-    let plan = build_execution_plan(
+    let mut plan = build_execution_plan(
         format!("plan:{}", dsl_spec.id),
         compiled.graph,
         compiled.campaign_template,
         &controller_registry,
     )
     .map_err(py_core_error)?;
+    if let Some(training_loss_roles_json) = training_loss_roles_json {
+        let roles: Vec<TrainingLossRoleReference> =
+            serde_json::from_str(training_loss_roles_json).map_err(py_serde_error)?;
+        plan = plan.with_training_losses(roles).map_err(py_core_error)?;
+    }
 
     // 3. Build the SAME Rust data provider the CLI uses
     //    (`data_provider_for_training_envelope`): validate the envelope relations
@@ -721,6 +782,67 @@ mod tests {
     const CHOICE0_LABEL: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const CHOICE1_LABEL: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 
+    #[test]
+    fn in_process_selection_metric_rejects_unknown_names() {
+        assert_eq!(
+            parse_selection_metric("rmse").unwrap(),
+            RegressionMetricKind::Rmse
+        );
+        assert_eq!(
+            parse_selection_metric("balanced_accuracy").unwrap(),
+            RegressionMetricKind::BalancedAccuracy
+        );
+        let error = parse_selection_metric("rms").unwrap_err().to_string();
+        assert!(error.contains("unsupported in-process selection metric `rms`"));
+    }
+
+    #[test]
+    fn in_process_callback_result_preserves_closed_object_shapes() {
+        Python::initialize();
+        Python::attach(|py| {
+            let valid = serde_json::json!({
+                "handle": 7,
+                "kind": "data",
+                "owner_controller": "controller:python.strict"
+            });
+            let valid_object = pythonize(py, &valid).unwrap();
+            from_py_object::<HandleRef>(&valid_object).expect("object-form handle is accepted");
+
+            let positional = serde_json::json!([7, "data", "controller:python.strict"]);
+            let positional_object = pythonize(py, &positional).unwrap();
+            let error = from_py_object::<HandleRef>(&positional_object)
+                .expect_err("serde's positional struct form must stay internal");
+            assert!(
+                error
+                    .to_string()
+                    .contains("must use a JSON object at the external contract boundary"),
+                "{error}"
+            );
+
+            let mut unknown = valid;
+            unknown.as_object_mut().unwrap().insert(
+                "unexpected_contract_field".to_string(),
+                serde_json::json!(true),
+            );
+            let unknown_object = pythonize(py, &unknown).unwrap();
+            let error = from_py_object::<HandleRef>(&unknown_object)
+                .expect_err("schema-closed callback fields must be rejected");
+            assert!(
+                error.to_string().contains("unexpected_contract_field"),
+                "{error}"
+            );
+
+            let mut colliding_keys = serde_json::Map::new();
+            colliding_keys.insert("é".to_string(), serde_json::json!(1));
+            colliding_keys.insert("e\u{301}".to_string(), serde_json::json!(2));
+            let colliding_object =
+                pythonize(py, &serde_json::Value::Object(colliding_keys)).unwrap();
+            let error = from_py_object::<BTreeMap<String, serde_json::Value>>(&colliding_object)
+                .expect_err("NFC-colliding callback map keys must be rejected");
+            assert!(error.to_string().contains("NFC-colliding"), "{error}");
+        });
+    }
+
     fn stable_handle(node_id: &str) -> u64 {
         let mut hash = 1469598103934665603u64;
         for byte in node_id.bytes() {
@@ -779,6 +901,7 @@ mod tests {
                         predictions.push(PredictionBlock {
                             prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                             producer_node: task.node_plan.node_id.clone(),
+                            producer_port: None,
                             partition: PredictionPartition::Validation,
                             fold_id: task.fold_id.clone(),
                             sample_ids: vec![sample_id.clone()],
@@ -796,6 +919,7 @@ mod tests {
                     predictions.push(PredictionBlock {
                         prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
                         producer_node: task.node_plan.node_id.clone(),
+                        producer_port: None,
                         partition: PredictionPartition::Final,
                         fold_id: None,
                         sample_ids: vec![SampleId::new("s1").unwrap()],
@@ -834,6 +958,7 @@ mod tests {
                 })
                 .collect::<BTreeMap<_, _>>();
             Ok(NodeResult {
+                schema_version: None,
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([
                     ("x".to_string(), data_output.clone()),
@@ -880,6 +1005,8 @@ mod tests {
                     seed: task.seed,
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
                 },
             })
         }

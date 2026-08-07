@@ -20,6 +20,20 @@
         { "type": "null" }
       ]
     },
+    "data_content_fingerprint": {
+      "anyOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ],
+      "description": "Additive V1 identity of concrete feature/input content. Legacy envelopes may omit it; TrainingRequest v1 requires the corresponding TrainingDataIdentity value."
+    },
+    "target_content_fingerprint": {
+      "anyOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ],
+      "description": "Additive V1 identity of concrete target content; prediction-only envelopes may omit it."
+    },
     "plan": {
       "type": "object",
       "required": ["id", "steps", "output_representation"],

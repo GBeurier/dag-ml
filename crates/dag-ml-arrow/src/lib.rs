@@ -9,9 +9,9 @@
 //! `RecordBatch`:
 //!
 //! - schema metadata carries the payload-level fields
-//!   (`requirement_key`, `cache_id`, `partition`, `prediction_level`,
-//!   `content_fingerprint`, `block_count`, `row_count`, codec
-//!   version);
+//!   (`requirement_key`, `cache_id`, cache namespace fingerprints,
+//!   `partition`, `prediction_level`, `content_fingerprint`,
+//!   `block_count`, `row_count`, codec version);
 //! - each row is one block, with `block_kind` distinguishing sample
 //!   blocks (`PredictionBlock`) from aggregated blocks
 //!   (`AggregatedPredictionBlock`) and `payload_json` carrying the
@@ -44,7 +44,8 @@ use dag_ml_core::oof::PredictionBlock;
 /// Codec version stamped into the Arrow schema metadata. Bump if the
 /// row layout or metadata key set changes in a way readers must
 /// reject as unsupported.
-pub const CODEC_VERSION: &str = "v1";
+pub const CODEC_VERSION: &str = "v2";
+pub const LEGACY_CODEC_VERSION: &str = "v1";
 const BLOCK_KIND_SAMPLE: &str = "sample";
 const BLOCK_KIND_AGGREGATED: &str = "aggregated";
 
@@ -54,6 +55,8 @@ const BLOCK_KIND_AGGREGATED: &str = "aggregated";
 pub const METADATA_KEY_FORMAT: &str = "dag_ml.prediction_cache.format";
 pub const METADATA_KEY_REQUIREMENT_KEY: &str = "dag_ml.prediction_cache.requirement_key";
 pub const METADATA_KEY_CACHE_ID: &str = "dag_ml.prediction_cache.cache_id";
+pub const METADATA_KEY_CACHE_NAMESPACE_FINGERPRINTS: &str =
+    "dag_ml.prediction_cache.cache_namespace_fingerprints";
 pub const METADATA_KEY_PARTITION: &str = "dag_ml.prediction_cache.partition";
 pub const METADATA_KEY_PREDICTION_LEVEL: &str = "dag_ml.prediction_cache.prediction_level";
 pub const METADATA_KEY_CONTENT_FINGERPRINT: &str = "dag_ml.prediction_cache.content_fingerprint";
@@ -68,6 +71,14 @@ fn cache_schema(payload: &BundlePredictionCachePayload) -> Result<Schema> {
         payload.requirement_key.clone(),
     );
     metadata.insert(METADATA_KEY_CACHE_ID.to_string(), payload.cache_id.clone());
+    metadata.insert(
+        METADATA_KEY_CACHE_NAMESPACE_FINGERPRINTS.to_string(),
+        serde_json::to_string(&payload.cache_namespace_fingerprints).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to serialize cache namespace fingerprints for Arrow metadata: {error}"
+            ))
+        })?,
+    );
     metadata.insert(
         METADATA_KEY_PARTITION.to_string(),
         serde_json::to_string(&payload.partition).map_err(|error| {
@@ -214,11 +225,15 @@ pub fn predictions_from_arrow_ipc(bytes: &[u8]) -> Result<BundlePredictionCacheP
     let metadata = schema.metadata.clone();
 
     let format = parse_metadata(&metadata, METADATA_KEY_FORMAT)?;
-    if format != CODEC_VERSION {
-        return Err(DagMlError::RuntimeValidation(format!(
-            "Arrow prediction cache uses codec version `{format}`, expected `{CODEC_VERSION}`"
-        )));
-    }
+    let cache_namespace_fingerprints = match format.as_str() {
+        LEGACY_CODEC_VERSION => Vec::new(),
+        CODEC_VERSION => parse_metadata_json(&metadata, METADATA_KEY_CACHE_NAMESPACE_FINGERPRINTS)?,
+        _ => {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "Arrow prediction cache uses codec version `{format}`, expected `{LEGACY_CODEC_VERSION}` or `{CODEC_VERSION}`"
+            )));
+        }
+    };
     let requirement_key = parse_metadata(&metadata, METADATA_KEY_REQUIREMENT_KEY)?;
     let cache_id = parse_metadata(&metadata, METADATA_KEY_CACHE_ID)?;
     let partition = parse_metadata_json(&metadata, METADATA_KEY_PARTITION)?;
@@ -284,6 +299,7 @@ pub fn predictions_from_arrow_ipc(bytes: &[u8]) -> Result<BundlePredictionCacheP
     let payload = BundlePredictionCachePayload {
         requirement_key,
         cache_id,
+        cache_namespace_fingerprints,
         format: dag_ml_core::bundle::BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
         partition,
         prediction_level,
@@ -323,6 +339,7 @@ mod tests {
         PredictionBlock {
             prediction_id: Some("pred:1".to_string()),
             producer_node: NodeId::new("model:ridge").unwrap(),
+            producer_port: Some("pred".to_string()),
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             sample_ids: vec![
@@ -338,6 +355,7 @@ mod tests {
         AggregatedPredictionBlock {
             prediction_id: Some("pred:agg:1".to_string()),
             producer_node: NodeId::new("model:ridge").unwrap(),
+            producer_port: Some("pred".to_string()),
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new("fold:0").unwrap()),
             level: PredictionLevel::Target,
@@ -355,6 +373,7 @@ mod tests {
         BundlePredictionCachePayload {
             requirement_key: "requirement:sample".to_string(),
             cache_id: "cache:sample".to_string(),
+            cache_namespace_fingerprints: Vec::new(),
             format: dag_ml_core::bundle::BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
             partition: PredictionPartition::Validation,
             prediction_level: PredictionLevel::Sample,
@@ -371,6 +390,7 @@ mod tests {
         BundlePredictionCachePayload {
             requirement_key: "requirement:agg".to_string(),
             cache_id: "cache:agg".to_string(),
+            cache_namespace_fingerprints: Vec::new(),
             format: dag_ml_core::bundle::BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
             partition: PredictionPartition::Validation,
             prediction_level: PredictionLevel::Target,
@@ -402,8 +422,39 @@ mod tests {
     }
 
     #[test]
+    fn arrow_ipc_round_trips_cache_namespace_fingerprints() {
+        let mut payload = sample_payload();
+        payload.cache_namespace_fingerprints = vec!["a".repeat(64)];
+        let bytes = predictions_to_arrow_ipc(&payload).expect("encode");
+        let decoded = predictions_from_arrow_ipc(&bytes).expect("decode");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn arrow_ipc_reads_legacy_v1_without_cache_namespace_fingerprints() {
+        let payload = sample_payload();
+        let mut schema = cache_schema(&payload).expect("schema");
+        let mut legacy_metadata = schema.metadata.clone();
+        legacy_metadata.insert(
+            METADATA_KEY_FORMAT.to_string(),
+            LEGACY_CODEC_VERSION.to_string(),
+        );
+        legacy_metadata.remove(METADATA_KEY_CACHE_NAMESPACE_FINGERPRINTS);
+        schema = Schema::new_with_metadata(schema.fields.clone(), legacy_metadata);
+        let batch = build_record_batch(&payload, schema.clone()).expect("batch");
+        let mut buffer = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buffer, &schema).expect("writer");
+            writer.write(&batch).expect("write batch");
+            writer.finish().expect("finish stream");
+        }
+        let decoded = predictions_from_arrow_ipc(&buffer).expect("decode legacy v1");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
     fn arrow_ipc_rejects_unknown_codec_version() {
-        // Construct an Arrow IPC stream directly with a non-`v1`
+        // Construct an Arrow IPC stream directly with an unsupported
         // codec version (instead of fragile byte-scanning the
         // encoded stream) so the test cannot accidentally corrupt
         // the wrong bytes if the literal `v1` happens to appear

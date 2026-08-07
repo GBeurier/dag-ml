@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::canonical::deserialize_external_contract;
 use crate::error::{DagMlError, Result};
 use crate::ids::NodeId;
 use crate::relation::EntityUnitLevel;
@@ -199,6 +200,14 @@ pub struct GraphSpec {
 }
 
 impl GraphSpec {
+    /// Parse the published object-only graph JSON representation and validate it.
+    pub fn from_json(json: &str) -> Result<Self> {
+        let graph: Self =
+            deserialize_external_contract(json, "graph", DagMlError::GraphValidation)?;
+        graph.validate()?;
+        Ok(graph)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.id.trim().is_empty() {
             return Err(DagMlError::GraphValidation(

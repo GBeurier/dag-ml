@@ -13,6 +13,7 @@ pub enum HandleKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HandleRef {
     pub handle: u64,
     pub kind: HandleKind,
@@ -116,6 +117,8 @@ pub struct ArtifactMaterializationRequest {
     pub controller_id: ControllerId,
     pub artifact: ArtifactRef,
     pub params_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub training_loss_fingerprint: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -125,6 +128,8 @@ pub struct ArtifactHandleRecord {
     pub controller_id: ControllerId,
     pub artifact: ArtifactRef,
     pub params_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub training_loss_fingerprint: Option<String>,
 }
 
 impl ArtifactHandleRecord {
@@ -154,6 +159,9 @@ impl ArtifactHandleRecord {
                 self.artifact.id
             )));
         }
+        if let Some(fingerprint) = &self.training_loss_fingerprint {
+            validate_runtime_fingerprint("artifact training loss", fingerprint)?;
+        }
         Ok(())
     }
 }
@@ -181,6 +189,7 @@ impl InMemoryArtifactStore {
             controller_id: artifact.controller_id.clone(),
             artifact: artifact.artifact.clone(),
             params_fingerprint: artifact.params_fingerprint.clone(),
+            training_loss_fingerprint: artifact.training_loss_fingerprint.clone(),
         };
         record.validate()?;
         if self.records.contains_key(&record.artifact.id)
@@ -224,11 +233,16 @@ impl InMemoryArtifactStore {
                 controller_id: task.node_plan.controller_id.clone(),
                 artifact: artifact.clone(),
                 params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                training_loss_fingerprint: task
+                    .node_plan
+                    .training_loss_fingerprint(Phase::Refit)?,
                 data_requirement_keys: task
                     .node_plan
                     .data_bindings
                     .iter()
-                    .map(|binding| format!("{}.{}", binding.node_id, binding.input_name))
+                    .map(|binding| {
+                        data_binding_requirement_key(&binding.node_id, &binding.input_name)
+                    })
                     .collect(),
                 // Only the Validation-OOF meta-feature inputs become replay
                 // prediction-cache requirements. The off-fold (REFIT/PREDICT)
@@ -305,6 +319,12 @@ impl RuntimeArtifactStore for InMemoryArtifactStore {
                 request.artifact.id
             )));
         }
+        if record.training_loss_fingerprint != request.training_loss_fingerprint {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` training loss fingerprint does not match bundle record",
+                request.artifact.id
+            )));
+        }
         record.validate()?;
         Ok(record.handle.clone())
     }
@@ -318,7 +338,7 @@ pub(crate) fn default_file_artifact_manifest_schema_version() -> u32 {
 }
 
 /// One persisted artifact entry. Mirrors the bundle [`RefitArtifactRecord`]
-/// identity (node, controller, artifact and params fingerprint) while requiring
+/// identity (node, controller, artifact, parameters and training loss) while requiring
 /// the [`ArtifactRef`] to be portable so the manifest stays movable with its
 /// payloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -327,6 +347,8 @@ pub struct FileArtifactManifestEntry {
     pub controller_id: ControllerId,
     pub artifact: ArtifactRef,
     pub params_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub training_loss_fingerprint: Option<String>,
 }
 
 impl FileArtifactManifestEntry {
@@ -336,6 +358,7 @@ impl FileArtifactManifestEntry {
             controller_id: record.controller_id.clone(),
             artifact: record.artifact.clone(),
             params_fingerprint: record.params_fingerprint.clone(),
+            training_loss_fingerprint: record.training_loss_fingerprint.clone(),
         };
         entry.validate()?;
         Ok(entry)
@@ -349,7 +372,11 @@ impl FileArtifactManifestEntry {
                 self.artifact.id, self.controller_id, self.artifact.controller_id
             )));
         }
-        validate_runtime_fingerprint("artifact manifest params", &self.params_fingerprint)
+        validate_runtime_fingerprint("artifact manifest params", &self.params_fingerprint)?;
+        if let Some(fingerprint) = &self.training_loss_fingerprint {
+            validate_runtime_fingerprint("artifact manifest training loss", fingerprint)?;
+        }
+        Ok(())
     }
 
     fn matches_refit_record(&self, record: &RefitArtifactRecord) -> bool {
@@ -357,6 +384,7 @@ impl FileArtifactManifestEntry {
             && self.controller_id == record.controller_id
             && self.artifact == record.artifact
             && self.params_fingerprint == record.params_fingerprint
+            && self.training_loss_fingerprint == record.training_loss_fingerprint
     }
 }
 
@@ -513,6 +541,7 @@ pub struct ArtifactPayloadMaterializationRecord {
     pub phase: Phase,
     pub variant_id: Option<VariantId>,
     pub artifact_id: ArtifactId,
+    pub training_loss_fingerprint: Option<String>,
     pub payload_uri: String,
     pub content_fingerprint: String,
     pub size_bytes: u64,
@@ -673,6 +702,12 @@ impl RuntimeArtifactStore for FileArtifactPayloadStore {
                 request.artifact.id
             )));
         }
+        if record.training_loss_fingerprint != request.training_loss_fingerprint {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` training loss fingerprint does not match bundle record",
+                request.artifact.id
+            )));
+        }
         let metadata = validate_artifact_payload_file(&self.root, &request.artifact)?;
         let fingerprint = stable_json_fingerprint(&(
             &request.run_id,
@@ -683,6 +718,7 @@ impl RuntimeArtifactStore for FileArtifactPayloadStore {
             &request.artifact.id,
             &metadata.content_fingerprint,
             &request.params_fingerprint,
+            &request.training_loss_fingerprint,
         ))?;
         let handle = HandleRef {
             handle: u64::from_str_radix(&fingerprint[..16], 16)
@@ -699,6 +735,7 @@ impl RuntimeArtifactStore for FileArtifactPayloadStore {
                 phase: request.phase,
                 variant_id: request.variant_id.clone(),
                 artifact_id: request.artifact.id.clone(),
+                training_loss_fingerprint: request.training_loss_fingerprint.clone(),
                 payload_uri: metadata.uri,
                 content_fingerprint: metadata.content_fingerprint,
                 size_bytes: metadata.size_bytes,
@@ -709,6 +746,7 @@ impl RuntimeArtifactStore for FileArtifactPayloadStore {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LineageRecord {
     pub record_id: LineageId,
     pub run_id: RunId,
@@ -732,6 +770,10 @@ pub struct LineageRecord {
     pub unsafe_flags: BTreeSet<String>,
     #[serde(default)]
     pub metrics: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loss_attestations: Vec<LossExecutionAttestation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub early_stopping_records: Vec<EarlyStoppingRecord>,
 }
 
 impl LineageRecord {
@@ -744,6 +786,25 @@ impl LineageRecord {
         }
         for artifact in &self.artifact_refs {
             artifact.validate()?;
+        }
+        for attestation in &self.loss_attestations {
+            attestation.validate()?;
+            if attestation.node_id != self.node_id || attestation.phase != self.phase {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "lineage `{}` contains a loss attestation outside its node/phase scope",
+                    self.record_id
+                )));
+            }
+        }
+        let mut early_stopping_roles = BTreeSet::new();
+        for record in &self.early_stopping_records {
+            record.validate_against(&self.node_id, self.phase, self.fold_id.as_ref())?;
+            if !early_stopping_roles.insert(record.metric_role.role_id.as_str()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "lineage `{}` contains duplicate early-stopping role `{}`",
+                    self.record_id, record.metric_role.role_id
+                )));
+            }
         }
         Ok(())
     }

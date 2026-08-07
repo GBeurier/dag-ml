@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/node_result.v2.schema.json",
+  "title": "DAG-ML NodeResult v2",
+  "description": "Versioned NodeResult wire requiring an explicit prediction producer_port on every prediction, observation-prediction, aggregated-prediction and explanation block.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "node_id", "lineage"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 2 },
+    "node_id": { "$ref": "#/$defs/identifier" },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/handle_ref"
+      }
+    },
+    "predictions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/prediction_block" }
+    },
+    "observation_predictions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/observation_prediction_block" }
+    },
+    "aggregated_predictions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/aggregated_prediction_block" }
+    },
+    "explanations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/explanation_block" }
+    },
+    "shape_deltas": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/shape_delta"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/artifact_ref"
+      }
+    },
+    "artifact_handles": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/handle_ref"
+      }
+    },
+    "fit_influence_diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/fit_influence_diagnostic"
+      }
+    },
+    "regression_targets": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/regression_target_block"
+      }
+    },
+    "lineage": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/lineage_record"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prediction_partition": {
+      "enum": ["train", "validation", "test", "final"]
+    },
+    "prediction_level": {
+      "enum": ["observation", "sample", "target", "group"]
+    },
+    "prediction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_node",
+        "producer_port",
+        "partition",
+        "fold_id",
+        "sample_ids",
+        "values"
+      ],
+      "properties": {
+        "prediction_id": { "type": ["string", "null"] },
+        "producer_node": { "$ref": "#/$defs/identifier" },
+        "producer_port": { "$ref": "#/$defs/non_empty_string" },
+        "partition": { "$ref": "#/$defs/prediction_partition" },
+        "fold_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "sample_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "values": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "number" } }
+        },
+        "target_names": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
+    "observation_prediction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_node",
+        "producer_port",
+        "partition",
+        "fold_id",
+        "observation_ids",
+        "values"
+      ],
+      "properties": {
+        "prediction_id": { "type": ["string", "null"] },
+        "producer_node": { "$ref": "#/$defs/identifier" },
+        "producer_port": { "$ref": "#/$defs/non_empty_string" },
+        "partition": { "$ref": "#/$defs/prediction_partition" },
+        "fold_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "observation_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "values": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "number" } }
+        },
+        "weights": { "type": "array", "items": { "type": "number" } },
+        "target_names": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
+    "aggregated_prediction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_node",
+        "producer_port",
+        "partition",
+        "fold_id",
+        "level",
+        "unit_ids",
+        "values"
+      ],
+      "properties": {
+        "prediction_id": { "type": ["string", "null"] },
+        "producer_node": { "$ref": "#/$defs/identifier" },
+        "producer_port": { "$ref": "#/$defs/non_empty_string" },
+        "partition": { "$ref": "#/$defs/prediction_partition" },
+        "fold_id": {
+          "anyOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "level": { "$ref": "#/$defs/prediction_level" },
+        "unit_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/prediction_unit_id"
+          }
+        },
+        "values": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "number" } }
+        },
+        "target_names": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
+    "explanation_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_node", "producer_port", "method", "payload"],
+      "properties": {
+        "producer_node": { "$ref": "#/$defs/identifier" },
+        "producer_port": { "$ref": "#/$defs/non_empty_string" },
+        "method": { "$ref": "#/$defs/non_empty_string" },
+        "target_name": { "$ref": "#/$defs/non_empty_string" },
+        "payload": {}
+      }
+    }
+  }
+}

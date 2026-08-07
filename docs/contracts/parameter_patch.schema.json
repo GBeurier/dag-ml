@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/parameter_patch.v1.schema.json",
+  "title": "DAG-ML ParameterPatch v1",
+  "description": "One typed value patch targeting a named node parameter namespace. Structural patches are portable declarations but require recompilation; V1 never encodes delete or append operations.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "node_id", "namespace", "path", "value"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "node_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "namespace": {
+      "$ref": "#/$defs/parameter_namespace"
+    },
+    "path": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/path_segment"
+      },
+      "description": "Ordered object-key traversal segments. V1 does not address array elements; empty segments and deletion/append markers are invalid."
+    },
+    "value": true
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "path_segment": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "not": { "const": "-" }
+    },
+    "parameter_namespace": {
+      "enum": ["operator", "fit", "control", "structural"]
+    },
+    "parameter_patch_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "namespace", "path"],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "namespace": {
+          "$ref": "#/$defs/parameter_namespace"
+        },
+        "path": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/path_segment"
+          }
+        }
+      }
+    }
+  }
+}

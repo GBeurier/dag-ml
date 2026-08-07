@@ -1,0 +1,99 @@
+{
+  "binding": {
+    "schema_version": 1,
+    "binding_id": "output:meta.class_label",
+    "node_id": "merge:stack.pred_plus_original.meta:ridge",
+    "port_name": "oof",
+    "prediction_level": "sample",
+    "unit_level": "physical_sample",
+    "prediction_kind": "class_label",
+    "prediction_source": "final_refit",
+    "refit_strategy": "refit_one",
+    "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+    "target_names": [
+      "class_primary",
+      "class_secondary"
+    ],
+    "target_units": [
+      null,
+      null
+    ],
+    "class_labels": [
+      [
+        "A",
+        "B"
+      ],
+      [
+        "low",
+        "mid",
+        "high"
+      ]
+    ],
+    "output_order": "target_order",
+    "target_space": "raw",
+    "binding_fingerprint": "1a8ecf2d486491e09eaf54e89a39c7ec5b3ae7f2745a8a751536b251b2576cf7"
+  },
+  "predictions": [
+    {
+      "prediction_id": "prediction:replay.class_label",
+      "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+      "producer_port": "oof",
+      "partition": "final",
+      "fold_id": null,
+      "sample_ids": [
+        "sample:prod.1",
+        "sample:prod.2"
+      ],
+      "values": [
+        [
+          0.0,
+          2.0
+        ],
+        [
+          1.0,
+          0.0
+        ]
+      ],
+      "target_names": [
+        "class_primary",
+        "class_secondary"
+      ]
+    }
+  ],
+  "observation_predictions": [],
+  "aggregated_predictions": [
+    {
+      "prediction_id": "prediction:replay.class_label.sample",
+      "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+      "producer_port": "oof",
+      "partition": "final",
+      "fold_id": null,
+      "level": "sample",
+      "unit_ids": [
+        {
+          "level": "sample",
+          "id": "sample:prod.1"
+        },
+        {
+          "level": "sample",
+          "id": "sample:prod.2"
+        }
+      ],
+      "values": [
+        [
+          0.0,
+          2.0
+        ],
+        [
+          1.0,
+          0.0
+        ]
+      ],
+      "target_names": [
+        "class_primary",
+        "class_secondary"
+      ]
+    }
+  ],
+  "schema_version": 2
+}

@@ -27,6 +27,80 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 #[test]
+fn cli_validates_loss_and_metric_specs_and_rejects_tampering() {
+    let root = repo_root();
+    let fixture: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("examples/fixtures/criteria/criteria_contracts.v1.json"))
+            .expect("criteria fixture is readable"),
+    )
+    .expect("criteria fixture is JSON");
+
+    for (command, key, expected) in [
+        (
+            "validate-loss-spec",
+            "loss_spec",
+            "valid loss spec: example.loss.asymmetric@1",
+        ),
+        (
+            "validate-metric-spec",
+            "metric_spec",
+            "valid metric spec: example.metric.bias@1",
+        ),
+    ] {
+        let path = std::env::temp_dir().join(format!(
+            "dag_ml_cli_{key}_{}_{}.json",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&fixture["valid"][key]).unwrap(),
+        )
+        .expect("write valid criteria spec");
+        let output = Command::new(cli())
+            .current_dir(&root)
+            .args([command, path.to_str().expect("temp path is valid utf-8")])
+            .output()
+            .expect("run criteria validation command");
+        assert!(
+            output.status.success(),
+            "{command} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains(expected));
+        std::fs::remove_file(path).ok();
+    }
+
+    let invalid = fixture["invalid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["id"] == "loss_mismatched_fingerprint")
+        .unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "dag_ml_cli_invalid_loss_{}_{}.json",
+        std::process::id(),
+        unique_suffix()
+    ));
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&invalid["document"]).unwrap(),
+    )
+    .expect("write invalid loss spec");
+    let output = Command::new(cli())
+        .current_dir(&root)
+        .args([
+            "validate-loss-spec",
+            path.to_str().expect("temp path is valid utf-8"),
+        ])
+        .output()
+        .expect("run invalid loss validation command");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("fingerprint mismatch"));
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
 fn cli_compiles_pipeline_dsl_to_graph() {
     let root = repo_root();
     let output_path = std::env::temp_dir().join(format!(
@@ -1020,7 +1094,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_cv_refit_bundle_json.contains("prediction_requirements")
             && branch_merge_cv_refit_bundle_json.contains("prediction_caches")
             && branch_merge_cv_refit_bundle_json.contains("prediction_requirement_keys")
-            && branch_merge_cv_refit_bundle_json.contains("dag-ml-json-prediction-blocks-v1")
+            && branch_merge_cv_refit_bundle_json.contains("dag-ml-json-prediction-blocks-v2")
             && branch_merge_cv_refit_bundle_json.contains(
                 "prediction-cache:branch:b0.model:ridge.oof->merge:stack.pred_plus_original.meta:ridge.b0_oof"
             )
@@ -1070,7 +1144,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             .expect("branch/merge prediction cache payload was written");
     assert!(
         branch_merge_prediction_cache_json.contains("\"bundle_id\": \"bundle:cli.branch.merge.cv.refit\"")
-            && branch_merge_prediction_cache_json.contains("\"schema_version\": 1")
+            && branch_merge_prediction_cache_json.contains("\"schema_version\": 2")
+            && branch_merge_prediction_cache_json.contains("dag-ml-json-prediction-blocks-v2")
+            && branch_merge_prediction_cache_json.contains("\"producer_port\": \"oof\"")
             && branch_merge_prediction_cache_json.contains("\"caches\"")
             && branch_merge_prediction_cache_json.contains("\"blocks\"")
             && branch_merge_prediction_cache_json.contains("\"values\"")
@@ -1174,7 +1250,9 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     assert!(
         dsl_branch_merge_prediction_cache_json
             .contains("\"bundle_id\": \"bundle:cli.dsl.branch.merge.cv.refit\"")
-            && dsl_branch_merge_prediction_cache_json.contains("\"schema_version\": 1")
+            && dsl_branch_merge_prediction_cache_json.contains("\"schema_version\": 2")
+            && dsl_branch_merge_prediction_cache_json.contains("dag-ml-json-prediction-blocks-v2")
+            && dsl_branch_merge_prediction_cache_json.contains("\"producer_port\": \"oof\"")
             && dsl_branch_merge_prediction_cache_json.contains("prediction-cache:branch:b0")
             && dsl_branch_merge_prediction_cache_json.contains("prediction-cache:branch:b1"),
         "unexpected DSL branch/merge prediction cache payload JSON: {}",
