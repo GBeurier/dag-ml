@@ -19,7 +19,7 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   dispatches both built-in and host-local providers through one registry,
   validates provider identity, finite values, scope and coverage, and reduces
   results before native score persistence. This additive contract publication
-  does not change the public C ABI.
+  extends the public C ABI through the versioned local-implementation vtable.
 - Training requests can now attach resolved loss roles to predictor nodes for
   `FIT_CV` and `REFIT`. Controller manifests advertise configurable, custom and
   differentiable-loss support; node tasks transport the resolved descriptor;
@@ -27,14 +27,14 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   reduction executed. Loss identity is included in candidate-cache, refit
   artifact, materialization, lineage and provenance validation, so replay
   refuses stale models trained under a different objective. Existing requests
-  without configured losses remain wire-compatible, and the public C ABI is
-  unchanged.
+  without configured losses remain wire-compatible; hosts opting into local
+  implementations use the additive, versioned C ABI extension.
 - Controller results can now attach fingerprinted `EarlyStoppingRecord` lineage
   evidence scoped to one `FIT_CV` fold or `REFIT` task and its exact
   `early_stopping` metric role. These optional records remain separate from
   `ScoreSet`, selection and tuning contracts. Existing results deserialize with
-  an empty record list, schemas and conformance packs are updated additively,
-  and the public C ABI is unchanged.
+  an empty record list, and schemas and conformance packs are updated
+  additively without a further C ABI extension.
 - ADR-20 and W0 JSON contracts for conformal calibration ownership,
   `ParameterPatch`, `OutputBinding`, `TrainingInfluenceManifest`, complete
   `TrainingOutcome`/`ReplayOutcome` payloads, and the existing execution-bundle

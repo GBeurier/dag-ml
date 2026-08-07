@@ -7165,6 +7165,16 @@ fn artifact_ref_validates_portable_metadata() {
     assert_eq!(legacy.backend, None);
     assert_eq!(legacy.content_fingerprint, None);
     legacy.validate().unwrap();
+
+    let legacy_with_extension: ArtifactRef = serde_json::from_value(serde_json::json!({
+        "id": "artifact:model:legacy-extension",
+        "kind": "mock_model",
+        "controller_id": "controller:mock",
+        "size_bytes": 128,
+        "host_metadata": { "format": "joblib", "version": 1 }
+    }))
+    .unwrap();
+    legacy_with_extension.validate().unwrap();
 }
 
 #[test]

@@ -33,7 +33,6 @@ pub enum ArtifactBackend {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ArtifactRef {
     pub id: ArtifactId,
     pub kind: String,
