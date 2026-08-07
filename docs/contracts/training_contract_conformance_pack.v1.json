@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "d257590e5618f5600b41ae769ca07afccd5fdde7e40ed8b0ccc98bbf1a998426",
+      "sha256": "49e110cd1c6b70811a8c2cb5f38c26c3c8fb08871ae1cd50182474743a960cbc",
       "kind": "ci_gate"
     },
     {
@@ -126,7 +126,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/artifact.rs",
-      "sha256": "d2a36d3f16b48d6dbecc705ff690924bd3c250e11487206a2331ee2549c0871f",
+      "sha256": "1f0350143a31e949e62da71e48b70825ada4b17b2303f4dbc1a4c66138338d34",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -206,7 +206,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "8c3cc1925082feec45b3fdefd04043df44b277c75e4bcba24434311f573640c1",
+      "sha256": "46fecc867064ac6715583ce728080b11bca20269db1384b757983d9fe3690f3c",
       "kind": "c_abi_snapshot"
     },
     {
@@ -276,12 +276,12 @@
     },
     {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "fa4c7629141a671eb5c7d5848e031b4f01e76f96b457a4d3bc960af1809e31f1",
+      "sha256": "c60b45bc56b27384d428eb9c3347e21392143333454601ed4d5efc8de20080ef",
       "kind": "schema_dependency"
     },
     {
       "path": "docs/contracts/node_task.schema.json",
-      "sha256": "e9b5548221d0b8f67b97c701b2a0e460f8d5cbc332f75c556317d56f4cc13eeb",
+      "sha256": "da0d67d6d60852f96ba20f3c352b22e4ce7f5cf8043b377c0d579cdd86e7421a",
       "kind": "schema_dependency"
     },
     {
@@ -446,7 +446,7 @@
     },
     {
       "path": "scripts/smoke_python_bindings.py",
-      "sha256": "3d419748694c1a6a4200fb4ef0421dcc294859c44dbe6a896ec762828bb72789",
+      "sha256": "8e2fef26f567de191e323f34ad55e3df97712ca24782f82244140daf85ca46cc",
       "kind": "binding_smoke"
     },
     {
@@ -529,5 +529,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "8e684dcac19df0cf22604f5391a79f25ea7e629e8ab3f2d54fdc2a8e60101290"
+  "pack_checksum": "757227785b6b108fc8c84b08a251e6fe0844b89e7b59b42474dacb8e59c41a2d"
 }
