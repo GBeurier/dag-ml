@@ -175,7 +175,7 @@ jobs:
           import dag_ml._dag_ml as native
 
           manifest = json.loads(dag_ml.contract_manifest_json())
-          assert native.version() == "0.2.7"
+          assert native.version() == "0.3.0"
           assert "TrainingRequest" in manifest["python_facade_exports"]
           assert callable(dag_ml.validate_training_request_json)
 
