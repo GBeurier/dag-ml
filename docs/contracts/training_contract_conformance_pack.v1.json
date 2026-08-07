@@ -1,0 +1,533 @@
+{
+  "schema_version": 1,
+  "pack_id": "dag-ml.training-contracts.v1",
+  "hash_algorithm": "sha256-file-bytes",
+  "canonical_profile": "DAG-ML TCV1",
+  "artifacts": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "49e110cd1c6b70811a8c2cb5f38c26c3c8fb08871ae1cd50182474743a960cbc",
+      "kind": "ci_gate"
+    },
+    {
+      "path": "crates/dag-ml-capi/include/dag_ml.h",
+      "sha256": "49e4c54cac3e0ea416537feb94e68fdb3bf6049ea424c26d407ef46d68ab8e36",
+      "kind": "c_abi_header"
+    },
+    {
+      "path": "crates/dag-ml-capi/src/lib.rs",
+      "sha256": "5fef9b1ea8cc648cd3b073a6a656c7207c793e922277397607fb2b3c5f26b4a4",
+      "kind": "c_training_binding"
+    },
+    {
+      "path": "crates/dag-ml-capi/src/local_implementation.rs",
+      "sha256": "bafc1888e57e26452b9c669a40ad2037e2e98b482a9b4482366207d807879f32",
+      "kind": "c_local_registry"
+    },
+    {
+      "path": "crates/dag-ml-capi/tests/c_conformance.rs",
+      "sha256": "13d8ab8a42383266c7b91087db6a4661d3bd96414dd8a41535a7b7bc363dc9a7",
+      "kind": "c_binding_test"
+    },
+    {
+      "path": "crates/dag-ml-capi/tests/local_implementations.rs",
+      "sha256": "73cbb8655e8c0dde2fceb8994c88c68e0ceb487d0cfc7a66e0e9ad2ad302d63d",
+      "kind": "c_local_registry_test"
+    },
+    {
+      "path": "crates/dag-ml-capi/tests/training_execute.rs",
+      "sha256": "23126f92fafe4b98b9f8cc96ece01cca58b36d57fe32e2e1fd29d879e933a542",
+      "kind": "c_training_test"
+    },
+    {
+      "path": "crates/dag-ml-cli/tests/training_contracts.rs",
+      "sha256": "07baad83791521de0f3a5d9dc925d32ae0339939d768e73770068ba5035144da",
+      "kind": "binding_test"
+    },
+    {
+      "path": "crates/dag-ml-core/src/aggregation.rs",
+      "sha256": "2ab69599ec4b837783762219eda0cdea8137795be16aaa82847d246fd192a615",
+      "kind": "typed_cache_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/bundle.rs",
+      "sha256": "9e38c2851a900762f36affeb287cd721f593513d51615bfc6d917df311913a5b",
+      "kind": "native_bundle_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/src/campaign.rs",
+      "sha256": "fa9ae9def1b15ac7ae3e738b6f399adb1e889103cee0334ae33efc63354fb9b6",
+      "kind": "historical_fingerprint_source"
+    },
+    {
+      "path": "crates/dag-ml-core/src/canonical.rs",
+      "sha256": "f0cc478b651381c13576e1d6980597cba7784d687ac6f067042bef2840a467fa",
+      "kind": "native_canonical_fingerprint"
+    },
+    {
+      "path": "crates/dag-ml-core/src/controller.rs",
+      "sha256": "978cd5e22b3c40ea28189852dd159605ff7a8eb7f4262c3883a1272a9dd1efb9",
+      "kind": "typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/data.rs",
+      "sha256": "f02ba993fdf2ebba5090fb163f0adac04c9d040512474ea02385923b1e1bfca0",
+      "kind": "typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/fold.rs",
+      "sha256": "81f1fdc2a3271ed20ca5ecf94a7a3ea6796743854ede5a8e3feea80d1f26cf91",
+      "kind": "typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/generation.rs",
+      "sha256": "aa4945a83fc4ce7601f6a4914a7b6933cd9af5be8d5f56ed41515a1f296f2eb9",
+      "kind": "typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/graph.rs",
+      "sha256": "9d931cd06c33d9c22eebf77c0e5cd108c2847fac51720ffb4b7c0a9e1cfe58dd",
+      "kind": "typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/ids.rs",
+      "sha256": "be6db93243a1b49f16fbeece86bc21d01ff34ac5c667638761471da242970d9d",
+      "kind": "typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/metrics.rs",
+      "sha256": "2fd5b10eaa6f198e450ea1a84d954b6a44c95facd7a87700a7d6b958e880b78a",
+      "kind": "typed_cache_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/oof.rs",
+      "sha256": "024c952917fe7e5e37c685c8f359bc3ad058b0189dd30aa5504f9edab3c4588b",
+      "kind": "typed_cache_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/phase.rs",
+      "sha256": "e65433e29903bd0c2a7a8af45ec1f3f6e62549810e36f444aefe7bad4804c45d",
+      "kind": "typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/plan.rs",
+      "sha256": "f997979bc34d8b6334db2f573d70bbed463b09690b0af3136a39d2e759b8fc42",
+      "kind": "native_plan_validator"
+    },
+    {
+      "path": "crates/dag-ml-core/src/policy.rs",
+      "sha256": "9012884b501e3a5d2f8b4f9bdebee108b28bd6d44724c5f8b191b5aee2d25678",
+      "kind": "typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/relation.rs",
+      "sha256": "8f5bad4f7636696754d07b23d3520d04e9f96ecfb69f3fe67af487d6802a15be",
+      "kind": "typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/runtime/artifact.rs",
+      "sha256": "1f0350143a31e949e62da71e48b70825ada4b17b2303f4dbc1a4c66138338d34",
+      "kind": "typed_runtime_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/runtime/task.rs",
+      "sha256": "e3a1b14bbcec7ccf406b2334c236f49e162b0e689d2605e0be86cd629c439390",
+      "kind": "typed_runtime_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/selection.rs",
+      "sha256": "110df9073acee79fba779e361df9b05bd57a011f724b200b0e97e10e9f9c3987",
+      "kind": "typed_contract_dependency"
+    },
+    {
+      "path": "crates/dag-ml-core/src/training.rs",
+      "sha256": "16ba13aad980c9f49991b8bf9581db31b8fe6b1fc5d958dec7640722e4ad3a55",
+      "kind": "native_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/src/training_runtime.rs",
+      "sha256": "4e64643142ae3122a83de5c011caa72c54392136dc3b1382b343e17545a7d0ba",
+      "kind": "native_runtime_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
+      "sha256": "214a894c3dfa957670f571825263a5a6cdc7c40b1b85f535233be74257b20d85",
+      "kind": "native_integration_test"
+    },
+    {
+      "path": "crates/dag-ml-py/README.md",
+      "sha256": "2aca09c98b3eda78ecabb1b934af5dd72b2dbee5f97b2b270f76f5be1d3774a3",
+      "kind": "python_binding_documentation"
+    },
+    {
+      "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
+      "sha256": "56977903fa4bb3fe700848bda1fd72790b288db645281d75bb962ccea3a22590",
+      "kind": "python_facade"
+    },
+    {
+      "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
+      "sha256": "0aac327004c29c6e7586d2082acd18083b39f0aca8b11bfc293d8d9c5c78f230",
+      "kind": "python_typing"
+    },
+    {
+      "path": "crates/dag-ml-py/src/in_process.rs",
+      "sha256": "4d258731fccc2cc8b77ed9d77b9f164f7523f71fb4cd17fcadfcfa28687d4c19",
+      "kind": "python_controller_bridge"
+    },
+    {
+      "path": "crates/dag-ml-py/src/lib.rs",
+      "sha256": "cffaaf9aeabff76de9a8360b853b6f2b70f99249aee3f3275fdbb4dbf1e996ca",
+      "kind": "python_binding"
+    },
+    {
+      "path": "crates/dag-ml-py/src/training.rs",
+      "sha256": "765c4eff99739beb67e1541e68ffb44841166f0881c8c8f2029dc520b8b69aa2",
+      "kind": "python_training_binding"
+    },
+    {
+      "path": "crates/dag-ml-py/tests/test_training_result.py",
+      "sha256": "e68cf5fd9e3d4f7d9b29839890db38bcd384bb97d3357dfc8e3790a6c5a0d638",
+      "kind": "python_binding_test"
+    },
+    {
+      "path": "crates/dag-ml-wasm/src/lib.rs",
+      "sha256": "8a35243ee4b5158cd8b22951f266177887abe1a98d42be0c84e814be0aab1c81",
+      "kind": "wasm_binding"
+    },
+    {
+      "path": "docs/TRAINING_CONTRACTS.md",
+      "sha256": "92a9a79c2a66daf44e322951e21ba5ffaa36265ab3ff855f192f27ccc1c3785e",
+      "kind": "documentation"
+    },
+    {
+      "path": "docs/contracts/README.md",
+      "sha256": "1e1af8eb2973effa72c7904de09fa153e3528851e883a801a1f3a721d60ecc44",
+      "kind": "contract_index_documentation"
+    },
+    {
+      "path": "docs/contracts/abi_snapshot.v1.json",
+      "sha256": "46fecc867064ac6715583ce728080b11bca20269db1384b757983d9fe3690f3c",
+      "kind": "c_abi_snapshot"
+    },
+    {
+      "path": "docs/contracts/cache_namespace.schema.json",
+      "sha256": "7e0f9bf2adc228c1733565873969f469ee0b03b306ed95a4c56724b5b14645e0",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/campaign_spec.schema.json",
+      "sha256": "3f40f734122b842da1c0ee8e2e0ddace9e58f02cdfcd2cf631cda13ffa4aa869",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/controller_manifest.schema.json",
+      "sha256": "5d69f9c76b2f085b90bdb1d7515cfb6db2f72b3f25c1b3ce60c78d1b62479464",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/coordinator_data_plan_envelope.schema.json",
+      "sha256": "e7e6cbac57a4eb583377351a809f55aad50b6fa3856adfb9bd8960c43f898001",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/early_stopping_record.schema.json",
+      "sha256": "2dc069c82b533bc3bfeba88833fd22ec36f24ad1219e1d76f2bee68f5af22710",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/execution_bundle.schema.json",
+      "sha256": "eefa7a9bd99023901a6b9246223cbaf0bcf9c04247374976173648c96e345871",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/execution_plan.schema.json",
+      "sha256": "f7edb22a7fd7468bfb685a99f790a1a954159cb5058e4ffdbd03f471bf85ea95",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/graph_spec.schema.json",
+      "sha256": "fbe8ee5ab1c7c5692c259bc007cbaf4067970bac309be3daf8a7a88768fa4168",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/implementation_descriptor.schema.json",
+      "sha256": "7fc37cd6dda7f7fcdb778facd691a5b27e64c825051965dd0948cfdb09092210",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/loss_execution_attestation.schema.json",
+      "sha256": "d3997aa28a9a785ac42ad328509ba001136fd5796b473a5246e2bc96b2577028",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/loss_spec.schema.json",
+      "sha256": "18a6cfc7bf74c42927ce3ba60d31b5c6bc8e5dd447b7c96a011ab26b3e282954",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/metric_role.schema.json",
+      "sha256": "b530ee58934571d0e82373f16ae92f86b6521c308479bef80d86040b4946f5a5",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/metric_spec.schema.json",
+      "sha256": "d463d99eab6b2399aecefdab92b0e0a7912e9e85cc09710015b9167393ca3523",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/node_result.schema.json",
+      "sha256": "c60b45bc56b27384d428eb9c3347e21392143333454601ed4d5efc8de20080ef",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/node_task.schema.json",
+      "sha256": "da0d67d6d60852f96ba20f3c352b22e4ce7f5cf8043b377c0d579cdd86e7421a",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/output_binding.schema.json",
+      "sha256": "5b3cf6c841ff0d2b8fc36cdd61240f63a12f507f2721e02322a159b6217cfbc2",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/parameter_patch.schema.json",
+      "sha256": "6e1a62e7fe25b68c577d59f6de6940f1924b30e0f539c86c47aad88f4d1bda0e",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/parameter_projection.schema.json",
+      "sha256": "94bee2fcdd73ad889fd4346875b256b13cf107cb15a92c191f6ac1c506421ea4",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/portable_predictor_package.schema.json",
+      "sha256": "b404a74aaa263fe8322d2cad24bd826168f1a447a3c58c0f0f39f741a3bb1777",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/prediction_cache_payload_set.schema.json",
+      "sha256": "d4147d75da2ce3354d17f58b01687bb1f3dc421290805bb673c039a73b71ac2e",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/score_set.schema.json",
+      "sha256": "b0122078a2812760688e71be449e7492c1ae9dd38d8aeb51211bc51eb1e87622",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/selection_decision.schema.json",
+      "sha256": "7f1d955a2dda4111c86cc76d196ae3fb81dc82304e7b8a0238c43334b0bd133b",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/selection_policy.schema.json",
+      "sha256": "a6196da912f5775ddd319698649adf04f7e91406f504a8669c8c3d5c2caf99e4",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/training_influence_manifest.schema.json",
+      "sha256": "79cb45a4c1cc79a1ecd74b9bcd23f6a69dd8f9d6dd03675f6339a3c9574bdfbf",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/training_loss_role.schema.json",
+      "sha256": "078886aa7f622c05c86aa22b4eaeaeeff857e2ad68da1137f62fe4f1510d02e3",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/training_outcome.schema.json",
+      "sha256": "cf9223520d6aa089beaf661934a520f65fcda6c882a9ff99c250a83bd3efe2eb",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/training_request.schema.json",
+      "sha256": "5d922ce91465b3478c51f324ee8924e6acf51cd532eead0e3cdd8a00deb790f9",
+      "kind": "schema"
+    },
+    {
+      "path": "examples/fixtures/estimator/training_outcome_no_refit.v1.json",
+      "sha256": "45657124b51bdab72201a3b1e482cea25c5e2d6364da63185d7b0c4142c78a71",
+      "kind": "source_fixture"
+    },
+    {
+      "path": "examples/fixtures/estimator/training_outcome_refit.v1.json",
+      "sha256": "eefeb752d8d4484a253abef038fabbefcf481c5a31f5ac32388b8120e14c7999",
+      "kind": "source_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/cache_namespace_fit_cv.v1.json",
+      "sha256": "b54c2fc4d0072727b4c9bf384cdef7b8bfe0696bcf6181324df3ecf856021e48",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/negative_cases.v1.json",
+      "sha256": "9983d12eee7d9e54769a5e36804c1ea6cafefb798ed463da8bc833a1d66709df",
+      "kind": "negative_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/parameter_projection_empty.v1.json",
+      "sha256": "87e1e58daf368d0708bb08d1798d35ea5a971f4a6462d38a86637a6e218978b9",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/portable_predictor_package.v1.json",
+      "sha256": "b234667c20456f8ca38c261a11a624890227a4fb4607046424f3b5fa03809d1b",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/python_training_multiport_smoke.v1.json",
+      "sha256": "e71d9d74839793001ca591bc1f3c34073033aca351a711f1f683a0eea13612d0",
+      "kind": "binding_smoke_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/python_training_smoke.v1.json",
+      "sha256": "efd1fec788ec07bcff14d2f8aa3ad19601ffb45feff4276d4b5542a89b33e20b",
+      "kind": "binding_smoke_fixture"
+    },
+    {
+      "path": "examples/fixtures/training/training_outcome_refit.v1.json",
+      "sha256": "db828b49d8776230fbc05986a90ecc5924c3b3d817f50a26d4ff5dda2c11ed7e",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/training_request_active_influence.v1.json",
+      "sha256": "d553a2f9062de4a66f9a02cf056c57cf9ec826d6f794c7b9673cc6351b9b6cdf",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/training_request_no_refit.v1.json",
+      "sha256": "806342929af822ada8d90b7cc45d35e7b93fd2cf34276f52e2568fcebfad533a",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/training_request_package_refit.v1.json",
+      "sha256": "5cebfabdd0f2d2def6aeda9443eaca79c232027af0d20464b5e874175b908fc1",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/training/training_request_refit.v1.json",
+      "sha256": "5fb8c37b56a8f966f5b0b03977680e97b3892984c4edc885c634c94b2c97ffe1",
+      "kind": "fixture"
+    },
+    {
+      "path": "parity/conformal/generate_fixtures.py",
+      "sha256": "11c4e8267534c9b444ffd1ec38c5534d98c4fea0d86d2da1ed2698ed897e914e",
+      "kind": "generator_dependency"
+    },
+    {
+      "path": "parity/conformal/oracle.py",
+      "sha256": "ef8d9062969fd4f885eb0fa7a90c710f178763cfd006b424e860771bf14668be",
+      "kind": "tcv1_oracle_dependency"
+    },
+    {
+      "path": "parity/schema_dependencies.py",
+      "sha256": "066d4e64dea2c314e0a1ef00b7e0da317ff49f2e9543e0172ad3741338669a5e",
+      "kind": "schema_dependency_resolver"
+    },
+    {
+      "path": "parity/training/generate_fixtures.py",
+      "sha256": "c5a02e5da120d32ca79cfb346eb8076b6b8c808482a0f7a19f311d834cf9c01e",
+      "kind": "generator"
+    },
+    {
+      "path": "parity/training/oracle.py",
+      "sha256": "9ee614ae3a50243b429bdc32dff7229ffda8d624163339751eddc5fae1b78242",
+      "kind": "test_oracle"
+    },
+    {
+      "path": "parity/training/tests/test_training_contracts.py",
+      "sha256": "03ce612e6e88fb1c5c2cd974c22f6c9322c4b158cae3021b7c65e586eaf84426",
+      "kind": "test"
+    },
+    {
+      "path": "scripts/check_so_freshness.py",
+      "sha256": "27f61c206575ace62fa47160a69a279b27bcbcfdfdd4807d34ce063b4ac161fb",
+      "kind": "python_extension_freshness_gate"
+    },
+    {
+      "path": "scripts/smoke_python_bindings.py",
+      "sha256": "8e2fef26f567de191e323f34ad55e3df97712ca24782f82244140daf85ca46cc",
+      "kind": "binding_smoke"
+    },
+    {
+      "path": "scripts/validate_abi_snapshot.py",
+      "sha256": "9294b2fb8c2c7ddda7dbdb0a9a061171cc2d388d7a14147e95abc1156cc92bf0",
+      "kind": "c_abi_gate"
+    },
+    {
+      "path": "scripts/validate_contracts.py",
+      "sha256": "acf9dfe7342abbb398ae30d09c8724a3d6ec9031e9b37b9fa8c641884f63e0f3",
+      "kind": "production_validator"
+    }
+  ],
+  "positive_fixture_ids": [
+    "cache_namespace_fit_cv.v1",
+    "parameter_projection_empty.v1",
+    "portable_predictor_package.v1",
+    "python_training_multiport_smoke.v1",
+    "python_training_smoke.v1",
+    "training_outcome_refit.v1",
+    "training_request_active_influence.v1",
+    "training_request_no_refit.v1",
+    "training_request_package_refit.v1",
+    "training_request_refit.v1"
+  ],
+  "negative_case_ids": [
+    "cache_phase_refit",
+    "package_relation_drift",
+    "package_request_crosslink_drift",
+    "package_content_identity_crosslink_drift",
+    "package_same_id_bundle_crosslink_drift",
+    "training_outcome_selection_score_drift",
+    "training_unknown_option",
+    "training_selection_output_missing",
+    "training_selection_output_unknown",
+    "training_selection_output_duplicate_id",
+    "training_selection_output_not_scorable",
+    "training_selection_metric_wrong_objective",
+    "training_selection_output_campaign_level_mismatch",
+    "training_selection_probability_requires_explicit_metric",
+    "training_selection_class_label_wrong_metric",
+    "training_selection_decision_score_requires_explicit_metric",
+    "training_data_binding_fingerprint_drift",
+    "training_patch_missing_policy",
+    "training_patch_forbidden_namespace",
+    "training_patch_parent_child",
+    "training_influence_missing_slot",
+    "training_influence_outer_validation_leak",
+    "training_influence_weighting_subset",
+    "training_influence_capability_inactive",
+    "training_output_unit_level_mismatch",
+    "training_output_empty_probability_vocabulary",
+    "package_duplicate_output_coordinate",
+    "package_influence_order",
+    "package_data_identity_order",
+    "package_native_artifact_not_portable",
+    "package_portable_required_host_sidecar",
+    "package_influence_wrong_base_kind",
+    "package_influence_extra_node",
+    "d2_outcome_forged_replay_vector",
+    "d2_outcome_completed_refit_readvertises_refit",
+    "d2_outcome_topological_order_drift",
+    "d2_outcome_parallel_levels_singleton_empty",
+    "d2_outcome_input_adjacency_drift",
+    "d2_outcome_output_adjacency_drift",
+    "d2_outcome_node_plan_phase_drift",
+    "d2_outcome_node_plan_version_drift",
+    "d2_outcome_stateful_without_artifact_forges_predict",
+    "d2_outcome_forged_graph_fingerprint",
+    "d2_outcome_forged_campaign_fingerprint",
+    "d2_outcome_forged_controller_fingerprint",
+    "d2_outcome_stale_controller_fingerprint",
+    "d2_outcome_stale_graph_content",
+    "d2_outcome_stale_campaign_content",
+    "d2_package_forged_artifact_record_controller",
+    "d2_package_forged_artifact_nested_controller",
+    "d2_package_forged_artifact_params",
+    "d2_package_predictor_closure_drift",
+    "d2_package_closure_missing_predict",
+    "d2_no_refit_without_refit_support",
+    "d2_no_refit_missing_portable_oof_payload"
+  ],
+  "pack_checksum": "757227785b6b108fc8c84b08a251e6fe0844b89e7b59b42474dacb8e59c41a2d"
+}

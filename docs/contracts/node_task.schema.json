@@ -63,6 +63,13 @@
         "$ref": "#/$defs/artifact_input_spec"
       }
     },
+    "required_loss_attestations": {
+      "type": "array",
+      "description": "Native-produced attestation templates for the training-loss roles that apply to this phase, preserving the node plan's strict order. A controller returns each template only after the corresponding loss executes successfully.",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json"
+      }
+    },
     "inner_fold_set": {
       "anyOf": [
         { "$ref": "#/$defs/fold_set" },
@@ -183,6 +190,9 @@
     "handle_kind": {
       "enum": ["data", "data_view", "model", "artifact", "prediction", "relation"]
     },
+    "artifact_backend": {
+      "enum": ["joblib", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
+    },
     "controller_capability": {
       "enum": [
         "deterministic",
@@ -203,7 +213,14 @@
         "supports_sample_weights",
         "supports_row_resampling",
         "supports_backend_loss_weights",
-        "supports_missing_masks"
+        "supports_missing_masks",
+        "supports_configurable_loss",
+        "supports_custom_loss",
+        "supports_differentiable_loss",
+        "uses_training_weights",
+        "uses_early_stopping",
+        "performs_internal_tuning",
+        "trains_aggregation"
       ]
     },
     "fit_influence_policy": {
@@ -353,6 +370,12 @@
           "type": "array",
           "items": {
             "type": "object"
+          }
+        },
+        "training_losses": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/training_loss_role.v1.schema.json"
           }
         },
         "params": {
@@ -550,6 +573,9 @@
         "params_fingerprint": {
           "$ref": "#/$defs/fingerprint"
         },
+        "training_loss_fingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
         "data_requirement_keys": {
           "type": "array",
           "items": {
@@ -578,9 +604,31 @@
         "controller_id": {
           "$ref": "#/$defs/identifier"
         },
+        "backend": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/artifact_backend"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uri": {
+          "type": ["string", "null"]
+        },
+        "content_fingerprint": {
+          "type": ["string", "null"]
+        },
         "size_bytes": {
           "type": ["integer", "null"],
           "minimum": 0
+        },
+        "plugin": {
+          "type": ["string", "null"]
+        },
+        "plugin_version": {
+          "type": ["string", "null"]
         }
       }
     }

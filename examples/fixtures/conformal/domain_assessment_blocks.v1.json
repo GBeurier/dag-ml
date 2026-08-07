@@ -1,0 +1,118 @@
+{
+  "fixture_id": "dag-ml.conformal.domain-assessment-blocks.v1",
+  "schema_version": 1,
+  "schema": "domain_assessment_block.schema.json",
+  "valid_cases": [
+    {
+      "id": "two_unit_support_assessment",
+      "document": {
+        "schema_version": 1,
+        "block_id": "domain:external.support.v1",
+        "predictor_binding_fingerprint": "bb73f1c18f17a6eaa522e121509914a85b7cc532f0ddec19c18b5fe1e6d62fb3",
+        "cohort_manifest_fingerprint": "b989daea51c25e88125c1bdb32bd6465fb5098e0e7434d0e2dbcd1251114f4b8",
+        "assessment_policy_id": "policy:domain.support.v1",
+        "assessment_policy_fingerprint": "1a7450ce8adae492ea020bd5b2e9d71b2a95a910b611b21143398b905b35455b",
+        "unit_level": "physical_sample",
+        "unit_ids": [
+          "sample:ext.01",
+          "sample:ext.02"
+        ],
+        "assessments": [
+          {
+            "unit_id": "sample:ext.01",
+            "status": "in_support",
+            "methods": [
+              {
+                "method_id": "method:leverage",
+                "kind": "leverage",
+                "score": 0.25,
+                "threshold": 0.8,
+                "supported": true
+              }
+            ],
+            "reasons": []
+          },
+          {
+            "unit_id": "sample:ext.02",
+            "status": "out_of_support",
+            "methods": [
+              {
+                "method_id": "method:feature.support",
+                "kind": "feature_support",
+                "score": 1.2,
+                "threshold": 1.0,
+                "supported": false
+              }
+            ],
+            "reasons": [
+              "feature_support_exceeded"
+            ]
+          }
+        ],
+        "block_fingerprint": "345752aff8f1eb15612c8dea77841e32fda9b65d80cf395f18795cdd49aa3771"
+      }
+    }
+  ],
+  "invalid_cases": [
+    {
+      "id": "assessment_identity_order_mismatch",
+      "base_case": "two_unit_support_assessment",
+      "mutations": [
+        {
+          "path": "/assessments/0/unit_id",
+          "value": "sample:ext.02"
+        }
+      ],
+      "expected_error": "align",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "status_contradicts_method_support",
+      "base_case": "two_unit_support_assessment",
+      "mutations": [
+        {
+          "path": "/assessments/0/status",
+          "value": "out_of_support"
+        }
+      ],
+      "expected_error": "contradicts",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "coverage_claim_is_not_domain_assessment",
+      "base_case": "two_unit_support_assessment",
+      "mutations": [
+        {
+          "path": "/coverage",
+          "value": 0.9
+        }
+      ],
+      "expected_error": "coverage",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "runtime_handle_refuses",
+      "base_case": "two_unit_support_assessment",
+      "mutations": [
+        {
+          "path": "/support_handle",
+          "value": 12
+        }
+      ],
+      "expected_error": "handle",
+      "recompute_fingerprints": true
+    },
+    {
+      "id": "nirs_specific_method_is_not_core_contract",
+      "base_case": "two_unit_support_assessment",
+      "mutations": [
+        {
+          "path": "/assessments/1/methods/0/kind",
+          "value": "spectral_support"
+        }
+      ],
+      "expected_error": "not one of",
+      "recompute_fingerprints": true
+    }
+  ]
+}

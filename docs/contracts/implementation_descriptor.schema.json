@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/implementation_descriptor.v1.schema.json",
+  "title": "DAG-ML ImplementationDescriptor v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "semantic_kind",
+    "semantic_id",
+    "semantic_fingerprint",
+    "provider_id",
+    "binding_id",
+    "implementation_version",
+    "implementation_fingerprint",
+    "supported_controller_families",
+    "runtime_requirements",
+    "capabilities",
+    "portability",
+    "replayability",
+    "descriptor_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "semantic_kind": { "enum": ["loss", "metric"] },
+    "semantic_id": { "$ref": "#/$defs/versioned_id" },
+    "semantic_fingerprint": { "$ref": "#/$defs/sha256" },
+    "provider_id": { "$ref": "#/$defs/token" },
+    "binding_id": { "$ref": "#/$defs/token" },
+    "implementation_version": { "$ref": "#/$defs/token" },
+    "implementation_fingerprint": { "$ref": "#/$defs/sha256" },
+    "supported_controller_families": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/token" }
+    },
+    "runtime_requirements": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/token" }
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "deterministic",
+          "differentiable",
+          "distributed_reduction",
+          "needs_gil",
+          "process_safe",
+          "supports_missing_mask",
+          "supports_sample_weights",
+          "thread_safe"
+        ]
+      }
+    },
+    "portability": {
+      "enum": ["host_local", "portable_registered", "portable_built_in"]
+    },
+    "replayability": {
+      "enum": ["process_local", "registry_required", "detached"]
+    },
+    "registry_key": { "$ref": "#/$defs/token" },
+    "descriptor_fingerprint": { "$ref": "#/$defs/sha256" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "portability": { "const": "host_local" } } },
+      "then": {
+        "required": ["registry_key"],
+        "properties": {
+          "replayability": { "enum": ["process_local", "registry_required"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "portability": { "const": "portable_registered" } }
+      },
+      "then": {
+        "required": ["registry_key"],
+        "properties": { "replayability": { "const": "registry_required" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "portability": { "const": "portable_built_in" } }
+      },
+      "then": {
+        "not": { "required": ["registry_key"] },
+        "properties": { "replayability": { "const": "detached" } }
+      }
+    }
+  ],
+  "$defs": {
+    "versioned_id": {
+      "type": "string",
+      "pattern": "^[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+@[1-9][0-9]*$"
+    },
+    "token": {
+      "type": "string",
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

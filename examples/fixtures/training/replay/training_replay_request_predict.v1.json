@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "replay:request.predict",
+  "source_outcome_fingerprint": "10254ebde3bb66c4e70b12e4e0e347268c943b8fb59c768d302735669b78814b",
+  "phase": "PREDICT",
+  "data_envelope_keys": [
+    "branch:b0.model:ridge.x",
+    "branch:b1.augment:noise.x",
+    "merge:stack.pred_plus_original.meta:ridge.x_original"
+  ],
+  "output_binding_ids": [
+    "output:meta.final"
+  ],
+  "request_fingerprint": "fbf4ff2a57e7f47d7d051a87728001e905ee65e19e28cfa1ffdef591cd771ef3"
+}

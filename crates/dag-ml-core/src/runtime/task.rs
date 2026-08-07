@@ -1,5 +1,6 @@
 // Auto-split from the former monolithic `runtime.rs` (pure refactor).
 use super::*;
+use crate::TrainingLossRoleReference;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PredictionInputSpec {
@@ -32,6 +33,8 @@ pub struct ArtifactInputSpec {
     pub controller_id: ControllerId,
     pub artifact: ArtifactRef,
     pub params_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub training_loss_fingerprint: Option<String>,
     #[serde(default)]
     pub data_requirement_keys: Vec<String>,
     #[serde(default)]
@@ -46,6 +49,7 @@ impl ArtifactInputSpec {
             controller_id: record.controller_id.clone(),
             artifact: record.artifact.clone(),
             params_fingerprint: record.params_fingerprint.clone(),
+            training_loss_fingerprint: record.training_loss_fingerprint.clone(),
             data_requirement_keys: record.data_requirement_keys.clone(),
             prediction_requirement_keys: record.prediction_requirement_keys.clone(),
         })
@@ -75,6 +79,12 @@ pub struct NodeTask {
     pub prediction_inputs: BTreeMap<String, PredictionInputSpec>,
     #[serde(default)]
     pub artifact_inputs: BTreeMap<String, ArtifactInputSpec>,
+    /// Native-produced attestation templates for the training losses that must
+    /// execute in this task. The order matches `node_plan.training_losses`
+    /// after filtering for `phase`. A controller may copy an entry into its
+    /// lineage only after the corresponding local or built-in loss succeeds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_loss_attestations: Vec<LossExecutionAttestation>,
     /// Nested (inner) CV fold set for this node in the current outer fold, built
     /// by the runtime from the outer fold's training samples when an effective
     /// `inner_cv` policy applies (FIT_CV only). `None` otherwise. Leakage-safe by
@@ -84,6 +94,64 @@ pub struct NodeTask {
     #[serde(default, skip_serializing_if = "FitInfluenceTask::is_default")]
     pub fit_influence: FitInfluenceTask,
     pub seed: Option<u64>,
+}
+
+impl NodeTask {
+    pub fn required_loss_attestations_for(
+        node_plan: &NodePlan,
+        phase: Phase,
+    ) -> Result<Vec<LossExecutionAttestation>> {
+        node_plan
+            .training_losses_for_phase(phase)
+            .map(|role| LossExecutionAttestation::for_role(role, phase))
+            .collect()
+    }
+
+    pub fn validate_required_loss_attestations(&self) -> Result<()> {
+        let expected = Self::required_loss_attestations_for(&self.node_plan, self.phase)?;
+        if self.required_loss_attestations != expected {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "task for node `{}` has loss execution requirements that do not match its ordered training losses for phase {:?}",
+                self.node_plan.node_id, self.phase
+            )));
+        }
+        Ok(())
+    }
+
+    /// Return one active training-loss role and its exact native attestation.
+    ///
+    /// The index addresses losses after filtering the node plan for the task's
+    /// phase. This keeps host bindings from reconstructing role ordering or
+    /// trusting controller-supplied attestation fields.
+    pub fn training_loss_binding(
+        &self,
+        role_index: usize,
+    ) -> Result<(&TrainingLossRoleReference, &LossExecutionAttestation)> {
+        if !matches!(self.phase, Phase::FitCv | Phase::Refit) {
+            return Err(DagMlError::RuntimeValidation(
+                "training loss phase must be FIT_CV or REFIT".to_string(),
+            ));
+        }
+        self.validate_required_loss_attestations()?;
+        let role = self
+            .node_plan
+            .training_losses_for_phase(self.phase)
+            .nth(role_index)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "role_index {role_index} is outside the active training loss range"
+                ))
+            })?;
+        let attestation = self
+            .required_loss_attestations
+            .get(role_index)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "validated training loss role has no matching attestation".to_string(),
+                )
+            })?;
+        Ok((role, attestation))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -177,6 +245,7 @@ impl FitInfluenceTask {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FitInfluenceDiagnostic {
     pub requested_policy: FitInfluencePolicy,
     pub effective_policy: FitInfluencePolicy,
@@ -215,6 +284,16 @@ impl FitInfluenceDiagnostic {
                 self.row_weight_count,
                 task.fit_influence.row_weights.len()
             )));
+        }
+        if self.fallback_used == task.fit_influence.warnings.is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "fit influence diagnostic fallback_used does not match task warnings".to_string(),
+            ));
+        }
+        if self.warnings != task.fit_influence.warnings {
+            return Err(DagMlError::RuntimeValidation(
+                "fit influence diagnostic warnings do not match task warnings".to_string(),
+            ));
         }
         if self
             .warnings
@@ -341,9 +420,12 @@ impl VariantExecutionSpec {
 /// (e.g. per-feature importances); the core does not interpret it. Explanations
 /// are only valid in the `EXPLAIN` phase.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExplanationBlock {
     /// Node whose model the explanation describes (must equal the producing node).
     pub producer_node: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_port: Option<String>,
     /// Stable explanation method identifier, e.g. `shap`, `permutation_importance`.
     pub method: String,
     /// Optional target/output name the explanation pertains to.
@@ -375,7 +457,10 @@ impl ExplanationBlock {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
     pub node_id: NodeId,
     #[serde(default)]
     pub outputs: BTreeMap<String, HandleRef>,
@@ -482,6 +567,29 @@ impl NodeResult {
                 task.node_plan.node_id,
                 self.lineage.params_fingerprint,
                 task.node_plan.params_fingerprint
+            )));
+        }
+        task.validate_required_loss_attestations()?;
+        let expected_losses = task
+            .node_plan
+            .training_losses_for_phase(task.phase)
+            .collect::<Vec<_>>();
+        if self.lineage.loss_attestations.len() != expected_losses.len() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` returned {} loss attestations for {} resolved losses in phase {:?}",
+                task.node_plan.node_id,
+                self.lineage.loss_attestations.len(),
+                expected_losses.len(),
+                task.phase
+            )));
+        }
+        for (attestation, role) in self.lineage.loss_attestations.iter().zip(expected_losses) {
+            attestation.validate_against(role, &task.node_plan.node_id, task.phase)?;
+        }
+        if self.lineage.loss_attestations != task.required_loss_attestations {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` returned loss attestations that do not match the task requirements",
+                task.node_plan.node_id
             )));
         }
         task.fit_influence.validate()?;

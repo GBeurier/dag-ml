@@ -1,0 +1,57 @@
+{
+  "binding": {
+    "schema_version": 1,
+    "binding_id": "output:meta.observation",
+    "node_id": "merge:stack.pred_plus_original.meta:ridge",
+    "port_name": "oof",
+    "prediction_level": "observation",
+    "unit_level": "observation",
+    "prediction_kind": "regression_point",
+    "prediction_source": "final_refit",
+    "refit_strategy": "refit_one",
+    "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+    "target_names": [
+      "protein"
+    ],
+    "target_units": [
+      "percent"
+    ],
+    "class_labels": [
+      []
+    ],
+    "output_order": "target_order",
+    "target_space": "raw",
+    "binding_fingerprint": "74696f7c44cc8b1f8f2716bed757c69384155f7280f8a5329f0947e444419585"
+  },
+  "predictions": [],
+  "observation_predictions": [
+    {
+      "prediction_id": "prediction:replay.observation",
+      "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+      "producer_port": "oof",
+      "partition": "final",
+      "fold_id": null,
+      "observation_ids": [
+        "obs:prod.1",
+        "obs:prod.2"
+      ],
+      "values": [
+        [
+          2.4
+        ],
+        [
+          3.1
+        ]
+      ],
+      "weights": [
+        1.0,
+        0.5
+      ],
+      "target_names": [
+        "protein"
+      ]
+    }
+  ],
+  "aggregated_predictions": [],
+  "schema_version": 2
+}

@@ -54,6 +54,7 @@ pub(crate) fn apply_result_scoring(
             // scored later, per-variant.
             target_records.push(RegressionTargetRecord {
                 producer_node: block.producer_node.clone(),
+                producer_port: block.producer_port.clone(),
                 variant_id: result.lineage.variant_id.clone(),
                 partition: block.partition.clone(),
                 fold_id: block.fold_id.clone(),
@@ -260,7 +261,7 @@ pub(crate) fn coordinator_relations_for_node(
             continue;
         }
         let relations = if let Some(envelopes) = resources.data_envelopes {
-            let key = format!("{}.{}", binding.node_id, binding.input_name);
+            let key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
             match envelopes.get(&key) {
                 Some(envelope) => {
                     binding.validate_envelope(envelope)?;

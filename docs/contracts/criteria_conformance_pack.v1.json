@@ -1,0 +1,269 @@
+{
+  "pack_id": "dag-ml.criteria-conformance.v1",
+  "schema_version": 1,
+  "hash_algorithm": "sha256-file-bytes",
+  "fingerprint_profile": "DAGML-TCV1-unicode-17.0.0",
+  "artifacts": [
+    {
+      "path": "bindings/matlab/+dagml/LocalImplementationRegistry.m",
+      "sha256": "9466cc9f28db3381a4a1d7b5970509d56acbe6b6275b2d2742fdac2570bd4cd8",
+      "kind": "matlab_local_registry"
+    },
+    {
+      "path": "bindings/matlab/+dagml/executeExecutionPlanPhase.m",
+      "sha256": "360c7fbb2d7a72680404ecbdb745d609fb13ba1b51006cad335823c8b707cb0f",
+      "kind": "matlab_phase_scheduler"
+    },
+    {
+      "path": "bindings/matlab/fixtures/matlab_local_implementations.v1.json",
+      "sha256": "630f9ab1860dd60945c62cd2d081208d07bcfe8d0446ce55a0ec9ab00f39f7f5",
+      "kind": "fixture"
+    },
+    {
+      "path": "bindings/matlab/native/task_training_loss_binding.c",
+      "sha256": "a224a071947086afbc56d376087552bb6d18f4a39c56495b62792ec7735d8bdb",
+      "kind": "matlab_native_bridge"
+    },
+    {
+      "path": "bindings/matlab/native/execution_plan_phase.c",
+      "sha256": "2b17bb8147eee99268d5b9b62a16ce72e9a5125a1a991329b5ca935d75c9ff75",
+      "kind": "matlab_phase_native_bridge"
+    },
+    {
+      "path": "bindings/matlab/tests/local_implementation_registry.m",
+      "sha256": "259110efc1479508cbcbe0ce43443384090cf986350999c98b4269c73a7e2f32",
+      "kind": "matlab_binding_test"
+    },
+    {
+      "path": "bindings/r/R/local_implementation_registry.R",
+      "sha256": "75cbe0648f10a32a762cc3d6e23113e0d9c1cfee5da8383d0798ebcf019dc400",
+      "kind": "r_local_registry"
+    },
+    {
+      "path": "bindings/r/inst/extdata/r_local_implementations.v1.json",
+      "sha256": "c43dae5ee791f7dc078f35de34faa1b5a7475ec8a6368b245de9bdd170cd6961",
+      "kind": "fixture"
+    },
+    {
+      "path": "bindings/r/src/task_training_loss_binding.c",
+      "sha256": "7ca655dd206ffa08aaa9bbe423e367bb2921e8db457ae95fa947dd0a808bca59",
+      "kind": "r_native_bridge"
+    },
+    {
+      "path": "bindings/r/tests/local_implementation_registry.R",
+      "sha256": "07374175b1e46f5245a6d98557c99c6521b7d05205ac5ceea4f4524cfbd5adf0",
+      "kind": "r_binding_test"
+    },
+    {
+      "path": "crates/dag-ml-capi/include/dag_ml.h",
+      "sha256": "49e4c54cac3e0ea416537feb94e68fdb3bf6049ea424c26d407ef46d68ab8e36",
+      "kind": "c_abi_header"
+    },
+    {
+      "path": "crates/dag-ml-capi/src/local_implementation.rs",
+      "sha256": "bafc1888e57e26452b9c669a40ad2037e2e98b482a9b4482366207d807879f32",
+      "kind": "c_local_registry"
+    },
+    {
+      "path": "crates/dag-ml-capi/tests/local_implementations.rs",
+      "sha256": "73cbb8655e8c0dde2fceb8994c88c68e0ceb487d0cfc7a66e0e9ad2ad302d63d",
+      "kind": "c_binding_test"
+    },
+    {
+      "path": "crates/dag-ml-cli/src/main.rs",
+      "sha256": "60f88a26a457a28b9ea230da321518b2b93b8f60c80dcba775e1f6a69fbd51a9",
+      "kind": "cli_validator"
+    },
+    {
+      "path": "crates/dag-ml-cli/tests/cli_contracts.rs",
+      "sha256": "43f1f2d584826c37fdba9d7c2b9b6974a29ebe6347054b0d936bfb7b9561efae",
+      "kind": "cli_test"
+    },
+    {
+      "path": "crates/dag-ml-core/src/criteria.rs",
+      "sha256": "7b8b8d4f212ae53eb464ecd2e4eb350b50dbc56626f4994f14b80b842b1371a3",
+      "kind": "rust_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/src/implementation_registry.rs",
+      "sha256": "d2f825b3257ffca01852f25f2ed4e78f6692552baaebd56c187d024b90536845",
+      "kind": "rust_local_registry"
+    },
+    {
+      "path": "crates/dag-ml-core/src/metric_provider.rs",
+      "sha256": "703cc2ed989045c002c37419598f95b9a940c03f3b8f3c246ba1423c793b0947",
+      "kind": "rust_provider_contract"
+    },
+    {
+      "path": "crates/dag-ml-core/src/metrics.rs",
+      "sha256": "2fd5b10eaa6f198e450ea1a84d954b6a44c95facd7a87700a7d6b958e880b78a",
+      "kind": "native_metric_adapter"
+    },
+    {
+      "path": "crates/dag-ml-core/src/runtime/artifact.rs",
+      "sha256": "d2a36d3f16b48d6dbecc705ff690924bd3c250e11487206a2331ee2549c0871f",
+      "kind": "rust_lineage_contract"
+    },
+    {
+      "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
+      "sha256": "b321135f6879b4ead7989b2a4f68f718f3247077b6172ac45bf52f4cb9fc7e03",
+      "kind": "python_facade"
+    },
+    {
+      "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
+      "sha256": "af97a148293261b67695775e87920b79b96cfa85d180ec380fc395e818962cad",
+      "kind": "python_types"
+    },
+    {
+      "path": "crates/dag-ml-py/src/local_implementation.rs",
+      "sha256": "5d6ddd85bcfbc070052bd80f7d4eaeb285470357e8fd5358b7290ff6aa75365f",
+      "kind": "python_local_registry"
+    },
+    {
+      "path": "crates/dag-ml-py/tests/test_local_implementation_registry.py",
+      "sha256": "999360fa6c6c4eb40b5e70f26bca807f24c6def4f7a48db4315f43815f04618c",
+      "kind": "python_binding_test"
+    },
+    {
+      "path": "crates/dag-ml-wasm/README.md",
+      "sha256": "6996cdcaf65f3cd0a934941482091ce83e1390a5ab57616e5727d289b0ac02e4",
+      "kind": "javascript_binding_documentation"
+    },
+    {
+      "path": "crates/dag-ml-wasm/src/lib.rs",
+      "sha256": "8a35243ee4b5158cd8b22951f266177887abe1a98d42be0c84e814be0aab1c81",
+      "kind": "javascript_binding"
+    },
+    {
+      "path": "crates/dag-ml-wasm/src/local_implementation.rs",
+      "sha256": "1f22a60a9c74269fc5f2994c14cec31b3a3f9b356a7ab2f1a5c7fdd8096dcff1",
+      "kind": "javascript_local_registry"
+    },
+    {
+      "path": "docs/CRITERIA_CONTRACTS.md",
+      "sha256": "d85cfa3916902a49670bb57d7ad0317f5bd8ed376603e00e55d397e7ed19502b",
+      "kind": "contract_documentation"
+    },
+    {
+      "path": "docs/contracts/early_stopping_record.schema.json",
+      "sha256": "2dc069c82b533bc3bfeba88833fd22ec36f24ad1219e1d76f2bee68f5af22710",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/implementation_descriptor.schema.json",
+      "sha256": "7fc37cd6dda7f7fcdb778facd691a5b27e64c825051965dd0948cfdb09092210",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/loss_execution_attestation.schema.json",
+      "sha256": "d3997aa28a9a785ac42ad328509ba001136fd5796b473a5246e2bc96b2577028",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/loss_spec.schema.json",
+      "sha256": "18a6cfc7bf74c42927ce3ba60d31b5c6bc8e5dd447b7c96a011ab26b3e282954",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/metric_evaluation_result.schema.json",
+      "sha256": "9e965989e878d34a63f7ef4d76e33e79927362b96a322c517932df15c4a9190c",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/metric_evaluation_task.schema.json",
+      "sha256": "72e7405eebb3a78e5489b31a61187d15ef81c2dcc3fbcba5ac4b70a0d52bd13a",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/metric_role.schema.json",
+      "sha256": "b530ee58934571d0e82373f16ae92f86b6521c308479bef80d86040b4946f5a5",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/metric_spec.schema.json",
+      "sha256": "d463d99eab6b2399aecefdab92b0e0a7912e9e85cc09710015b9167393ca3523",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/node_result.schema.json",
+      "sha256": "fa4c7629141a671eb5c7d5848e031b4f01e76f96b457a4d3bc960af1809e31f1",
+      "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/training_loss_role.schema.json",
+      "sha256": "078886aa7f622c05c86aa22b4eaeaeeff857e2ad68da1137f62fe4f1510d02e3",
+      "kind": "schema"
+    },
+    {
+      "path": "examples/fixtures/criteria/c_local_implementations.v1.json",
+      "sha256": "90306b34b2cee6a565430aec6df388f5c31c39d405633ee5b9887d8d4cfe50f5",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/criteria/criteria_contracts.v1.json",
+      "sha256": "b2328be3ec466399f450d23368370fae5cc962e225c0a870171859fc86ea33cc",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/criteria/javascript_local_implementations.v1.json",
+      "sha256": "95b0cbacabea856d6e193e5080cecfb02f75733f936967f92a2e98d3d5ad39ef",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/criteria/metric_provider_contracts.v1.json",
+      "sha256": "940eb1961335e600568bc03e74b9ef71751f8e6b5429a95c32e39af344d4a725",
+      "kind": "fixture"
+    },
+    {
+      "path": "examples/fixtures/criteria/python_local_implementations.v1.json",
+      "sha256": "c2c8376f11e23c837b239900dd2ae02750578d1c6a0edd82a36584048200dbbf",
+      "kind": "fixture"
+    },
+    {
+      "path": "parity/criteria/generate_fixtures.py",
+      "sha256": "7eba3e9887879d2812430cff1ec4785adcd6d88fafb957f14bdce3782336073e",
+      "kind": "generator"
+    },
+    {
+      "path": "parity/criteria/oracle.py",
+      "sha256": "0aac8777ec6cb8017c1dc290302dd958b5ce8d2d84077e0efddc293e31383a51",
+      "kind": "independent_validator"
+    },
+    {
+      "path": "parity/criteria/tests/test_criteria_contracts.py",
+      "sha256": "a7b7f9ae7df5c46251020eefd39af95226e7c5d91a45d2b76baa372d43fb472e",
+      "kind": "parity_test"
+    },
+    {
+      "path": "scripts/smoke_wasm_bindings.cjs",
+      "sha256": "2df35e993d63e0af4e9ea466f9a682910c03da1f8c9a1c9d772e9ccd54466197",
+      "kind": "javascript_binding_test"
+    }
+  ],
+  "required_negative_cases": [
+    "loss_unversioned_id",
+    "loss_leading_zero_version",
+    "loss_c1_control_id",
+    "loss_uppercase_callable_payload",
+    "loss_unknown_task",
+    "loss_nested_callable_payload",
+    "loss_weighted_without_weight_input",
+    "loss_mismatched_fingerprint",
+    "metric_without_objective",
+    "host_local_descriptor_without_registry_key",
+    "selection_metric_skips_missing_values",
+    "loss_attestation_wrong_phase",
+    "early_stopping_selection_role",
+    "early_stopping_invalid_iteration",
+    "early_stopping_refit_with_fold",
+    "early_stopping_tampered_fingerprint",
+    "custom_metric_without_objective",
+    "provider_result_wrong_scope",
+    "provider_result_wrong_coverage",
+    "provider_result_mismatched_implementation_fingerprint"
+  ],
+  "runtime_only_negative_cases": [
+    "provider_result_non_finite"
+  ],
+  "pack_checksum": "46a5732c3fdfc0281aaa077e2d757310f0cc8b3cfd2185b2e5cf8a6f8de68899"
+}

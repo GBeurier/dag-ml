@@ -1,0 +1,117 @@
+{
+  "binding": {
+    "schema_version": 1,
+    "binding_id": "output:meta.class_probability",
+    "node_id": "merge:stack.pred_plus_original.meta:ridge",
+    "port_name": "oof",
+    "prediction_level": "sample",
+    "unit_level": "physical_sample",
+    "prediction_kind": "class_probability",
+    "prediction_source": "final_refit",
+    "refit_strategy": "refit_one",
+    "aggregation_fingerprint": "f26a1edef406d0d2fc5189cd22d842978ce4de9354714e5dc69b75552ddfd41d",
+    "target_names": [
+      "class_primary",
+      "class_secondary"
+    ],
+    "target_units": [
+      null,
+      null
+    ],
+    "class_labels": [
+      [
+        "A",
+        "B"
+      ],
+      [
+        "low",
+        "mid",
+        "high"
+      ]
+    ],
+    "output_order": "target_major_class_minor",
+    "target_space": "raw",
+    "binding_fingerprint": "2874b4cfee0bfd268f9d3341752c4f3fc90835ddbaea726aed7b8896e1dc5805"
+  },
+  "predictions": [
+    {
+      "prediction_id": "prediction:replay.class_probability",
+      "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+      "producer_port": "oof",
+      "partition": "final",
+      "fold_id": null,
+      "sample_ids": [
+        "sample:prod.1",
+        "sample:prod.2"
+      ],
+      "values": [
+        [
+          0.8,
+          0.2,
+          0.1,
+          0.2,
+          0.7
+        ],
+        [
+          0.3,
+          0.7,
+          0.6,
+          0.1,
+          0.3
+        ]
+      ],
+      "target_names": [
+        "class_primary:A",
+        "class_primary:B",
+        "class_secondary:low",
+        "class_secondary:mid",
+        "class_secondary:high"
+      ]
+    }
+  ],
+  "observation_predictions": [],
+  "aggregated_predictions": [
+    {
+      "prediction_id": "prediction:replay.class_probability.sample",
+      "producer_node": "merge:stack.pred_plus_original.meta:ridge",
+      "producer_port": "oof",
+      "partition": "final",
+      "fold_id": null,
+      "level": "sample",
+      "unit_ids": [
+        {
+          "level": "sample",
+          "id": "sample:prod.1"
+        },
+        {
+          "level": "sample",
+          "id": "sample:prod.2"
+        }
+      ],
+      "values": [
+        [
+          0.8,
+          0.2,
+          0.1,
+          0.2,
+          0.7
+        ],
+        [
+          0.3,
+          0.7,
+          0.6,
+          0.1,
+          0.3
+        ]
+      ],
+      "target_names": [
+        "class_primary:A",
+        "class_primary:B",
+        "class_secondary:low",
+        "class_secondary:mid",
+        "class_secondary:high"
+      ]
+    }
+  ],
+  "schema_version": 2
+}

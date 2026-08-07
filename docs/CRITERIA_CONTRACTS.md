@@ -1,0 +1,158 @@
+# Loss and Metric Contracts
+
+The native owner is `dag_ml_core::criteria`. The published v1 wire family is:
+
+- `docs/contracts/loss_spec.schema.json`;
+- `docs/contracts/metric_spec.schema.json`;
+- `docs/contracts/implementation_descriptor.schema.json`;
+- `docs/contracts/training_loss_role.schema.json`;
+- `docs/contracts/loss_execution_attestation.schema.json`;
+- `docs/contracts/metric_role.schema.json`;
+- `docs/contracts/early_stopping_record.schema.json`;
+- `docs/contracts/metric_evaluation_task.schema.json`;
+- `docs/contracts/metric_evaluation_result.schema.json`.
+
+The canonical positive and negative fixtures are
+`examples/fixtures/criteria/criteria_contracts.v1.json` and
+`examples/fixtures/criteria/metric_provider_contracts.v1.json`. The exact
+artifact closure is pinned by
+`docs/contracts/criteria_conformance_pack.v1.json` and is validated
+independently by `parity/criteria/oracle.py`.
+
+Metric providers receive a self-fingerprinted `MetricEvaluationTask` containing
+the semantic and implementation references, exact scope, unit identities,
+prediction/target matrices and declared optional inputs. They return a
+self-fingerprinted `MetricEvaluationResult`. DAG-ML rejects identity,
+implementation, scope, coverage and non-finite-value mismatches before applying
+the declared reduction. Built-in metrics use this same registry and delegate to
+the existing native kernels; binding-local metrics register an implementation
+under the descriptor's opaque `registry_key`.
+
+`LossSpec` defines optimizer-objective semantics; `MetricSpec` defines
+evaluation semantics and objective direction. Pipeline roles remain separate,
+so selection, reporting, early stopping and training cannot silently exchange
+meanings. Both specs reference the same generic implementation-descriptor
+shape, which carries only provider identity, capabilities and lifecycle. Local
+callbacks are resolved through opaque registry keys; executable code and import
+instructions are forbidden in canonical JSON.
+
+`LocalImplementationRegistry<T>` is the native process-local resolution
+primitive shared by loss and metric implementations. It stores an arbitrary
+binding-owned executable object as `T`, but resolves it only when the complete
+validated implementation descriptor matches the registered descriptor. Rust
+can therefore retain closures or trait objects directly, while language
+bindings retain their own callable handles without putting executable objects
+into serialized contracts.
+
+The Python binding exposes this primitive as `LocalImplementationRegistry`.
+`register_loss` and `register_metric` accept Python callables but keep separate
+semantic resolution paths. Python-local descriptors must use
+`binding_id = "binding:python"`, declare `needs_gil`, and use either the
+`host_local` or `portable_registered` lifecycle; `portable_builtin`
+implementations remain native catalog entries. The registry itself is not
+serializable. A detached worker or replay process must explicitly register the
+same descriptor before resolving its opaque `registry_key`.
+
+`register_local_loss` and `register_local_metric` are convenience methods for
+direct Python callables. They accept a semantic spec with an existing
+fingerprint or no `spec_fingerprint`; Rust signs an unsigned spec, constructs
+and fingerprints the `host_local`/`registry_required` descriptor, adds the
+mandatory `needs_gil` capability plus every implementation capability required
+by the semantic spec, and registers the callable atomically. When
+the caller omits implementation identity, Python generates opaque random
+process-local identifiers. Those identifiers deliberately make no claim about
+callable source equivalence and cannot support detached replay; callers that
+need reproducible reconstruction must supply a stable implementation
+fingerprint and registry key, then explicitly register the equivalent callable
+in the new process.
+
+The WASM binding exposes the same primitive as a JavaScript
+`LocalImplementationRegistry`. It retains `Function` objects for
+`binding:javascript` descriptors, resolves loss roles only for their declared
+training phases, and emits the common execution attestation. Registries reject
+JSON serialization. Every browser main thread or worker must register its own
+local callback before execution or replay.
+
+The R binding exposes `dagml_local_implementation_registry()`. It retains R
+functions for `binding:r` descriptors, keeps loss and metric resolution paths
+separate, and invokes active training losses directly in `FIT_CV` and `REFIT`.
+Its compiled bridge asks the C ABI to select the active role and task-owned
+attestation from the exact native `NodeTask` JSON, then invokes the R function
+on R-owned values. The attestation is exposed only after the function succeeds;
+the binding never computes TCV1 fingerprints or writes a function into DAG
+JSON.
+
+The MATLAB/Octave binding exposes `dagml.LocalImplementationRegistry`. It
+retains local `function_handle` objects for `binding:matlab` descriptors and
+uses the same separate loss and metric paths. `invokeTrainingLoss` validates a
+native `NodeTask` JSON through the C ABI MEX bridge, executes the selected
+function on MATLAB-owned values, and exposes the task-owned attestation only
+after success. Each MATLAB process, parallel worker, or Octave process owns an
+independent registry.
+
+R `dagml_execute_execution_plan_phase()` and MATLAB
+`dagml.executeExecutionPlanPhase()` are thin phase-execution bridges over
+`dagml_execution_plan_execute_phase_json`. The scheduler remains native:
+DAG-ML validates the plan, checks trusted runtime manifests, emits exact
+`NodeTask` JSON, and validates returned `NodeResult` JSON. The language
+callback stays local and may close over its own implementation registry; loss
+callbacks still resolve through the loss path, while metrics continue to use
+the distinct metric path.
+
+`TrainingRequest.training_losses` is the authoritative pipeline assignment.
+Each role targets a node and an optional controller-local output/head and lists
+the exact training phases where it applies. The resolved roles travel inside
+`ExecutionPlan::NodePlan` and therefore inside `NodeTask`; no parallel
+controller-only loss setting is allowed. Controllers declare
+`supports_configurable_loss`, `supports_custom_loss` and, when applicable,
+`supports_differentiable_loss`. A configured loss is rejected during planning
+when the controller or implementation cannot satisfy its required inputs or
+runtime capabilities.
+
+For every configured role, `NodeResult.lineage.loss_attestations` must contain
+one ordered `LossExecutionAttestation`. Attestations use the resolved node-plan
+order: roles are strictly ordered by `(output_id, phases)` and filtering for the
+current phase preserves that order. DAG-ML compares semantic,
+implementation and descriptor fingerprints, effective parameters, reduction,
+node, output and phase against the resolved role. `FIT_CV` cache namespaces and
+`REFIT` artifact records commit to the corresponding ordered loss-role set;
+artifact materialization and replay require an exact commitment match.
+
+Every serialized `NodeTask` with active loss roles also carries
+`required_loss_attestations`, generated by DAG-ML from those roles in the same
+order. This is the host-language handoff: a controller resolves and executes
+its local function, then copies the corresponding native-produced template to
+`NodeResult.lineage.loss_attestations` only after execution succeeds. The core
+recomputes and verifies both the task requirements and the returned lineage, so
+R, MATLAB and other process adapters do not implement canonical fingerprinting.
+
+`NodeResult.lineage.early_stopping_records` stores controller-reported stopping
+outcomes separately from `ScoreSet`. Each fingerprinted record is scoped to one
+`FIT_CV` fold or one fold-free `REFIT` task and embeds the exact
+`MetricRoleReference` used by the controller. That role must be
+`early_stopping`, must monitor the validation partition and cannot use the
+reporting-only missing-value skip policy. The record captures the zero-based
+best iteration, total observed iterations, finite best value and whether the
+controller stopped early. It does not create another metric evaluator: the
+controller reports the outcome of the same typed metric implementation selected
+by the pipeline, while DAG-ML validates identity, scope and fingerprint. Final
+OOF/reporting scores, selection decisions and tuning observations retain their
+own contracts and lifecycles.
+
+The semantic contracts are standalone v1 contracts. The controller-protocol
+integration adds only defaulted/optional fields to existing v1 JSON shapes, so
+historical requests, plans, tasks, results, caches and bundles without explicit
+losses remain readable. Future incompatible changes publish new schema ids and
+Rust readers. The C ABI exposes an opaque process-local registry and a
+versioned callback vtable without changing any controller vtable layout. A
+registry is scoped to an explicit binding identity (`binding:c`, `binding:r`,
+`binding:matlab`, or a future native host), retains callback `user_data` through
+balanced optional `retain`/`release` hooks, and copies callback-owned result
+JSON before invoking its required `release_bytes` hook. Training-loss
+invocation is limited to `FIT_CV` and `REFIT` and returns the common attestation
+only after callback success. The validation-only
+`dagml_node_task_training_loss_binding` entry point returns the exact active role
+and task-owned attestation without routing host tensors through JSON; R and
+MATLAB use it before executing their local functions. Host exceptions must be
+caught by callback trampolines; no unwind may cross the C boundary. Each process
+or worker owns a separate registry and must register its local runtime objects.
