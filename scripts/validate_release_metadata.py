@@ -14,7 +14,7 @@ EXPECTED_CARGO_AUDIT_VERSION = "0.22.1"
 EXPECTED_INDEXMAP_VERSION = "=2.13.1"
 EXPECTED_RUST_VERSION = "1.83"
 EXPECTED_RUST_TOOLCHAIN = f"{EXPECTED_RUST_VERSION}.0"
-EXPECTED_PYO3_VERSION = "0.28.3"
+EXPECTED_PYO3_VERSION = "0.29"
 # ADR-18: dag-ml is dual-licensed under the canonical SPDX expression
 # `CECILL-2.1 OR AGPL-3.0-or-later`. The same expression must be used verbatim
 # across the Cargo workspace, the excluded PyO3 crate, and its pyproject so the
