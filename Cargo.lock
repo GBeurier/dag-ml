@@ -365,27 +365,27 @@ dependencies = [
 [[package]]
 name = "dag-ml"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fa108f5c0f5b321ceebd693400e25495bfb1b8d0e03fdae80ea84117fcb99f9"
 dependencies = [
  "dag-ml-core 0.3.0",
 ]
 
 [[package]]
 name = "dag-ml"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fa108f5c0f5b321ceebd693400e25495bfb1b8d0e03fdae80ea84117fcb99f9"
+version = "0.3.1"
 dependencies = [
- "dag-ml-core 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dag-ml-core 0.3.1",
 ]
 
 [[package]]
 name = "dag-ml-arrow"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
- "dag-ml-core 0.3.0",
+ "dag-ml-core 0.3.1",
  "serde",
  "serde_json",
  "sha2",
@@ -393,9 +393,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-capi"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
- "dag-ml-core 0.3.0",
+ "dag-ml-core 0.3.1",
  "serde",
  "serde_json",
  "tracing-subscriber",
@@ -403,11 +403,11 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
- "dag-ml-core 0.3.0",
+ "dag-ml-core 0.3.1",
  "serde",
  "serde_json",
  "sha2",
@@ -417,9 +417,10 @@ dependencies = [
 [[package]]
 name = "dag-ml-core"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ddc32f0c08f81fa4229a45db60b5c824c112a554ac8a25a534feac89e92e6c7"
 dependencies = [
  "indexmap",
- "nirs4all",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -432,11 +433,10 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ddc32f0c08f81fa4229a45db60b5c824c112a554ac8a25a534feac89e92e6c7"
+version = "0.3.1"
 dependencies = [
  "indexmap",
+ "nirs4all",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -470,9 +470,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-wasm"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
- "dag-ml-core 0.3.0",
+ "dag-ml-core 0.3.1",
  "js-sys",
  "serde",
  "serde_json",
@@ -769,9 +769,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "nirs4all"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
- "dag-ml 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dag-ml 0.3.0",
  "dag-ml-data",
  "libloading",
  "serde",

@@ -590,14 +590,14 @@ mod tests {
             .expect_err("duplicate relation-set keys must be rejected");
         assert!(relation_error
             .to_string()
-            .contains("duplicate JSON object key"));
+            .contains("duplicate field `records`"));
 
         let request_error =
             sign_training_request_json(r#"{"schema_version":1,"schema_version":1}"#)
                 .expect_err("duplicate training-request keys must be rejected");
         assert!(request_error
             .to_string()
-            .contains("duplicate JSON object key"));
+            .contains("duplicate field `schema_version`"));
     }
 
     #[test]
