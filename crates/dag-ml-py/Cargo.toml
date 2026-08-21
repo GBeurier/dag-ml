@@ -29,6 +29,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 extension-module = ["pyo3/extension-module"]
+methods-optimizer = ["dag-ml-core/methods-optimizer"]
 
 [dependencies]
 dag-ml-core = { path = "../dag-ml-core", version = "0.3.2" }
