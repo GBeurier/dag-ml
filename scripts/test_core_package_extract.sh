@@ -26,8 +26,9 @@ if rg -q '/(examples|docs)/|negative_cases\.v1\.json' "$archive_contents"; then
   echo 'package unexpectedly contains workspace fixtures or the W1 corpus' >&2
   exit 1
 fi
-if rg -q '(^|/)[^/]+\.v1\.json$|parameter_projection_empty|training_outcome_refit' "$archive_contents"; then
-  echo 'package unexpectedly contains W1 or protocol-versioned fixtures' >&2
+if rg '(^|/)[^/]+\.v[0-9]+\.json$' "$archive_contents" \
+  | rg -vq '/tests/fixtures/conformal_w0_golden\.v1\.json$'; then
+  echo 'package unexpectedly contains an unapproved protocol-versioned fixture' >&2
   exit 1
 fi
 if ! rg -q '(^|/)README\.md$' "$archive_contents"; then

@@ -164,7 +164,7 @@ fn resolution_error<T>(message: impl Into<String>) -> Result<T> {
     Err(DagMlError::RuntimeValidation(message.into()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, dag_ml_workspace_contract_fixtures))]
 mod tests {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},

@@ -832,6 +832,7 @@ mod tests {
             .contains("descriptor"));
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_provider_fixture_matches_rust_task_and_result_contracts() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(

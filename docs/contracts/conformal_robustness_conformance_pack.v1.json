@@ -59,13 +59,18 @@
       "kind": "schema"
     },
     {
+      "path": "docs/contracts/early_stopping_record.schema.json",
+      "sha256": "2dc069c82b533bc3bfeba88833fd22ec36f24ad1219e1d76f2bee68f5af22710",
+      "kind": "schema_dependency"
+    },
+    {
       "path": "docs/contracts/execution_bundle.schema.json",
       "sha256": "61b0dee81f4c8fedcf0bdb92283fa1136c0e48e57cf8d590d48086e98c842ae7",
       "kind": "schema_dependency"
     },
     {
       "path": "docs/contracts/execution_plan.schema.json",
-      "sha256": "f56e7e65ebe6c328728c719d09f4b2266d707e7e4680ac91ceb7bd2ee7ebdf60",
+      "sha256": "cfac81def4938edbab72bd5480842990947388d27b42290d52ef0e7cc6b942ae",
       "kind": "schema_dependency"
     },
     {
@@ -74,8 +79,33 @@
       "kind": "schema_dependency"
     },
     {
+      "path": "docs/contracts/implementation_descriptor.schema.json",
+      "sha256": "7fc37cd6dda7f7fcdb778facd691a5b27e64c825051965dd0948cfdb09092210",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/loss_execution_attestation.schema.json",
+      "sha256": "d3997aa28a9a785ac42ad328509ba001136fd5796b473a5246e2bc96b2577028",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/loss_spec.schema.json",
+      "sha256": "18a6cfc7bf74c42927ce3ba60d31b5c6bc8e5dd447b7c96a011ab26b3e282954",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/metric_role.schema.json",
+      "sha256": "b530ee58934571d0e82373f16ae92f86b6521c308479bef80d86040b4946f5a5",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/metric_spec.schema.json",
+      "sha256": "d463d99eab6b2399aecefdab92b0e0a7912e9e85cc09710015b9167393ca3523",
+      "kind": "schema_dependency"
+    },
+    {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "6fb4a3856e3ec070b5bb49511ce10b4c21273cd030ecad04719248a5ce98686f",
+      "sha256": "c60b45bc56b27384d428eb9c3347e21392143333454601ed4d5efc8de20080ef",
       "kind": "schema_dependency"
     },
     {
@@ -122,6 +152,11 @@
       "path": "docs/contracts/training_influence_manifest.schema.json",
       "sha256": "79cb45a4c1cc79a1ecd74b9bcd23f6a69dd8f9d6dd03675f6339a3c9574bdfbf",
       "kind": "schema"
+    },
+    {
+      "path": "docs/contracts/training_loss_role.schema.json",
+      "sha256": "078886aa7f622c05c86aa22b4eaeaeeff857e2ad68da1137f62fe4f1510d02e3",
+      "kind": "schema_dependency"
     },
     {
       "path": "docs/contracts/training_outcome.schema.json",
@@ -408,5 +443,5 @@
       ]
     }
   ],
-  "pack_checksum": "1a2d7b1b5beda26edbdcddb2154fcdc47703f4d66f5308349a6f4bf92c84ff95"
+  "pack_checksum": "82b82d00a7c281fc62afb21caa3c6191a66d77c8ca77c9093ee4fba9de1468d3"
 }

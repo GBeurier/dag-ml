@@ -1895,6 +1895,7 @@ mod tests {
             .contains("duplicate JSON object key"));
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_criteria_fixture_matches_rust_contracts_and_negative_cases() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(

@@ -568,6 +568,13 @@ NODE_TASK_SCHEMA_ID = (
 NODE_RESULT_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json"
 )
+LOSS_EXECUTION_ATTESTATION_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "loss_execution_attestation.v1.schema.json"
+)
+EARLY_STOPPING_RECORD_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/early_stopping_record.v1.schema.json"
+)
 PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "process_adapter_description.v1.schema.json"
