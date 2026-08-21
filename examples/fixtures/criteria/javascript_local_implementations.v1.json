@@ -1,0 +1,200 @@
+{
+  "profile": "dagml.javascript-local-implementations.v1",
+  "canonicalization": "TCV1-unicode-17.0.0",
+  "loss_reference": {
+    "spec": {
+      "schema_version": 1,
+      "loss_id": "example.loss.asymmetric@1",
+      "kind": "custom",
+      "task_kinds": [
+        "regression"
+      ],
+      "prediction_kinds": [
+        "regression_point"
+      ],
+      "objective": "minimize",
+      "reduction": "mean",
+      "required_inputs": [
+        "target",
+        "prediction"
+      ],
+      "capabilities": [
+        "differentiable"
+      ],
+      "parameters": {
+        "over_weight": 1,
+        "under_weight": 2
+      },
+      "spec_fingerprint": "7aa94a731be37e0b659618750d43ca281d9945caba4ab7cedd6fa69a31048c98"
+    },
+    "implementation": {
+      "schema_version": 1,
+      "semantic_kind": "loss",
+      "semantic_id": "example.loss.asymmetric@1",
+      "semantic_fingerprint": "7aa94a731be37e0b659618750d43ca281d9945caba4ab7cedd6fa69a31048c98",
+      "provider_id": "provider:javascript-local",
+      "binding_id": "binding:javascript",
+      "implementation_version": "1.0.0",
+      "implementation_fingerprint": "a7fd21840dcee5f44a1f86865464d6ec1e6ae182733b6fa608b4579f571f7739",
+      "supported_controller_families": [],
+      "runtime_requirements": [],
+      "capabilities": [
+        "deterministic",
+        "differentiable"
+      ],
+      "portability": "host_local",
+      "replayability": "registry_required",
+      "registry_key": "loss:javascript:asymmetric",
+      "descriptor_fingerprint": "0fe5e80ecafa2bb6fce190bb9eb7dbc72e84116c451f3e6c3faef0d93f44895a"
+    }
+  },
+  "foreign_loss_reference": {
+    "spec": {
+      "schema_version": 1,
+      "loss_id": "example.loss.asymmetric@1",
+      "kind": "custom",
+      "task_kinds": [
+        "regression"
+      ],
+      "prediction_kinds": [
+        "regression_point"
+      ],
+      "objective": "minimize",
+      "reduction": "mean",
+      "required_inputs": [
+        "target",
+        "prediction"
+      ],
+      "capabilities": [
+        "differentiable"
+      ],
+      "parameters": {
+        "over_weight": 1,
+        "under_weight": 2
+      },
+      "spec_fingerprint": "7aa94a731be37e0b659618750d43ca281d9945caba4ab7cedd6fa69a31048c98"
+    },
+    "implementation": {
+      "schema_version": 1,
+      "semantic_kind": "loss",
+      "semantic_id": "example.loss.asymmetric@1",
+      "semantic_fingerprint": "7aa94a731be37e0b659618750d43ca281d9945caba4ab7cedd6fa69a31048c98",
+      "provider_id": "provider:python-local",
+      "binding_id": "binding:python",
+      "implementation_version": "1.0.0",
+      "implementation_fingerprint": "a7fd21840dcee5f44a1f86865464d6ec1e6ae182733b6fa608b4579f571f7739",
+      "supported_controller_families": [],
+      "runtime_requirements": [],
+      "capabilities": [
+        "deterministic",
+        "differentiable",
+        "needs_gil"
+      ],
+      "portability": "host_local",
+      "replayability": "registry_required",
+      "registry_key": "loss:javascript:asymmetric",
+      "descriptor_fingerprint": "75c56bb252c46b95091f9de77400008afa163099de9ff03fd1de8acd79c8548f"
+    }
+  },
+  "training_loss_role": {
+    "schema_version": 1,
+    "node_id": "model:custom",
+    "output_id": "prediction",
+    "phases": [
+      "FIT_CV",
+      "REFIT"
+    ],
+    "loss": {
+      "spec": {
+        "schema_version": 1,
+        "loss_id": "example.loss.asymmetric@1",
+        "kind": "custom",
+        "task_kinds": [
+          "regression"
+        ],
+        "prediction_kinds": [
+          "regression_point"
+        ],
+        "objective": "minimize",
+        "reduction": "mean",
+        "required_inputs": [
+          "target",
+          "prediction"
+        ],
+        "capabilities": [
+          "differentiable"
+        ],
+        "parameters": {
+          "over_weight": 1,
+          "under_weight": 2
+        },
+        "spec_fingerprint": "7aa94a731be37e0b659618750d43ca281d9945caba4ab7cedd6fa69a31048c98"
+      },
+      "implementation": {
+        "schema_version": 1,
+        "semantic_kind": "loss",
+        "semantic_id": "example.loss.asymmetric@1",
+        "semantic_fingerprint": "7aa94a731be37e0b659618750d43ca281d9945caba4ab7cedd6fa69a31048c98",
+        "provider_id": "provider:javascript-local",
+        "binding_id": "binding:javascript",
+        "implementation_version": "1.0.0",
+        "implementation_fingerprint": "a7fd21840dcee5f44a1f86865464d6ec1e6ae182733b6fa608b4579f571f7739",
+        "supported_controller_families": [],
+        "runtime_requirements": [],
+        "capabilities": [
+          "deterministic",
+          "differentiable"
+        ],
+        "portability": "host_local",
+        "replayability": "registry_required",
+        "registry_key": "loss:javascript:asymmetric",
+        "descriptor_fingerprint": "0fe5e80ecafa2bb6fce190bb9eb7dbc72e84116c451f3e6c3faef0d93f44895a"
+      }
+    }
+  },
+  "metric_reference": {
+    "spec": {
+      "schema_version": 1,
+      "metric_id": "example.metric.bias@1",
+      "kind": "custom",
+      "task_kinds": [
+        "regression"
+      ],
+      "prediction_kinds": [
+        "regression_point"
+      ],
+      "objective": "minimize",
+      "supported_levels": [
+        "sample"
+      ],
+      "decomposition": "global",
+      "reduction": "global",
+      "required_inputs": [
+        "target",
+        "prediction"
+      ],
+      "capabilities": [],
+      "parameters": {},
+      "spec_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006"
+    },
+    "implementation": {
+      "schema_version": 1,
+      "semantic_kind": "metric",
+      "semantic_id": "example.metric.bias@1",
+      "semantic_fingerprint": "be54e6824479b10c398c229169bd324387c2fbb932e8fa879e37eba7d8821006",
+      "provider_id": "provider:javascript-local",
+      "binding_id": "binding:javascript",
+      "implementation_version": "1.0.0",
+      "implementation_fingerprint": "f1dd19e40fbf578345e71c267a1a2854b97b2a9ec11df3f4a8ffb3219056dae1",
+      "supported_controller_families": [],
+      "runtime_requirements": [],
+      "capabilities": [
+        "deterministic"
+      ],
+      "portability": "host_local",
+      "replayability": "registry_required",
+      "registry_key": "metric:javascript:bias",
+      "descriptor_fingerprint": "c6967e1e72b6ba79fd2a22fc3c488fe7f08a7c999ac189b9d82799b312ffebc6"
+    }
+  }
+}

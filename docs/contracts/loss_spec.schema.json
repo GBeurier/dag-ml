@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/loss_spec.v1.schema.json",
+  "title": "DAG-ML LossSpec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "loss_id",
+    "kind",
+    "task_kinds",
+    "prediction_kinds",
+    "objective",
+    "reduction",
+    "required_inputs",
+    "capabilities",
+    "parameters",
+    "spec_fingerprint"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "loss_id": { "$ref": "#/$defs/versioned_id" },
+    "kind": { "enum": ["built_in", "custom"] },
+    "task_kinds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/task_kind" }
+    },
+    "prediction_kinds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/prediction_kind" }
+    },
+    "objective": { "const": "minimize" },
+    "reduction": { "enum": ["mean", "sum", "weighted_mean"] },
+    "required_inputs": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "contains": { "const": "target" },
+      "items": { "$ref": "#/$defs/criterion_input" },
+      "allOf": [{ "contains": { "const": "prediction" } }]
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "differentiable",
+          "distributed_reduction",
+          "per_output",
+          "supports_missing_mask",
+          "supports_sample_weights"
+        ]
+      }
+    },
+    "parameters": { "$ref": "#/$defs/parameters" },
+    "spec_fingerprint": { "$ref": "#/$defs/sha256" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "reduction": { "const": "weighted_mean" } } },
+      "then": {
+        "properties": {
+          "required_inputs": { "contains": { "const": "sample_weight" } },
+          "capabilities": { "contains": { "const": "supports_sample_weights" } }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "required_inputs": { "contains": { "const": "missing_mask" } }
+        }
+      },
+      "then": {
+        "properties": {
+          "capabilities": { "contains": { "const": "supports_missing_mask" } }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "versioned_id": {
+      "type": "string",
+      "pattern": "^[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+@[1-9][0-9]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "task_kind": {
+      "enum": [
+        "regression",
+        "binary_classification",
+        "multiclass_classification",
+        "multilabel_classification"
+      ]
+    },
+    "prediction_kind": {
+      "enum": [
+        "regression_point",
+        "class_label",
+        "class_probability",
+        "decision_score"
+      ]
+    },
+    "criterion_input": {
+      "enum": ["target", "prediction", "sample_weight", "missing_mask", "group"]
+    },
+    "parameters": {
+      "type": "object",
+      "propertyNames": {
+        "not": {
+          "pattern": "^(?:[bB][yY][tT][eE][cC][oO][dD][eE]|[cC][aA][lL][lL][aA][bB][lL][eE]|[cC][oO][dD][eE]|[fF][uU][nN][cC][tT][iI][oO][nN]_[sS][oO][uU][rR][cC][eE]|[iI][mM][pP][oO][rR][tT]_[pP][aA][tT][hH]|[mM][oO][dD][uU][lL][eE]_[pP][aA][tT][hH]|[pP][iI][cC][kK][lL][eE]|[sS][eE][rR][iI][aA][lL][iI][zZ][eE][dD]_[cC][aA][lL][lL][aA][bB][lL][eE]|[sS][oO][uU][rR][cC][eE]_[cC][oO][dD][eE])$"
+        }
+      },
+      "additionalProperties": { "$ref": "#/$defs/parameter_value" }
+    },
+    "parameter_value": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/parameter_value" }
+        },
+        { "$ref": "#/$defs/parameters" }
+      ]
+    }
+  }
+}

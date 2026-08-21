@@ -267,6 +267,12 @@
             "type": "object"
           }
         },
+        "training_losses": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/training_loss_role.v1.schema.json"
+          }
+        },
         "params": {
           "type": "object"
         },

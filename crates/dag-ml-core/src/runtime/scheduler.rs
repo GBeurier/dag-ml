@@ -840,6 +840,10 @@ impl SequentialScheduler {
                             data_views: BTreeMap::new(),
                             prediction_inputs: BTreeMap::new(),
                             artifact_inputs: BTreeMap::new(),
+                            required_loss_attestations: NodeTask::required_loss_attestations_for(
+                                &task_node_plan,
+                                scope.phase,
+                            )?,
                             fit_influence: FitInfluenceTask::default(),
                             seed: None,
                         };
@@ -929,6 +933,10 @@ impl SequentialScheduler {
                     data_views: collected_inputs.data_views,
                     prediction_inputs: collected_inputs.prediction_inputs,
                     artifact_inputs,
+                    required_loss_attestations: NodeTask::required_loss_attestations_for(
+                        &task_node_plan,
+                        scope.phase,
+                    )?,
                     fit_influence,
                     seed: derive_task_seed(
                         scope.seed_root,
@@ -1415,6 +1423,10 @@ impl ParallelScheduler {
                         data_views: collected_inputs.data_views,
                         prediction_inputs: collected_inputs.prediction_inputs,
                         artifact_inputs,
+                        required_loss_attestations: NodeTask::required_loss_attestations_for(
+                            &task_node_plan,
+                            scope.phase,
+                        )?,
                         fit_influence,
                         seed: derive_task_seed(
                             scope.seed_root,
@@ -1556,6 +1568,10 @@ impl ParallelScheduler {
                         data_views: BTreeMap::new(),
                         prediction_inputs: BTreeMap::new(),
                         artifact_inputs: BTreeMap::new(),
+                        required_loss_attestations: NodeTask::required_loss_attestations_for(
+                            &task_node_plan,
+                            scope.phase,
+                        )?,
                         fit_influence: FitInfluenceTask::default(),
                         seed: None,
                     };
@@ -1827,6 +1843,8 @@ mod hpo_scheduler_tests {
                     seed: task.seed,
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
                 },
             })
         }
@@ -2720,6 +2738,7 @@ pub(crate) fn materialize_replay_artifact_handles(
             controller_id: artifact.controller_id.clone(),
             artifact: artifact.artifact.clone(),
             params_fingerprint: artifact.params_fingerprint.clone(),
+            training_loss_fingerprint: artifact.training_loss_fingerprint.clone(),
         })?;
         if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact) {
             return Err(DagMlError::RuntimeValidation(format!(

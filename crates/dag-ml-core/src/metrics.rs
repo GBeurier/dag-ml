@@ -8,9 +8,14 @@ use crate::aggregation::{
 use crate::error::{DagMlError, Result};
 use crate::fold::FoldPartitionMode;
 use crate::ids::{FoldId, NodeId, SampleId, VariantId};
+use crate::metric_provider::{
+    builtin_metric_reference, builtin_metric_registry, MetricEvaluationScope, MetricEvaluationTask,
+    MetricUnitId,
+};
 use crate::oof::{validate_producer_oof_coverage, PredictionBlock, PredictionPartition};
 use crate::policy::PredictionLevel;
 use crate::selection::{CandidateScore, MetricObjective};
+use crate::{LearningTaskKind, PredictionKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -596,17 +601,69 @@ fn score_regression_rows(
         targets.target_names.clone()
     };
     let metric_suffixes = target_metric_names(predictions.width, &target_names);
+    let provider_output_ids = (0..predictions.width)
+        .map(|index| format!("output:{index}"))
+        .collect::<Vec<_>>();
+    let metric_units = predictions
+        .unit_ids
+        .iter()
+        .map(MetricUnitId::from)
+        .collect::<Vec<_>>();
+    let prediction_values = aligned_predictions
+        .iter()
+        .map(|row| row.to_vec())
+        .collect::<Vec<_>>();
+    let target_values = aligned_targets
+        .iter()
+        .map(|row| row.to_vec())
+        .collect::<Vec<_>>();
+    let scope = MetricEvaluationScope {
+        producer_node: predictions.origin.producer_node.clone(),
+        producer_port: predictions.origin.producer_port.clone(),
+        prediction_id: predictions.origin.prediction_id.clone(),
+        variant_id: None,
+        partition: predictions.origin.partition.clone(),
+        fold_id: predictions.origin.fold_id.clone(),
+        level: predictions.level,
+    };
+    let registry = builtin_metric_registry()?;
     let mut values = BTreeMap::new();
     for metric in metrics {
-        let per_target = compute_metric_per_target(
-            *metric,
-            predictions.width,
-            &aligned_predictions,
-            &aligned_targets,
-        );
-        values.insert(metric.name().to_string(), macro_mean(&per_target));
-        for (name, value) in metric_suffixes.iter().zip(per_target) {
-            values.insert(format!("{}:{name}", metric.name()), value);
+        let (task_kind, prediction_kind) = match metric {
+            RegressionMetricKind::Mse
+            | RegressionMetricKind::Rmse
+            | RegressionMetricKind::Mae
+            | RegressionMetricKind::R2 => (
+                LearningTaskKind::Regression,
+                PredictionKind::RegressionPoint,
+            ),
+            RegressionMetricKind::Accuracy | RegressionMetricKind::BalancedAccuracy => (
+                LearningTaskKind::MulticlassClassification,
+                PredictionKind::ClassLabel,
+            ),
+        };
+        let task = MetricEvaluationTask::new(
+            format!(
+                "metric:{}:{}",
+                predictions.origin.producer_node,
+                metric.name()
+            ),
+            builtin_metric_reference(*metric)?,
+            task_kind,
+            prediction_kind,
+            scope.clone(),
+            metric_units.clone(),
+            prediction_values.clone(),
+            target_values.clone(),
+            provider_output_ids.clone(),
+            None,
+            None,
+            None,
+        )?;
+        let evaluation = registry.evaluate(&task)?;
+        values.insert(metric.name().to_string(), evaluation.aggregate);
+        for (component, suffix) in evaluation.result.values.into_iter().zip(&metric_suffixes) {
+            values.insert(format!("{}:{suffix}", metric.name()), component.value);
         }
     }
 
@@ -632,7 +689,7 @@ fn validate_sample_prediction_block(block: &PredictionBlock) -> Result<usize> {
     block.validate_content()
 }
 
-fn compute_metric_per_target(
+pub(crate) fn compute_metric_per_target(
     metric: RegressionMetricKind,
     width: usize,
     predictions: &[&[f64]],
@@ -745,10 +802,6 @@ fn r2_for_target(target_idx: usize, predictions: &[&[f64]], targets: &[&[f64]]) 
     } else {
         1.0 - ss_res / ss_tot
     }
-}
-
-fn macro_mean(values: &[f64]) -> f64 {
-    values.iter().sum::<f64>() / values.len() as f64
 }
 
 fn target_metric_names(width: usize, target_names: &[String]) -> Vec<String> {
@@ -1124,6 +1177,35 @@ mod tests {
         assert_eq!(candidate.metadata["partition"], "validation");
         assert_eq!(candidate.metadata["prediction_id"], "pred:sample");
         assert_eq!(candidate.metadata["target_names"], serde_json::json!(["y"]));
+    }
+
+    #[test]
+    fn provider_adapter_preserves_display_target_names_with_spaces() {
+        let predictions = PredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: Some("prediction".to_string()),
+            partition: PredictionPartition::Validation,
+            fold_id: None,
+            sample_ids: vec![sid("sample:1"), sid("sample:2")],
+            values: vec![vec![2.0], vec![4.0]],
+            target_names: vec!["protein content".to_string()],
+        };
+        let targets = RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: vec![sample_unit("sample:1"), sample_unit("sample:2")],
+            values: vec![vec![1.0], vec![5.0]],
+            target_names: vec!["protein content".to_string()],
+        };
+
+        let report = score_regression_prediction_block(
+            &predictions,
+            &targets,
+            &[RegressionMetricKind::Rmse],
+        )
+        .unwrap();
+        assert_close(report.metrics["rmse"], 1.0);
+        assert_close(report.metrics["rmse:protein content"], 1.0);
     }
 
     #[test]

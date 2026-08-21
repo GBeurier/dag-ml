@@ -5,6 +5,26 @@ DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
 validator: it checks fingerprints, campaign fold membership, OOF boundaries and
 leakage policies before any controller receives a handle.
 
+## Loss, Metric and Early-Stopping Contracts
+
+Schemas: `loss_spec.schema.json`, `metric_spec.schema.json`,
+`implementation_descriptor.schema.json`, `training_loss_role.schema.json`,
+`loss_execution_attestation.schema.json`, `metric_role.schema.json`,
+`metric_evaluation_task.schema.json`, `metric_evaluation_result.schema.json`
+and `early_stopping_record.schema.json`.
+
+Training losses are optimizer objectives; metrics are typed evaluations with an
+explicit objective direction and pipeline role. `EarlyStoppingRecord` is a
+fingerprinted controller outcome bound to an `early_stopping` metric role and
+one `FIT_CV` fold or `REFIT` task. It is optional lineage evidence in
+`NodeResult`, not a `ScoreSet`, selection decision, tuning observation or second
+metric-provider protocol. Rust validation additionally enforces finite values,
+iteration ordering, validation-partition monitoring and exact lineage scope.
+
+Canonical fixtures are under `examples/fixtures/criteria/`; the byte-exact
+closure is `criteria_conformance_pack.v1.json` and the independent semantic
+oracle is `parity/criteria/oracle.py`.
+
 ## Heterogeneous Multi-Source Vocabulary and Evolution
 
 The heterogeneous multi-source repetitions roadmap
@@ -600,14 +620,20 @@ C ABI: `DAG_ML_NODE_TASK_SCHEMA_VERSION`,
 `dagml_node_result_validate_for_task_json`
 
 These are the direct wire contracts between the Rust coordinator and external
-operator controllers. `NodeTask` carries the resolved node plan, phase,
-variant/fold context, handles, data views, OOF prediction inputs, refit artifact
-inputs and deterministic seed. `NodeResult` returns output handles,
+operator controllers. `NodeTask` carries the resolved node plan, including
+phase-specific training-loss roles, phase, variant/fold context, handles, data
+views, OOF prediction inputs, refit artifact inputs and deterministic seed.
+`NodeResult` returns output handles,
 sample predictions, optional observation-level predictions, optional aggregated
 sample/target/group predictions, shape deltas, artifacts and lineage. Rust validates every result
 against the exact task before committing it, including node/run/phase/fold,
 variant, controller, seed, params fingerprint, shape fingerprints, output
 ownership and artifact handle consistency.
+
+For `FIT_CV` and `REFIT`, each configured loss role requires an ordered lineage
+attestation of the exact semantic and executable implementation used. Missing,
+extra, stale or cross-phase attestations are rejected before the result is
+committed.
 
 ## SelectionPolicy / SelectionDecision v1
 

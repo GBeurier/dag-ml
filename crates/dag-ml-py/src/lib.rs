@@ -584,38 +584,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fingerprint_and_signing_helpers_reject_duplicate_json_keys() {
+        Python::initialize();
+        let relation_error = sample_relation_set_fingerprint_json(r#"{"records":[],"records":[]}"#)
+            .expect_err("duplicate relation-set keys must be rejected");
+        assert!(relation_error
+            .to_string()
+            .contains("duplicate JSON object key"));
+
+        let request_error =
+            sign_training_request_json(r#"{"schema_version":1,"schema_version":1}"#)
+                .expect_err("duplicate training-request keys must be rejected");
+        assert!(request_error
+            .to_string()
+            .contains("duplicate JSON object key"));
+    }
+
+    #[test]
     fn error_subclasses_map_by_category() {
         Python::initialize();
         // Valid JSON but invalid graph -> "validation" -> DagMlValidationError.
         let validation_err =
             validate_graph_json(r#"{"id":"","interface":{},"nodes":[],"edges":[]}"#)
                 .expect_err("invalid graph should fail");
-        // Malformed JSON -> "compatibility" -> DagMlCompatibilityError.
-        let compat_err = validate_graph_json("{").expect_err("malformed JSON should fail");
+        // Graph parsing errors retain the graph-validation category supplied by GraphSpec.
+        let malformed_graph_err = validate_graph_json("{").expect_err("malformed JSON should fail");
         Python::attach(|py| {
             let validation_value = validation_err.value(py);
             assert!(validation_value.is_instance_of::<DagMlValidationError>());
             assert!(validation_value.is_instance_of::<DagMlError>());
             assert!(!validation_value.is_instance_of::<DagMlCompatibilityError>());
 
-            let compat_value = compat_err.value(py);
-            assert!(compat_value.is_instance_of::<DagMlCompatibilityError>());
-            assert!(compat_value.is_instance_of::<DagMlError>());
+            let malformed_graph_value = malformed_graph_err.value(py);
+            assert!(malformed_graph_value.is_instance_of::<DagMlValidationError>());
+            assert!(malformed_graph_value.is_instance_of::<DagMlError>());
             assert_eq!(
-                compat_value
+                malformed_graph_value
                     .getattr("category")
                     .unwrap()
                     .extract::<String>()
                     .unwrap(),
-                "compatibility"
+                "validation"
             );
             assert_eq!(
-                compat_value
+                malformed_graph_value
                     .getattr("code")
                     .unwrap()
                     .extract::<String>()
                     .unwrap(),
-                "serialization_error"
+                "graph_validation"
             );
         });
     }

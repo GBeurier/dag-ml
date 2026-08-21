@@ -16,6 +16,8 @@ jobs:
   contract-lockstep:
     name: Shared contract lockstep
     runs-on: ubuntu-latest
+    outputs:
+      peer-ref: ${{ steps.peer.outputs.ref }}
     env:
       DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
     steps:
@@ -105,15 +107,8 @@ jobs:
   msrv:
     name: MSRV Rust
     runs-on: ubuntu-latest
-    env:
-      DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
     steps:
       - uses: actions/checkout@v7
-      - name: Checkout dag-ml-data contract peer
-        uses: actions/checkout@v7
-        with:
-          repository: GBeurier/dag-ml-data
-          path: external/dag-ml-data
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_MSRV }}
@@ -125,6 +120,7 @@ jobs:
 
   rust:
     name: Rust
+    needs: contract-lockstep
     runs-on: ubuntu-latest
     env:
       DAG_ML_DATA_REPO: ${{ github.workspace }}/external/dag-ml-data
@@ -140,6 +136,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
+          ref: ${{ needs.contract-lockstep.outputs.peer-ref }}
           path: external/dag-ml-data
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -339,6 +336,7 @@ jobs:
 
   python-bindings:
     name: Python bindings ${{ matrix.python-version }}
+    needs: contract-lockstep
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -350,6 +348,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
+          ref: ${{ needs.contract-lockstep.outputs.peer-ref }}
           path: external/dag-ml-data
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v6
@@ -376,8 +375,59 @@ jobs:
           python scripts/smoke_python_bindings.py
           python scripts/smoke_python_integration.py external/dag-ml-data
 
+  r-bindings:
+    name: R bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: r-lib/actions/setup-r@v2
+      - name: Install R dependencies
+        run: Rscript -e 'install.packages("jsonlite", repos = "https://cloud.r-project.org")'
+      - name: Build DAG-ML C ABI
+        run: cargo build -p dag-ml-capi --release
+      - name: Build R source package
+        run: |
+          mkdir -p target/r
+          cd target/r
+          R CMD build ../../bindings/r
+      - name: Check R source package
+        run: |
+          if ! R CMD check --no-manual target/r/dagml_*.tar.gz; then
+            for log in dagml.Rcheck/00install.out dagml.Rcheck/00check.log; do
+              if [ -f "$log" ]; then
+                printf '\n===== %s =====\n' "$log"
+                sed -n '1,240p' "$log"
+              fi
+            done
+            exit 1
+          fi
+        env:
+          DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
+
+  matlab-octave-bindings:
+    name: MATLAB/Octave bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GNU Octave
+        run: sudo apt-get update && sudo apt-get install --yes octave octave-dev
+      - name: Build native MATLAB/Octave bridges
+        run: |
+          cargo build -p dag-ml-capi --release
+          mkoctfile --mex bindings/matlab/native/task_training_loss_binding.c \
+            -o bindings/matlab/+dagml/taskTrainingLossBindingNative.mex
+          mkoctfile --mex bindings/matlab/native/execution_plan_phase.c \
+            -o bindings/matlab/+dagml/executeExecutionPlanPhaseNative.mex
+      - name: Test local implementation registry
+        run: octave --no-gui --quiet --eval "addpath('bindings/matlab/tests'); local_implementation_registry"
+        env:
+          DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
+
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}
+    needs: contract-lockstep
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -389,6 +439,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml-data
+          ref: ${{ needs.contract-lockstep.outputs.peer-ref }}
           path: external/dag-ml-data
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v6
