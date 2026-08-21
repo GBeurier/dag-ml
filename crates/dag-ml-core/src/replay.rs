@@ -30,18 +30,19 @@ use crate::runtime::{
     LineageRecord, RunContext, RuntimeArtifactStore, RuntimeControllerRegistry,
     RuntimeDataProvider, SequentialScheduler,
 };
-use crate::training::{
-    LoadedPredictor, PortablePredictorPackage, TrainingDataIdentity, TrainingOutcomeRef,
-};
+use crate::training::{LoadedPredictor, PortablePredictorPackage, TrainingOutcomeRef};
 use crate::training_runtime::{
     BoundTrainingOutput, TrainingOutcome, BOUND_TRAINING_OUTPUT_SCHEMA_VERSION,
 };
 
 pub const TRAINING_REPLAY_REQUEST_SCHEMA_VERSION: u32 = 1;
-/// V2 owns the typed conformal-interval closure. V1 remains readable only
-/// when it contains no conformal field values.
-pub const TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 2;
+/// V3 permits target-free external data identities for PREDICT/EXPLAIN.  The
+/// training-only identity remains deliberately target-bound; a replay on a
+/// fresh unlabeled cohort must not invent a target fingerprint simply to fit
+/// that training attestation type.
+pub const TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 3;
 pub const LEGACY_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 1;
+pub const CONFORMAL_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 2;
 pub const MIN_READABLE_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 1;
 
 /// Strictly decode the complete, current Methods HPO resume state.
@@ -188,7 +189,7 @@ pub struct TrainingReplayOutcome {
     pub source_training_outcome: TrainingOutcomeRef,
     pub replay_request_id: String,
     pub replay_request_fingerprint: String,
-    pub input_data_identities: Vec<TrainingDataIdentity>,
+    pub input_data_identities: Vec<ReplayDataIdentity>,
     pub bundle_id: BundleId,
     pub plan_id: String,
     pub phase: Phase,
@@ -208,6 +209,55 @@ pub struct TrainingReplayOutcome {
     pub warnings: Vec<String>,
     pub diagnostics: BTreeMap<String, serde_json::Value>,
     pub outcome_fingerprint: String,
+}
+
+/// Content identity for one external replay input.
+///
+/// This is intentionally distinct from [`TrainingDataIdentity`].  Training
+/// requires a target-content proof because it scores and selects models;
+/// PREDICT and EXPLAIN operate on a new, often unlabeled cohort and therefore
+/// attest only the feature content and relation authority.  A target proof is
+/// retained when the caller supplies one (for example calibration evidence),
+/// but absence is never represented by a sentinel digest.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayDataIdentity {
+    pub requirement_key: String,
+    pub schema_fingerprint: String,
+    pub plan_fingerprint: String,
+    pub relation_fingerprint: String,
+    pub data_content_fingerprint: String,
+    #[serde(default)]
+    pub target_content_fingerprint: Option<String>,
+    pub identity_fingerprint: String,
+}
+
+impl ReplayDataIdentity {
+    /// Compute the strict TCV1 identity fingerprint used by the portable
+    /// replay outcome.
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        tcv1_fingerprint_without(self, "identity_fingerprint", "replay data identity")
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_non_empty("replay data requirement_key", &self.requirement_key)?;
+        for (label, value) in [
+            ("replay data schema", &self.schema_fingerprint),
+            ("replay data plan", &self.plan_fingerprint),
+            ("replay data relation", &self.relation_fingerprint),
+            ("replay data content", &self.data_content_fingerprint),
+            ("replay data identity", &self.identity_fingerprint),
+        ] {
+            validate_sha256(label, value)?;
+        }
+        if let Some(target_content_fingerprint) = &self.target_content_fingerprint {
+            validate_sha256("replay target content", target_content_fingerprint)?;
+        }
+        if self.identity_fingerprint != self.compute_fingerprint()? {
+            return contract_error("replay data identity fingerprint does not match TCV1 content");
+        }
+        Ok(())
+    }
 }
 
 impl TrainingReplayOutcome {
@@ -250,6 +300,16 @@ impl TrainingReplayOutcome {
         for identity in &self.input_data_identities {
             identity.validate()?;
         }
+        if self.schema_version < TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+            && self
+                .input_data_identities
+                .iter()
+                .any(|identity| identity.target_content_fingerprint.is_none())
+        {
+            return contract_error(
+                "training replay outcome V1/V2 requires target-bound input identities; migrate target-free PREDICT/EXPLAIN evidence to V3",
+            );
+        }
         validate_sorted_unique_keys(
             "training replay input_data_identities",
             self.input_data_identities
@@ -271,7 +331,14 @@ impl TrainingReplayOutcome {
                     .is_some())
         {
             return contract_error(
-                "training replay outcome V1 cannot carry conformal state; migrate to V2",
+                "training replay outcome V1 cannot carry conformal state; migrate to V2 or V3",
+            );
+        }
+        if self.schema_version == TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+            && !self.conformal_intervals.is_empty()
+        {
+            return contract_error(
+                "training replay outcome V3 is target-free inference evidence and cannot carry conformal intervals",
             );
         }
         for output in &self.outputs {
@@ -884,7 +951,7 @@ pub fn execute_attached_training_replay(
     lineage.sort_by(|left, right| left.record_id.cmp(&right.record_id));
 
     let mut outcome = TrainingReplayOutcome {
-        schema_version: TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION,
+        schema_version: replay_outcome_schema_version(&input_data_identities),
         outcome_id: input.outcome_id,
         run_id: input.run_id,
         source_training_outcome: input.source.to_reference()?,
@@ -1012,7 +1079,7 @@ pub fn execute_loaded_predictor_replay(
     lineage.sort_by(|left, right| left.record_id.cmp(&right.record_id));
 
     let mut outcome = TrainingReplayOutcome {
-        schema_version: TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION,
+        schema_version: replay_outcome_schema_version(&input_data_identities),
         outcome_id: input.outcome_id,
         run_id: input.run_id,
         source_training_outcome: package.training_outcome.clone(),
@@ -1072,6 +1139,16 @@ pub fn calibrate_attached_training_replay(
     if replay.phase != Phase::Predict {
         return Err(DagMlError::RuntimeValidation(
             "conformal calibration requires a PREDICT replay outcome".to_string(),
+        ));
+    }
+    if replay
+        .input_data_identities
+        .iter()
+        .any(|identity| identity.target_content_fingerprint.is_none())
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal calibration requires target-bound replay input identities; run the calibration replay with its authoritative truth cohort"
+                .to_string(),
         ));
     }
     replay.validate_against(source, &replay_request_from_outcome(replay))?;
@@ -1236,7 +1313,7 @@ fn replay_input_data_identities(
     bundle: &ExecutionBundle,
     request: &TrainingReplayRequest,
     envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
-) -> Result<Vec<TrainingDataIdentity>> {
+) -> Result<Vec<ReplayDataIdentity>> {
     request
         .data_envelope_keys
         .iter()
@@ -1274,19 +1351,13 @@ fn replay_input_data_identities(
                         "training replay envelope for `{key}` requires a data content fingerprint"
                     ))
                 })?;
-            let target_content_fingerprint =
-                envelope.target_content_fingerprint.clone().ok_or_else(|| {
-                    DagMlError::RuntimeValidation(format!(
-                        "training replay envelope for `{key}` requires a target content fingerprint"
-                    ))
-                })?;
-            let mut identity = TrainingDataIdentity {
+            let mut identity = ReplayDataIdentity {
                 requirement_key: key.clone(),
                 schema_fingerprint: envelope.schema_fingerprint.clone(),
                 plan_fingerprint: envelope.plan_fingerprint.clone(),
                 relation_fingerprint,
                 data_content_fingerprint,
-                target_content_fingerprint,
+                target_content_fingerprint: envelope.target_content_fingerprint.clone(),
                 identity_fingerprint: zero_fingerprint(),
             };
             identity.identity_fingerprint = identity.compute_fingerprint()?;
@@ -1294,6 +1365,17 @@ fn replay_input_data_identities(
             Ok(identity)
         })
         .collect()
+}
+
+fn replay_outcome_schema_version(identities: &[ReplayDataIdentity]) -> u32 {
+    if identities
+        .iter()
+        .any(|identity| identity.target_content_fingerprint.is_none())
+    {
+        TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+    } else {
+        CONFORMAL_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+    }
 }
 
 fn replay_plan_and_bundle_for_current_cohort(
@@ -1654,7 +1736,7 @@ fn validate_replay_phase(phase: Phase) -> Result<()> {
     if matches!(phase, Phase::Predict | Phase::Explain) {
         Ok(())
     } else {
-        contract_error("training replay V1 supports only PREDICT and EXPLAIN")
+        contract_error("training replay supports only PREDICT and EXPLAIN")
     }
 }
 
@@ -1834,6 +1916,58 @@ mod methods_hpo_resume_state_tests {
 }
 
 #[cfg(test)]
+mod replay_identity_tests {
+    use super::*;
+
+    fn replay_identity(target_content_fingerprint: Option<&str>) -> ReplayDataIdentity {
+        let mut identity = ReplayDataIdentity {
+            requirement_key: "model:base.X".to_string(),
+            schema_fingerprint: "1".repeat(64),
+            plan_fingerprint: "2".repeat(64),
+            relation_fingerprint: "3".repeat(64),
+            data_content_fingerprint: "4".repeat(64),
+            target_content_fingerprint: target_content_fingerprint.map(str::to_string),
+            identity_fingerprint: zero_fingerprint(),
+        };
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+        identity
+    }
+
+    #[test]
+    fn replay_identity_permits_an_unlabeled_predict_cohort_without_a_sentinel() {
+        let identity = replay_identity(None);
+        identity.validate().unwrap();
+        assert!(identity.target_content_fingerprint.is_none());
+        assert!(serde_json::to_value(&identity)
+            .unwrap()
+            .get("target_content_fingerprint")
+            .unwrap()
+            .is_null());
+    }
+
+    #[test]
+    fn replay_identity_rejects_a_resigned_target_fingerprint_tamper() {
+        let mut identity = replay_identity(None);
+        identity.target_content_fingerprint = Some("not-a-fingerprint".to_string());
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+        let error = identity.validate().unwrap_err().to_string();
+        assert!(error.contains("target content"), "{error}");
+    }
+
+    #[test]
+    fn replay_schema_version_is_v3_only_for_a_target_free_cohort() {
+        assert_eq!(
+            replay_outcome_schema_version(&[replay_identity(None)]),
+            TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+        );
+        assert_eq!(
+            replay_outcome_schema_version(&[replay_identity(Some(&"5".repeat(64)))]),
+            CONFORMAL_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     #[cfg(dag_ml_workspace_contract_fixtures)]
     use std::fs;
@@ -1964,5 +2098,25 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("source reference"));
+    }
+
+    #[cfg(dag_ml_workspace_contract_fixtures)]
+    #[test]
+    fn target_free_predict_evidence_is_v3_only() {
+        let mut outcome =
+            TrainingReplayOutcome::from_json(&fixture("training_replay_outcome_predict.v1.json"))
+                .unwrap();
+        outcome.schema_version = TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION;
+        for identity in &mut outcome.input_data_identities {
+            identity.target_content_fingerprint = None;
+            identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+        }
+        outcome.outcome_fingerprint = outcome.compute_fingerprint().unwrap();
+        outcome.validate().unwrap();
+
+        outcome.schema_version = CONFORMAL_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION;
+        outcome.outcome_fingerprint = outcome.compute_fingerprint().unwrap();
+        let error = outcome.validate().unwrap_err().to_string();
+        assert!(error.contains("V1/V2 requires target-bound"), "{error}");
     }
 }
