@@ -21,6 +21,7 @@ use crate::controller::{
     ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
     ControllerRegistry, RngPolicy,
 };
+#[cfg(dag_ml_workspace_contract_fixtures)]
 use crate::criteria::{ImplementationCapability, TrainingLossRoleReference};
 use crate::data::{
     DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider, SOURCE_INDEX_METADATA_KEY,
@@ -48,6 +49,7 @@ use crate::policy::{
 use crate::relation::{SampleRelation, SampleRelationSet};
 use serde_json::json;
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn lineage_rejects_duplicate_or_out_of_scope_early_stopping_records() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -5887,6 +5889,8 @@ fn published_node_task_result_fixtures_validate_current_contract() {
 }
 
 #[cfg(dag_ml_workspace_contract_fixtures)]
+#[cfg(dag_ml_workspace_contract_fixtures)]
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn node_result_deserialization_rejects_unknown_contract_fields_but_keeps_opaque_maps() {
     let mut document: serde_json::Value = serde_json::from_str(include_str!(
@@ -6026,6 +6030,7 @@ fn node_result_deserialization_rejects_unknown_contract_fields_but_keeps_opaque_
     }
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn node_result_deserialization_rejects_unknown_contract_fields_but_keeps_opaque_maps() {
     let mut document: serde_json::Value = serde_json::from_str(include_str!(
@@ -6490,6 +6495,7 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
     }
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 fn runtime_custom_loss_role(node_id: NodeId) -> TrainingLossRoleReference {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../examples/fixtures/criteria/criteria_contracts.v1.json"
@@ -6501,6 +6507,7 @@ fn runtime_custom_loss_role(node_id: NodeId) -> TrainingLossRoleReference {
     role
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 fn runtime_rust_custom_loss_role(node_id: NodeId) -> TrainingLossRoleReference {
     let mut role = runtime_custom_loss_role(node_id);
     role.loss.implementation.provider_id = "provider:rust-local".to_string();
@@ -6623,6 +6630,7 @@ fn equal_sample_influence_emits_per_row_weights_without_aggregation_weights() {
     );
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn node_result_validation_rejects_external_conformance_mismatches() {
     let plan = build_execution_plan(
@@ -6851,6 +6859,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         .contains("FIT_CV or REFIT"));
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn scheduler_populates_native_loss_execution_requirements() {
     let mut controller_manifests = ControllerRegistry::new();
@@ -6929,6 +6938,7 @@ fn scheduler_populates_native_loss_execution_requirements() {
     );
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn scheduler_executes_rust_local_loss_before_attesting() {
     let mut controller_manifests = ControllerRegistry::new();

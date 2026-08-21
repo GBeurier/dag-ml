@@ -2259,6 +2259,7 @@ mod tests {
         }
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     fn custom_loss_role(node_id: &str, output_id: &str) -> TrainingLossRoleReference {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../examples/fixtures/criteria/javascript_local_implementations.v1.json"
@@ -2271,6 +2272,7 @@ mod tests {
         role
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn execution_plan_lowers_training_losses_in_canonical_order() {
         let mut loss_registry = ControllerRegistry::new();
