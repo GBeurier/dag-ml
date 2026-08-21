@@ -845,6 +845,7 @@ def replay_loaded_predictor_package_json(
     *,
     outcome_id: str,
     run_id: str,
+    artifact_callback: Any | None = None,
     warnings: Any = (),
     diagnostics: Any = None,
 ) -> str:
@@ -853,9 +854,11 @@ def replay_loaded_predictor_package_json(
     ``package`` is a signed ``PortablePredictorPackage`` contract and must not
     contain process-local handles. ``artifact_handles`` is the host-side sidecar
     map keyed by package artifact id, with ``HandleRef`` values supplied by the
-    current runtime. ``request.phase`` selects ``PREDICT`` or ``EXPLAIN``; an
-    ``EXPLAIN`` request returns explanation blocks and may also return the final
-    bound predictions emitted by the requested package binding.
+    current runtime. A package carrying durable raw artifacts instead requires
+    ``artifact_callback``: it receives strict ``hydrate`` and ``release`` calls
+    for invocation-local handles. ``request.phase`` selects ``PREDICT`` or
+    ``EXPLAIN``; an ``EXPLAIN`` request returns explanation blocks and may also
+    return the final bound predictions emitted by the requested package binding.
     """
 
     portable_package = PortablePredictorPackage(package)
@@ -868,6 +871,7 @@ def replay_loaded_predictor_package_json(
         op_callback,
         outcome_id,
         run_id,
+        artifact_callback,
         _coerce_json(warnings),
         _coerce_json({} if diagnostics is None else diagnostics),
     )
@@ -882,6 +886,7 @@ def replay_loaded_predictor_package(
     *,
     outcome_id: str,
     run_id: str,
+    artifact_callback: Any | None = None,
     warnings: Any = (),
     diagnostics: Any = None,
 ) -> TrainingReplayOutcome:
@@ -896,6 +901,7 @@ def replay_loaded_predictor_package(
             op_callback,
             outcome_id=outcome_id,
             run_id=run_id,
+            artifact_callback=artifact_callback,
             warnings=warnings,
             diagnostics=diagnostics,
         )

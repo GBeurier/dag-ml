@@ -20,7 +20,9 @@ use pyo3::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::in_process::build_runtime_controllers;
+use crate::in_process::{
+    build_runtime_controllers, build_runtime_controllers_with_artifact_callback,
+};
 use crate::{py_core_error, py_serde_error};
 
 const PY_DATA_PROVIDER_CONTROLLER_ID: &str = "controller:python.data.provider";
@@ -164,6 +166,7 @@ impl TrainingResult {
         warnings_json = "[]",
         diagnostics_json = "{}"
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn replay_json(
         &self,
         _py: Python<'_>,
@@ -364,7 +367,12 @@ pub fn execute_training_json(
 ///
 /// `artifact_handles_json` is a host-side sidecar map keyed by artifact id. The
 /// portable package remains handle-free; this binding only joins the package to
-/// the explicit handles supplied by the host for this process.
+/// the explicit handles supplied by the host for this process.  A package with
+/// durable raw artifacts may instead provide `artifact_callback`: it receives
+/// strict `{operation, request, payload}` hydration calls and
+/// `{operation, handle}` release calls. The callback is opt-in, so a raw
+/// portable package fails closed rather than being silently treated as a host
+/// sidecar package.
 #[pyfunction]
 #[pyo3(signature = (
     package_json,
@@ -374,6 +382,7 @@ pub fn execute_training_json(
     op_callback,
     outcome_id,
     run_id,
+    artifact_callback = None,
     warnings_json = "[]",
     diagnostics_json = "{}"
 ))]
@@ -387,6 +396,7 @@ pub fn execute_loaded_predictor_replay_json(
     op_callback: Py<PyAny>,
     outcome_id: &str,
     run_id: &str,
+    artifact_callback: Option<Py<PyAny>>,
     warnings_json: &str,
     diagnostics_json: &str,
 ) -> PyResult<String> {
@@ -394,6 +404,13 @@ pub fn execute_loaded_predictor_replay_json(
         return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
             "loaded predictor replay op_callback must be callable".to_string(),
         )));
+    }
+    if let Some(callback) = artifact_callback.as_ref() {
+        if !callback.bind(py).is_callable() {
+            return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+                "loaded predictor replay artifact_callback must be callable".to_string(),
+            )));
+        }
     }
 
     let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
@@ -429,8 +446,13 @@ pub fn execute_loaded_predictor_replay_json(
             .register_envelope(envelope)
             .map_err(py_core_error)?;
     }
-    let controllers = build_runtime_controllers(py, &predictor.package().effective_plan, &op_callback)
-        .map_err(py_core_error)?;
+    let controllers = build_runtime_controllers_with_artifact_callback(
+        py,
+        &predictor.package().effective_plan,
+        &op_callback,
+        artifact_callback.as_ref(),
+    )
+    .map_err(py_core_error)?;
 
     let outcome = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
         predictor: &predictor,
