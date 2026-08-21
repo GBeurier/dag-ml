@@ -529,6 +529,168 @@ impl MethodsPlsData {
     }
 }
 
+/// One host-materialized X-only cohort offered to the native Methods PLS
+/// controller for a fresh PREDICT replay.
+///
+/// The feature-content fingerprint is intentionally carried separately from
+/// the numeric matrix: Core binds it to the signed external envelope, while
+/// the production IO provider remains the authority that derives it from its
+/// source bytes. This runtime layer neither synthesizes targets nor invents a
+/// feature-content hash.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodsPlsPredictInput {
+    pub data_content_fingerprint: String,
+    pub dataset: MethodsPlsDataset,
+}
+
+/// Native, in-memory data provider for target-free Methods PLS PREDICT.
+///
+/// It is deliberately PREDICT-only: training must use a provider that can
+/// produce the complete target-bound [`TrainingDataIdentity`]. The provider
+/// owns only row-major values already materialized by the upstream IO layer;
+/// it delegates data/view handles and envelope identity checks to the normal
+/// runtime provider rather than bypassing the scheduler.
+#[derive(Debug)]
+pub struct MethodsPlsPredictDataProvider {
+    inner: EnvelopeAttestedRuntimeDataProvider<crate::data::InMemoryDataProvider>,
+    inputs: BTreeMap<String, MethodsPlsPredictInput>,
+}
+
+impl MethodsPlsPredictDataProvider {
+    pub fn new<I>(
+        owner_controller: ControllerId,
+        bindings: I,
+        envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
+        inputs: BTreeMap<String, MethodsPlsPredictInput>,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = DataBinding>,
+    {
+        let bindings = bindings.into_iter().collect::<Vec<_>>();
+        let expected_keys = bindings
+            .iter()
+            .map(|binding| data_binding_requirement_key(&binding.node_id, &binding.input_name))
+            .collect::<BTreeSet<_>>();
+        let input_keys = inputs.keys().cloned().collect::<BTreeSet<_>>();
+        if input_keys.is_empty() || !input_keys.is_subset(&expected_keys) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "portable Methods PLS PREDICT inputs must name registered runtime bindings (unexpected: [{}])",
+                input_keys
+                    .difference(&expected_keys)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )));
+        }
+        for (key, input) in &inputs {
+            input.dataset.validate("predict input", false)?;
+            if input.dataset.y.is_some() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS PREDICT input `{key}` must not carry targets"
+                )));
+            }
+            let envelope = envelopes.get(key).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS PREDICT input `{key}` has no external envelope"
+                ))
+            })?;
+            envelope.validate()?;
+            let expected_fingerprint = envelope.data_content_fingerprint.as_deref().ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS PREDICT envelope `{key}` has no feature content fingerprint"
+                ))
+            })?;
+            if input.data_content_fingerprint != expected_fingerprint {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS PREDICT input `{key}` feature content fingerprint does not match its envelope"
+                )));
+            }
+            if envelope.target_content_fingerprint.is_some() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS PREDICT input `{key}` requires a target-free envelope"
+                )));
+            }
+        }
+
+        let mut raw = crate::data::InMemoryDataProvider::new(owner_controller);
+        for envelope in envelopes.values().cloned() {
+            raw.register_envelope(envelope)?;
+        }
+        let inner = EnvelopeAttestedRuntimeDataProvider::new(raw, bindings, envelopes)?;
+        Ok(Self { inner, inputs })
+    }
+
+    fn input_for(&self, request: &MethodsPlsDataRequest) -> Result<&MethodsPlsPredictInput> {
+        request.validate()?;
+        if request.phase != Phase::Predict || request.identity.is_some() {
+            return Err(DagMlError::RuntimeValidation(
+                "portable Methods PLS target-free provider supports only PREDICT without a training identity"
+                    .to_string(),
+            ));
+        }
+        if request.prediction_view.is_some() {
+            return Err(DagMlError::RuntimeValidation(
+                "portable Methods PLS target-free provider does not support FIT_CV validation views"
+                    .to_string(),
+            ));
+        }
+        let key =
+            data_binding_requirement_key(&request.binding.node_id, &request.binding.input_name);
+        let input = self.inputs.get(&key).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "portable Methods PLS target-free provider has no input for `{key}`"
+            ))
+        })?;
+        if let Some(expected_sample_ids) = &request.fit_view.sample_ids {
+            if input.dataset.sample_ids != *expected_sample_ids {
+                return Err(DagMlError::RuntimeValidation(
+                    "portable Methods PLS target-free input rows do not match the scheduler-selected identity view"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(input)
+    }
+}
+
+impl RuntimeDataProvider for MethodsPlsPredictDataProvider {
+    fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+        self.inner.materialize(request)
+    }
+
+    fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+        self.inner.make_view(request)
+    }
+
+    fn training_data_identity(
+        &self,
+        binding: &DataBinding,
+    ) -> Result<Option<crate::training::TrainingDataIdentity>> {
+        self.inner.training_data_identity(binding)
+    }
+
+    fn coordinator_relations(&self, binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
+        self.inner.coordinator_relations(binding)
+    }
+
+    fn methods_pls_capability(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn preflight_methods_pls(&self, request: &MethodsPlsDataRequest) -> Result<()> {
+        self.input_for(request)?;
+        Ok(())
+    }
+
+    fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> Result<MethodsPlsData> {
+        let input = self.input_for(request)?;
+        Ok(MethodsPlsData {
+            fit: input.dataset.clone(),
+            prediction: None,
+        })
+    }
+}
+
 impl MethodsPlsDataRequest {
     fn prediction_view_sample_ids(&self) -> Result<Vec<SampleId>> {
         self.prediction_view
@@ -1362,5 +1524,83 @@ mod envelope_attested_provider_tests {
         assert!(error
             .to_string()
             .contains("FIT_CV/REFIT requires a target-bound training data identity"));
+    }
+
+    #[test]
+    fn methods_pls_predict_provider_binds_x_only_rows_to_the_envelope() {
+        let mut envelope = complete_envelope();
+        envelope.target_content_fingerprint = None;
+        let binding = binding_for("model:base", "x", &envelope);
+        let key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
+        let input = MethodsPlsPredictInput {
+            data_content_fingerprint: envelope.data_content_fingerprint.clone().unwrap(),
+            dataset: MethodsPlsDataset {
+                sample_ids: vec![SampleId::new("sample:1").unwrap()],
+                x: MethodsPlsMatrix {
+                    values: vec![1.0, 2.0],
+                    rows: 1,
+                    cols: 2,
+                },
+                y: None,
+                target_names: vec!["protein".to_string()],
+            },
+        };
+        let provider = MethodsPlsPredictDataProvider::new(
+            ControllerId::new("controller:data.methods.predict").unwrap(),
+            vec![binding.clone()],
+            envelopes_for(&binding, envelope),
+            BTreeMap::from([(key, input.clone())]),
+        )
+        .unwrap();
+        let request = MethodsPlsDataRequest {
+            node_id: binding.node_id.clone(),
+            phase: Phase::Predict,
+            variant_id: None,
+            fold_id: None,
+            binding,
+            identity: None,
+            fit_view: DataProviderViewSpec {
+                sample_ids: Some(input.dataset.sample_ids.clone()),
+                partition: DataRequestPartition::Predict,
+                fold_id: None,
+                source_ids: None,
+                columns: None,
+                include_augmented: false,
+                include_excluded: false,
+                branch_view: None,
+                extra: BTreeMap::new(),
+            },
+            prediction_view: None,
+        };
+        assert_eq!(
+            provider.methods_pls_data(&request).unwrap().fit,
+            input.dataset
+        );
+
+        let mut wrong_fingerprint = input;
+        wrong_fingerprint.data_content_fingerprint = "f".repeat(64);
+        let error = MethodsPlsPredictDataProvider::new(
+            ControllerId::new("controller:data.methods.predict").unwrap(),
+            vec![request.binding.clone()],
+            envelopes_for(
+                &request.binding,
+                complete_envelope_with_target_free_fingerprint("a".repeat(64)),
+            ),
+            BTreeMap::from([(
+                data_binding_requirement_key(&request.binding.node_id, &request.binding.input_name),
+                wrong_fingerprint,
+            )]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("feature content fingerprint"));
+    }
+
+    fn complete_envelope_with_target_free_fingerprint(
+        data_content_fingerprint: String,
+    ) -> ExternalDataPlanEnvelope {
+        let mut envelope = complete_envelope();
+        envelope.data_content_fingerprint = Some(data_content_fingerprint);
+        envelope.target_content_fingerprint = None;
+        envelope
     }
 }

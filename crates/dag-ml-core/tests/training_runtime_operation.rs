@@ -1048,6 +1048,81 @@ fn provider(fixture: &Fixture) -> AttestedProvider {
     }
 }
 
+#[cfg(feature = "methods-optimizer-local")]
+fn target_free_methods_provider(
+    fixture: &Fixture,
+    source: &TrainingOutcome,
+    envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
+) -> MethodsPlsPredictDataProvider {
+    let source_provider = provider(fixture);
+    let binding = source
+        .effective_plan
+        .node_plans
+        .values()
+        .find(|node| node.controller_id.as_str() == METHODS_PLS_CONTROLLER_ID)
+        .and_then(|node| {
+            node.data_bindings
+                .iter()
+                .find(|binding| binding.input_name == "x")
+        })
+        .expect("Methods PLS source plan has an x data binding")
+        .clone();
+    let key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
+    let data_content_fingerprint = envelopes
+        .get(&key)
+        .and_then(|envelope| envelope.data_content_fingerprint.clone())
+        .expect("target-free replay envelope retains an X content fingerprint");
+    let sample_ids = source_provider
+        .methods_rows
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let values = sample_ids
+        .iter()
+        .flat_map(|sample_id| {
+            source_provider.methods_rows[sample_id][..source_provider.methods_pls_feature_count]
+                .iter()
+                .copied()
+        })
+        .collect::<Vec<_>>();
+    let mut bindings = source
+        .effective_plan
+        .node_plans
+        .values()
+        .flat_map(|node| node.data_bindings.iter().cloned())
+        .collect::<Vec<_>>();
+    for binding in &mut bindings {
+        let binding_key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
+        binding.relation_fingerprint = envelopes
+            .get(&binding_key)
+            .expect("replay envelope exactly covers effective-plan bindings")
+            .relation_fingerprint
+            .clone();
+    }
+    MethodsPlsPredictDataProvider::new(
+        ControllerId::new("controller:data.provider").unwrap(),
+        bindings,
+        envelopes,
+        BTreeMap::from([(
+            key,
+            MethodsPlsPredictInput {
+                data_content_fingerprint,
+                dataset: MethodsPlsDataset {
+                    x: MethodsPlsMatrix {
+                        rows: sample_ids.len(),
+                        cols: source_provider.methods_pls_feature_count,
+                        values,
+                    },
+                    sample_ids,
+                    y: None,
+                    target_names: vec!["protein".to_string()],
+                },
+            },
+        )]),
+    )
+    .expect("target-free Methods provider must bind its exact PREDICT cohort")
+}
+
 fn replay_envelopes_with_relation(
     outcome: &TrainingOutcome,
     relation_fingerprint: &str,
@@ -2296,12 +2371,12 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     // A fresh inference cohort is intentionally target-free. The exact same
     // native N4MM controller must accept it without replacing the absent
     // target identity with a training-time sentinel.
-    let mut target_free_provider = provider(&fixture);
-    target_free_provider.identity = None;
     let mut target_free_envelopes = replay_envelopes_with_relation(&source, &"a".repeat(64));
     for envelope in target_free_envelopes.values_mut() {
         envelope.target_content_fingerprint = None;
     }
+    let target_free_provider =
+        target_free_methods_provider(&fixture, &source, target_free_envelopes.clone());
     let target_free = execute_attached_training_replay(AttachedTrainingReplayInput {
         source: &source,
         request: &request,
