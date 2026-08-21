@@ -78,6 +78,18 @@ the historical target-bound identity; writers emit V3 only when at least one req
 envelope is genuinely target-free. Calibration remains target-bound and therefore emits
 V2 replay evidence.
 
+### Methods PREDICT matrix content profile
+
+For a new target-free Methods PLS cohort, `data_content_fingerprint` uses the
+published `n4a-matrix-f64-le.v1` preimage. It is SHA-256 over the ASCII profile
+name, one NUL byte, the row and column counts as little-endian `u64`, then each
+finite row-major IEEE-754 `f64` bit-pattern in little-endian order. Sample IDs,
+groups and targets are deliberately outside this preimage: they remain bound by
+the signed envelope and relation proofs. Producers must reject non-finite values
+and a profile they cannot reproduce; they must not substitute the historical
+NumPy dtype/string hash. Existing serialized outcomes stay readable because a
+replay identity records a SHA-256 value, not an implicit conversion rule.
+
 D4's cohort guarantee is deliberately narrow and safe: identities emitted in any
 prediction family are unique and belong to the union of current coordinator relations.
 `excluded: true` only excludes a relation record from training; it remains eligible for

@@ -1052,7 +1052,7 @@ fn provider(fixture: &Fixture) -> AttestedProvider {
 fn target_free_methods_provider(
     fixture: &Fixture,
     source: &TrainingOutcome,
-    envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
+    mut envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
 ) -> MethodsPlsPredictDataProvider {
     let source_provider = provider(fixture);
     let binding = source
@@ -1068,10 +1068,6 @@ fn target_free_methods_provider(
         .expect("Methods PLS source plan has an x data binding")
         .clone();
     let key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
-    let data_content_fingerprint = envelopes
-        .get(&key)
-        .and_then(|envelope| envelope.data_content_fingerprint.clone())
-        .expect("target-free replay envelope retains an X content fingerprint");
     let sample_ids = source_provider
         .methods_rows
         .keys()
@@ -1099,6 +1095,22 @@ fn target_free_methods_provider(
             .relation_fingerprint
             .clone();
     }
+    let dataset = MethodsPlsDataset {
+        x: MethodsPlsMatrix {
+            rows: sample_ids.len(),
+            cols: source_provider.methods_pls_feature_count,
+            values,
+        },
+        sample_ids,
+        y: None,
+        target_names: vec!["protein".to_string()],
+    };
+    let data_content_fingerprint = methods_pls_predict_feature_content_fingerprint(&dataset.x)
+        .expect("target-free Methods PLS rows have a canonical content fingerprint");
+    envelopes
+        .get_mut(&key)
+        .expect("target-free replay envelope covers the Methods x binding")
+        .data_content_fingerprint = Some(data_content_fingerprint.clone());
     MethodsPlsPredictDataProvider::new(
         ControllerId::new("controller:data.provider").unwrap(),
         bindings,
@@ -1106,17 +1118,9 @@ fn target_free_methods_provider(
         BTreeMap::from([(
             key,
             MethodsPlsPredictInput {
+                data_content_profile: METHODS_PLS_PREDICT_CONTENT_PROFILE.to_string(),
                 data_content_fingerprint,
-                dataset: MethodsPlsDataset {
-                    x: MethodsPlsMatrix {
-                        rows: sample_ids.len(),
-                        cols: source_provider.methods_pls_feature_count,
-                        values,
-                    },
-                    sample_ids,
-                    y: None,
-                    target_names: vec!["protein".to_string()],
-                },
+                dataset,
             },
         )]),
     )

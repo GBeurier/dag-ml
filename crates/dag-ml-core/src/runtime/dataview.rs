@@ -537,8 +537,45 @@ impl MethodsPlsData {
 /// the production IO provider remains the authority that derives it from its
 /// source bytes. This runtime layer neither synthesizes targets nor invents a
 /// feature-content hash.
+pub const METHODS_PLS_PREDICT_CONTENT_PROFILE: &str = "n4a-matrix-f64-le.v1";
+
+/// Compute the published X-only content identity for a Methods PLS cohort.
+///
+/// The preimage is the ASCII profile plus NUL, two little-endian `u64`
+/// dimensions and each finite IEEE-754 `f64` bit-pattern in row-major order.
+/// It deliberately does not include sample identities or targets: those have
+/// their own signed envelope/relation proofs.
+pub fn methods_pls_predict_feature_content_fingerprint(
+    matrix: &MethodsPlsMatrix,
+) -> Result<String> {
+    matrix.validate("PREDICT feature fingerprint")?;
+    let rows = u64::try_from(matrix.rows).map_err(|_| {
+        DagMlError::RuntimeValidation(
+            "portable Methods PLS PREDICT matrix row count does not fit the content identity profile"
+                .to_string(),
+        )
+    })?;
+    let cols = u64::try_from(matrix.cols).map_err(|_| {
+        DagMlError::RuntimeValidation(
+            "portable Methods PLS PREDICT matrix column count does not fit the content identity profile"
+                .to_string(),
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(METHODS_PLS_PREDICT_CONTENT_PROFILE.as_bytes());
+    hasher.update([0]);
+    hasher.update(rows.to_le_bytes());
+    hasher.update(cols.to_le_bytes());
+    for value in &matrix.values {
+        hasher.update(value.to_bits().to_le_bytes());
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct MethodsPlsPredictInput {
+    /// Must be [`METHODS_PLS_PREDICT_CONTENT_PROFILE`].
+    pub data_content_profile: String,
     pub data_content_fingerprint: String,
     pub dataset: MethodsPlsDataset,
 }
@@ -584,6 +621,19 @@ impl MethodsPlsPredictDataProvider {
         }
         for (key, input) in &inputs {
             input.dataset.validate("predict input", false)?;
+            if input.data_content_profile != METHODS_PLS_PREDICT_CONTENT_PROFILE {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS PREDICT input `{key}` has unsupported feature content profile `{}`",
+                    input.data_content_profile,
+                )));
+            }
+            let actual_fingerprint =
+                methods_pls_predict_feature_content_fingerprint(&input.dataset.x)?;
+            if input.data_content_fingerprint != actual_fingerprint {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS PREDICT input `{key}` feature content fingerprint does not match its row-major f64 values"
+                )));
+            }
             if input.dataset.y.is_some() {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "portable Methods PLS PREDICT input `{key}` must not carry targets"
@@ -1533,7 +1583,15 @@ mod envelope_attested_provider_tests {
         let binding = binding_for("model:base", "x", &envelope);
         let key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
         let input = MethodsPlsPredictInput {
-            data_content_fingerprint: envelope.data_content_fingerprint.clone().unwrap(),
+            data_content_profile: METHODS_PLS_PREDICT_CONTENT_PROFILE.to_string(),
+            data_content_fingerprint: methods_pls_predict_feature_content_fingerprint(
+                &MethodsPlsMatrix {
+                    values: vec![1.0, 2.0],
+                    rows: 1,
+                    cols: 2,
+                },
+            )
+            .unwrap(),
             dataset: MethodsPlsDataset {
                 sample_ids: vec![SampleId::new("sample:1").unwrap()],
                 x: MethodsPlsMatrix {
@@ -1548,7 +1606,12 @@ mod envelope_attested_provider_tests {
         let provider = MethodsPlsPredictDataProvider::new(
             ControllerId::new("controller:data.methods.predict").unwrap(),
             vec![binding.clone()],
-            envelopes_for(&binding, envelope),
+            envelopes_for(
+                &binding,
+                complete_envelope_with_target_free_fingerprint(
+                    input.data_content_fingerprint.clone(),
+                ),
+            ),
             BTreeMap::from([(key, input.clone())]),
         )
         .unwrap();
@@ -1584,7 +1647,10 @@ mod envelope_attested_provider_tests {
             vec![request.binding.clone()],
             envelopes_for(
                 &request.binding,
-                complete_envelope_with_target_free_fingerprint("a".repeat(64)),
+                complete_envelope_with_target_free_fingerprint(
+                    methods_pls_predict_feature_content_fingerprint(&wrong_fingerprint.dataset.x)
+                        .unwrap(),
+                ),
             ),
             BTreeMap::from([(
                 data_binding_requirement_key(&request.binding.node_id, &request.binding.input_name),
@@ -1593,6 +1659,21 @@ mod envelope_attested_provider_tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("feature content fingerprint"));
+    }
+
+    #[test]
+    fn methods_pls_predict_content_profile_matches_the_python_reference_vector() {
+        let fingerprint = methods_pls_predict_feature_content_fingerprint(&MethodsPlsMatrix {
+            values: vec![1.0, 2.0, 3.0, 4.0],
+            rows: 2,
+            cols: 2,
+        })
+        .unwrap();
+        assert_eq!(METHODS_PLS_PREDICT_CONTENT_PROFILE, "n4a-matrix-f64-le.v1");
+        assert_eq!(
+            fingerprint,
+            "ca93722602866b81462d63044d1857ea9acb31ee9532e1a891dcb69a2fd41981"
+        );
     }
 
     fn complete_envelope_with_target_free_fingerprint(
