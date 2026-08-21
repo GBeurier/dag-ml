@@ -511,7 +511,7 @@
     },
     {
       "path": "docs/index.md",
-      "sha256": "a720e94be335d122b0ce197b1359ad26af8c991806482b0a474371176f0bcd35",
+      "sha256": "7917ab8da98db29c1321083ae9ee2fbae345eb9f398b1441f84f050ca5077aca",
       "kind": "documentation_index"
     },
     {
@@ -826,5 +826,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "35755b4ea3e2cb98c0b8eb93e8fcb5a061a6668d59ce5a4d0b1e2891b0ce426e"
+  "pack_checksum": "acb72cbdc22f6a8edd6f17afd214fd0d42a11f8c9589c9343b1e6a107d14a299"
 }
