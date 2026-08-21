@@ -110,7 +110,7 @@
     },
     "conformal_calibration_replay": {
       "anyOf": [
-        { "$ref": "https://github.com/GBeurier/dag-ml/schemas/training_replay_outcome.v2.schema.json" },
+        { "$ref": "https://github.com/GBeurier/dag-ml/schemas/training_replay_outcome.v3.schema.json" },
         { "type": "null" }
       ],
       "default": null,
