@@ -11,6 +11,7 @@ use pyo3::types::{PyAny, PyType};
 use serde::de::DeserializeOwned;
 
 mod in_process;
+mod local_implementation;
 mod training;
 
 use dag_ml_core::{
@@ -450,6 +451,15 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         in_process::run_cv_refit_in_process,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(
+        in_process::run_cv_refit_in_process_with_training_losses,
+        module
+    )?)?;
+    module.add_class::<local_implementation::PyLocalImplementationRegistry>()?;
+    module.add_function(wrap_pyfunction!(
+        local_implementation::loss_execution_attestation_json,
+        module
+    )?)?;
     module.add_class::<training::TrainingResult>()?;
     module.add_function(wrap_pyfunction!(training::execute_training_json, module)?)?;
     module.add_function(wrap_pyfunction!(
@@ -539,6 +549,7 @@ fn contract_manifest() -> serde_json::Value {
             "canonical_operator_variant_label",
             "canonical_operator_variant_value_json",
             "run_cv_refit_in_process",
+            "run_cv_refit_in_process_with_training_losses",
             "TrainingResult",
             "execute_training_json",
             "execute_loaded_predictor_replay_json"
