@@ -5,11 +5,13 @@
 //! prediction flows that every binding must preserve.
 
 pub mod aggregation;
+pub mod archive_workspace;
 pub mod bundle;
 pub mod campaign;
 pub mod canonical;
 pub mod chain_effect;
 pub mod conformal;
+pub mod conformal_runtime;
 pub mod controller;
 pub mod controller_adapter;
 pub mod controller_registry;
@@ -19,6 +21,7 @@ pub mod error;
 pub mod fold;
 pub mod generation;
 pub mod graph;
+pub mod hpo;
 pub mod ids;
 pub mod metrics;
 pub mod observability;
@@ -36,11 +39,13 @@ pub mod training;
 pub mod training_runtime;
 
 pub use aggregation::*;
+pub use archive_workspace::*;
 pub use bundle::*;
 pub use campaign::*;
 pub use canonical::*;
 pub use chain_effect::*;
 pub use conformal::*;
+pub use conformal_runtime::*;
 pub use controller::*;
 pub use controller_adapter::*;
 pub use controller_registry::*;
@@ -50,6 +55,7 @@ pub use error::{DagMlError, DagMlErrorDescriptor, Result};
 pub use fold::*;
 pub use generation::*;
 pub use graph::*;
+pub use hpo::*;
 pub use ids::*;
 pub use metrics::*;
 pub use observability::*;

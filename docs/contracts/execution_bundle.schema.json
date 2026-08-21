@@ -101,6 +101,17 @@
       },
       "default": []
     },
+    "methods_hpo_resume_state": {
+      "anyOf": [{ "$ref": "#/$defs/methods_hpo_resume_state" }, { "type": "null" }],
+      "default": null
+    },
+    "raw_artifact_payloads": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+      },
+      "default": {}
+    },
     "unsafe_flags": {
       "type": "array",
       "uniqueItems": true,
@@ -126,9 +137,86 @@
       "type": "string",
       "minLength": 1
     },
+    "n4mopt_checkpoint": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "artifact_kind", "format", "binding", "methods_abi", "opaque_payload", "payload_sha256"],
+      "properties": {
+        "schema_version": { "type": "integer", "const": 1 }, "artifact_kind": { "const": "n4m_optimizer_checkpoint" }, "format": { "const": "N4MOPT" },
+        "binding": { "$ref": "#/$defs/hpo_binding" }, "methods_abi": { "$ref": "#/$defs/non_empty_string" },
+        "opaque_payload": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0, "maximum": 255 } }, "payload_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "methods_hpo_resume_state": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "checkpoint", "provenance", "operation_id", "controller_id", "target_node_id", "incumbent", "trial_history_len", "terminal_trials", "completed_proposals", "completed_reports", "candidates"],
+      "properties": {
+        "schema_version": { "type": "integer", "const": 1 }, "checkpoint": { "$ref": "#/$defs/n4mopt_checkpoint" }, "provenance": { "$ref": "#/$defs/methods_hpo_resume_provenance" },
+        "operation_id": { "$ref": "#/$defs/non_empty_string" }, "controller_id": { "$ref": "#/$defs/identifier" }, "target_node_id": { "$ref": "#/$defs/identifier" }, "incumbent": { "$ref": "#/$defs/methods_hpo_native_incumbent" }, "trial_history_len": { "type": "integer", "minimum": 1 }, "terminal_trials": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/methods_hpo_terminal_evidence" } },
+        "completed_proposals": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/methods_hpo_completed_proposal" } }, "completed_reports": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/methods_hpo_completed_report" } }, "candidates": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/methods_hpo_candidate_evidence" } }
+      }
+    },
+    "methods_hpo_native_incumbent": {
+      "type": "object", "additionalProperties": false, "required": ["trial_id", "score", "metric", "direction", "variant_id"],
+      "properties": { "trial_id": { "type": "integer" }, "score": { "type": "number" }, "metric": { "$ref": "#/$defs/non_empty_string" }, "direction": { "enum": ["auto", "minimize", "maximize"] }, "variant_id": { "$ref": "#/$defs/identifier" } }
+    },
+    "methods_hpo_terminal_evidence": {
+      "type": "object", "additionalProperties": false, "required": ["trial", "variant_id"],
+      "properties": { "trial": { "$ref": "#/$defs/methods_hpo_terminal_trial" }, "variant_id": { "anyOf": [{ "$ref": "#/$defs/identifier" }, { "type": "null" }] } }
+    },
+    "methods_hpo_terminal_trial": {
+      "allOf": [
+        { "$ref": "#/$defs/methods_hpo_trial" },
+        { "properties": { "status": { "enum": ["completed", "pruned", "failed"] } } }
+      ]
+    },
+    "methods_hpo_trial": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "ask_sequence", "terminal_sequence", "parameters", "parameter_order", "status", "score", "rung", "duration", "intermediates", "failure"],
+      "properties": {
+        "id": { "type": "integer" }, "ask_sequence": { "type": "integer" }, "terminal_sequence": { "anyOf": [{ "type": "integer" }, { "type": "null" }] }, "parameters": { "type": "object", "additionalProperties": { "$ref": "#/$defs/methods_hpo_trial_parameter" } }, "parameter_order": { "type": "array", "items": { "$ref": "#/$defs/non_empty_string" } }, "status": { "enum": ["running", "completed", "pruned", "failed", "cancelled"] }, "score": { "anyOf": [{ "type": "number" }, { "type": "null" }] }, "rung": { "type": "integer" }, "duration": { "type": "number" }, "intermediates": { "type": "array", "items": { "$ref": "#/$defs/methods_hpo_intermediate" } }, "failure": { "anyOf": [{ "$ref": "#/$defs/methods_hpo_failure" }, { "type": "null" }] }
+      }
+    },
+    "methods_hpo_trial_parameter": {
+      "type": "object", "additionalProperties": false, "required": ["name", "value", "native_kind", "category_type", "integer", "active", "category_index", "category_label"],
+      "properties": { "name": { "$ref": "#/$defs/non_empty_string" }, "value": { "type": "number" }, "native_kind": { "anyOf": [{ "enum": ["int", "float", "log_int", "log_float", "categorical", "ordinal", "sorted_tuple"] }, { "type": "null" }] }, "category_type": { "anyOf": [{ "enum": ["string", "integer", "float", "boolean"] }, { "type": "null" }] }, "integer": { "type": "boolean" }, "active": { "type": "boolean" }, "category_index": { "anyOf": [{ "type": "integer" }, { "type": "null" }] }, "category_label": { "anyOf": [{ "type": "string" }, { "type": "null" }] } }
+    },
+    "methods_hpo_intermediate": {
+      "type": "object", "additionalProperties": false, "required": ["sequence", "step", "score", "should_prune"],
+      "properties": { "sequence": { "type": "integer" }, "step": { "type": "integer" }, "score": { "type": "number" }, "should_prune": { "type": "boolean" } }
+    },
+    "methods_hpo_failure": {
+      "type": "object", "additionalProperties": false, "required": ["code", "message", "retryable"],
+      "properties": { "code": { "$ref": "#/$defs/non_empty_string" }, "message": { "$ref": "#/$defs/non_empty_string" }, "retryable": { "type": "boolean" } }
+    },
+    "hpo_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["controller_id", "study_id", "search_space_fingerprint", "optimizer_fingerprint"],
+      "properties": {
+        "controller_id": { "$ref": "#/$defs/non_empty_string" }, "study_id": { "$ref": "#/$defs/non_empty_string" },
+        "search_space_fingerprint": { "$ref": "#/$defs/sha256" }, "optimizer_fingerprint": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "methods_hpo_resume_provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["graph_fingerprint", "campaign_fingerprint", "controller_fingerprint", "data_identities_fingerprint", "fold_set_fingerprint", "training_influence_fingerprint", "relation_fingerprint", "selection"],
+      "properties": {
+        "graph_fingerprint": { "$ref": "#/$defs/sha256" }, "campaign_fingerprint": { "$ref": "#/$defs/sha256" }, "controller_fingerprint": { "$ref": "#/$defs/sha256" }, "data_identities_fingerprint": { "$ref": "#/$defs/sha256" }, "fold_set_fingerprint": { "$ref": "#/$defs/sha256" }, "training_influence_fingerprint": { "$ref": "#/$defs/sha256" }, "relation_fingerprint": { "$ref": "#/$defs/sha256" }, "selection": { "$ref": "#/$defs/methods_hpo_resume_selection" }
+      }
+    },
+    "methods_hpo_resume_selection": {
+      "type": "object", "additionalProperties": false, "required": ["selection_id", "target_node_id", "producer_port", "metric"],
+      "properties": { "selection_id": { "$ref": "#/$defs/identifier" }, "target_node_id": { "$ref": "#/$defs/identifier" }, "producer_port": { "$ref": "#/$defs/non_empty_string" }, "metric": { "$ref": "#/$defs/non_empty_string" } }
+    },
+    "methods_hpo_completed_proposal": { "type": "object", "additionalProperties": false, "required": ["trial_id", "variant"], "properties": { "trial_id": { "type": "integer" }, "variant": { "$ref": "https://github.com/GBeurier/dag-ml/schemas/execution_plan.v1.schema.json#/$defs/variant_plan" } } },
+    "methods_hpo_completed_report": { "type": "object", "additionalProperties": false, "required": ["trial_id", "variant_id", "terminal_state", "score", "report"], "properties": { "trial_id": { "type": "integer" }, "variant_id": { "$ref": "#/$defs/identifier" }, "terminal_state": { "const": "completed" }, "score": { "type": "number" }, "report": { "$ref": "https://github.com/GBeurier/dag-ml/schemas/score_set.v1.schema.json#/$defs/regression_metric_report" } } },
+    "methods_hpo_oof_average": { "type": "object", "additionalProperties": false, "required": ["predictions", "y_true"], "properties": { "predictions": { "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/aggregated_prediction_block" }, "y_true": { "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/regression_target_block" } } },
+    "methods_hpo_candidate_evidence": {
+      "type": "object", "additionalProperties": false, "required": ["trial_id", "variant_id", "predictions", "regression_targets", "oof_average", "lineage"],
+      "properties": { "trial_id": { "type": "integer" }, "variant_id": { "$ref": "#/$defs/identifier" }, "variant_label": { "type": ["string", "null"] }, "predictions": { "type": "array", "minItems": 1, "items": { "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/prediction_block" } }, "regression_targets": { "type": "array", "minItems": 1, "items": { "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/regression_target_block" } }, "oof_average": { "$ref": "#/$defs/methods_hpo_oof_average" }, "lineage": { "type": "array", "minItems": 1, "items": { "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/lineage_record" } } }
+    },
     "sha256": {
       "type": "string",
-      "pattern": "^[0-9A-Fa-f]{64}$"
+      "pattern": "^[0-9a-f]{64}$"
     },
     "prediction_partition": {
       "enum": ["train", "validation", "test", "final"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -50,16 +51,87 @@ def _sha256(path: Path) -> str:
 def test_base_pack_remains_byte_current() -> None:
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "58ff492b09b2a33e45646e6568c5f8e6c56115b34914f5eebbd51c4e29938434"
+        "ff6528da4e2cb97307ead347d42facfe35de6c7e377932d55300f9eaedba33d1"
     )
     assert pack["pack_checksum"] == (
-        "9caeeaba05b7312ab77f9b192f58a848d9ae0f716f81a03c455d451875897fbb"
+        "3e4832d9849d4a395b1f4c3a032b42e4bb299332e378bc2a70216b6a93e36d7d"
     )
-    assert len(pack["artifacts"]) == 82
+    assert len(pack["artifacts"]) == 92
     assert all(
         _sha256(ROOT / artifact["path"]) == artifact["sha256"]
         for artifact in pack["artifacts"]
     )
+
+
+def test_temp_base_pack_byte_mutation_is_rejected_by_both_validators(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both W1 consumers must fail closed on a byte-level base-pack change."""
+    raw = bytearray(BASE_PACK.read_bytes())
+    checksum_prefix = b'"pack_checksum": "'
+    checksum_index = raw.index(checksum_prefix) + len(checksum_prefix)
+    raw[checksum_index] = ord("0") if raw[checksum_index] != ord("0") else ord("1")
+    mutated_pack = tmp_path / BASE_PACK.name
+    mutated_pack.write_bytes(raw)
+
+    monkeypatch.setattr(base, "W10_TRAINING_PACK_REL", mutated_pack)
+    with pytest.raises(base.ContractError, match="pack checksum mismatch"):
+        base.validate_w10_training_pack(
+            load_json(mutated_pack),
+            load_json(TRAINING_FIXTURES / "negative_cases.v1.json"),
+        )
+
+    monkeypatch.setattr(production, "BASE_PACK_PATH", mutated_pack)
+    with pytest.raises(
+        production.ContractError, match="pinned D1-D3 base pack authority drifted"
+    ):
+        production.validate_pack()
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "crates/dag-ml-core/src/conformal.rs",
+        "crates/dag-ml-core/src/conformal_runtime.rs",
+    ),
+)
+def test_conformal_runtime_source_mutation_is_rejected_by_both_validators(
+    relative_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The base and replay authorities both close over native conformal code."""
+    base_pack = load_json(BASE_PACK)
+    assert relative_path in {
+        artifact["path"] for artifact in base_pack["artifacts"]
+    }
+
+    isolated_root = tmp_path / "base-root"
+    for artifact in base_pack["artifacts"]:
+        source = ROOT / artifact["path"]
+        destination = isolated_root / artifact["path"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    mutated_source = isolated_root / relative_path
+    mutated_source.write_bytes(mutated_source.read_bytes() + b"\n// mutation probe\n")
+
+    negatives = load_json(TRAINING_FIXTURES / "negative_cases.v1.json")
+    monkeypatch.setattr(base, "ROOT", isolated_root)
+    with pytest.raises(base.ContractError, match="sha256 does not match file bytes"):
+        base.validate_w10_training_pack(base_pack, negatives)
+    monkeypatch.setattr(base, "ROOT", ROOT)
+
+    original_confined = production._confined_artifact_path
+
+    def confined_with_mutation(candidate: str) -> Path:
+        if candidate == relative_path:
+            return mutated_source
+        return original_confined(candidate)
+
+    monkeypatch.setattr(production, "_confined_artifact_path", confined_with_mutation)
+    with pytest.raises(
+        production.ContractError,
+        match=f"base artifact stale: {relative_path}",
+    ):
+        production.validate_pack()
 
 
 def test_legacy_replay_and_protocol_authorities_remain_byte_current() -> None:
@@ -623,9 +695,17 @@ def _normalize_v2_schema_delta(value: Any) -> Any:
             return "dag-ml-json-prediction-blocks-vN"
         return value
     normalized: dict[str, Any] = {}
-    v2_only_fields = {"schema_version", "producer_port", "cache_namespace_fingerprints"}
+    v2_only_fields = {
+        "schema_version",
+        "producer_port",
+        "cache_namespace_fingerprints",
+        "conformal_calibration",
+        "conformal_calibration_replay",
+    }
     for key, member in value.items():
         if key in {"$schema", "$id", "$defs", "title", "description"}:
+            continue
+        if key == "dependentRequired":
             continue
         if key == "properties":
             normalized[key] = {

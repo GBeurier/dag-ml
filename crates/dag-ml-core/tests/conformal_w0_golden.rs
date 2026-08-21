@@ -7,7 +7,7 @@ use dag_ml_core::{
 use serde_json::Value;
 
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("fixtures/conformal_w0_golden.v1.json"))
+    serde_json::from_str(include_str!("fixtures/conformal_w0_golden.json"))
         .expect("frozen conformal golden must be valid JSON")
 }
 

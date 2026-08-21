@@ -1256,7 +1256,7 @@ mod tests {
     #[test]
     fn uc6_fixture_joins_successfully() {
         let fixture = load_fixture(include_str!(
-            "../../../examples/fixtures/oof_campaign/uc6_oof_success_predictions.json"
+            "../tests/fixtures/package/oof/uc6_oof_success_predictions.json"
         ));
 
         let joined = validate_oof_campaign(&fixture).unwrap();
@@ -1273,7 +1273,7 @@ mod tests {
     #[test]
     fn uc11_fixture_refuses_train_predictions() {
         let fixture = load_fixture(include_str!(
-            "../../../examples/fixtures/oof_campaign/uc11_train_prediction_refusal.json"
+            "../tests/fixtures/package/oof/uc11_train_prediction_refusal.json"
         ));
 
         let err = validate_oof_campaign(&fixture).unwrap_err();
@@ -1292,7 +1292,7 @@ mod tests {
     #[test]
     fn fold_validation_rejects_wrong_validation_partition_samples() {
         let mut fixture = load_fixture(include_str!(
-            "../../../examples/fixtures/oof_campaign/uc6_oof_success_predictions.json"
+            "../tests/fixtures/package/oof/uc6_oof_success_predictions.json"
         ));
         fixture.prediction_blocks[0].sample_ids = vec![sid("S001"), sid("S002")];
 

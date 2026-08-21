@@ -759,6 +759,7 @@ mod tests {
     /// and produce byte-identical fingerprints (`generation_spec_fingerprint` /
     /// `stable_json_fingerprint`) as before the struct change. The fingerprints are pinned to the
     /// values produced before the fields existed, proving pure additivity / zero behavior change.
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn additive_variant_fields_are_invisible_when_absent() {
         // `examples/campaign_oof_generation.json` — a CampaignSpec whose `generation` block is a

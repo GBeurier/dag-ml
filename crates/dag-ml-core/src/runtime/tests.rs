@@ -2374,14 +2374,16 @@ fn oof_edge_manifests(phases: BTreeSet<Phase>) -> crate::controller::ControllerR
 }
 
 fn fixture_plan(plan_id: &str) -> ExecutionPlan {
-    let graph: GraphSpec =
-        serde_json::from_str(include_str!("../../../../examples/minimal_graph.json")).unwrap();
+    let graph: GraphSpec = serde_json::from_str(include_str!(
+        "../../tests/fixtures/package/minimal_graph.json"
+    ))
+    .unwrap();
     let campaign: CampaignSpec = serde_json::from_str(include_str!(
-        "../../../../examples/campaign_oof_generation.json"
+        "../../tests/fixtures/package/campaign_oof_generation.json"
     ))
     .unwrap();
     let manifests: Vec<ControllerManifest> = serde_json::from_str(include_str!(
-        "../../../../examples/controller_manifests.json"
+        "../../tests/fixtures/package/controller_manifests.json"
     ))
     .unwrap();
     let mut registry = ControllerRegistry::new();
@@ -2435,7 +2437,7 @@ fn replay_envelopes() -> BTreeMap<String, ExternalDataPlanEnvelope> {
     BTreeMap::from([(
         "model:base.x".to_string(),
         serde_json::from_str(include_str!(
-            "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap(),
     )])
@@ -3353,7 +3355,7 @@ fn d9_golden_oof_refit_and_predict_replay_mock_run() {
     }
 
     let fixture: D9GoldenFixture = serde_json::from_str(include_str!(
-        "../../../../examples/fixtures/runtime/d9_golden_multisource_scenarios.json"
+        "../../tests/fixtures/package/data/d9_golden_multisource_scenarios.json"
     ))
     .unwrap();
     assert_eq!(fixture.golden_scenarios.len(), 7);
@@ -3461,7 +3463,7 @@ fn requires_oof_prediction_edge_feeds_live_group_units_to_fit_cv_and_refit() {
         }))
         .unwrap();
     let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-        "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
     ))
     .unwrap();
     let data_provider = InMemoryDataProvider::with_envelope(
@@ -3534,7 +3536,7 @@ fn aggregated_oof_edge_rejects_relation_level_train_validation_overlap() {
         }))
         .unwrap();
     let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-        "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
     ))
     .unwrap();
     for record in &mut envelope
@@ -3748,7 +3750,7 @@ fn scheduler_aggregates_observation_predictions_with_custom_controller() {
         }))
         .unwrap();
     let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-        "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
     ))
     .unwrap();
     let data_provider = InMemoryDataProvider::with_envelope(
@@ -5087,7 +5089,7 @@ fn data_bindings_require_runtime_provider_and_materialize_handles() {
         .is_err());
 
     let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-        "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
     ))
     .unwrap();
     let provider = InMemoryDataProvider::with_envelope(
@@ -5144,7 +5146,7 @@ fn campaign_data_bindings_create_fold_train_views() {
     )
     .unwrap();
     let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-        "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
     ))
     .unwrap();
     let provider = InMemoryDataProvider::with_envelope(
@@ -5294,7 +5296,7 @@ fn data_edges_propagate_fold_views_from_data_producing_nodes() {
     )
     .unwrap();
     let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-        "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
     ))
     .unwrap();
     let provider = InMemoryDataProvider::with_envelope(
@@ -5651,6 +5653,7 @@ fn scheduler_extracts_branch_view_from_node_metadata() {
     assert_eq!(missing_resolved, None);
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn published_data_output_provenance_schema_declares_current_version() {
     let schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -5683,6 +5686,7 @@ fn published_data_output_provenance_schema_declares_current_version() {
     assert!(defs.contains_key("representation_combo_selection_record"));
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn published_node_task_and_result_schemas_declare_current_contracts() {
     let task_schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -5732,6 +5736,7 @@ fn published_node_task_and_result_schemas_declare_current_contracts() {
     }
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn published_node_task_result_fixtures_validate_current_contract() {
     let task: NodeTask = serde_json::from_str(include_str!(
@@ -5751,6 +5756,7 @@ fn published_node_task_result_fixtures_validate_current_contract() {
     assert_eq!(result.outputs.len(), 1);
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn node_result_deserialization_rejects_unknown_contract_fields_but_keeps_opaque_maps() {
     let mut document: serde_json::Value = serde_json::from_str(include_str!(
@@ -5922,7 +5928,7 @@ fn campaign_data_bindings_require_unsafe_flags_for_full_train_cv_views() {
     .is_err());
 
     let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-        "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
     ))
     .unwrap();
     let provider = InMemoryDataProvider::with_envelope(
@@ -7138,7 +7144,7 @@ fn coordinator_relations_required_but_unresolved_is_refused() {
 
     // Valid: a provider carrying the binding's relations resolves them.
     let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-        "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+        "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
     ))
     .unwrap();
     let provider = InMemoryDataProvider::with_envelope(

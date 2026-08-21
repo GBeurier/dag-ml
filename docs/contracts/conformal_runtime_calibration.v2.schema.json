@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/conformal_runtime_calibration.v2.schema.json",
+  "title": "DAG-ML runtime ConformalCalibration v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "binding_id", "target_names", "sample_ids", "coverages", "multi_target_policy", "small_sample_policy", "quantiles", "context", "calibration_fingerprint"],
+  "properties": {
+    "schema_version": {"const": 2}, "binding_id": {"$ref": "#/$defs/id"},
+    "target_names": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "sample_ids": {"$ref": "#/$defs/ids"},
+    "coverages": {"type": "array", "minItems": 1, "items": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}},
+    "multi_target_policy": {"enum": ["marginal", "joint_max"]},
+    "small_sample_policy": {"enum": ["error", "unbounded"]},
+    "quantiles": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/quantile"}},
+    "context": {"$ref": "#/$defs/context"}, "calibration_fingerprint": {"$ref": "#/$defs/sha"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_.:-]+$"},
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "optional_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "radius": {"oneOf": [{"type": "object", "additionalProperties": false, "required": ["status", "value"], "properties": {"status": {"const": "finite"}, "value": {"type": "number", "minimum": 0}}}, {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"const": "unbounded"}}}]},
+    "quantile": {"type": "object", "additionalProperties": false, "required": ["coverage", "rank", "radii"], "properties": {"coverage": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}, "rank": {"type": "integer", "minimum": 1}, "radii": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/radius"}}}},
+    "cohort": {"type": "object", "additionalProperties": false, "required": ["role", "physical_sample_ids", "origin_sample_ids", "target_names", "manifest_fingerprint"], "properties": {"role": {"const": "calibration"}, "physical_sample_ids": {"$ref": "#/$defs/ids"}, "origin_sample_ids": {"$ref": "#/$defs/optional_ids"}, "target_names": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}, "manifest_fingerprint": {"$ref": "#/$defs/sha"}}},
+    "context": {"type": "object", "additionalProperties": false, "required": ["predictor_binding_fingerprint", "source_training_outcome_fingerprint", "calibration_replay_outcome_fingerprint", "data_identities_fingerprint", "fold_set_fingerprint", "training_influence_fingerprint", "relation_fingerprint", "calibration_cohort", "context_fingerprint"], "properties": {"predictor_binding_fingerprint": {"$ref": "#/$defs/sha"}, "source_training_outcome_fingerprint": {"$ref": "#/$defs/sha"}, "calibration_replay_outcome_fingerprint": {"$ref": "#/$defs/sha"}, "data_identities_fingerprint": {"$ref": "#/$defs/sha"}, "fold_set_fingerprint": {"$ref": "#/$defs/sha"}, "training_influence_fingerprint": {"$ref": "#/$defs/sha"}, "relation_fingerprint": {"$ref": "#/$defs/sha"}, "calibration_cohort": {"$ref": "#/$defs/cohort"}, "context_fingerprint": {"$ref": "#/$defs/sha"}}}
+  }
+}

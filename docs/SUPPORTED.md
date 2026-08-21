@@ -23,7 +23,8 @@ not change any public ABI, JSON schema, Rust, Python or WASM signature.
 | Deterministic selection and replay bundle validation | Supported | Plan/controller/data/artifact fingerprints and selection metric levels are validated. |
 | Research provenance export | Supported | RO-Crate, PROV and OpenLineage exports are generated from validated internal contracts. |
 | C ABI JSON contract helpers | Supported | Header snapshot, C conformance and non-mock replay paths are gated. |
-| Runtime process adapter protocol | Supported | JSONL frames, describe handshake, timeouts, retries and worker pools are covered by CLI tests. |
+| Runtime process adapter protocol | Supported | JSONL frames, describe handshake, timeouts, retries and worker pools are covered by CLI tests. It is not an HPO protocol: process controllers cannot attest native optimizer state, trial history, checkpoints or terminalization and therefore refuse tuner-session creation. |
+| Native Methods HPO session (R1) | Experimental | Only the native Methods controller may create a `RuntimeHpoExecutionContext`-bound HPO session. Plugin/process controllers, including Optuna adapters, are not release-promised for HPO. |
 | Python and WASM JSON-contract bindings | Supported | Wheel/package metadata and smoke tests are CI-gated; object-native Python DSL frontend is not included. |
 | Pipeline DSL JSON compiler | Supported | Canonical JSON plus nirs4all-compatible serialized JSON descriptors are covered. |
 | Direct Python/YAML object DSL frontend | Backlog | Host object resolution remains binding-owned. |

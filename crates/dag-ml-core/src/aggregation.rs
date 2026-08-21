@@ -1657,17 +1657,20 @@ mod tests {
             );
         }
 
-        let schema: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../docs/contracts/aggregation_controller_result.schema.json"
-        ))
-        .unwrap();
-        assert_eq!(schema["additionalProperties"].as_bool(), Some(false));
-        for definition in ["sample_output", "unit_output"] {
-            assert_eq!(
-                schema["$defs"][definition]["additionalProperties"].as_bool(),
-                Some(false),
-                "aggregation schema definition `{definition}` must be closed"
-            );
+        #[cfg(dag_ml_workspace_contract_fixtures)]
+        {
+            let schema: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../docs/contracts/aggregation_controller_result.schema.json"
+            ))
+            .unwrap();
+            assert_eq!(schema["additionalProperties"].as_bool(), Some(false));
+            for definition in ["sample_output", "unit_output"] {
+                assert_eq!(
+                    schema["$defs"][definition]["additionalProperties"].as_bool(),
+                    Some(false),
+                    "aggregation schema definition `{definition}` must be closed"
+                );
+            }
         }
     }
 

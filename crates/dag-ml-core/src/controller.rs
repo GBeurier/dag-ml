@@ -957,6 +957,7 @@ mod tests {
         assert!(manifest.supports_parallel_invocation());
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_controller_manifest_schema_declares_current_contract() {
         let schema: serde_json::Value = serde_json::from_str(include_str!(

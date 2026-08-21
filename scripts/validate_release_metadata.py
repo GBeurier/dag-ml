@@ -273,6 +273,10 @@ def validate_ci(repo: Path) -> None:
     )
     require("cargo package --workspace --no-verify" in workflow, "CI must package Cargo crates")
     require(
+        "scripts/test_core_package_extract.sh" in workflow,
+        "CI must test the extracted dag-ml-core package",
+    )
+    require(
         "scripts/release/check_publish_plan.py --dry-run" in workflow,
         "CI must dry-run publishable Cargo root crates",
     )

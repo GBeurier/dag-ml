@@ -8,15 +8,27 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
+exclude = ["Cargo.toml.methods-local"]
+
+[features]
+default = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("methods-optimizer-local"))', 'cfg(dag_ml_workspace_contract_fixtures)'] }
 
 [dependencies]
 serde.workspace = true
 serde_ignored.workspace = true
 serde_json.workspace = true
 yaml_serde.workspace = true
-# Keep yaml_serde's transitive indexmap on a Rust 1.83-compatible release.
 indexmap.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
+
+[dev-dependencies]
+# Test-only bridge: DAG-ML owns the member contracts/replay; Core is invoked
+# solely through its public opaque Archive V2 storage API.
+nirs4all_archive_core = { package = "nirs4all", path = "../../../nirs4all-core/bindings/rust/nirs4all" }

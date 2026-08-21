@@ -43,8 +43,10 @@ PACK_PATH = (
     ROOT / "docs" / "contracts" / "training_replay_contract_conformance_pack.v1.json"
 )
 BASE_PACK_ID = "dag-ml.training-contracts.v1"
-BASE_PACK_SHA256 = "58ff492b09b2a33e45646e6568c5f8e6c56115b34914f5eebbd51c4e29938434"
-BASE_PACK_CHECKSUM = "9caeeaba05b7312ab77f9b192f58a848d9ae0f716f81a03c455d451875897fbb"
+# Derived from the current base pack by generate_fixtures.py.  Keep the replay
+# pack pinned to those bytes/checksum; do not edit a replay artifact hash by hand.
+BASE_PACK_SHA256 = "ff6528da4e2cb97307ead347d42facfe35de6c7e377932d55300f9eaedba33d1"
+BASE_PACK_CHECKSUM = "3e4832d9849d4a395b1f4c3a032b42e4bb299332e378bc2a70216b6a93e36d7d"
 serde_json_sha256 = _serde_sha256
 LEGACY_AUTHORITY_SHA256 = {
     "docs/contracts/replay_outcome.schema.json": "c57279e8c76e4e2467af0eca5eb59804a2f7bb97bec6cce9d8b23975f223c36a",
@@ -1656,6 +1658,13 @@ def _base_pack() -> dict[str, Any]:
         raise ValueError("unexpected base training pack checksum")
     if file_sha256(BASE_PACK_PATH) != BASE_PACK_SHA256:
         raise ValueError("base training pack bytes changed")
+    required_runtime_sources = {
+        "crates/dag-ml-core/src/conformal.rs",
+        "crates/dag-ml-core/src/conformal_runtime.rs",
+    }
+    artifact_paths = {artifact["path"] for artifact in pack.get("artifacts", [])}
+    if not required_runtime_sources <= artifact_paths:
+        raise ValueError("base training pack omits conformal runtime authority")
     for artifact in pack.get("artifacts", []):
         if artifact_sha256(artifact["path"]) != artifact["sha256"]:
             raise ValueError(f"base training artifact changed: {artifact['path']}")

@@ -76,8 +76,19 @@ jobs:
           repository: GBeurier/dag-ml-data
           ref: ${{ steps.peer.outputs.ref }}
           path: external/dag-ml-data
+      - name: Checkout retained BundleLoader oracle
+        uses: actions/checkout@v7
+        with:
+          repository: GBeurier/nirs4all
+          ref: bd7fba454f5f5a5e644941061b98d2c45f15fafd
+          path: external/nirs4all-legacy
       - name: Shared contract
         run: python scripts/validate_contracts.py --require-sibling --sibling-root external/dag-ml-data
+      - name: Archive V1 fixture, security, and legacy-loader oracle
+        run: |
+          python -m pip install -e external/nirs4all-legacy
+          NIRS4ALL_LEGACY_REPO="${{ github.workspace }}/external/nirs4all-legacy" \
+            python -m unittest discover -s tests -p 'test_archive_v1_contract.py'
       - name: Conformal and robustness oracle
         run: python -m pytest parity/conformal/tests/test_conformal_robustness_contracts.py -q
       - name: Native training contract oracle
@@ -163,7 +174,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
+        env:
+          RUSTFLAGS: --cfg dag_ml_workspace_contract_fixtures
         run: cargo test --workspace
+      - name: dag-ml-core extracted package test
+        run: scripts/test_core_package_extract.sh
       - name: Committed extension freshness
         run: |
           python scripts/check_so_freshness.py --self-test
@@ -264,6 +279,30 @@ jobs:
         run: python scripts/release/check_publish_plan.py --dry-run
       - name: Example graph
         run: cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
+
+  methods-hpo-local:
+    name: Methods HPO local integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout Methods producer
+        uses: actions/checkout@v7
+        with:
+          repository: GBeurier/nirs4all-methods
+          ref: 0ef355e6f74573ed07a6920bdeed1a052a6e8312
+          path: external/nirs4all-methods
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build ABI-matched Methods library
+        working-directory: external/nirs4all-methods
+        run: make build PRESET=dev-release
+      - name: Native TPE, pruner, checkpoint, and N4MM replay
+        env:
+          N4M_BINDING_SHA: 0ef355e6f74573ed07a6920bdeed1a052a6e8312
+          N4M_METHODS_REPO: ${{ github.workspace }}/external/nirs4all-methods
+          N4M_LIB_DIR: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src
+          N4M_RUNTIME_RPATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src
+          LD_LIBRARY_PATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src
+        run: scripts/test_methods_optimizer_local.sh
 
   sanitizer:
     name: AddressSanitizer (capi)

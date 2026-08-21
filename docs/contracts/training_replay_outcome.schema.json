@@ -181,6 +181,18 @@
     "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "conformal_interval_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "binding_id", "sample_ids", "intervals", "calibration_fingerprint"],
+      "properties": {
+        "schema_version": { "type": "integer", "const": 1 },
+        "binding_id": { "$ref": "#/$defs/identifier" },
+        "sample_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+        "intervals": { "type": "array", "minItems": 1, "items": { "type": "object" } },
+        "calibration_fingerprint": { "$ref": "#/$defs/sha256" }
+      }
     }
   }
 }

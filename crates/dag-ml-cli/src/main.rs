@@ -33,8 +33,9 @@ use dag_ml_core::{
     PredictionUnitId, RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport,
     RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId,
     RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
-    RuntimePredictionCacheStore, SampleId, ScoreSet, SelectionDecision, SelectionMetric,
-    SelectionPolicy, SequentialScheduler, TrainingRequest, VariantId, SCORE_SET_SCHEMA_VERSION,
+    RuntimePredictionCacheStore, RuntimeTunerSession, SampleId, ScoreSet, SelectionDecision,
+    SelectionMetric, SelectionPolicy, SequentialScheduler, TrainingRequest, VariantId,
+    SCORE_SET_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -3928,6 +3929,17 @@ impl RuntimeController for ProcessRuntimeController {
             ))
         })
     }
+
+    fn create_tuner_session(
+        &self,
+        task: &dag_ml_core::RuntimeHpoCampaignTask,
+        _context: &dag_ml_core::RuntimeHpoExecutionContext,
+    ) -> dag_ml_core::Result<Box<dyn RuntimeTunerSession>> {
+        Err(DagMlError::RuntimeValidation(format!(
+            "process adapter controller `{}` cannot create a native HPO tuner session for node `{}`; the process-adapter protocol does not attest optimizer state, trial history, checkpoints, or terminalization",
+            self.id, task.target_node_id
+        )))
+    }
 }
 
 impl RuntimeController for PersistentProcessRuntimeController {
@@ -3986,6 +3998,17 @@ impl RuntimeController for PersistentProcessRuntimeController {
             "controller `{}` persistent adapter `{}` exhausted retry budget",
             self.id,
             self.adapter.display()
+        )))
+    }
+
+    fn create_tuner_session(
+        &self,
+        task: &dag_ml_core::RuntimeHpoCampaignTask,
+        _context: &dag_ml_core::RuntimeHpoExecutionContext,
+    ) -> dag_ml_core::Result<Box<dyn RuntimeTunerSession>> {
+        Err(DagMlError::RuntimeValidation(format!(
+            "persistent process adapter controller `{}` cannot create a native HPO tuner session for node `{}`; the process-adapter protocol does not attest optimizer state, trial history, checkpoints, or terminalization",
+            self.id, task.target_node_id
         )))
     }
 }
@@ -4211,6 +4234,17 @@ impl RuntimeController for CliMockController {
                 metrics,
             },
         })
+    }
+
+    fn create_tuner_session(
+        &self,
+        task: &dag_ml_core::RuntimeHpoCampaignTask,
+        _context: &dag_ml_core::RuntimeHpoExecutionContext,
+    ) -> dag_ml_core::Result<Box<dyn RuntimeTunerSession>> {
+        Err(DagMlError::RuntimeValidation(format!(
+            "CLI mock controller `{}` cannot create a native HPO tuner session for node `{}`; mock campaign execution does not implement optimizer state, trial history, checkpoints, or terminalization",
+            self.id, task.target_node_id
+        )))
     }
 }
 

@@ -5,6 +5,7 @@
 //! buffers. It is intentionally a typed Rust surface only: persistence and
 //! binding contracts are added separately once their wire formats are frozen.
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Largest calibration sample count accepted by the exact rank routine.
@@ -19,7 +20,8 @@ const MAX_SHORTEST_DECIMAL_COEFFICIENT: u128 = 99_999_999_999_999_999;
 const MAX_U128_POWER_OF_TEN: u32 = 38;
 
 /// Multi-target nonconformity reduction for split regression intervals.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConformalMultiTargetPolicy {
     /// Calibrate one absolute-residual quantile per target.
     Marginal,
@@ -28,7 +30,8 @@ pub enum ConformalMultiTargetPolicy {
 }
 
 /// Behavior when `ceil((n + 1) * coverage)` exceeds `n`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConformalSmallSamplePolicy {
     /// Refuse calibration because no finite order statistic exists.
     Error,
@@ -37,14 +40,16 @@ pub enum ConformalSmallSamplePolicy {
 }
 
 /// One calibrated radius.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status", content = "value")]
 pub enum ConformalRadius {
     Finite(f64),
     Unbounded,
 }
 
 /// Quantile record for one requested coverage.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SplitConformalQuantile {
     pub coverage: f64,
     /// One-indexed finite-sample rank. It may equal `n + 1` for an unbounded
@@ -59,7 +64,8 @@ pub struct SplitConformalQuantile {
 ///
 /// The tagged form makes unbounded endpoints inseparable, avoiding `(-inf,
 /// +inf)` sentinels and half-unbounded states.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
 pub enum RegressionIntervalCell {
     Finite { lower: f64, upper: f64 },
     Unbounded,
@@ -84,7 +90,8 @@ impl RegressionIntervalCell {
 }
 
 /// Multi-row, multi-target interval at one coverage.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegressionConformalInterval {
     pub coverage: f64,
     pub cells: Vec<Vec<RegressionIntervalCell>>,
