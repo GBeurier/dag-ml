@@ -1681,6 +1681,8 @@ pub struct RefitArtifactRecord {
     pub controller_id: ControllerId,
     pub artifact: ArtifactRef,
     pub params_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub training_loss_fingerprint: Option<String>,
     #[serde(default)]
     pub data_requirement_keys: Vec<String>,
     #[serde(default)]
@@ -1709,6 +1711,9 @@ impl RefitArtifactRecord {
             )));
         }
         validate_fingerprint("params", &self.params_fingerprint)?;
+        if let Some(fingerprint) = &self.training_loss_fingerprint {
+            validate_fingerprint("training loss", fingerprint)?;
+        }
         let mut seen_keys = BTreeSet::new();
         for key in &self.data_requirement_keys {
             if key.trim().is_empty() {
@@ -2094,6 +2099,14 @@ impl ExecutionBundle {
             if artifact.params_fingerprint != expected_params_fingerprint {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "bundle `{}` artifact params for `{}` do not match plan",
+                    self.bundle_id, artifact.node_id
+                )));
+            }
+            if artifact.training_loss_fingerprint
+                != node_plan.training_loss_fingerprint(Phase::Refit)?
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` artifact training loss for `{}` does not match plan",
                     self.bundle_id, artifact.node_id
                 )));
             }
@@ -3630,6 +3643,8 @@ mod tests {
                     seed: Some(7),
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
                 }],
             }],
         }
@@ -3802,6 +3817,7 @@ mod tests {
                 plugin_version: None,
             },
             params_fingerprint: node_plan.params_fingerprint.clone(),
+            training_loss_fingerprint: node_plan.training_loss_fingerprint(Phase::Refit).unwrap(),
             data_requirement_keys,
             prediction_requirement_keys,
         }
@@ -3926,6 +3942,7 @@ mod tests {
                 plugin_version: None,
             },
             params_fingerprint: model_plan.params_fingerprint.clone(),
+            training_loss_fingerprint: model_plan.training_loss_fingerprint(Phase::Refit).unwrap(),
             data_requirement_keys: vec!["model:base.x".to_string()],
             prediction_requirement_keys: Vec::new(),
         }
@@ -4166,6 +4183,7 @@ mod tests {
                 plugin_version: None,
             },
             params_fingerprint: effective_fingerprint,
+            training_loss_fingerprint: node_plan.training_loss_fingerprint(Phase::Refit).unwrap(),
             data_requirement_keys: vec!["branch:b0.model:ridge.x".to_string()],
             prediction_requirement_keys: Vec::new(),
         };
@@ -4750,6 +4768,7 @@ mod tests {
                 plugin_version: None,
             },
             params_fingerprint: meta_plan.params_fingerprint.clone(),
+            training_loss_fingerprint: meta_plan.training_loss_fingerprint(Phase::Refit).unwrap(),
             data_requirement_keys: vec![
                 "merge:stack.pred_plus_original.meta:ridge.x_original".to_string()
             ],

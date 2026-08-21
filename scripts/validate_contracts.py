@@ -10468,6 +10468,15 @@ def validate_node_result_schema(schema: Any, label: str) -> None:
         "fit_influence_diagnostics" in properties,
         f"{label} NodeResult schema misses fit_influence_diagnostics",
     )
+    lineage_properties = defs.get("lineage_record", {}).get("properties", {})
+    early_stopping_records = lineage_properties.get("early_stopping_records")
+    require(
+        isinstance(early_stopping_records, dict)
+        and early_stopping_records.get("type") == "array"
+        and early_stopping_records.get("items", {}).get("$ref")
+        == EARLY_STOPPING_RECORD_SCHEMA_ID,
+        f"{label} NodeResult early-stopping record schema mismatch",
+    )
     require(
         defs.get("prediction_partition", {}).get("enum")
         == ["train", "validation", "test", "final"],
@@ -13070,6 +13079,85 @@ def validate_node_task(value: Any, label: str) -> None:
     fit_influence = value.get("fit_influence")
     if fit_influence is not None:
         validate_fit_influence_task(fit_influence, f"{label}.fit_influence")
+    requirements = value.get("required_loss_attestations", [])
+    require(
+        isinstance(requirements, list),
+        f"{label}.required_loss_attestations must be an array",
+    )
+    roles = node_plan.get("training_losses", [])
+    require(
+        isinstance(roles, list),
+        f"{label}.node_plan.training_losses must be an array",
+    )
+    active_roles = [
+        role
+        for role in roles
+        if isinstance(role, dict) and value.get("phase") in role.get("phases", [])
+    ]
+    require(
+        len(requirements) == len(active_roles),
+        f"{label}.required_loss_attestations count mismatch",
+    )
+    for index, (attestation, role) in enumerate(zip(requirements, active_roles)):
+        requirement_label = f"{label}.required_loss_attestations[{index}]"
+        require(
+            isinstance(attestation, dict),
+            f"{requirement_label} must be an object",
+        )
+        require(
+            attestation.get("node_id") == node_plan.get("node_id"),
+            f"{requirement_label}.node_id mismatch",
+        )
+        require(
+            attestation.get("output_id") == role.get("output_id"),
+            f"{requirement_label}.output_id mismatch",
+        )
+        require(
+            attestation.get("phase") == value.get("phase"),
+            f"{requirement_label}.phase mismatch",
+        )
+        loss = role.get("loss", {})
+        implementation = (
+            loss.get("implementation", {}) if isinstance(loss, dict) else {}
+        )
+        spec = loss.get("spec", {}) if isinstance(loss, dict) else {}
+        require(
+            attestation.get("loss_id") == spec.get("loss_id"),
+            f"{requirement_label}.loss_id mismatch",
+        )
+        require(
+            attestation.get("descriptor_fingerprint")
+            == implementation.get("descriptor_fingerprint"),
+            f"{requirement_label}.descriptor_fingerprint mismatch",
+        )
+        require(
+            attestation.get("semantic_fingerprint") == spec.get("spec_fingerprint"),
+            f"{requirement_label}.semantic_fingerprint mismatch",
+        )
+        require(
+            attestation.get("implementation_fingerprint")
+            == implementation.get("implementation_fingerprint"),
+            f"{requirement_label}.implementation_fingerprint mismatch",
+        )
+        require(
+            attestation.get("effective_parameters") == spec.get("parameters"),
+            f"{requirement_label}.effective_parameters mismatch",
+        )
+        require(
+            attestation.get("reduction") == spec.get("reduction"),
+            f"{requirement_label}.reduction mismatch",
+        )
+        require(
+            attestation.get("attestation_fingerprint")
+            == dagml_tcv1_sha256(
+                {
+                    key: field_value
+                    for key, field_value in attestation.items()
+                    if key != "attestation_fingerprint"
+                }
+            ),
+            f"{requirement_label}.attestation_fingerprint mismatch",
+        )
 
 
 def validate_node_result(value: Any, label: str) -> None:
@@ -13495,6 +13583,7 @@ def validate_dag_ml_execution_plan_header(header: str, label: str) -> None:
         "dagml_execution_plan_contract_json",
         "dagml_execution_plan_build_json",
         "dagml_execution_plan_schedule_json",
+        "dagml_execution_plan_execute_phase_json",
         "dagml_execution_plan_validate_json",
     ):
         require(symbol in header, f"{label} header must expose `{symbol}`")

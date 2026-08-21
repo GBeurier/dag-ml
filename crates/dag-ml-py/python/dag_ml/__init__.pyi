@@ -1,5 +1,5 @@
 from os import PathLike
-from typing import Any, Self
+from typing import Any, Iterable, Self
 
 class DagMlError(Exception):
     category: str

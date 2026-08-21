@@ -141,6 +141,10 @@ typedef struct ArrowSchema {
 #define DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION 2u
 #endif
 
+#ifndef DAG_ML_LOCAL_IMPLEMENTATION_VTABLE_ABI_VERSION
+#define DAG_ML_LOCAL_IMPLEMENTATION_VTABLE_ABI_VERSION 1u
+#endif
+
 #ifndef DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION
 #define DAG_ML_PREDICTION_CACHE_TENSOR_METADATA_SCHEMA_VERSION 1u
 #endif
@@ -267,6 +271,32 @@ typedef struct DagMlArtifactStoreVTable {
     void (*destroy)(void *user_data);
 } DagMlArtifactStoreVTable;
 
+/* Opaque process-local loss/metric callback registry. The registry is scoped
+ * to the binding id supplied at creation (for example binding:c, binding:r, or
+ * binding:matlab). Callback pointers and language runtime objects never enter
+ * serialized DAG-ML contracts. */
+typedef struct DagMlLocalImplementationRegistry DagMlLocalImplementationRegistry;
+
+/* Generic host callback retained under an exact implementation descriptor.
+ * invoke receives binding-defined strict JSON and returns host-allocated JSON;
+ * release_bytes must release every non-NULL callback output, including error
+ * outputs. retain/release are optional but must be supplied together. When
+ * present, successful registration retains non-NULL user_data once and
+ * unregister/clear/free releases it once. A failed registration leaves no
+ * retained reference. Host exceptions and unwinds must be caught by the host
+ * trampoline and reported as DAG_ML_STATUS_PANIC; they must not cross the C
+ * boundary. The host must synchronize user_data unless its descriptor declares
+ * thread-safe execution. Lifecycle callbacks must not re-enter the same
+ * registry. */
+typedef struct DagMlLocalImplementationVTable {
+    uint32_t abi_version;
+    void *user_data;
+    DagMlStatusCode (*invoke)(void *user_data, DagMlBytesView request_json, DagMlOwnedBytes *out_result_json);
+    void (*release_bytes)(void *user_data, DagMlOwnedBytes bytes);
+    void (*retain)(void *user_data);
+    void (*release)(void *user_data);
+} DagMlLocalImplementationVTable;
+
 typedef struct DagMlControllerBinding {
     DagMlBytesView controller_id;
     DagMlControllerVTable vtable;
@@ -339,6 +369,81 @@ void dagml_f64_tensor_free(DagMlF64Tensor value);
 void dagml_f64_columnar_tensor_free(DagMlF64ColumnarTensor value);
 void dagml_f32_tensor_free(DagMlF32Tensor value);
 void dagml_f32_columnar_tensor_free(DagMlF32ColumnarTensor value);
+/* Select one zero-based, phase-filtered training-loss role from an exact
+ * NodeTask. This validation-only entry point returns the native role and the
+ * task-owned attestation without invoking a host callback, so runtimes can
+ * keep tensors and executable functions local. Both outputs are released with
+ * dagml_owned_bytes_free. */
+DagMlStatusCode dagml_node_task_training_loss_binding(
+    DagMlBytesView node_task_json,
+    size_t role_index,
+    DagMlOwnedBytes *out_training_loss_role_json,
+    DagMlOwnedBytes *out_attestation_json,
+    DagMlString *error_out);
+/* Local callbacks are resolved by the complete validated loss/metric
+ * descriptor, not only by registry_key. invoke_training_loss accepts only
+ * FIT_CV/REFIT and emits a DAG-ML-owned attestation after callback success.
+ * All returned DagMlOwnedBytes values must be released with
+ * dagml_owned_bytes_free. Registry pointers are process-local and cannot be
+ * serialized or shared across workers; each runtime must register locally. */
+DagMlStatusCode dagml_local_implementation_registry_create(
+    DagMlBytesView binding_id,
+    DagMlLocalImplementationRegistry **out_registry,
+    DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_register_loss(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlBytesView loss_reference_json,
+    DagMlLocalImplementationVTable implementation,
+    DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_register_metric(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlBytesView metric_reference_json,
+    DagMlLocalImplementationVTable implementation,
+    DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_invoke_loss(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlBytesView loss_reference_json,
+    DagMlBytesView request_json,
+    DagMlOwnedBytes *out_result_json,
+    DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_invoke_training_loss(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlBytesView training_loss_role_json,
+    DagMlBytesView phase,
+    DagMlBytesView request_json,
+    DagMlOwnedBytes *out_result_json,
+    DagMlOwnedBytes *out_attestation_json,
+    DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_invoke_task_training_loss(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlBytesView node_task_json,
+    size_t role_index,
+    DagMlBytesView request_json,
+    DagMlOwnedBytes *out_result_json,
+    DagMlOwnedBytes *out_attestation_json,
+    DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_invoke_metric(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlBytesView metric_reference_json,
+    DagMlBytesView request_json,
+    DagMlOwnedBytes *out_result_json,
+    DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_unregister_loss(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlBytesView loss_reference_json,
+    DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_unregister_metric(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlBytesView metric_reference_json,
+    DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_descriptors_json(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlOwnedBytes *out_json,
+    DagMlString *error_out);
+DagMlStatusCode dagml_local_implementation_registry_clear(
+    DagMlLocalImplementationRegistry *registry,
+    DagMlString *error_out);
+void dagml_local_implementation_registry_free(DagMlLocalImplementationRegistry *registry);
 DagMlStatusCode dagml_graph_spec_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_graph_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_campaign_spec_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
@@ -393,6 +498,26 @@ DagMlStatusCode dagml_execution_plan_schedule_json(
     const uint8_t *plan_ptr,
     size_t plan_len,
     DagMlBytesView phase,
+    DagMlOwnedBytes *out_json,
+    DagMlString *error_out);
+/* Execute one phase from a previously built ExecutionPlan through native
+ * SequentialScheduler. The embedded plan manifests must exactly match the
+ * trusted controller manifest list before any controller callback is invoked.
+ * This JSON-returning entry point is intended for local binding callbacks and
+ * conformance smokes. Controller vtables must be borrowed and must not expose
+ * release/destroy callbacks, because no opaque result retains the registry;
+ * long-lived native handles should use the opaque training/replay APIs that
+ * retain controller registries. */
+DagMlStatusCode dagml_execution_plan_execute_phase_json(
+    const uint8_t *plan_ptr,
+    size_t plan_len,
+    const uint8_t *trusted_controllers_ptr,
+    size_t trusted_controllers_len,
+    DagMlBytesView run_id,
+    uint64_t root_seed,
+    DagMlBytesView phase,
+    const DagMlControllerBinding *controller_bindings,
+    size_t controller_binding_count,
     DagMlOwnedBytes *out_json,
     DagMlString *error_out);
 DagMlStatusCode dagml_execution_plan_validate_json(

@@ -719,6 +719,11 @@ where
     T: DeserializeOwned + Serialize,
     F: Fn(String) -> DagMlError,
 {
+    parse_typed_json(json).map_err(|error| {
+        shape_error(format!(
+            "{label} is not a strict TCV1 JSON document: {error}"
+        ))
+    })?;
     let raw: serde_json::Value = serde_json::from_str(json)?;
     deserialize_external_value(raw, label, shape_error)
 }

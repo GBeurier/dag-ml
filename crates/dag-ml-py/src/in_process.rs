@@ -48,7 +48,7 @@ use dag_ml_core::{
     DagMlError as CoreDagMlError, ExecutionPlan, ExternalDataPlanEnvelope, InMemoryArtifactStore,
     InMemoryDataProvider, NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
     RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    ScoreSet, SequentialScheduler, VariantId, VariantValidationPredictions,
+    ScoreSet, SequentialScheduler, TrainingLossRoleReference, VariantId, VariantValidationPredictions,
     SCORE_SET_SCHEMA_VERSION,
 };
 
@@ -170,15 +170,16 @@ impl RuntimeController for PyOperatorController {
     }
 }
 
-/// Map the host's selection-metric string to the core metric kind. Mirrors the
-/// CLI's `--selection-metric` (`rmse` | `accuracy` | `balanced_accuracy`); anything
-/// else defaults to RMSE, exactly like the CLI's clap default. `balanced_accuracy`
-/// matches nirs4all's default classification ranking metric.
-fn parse_selection_metric(metric: &str) -> RegressionMetricKind {
+/// Map the host's explicit selection metric to the core metric kind.
+/// `balanced_accuracy` matches nirs4all's default classification ranking metric.
+fn parse_selection_metric(metric: &str) -> Result<RegressionMetricKind, CoreDagMlError> {
     match metric {
-        "accuracy" => RegressionMetricKind::Accuracy,
-        "balanced_accuracy" => RegressionMetricKind::BalancedAccuracy,
-        _ => RegressionMetricKind::Rmse,
+        "rmse" => Ok(RegressionMetricKind::Rmse),
+        "accuracy" => Ok(RegressionMetricKind::Accuracy),
+        "balanced_accuracy" => Ok(RegressionMetricKind::BalancedAccuracy),
+        _ => Err(CoreDagMlError::CampaignValidation(format!(
+            "unsupported in-process selection metric `{metric}`; expected rmse, accuracy or balanced_accuracy"
+        ))),
     }
 }
 
@@ -516,8 +517,8 @@ fn surface_loser_validation_frames(
 ///   relations + the DSL fold set drive `data_views` production.
 /// * `controller_manifests_json` — the controller manifest list.
 /// * `op_callback` — the host bridge running one [`NodeTask`] (`run_node`).
-/// * `selection_metric` — `rmse` | `accuracy`, used only for native multi-variant
-///   SELECT (ignored for single-variant plans).
+/// * `selection_metric` — `rmse` | `accuracy` | `balanced_accuracy`, used only
+///   for native multi-variant SELECT (validated even for single-variant plans).
 ///
 /// Returns a JSON object `{ "node_results": [...], "scores": <ScoreSet|null> }`.
 /// `scores` is byte-identical to the subprocess bundle's `scores`, so the host
@@ -531,7 +532,56 @@ pub fn run_cv_refit_in_process(
     op_callback: Py<PyAny>,
     selection_metric: &str,
 ) -> PyResult<String> {
-    let metric = parse_selection_metric(selection_metric);
+    run_cv_refit_in_process_impl(
+        py,
+        dsl_json,
+        envelope_json,
+        controller_manifests_json,
+        None,
+        op_callback,
+        selection_metric,
+    )
+}
+
+/// Run a CV + refit campaign IN-PROCESS after binding native training-loss
+/// role references into the execution plan.
+///
+/// This is the same scheduler path as [`run_cv_refit_in_process`], with one
+/// additional native step: the supplied roles replace `NodePlan.training_losses`
+/// via [`ExecutionPlan::with_training_losses`] before any `NodeTask` is built.
+/// The roles remain contract data; process-local callable resolution still
+/// happens in the host callback that receives the exact native `NodeTask`.
+#[pyfunction]
+pub fn run_cv_refit_in_process_with_training_losses(
+    py: Python<'_>,
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    training_loss_roles_json: &str,
+    op_callback: Py<PyAny>,
+    selection_metric: &str,
+) -> PyResult<String> {
+    run_cv_refit_in_process_impl(
+        py,
+        dsl_json,
+        envelope_json,
+        controller_manifests_json,
+        Some(training_loss_roles_json),
+        op_callback,
+        selection_metric,
+    )
+}
+
+fn run_cv_refit_in_process_impl(
+    py: Python<'_>,
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    training_loss_roles_json: Option<&str>,
+    op_callback: Py<PyAny>,
+    selection_metric: &str,
+) -> PyResult<String> {
+    let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
 
     // 1. Read the envelope first (the CLI reads it before the plan so data-aware
     //    branch fan-out can discover partition values from coordinator relations).
@@ -564,13 +614,18 @@ pub fn run_cv_refit_in_process(
     // default in-process binding to native operator-SELECT, mirroring CLI Mechanism A.
     let operator_variant_models =
         compile_operator_variant_models(&dsl_spec).map_err(py_core_error)?;
-    let plan = build_execution_plan(
+    let mut plan = build_execution_plan(
         format!("plan:{}", dsl_spec.id),
         compiled.graph,
         compiled.campaign_template,
         &controller_registry,
     )
     .map_err(py_core_error)?;
+    if let Some(training_loss_roles_json) = training_loss_roles_json {
+        let roles: Vec<TrainingLossRoleReference> =
+            serde_json::from_str(training_loss_roles_json).map_err(py_serde_error)?;
+        plan = plan.with_training_losses(roles).map_err(py_core_error)?;
+    }
 
     // 3. Build the SAME Rust data provider the CLI uses
     //    (`data_provider_for_training_envelope`): validate the envelope relations
@@ -936,6 +991,8 @@ mod tests {
                     seed: task.seed,
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
                 },
             })
         }

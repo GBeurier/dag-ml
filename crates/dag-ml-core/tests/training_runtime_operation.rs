@@ -538,6 +538,8 @@ impl RuntimeController for TrainingController {
                 seed: task.seed,
                 unsafe_flags: BTreeSet::new(),
                 metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
             },
         })
     }
@@ -4247,6 +4249,7 @@ fn identifiers_controllers_diagnostics_and_store_are_prevalidated() {
             plugin_version: None,
         },
         params_fingerprint: "a".repeat(64),
+        training_loss_fingerprint: None,
         data_requirement_keys: Vec::new(),
         prediction_requirement_keys: Vec::new(),
     };

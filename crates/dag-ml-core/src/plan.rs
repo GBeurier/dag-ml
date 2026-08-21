@@ -9,6 +9,10 @@ use crate::controller::{
     ControllerRegistry, RngPolicy,
 };
 use crate::controller_adapter::representation_type_id;
+use crate::criteria::{
+    CriterionInput, ImplementationCapability, LossCapability, SemanticSpecKind,
+    TrainingLossRoleReference,
+};
 use crate::data::{
     BranchViewMode, BranchViewPlan, DataBinding, ExternalDataPlanEnvelope, ModelInputFusionMode,
     ModelInputPortSpec, ModelInputSpec, RepresentationPlan, SOURCE_INDEX_METADATA_KEY,
@@ -18,7 +22,7 @@ use crate::fold::{FoldSet, NestedCvSpec};
 use crate::generation::{
     enumerate_variants, generation_spec_fingerprint, GenerationSpec, VariantPlan,
 };
-use crate::graph::{GraphSpec, NodeKind, NodeSpec};
+use crate::graph::{GraphSpec, NodeKind, NodeSpec, PortKind};
 use crate::ids::{ControllerId, FoldId, NodeId, VariantId};
 use crate::phase::Phase;
 use crate::policy::{AggregationPolicy, DataModelShapePlan, LeakageUnitPolicy};
@@ -196,6 +200,8 @@ pub struct NodePlan {
     pub supported_phases: BTreeSet<Phase>,
     #[serde(default)]
     pub controller_capabilities: BTreeSet<ControllerCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub training_losses: Vec<TrainingLossRoleReference>,
     pub fit_scope: ControllerFitScope,
     pub rng_policy: RngPolicy,
     pub artifact_policy: ArtifactPolicy,
@@ -211,6 +217,26 @@ pub struct NodePlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inner_cv: Option<NestedCvSpec>,
     pub params_fingerprint: String,
+}
+
+impl NodePlan {
+    pub fn training_losses_for_phase(
+        &self,
+        phase: Phase,
+    ) -> impl Iterator<Item = &TrainingLossRoleReference> {
+        self.training_losses
+            .iter()
+            .filter(move |role| role.phases.contains(&phase))
+    }
+
+    pub fn training_loss_fingerprint(&self, phase: Phase) -> Result<Option<String>> {
+        let roles = self.training_losses_for_phase(phase).collect::<Vec<_>>();
+        if roles.is_empty() {
+            Ok(None)
+        } else {
+            stable_json_fingerprint(&roles).map(Some)
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -259,6 +285,37 @@ impl ExecutionPlan {
             deserialize_external_contract(json, "execution plan", DagMlError::Planning)?;
         plan.validate()?;
         Ok(plan)
+    }
+
+    /// Replace the plan's training-loss roles with a validated canonical set.
+    /// Roles are grouped by node and sorted so every binding receives the same
+    /// `NodeTask` requirement ordering.
+    pub fn with_training_losses(mut self, roles: Vec<TrainingLossRoleReference>) -> Result<Self> {
+        self.validate()?;
+        let mut roles_by_node = BTreeMap::<NodeId, Vec<TrainingLossRoleReference>>::new();
+        for role in roles {
+            role.validate()?;
+            if !self.node_plans.contains_key(&role.node_id) {
+                return Err(DagMlError::Planning(format!(
+                    "training loss references unknown plan node `{}`",
+                    role.node_id
+                )));
+            }
+            roles_by_node
+                .entry(role.node_id.clone())
+                .or_default()
+                .push(role);
+        }
+        for node_roles in roles_by_node.values_mut() {
+            node_roles.sort_by(|left, right| {
+                (&left.output_id, &left.phases).cmp(&(&right.output_id, &right.phases))
+            });
+        }
+        for (node_id, node_plan) in &mut self.node_plans {
+            node_plan.training_losses = roles_by_node.remove(node_id).unwrap_or_default();
+        }
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -418,6 +475,7 @@ impl ExecutionPlan {
                 binding.validate()?;
             }
             validate_data_binding_requirements(node_id, plan, manifest, graph_node)?;
+            validate_node_training_losses(plan)?;
             let actual_params_fingerprint = stable_json_fingerprint(&plan.params)?;
             if actual_params_fingerprint != plan.params_fingerprint {
                 return Err(DagMlError::Planning(format!(
@@ -488,6 +546,32 @@ impl ExecutionPlan {
 
     fn validate_oof_controller_capabilities(&self) -> Result<()> {
         for edge in &self.graph_plan.graph.edges {
+            if edge.contract.kind != PortKind::Prediction {
+                continue;
+            }
+            let target_plan = self.node_plans.get(&edge.target.node_id).ok_or_else(|| {
+                DagMlError::Planning(format!(
+                    "prediction edge target node `{}` has no node plan",
+                    edge.target.node_id
+                ))
+            })?;
+            let target_fits = matches!(
+                target_plan.fit_scope,
+                ControllerFitScope::FoldTrain | ControllerFitScope::FullTrain
+            ) && target_plan
+                .supported_phases
+                .iter()
+                .any(|phase| matches!(phase, Phase::FitCv | Phase::Refit));
+            if target_fits && !edge.contract.requires_oof {
+                return Err(DagMlError::Planning(format!(
+                    "prediction edge `{}.{}` -> `{}.{}` enters fitting controller `{}` and must require OOF",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name,
+                    target_plan.controller_id
+                )));
+            }
             if !edge.contract.requires_oof {
                 continue;
             }
@@ -510,12 +594,6 @@ impl ExecutionPlan {
                     source_plan.controller_id
                 )));
             }
-            let target_plan = self.node_plans.get(&edge.target.node_id).ok_or_else(|| {
-                DagMlError::Planning(format!(
-                    "OOF edge target node `{}` has no node plan",
-                    edge.target.node_id
-                ))
-            })?;
             if !target_plan
                 .controller_capabilities
                 .contains(&ControllerCapability::ConsumesOofPredictions)
@@ -684,6 +762,121 @@ fn validate_data_binding_requirements(
             manifest,
             branch_view.as_ref(),
         )?;
+    }
+    Ok(())
+}
+
+fn validate_node_training_losses(plan: &NodePlan) -> Result<()> {
+    let mut previous_key: Option<(Option<String>, BTreeSet<Phase>)> = None;
+    let mut occupied_phases = BTreeSet::new();
+    for role in &plan.training_losses {
+        role.validate()?;
+        if role.node_id != plan.node_id {
+            return Err(DagMlError::Planning(format!(
+                "node plan `{}` contains training loss for `{}`",
+                plan.node_id, role.node_id
+            )));
+        }
+        let key = (role.output_id.clone(), role.phases.clone());
+        if previous_key
+            .as_ref()
+            .is_some_and(|previous| previous >= &key)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node plan `{}` training losses must be strictly sorted by output_id and phases",
+                plan.node_id
+            )));
+        }
+        previous_key = Some(key);
+        for phase in &role.phases {
+            if !plan.supported_phases.contains(phase) {
+                return Err(DagMlError::Planning(format!(
+                    "node `{}` has a training loss for unsupported phase {phase:?}",
+                    plan.node_id
+                )));
+            }
+            if !occupied_phases.insert((role.output_id.clone(), *phase)) {
+                return Err(DagMlError::Planning(format!(
+                    "node `{}` has overlapping training losses for output {:?} in phase {phase:?}",
+                    plan.node_id, role.output_id
+                )));
+            }
+        }
+        if !plan
+            .controller_capabilities
+            .contains(&ControllerCapability::SupportsConfigurableLoss)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` configures a training loss but its controller does not support configurable loss",
+                plan.node_id
+            )));
+        }
+        if role.loss.spec.kind == SemanticSpecKind::Custom
+            && !plan
+                .controller_capabilities
+                .contains(&ControllerCapability::SupportsCustomLoss)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` configures a custom loss but its controller does not support custom loss",
+                plan.node_id
+            )));
+        }
+        if role
+            .loss
+            .spec
+            .capabilities
+            .contains(&LossCapability::Differentiable)
+            && !plan
+                .controller_capabilities
+                .contains(&ControllerCapability::SupportsDifferentiableLoss)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` configures a differentiable loss but its controller does not support differentiable loss",
+                plan.node_id
+            )));
+        }
+        if role
+            .loss
+            .spec
+            .required_inputs
+            .contains(&CriterionInput::SampleWeight)
+            && !plan
+                .controller_capabilities
+                .contains(&ControllerCapability::SupportsSampleWeights)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` loss requires sample weights but its controller does not support them",
+                plan.node_id
+            )));
+        }
+        if role
+            .loss
+            .spec
+            .required_inputs
+            .contains(&CriterionInput::MissingMask)
+            && !plan
+                .controller_capabilities
+                .contains(&ControllerCapability::SupportsMissingMasks)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` loss requires missing masks but its controller does not support them",
+                plan.node_id
+            )));
+        }
+        if role
+            .loss
+            .implementation
+            .capabilities
+            .contains(&ImplementationCapability::NeedsGil)
+            && !plan
+                .controller_capabilities
+                .contains(&ControllerCapability::NeedsPythonGil)
+        {
+            return Err(DagMlError::Planning(format!(
+                "node `{}` loss implementation needs the Python GIL but its controller does not declare it",
+                plan.node_id
+            )));
+        }
     }
     Ok(())
 }
@@ -1040,6 +1233,7 @@ pub fn build_execution_plan(
                 controller_version: manifest.controller_version.clone(),
                 supported_phases: manifest.supported_phases.clone(),
                 controller_capabilities: manifest.capabilities.clone(),
+                training_losses: Vec::new(),
                 fit_scope: manifest.fit_scope,
                 rng_policy: manifest.rng_policy,
                 artifact_policy: manifest.artifact_policy,
@@ -2065,6 +2259,87 @@ mod tests {
         }
     }
 
+    fn custom_loss_role(node_id: &str, output_id: &str) -> TrainingLossRoleReference {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/criteria/javascript_local_implementations.v1.json"
+        ))
+        .unwrap();
+        let mut role: TrainingLossRoleReference =
+            serde_json::from_value(fixture["training_loss_role"].clone()).unwrap();
+        role.node_id = NodeId::new(node_id).unwrap();
+        role.output_id = Some(output_id.to_string());
+        role
+    }
+
+    #[test]
+    fn execution_plan_lowers_training_losses_in_canonical_order() {
+        let mut loss_registry = ControllerRegistry::new();
+        loss_registry
+            .register(manifest("controller:transform", NodeKind::Transform))
+            .unwrap();
+        let mut model_manifest = manifest("controller:model", NodeKind::Model);
+        model_manifest.capabilities.extend([
+            ControllerCapability::SupportsConfigurableLoss,
+            ControllerCapability::SupportsCustomLoss,
+            ControllerCapability::SupportsDifferentiableLoss,
+        ]);
+        loss_registry.register(model_manifest).unwrap();
+
+        let plan = build_execution_plan(
+            "plan:training-loss-lowering",
+            graph(),
+            campaign("campaign:training-loss-lowering"),
+            &loss_registry,
+        )
+        .unwrap();
+        let role_b = custom_loss_role("model:pls", "b");
+        let role_a = custom_loss_role("model:pls", "a");
+        let bound = plan
+            .clone()
+            .with_training_losses(vec![role_b, role_a.clone()])
+            .unwrap();
+        let model = bound
+            .node_plans
+            .get(&NodeId::new("model:pls").unwrap())
+            .unwrap();
+        assert_eq!(
+            model
+                .training_losses
+                .iter()
+                .map(|role| role.output_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("a"), Some("b")]
+        );
+
+        let cleared = bound.with_training_losses(Vec::new()).unwrap();
+        assert!(cleared
+            .node_plans
+            .values()
+            .all(|node| node.training_losses.is_empty()));
+
+        let mut unknown = role_a.clone();
+        unknown.node_id = NodeId::new("model:unknown").unwrap();
+        assert!(plan
+            .clone()
+            .with_training_losses(vec![unknown])
+            .unwrap_err()
+            .to_string()
+            .contains("unknown plan node"));
+
+        let incapable = build_execution_plan(
+            "plan:training-loss-incapable",
+            graph(),
+            campaign("campaign:training-loss-incapable"),
+            &registry(),
+        )
+        .unwrap();
+        assert!(incapable
+            .with_training_losses(vec![role_a])
+            .unwrap_err()
+            .to_string()
+            .contains("does not support configurable loss"));
+    }
+
     #[test]
     fn build_execution_plan_consumes_controller_data_requirements_for_bindings() {
         let model_id = NodeId::new("model:pls").unwrap();
@@ -2677,6 +2952,47 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("consumes_oof_predictions"));
+    }
+
+    #[test]
+    fn planning_refuses_raw_prediction_sibling_port_into_fitting_node() {
+        let mut graph = oof_graph();
+        graph.id = "g:oof.raw-sibling".to_string();
+        let base = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.as_str() == "model:base")
+            .unwrap();
+        base.ports.outputs.push(port("aux", PortKind::Prediction));
+        let meta = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.as_str() == "model:meta")
+            .unwrap();
+        meta.ports.inputs.push(port("aux", PortKind::Prediction));
+        graph.edges.push(EdgeSpec {
+            source: PortRef {
+                node_id: NodeId::new("model:base").unwrap(),
+                port_name: "aux".to_string(),
+            },
+            target: PortRef {
+                node_id: NodeId::new("model:meta").unwrap(),
+                port_name: "aux".to_string(),
+            },
+            contract: EdgeContract::new(PortKind::Prediction, None),
+        });
+
+        let error = build_execution_plan(
+            "plan:oof.raw-sibling",
+            graph,
+            campaign("campaign:oof.raw-sibling"),
+            &registry(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("enters fitting controller"));
+        assert!(error.contains("must require OOF"));
     }
 
     #[test]

@@ -175,8 +175,55 @@ it receives or materializes through the vtables.
 | Rust row-major F64 tensor output | Rust allocation returned through ABI | `dagml_f64_tensor_free` |
 | Rust column-major F64 tensor output | Rust allocation returned through ABI | `dagml_f64_columnar_tensor_free` |
 | Host JSON byte output | Host allocation returned through prediction-cache vtable | `PredictionCacheVTable.release_bytes` |
+| Host local loss/metric result JSON | Host allocation returned through local implementation vtable | `DagMlLocalImplementationVTable.release_bytes` after DAG-ML copies it |
+| Local loss/metric `user_data` | Host or binding runtime | Optional paired `retain`/`release`; one retained reference per successful registry entry |
 | Arrow arrays | Producer of the Arrow array | Arrow C Data Interface release callback |
 | JSON blobs | Caller-provided view unless returned as owned bytes | ABI-specific free function |
+
+## Local Loss And Metric Callbacks
+
+`DagMlLocalImplementationRegistry` is an opaque process-local registry scoped
+to the binding id passed to `dagml_local_implementation_registry_create`.
+Registration accepts a complete `LossReference` or `MetricReference` plus a v1
+`DagMlLocalImplementationVTable`; descriptor resolution remains exact and loss
+and metric semantic paths remain distinct. `invoke_training_loss` accepts only
+`FIT_CV` or `REFIT` and returns a native execution attestation after the host
+callback succeeds. Controllers should prefer
+`dagml_local_implementation_registry_invoke_task_training_loss`: it selects a
+zero-based active role from the exact native `NodeTask`, verifies that the
+task's ordered requirements match its plan, and returns that task-owned
+attestation only after callback success. Host runtimes that cannot route their
+native arrays through the generic C callback use
+`dagml_node_task_training_loss_binding` instead. It performs the same native
+task validation and returns the exact role and task-owned attestation without
+invoking a callback; the binding then resolves and executes its process-local
+function on host-owned values. R and MATLAB/Octave pass the exact `NodeTask`
+JSON emitted by DAG-ML to this validation-only boundary; they do not rebuild
+the task from host objects whose scalar and single-element-array shapes may be
+ambiguous.
+
+`dagml_execution_plan_execute_phase_json` is the C ABI counterpart of the
+binding-level phase scheduler surface. It accepts a validated `ExecutionPlan`,
+an independently supplied trusted controller-manifest list, a run id/root seed,
+one phase, and controller vtables. DAG-ML refuses execution before dispatch when
+any embedded plan manifest is absent from, or differs from, the trusted runtime
+manifests. It then runs the native sequential scheduler, emits exact `NodeTask`
+JSON to the host callbacks, and validates each returned `NodeResult`. This
+JSON-returning helper is meant for local binding callbacks and conformance
+smokes. Its controller vtables must be borrowed and must not expose
+release/destroy callbacks, because the function returns JSON rather than an
+opaque object that keeps the registry alive. Workflows that need long-lived
+native handles must use the opaque training/replay APIs that keep controller
+registries alive.
+
+The invocation request and result are strict JSON but intentionally
+binding-defined: feature and autodiff tensors remain host-owned, so R, MATLAB,
+C, or another native controller can pass handles or its own local task shape
+through its trampoline. `release_bytes` is mandatory. Optional `retain` and
+`release` callbacks must be supplied together and preserve native language
+functions or environments until unregister, clear, or registry free. Host
+exceptions, long jumps, and language unwinds must be caught by the binding
+trampoline and converted to a DAG-ML status; crossing the C boundary is invalid.
 
 ## ABI Roadmap
 
