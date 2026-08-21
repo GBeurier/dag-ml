@@ -23,6 +23,7 @@ from ._dag_ml import (
     build_execution_plan_json,
     build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
     canonical_operator_variant_label,
+    configure_methods_runtime as _native_configure_methods_runtime,
     contract_manifest_json as _native_contract_manifest_json,
     compile_pipeline_dsl_artifact_json,
     compile_pipeline_dsl_artifact_with_controllers_json,
@@ -85,6 +86,7 @@ _FACADE_EXPORTS = [
     "PortablePredictorPackage",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
+    "configure_methods_runtime",
     "build_archive_v2_native_portable_payloads",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_with_controllers",
@@ -135,6 +137,17 @@ def _facade_contract_error(message: str) -> DagMlError:
         descriptor, sort_keys=True, separators=(",", ":")
     )
     return error
+
+
+def configure_methods_runtime(library_path: str | PathLike[str]) -> str:
+    """Configure the exact dynamically loaded Methods library for this process.
+
+    The extension must have been built with its optional ``methods-optimizer``
+    feature.  This performs no controller registration and never searches a
+    sibling checkout or the process ``PATH``.
+    """
+
+    return _native_configure_methods_runtime(str(library_path))
 
 
 class JsonContract:
