@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/training_replay_outcome.v3.schema.json",
+  "title": "DAG-ML TrainingReplayOutcome v3",
+  "description": "Closed V3 replay outcome. PREDICT and EXPLAIN may attest a fresh unlabeled cohort; target_content_fingerprint is therefore nullable only in replay input identities.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "outcome_id", "run_id", "source_training_outcome", "replay_request_id", "replay_request_fingerprint", "input_data_identities", "bundle_id", "plan_id", "phase", "result_count", "lineage_record_count", "prediction_block_count", "observation_prediction_block_count", "aggregated_prediction_block_count", "explanation_block_count", "controller_count", "prediction_cache_store", "outputs", "explanations", "lineage", "warnings", "diagnostics", "outcome_fingerprint"],
+  "properties": {
+    "schema_version": {"const": 3},
+    "outcome_id": {"$ref": "#/$defs/id"},
+    "run_id": {"$ref": "#/$defs/id"},
+    "source_training_outcome": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/portable_predictor_package.v2.schema.json#/$defs/training_outcome_ref"},
+    "replay_request_id": {"$ref": "#/$defs/id"},
+    "replay_request_fingerprint": {"$ref": "#/$defs/sha"},
+    "input_data_identities": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/replay_data_identity"}},
+    "bundle_id": {"$ref": "#/$defs/id"},
+    "plan_id": {"type": "string", "minLength": 1},
+    "phase": {"enum": ["PREDICT", "EXPLAIN"]},
+    "result_count": {"type": "integer", "minimum": 0},
+    "lineage_record_count": {"type": "integer", "minimum": 0},
+    "prediction_block_count": {"type": "integer", "minimum": 0},
+    "observation_prediction_block_count": {"type": "integer", "minimum": 0},
+    "aggregated_prediction_block_count": {"type": "integer", "minimum": 0},
+    "explanation_block_count": {"type": "integer", "minimum": 0},
+    "controller_count": {"type": "integer", "minimum": 0},
+    "prediction_cache_store": {"const": false},
+    "outputs": {"type": "array", "items": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/bound_training_output.v2.schema.json"}},
+    "conformal_intervals": {"type": "array", "maxItems": 0},
+    "explanations": {"type": "array", "items": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/explanation_block"}},
+    "lineage": {"type": "array", "items": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/lineage_record"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "diagnostics": {"type": "object", "additionalProperties": true},
+    "outcome_fingerprint": {"$ref": "#/$defs/sha"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_.:-]+$"},
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "replay_data_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requirement_key", "schema_fingerprint", "plan_fingerprint", "relation_fingerprint", "data_content_fingerprint", "target_content_fingerprint", "identity_fingerprint"],
+      "properties": {
+        "requirement_key": {"type": "string", "minLength": 1},
+        "schema_fingerprint": {"$ref": "#/$defs/sha"},
+        "plan_fingerprint": {"$ref": "#/$defs/sha"},
+        "relation_fingerprint": {"$ref": "#/$defs/sha"},
+        "data_content_fingerprint": {"$ref": "#/$defs/sha"},
+        "target_content_fingerprint": {"anyOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]},
+        "identity_fingerprint": {"$ref": "#/$defs/sha"}
+      }
+    }
+  }
+}

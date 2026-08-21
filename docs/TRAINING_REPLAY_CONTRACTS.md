@@ -61,7 +61,7 @@ its identity fields into frozen and current parts:
 |---|---|
 | envelope schema fingerprint | relation fingerprint |
 | data-plan structure/fingerprint | data-content fingerprint |
-| input representation | target-content fingerprint |
+| input representation | target-content fingerprint when an authoritative target cohort is supplied |
 | source IDs | composite current identity fingerprint |
 | `feature_set_id` | coordinator relation records |
 
@@ -69,6 +69,14 @@ The envelope map has exactly the requested keys. Every current identity is copie
 `input_data_identities`, sorted by `requirement_key`, and cross-checked against its
 envelope. Relation metadata is canonicalized recursively as a BTreeMap before its
 fingerprint is computed.
+
+`training_replay_outcome.v3` makes `target_content_fingerprint` explicitly nullable in
+these **replay** identities. `PREDICT` and `EXPLAIN` on a fresh inference cohort must
+not fabricate a target hash merely because model training had labels. The feature-content
+and relation proofs remain mandatory. V1/V2 replay outcomes remain readable and require
+the historical target-bound identity; writers emit V3 only when at least one requested
+envelope is genuinely target-free. Calibration remains target-bound and therefore emits
+V2 replay evidence.
 
 D4's cohort guarantee is deliberately narrow and safe: identities emitted in any
 prediction family are unique and belong to the union of current coordinator relations.
