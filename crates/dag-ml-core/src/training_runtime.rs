@@ -9,21 +9,26 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::aggregation::{AggregatedPredictionBlock, ObservationPredictionBlock, PredictionUnitId};
+#[cfg(feature = "methods-optimizer-local")]
+use crate::bundle::MethodsHpoResumeSelection;
 use crate::bundle::{
     build_aggregated_prediction_cache_payload, build_aggregated_prediction_cache_record,
     build_execution_bundle_with_prediction_contracts, build_prediction_cache_payload,
     build_prediction_cache_record, validate_prediction_cache_payload_matches_record,
     BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
-    BundlePredictionRequirement, ExecutionBundle, EXECUTION_BUNDLE_SCHEMA_VERSION,
-    LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION, LEGACY_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
-    PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+    BundlePredictionRequirement, ExecutionBundle, MethodsHpoResumeState,
+    EXECUTION_BUNDLE_SCHEMA_VERSION, LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION,
+    LEGACY_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION, PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
 };
 use crate::campaign::stable_json_fingerprint;
 use crate::canonical::parse_typed_json;
+use crate::conformal_runtime::ConformalCalibration;
 use crate::controller::{ControllerCapability, ControllerFitScope};
 use crate::data::data_binding_requirement_key;
 use crate::error::{DagMlError, Result};
+use crate::fold::fold_set_fingerprint;
 use crate::graph::{NodeKind, PortKind};
+use crate::hpo::{methods_optimizer_preflight, MethodsHpoStudyConfig};
 use crate::ids::{BundleId, FoldId, LineageId, NodeId, RunId, SampleId, VariantId};
 use crate::metrics::{
     RegressionMetricKind, ScoreSet, LEGACY_SCORE_SET_SCHEMA_VERSION, SCORE_SET_SCHEMA_VERSION,
@@ -32,10 +37,18 @@ use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::ExecutionPlan;
 use crate::policy::PredictionLevel;
+#[cfg(feature = "methods-optimizer-local")]
+use crate::replay::methods_hpo_resume_state_from_package_json;
+use crate::replay::{replay_request_from_outcome, TrainingReplayOutcome};
 use crate::runtime::{
     plan_oof_partition_mode, select_best_variant_outcome_by_cv_for_target, InMemoryArtifactStore,
     LineageRecord, NodeResult, ParallelScheduler, RunContext, RuntimeControllerRegistry,
     RuntimeDataProvider, SequentialScheduler, VariantExecutionSpec,
+};
+#[cfg(feature = "methods-optimizer-local")]
+use crate::runtime::{
+    RuntimeHpoExecutionContext, RuntimeHpoProvenance, RuntimeHpoSelectionTarget, VariantSelection,
+    VariantSelectionOutcome,
 };
 use crate::selection::{
     select_candidate, EvaluationScope, RefitStrategy, SelectionDecision, SelectionMetric,
@@ -108,6 +121,15 @@ pub struct TrainingOutcome {
     pub portable_prediction_caches: Option<BundlePredictionCachePayloadSet>,
     pub training_influence: TrainingInfluenceManifest,
     pub execution_bundle: ExecutionBundle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conformal_calibration: Option<ConformalCalibration>,
+    /// Complete pre-calibration replay evidence. V2 calibration attachment
+    /// retains this beside the derived quantiles so a loaded package can
+    /// independently revalidate the replay/source/sample closure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conformal_calibration_replay: Option<TrainingReplayOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub methods_hpo_resume_state: Option<MethodsHpoResumeState>,
     pub replayable_phases: Vec<Phase>,
     pub warnings: Vec<String>,
     pub diagnostics: BTreeMap<String, serde_json::Value>,
@@ -131,6 +153,673 @@ pub struct TrainingExecutionInput<'a> {
     pub artifact_store: &'a mut InMemoryArtifactStore,
     pub warnings: Vec<String>,
     pub diagnostics: BTreeMap<String, serde_json::Value>,
+}
+
+/// Training-owned state for a native Methods HPO invocation.
+///
+/// This object is deliberately constructed by [`execute_training`] and never
+/// stored in [`RuntimeControllerRegistry`].  A Methods `Context`/`Optimizer`
+/// is thread-affine, while the registry is long-lived and `Send + Sync`.  The
+/// context therefore gives the eventual native session the exact invocation
+/// evidence it is allowed to use without making any of it controller-global.
+///
+/// Native HPO is a typed campaign operation in `CampaignSpec.metadata`, bound
+/// to a target model and a registered controller. It is intentionally outside
+/// the predictor graph: candidate model tasks remain ordinary scheduler work.
+struct HpoExecutionContext<'a> {
+    request: &'a TrainingRequest,
+    projection: &'a TrainingContractProjection,
+    controllers: &'a RuntimeControllerRegistry,
+    data_provider: &'a dyn RuntimeDataProvider,
+    relations: &'a crate::relation::SampleRelationSet,
+    training_influence: &'a TrainingInfluenceManifest,
+    selection: &'a SelectionPolicy,
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+impl HpoExecutionContext<'_> {
+    /// Assemble the explicit, attested scheduler contract for one native HPO
+    /// campaign.  This is deliberately the only route from training into an
+    /// execution-local tuner session: no native study is created or restored
+    /// by training itself.
+    fn runtime_context(
+        &self,
+        descriptor: &PortableMethodsHpoDescriptor,
+        selection_metric: RegressionMetricKind,
+        producer: &NodeId,
+        producer_port: &str,
+    ) -> Result<(RuntimeHpoExecutionContext, Option<MethodsHpoResumeState>)> {
+        if self.projection.plan.variants.len() != 1 {
+            return Err(DagMlError::RuntimeValidation(
+                "native Methods HPO v1 requires a single unexpanded base variant".to_string(),
+            ));
+        }
+        let controller_id = crate::ControllerId::new(descriptor.study.controller_id.clone())
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "native Methods HPO has an invalid controller id: {error}"
+                ))
+            })?;
+        let provenance = RuntimeHpoProvenance {
+            graph_fingerprint: self.projection.plan.graph_fingerprint.clone(),
+            campaign_fingerprint: crate::hpo::campaign_provenance_fingerprint(
+                &self.projection.plan.campaign,
+            )?,
+            controller_fingerprint: self.projection.plan.controller_fingerprint.clone(),
+            data_identities_fingerprint: tcv1_fingerprint(
+                &self.request.data_identities,
+                "native Methods HPO data identities",
+            )?,
+            fold_set_fingerprint: self
+                .projection
+                .plan
+                .fold_set
+                .as_ref()
+                .map(stable_json_fingerprint)
+                .transpose()?,
+            training_influence_fingerprint: self.training_influence.manifest_fingerprint.clone(),
+            relation_fingerprint: self.relations.fingerprint()?,
+        };
+        let resume_state = descriptor
+            .resume_package_json
+            .as_deref()
+            .map(methods_hpo_resume_state_from_package_json)
+            .transpose()?;
+        if let Some(state) = &resume_state {
+            validate_methods_hpo_resume_state(
+                state,
+                &self.projection.plan,
+                descriptor.operation_id.as_str(),
+                &controller_id,
+                descriptor,
+                self.selection.id.as_str(),
+                selection_metric,
+                producer,
+                producer_port,
+                &provenance,
+            )?;
+        }
+        Ok((
+            RuntimeHpoExecutionContext {
+                operation_id: descriptor.operation_id.clone(),
+                controller_id,
+                target_node_id: descriptor.target_node_id.clone(),
+                base_variant: self.projection.plan.variants[0].clone(),
+                // This is the global optimizer budget, including trials held
+                // only in the opaque restored checkpoint (failed/pruned
+                // trials have no selectable proposal evidence). The scheduler
+                // owns the typed history-count query and derives remaining
+                // work; training must never subtract completed candidates.
+                trial_budget_total: descriptor.trials,
+                study: descriptor.study.clone(),
+                parameter_paths: descriptor.parameter_paths.clone(),
+                resume_checkpoint: resume_state.as_ref().map(|state| state.checkpoint.clone()),
+                resume_variants: resume_state
+                    .as_ref()
+                    .map(|state| {
+                        state
+                            .completed_proposals
+                            .iter()
+                            .map(|proposal| {
+                                (proposal.trial_id, proposal.variant.variant_id.clone())
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                resume_terminal_trials: resume_state
+                    .as_ref()
+                    .map(|state| {
+                        state
+                            .terminal_trials
+                            .iter()
+                            .map(|evidence| crate::runtime::RuntimeHpoTerminalSnapshot {
+                                trial: evidence.trial.clone(),
+                                variant_id: evidence.variant_id.clone(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                selection: RuntimeHpoSelectionTarget {
+                    producer_node: producer.clone(),
+                    producer_port: producer_port.to_string(),
+                    metric: selection_metric,
+                    direction: match self.selection.metric.objective {
+                        crate::selection::MetricObjective::Minimize => {
+                            crate::hpo::HpoDirection::Minimize
+                        }
+                        crate::selection::MetricObjective::Maximize => {
+                            crate::hpo::HpoDirection::Maximize
+                        }
+                    },
+                },
+                provenance,
+            },
+            resume_state,
+        ))
+    }
+
+    /// Select once from the scheduler's completed candidate evidence.  Native
+    /// optimizer state has already been terminalized by the session; this
+    /// method only makes the normal DAG-ML selection decision and retains the
+    /// report-grade OOF evidence it was based on.
+    fn selection_from_campaign(
+        &self,
+        context: &RuntimeHpoExecutionContext,
+        previous_resume_state: Option<MethodsHpoResumeState>,
+        campaign: crate::runtime::RuntimeHpoCampaignResult,
+    ) -> Result<(
+        ExecutionPlan,
+        VariantSelectionOutcome,
+        MethodsHpoResumeState,
+    )> {
+        if campaign.operation_id != context.operation_id
+            || campaign.controller_id != context.controller_id
+            || campaign.target_node_id != context.target_node_id
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native Methods HPO campaign operation identity mismatch".to_string(),
+            ));
+        }
+        if campaign.checkpoint.provenance != context.provenance {
+            return Err(DagMlError::RuntimeValidation(
+                "native Methods HPO campaign checkpoint provenance does not match attested training evidence"
+                    .to_string(),
+            ));
+        }
+        let resume_selection = MethodsHpoResumeSelection {
+            selection_id: self.selection.id.clone(),
+            target_node_id: context.target_node_id.clone(),
+            producer_port: context.selection.producer_port.clone(),
+            metric: context.selection.metric.name().to_string(),
+        };
+        // A restored optimizer may spend this invocation only on failed or
+        // pruned trials. Its fresh checkpoint then legitimately has no *new*
+        // completed proposal, while the prior durable state already holds the
+        // exact proposal/report/candidate evidence that SELECT must retain.
+        // Do not manufacture a proposal from a report or native checkpoint:
+        // accept this shape solely when all fresh coordinator evidence is
+        // empty and replace only the native checkpoint bytes in the already
+        // validated prior state.
+        let no_new_completed_proposals = campaign.checkpoint.completed_proposals.is_empty();
+        let resume_state = match (previous_resume_state, no_new_completed_proposals) {
+            (Some(mut previous), true) => {
+                if !campaign.checkpoint.completed_reports.is_empty()
+                    || !campaign.candidates.is_empty()
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "native Methods HPO campaign has reports or candidates without completed proposal evidence"
+                            .to_string(),
+                    ));
+                }
+                if previous.provenance.graph_fingerprint != context.provenance.graph_fingerprint
+                    || previous.provenance.campaign_fingerprint
+                        != context.provenance.campaign_fingerprint
+                    || previous.provenance.controller_fingerprint
+                        != context.provenance.controller_fingerprint
+                    || previous.provenance.data_identities_fingerprint
+                        != context.provenance.data_identities_fingerprint
+                    || context.provenance.fold_set_fingerprint.as_deref()
+                        != Some(previous.provenance.fold_set_fingerprint.as_str())
+                    || previous.provenance.training_influence_fingerprint
+                        != context.provenance.training_influence_fingerprint
+                    || previous.provenance.relation_fingerprint
+                        != context.provenance.relation_fingerprint
+                    || previous.provenance.selection.selection_id != self.selection.id
+                    || previous.provenance.selection.target_node_id != context.target_node_id
+                    || previous.provenance.selection.producer_port
+                        != context.selection.producer_port
+                    || previous.provenance.selection.metric != context.selection.metric.name()
+                    || previous.operation_id != context.operation_id
+                    || previous.controller_id != context.controller_id
+                    || previous.target_node_id != context.target_node_id
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "native Methods HPO resumed campaign state has incompatible provenance"
+                            .to_string(),
+                    ));
+                }
+                previous.checkpoint = campaign.checkpoint.artifact.clone();
+                previous.trial_history_len = campaign.checkpoint.trial_history_len;
+                previous.terminal_trials = campaign
+                    .terminal_trials
+                    .iter()
+                    .map(|snapshot| crate::bundle::MethodsHpoTerminalEvidence {
+                        trial: snapshot.trial.clone(),
+                        variant_id: snapshot.variant_id.clone(),
+                    })
+                    .collect();
+                previous.incumbent = crate::bundle::MethodsHpoNativeIncumbent {
+                    trial_id: campaign.incumbent.trial_id,
+                    score: campaign.incumbent.score,
+                    metric: campaign.incumbent.metric.clone(),
+                    direction: campaign.incumbent.direction,
+                    variant_id: campaign.incumbent.variant_id.clone(),
+                };
+                previous
+            }
+            (None, true) => {
+                return Err(DagMlError::RuntimeValidation(
+                    "native Methods HPO campaign completed no proposal evidence; cannot create an initial resumable state"
+                        .to_string(),
+                ));
+            }
+            (previous, false) => {
+                let mut current = MethodsHpoResumeState::from_runtime_checkpoint(
+                    campaign.checkpoint.clone(),
+                    resume_selection,
+                    campaign.candidates.clone(),
+                    campaign.incumbent.clone(),
+                    campaign.terminal_trials.clone(),
+                )?;
+                if let Some(previous) = previous {
+                    if previous.provenance != current.provenance
+                        || previous.operation_id != current.operation_id
+                        || previous.controller_id != current.controller_id
+                        || previous.target_node_id != current.target_node_id
+                    {
+                        return Err(DagMlError::RuntimeValidation(
+                            "native Methods HPO resumed campaign state has incompatible provenance"
+                                .to_string(),
+                        ));
+                    }
+                    current
+                        .completed_proposals
+                        .extend(previous.completed_proposals);
+                    current.completed_reports.extend(previous.completed_reports);
+                    current.candidates.extend(previous.candidates);
+                }
+                current
+            }
+        };
+        resume_state.validate()?;
+        let mut variants = resume_state
+            .completed_proposals
+            .iter()
+            .map(|proposal| proposal.variant.clone())
+            .collect::<Vec<_>>();
+        variants.sort_by(|left, right| left.variant_id.cmp(&right.variant_id));
+        if variants.is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "native Methods HPO campaign completed no selectable candidates".to_string(),
+            ));
+        }
+        let mut candidate_scores = resume_state
+            .completed_reports
+            .iter()
+            .map(|completed| {
+                completed
+                    .report
+                    .clone()
+                    .into_candidate_score(completed.variant_id.as_str())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        candidate_scores.sort_by(|left, right| left.candidate_id.cmp(&right.candidate_id));
+        if candidate_scores.len() != variants.len()
+            || candidate_scores
+                .iter()
+                .map(|candidate| candidate.candidate_id.as_str())
+                .collect::<BTreeSet<_>>()
+                != variants
+                    .iter()
+                    .map(|variant| variant.variant_id.as_str())
+                    .collect::<BTreeSet<_>>()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native Methods HPO completed reports do not exactly cover scheduler candidate variants"
+                    .to_string(),
+            ));
+        }
+        let decision = select_candidate(self.selection, &candidate_scores)?;
+        let selected_variant_id =
+            VariantId::new(decision.selected_candidate_id.clone()).map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "native Methods HPO selected invalid candidate variant: {error}"
+                ))
+            })?;
+        let incumbent = &resume_state.incumbent;
+        if incumbent.metric != self.selection.metric.name
+            || incumbent.direction
+                != match self.selection.metric.objective {
+                    crate::selection::MetricObjective::Minimize => {
+                        crate::hpo::HpoDirection::Minimize
+                    }
+                    crate::selection::MetricObjective::Maximize => {
+                        crate::hpo::HpoDirection::Maximize
+                    }
+                }
+            || incumbent.variant_id != selected_variant_id
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native Methods HPO incumbent does not exactly match DAG-ML selection metric, direction, and variant"
+                    .to_string(),
+            ));
+        }
+        let incumbent_report = resume_state
+            .completed_reports
+            .iter()
+            .find(|report| report.trial_id == incumbent.trial_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "native Methods HPO incumbent has no completed scheduler report".to_string(),
+                )
+            })?;
+        if incumbent_report.variant_id != incumbent.variant_id
+            || incumbent_report.score.to_bits() != incumbent.score.to_bits()
+            || candidate_scores
+                .iter()
+                .filter(|candidate| {
+                    candidate
+                        .metrics
+                        .get(&self.selection.metric.name)
+                        .is_some_and(|score| score.to_bits() == incumbent.score.to_bits())
+                })
+                .count()
+                != 1
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native Methods HPO incumbent score is tied, drifted, or not uniquely attested by scheduler evidence"
+                    .to_string(),
+            ));
+        }
+        let validation_reports = resume_state
+            .completed_reports
+            .iter()
+            .map(|completed| completed.report.clone())
+            .collect::<Vec<_>>();
+        let validation_predictions = campaign
+            .candidates
+            .iter()
+            .map(|candidate| candidate.validation_predictions.clone())
+            .collect::<Vec<_>>();
+        let mut plan = self.projection.plan.clone();
+        plan.variants = variants;
+        plan.validate()?;
+        Ok((
+            plan,
+            VariantSelectionOutcome {
+                selection: VariantSelection {
+                    selected_variant_id,
+                    validation_reports,
+                    variant_validation_predictions: validation_predictions,
+                },
+                decision,
+            },
+            resume_state,
+        ))
+    }
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[allow(clippy::too_many_arguments)]
+fn validate_methods_hpo_resume_state(
+    state: &MethodsHpoResumeState,
+    plan: &ExecutionPlan,
+    operation_id: &str,
+    controller_id: &crate::ControllerId,
+    descriptor: &PortableMethodsHpoDescriptor,
+    selection_id: &str,
+    selection_metric: RegressionMetricKind,
+    producer: &NodeId,
+    producer_port: &str,
+    provenance: &RuntimeHpoProvenance,
+) -> Result<()> {
+    state.validate_against_plan(plan)?;
+    let expected_fold = provenance.fold_set_fingerprint.as_deref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(
+            "native Methods HPO resume requires an attested execution-plan fold set".to_string(),
+        )
+    })?;
+    if state.operation_id != operation_id
+        || state.controller_id != *controller_id
+        || state.target_node_id != descriptor.target_node_id
+        || state.checkpoint.binding.controller_id != descriptor.study.controller_id
+        || state.checkpoint.binding.study_id != descriptor.study.study_id
+        || state.provenance.graph_fingerprint != provenance.graph_fingerprint
+        || state.provenance.campaign_fingerprint != provenance.campaign_fingerprint
+        || state.provenance.controller_fingerprint != provenance.controller_fingerprint
+        || state.provenance.data_identities_fingerprint != provenance.data_identities_fingerprint
+        || state.provenance.fold_set_fingerprint != expected_fold
+        || state.provenance.training_influence_fingerprint
+            != provenance.training_influence_fingerprint
+        || state.provenance.relation_fingerprint != provenance.relation_fingerprint
+        || state.provenance.selection.selection_id != selection_id
+        || state.provenance.selection.target_node_id != *producer
+        || state.provenance.selection.producer_port != producer_port
+        || state.provenance.selection.metric != selection_metric.name()
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "native Methods HPO resume state does not match this attested plan, data, fold, influence, or selection identity"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PortableMethodsHpoDescriptor {
+    operation_id: String,
+    study: MethodsHpoStudyConfig,
+    trials: u32,
+    /// Optional complete portable predictor package from a previous,
+    /// compatible campaign. A resume is accepted only after the package's
+    /// cross-links validate through the replay-owned loader; callers cannot
+    /// inject a free checkpoint, report, or proposal list here.
+    #[serde(default)]
+    #[cfg_attr(not(feature = "methods-optimizer-local"), allow(dead_code))]
+    resume_package_json: Option<String>,
+    target_node_id: NodeId,
+    /// Native parameter name -> direct model parameter key.  Nested paths are
+    /// deliberately not accepted in v1: a candidate patch must remain a
+    /// replayable ordinary model parameter override.
+    parameter_paths: BTreeMap<String, String>,
+}
+
+impl HpoExecutionContext<'_> {
+    /// Validate native-HPO ownership before any provider attestation or data
+    /// view can be requested.  This is a hard preflight, not a soft fallback:
+    /// an unsupported tuner must never be silently delegated to generic
+    /// controller state.
+    fn preflight(&self) -> Result<Option<PortableMethodsHpoDescriptor>> {
+        let Some(raw) = self
+            .projection
+            .plan
+            .campaign
+            .metadata
+            .get("methods_hpo_operation")
+        else {
+            return Ok(None);
+        };
+        let descriptor: PortableMethodsHpoDescriptor = serde_json::from_value(raw.clone())
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "campaign methods_hpo_operation descriptor is invalid: {error}",
+                ))
+            })?;
+        validate_portable_methods_hpo_descriptor(&descriptor, &self.projection.plan)?;
+        validate_methods_hpo_selection_alignment(&descriptor, self.selection)?;
+        let controller_id = crate::ControllerId::new(descriptor.study.controller_id.clone())
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "native Methods HPO descriptor has invalid controller id: {error}"
+                ))
+            })?;
+        if self.controllers.get(&controller_id).is_none() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods HPO campaign controller `{controller_id}` is not registered",
+            )));
+        }
+
+        let target = self
+            .projection
+            .plan
+            .node_plans
+            .get(&descriptor.target_node_id)
+            .expect("portable Methods HPO descriptor target was validated");
+        if target.controller_id.as_str() != crate::hpo::METHODS_PLS_CONTROLLER_ID {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods HPO target `{}` must resolve to `{}`; host/plugin model controllers are refused",
+                descriptor.target_node_id,
+                crate::hpo::METHODS_PLS_CONTROLLER_ID,
+            )));
+        }
+        if self.request.options.scheduler.kind != TrainingSchedulerKind::Sequential {
+            return Err(DagMlError::RuntimeValidation(
+                "native Methods HPO v1 requires the sequential scheduler because its approved provider numerical view is not Sync".to_string(),
+            ));
+        }
+        self.data_provider.methods_pls_capability()?;
+
+        // Keep all borrowed execution evidence live in this local context.
+        // These accesses make the ownership relationship explicit and prevent
+        // accidental construction from detached controller state.
+        let _ = (
+            self.request.request_id.as_str(),
+            self.controllers,
+            self.data_provider,
+            self.relations,
+            self.training_influence,
+            self.selection.id.as_str(),
+        );
+        methods_optimizer_preflight().map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "native Methods HPO preflight failed before data access: {error}"
+            ))
+        })?;
+        Ok(Some(descriptor))
+    }
+}
+
+fn validate_portable_methods_hpo_descriptor(
+    descriptor: &PortableMethodsHpoDescriptor,
+    plan: &ExecutionPlan,
+) -> Result<()> {
+    if descriptor.trials == 0 {
+        return Err(DagMlError::RuntimeValidation(
+            "native Methods HPO descriptor trials must be positive".to_string(),
+        ));
+    }
+    if descriptor.operation_id.trim().is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "native Methods HPO operation_id must be non-empty".to_string(),
+        ));
+    }
+    descriptor.study.search_space.validate().map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "native Methods HPO search space is invalid: {error}"
+        ))
+    })?;
+    let target = plan
+        .node_plans
+        .get(&descriptor.target_node_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "native Methods HPO target model `{}` is absent from the execution plan",
+                descriptor.target_node_id
+            ))
+        })?;
+    if target.kind != NodeKind::Model {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "native Methods HPO target `{}` must be a model node",
+            descriptor.target_node_id
+        )));
+    }
+    let graph_node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == descriptor.target_node_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "native Methods HPO target `{}` is absent from the graph",
+                descriptor.target_node_id
+            ))
+        })?;
+    let portable_pls = graph_node
+        .operator
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|operator| operator.eq_ignore_ascii_case("pls"));
+    if !portable_pls {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "native Methods HPO v1 supports only a portable `pls` target; `{}` is not one",
+            descriptor.target_node_id
+        )));
+    }
+    // This is an intentionally narrow portable projection.  The Methods PLS
+    // controller and its execution-local tuner session can attest only the
+    // direct `n_components` model parameter today; accepting an arbitrary
+    // native search space here would create variants whose parameter effects
+    // cannot be proven in the normal scheduler task/lineage path.
+    let [crate::hpo::HpoParameter::Int {
+        name,
+        low,
+        high,
+        step,
+        log,
+    }] = descriptor.study.search_space.parameters.as_slice()
+    else {
+        return Err(DagMlError::RuntimeValidation(
+            "native Methods HPO v1 supports exactly one integer `n_components` search parameter"
+                .to_string(),
+        ));
+    };
+    if name != "n_components" || *low != 1 || *high != 3 || *step != 1 || *log {
+        return Err(DagMlError::RuntimeValidation(
+            "native Methods HPO v1 requires active `n_components` integer bounds 1..=3, step=1, log=false"
+                .to_string(),
+        ));
+    }
+    if descriptor.parameter_paths
+        != BTreeMap::from([("n_components".to_string(), "n_components".to_string())])
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "native Methods HPO v1 requires parameter_paths {`n_components`: `n_components`}"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_methods_hpo_selection_alignment(
+    descriptor: &PortableMethodsHpoDescriptor,
+    selection: &SelectionPolicy,
+) -> Result<()> {
+    let expected_metric = match selection.metric.name.as_str() {
+        "rmse" => crate::hpo::HpoMetric::Rmse,
+        "mse" => crate::hpo::HpoMetric::Mse,
+        "mae" => crate::hpo::HpoMetric::Mae,
+        "r2" => crate::hpo::HpoMetric::R2,
+        "accuracy" => crate::hpo::HpoMetric::Accuracy,
+        "balanced_accuracy" => crate::hpo::HpoMetric::BalancedAccuracy,
+        other => {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods HPO cannot align unsupported selection metric `{other}`"
+            )))
+        }
+    };
+    if descriptor.study.optimizer.metric != expected_metric {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "native Methods HPO metric {:?} disagrees with selection metric `{}`",
+            descriptor.study.optimizer.metric, selection.metric.name
+        )));
+    }
+    let expected_direction = match selection.metric.objective {
+        crate::selection::MetricObjective::Minimize => crate::hpo::HpoDirection::Minimize,
+        crate::selection::MetricObjective::Maximize => crate::hpo::HpoDirection::Maximize,
+    };
+    if !matches!(
+        descriptor.study.optimizer.direction,
+        crate::hpo::HpoDirection::Auto
+    ) && descriptor.study.optimizer.direction != expected_direction
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "native Methods HPO direction {:?} disagrees with selection objective {:?}",
+            descriptor.study.optimizer.direction, selection.metric.objective
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -247,6 +936,34 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     projection.plan = materialize_request_parameter_patches(projection.plan, input.request)?;
     projection.validate()?;
     validate_native_training_options(input.request)?;
+    input.training_influence.validate_for_projection(
+        &projection,
+        input.request,
+        input.relations,
+    )?;
+    let runtime_training_influence = TrainingInfluenceManifest::derive_for_projection(
+        &projection,
+        input.request,
+        input.relations,
+    )?;
+    if input.training_influence != &runtime_training_influence {
+        return Err(DagMlError::RuntimeValidation(
+            "native training influence manifest does not match runtime-derived evidence"
+                .to_string(),
+        ));
+    }
+    // Native HPO is preflighted before provider attestation/materialization so
+    // unsupported model or tuning descriptors cannot incur any data cost.
+    let native_hpo_descriptor = HpoExecutionContext {
+        request: input.request,
+        projection: &projection,
+        controllers: input.controllers,
+        data_provider: input.data_provider,
+        relations: input.relations,
+        training_influence: &runtime_training_influence,
+        selection: &input.request.options.selection,
+    }
+    .preflight()?;
     validate_provider_attestations(
         &projection,
         input.request,
@@ -261,32 +978,16 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             )));
         }
     }
-    if projection.predictor_node_ids
-        != projection
-            .plan
-            .node_plans
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>()
-    {
+    let executable_nodes = projection
+        .plan
+        .node_plans
+        .values()
+        .filter(|node| !node.supported_phases.is_empty())
+        .map(|node| node.node_id.clone())
+        .collect::<BTreeSet<_>>();
+    if projection.predictor_node_ids != executable_nodes {
         return Err(DagMlError::RuntimeValidation(
             "native training currently requires the predictor closure to equal the executable plan; refusing to persist unrelated nodes"
-                .to_string(),
-        ));
-    }
-    input.training_influence.validate_for_projection(
-        &projection,
-        input.request,
-        input.relations,
-    )?;
-    let runtime_training_influence = TrainingInfluenceManifest::derive_for_projection(
-        &projection,
-        input.request,
-        input.relations,
-    )?;
-    if input.training_influence != &runtime_training_influence {
-        return Err(DagMlError::RuntimeValidation(
-            "native training influence manifest does not match runtime-derived evidence"
                 .to_string(),
         ));
     }
@@ -306,7 +1007,6 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
                 .to_string(),
         ));
     }
-
     let scheduler = NativeTrainingScheduler::from_request(input.request)?;
     let selection_metric = parse_selection_metric(input.request)?;
     let metric_level = effective_selection_metric_level(input.request)?;
@@ -323,31 +1023,80 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     let selection_producer = selection_output.node_id.clone();
     let selection_producer_port = selection_output.port_name.clone();
     validate_selection_prediction_kind(selection_metric, selection_output.prediction_kind)?;
-    let selection = select_best_variant_outcome_by_cv_for_target(
-        &projection.plan,
-        &input.run_id,
-        Some(input.request.options.seed),
-        selection_metric,
-        &selection_producer,
-        Some(selection_producer_port.as_str()),
-        metric_level,
-        |candidate_plan, candidate_ctx| {
-            scheduler
-                .fit_cv(
-                    candidate_plan,
-                    input.controllers,
-                    input.data_provider,
-                    candidate_ctx,
-                )
-                .map(|_| ())
-        },
-    )?
-    .ok_or_else(|| {
-        DagMlError::RuntimeValidation(
-            "native training SELECT received no scored candidate; controllers must emit targets"
-                .to_string(),
-        )
-    })?;
+    #[cfg(feature = "methods-optimizer-local")]
+    let mut methods_hpo_resume_state = None;
+    #[cfg(feature = "methods-optimizer-local")]
+    #[cfg(feature = "methods-optimizer-local")]
+    let selection = if let Some(descriptor) = native_hpo_descriptor.as_ref() {
+        let hpo_execution = HpoExecutionContext {
+            request: input.request,
+            projection: &projection,
+            controllers: input.controllers,
+            data_provider: input.data_provider,
+            relations: input.relations,
+            training_influence: &runtime_training_influence,
+            selection: &input.request.options.selection,
+        };
+        let (context, previous_resume_state) = hpo_execution.runtime_context(
+            descriptor,
+            selection_metric,
+            &selection_producer,
+            &selection_producer_port,
+        )?;
+        let campaign_context =
+            RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
+        let campaign = SequentialScheduler.execute_hpo_campaign(
+            &projection.plan,
+            input.controllers,
+            input.data_provider,
+            &campaign_context,
+            &context,
+        )?;
+        let (plan, selection, resume_state) =
+            hpo_execution.selection_from_campaign(&context, previous_resume_state, campaign)?;
+        projection.plan = plan;
+        methods_hpo_resume_state = Some(resume_state);
+        selection
+    } else {
+        select_best_variant_outcome_by_cv_for_target(
+            &projection.plan,
+            &input.run_id,
+            Some(input.request.options.seed),
+            selection_metric,
+            &selection_producer,
+            Some(selection_producer_port.as_str()),
+            metric_level,
+            |candidate_plan, candidate_ctx| {
+                scheduler
+                    .fit_cv(candidate_plan, input.controllers, input.data_provider, candidate_ctx)
+                    .map(|_| ())
+            },
+        )?
+        .ok_or_else(|| DagMlError::RuntimeValidation(
+            "native training SELECT received no scored candidate; controllers must emit targets".to_string(),
+        ))?
+    };
+    #[cfg(not(feature = "methods-optimizer-local"))]
+    let selection = {
+        let _ = native_hpo_descriptor;
+        select_best_variant_outcome_by_cv_for_target(
+            &projection.plan,
+            &input.run_id,
+            Some(input.request.options.seed),
+            selection_metric,
+            &selection_producer,
+            Some(selection_producer_port.as_str()),
+            metric_level,
+            |candidate_plan, candidate_ctx| {
+                scheduler
+                    .fit_cv(candidate_plan, input.controllers, input.data_provider, candidate_ctx)
+                    .map(|_| ())
+            },
+        )?
+        .ok_or_else(|| DagMlError::RuntimeValidation(
+            "native training SELECT received no scored candidate; controllers must emit targets".to_string(),
+        ))?
+    };
 
     validate_selection_report_levels(
         &selection.selection.validation_reports,
@@ -361,7 +1110,6 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     let effective_plan = materialize_selected_variant(projection.plan, &selected_variant_id)?;
     // Keep the original union variants for replay/identity while pinning every
     // retained execution through RunContext.variant_id.
-    effective_plan.validate()?;
     let selected_variant = effective_plan
         .variants
         .iter()
@@ -372,6 +1120,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
                 "selected variant disappeared while materializing the plan".to_string(),
             )
         })?;
+    effective_plan.validate()?;
 
     let mut selected_ctx = RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
     selected_ctx.variant_id = Some(selected_variant_id.clone());
@@ -457,6 +1206,35 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         prediction_requirements,
         prediction_caches,
     )?;
+    #[cfg(feature = "methods-optimizer-local")]
+    {
+        execution_bundle.methods_hpo_resume_state = methods_hpo_resume_state.clone();
+        for record in &execution_bundle.refit_artifacts {
+            if record.artifact.kind != "n4m_model" {
+                continue;
+            }
+            let controller = input
+                .controllers
+                .get(&record.controller_id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "missing controller `{}` for N4MM export",
+                        record.controller_id
+                    ))
+                })?;
+            let bytes = controller
+                .export_artifact_payload(&record.artifact.id)?
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "Methods controller did not export durable N4MM payload `{}`",
+                        record.artifact.id
+                    ))
+                })?;
+            execution_bundle
+                .raw_artifact_payloads
+                .insert(record.artifact.id.clone(), bytes);
+        }
+    }
     execution_bundle.scores = Some(score_set.clone());
     execution_bundle.validate_against_plan(&effective_plan)?;
     if let Some(caches) = &portable_prediction_caches {
@@ -533,6 +1311,12 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         portable_prediction_caches,
         training_influence: runtime_training_influence,
         execution_bundle,
+        conformal_calibration: None,
+        conformal_calibration_replay: None,
+        #[cfg(feature = "methods-optimizer-local")]
+        methods_hpo_resume_state,
+        #[cfg(not(feature = "methods-optimizer-local"))]
+        methods_hpo_resume_state: None,
         replayable_phases,
         warnings: input.warnings,
         diagnostics: input.diagnostics,
@@ -545,16 +1329,47 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
 }
 
 fn stabilize_training_outcome_for_tcv1(mut outcome: TrainingOutcome) -> Result<TrainingOutcome> {
-    // Some metrics originate from floating-point computations whose first JSON
-    // spelling can deserialize to the same binary64 value but reserialize with a
-    // shorter decimal spelling. TCV1 fingerprints must sign the portable JSON
-    // shape that readers validate after deserialization, so normalize once
-    // through serde before computing the self fingerprint.
+    // TCV1 signs the lexical JSON number token, whereas serde first parses a
+    // metric into binary64 and may subsequently select a different shortest
+    // spelling for that same value. Sign only the fixed point that a strict
+    // reader will itself obtain after deserialize/serialize; otherwise a newly
+    // produced package can fail its own `TrainingOutcome::from_json` boundary.
     outcome.outcome_fingerprint = zero_fingerprint();
-    let json = serde_json::to_string(&outcome)?;
-    let mut normalized = serde_json::from_str::<TrainingOutcome>(&json)?;
-    normalized.outcome_fingerprint = normalized.compute_fingerprint()?;
-    Ok(normalized)
+    for _ in 0..8 {
+        let json = serde_json::to_string(&outcome)?;
+        let before = parse_typed_json(&json).map_err(|error| {
+            DagMlError::CampaignValidation(format!(
+                "training outcome is not strict TCV1 JSON while normalizing: {error}"
+            ))
+        })?;
+        let mut normalized = serde_json::from_str::<TrainingOutcome>(&json)?;
+        normalized.outcome_fingerprint = zero_fingerprint();
+        let normalized_json = serde_json::to_string(&normalized)?;
+        let after = parse_typed_json(&normalized_json).map_err(|error| {
+            DagMlError::CampaignValidation(format!(
+                "training outcome is not strict TCV1 JSON after normalization: {error}"
+            ))
+        })?;
+        if before != after {
+            outcome = normalized;
+            continue;
+        }
+
+        normalized.outcome_fingerprint =
+            after
+                .fingerprint_without("outcome_fingerprint")
+                .map_err(|error| {
+                    DagMlError::CampaignValidation(format!(
+                        "training outcome TCV1 fingerprint failed after normalization: {error}"
+                    ))
+                })?;
+        let signed_json = serde_json::to_string(&normalized)?;
+        let signed = TrainingOutcome::from_json(&signed_json)?;
+        return Ok(signed);
+    }
+    Err(DagMlError::CampaignValidation(
+        "training outcome TCV1 JSON did not reach a serde canonical fixed point".to_string(),
+    ))
 }
 
 fn zero_fingerprint() -> String {
@@ -844,6 +1659,31 @@ fn validate_selected_rerun_reports(
             report
         })
         .collect::<Vec<_>>();
+    // A durable Methods HPO resume state records the one sample-level OOF
+    // average that terminalized each native trial, rather than inventing a
+    // free per-fold score transcript.  In that explicit contract, compare the
+    // selected rerun against precisely those terminal report identities.  The
+    // ordinary path retains every validation report and therefore continues to
+    // require exact full-report coverage below.
+    let terminal_oof_only = retained.iter().all(|report| {
+        report.partition == PredictionPartition::Validation
+            && report
+                .fold_id
+                .as_ref()
+                .is_some_and(|fold| fold.as_str() == "avg")
+            && report.level == PredictionLevel::Sample
+    });
+    if terminal_oof_only {
+        rerun.retain(|actual| {
+            retained.iter().any(|expected| {
+                expected.producer_node == actual.producer_node
+                    && expected.producer_port == actual.producer_port
+                    && expected.fold_id == actual.fold_id
+                    && expected.prediction_id == actual.prediction_id
+                    && expected.level == actual.level
+            })
+        });
+    }
     let sort = |reports: &mut Vec<crate::metrics::RegressionMetricReport>| {
         reports.sort_by(|left, right| {
             (
@@ -864,13 +1704,46 @@ fn validate_selected_rerun_reports(
     };
     sort(&mut retained);
     sort(&mut rerun);
-    if retained.is_empty() || retained != rerun {
+    if retained.is_empty()
+        || retained.len() != rerun.len()
+        || retained
+            .iter()
+            .zip(&rerun)
+            .any(|(left, right)| !reports_match_rerun_tolerance(left, right))
+    {
         return Err(DagMlError::RuntimeValidation(
             "selected variant FIT_CV rerun diverged from the reports that justified SELECT"
                 .to_string(),
         ));
     }
     Ok(())
+}
+
+/// Native numerical libraries may differ by one rounding unit across a fresh
+/// process/context.  Preserve report identity exactly, while comparing the
+/// numeric evidence with the same tight tolerance used for portable replay.
+fn reports_match_rerun_tolerance(
+    left: &crate::metrics::RegressionMetricReport,
+    right: &crate::metrics::RegressionMetricReport,
+) -> bool {
+    left.prediction_id == right.prediction_id
+        && left.producer_node == right.producer_node
+        && left.producer_port == right.producer_port
+        && left.variant_id == right.variant_id
+        && left.variant_label == right.variant_label
+        && left.partition == right.partition
+        && left.fold_id == right.fold_id
+        && left.level == right.level
+        && left.row_count == right.row_count
+        && left.target_width == right.target_width
+        && left.target_names == right.target_names
+        && left.metrics.len() == right.metrics.len()
+        && left.metrics.iter().all(|(name, value)| {
+            right
+                .metrics
+                .get(name)
+                .is_some_and(|other| (value - other).abs() <= 1.0e-12)
+        })
 }
 
 fn validate_selection_report_levels(
@@ -1546,6 +2419,92 @@ impl TrainingOutcome {
         tcv1_fingerprint(&self.execution_bundle, "training outcome execution bundle")
     }
 
+    fn pre_conformal_outcome(&self) -> Result<Self> {
+        let mut source = self.clone();
+        source.conformal_calibration = None;
+        source.conformal_calibration_replay = None;
+        source.execution_bundle.conformal_calibration = None;
+        stabilize_training_outcome_for_tcv1(source)
+    }
+
+    fn pre_conformal_outcome_fingerprint(&self) -> Result<String> {
+        Ok(self.pre_conformal_outcome()?.outcome_fingerprint)
+    }
+
+    /// Attach native split-conformal state after an ordinary identity-attested
+    /// calibration replay.  The bundle retains a typed reference and the
+    /// outcome owns the complete signed quantiles.
+    pub(crate) fn attach_conformal_calibration(
+        &mut self,
+        calibration: ConformalCalibration,
+        replay: TrainingReplayOutcome,
+    ) -> Result<()> {
+        self.validate()?;
+        calibration.validate()?;
+        let request = replay_request_from_outcome(&replay);
+        replay.validate_against(self, &request)?;
+        let binding = self
+            .outputs
+            .iter()
+            .find(|output| output.binding.binding_id == calibration.binding_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "conformal calibration binding is absent from training outcome".to_string(),
+                )
+            })?;
+        if binding.binding.target_names != calibration.target_names {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal calibration target order does not match training outcome binding"
+                    .to_string(),
+            ));
+        }
+        let fold_set = self.effective_plan.fold_set.as_ref().ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "conformal calibration requires a source FoldSet".to_string(),
+            )
+        })?;
+        let context = &calibration.context;
+        if context.predictor_binding_fingerprint != binding.binding.binding_fingerprint
+            || context.source_training_outcome_fingerprint != self.outcome_fingerprint
+            || context.data_identities_fingerprint != self.data_identities_fingerprint()?
+            || context.fold_set_fingerprint != fold_set_fingerprint(fold_set)?
+            || context.training_influence_fingerprint
+                != self.training_influence.manifest_fingerprint
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal calibration context does not exactly match its training outcome"
+                    .to_string(),
+            ));
+        }
+        let training_ids = self
+            .training_influence
+            .entries
+            .iter()
+            .flat_map(|entry| {
+                entry
+                    .physical_sample_ids
+                    .iter()
+                    .chain(entry.origin_sample_ids.iter())
+            })
+            .collect::<BTreeSet<_>>();
+        if context
+            .calibration_cohort
+            .physical_sample_ids
+            .iter()
+            .chain(context.calibration_cohort.origin_sample_ids.iter())
+            .any(|id| training_ids.contains(id))
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal calibration cohort overlaps training influence closure".to_string(),
+            ));
+        }
+        self.execution_bundle.conformal_calibration = Some(calibration.reference()?);
+        self.conformal_calibration = Some(calibration);
+        self.conformal_calibration_replay = Some(replay);
+        *self = stabilize_training_outcome_for_tcv1(self.clone())?;
+        self.validate()
+    }
+
     /// Build the compact cross-link embedded by a portable predictor package.
     pub fn to_reference(&self) -> Result<TrainingOutcomeRef> {
         self.validate()?;
@@ -1556,6 +2515,11 @@ impl TrainingOutcome {
         Ok(TrainingOutcomeRef {
             outcome_id: self.outcome_id.clone(),
             outcome_fingerprint: self.outcome_fingerprint.clone(),
+            pre_conformal_outcome_fingerprint: self
+                .conformal_calibration
+                .as_ref()
+                .map(|_| self.pre_conformal_outcome_fingerprint())
+                .transpose()?,
             training_request_fingerprint: self.training_request_fingerprint.clone(),
             effective_plan_fingerprint: self.effective_plan_fingerprint.clone(),
             execution_bundle_id: self.execution_bundle.bundle_id.clone(),
@@ -1620,6 +2584,8 @@ impl TrainingOutcome {
             training_outcome: self.to_reference()?,
             effective_plan: self.effective_plan.clone(),
             execution_bundle: self.execution_bundle.clone(),
+            conformal_calibration: self.conformal_calibration.clone(),
+            conformal_calibration_replay: self.conformal_calibration_replay.clone(),
             output_bindings,
             predictor_node_ids,
             training_influence: self.training_influence.clone(),
@@ -1703,6 +2669,13 @@ impl TrainingOutcome {
         self.validate_refit()?;
         self.score_set.validate()?;
         self.validate_version_family()?;
+        if self.schema_version == LEGACY_TRAINING_OUTCOME_SCHEMA_VERSION
+            && (self.conformal_calibration.is_some() || self.conformal_calibration_replay.is_some())
+        {
+            return contract_error(
+                "training outcome V1 cannot carry conformal state; migrate to V2",
+            );
+        }
         if self.score_set.plan_id != self.effective_plan.id {
             return contract_error("training outcome score_set.plan_id does not match plan");
         }
@@ -1717,21 +2690,15 @@ impl TrainingOutcome {
         self.validate_selection_decision()?;
 
         let closure = self.validate_outputs()?;
-        // V1 standalone-validation invariant: the effective predictor closure
-        // must cover every effective plan node. Until unrelated-node execution
-        // and persistence have an explicit policy, this lets replayable-phase
-        // derivation trust `closure` as the full predictor without reconstructing
-        // a partial schedule from outcome data alone.
-        if closure
-            != self
-                .effective_plan
-                .node_plans
-                .keys()
-                .cloned()
-                .collect::<BTreeSet<_>>()
-        {
+        let expected_predictor_execution_closure = self
+            .effective_plan
+            .node_plans
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if closure != expected_predictor_execution_closure {
             return contract_error(
-                "training outcome predictor closure must equal all effective plan nodes in V1",
+                "training outcome predictor closure does not equal the explicit V1 predictor execution closure",
             );
         }
         self.training_influence.validate()?;
@@ -1773,6 +2740,125 @@ impl TrainingOutcome {
             return contract_error(
                 "training outcome execution bundle scores do not equal score_set",
             );
+        }
+        if self.execution_bundle.methods_hpo_resume_state != self.methods_hpo_resume_state {
+            return contract_error(
+                "training outcome Methods HPO resume state does not equal execution bundle state",
+            );
+        }
+        match (
+            &self.conformal_calibration,
+            &self.conformal_calibration_replay,
+            &self.execution_bundle.conformal_calibration,
+        ) {
+            (Some(calibration), Some(replay), Some(reference)) => {
+                reference.validate_against(calibration)?;
+                let pre_conformal_source = self.pre_conformal_outcome()?;
+                let replay_request = replay_request_from_outcome(replay);
+                replay.validate_against(&pre_conformal_source, &replay_request)?;
+                let binding = self
+                    .outputs
+                    .iter()
+                    .find(|output| output.binding.binding_id == calibration.binding_id)
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "conformal calibration binding is absent from training outcome"
+                                .to_string(),
+                        )
+                    })?;
+                let fold_set = self.effective_plan.fold_set.as_ref().ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "conformal calibration requires a source FoldSet".to_string(),
+                    )
+                })?;
+                let context = &calibration.context;
+                if binding.binding.target_names != calibration.target_names
+                    || context.predictor_binding_fingerprint != binding.binding.binding_fingerprint
+                    || context.source_training_outcome_fingerprint
+                        != pre_conformal_source.outcome_fingerprint
+                    || context.calibration_replay_outcome_fingerprint != replay.outcome_fingerprint
+                    || context.data_identities_fingerprint != self.data_identities_fingerprint()?
+                    || context.fold_set_fingerprint != fold_set_fingerprint(fold_set)?
+                    || context.training_influence_fingerprint
+                        != self.training_influence.manifest_fingerprint
+                {
+                    return contract_error(
+                        "training outcome conformal context does not exactly cross-link its pre-calibration source",
+                    );
+                }
+                if context.relation_fingerprint == self.training_influence.relation_fingerprint {
+                    return contract_error(
+                        "training outcome calibration relation authority must be distinct from development relations",
+                    );
+                }
+                let replay_output = replay
+                    .outputs
+                    .iter()
+                    .find(|output| output.binding.binding_id == calibration.binding_id)
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "conformal calibration replay is missing its selected binding"
+                                .to_string(),
+                        )
+                    })?;
+                let [point] = replay_output.predictions.as_slice() else {
+                    return contract_error(
+                        "conformal calibration replay requires exactly one selected point block",
+                    );
+                };
+                if replay.phase != Phase::Predict
+                    || replay_output.binding != binding.binding
+                    || point.sample_ids != calibration.sample_ids
+                    || point.sample_ids != context.calibration_cohort.physical_sample_ids
+                    || replay.input_data_identities.iter().any(|identity| {
+                        identity.relation_fingerprint != context.relation_fingerprint
+                    })
+                {
+                    return contract_error(
+                        "conformal calibration replay evidence does not match its selected binding, samples, or relation authority",
+                    );
+                }
+                let training_ids = self
+                    .training_influence
+                    .entries
+                    .iter()
+                    .flat_map(|entry| {
+                        entry
+                            .physical_sample_ids
+                            .iter()
+                            .chain(entry.origin_sample_ids.iter())
+                    })
+                    .collect::<BTreeSet<_>>();
+                if context
+                    .calibration_cohort
+                    .physical_sample_ids
+                    .iter()
+                    .chain(context.calibration_cohort.origin_sample_ids.iter())
+                    .any(|id| training_ids.contains(id))
+                {
+                    return contract_error(
+                        "conformal calibration cohort overlaps training influence closure",
+                    );
+                }
+            }
+            (None, None, None) => {}
+            _ => {
+                return contract_error(
+                    "training outcome and execution bundle conformal state disagree",
+                )
+            }
+        }
+        if let Some(state) = &self.methods_hpo_resume_state {
+            let terminal_reports = state
+                .completed_reports
+                .iter()
+                .map(|completed| completed.report.clone())
+                .collect::<Vec<_>>();
+            if self.score_set.reports != terminal_reports {
+                return contract_error(
+                    "training outcome score_set does not exactly retain Methods HPO terminal OOF reports",
+                );
+            }
         }
         self.validate_data_identities()?;
         validate_all_identity_relations(
@@ -2282,6 +3368,7 @@ impl BoundTrainingOutput {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_bound_block(
     plan: &ExecutionPlan,
     binding: &OutputBinding,
@@ -3233,8 +4320,10 @@ mod replay_phase_tests {
 mod tests {
     use super::*;
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     const REFIT_FIXTURE: &str =
         include_str!("../../../examples/fixtures/estimator/training_outcome_refit.v1.json");
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     const NO_REFIT_FIXTURE: &str =
         include_str!("../../../examples/fixtures/estimator/training_outcome_no_refit.v1.json");
 
@@ -3254,6 +4343,7 @@ mod tests {
         }
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn independent_w0_training_outcomes_parse_and_round_trip_fingerprint() {
         for fixture in [REFIT_FIXTURE, NO_REFIT_FIXTURE] {
@@ -3268,6 +4358,7 @@ mod tests {
         }
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn strict_parser_rejects_tamper_and_unknown_field() {
         let mut tampered: serde_json::Value = serde_json::from_str(REFIT_FIXTURE).unwrap();
@@ -3279,6 +4370,7 @@ mod tests {
         assert!(TrainingOutcome::from_json(&serde_json::to_string(&unknown).unwrap()).is_err());
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn outcome_rejects_nested_runtime_handle_keys_defense_in_depth() {
         let mut outcome = TrainingOutcome::from_json(REFIT_FIXTURE).unwrap();
@@ -3291,6 +4383,7 @@ mod tests {
         assert!(error.to_string().contains("runtime handles"), "{error}");
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn strict_parser_rejects_future_version_even_when_resigned() {
         let mut future: serde_json::Value = serde_json::from_str(REFIT_FIXTURE).unwrap();
@@ -3302,6 +4395,7 @@ mod tests {
         assert!(TrainingOutcome::from_json(&serde_json::to_string(&future).unwrap()).is_err());
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn select_lineage_is_portable_but_foreign_phase_is_rejected() {
         let mut outcome = TrainingOutcome::from_json(REFIT_FIXTURE).unwrap();

@@ -37,15 +37,19 @@ PACK_PATH = ROOT / "docs" / "contracts" / "training_contract_conformance_pack.v1
 
 BASE_PACK_ARTIFACTS = {
     ".github/workflows/ci.yml": "ci_gate",
+    "crates/dag-ml-core/Cargo.toml": "published_native_manifest",
     "crates/dag-ml-cli/tests/training_contracts.rs": "binding_test",
     "crates/dag-ml-capi/include/dag_ml.h": "c_abi_header",
     "crates/dag-ml-capi/src/lib.rs": "c_training_binding",
     "crates/dag-ml-capi/tests/c_conformance.rs": "c_binding_test",
     "crates/dag-ml-capi/tests/training_execute.rs": "c_training_test",
     "crates/dag-ml-core/src/bundle.rs": "native_bundle_contract",
+    "crates/dag-ml-core/src/hpo.rs": "native_hpo_controller",
     "crates/dag-ml-core/src/aggregation.rs": "typed_cache_dependency",
     "crates/dag-ml-core/src/campaign.rs": "historical_fingerprint_source",
     "crates/dag-ml-core/src/canonical.rs": "native_canonical_fingerprint",
+    "crates/dag-ml-core/src/conformal.rs": "native_conformal_kernel",
+    "crates/dag-ml-core/src/conformal_runtime.rs": "native_conformal_runtime_contract",
     "crates/dag-ml-core/src/controller.rs": "typed_contract_dependency",
     "crates/dag-ml-core/src/data.rs": "typed_contract_dependency",
     "crates/dag-ml-core/src/fold.rs": "typed_contract_dependency",
@@ -59,6 +63,9 @@ BASE_PACK_ARTIFACTS = {
     "crates/dag-ml-core/src/policy.rs": "typed_contract_dependency",
     "crates/dag-ml-core/src/relation.rs": "typed_contract_dependency",
     "crates/dag-ml-core/src/runtime/artifact.rs": "typed_runtime_dependency",
+    "crates/dag-ml-core/src/runtime/dataview.rs": "native_hpo_runtime_session",
+    "crates/dag-ml-core/src/runtime/mod.rs": "native_hpo_runtime_topology",
+    "crates/dag-ml-core/src/runtime/scheduler.rs": "native_hpo_scheduler",
     "crates/dag-ml-core/src/runtime/task.rs": "typed_runtime_dependency",
     "crates/dag-ml-core/src/selection.rs": "typed_contract_dependency",
     "crates/dag-ml-core/src/training.rs": "native_contract",
@@ -73,6 +80,7 @@ BASE_PACK_ARTIFACTS = {
     "crates/dag-ml-py/tests/test_training_result.py": "python_binding_test",
     "crates/dag-ml-wasm/src/lib.rs": "wasm_binding",
     "docs/TRAINING_CONTRACTS.md": "documentation",
+    "docs/HPO_METHODS_ADAPTER.md": "hpo_documentation",
     "docs/contracts/abi_snapshot.v1.json": "c_abi_snapshot",
     "docs/contracts/README.md": "contract_index_documentation",
     "docs/contracts/cache_namespace.schema.json": "schema",
@@ -120,6 +128,8 @@ BASE_PACK_ARTIFACTS = {
     "scripts/smoke_python_bindings.py": "binding_smoke",
     "scripts/validate_abi_snapshot.py": "c_abi_gate",
     "scripts/validate_contracts.py": "production_validator",
+    "crates/dag-ml-core/Cargo.toml.methods-local": "native_hpo_overlay_manifest",
+    "scripts/test_methods_optimizer_local.sh": "native_hpo_overlay_helper",
 }
 
 PACK_ARTIFACTS = with_transitive_schema_dependencies(ROOT, BASE_PACK_ARTIFACTS)

@@ -315,6 +315,213 @@ pub trait RuntimeDataProvider {
     fn coordinator_relations(&self, _binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
         Ok(None)
     }
+
+    /// Confirm that this provider can supply the deliberately narrow numeric
+    /// view consumed by the portable Methods PLS controller.  The default is a
+    /// refusal, so an ordinary data provider can never accidentally expose its
+    /// buffers to a native numerical controller.
+    fn methods_pls_capability(&self) -> Result<()> {
+        Err(DagMlError::RuntimeValidation(
+            "runtime data provider does not implement the portable Methods PLS numeric view"
+                .to_string(),
+        ))
+    }
+
+    fn preflight_methods_pls(&self, request: &MethodsPlsDataRequest) -> Result<()> {
+        request.validate()?;
+        self.methods_pls_capability()
+    }
+
+    /// Return provider-selected row-major numeric values for a Methods PLS
+    /// invocation.  This is not a raw IO escape hatch: the request carries the
+    /// scheduler-created, identity-keyed data views and the provider is solely
+    /// responsible for resolving them to rows and targets.
+    fn methods_pls_data(&self, _request: &MethodsPlsDataRequest) -> Result<MethodsPlsData> {
+        Err(DagMlError::RuntimeValidation(
+            "runtime data provider does not implement the portable Methods PLS numeric view"
+                .to_string(),
+        ))
+    }
+}
+
+/// Row-major `f64` matrix passed from an explicitly capable provider to the
+/// portable Methods PLS controller.  It never crosses the public ABI.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodsPlsMatrix {
+    pub values: Vec<f64>,
+    pub rows: usize,
+    pub cols: usize,
+}
+
+impl MethodsPlsMatrix {
+    pub fn validate(&self, label: &str) -> Result<()> {
+        if self.rows == 0
+            || self.cols == 0
+            || self.rows.checked_mul(self.cols) != Some(self.values.len())
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "portable Methods PLS {label} matrix has invalid row-major dimensions"
+            )));
+        }
+        if self.values.iter().any(|value| !value.is_finite()) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "portable Methods PLS {label} matrix contains a non-finite value"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// One identity-keyed dataset returned by the portable PLS provider capability.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodsPlsDataset {
+    pub sample_ids: Vec<SampleId>,
+    pub x: MethodsPlsMatrix,
+    /// Targets are required for fitting/CV scoring, but deliberately absent
+    /// for production PREDICT.  A predictor must never require labels merely
+    /// to materialize an inference cohort.
+    pub y: Option<MethodsPlsMatrix>,
+    pub target_names: Vec<String>,
+}
+
+impl MethodsPlsDataset {
+    pub fn validate(&self, label: &str, require_targets: bool) -> Result<()> {
+        self.x.validate(&format!("{label}.x"))?;
+        if self.sample_ids.len() != self.x.rows {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "portable Methods PLS {label} rows do not match sample identities"
+            )));
+        }
+        if self.target_names.is_empty()
+            || self.target_names.iter().any(|name| name.trim().is_empty())
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "portable Methods PLS {label} has invalid target names"
+            )));
+        }
+        match &self.y {
+            Some(y) => {
+                y.validate(&format!("{label}.y"))?;
+                if self.sample_ids.len() != y.rows || self.target_names.len() != y.cols {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "portable Methods PLS {label} targets do not match sample identities or target names"
+                    )));
+                }
+            }
+            None if require_targets => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS {label} requires targets for fitting or CV scoring"
+                )))
+            }
+            None => {}
+        }
+        let unique = self.sample_ids.iter().collect::<BTreeSet<_>>();
+        if unique.len() != self.sample_ids.len() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "portable Methods PLS {label} contains duplicate sample identities"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Scheduler-owned view selection for a portable Methods PLS operation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodsPlsDataRequest {
+    pub node_id: NodeId,
+    pub phase: Phase,
+    pub variant_id: Option<VariantId>,
+    pub fold_id: Option<FoldId>,
+    /// The exact signed data-plan binding selected by the scheduler.  Native
+    /// numerical adapters must not manufacture a dataset from sample IDs.
+    pub binding: DataBinding,
+    /// Content identity attested by the provider for `binding`.
+    pub identity: crate::training::TrainingDataIdentity,
+    pub fit_view: DataProviderViewSpec,
+    pub prediction_view: Option<DataProviderViewSpec>,
+}
+
+impl MethodsPlsDataRequest {
+    pub fn validate(&self) -> Result<()> {
+        self.binding.validate()?;
+        self.identity.validate()?;
+        if self.identity.requirement_key
+            != crate::data::data_binding_requirement_key(
+                &self.binding.node_id,
+                &self.binding.input_name,
+            )
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "portable Methods PLS identity is not bound to its data binding".to_string(),
+            ));
+        }
+        self.fit_view.validate()?;
+        if let Some(view) = &self.prediction_view {
+            view.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Provider response for one PLS fit/predict invocation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodsPlsData {
+    pub fit: MethodsPlsDataset,
+    pub prediction: Option<MethodsPlsDataset>,
+}
+
+impl MethodsPlsData {
+    pub fn validate_for(&self, request: &MethodsPlsDataRequest) -> Result<()> {
+        request.validate()?;
+        self.fit.validate("fit", request.phase != Phase::Predict)?;
+        if let Some(expected_sample_ids) = &request.fit_view.sample_ids {
+            if self.fit.sample_ids != *expected_sample_ids {
+                return Err(DagMlError::RuntimeValidation(
+                    "portable Methods PLS fit rows do not exactly match the scheduler-selected identity view".to_string(),
+                ));
+            }
+        } else if request.phase != Phase::Predict {
+            return Err(DagMlError::RuntimeValidation(
+                "portable Methods PLS fit view must carry scheduler-selected sample identities"
+                    .to_string(),
+            ));
+        }
+        if let Some(prediction) = &self.prediction {
+            prediction.validate("prediction", request.phase == Phase::FitCv)?;
+            if prediction.sample_ids != request.prediction_view_sample_ids()? {
+                return Err(DagMlError::RuntimeValidation(
+                    "portable Methods PLS prediction rows do not exactly match the scheduler-selected identity view".to_string(),
+                ));
+            }
+            if prediction.x.cols != self.fit.x.cols
+                || prediction.target_names != self.fit.target_names
+                || matches!((&prediction.y, &self.fit.y), (Some(left), Some(right)) if left.cols != right.cols)
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "portable Methods PLS prediction schema differs from fit schema".to_string(),
+                ));
+            }
+        }
+        if request.prediction_view.is_some() != self.prediction.is_some() {
+            return Err(DagMlError::RuntimeValidation(
+                "portable Methods PLS provider did not return exactly the requested prediction view".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl MethodsPlsDataRequest {
+    fn prediction_view_sample_ids(&self) -> Result<Vec<SampleId>> {
+        self.prediction_view
+            .as_ref()
+            .and_then(|view| view.sample_ids.clone())
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "portable Methods PLS prediction view must carry scheduler-selected sample identities".to_string(),
+                )
+            })
+    }
 }
 
 #[derive(Debug)]
@@ -475,11 +682,87 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeData
             .coordinator_relations
             .clone())
     }
+
+    fn methods_pls_capability(&self) -> Result<()> {
+        self.inner.methods_pls_capability()
+    }
+
+    fn preflight_methods_pls(&self, request: &MethodsPlsDataRequest) -> Result<()> {
+        request.validate()?;
+        self.inner.preflight_methods_pls(request)
+    }
+
+    fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> Result<MethodsPlsData> {
+        request.validate()?;
+        self.inner.methods_pls_data(request)
+    }
 }
 
 pub trait RuntimeController: Send + Sync {
     fn controller_id(&self) -> &ControllerId;
     fn invoke(&self, task: &NodeTask) -> Result<NodeResult>;
+
+    /// Export a raw, portable artifact payload after REFIT.  The scheduler
+    /// immediately transfers this into the durable bundle; implementations
+    /// must not rely on the returned handle surviving a process boundary.
+    fn export_artifact_payload(&self, _artifact_id: &ArtifactId) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    /// Materialize a durable raw artifact payload in this controller's fresh
+    /// process-local runtime.  The payload is owned by the bundle; the
+    /// returned handle is deliberately ephemeral and is only valid for the
+    /// current replay invocation.  Controllers that do not publish raw
+    /// portable artifacts keep the default fail-closed implementation.
+    fn hydrate_artifact_payload(
+        &self,
+        _request: &ArtifactMaterializationRequest,
+        _payload: &[u8],
+    ) -> Result<HandleRef> {
+        Err(DagMlError::RuntimeValidation(format!(
+            "runtime controller `{}` cannot hydrate a raw portable artifact payload",
+            self.controller_id()
+        )))
+    }
+
+    /// Release an invocation-local handle previously returned by
+    /// [`Self::hydrate_artifact_payload`]. Replay calls this exactly once when
+    /// execution finishes or aborts; implementations must accept a handle
+    /// that the controller already consumed during successful invocation.
+    fn release_hydrated_artifact_payload(&self, _handle: &HandleRef) -> Result<()> {
+        Err(DagMlError::RuntimeValidation(format!(
+            "runtime controller `{}` cannot release a hydrated raw portable artifact payload",
+            self.controller_id()
+        )))
+    }
+
+    /// Provider-aware execution is opt-in.  Existing controllers retain the
+    /// opaque-handle path; native Methods controllers can only receive the
+    /// narrow provider capability above when the scheduler has one.
+    fn invoke_with_data_provider(
+        &self,
+        task: &NodeTask,
+        _data_provider: &dyn RuntimeDataProvider,
+    ) -> Result<NodeResult> {
+        self.invoke(task)
+    }
+
+    /// Create an execution-local tuner session for one scheduler-owned HPO
+    /// campaign. The controller stays `Send + Sync` because it is only a
+    /// factory; the returned session has no Send/Sync bound and may therefore
+    /// own a thread-affine native context and optimizer.  The scheduler keeps
+    /// this session on its calling thread and passes only portable proposal and
+    /// evaluation values across the controller boundary.
+    fn create_tuner_session(
+        &self,
+        task: &RuntimeHpoCampaignTask,
+        _context: &RuntimeHpoExecutionContext,
+    ) -> Result<Box<dyn RuntimeTunerSession>> {
+        Err(DagMlError::RuntimeValidation(format!(
+            "runtime controller `{}` does not implement an execution-local tuner session for HPO campaign `{}`",
+            self.controller_id(), task.operation_id
+        )))
+    }
 
     fn invoke_aggregation(
         &self,
@@ -491,6 +774,47 @@ pub trait RuntimeController: Send + Sync {
             task.task_id
         )))
     }
+}
+
+/// Per-campaign tuner state. Deliberately no `Send` or `Sync` supertrait:
+/// libn4m's Context and Optimizer are thread-affine.  The session proposes a
+/// portable variant; the scheduler evaluates its FIT_CV/OOF evidence and
+/// feeds the scalar intermediate/terminal state back here.  This avoids a
+/// controller-owned CV loop and prevents native state from entering a `Send`
+/// scheduler worker or registry.
+pub trait RuntimeTunerSession {
+    /// Return the complete native study history length, including restored
+    /// completed, failed and pruned trials. Only the local controller can
+    /// attest this opaque optimizer state.
+    fn trial_history_len(&self) -> Result<u32>;
+
+    fn ask(&mut self) -> Result<Option<RuntimeHpoProposal>>;
+
+    fn report_intermediate(
+        &mut self,
+        intermediate: RuntimeHpoIntermediate,
+    ) -> Result<RuntimeHpoIntermediateOutcome>;
+
+    fn tell(&mut self, trial_id: i64, terminal: RuntimeHpoTerminal) -> Result<()>;
+
+    /// Return the native optimizer incumbent after scheduler terminalization.
+    /// Implementations must derive it from their optimizer's native `best()`;
+    /// a coordinator ranking is not an acceptable substitute.
+    fn incumbent(&self, variants: &BTreeMap<i64, VariantId>)
+        -> Result<Option<RuntimeHpoIncumbent>>;
+
+    /// Return the native trial ledger after terminalization.  This is the
+    /// sole allowed observation of native status/intermediate/failure state;
+    /// scheduler and bundle code must never decode N4MOPT bytes themselves.
+    fn terminal_trial_snapshots(
+        &self,
+        variants: &BTreeMap<i64, VariantId>,
+    ) -> Result<Vec<RuntimeHpoTerminalSnapshot>>;
+
+    /// Export the current durable native checkpoint after all scheduler-owned
+    /// trial transitions have completed. The scheduler validates its binding
+    /// against the explicit HPO context before exposing it to training.
+    fn checkpoint(&self) -> Result<crate::hpo::N4moptCheckpointArtifact>;
 }
 pub(crate) struct CollectedInputs {
     pub(crate) handles: BTreeMap<String, HandleRef>,
@@ -759,7 +1083,7 @@ mod envelope_attested_provider_tests {
 
     fn complete_envelope() -> ExternalDataPlanEnvelope {
         let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         envelope.data_content_fingerprint = Some("a".repeat(64));

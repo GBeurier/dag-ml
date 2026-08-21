@@ -1936,6 +1936,7 @@ mod tests {
         assert_eq!(binding.feature_set_id(), "x");
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_model_input_and_data_plan_schemas_declare_current_contract() {
         let model_input_schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -1984,7 +1985,7 @@ mod tests {
     #[test]
     fn validates_model_input_and_data_plan_fixtures() {
         let model_input: ModelInputSpec = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/model_input_spec_tabular_regressor.json"
+            "../tests/fixtures/package/data/model_input_spec_tabular_regressor.json"
         ))
         .unwrap();
         model_input.validate().unwrap();
@@ -1992,7 +1993,7 @@ mod tests {
         assert!(model_input.ports[0].multi_source);
 
         let data_plan: DataPlan = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/data_plan_tabular_fusion.json"
+            "../tests/fixtures/package/data/data_plan_tabular_fusion.json"
         ))
         .unwrap();
         data_plan.validate().unwrap();
@@ -2071,7 +2072,7 @@ mod tests {
     #[test]
     fn validates_external_data_envelope_subset() {
         let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
 
@@ -2087,7 +2088,7 @@ mod tests {
     #[test]
     fn external_data_envelope_content_identity_is_additive_and_validated() {
         let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         envelope.data_content_fingerprint = Some("a".repeat(64));
@@ -2105,7 +2106,7 @@ mod tests {
     #[test]
     fn in_memory_provider_attests_complete_training_identity() {
         let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         envelope.data_content_fingerprint = Some("a".repeat(64));
@@ -2129,7 +2130,7 @@ mod tests {
     #[test]
     fn validates_multisource_repetition_envelope_fixture() {
         let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_multisource_repetitions.json"
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_multisource_repetitions.json"
         ))
         .unwrap();
 
@@ -2178,6 +2179,7 @@ mod tests {
         );
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_external_data_envelope_schema_declares_current_version() {
         let schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -2199,7 +2201,7 @@ mod tests {
     #[test]
     fn refuses_unsupported_external_data_envelope_schema_version() {
         let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION + 1;
@@ -2210,7 +2212,7 @@ mod tests {
     #[test]
     fn refuses_envelope_fingerprint_mismatch() {
         let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         envelope.plan_fingerprint = "0".repeat(64);
@@ -2221,7 +2223,7 @@ mod tests {
     #[test]
     fn in_memory_provider_materializes_validated_data_handles() {
         let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         let provider = InMemoryDataProvider::with_envelope(
@@ -2251,7 +2253,7 @@ mod tests {
     #[test]
     fn in_memory_provider_registration_is_idempotent_for_same_envelope() {
         let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         let mut provider =
@@ -2336,7 +2338,7 @@ mod tests {
     #[test]
     fn d9_golden_multisource_repetition_manifests_validate() {
         let fixture: D9GoldenFixture = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/runtime/d9_golden_multisource_scenarios.json"
+            "../tests/fixtures/package/data/d9_golden_multisource_scenarios.json"
         ))
         .unwrap();
         assert_eq!(fixture.schema_version, 1);

@@ -166,6 +166,329 @@ pub(crate) struct PhaseScopeResources<'a> {
 }
 
 impl SequentialScheduler {
+    /// Run one local tuner session and evaluate every proposal through the
+    /// ordinary FIT_CV scheduler.  The session remains on this thread; only a
+    /// portable [`RuntimeHpoProposal`] and OOF-derived scalar feedback cross
+    /// the controller boundary. SELECT and REFIT deliberately do not occur
+    /// here, so callers can make exactly one selection and one refit after the
+    /// returned report-grade candidate evidence has been audited.
+    pub fn execute_hpo_campaign(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &RunContext,
+        hpo: &RuntimeHpoExecutionContext,
+    ) -> Result<RuntimeHpoCampaignResult> {
+        plan.validate()?;
+        hpo.validate_for_plan(plan)?;
+        let controller = controllers.get(&hpo.controller_id).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "runtime HPO campaign controller `{}` is not registered",
+                hpo.controller_id
+            ))
+        })?;
+        let task = RuntimeHpoCampaignTask {
+            run_id: ctx.run_id.clone(),
+            operation_id: hpo.operation_id.clone(),
+            controller_id: hpo.controller_id.clone(),
+            target_node_id: hpo.target_node_id.clone(),
+            seed: ctx.root_seed,
+        };
+        let mut session = controller.create_tuner_session(&task, hpo)?;
+        let history_at_start = session.trial_history_len()?;
+        if history_at_start > hpo.trial_budget_total {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime HPO restored native history ({history_at_start}) exceeds total trial budget ({})",
+                hpo.trial_budget_total
+            )));
+        }
+        let remaining_trials = hpo.trial_budget_total - history_at_start;
+        let mut candidates = Vec::new();
+        let mut proposed_variant_ids = BTreeSet::new();
+        // Fresh proposals are checkpointed by this call.  The native study can
+        // nevertheless retain an incumbent from a restored terminal trial, so
+        // keep its persisted trial->variant binding separate from the new
+        // checkpoint evidence and extend it as we ask new trials.
+        let mut trial_variants = BTreeMap::new();
+        let mut incumbent_variants = hpo.resume_variants.clone();
+        let mut terminal_trials = BTreeMap::new();
+        let mut completed_proposals = Vec::new();
+        let mut completed_reports = Vec::new();
+
+        for _ in 0..remaining_trials {
+            let Some(proposal) = session.ask()? else {
+                break;
+            };
+            if trial_variants
+                .insert(proposal.trial_id, proposal.variant.variant_id.clone())
+                .is_some()
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "runtime HPO session proposed duplicate trial `{}`",
+                    proposal.trial_id
+                )));
+            }
+            if incumbent_variants
+                .insert(proposal.trial_id, proposal.variant.variant_id.clone())
+                .is_some()
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "runtime HPO session reused restored trial `{}`",
+                    proposal.trial_id
+                )));
+            }
+            if !proposed_variant_ids.insert(proposal.variant.variant_id.clone()) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "runtime HPO session proposed duplicate variant `{}`",
+                    proposal.variant.variant_id
+                )));
+            }
+            let mut candidate_plan = plan.clone();
+            candidate_plan.variants = vec![proposal.variant.clone()];
+            candidate_plan.validate()?;
+            let mut candidate_ctx =
+                RunContext::new(ctx.run_id.clone(), proposal.variant.seed.or(ctx.root_seed));
+            candidate_ctx.variant_id = Some(proposal.variant.variant_id.clone());
+
+            let evaluation = self.execute_hpo_candidate_fit_cv(
+                &candidate_plan,
+                controllers,
+                data_provider,
+                &mut candidate_ctx,
+            );
+            if let Err(error) = evaluation {
+                session.tell(
+                    proposal.trial_id,
+                    RuntimeHpoTerminal::Failed {
+                        failure: RuntimeHpoFailure {
+                            code: "DAGML_CV_ERROR".to_string(),
+                            message: error.to_string(),
+                            retryable: false,
+                        },
+                    },
+                )?;
+                terminal_trials.insert(proposal.trial_id, HpoTrialTerminalState::Failed);
+                continue;
+            }
+            if let Err(error) = candidate_ctx
+                .collect_cross_fold_validation_scores(plan_oof_partition_mode(&candidate_plan))
+            {
+                session.tell(
+                    proposal.trial_id,
+                    RuntimeHpoTerminal::Failed {
+                        failure: RuntimeHpoFailure {
+                            code: "DAGML_SCORE_ERROR".to_string(),
+                            message: error.to_string(),
+                            retryable: false,
+                        },
+                    },
+                )?;
+                terminal_trials.insert(proposal.trial_id, HpoTrialTerminalState::Failed);
+                continue;
+            }
+            let report = candidate_ctx
+                .score_collector
+                .iter()
+                .find(|report| {
+                    report.producer_node == hpo.selection.producer_node
+                        && report.producer_port.as_deref()
+                            == Some(hpo.selection.producer_port.as_str())
+                        && report.partition == PredictionPartition::Validation
+                        && report
+                            .fold_id
+                            .as_ref()
+                            .is_some_and(|fold| fold.as_str() == "avg")
+                })
+                .cloned();
+            let Some(mut report) = report else {
+                session.tell(
+                    proposal.trial_id,
+                    RuntimeHpoTerminal::Failed {
+                        failure: RuntimeHpoFailure {
+                            code: "DAGML_SCORE_MISSING".to_string(),
+                            message: format!(
+                                "runtime HPO trial `{}` emitted no target OOF average",
+                                proposal.trial_id
+                            ),
+                            retryable: false,
+                        },
+                    },
+                )?;
+                terminal_trials.insert(proposal.trial_id, HpoTrialTerminalState::Failed);
+                continue;
+            };
+            report.variant_id = Some(proposal.variant.variant_id.clone());
+            let score = report
+                .metrics
+                .get(hpo.selection.metric.name())
+                .copied()
+                .filter(|score| score.is_finite());
+            let Some(score) = score else {
+                session.tell(
+                    proposal.trial_id,
+                    RuntimeHpoTerminal::Failed {
+                        failure: RuntimeHpoFailure {
+                            code: "DAGML_SCORE_NONFINITE".to_string(),
+                            message: format!(
+                                "runtime HPO trial `{}` emitted no finite `{}` score",
+                                proposal.trial_id,
+                                hpo.selection.metric.name()
+                            ),
+                            retryable: false,
+                        },
+                    },
+                )?;
+                terminal_trials.insert(proposal.trial_id, HpoTrialTerminalState::Failed);
+                continue;
+            };
+            let intermediate = RuntimeHpoIntermediate {
+                trial_id: proposal.trial_id,
+                step: 0,
+                score,
+            };
+            if session.report_intermediate(intermediate)? == RuntimeHpoIntermediateOutcome::Pruned {
+                terminal_trials.insert(proposal.trial_id, HpoTrialTerminalState::Pruned);
+                continue;
+            }
+            session.tell(proposal.trial_id, RuntimeHpoTerminal::Completed { score })?;
+            terminal_trials.insert(proposal.trial_id, HpoTrialTerminalState::Completed);
+            completed_proposals.push(proposal.clone());
+            completed_reports.push(RuntimeHpoCompletedReport {
+                trial_id: proposal.trial_id,
+                variant_id: proposal.variant.variant_id.clone(),
+                report: report.clone(),
+            });
+
+            let mut validation_reports = candidate_ctx
+                .score_collector
+                .iter()
+                .filter(|item| item.partition == PredictionPartition::Validation)
+                .cloned()
+                .collect::<Vec<_>>();
+            for item in &mut validation_reports {
+                item.variant_id = Some(proposal.variant.variant_id.clone());
+            }
+            candidates.push(RuntimeHpoCandidateEvaluation {
+                validation_predictions: capture_variant_validation_predictions(
+                    &proposal.variant.variant_id,
+                    None,
+                    &candidate_ctx,
+                ),
+                lineage: candidate_ctx.lineage.records().cloned().collect(),
+                proposal,
+                score,
+                validation_reports,
+            });
+        }
+
+        let history_at_checkpoint = session.trial_history_len()?;
+        if history_at_checkpoint != hpo.trial_budget_total {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime HPO native history ended at {history_at_checkpoint}, expected total trial budget {}",
+                hpo.trial_budget_total
+            )));
+        }
+
+        let checkpoint = RuntimeHpoCheckpointResult {
+            artifact: session.checkpoint()?,
+            provenance: hpo.provenance.clone(),
+            operation_id: hpo.operation_id.clone(),
+            controller_id: hpo.controller_id.clone(),
+            target_node_id: hpo.target_node_id.clone(),
+            completed_proposals,
+            completed_reports,
+            trial_history_len: history_at_checkpoint,
+        };
+        validate_hpo_checkpoint_result(
+            &checkpoint,
+            hpo,
+            &trial_variants,
+            &terminal_trials,
+            history_at_start,
+        )?;
+        let incumbent = session.incumbent(&incumbent_variants)?.ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "native HPO campaign has no completed native incumbent after terminalization"
+                    .to_string(),
+            )
+        })?;
+        if incumbent.metric != hpo.selection.metric.name()
+            || incumbent.direction != hpo.selection.direction
+            || incumbent_variants.get(&incumbent.trial_id) != Some(&incumbent.variant_id)
+            || !incumbent.score.is_finite()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native HPO incumbent is not bound to this scheduler campaign's metric, direction, trial, and variant"
+                    .to_string(),
+            ));
+        }
+        let terminal_trials = session.terminal_trial_snapshots(&incumbent_variants)?;
+        if terminal_trials.len() != history_at_checkpoint as usize
+            || terminal_trials
+                .windows(2)
+                .any(|pair| pair[0].trial.id >= pair[1].trial.id)
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native HPO terminal ledger is not a complete strictly ordered history".to_string(),
+            ));
+        }
+        Ok(RuntimeHpoCampaignResult {
+            operation_id: hpo.operation_id.clone(),
+            controller_id: hpo.controller_id.clone(),
+            target_node_id: hpo.target_node_id.clone(),
+            candidates,
+            checkpoint,
+            incumbent,
+            terminal_trials,
+        })
+    }
+
+    fn execute_hpo_candidate_fit_cv(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+    ) -> Result<Vec<NodeResult>> {
+        let candidate_plan = plan;
+        let fold_ids = candidate_plan
+            .fold_set
+            .as_ref()
+            .map(|fold_set| {
+                fold_set
+                    .folds
+                    .iter()
+                    .map(|fold| Some(fold.fold_id.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec![None]);
+        let variant = candidate_plan
+            .variants
+            .first()
+            .expect("candidate plan has exactly one variant");
+        let mut results = Vec::new();
+        for fold_id in fold_ids {
+            results.extend(self.execute_phase_scope(
+                candidate_plan,
+                controllers,
+                ctx,
+                PhaseScope {
+                    phase: Phase::FitCv,
+                    variant_id: Some(variant.variant_id.clone()),
+                    variant: Some(VariantExecutionSpec::from_plan(variant)),
+                    fold_id,
+                    seed_root: variant.seed.or(ctx.root_seed),
+                },
+                PhaseScopeResources {
+                    data_provider: Some(data_provider),
+                    ..Default::default()
+                },
+            )?);
+        }
+        Ok(results)
+    }
+
     pub fn execute_phase(
         &self,
         plan: &ExecutionPlan,
@@ -623,7 +946,19 @@ impl SequentialScheduler {
                     task.node_plan.controller_id.as_str(),
                 )
                 .entered();
-                let mut result = controller.invoke(&task)?;
+                let mut result = if task.node_plan.kind == NodeKind::Tuner {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "tuner node `{}` requires execute_hpo_campaign with an explicit RuntimeHpoExecutionContext",
+                        task.node_plan.node_id
+                    )));
+                } else {
+                    match resources.data_provider {
+                        Some(data_provider) => {
+                            controller.invoke_with_data_provider(&task, data_provider)?
+                        }
+                        None => controller.invoke(&task)?,
+                    }
+                };
                 record_fit_influence_diagnostic(&task, &mut result);
                 normalize_result_prediction_ports(plan, &task, &mut result)?;
                 result.validate_for_task(&task)?;
@@ -1093,8 +1428,8 @@ impl ParallelScheduler {
             }
 
             for chunk in prepared.chunks(self.max_workers) {
-                let chunk_results =
-                    std::thread::scope(|thread_scope| -> Result<Vec<NodeResult>> {
+                let chunk_results = std::thread::scope(
+                    |thread_scope| -> Result<Vec<NodeResult>> {
                         let mut handles = Vec::with_capacity(chunk.len());
                         for prepared_task in chunk {
                             let controller = controllers
@@ -1116,7 +1451,20 @@ impl ParallelScheduler {
                                     prepared_task.task.node_plan.controller_id.as_str(),
                                 )
                                 .entered();
-                                let mut result = controller.invoke(&prepared_task.task)?;
+                                let mut result =
+                                    if prepared_task.task.node_plan.kind == NodeKind::Tuner {
+                                        return Err(DagMlError::RuntimeValidation(format!(
+                                            "tuner node `{}` requires execute_hpo_campaign with an explicit RuntimeHpoExecutionContext",
+                                            prepared_task.task.node_plan.node_id
+                                        )));
+                                    } else {
+                                        // A provider-aware controller may require a
+                                        // non-Sync host provider.  Parallel native
+                                        // Methods PLS is deliberately refused by its
+                                        // HPO preflight; ordinary controllers keep
+                                        // their opaque-handle invocation here.
+                                        controller.invoke(&prepared_task.task)?
+                                    };
                                 record_fit_influence_diagnostic(&prepared_task.task, &mut result);
                                 normalize_result_prediction_ports(
                                     plan,
@@ -1137,7 +1485,8 @@ impl ParallelScheduler {
                                 })?
                             })
                             .collect()
-                    })?;
+                    },
+                )?;
 
                 for (prepared_task, mut result) in chunk.iter().zip(chunk_results) {
                     apply_result_prediction_aggregation(
@@ -1232,9 +1581,720 @@ impl ParallelScheduler {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HpoTrialTerminalState {
+    Completed,
+    Pruned,
+    Failed,
+}
+
+fn validate_hpo_checkpoint_result(
+    checkpoint: &RuntimeHpoCheckpointResult,
+    hpo: &RuntimeHpoExecutionContext,
+    trial_variants: &BTreeMap<i64, VariantId>,
+    terminal_trials: &BTreeMap<i64, HpoTrialTerminalState>,
+    history_at_start: u32,
+) -> Result<()> {
+    checkpoint.artifact.validate().map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "runtime HPO checkpoint artifact is invalid: {error}"
+        ))
+    })?;
+    if checkpoint.operation_id != hpo.operation_id
+        || checkpoint.controller_id != hpo.controller_id
+        || checkpoint.target_node_id != hpo.target_node_id
+        || checkpoint.provenance != hpo.provenance
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "runtime HPO checkpoint provenance does not exactly match its execution context"
+                .to_string(),
+        ));
+    }
+    let proposed_count = u32::try_from(trial_variants.len()).map_err(|_| {
+        DagMlError::RuntimeValidation(
+            "runtime HPO scheduler proposal count does not fit u32".to_string(),
+        )
+    })?;
+    if checkpoint.trial_history_len != hpo.trial_budget_total
+        || checkpoint.trial_history_len < history_at_start
+        || checkpoint.trial_history_len - history_at_start != proposed_count
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "runtime HPO checkpoint native history is inconsistent with scheduler-observed trials"
+                .to_string(),
+        ));
+    }
+    if checkpoint.artifact.binding.controller_id != hpo.controller_id.as_str()
+        || checkpoint.artifact.binding.controller_id != hpo.study.controller_id
+        || checkpoint.artifact.binding.study_id != hpo.study.study_id
+        || checkpoint.artifact.methods_abi != hpo.study.methods_abi
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "runtime HPO checkpoint binding/controller/study does not match the active tuner"
+                .to_string(),
+        ));
+    }
+    let expected_search_space = hpo.study.search_space.fingerprint().map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "runtime HPO cannot fingerprint the configured search space: {error}"
+        ))
+    })?;
+    if checkpoint.artifact.binding.search_space_fingerprint != expected_search_space {
+        return Err(DagMlError::RuntimeValidation(
+            "runtime HPO checkpoint search-space binding does not match the active study"
+                .to_string(),
+        ));
+    }
+
+    let completed_trial_ids = terminal_trials
+        .iter()
+        .filter_map(|(trial_id, state)| {
+            (*state == HpoTrialTerminalState::Completed).then_some(*trial_id)
+        })
+        .collect::<BTreeSet<_>>();
+    let mut proposal_trial_ids = BTreeSet::new();
+    for proposal in &checkpoint.completed_proposals {
+        if !proposal_trial_ids.insert(proposal.trial_id) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime HPO checkpoint has duplicate completed proposal for trial `{}`",
+                proposal.trial_id
+            )));
+        }
+        if trial_variants.get(&proposal.trial_id) != Some(&proposal.variant.variant_id) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime HPO checkpoint proposal for trial `{}` does not exactly match its scheduler proposal",
+                proposal.trial_id
+            )));
+        }
+    }
+    if proposal_trial_ids != completed_trial_ids {
+        return Err(DagMlError::RuntimeValidation(
+            "runtime HPO checkpoint proposals must cover exactly the completed trials".to_string(),
+        ));
+    }
+
+    let mut report_trial_ids = BTreeSet::new();
+    for completed in &checkpoint.completed_reports {
+        if !report_trial_ids.insert(completed.trial_id) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime HPO checkpoint has duplicate completed report for trial `{}`",
+                completed.trial_id
+            )));
+        }
+        if trial_variants.get(&completed.trial_id) != Some(&completed.variant_id)
+            || !proposal_trial_ids.contains(&completed.trial_id)
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime HPO checkpoint report for trial `{}` does not match a completed proposal",
+                completed.trial_id
+            )));
+        }
+        let report = &completed.report;
+        if report.producer_node != hpo.selection.producer_node
+            || report.producer_port.as_deref() != Some(hpo.selection.producer_port.as_str())
+            || report.partition != PredictionPartition::Validation
+            || report
+                .fold_id
+                .as_ref()
+                .is_none_or(|fold| fold.as_str() != "avg")
+            || report.variant_id.as_ref() != Some(&completed.variant_id)
+            || !report
+                .metrics
+                .get(hpo.selection.metric.name())
+                .is_some_and(|score| score.is_finite())
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime HPO checkpoint report for trial `{}` is not its one finite target OOF average",
+                completed.trial_id
+            )));
+        }
+    }
+    if report_trial_ids != completed_trial_ids {
+        return Err(DagMlError::RuntimeValidation(
+            "runtime HPO checkpoint reports must cover exactly one OOF average per completed trial"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) struct PreparedNodeTask {
     pub(crate) node_id: NodeId,
     pub(crate) task: NodeTask,
+}
+
+// This module stays adjacent to the scheduler-owned task preparation it
+// exercises; the remaining helpers below are shared by both schedulers.
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod hpo_scheduler_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::{Arc, Mutex};
+
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+    use crate::controller::{
+        ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
+        ControllerRegistry, RngPolicy,
+    };
+    use crate::data::InMemoryDataProvider;
+    use crate::fold::{FoldAssignment, FoldPartitionMode};
+    use crate::graph::{GraphInterface, GraphSpec, NodeSpec, PortSchema, PortSpec};
+    use crate::hpo::{
+        HpoDirection, HpoMetric, HpoOptimizerConfig, HpoParameter, HpoPruner, HpoSampler,
+        HpoSearchSpace, HpoStudyBinding, MethodsHpoStudyConfig, N4moptCheckpointArtifact,
+        N4MOPT_ARTIFACT_KIND, N4MOPT_CHECKPOINT_SCHEMA_VERSION, N4MOPT_FORMAT,
+    };
+    use crate::metrics::RegressionTargetBlock;
+    use crate::oof::PredictionBlock;
+    use crate::plan::{build_execution_plan, SplitInvocation};
+
+    struct HpoTestModel {
+        id: ControllerId,
+        trace: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RuntimeController for HpoTestModel {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            self.trace.lock().unwrap().push("model_cv".to_string());
+            let sample_id = match task.fold_id.as_ref().map(FoldId::as_str) {
+                Some("fold:0") => SampleId::new("sample:one").unwrap(),
+                Some("fold:1") => SampleId::new("sample:two").unwrap(),
+                other => {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "HPO test model received unexpected fold {other:?}"
+                    )));
+                }
+            };
+            Ok(NodeResult {
+                schema_version: None,
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([(
+                    "prediction".to_string(),
+                    HandleRef {
+                        handle: 2,
+                        kind: HandleKind::Prediction,
+                        owner_controller: self.id.clone(),
+                    },
+                )]),
+                predictions: vec![PredictionBlock {
+                    prediction_id: Some(format!("prediction:{}", task.fold_id.as_ref().unwrap())),
+                    producer_node: task.node_plan.node_id.clone(),
+                    producer_port: None,
+                    partition: PredictionPartition::Validation,
+                    fold_id: task.fold_id.clone(),
+                    sample_ids: vec![sample_id.clone()],
+                    values: vec![vec![1.0]],
+                    target_names: vec!["target".to_string()],
+                }],
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
+                explanations: Vec::new(),
+                shape_deltas: Vec::new(),
+                artifacts: Vec::new(),
+                artifact_handles: BTreeMap::new(),
+                fit_influence_diagnostics: Vec::new(),
+                regression_targets: vec![RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids: vec![PredictionUnitId::Sample(sample_id)],
+                    values: vec![vec![1.0]],
+                    target_names: vec!["target".to_string()],
+                }],
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:hpo-model:{}",
+                        task.fold_id.as_ref().unwrap()
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: Vec::new(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
+    struct HpoTestTuner {
+        id: ControllerId,
+        trace: Arc<Mutex<Vec<String>>>,
+        history_len: u32,
+        proposal_count: u32,
+    }
+
+    struct HpoTestSession {
+        proposals: Vec<RuntimeHpoProposal>,
+        trace: Arc<Mutex<Vec<String>>>,
+        checkpoint: N4moptCheckpointArtifact,
+        history_len: u32,
+        completed: Option<(i64, f64)>,
+    }
+
+    impl RuntimeController for HpoTestTuner {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            Err(DagMlError::RuntimeValidation(format!(
+                "HPO test tuner `{}` was dispatched through generic invoke",
+                task.node_plan.node_id
+            )))
+        }
+
+        fn create_tuner_session(
+            &self,
+            task: &RuntimeHpoCampaignTask,
+            context: &RuntimeHpoExecutionContext,
+        ) -> Result<Box<dyn RuntimeTunerSession>> {
+            assert_eq!(task.operation_id, context.operation_id);
+            self.trace
+                .lock()
+                .unwrap()
+                .push("session_factory".to_string());
+            let payload = vec![7_u8];
+            let proposals = (0..self.proposal_count)
+                .map(|offset| {
+                    let trial_id = i64::from(self.history_len + offset + 1);
+                    let mut variant = context.base_variant.clone();
+                    if self.history_len != 0 || self.proposal_count != 1 {
+                        variant.variant_id = VariantId::new(format!("hpo:trial:{trial_id}"))
+                            .map_err(|error| DagMlError::RuntimeValidation(error.to_string()))?;
+                        variant.fingerprint = format!("hpo-test-{trial_id}");
+                    }
+                    Ok(RuntimeHpoProposal { trial_id, variant })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Box::new(HpoTestSession {
+                proposals: proposals.into_iter().rev().collect(),
+                trace: Arc::clone(&self.trace),
+                history_len: self.history_len,
+                completed: None,
+                checkpoint: N4moptCheckpointArtifact {
+                    schema_version: N4MOPT_CHECKPOINT_SCHEMA_VERSION,
+                    artifact_kind: N4MOPT_ARTIFACT_KIND.to_string(),
+                    format: N4MOPT_FORMAT.to_string(),
+                    binding: HpoStudyBinding {
+                        controller_id: context.study.controller_id.clone(),
+                        study_id: context.study.study_id.clone(),
+                        search_space_fingerprint: context
+                            .study
+                            .search_space
+                            .fingerprint()
+                            .map_err(|error| DagMlError::RuntimeValidation(error.to_string()))?,
+                        optimizer_fingerprint: "optimizer:test".to_string(),
+                    },
+                    methods_abi: context.study.methods_abi.clone(),
+                    payload_sha256: format!("{:x}", Sha256::digest(&payload)),
+                    opaque_payload: payload,
+                },
+            }))
+        }
+    }
+
+    impl RuntimeTunerSession for HpoTestSession {
+        fn trial_history_len(&self) -> Result<u32> {
+            Ok(self.history_len)
+        }
+
+        fn ask(&mut self) -> Result<Option<RuntimeHpoProposal>> {
+            self.trace.lock().unwrap().push("ask".to_string());
+            let proposal = self.proposals.pop();
+            if proposal.is_some() {
+                self.history_len += 1;
+            }
+            Ok(proposal)
+        }
+
+        fn report_intermediate(
+            &mut self,
+            intermediate: RuntimeHpoIntermediate,
+        ) -> Result<RuntimeHpoIntermediateOutcome> {
+            assert_eq!(intermediate.step, 0);
+            assert!(intermediate.score.is_finite());
+            self.trace.lock().unwrap().push("intermediate".to_string());
+            Ok(RuntimeHpoIntermediateOutcome::Continue)
+        }
+
+        fn tell(&mut self, trial_id: i64, terminal: RuntimeHpoTerminal) -> Result<()> {
+            assert!(trial_id > 0);
+            assert!(
+                matches!(terminal, RuntimeHpoTerminal::Completed { score } if score.is_finite())
+            );
+            self.trace.lock().unwrap().push("tell".to_string());
+            if let RuntimeHpoTerminal::Completed { score } = terminal {
+                self.completed = Some((trial_id, score));
+            }
+            Ok(())
+        }
+
+        fn checkpoint(&self) -> Result<N4moptCheckpointArtifact> {
+            self.trace.lock().unwrap().push("checkpoint".to_string());
+            Ok(self.checkpoint.clone())
+        }
+
+        fn incumbent(
+            &self,
+            variants: &BTreeMap<i64, VariantId>,
+        ) -> Result<Option<RuntimeHpoIncumbent>> {
+            let Some((trial_id, score)) = self.completed else {
+                return Ok(None);
+            };
+            Ok(Some(RuntimeHpoIncumbent {
+                trial_id,
+                score,
+                metric: "rmse".to_string(),
+                direction: HpoDirection::Minimize,
+                variant_id: variants.get(&trial_id).cloned().unwrap(),
+            }))
+        }
+
+        fn terminal_trial_snapshots(
+            &self,
+            variants: &BTreeMap<i64, VariantId>,
+        ) -> Result<Vec<RuntimeHpoTerminalSnapshot>> {
+            let (trial_id, score) = self.completed.ok_or_else(|| {
+                DagMlError::RuntimeValidation("test HPO session has no completed trial".to_string())
+            })?;
+            Ok((1..=i64::from(self.history_len))
+                .map(|id| {
+                    let completed = id == trial_id;
+                    RuntimeHpoTerminalSnapshot {
+                        trial: crate::hpo::HpoTrial {
+                            id,
+                            ask_sequence: id,
+                            terminal_sequence: Some(id),
+                            parameters: BTreeMap::new(),
+                            parameter_order: Vec::new(),
+                            status: if completed {
+                                crate::hpo::HpoTrialStatus::Completed
+                            } else {
+                                crate::hpo::HpoTrialStatus::Failed
+                            },
+                            score: completed.then_some(score),
+                            rung: 0,
+                            duration: 0.0,
+                            intermediates: Vec::new(),
+                            failure: (!completed).then(|| crate::hpo::HpoFailure {
+                                code: "RESTORED_TEST_FAILURE".to_string(),
+                                message: "synthetic restored terminal".to_string(),
+                                retryable: false,
+                            }),
+                        },
+                        variant_id: variants.get(&id).cloned(),
+                    }
+                })
+                .collect())
+        }
+    }
+
+    fn node(id: &str, kind: NodeKind, outputs: Vec<PortSpec>) -> NodeSpec {
+        NodeSpec {
+            id: NodeId::new(id).unwrap(),
+            kind,
+            operator: None,
+            params: BTreeMap::new(),
+            ports: PortSchema {
+                inputs: Vec::new(),
+                outputs,
+            },
+            metadata: BTreeMap::new(),
+            seed_label: None,
+        }
+    }
+
+    fn manifest(id: &str, kind: NodeKind) -> ControllerManifest {
+        ControllerManifest {
+            controller_id: ControllerId::new(id).unwrap(),
+            controller_version: "test".to_string(),
+            operator_kind: kind,
+            priority: 0,
+            supported_phases: BTreeSet::from([Phase::FitCv]),
+            input_ports: Vec::new(),
+            output_ports: Vec::new(),
+            data_requirements: None,
+            capabilities: BTreeSet::from([
+                ControllerCapability::Deterministic,
+                ControllerCapability::EmitsPredictions,
+            ]),
+            operator_selectors: Vec::new(),
+            fit_scope: ControllerFitScope::FoldTrain,
+            rng_policy: RngPolicy::UsesCoreSeed,
+            artifact_policy: ArtifactPolicy::Serializable,
+        }
+    }
+
+    #[test]
+    fn hpo_campaign_invokes_registered_session_and_routes_oof_feedback() {
+        let target = NodeId::new("model:score").unwrap();
+        let graph = GraphSpec {
+            id: "graph:hpo.scheduler".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![node(
+                "model:score",
+                NodeKind::Model,
+                vec![PortSpec {
+                    name: "prediction".to_string(),
+                    kind: PortKind::Prediction,
+                    representation: None,
+                    cardinality: crate::graph::PortCardinality::One,
+                    unit_level: None,
+                    alignment_key: None,
+                    target_level: None,
+                    description: String::new(),
+                }],
+            )],
+            edges: Vec::new(),
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+        let fold_set = FoldSet {
+            id: "folds:hpo".to_string(),
+            sample_ids: vec![
+                SampleId::new("sample:one").unwrap(),
+                SampleId::new("sample:two").unwrap(),
+            ],
+            folds: vec![
+                FoldAssignment {
+                    fold_id: FoldId::new("fold:0").unwrap(),
+                    train_sample_ids: vec![SampleId::new("sample:two").unwrap()],
+                    validation_sample_ids: vec![SampleId::new("sample:one").unwrap()],
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("fold:1").unwrap(),
+                    train_sample_ids: vec![SampleId::new("sample:one").unwrap()],
+                    validation_sample_ids: vec![SampleId::new("sample:two").unwrap()],
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
+        };
+        let mut registry = ControllerRegistry::new();
+        registry
+            .register(manifest("controller:model", NodeKind::Model))
+            .unwrap();
+        let plan = build_execution_plan(
+            "plan:hpo.scheduler",
+            graph,
+            CampaignSpec {
+                inner_cv: None,
+                id: "campaign:hpo.scheduler".to_string(),
+                root_seed: Some(13),
+                leakage_policy: Default::default(),
+                aggregation_policy: Default::default(),
+                split_invocation: Some(SplitInvocation {
+                    id: "split:hpo".to_string(),
+                    controller_id: None,
+                    leakage_policy: Default::default(),
+                    params: BTreeMap::new(),
+                    fold_set: Some(fold_set),
+                }),
+                generation: Default::default(),
+                shape_plans: BTreeMap::new(),
+                data_bindings: BTreeMap::new(),
+                branch_view_plans: Vec::new(),
+                metadata: BTreeMap::new(),
+            },
+            &registry,
+        )
+        .unwrap();
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(HpoTestTuner {
+                id: ControllerId::new("controller:tuner").unwrap(),
+                trace: Arc::clone(&trace),
+                history_len: 0,
+                proposal_count: 1,
+            }))
+            .unwrap();
+        controllers
+            .register(Box::new(HpoTestModel {
+                id: ControllerId::new("controller:model").unwrap(),
+                trace: Arc::clone(&trace),
+            }))
+            .unwrap();
+        let hpo = RuntimeHpoExecutionContext {
+            operation_id: "hpo:test".to_string(),
+            controller_id: ControllerId::new("controller:tuner").unwrap(),
+            target_node_id: target.clone(),
+            base_variant: plan.variants[0].clone(),
+            trial_budget_total: 1,
+            study: MethodsHpoStudyConfig {
+                controller_id: "controller:tuner".to_string(),
+                study_id: "study:hpo.scheduler".to_string(),
+                methods_abi: "test-abi".to_string(),
+                search_space: HpoSearchSpace {
+                    parameters: vec![HpoParameter::Int {
+                        name: "n_components".to_string(),
+                        low: 1,
+                        high: 1,
+                        step: 1,
+                        log: false,
+                    }],
+                },
+                optimizer: HpoOptimizerConfig {
+                    sampler: HpoSampler::Random,
+                    pruner: HpoPruner::None,
+                    direction: HpoDirection::Minimize,
+                    metric: HpoMetric::Rmse,
+                    seed: 13,
+                    n_startup_trials: 1,
+                    max_resource: 0,
+                    reduction_factor: 1,
+                },
+            },
+            parameter_paths: BTreeMap::from([(
+                "n_components".to_string(),
+                "n_components".to_string(),
+            )]),
+            resume_checkpoint: None,
+            resume_variants: BTreeMap::new(),
+            resume_terminal_trials: Vec::new(),
+            selection: RuntimeHpoSelectionTarget {
+                producer_node: target,
+                producer_port: "prediction".to_string(),
+                metric: RegressionMetricKind::Rmse,
+                direction: HpoDirection::Minimize,
+            },
+            provenance: RuntimeHpoProvenance {
+                graph_fingerprint: plan.graph_fingerprint.clone(),
+                campaign_fingerprint: plan.campaign_fingerprint.clone(),
+                controller_fingerprint: plan.controller_fingerprint.clone(),
+                data_identities_fingerprint: "identity:test".to_string(),
+                fold_set_fingerprint: plan
+                    .fold_set
+                    .as_ref()
+                    .map(stable_json_fingerprint)
+                    .transpose()
+                    .unwrap(),
+                training_influence_fingerprint: "influence:test".to_string(),
+                relation_fingerprint: "relation:test".to_string(),
+            },
+        };
+        let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+        let ctx = RunContext::new(RunId::new("run:hpo.scheduler").unwrap(), Some(13));
+
+        let result = SequentialScheduler
+            .execute_hpo_campaign(&plan, &controllers, &provider, &ctx, &hpo)
+            .unwrap();
+
+        assert_eq!(result.operation_id, "hpo:test");
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.checkpoint.completed_proposals.len(), 1);
+        assert_eq!(result.checkpoint.completed_reports.len(), 1);
+        assert_eq!(result.candidates[0].lineage.len(), 2);
+        assert_eq!(result.incumbent.variant_id, plan.variants[0].variant_id);
+        let mut selected_ctx = RunContext::new(RunId::new("run:hpo.scheduler").unwrap(), Some(13));
+        selected_ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+        let selected_results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &provider,
+                &mut selected_ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+        assert_eq!(selected_results.len(), 2);
+        assert_eq!(selected_ctx.lineage.len(), 2);
+        assert_eq!(
+            trace.lock().unwrap().as_slice(),
+            [
+                "session_factory",
+                "ask",
+                "model_cv",
+                "model_cv",
+                "intermediate",
+                "tell",
+                "checkpoint",
+                "model_cv",
+                "model_cv"
+            ]
+        );
+
+        // The native study may restore failed/pruned history that has no
+        // completed proposal evidence. Its local count, not the coordinator's
+        // persisted completed list, determines the remaining global budget.
+        let resumed_trace = Arc::new(Mutex::new(Vec::new()));
+        let mut resumed_controllers = RuntimeControllerRegistry::new();
+        resumed_controllers
+            .register(Box::new(HpoTestTuner {
+                id: ControllerId::new("controller:tuner").unwrap(),
+                trace: Arc::clone(&resumed_trace),
+                history_len: 2,
+                proposal_count: 2,
+            }))
+            .unwrap();
+        resumed_controllers
+            .register(Box::new(HpoTestModel {
+                id: ControllerId::new("controller:model").unwrap(),
+                trace: Arc::clone(&resumed_trace),
+            }))
+            .unwrap();
+        let mut resumed_hpo = hpo.clone();
+        resumed_hpo.trial_budget_total = 4;
+        let resumed_ctx = RunContext::new(RunId::new("run:hpo.resumed").unwrap(), Some(13));
+        let resumed = SequentialScheduler
+            .execute_hpo_campaign(
+                &plan,
+                &resumed_controllers,
+                &provider,
+                &resumed_ctx,
+                &resumed_hpo,
+            )
+            .unwrap();
+        assert_eq!(resumed.candidates.len(), 2);
+        assert_eq!(resumed.checkpoint.trial_history_len, 4);
+        assert_eq!(
+            resumed_trace
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.as_str() == "ask")
+                .count(),
+            2
+        );
+
+        let mut over_budget_controllers = RuntimeControllerRegistry::new();
+        over_budget_controllers
+            .register(Box::new(HpoTestTuner {
+                id: ControllerId::new("controller:tuner").unwrap(),
+                trace: Arc::new(Mutex::new(Vec::new())),
+                history_len: 5,
+                proposal_count: 0,
+            }))
+            .unwrap();
+        let error = SequentialScheduler
+            .execute_hpo_campaign(
+                &plan,
+                &over_budget_controllers,
+                &provider,
+                &resumed_ctx,
+                &resumed_hpo,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds total trial budget"));
+    }
 }
 
 pub(crate) fn attach_coordinator_input_lineage(

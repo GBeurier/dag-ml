@@ -1439,14 +1439,16 @@ mod tests {
 
     fn fixture_plan() -> ExecutionPlan {
         let graph: GraphSpec =
-            serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
+            serde_json::from_str(include_str!("../tests/fixtures/package/minimal_graph.json"))
+                .unwrap();
         let campaign: CampaignSpec = serde_json::from_str(include_str!(
-            "../../../examples/campaign_oof_generation.json"
+            "../tests/fixtures/package/campaign_oof_generation.json"
         ))
         .unwrap();
-        let manifests: Vec<ControllerManifest> =
-            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
-                .unwrap();
+        let manifests: Vec<ControllerManifest> = serde_json::from_str(include_str!(
+            "../tests/fixtures/package/controller_manifests.json"
+        ))
+        .unwrap();
         let mut registry = ControllerRegistry::new();
         for manifest in manifests {
             registry.register(manifest).unwrap();
@@ -1456,7 +1458,7 @@ mod tests {
 
     fn fixture_bundle() -> ExecutionBundle {
         serde_json::from_str(include_str!(
-            "../../../examples/generated/execution_bundle_minimal.json"
+            "../tests/fixtures/package/provenance/execution_bundle_minimal.json"
         ))
         .unwrap()
     }

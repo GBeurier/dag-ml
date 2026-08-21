@@ -847,6 +847,7 @@ mod tests {
         assert!(analysis.validate().is_err());
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_schema_declares_current_contract() {
         let schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -876,7 +877,7 @@ mod tests {
 
     #[test]
     fn published_fixture_matches_contract() {
-        let fixture = include_str!("../../../examples/fixtures/chain_effect_analysis.json");
+        let fixture = include_str!("../tests/fixtures/package/chain_effect_analysis.json");
         let analysis = ChainEffectAnalysis::from_json(fixture).unwrap();
         assert_eq!(analysis.schema_id, CHAIN_EFFECT_SCHEMA_ID);
         assert!(!analysis.points.is_empty());

@@ -116,6 +116,13 @@
     "execution_bundle": {
       "$ref": "https://github.com/GBeurier/dag-ml/schemas/execution_bundle.v1.schema.json"
     },
+    "methods_hpo_resume_state": {
+      "anyOf": [
+        { "$ref": "https://github.com/GBeurier/dag-ml/schemas/execution_bundle.v1.schema.json#/$defs/methods_hpo_resume_state" },
+        { "type": "null" }
+      ],
+      "default": null
+    },
     "replayable_phases": {
       "type": "array",
       "uniqueItems": true,

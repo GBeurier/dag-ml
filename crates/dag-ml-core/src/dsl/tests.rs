@@ -1744,6 +1744,7 @@ fn graph_choice_node_groups(graph: &GraphSpec) -> BTreeMap<usize, BTreeSet<NodeI
 ///   (b) `enumerate_variants` over the model's generation spec yields one `VariantPlan` per choice;
 ///   (c) the existing Mechanism B compile is UNCHANGED (graph has no operator dimension folded in:
 ///       `generation.strategy == None`, `search_space_fingerprint == None`).
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn operator_variant_model_mirrors_generator_subsequences() {
     let spec: PipelineDslSpec = serde_json::from_str(include_str!(
@@ -1890,6 +1891,7 @@ fn operator_variant_model_mirrors_generator_subsequences() {
 /// `cartesian_generation_is_deterministic_and_fingerprinted` pattern to the operator dimension):
 /// two derivations are byte-identical, the model's generation spec fingerprints stably, and a
 /// changed sub-sequence moves the fingerprint.
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn operator_variant_model_is_deterministic_and_fingerprinted() {
     let spec: PipelineDslSpec = serde_json::from_str(include_str!(
@@ -2201,6 +2203,7 @@ fn operator_variant_label_matches_pinned_host_contract() {
 /// (`canonical_operator_variant_label`) calls, and reproduces the fixture's pinned `variant_label`.
 /// This is the byte-identity anchor both repos validate against (`scripts/validate_contracts.py`
 /// recomputes the SAME digest from `canonical_value`).
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn operator_variant_label_fixture_steps_json_matches_pinned() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -3719,6 +3722,7 @@ fn parses_nirs4all_compat_feature_branch_merge_dict() {
         && node.operator.as_ref().unwrap().as_str() == Some("PLSRegression")));
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn published_pipeline_dsl_schema_declares_current_contract() {
     let schema: serde_json::Value = serde_json::from_str(include_str!(

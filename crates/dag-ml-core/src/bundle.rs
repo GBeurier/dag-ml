@@ -1,23 +1,704 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 use crate::aggregation::{AggregatedPredictionBlock, PredictionUnitId};
 use crate::campaign::stable_json_fingerprint;
 use crate::canonical::deserialize_external_contract;
+use crate::conformal_runtime::ConformalCalibrationRef;
 use crate::data::{
     data_binding_requirement_key, ExternalDataPlanEnvelope, RepresentationCompatibilityReport,
     RepresentationReplayManifest,
 };
 use crate::error::{DagMlError, Result};
-use crate::ids::{BundleId, ControllerId, FoldId, NodeId, SampleId, VariantId};
-use crate::metrics::ScoreSet;
+use crate::ids::{ArtifactId, BundleId, ControllerId, FoldId, NodeId, SampleId, VariantId};
+use crate::metrics::{RegressionMetricReport, RegressionTargetBlock, ScoreSet};
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::ExecutionPlan;
 use crate::policy::PredictionLevel;
-use crate::runtime::ArtifactRef;
+use crate::runtime::{ArtifactBackend, ArtifactRef};
 use crate::selection::SelectionDecision;
+
+/// Schema version for the durable, self-contained Methods HPO resume state.
+pub const METHODS_HPO_RESUME_STATE_SCHEMA_VERSION: u32 = 1;
+
+/// The scalar selection identity bound into a persisted Methods HPO campaign.
+///
+/// This deliberately carries the selection id as well as the actual model
+/// output and metric.  A N4MOPT payload has no knowledge of DAG-ML's SELECT
+/// contract, so restoring it without this identity would permit an optimizer
+/// history to be applied to a different decision boundary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodsHpoResumeSelection {
+    pub selection_id: String,
+    pub target_node_id: NodeId,
+    pub producer_port: String,
+    pub metric: String,
+}
+
+/// Exact coordinator provenance bound to an N4MOPT checkpoint.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodsHpoResumeProvenance {
+    pub graph_fingerprint: String,
+    pub campaign_fingerprint: String,
+    pub controller_fingerprint: String,
+    pub data_identities_fingerprint: String,
+    pub fold_set_fingerprint: String,
+    pub training_influence_fingerprint: String,
+    pub relation_fingerprint: String,
+    pub selection: MethodsHpoResumeSelection,
+}
+
+/// A completed native proposal paired with its exact, scheduler-owned plan
+/// variant.  Native checkpoints alone cannot reconstruct this value.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodsHpoCompletedProposal {
+    pub trial_id: i64,
+    pub variant: crate::generation::VariantPlan,
+}
+
+/// The sole report permitted to terminalize a persisted trial: the scalar
+/// cross-fold validation OOF average used by SELECT.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodsHpoCompletedReport {
+    pub trial_id: i64,
+    pub variant_id: VariantId,
+    /// Only terminally completed trials may carry report-grade OOF evidence.
+    /// `failed` and `pruned` are deliberately not representable here.
+    pub terminal_state: MethodsHpoCompletedState,
+    pub score: f64,
+    pub report: RegressionMetricReport,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MethodsHpoCompletedState {
+    Completed,
+}
+
+/// Per-sample OOF average retained with its matching targets.  This is a
+/// serializable equivalent of the transient `OofAverageBlock`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodsHpoOofAverage {
+    pub predictions: AggregatedPredictionBlock,
+    pub y_true: RegressionTargetBlock,
+}
+
+/// Candidate-level evidence retained because it was needed to produce the
+/// selection decision.  It is report-grade only and never a training input.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodsHpoCandidateEvidence {
+    pub trial_id: i64,
+    pub variant_id: VariantId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant_label: Option<String>,
+    pub predictions: Vec<PredictionBlock>,
+    pub regression_targets: Vec<RegressionTargetBlock>,
+    pub oof_average: MethodsHpoOofAverage,
+    pub lineage: Vec<crate::runtime::LineageRecord>,
+}
+
+/// Native optimizer incumbent recorded beside scheduler evidence. This is the
+/// only portable assertion that DAG-ML's SELECT agrees with Methods `best()`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodsHpoNativeIncumbent {
+    pub trial_id: i64,
+    pub score: f64,
+    pub metric: String,
+    pub direction: crate::hpo::HpoDirection,
+    pub variant_id: VariantId,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodsHpoTerminalEvidence {
+    pub trial: crate::hpo::HpoTrial,
+    pub variant_id: Option<VariantId>,
+}
+
+/// Atomic portable state required to resume a Methods HPO campaign.
+///
+/// A restore path must consume this whole object after deserializing its
+/// containing package.  In particular, the N4MOPT bytes are never a free
+/// descriptor field: proposals, terminal OOF reports, candidate predictions
+/// and lineage remain inseparable from their native optimizer state.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodsHpoResumeState {
+    pub schema_version: u32,
+    pub checkpoint: crate::hpo::N4moptCheckpointArtifact,
+    pub provenance: MethodsHpoResumeProvenance,
+    /// Scheduler campaign operation identity. HPO is not a graph node.
+    pub operation_id: String,
+    pub controller_id: ControllerId,
+    pub target_node_id: NodeId,
+    pub incumbent: MethodsHpoNativeIncumbent,
+    /// Total terminal/native-history cardinality, including failed and pruned
+    /// trials which deliberately have no selectable OOF candidate payload.
+    pub trial_history_len: u32,
+    pub terminal_trials: Vec<MethodsHpoTerminalEvidence>,
+    pub completed_proposals: Vec<MethodsHpoCompletedProposal>,
+    pub completed_reports: Vec<MethodsHpoCompletedReport>,
+    pub candidates: Vec<MethodsHpoCandidateEvidence>,
+}
+
+impl MethodsHpoResumeState {
+    /// Materialize the portable state from scheduler-owned campaign evidence.
+    /// This is intentionally the only conversion from the non-serializable
+    /// runtime checkpoint result: callers must supply every candidate's OOF
+    /// predictions and lineage, rather than serializing a bare checkpoint.
+    pub fn from_runtime_checkpoint(
+        checkpoint: crate::runtime::RuntimeHpoCheckpointResult,
+        selection: MethodsHpoResumeSelection,
+        candidates: Vec<crate::runtime::RuntimeHpoCandidateEvaluation>,
+        incumbent: crate::runtime::RuntimeHpoIncumbent,
+        terminal_trials: Vec<crate::runtime::RuntimeHpoTerminalSnapshot>,
+    ) -> Result<Self> {
+        let candidate_scores = candidates
+            .iter()
+            .map(|candidate| (candidate.proposal.trial_id, candidate.score))
+            .collect::<BTreeMap<_, _>>();
+        let completed_proposals = checkpoint
+            .completed_proposals
+            .iter()
+            .map(|proposal| MethodsHpoCompletedProposal {
+                trial_id: proposal.trial_id,
+                variant: proposal.variant.clone(),
+            })
+            .collect();
+        let completed_reports = checkpoint
+            .completed_reports
+            .iter()
+            .map(|completed| {
+                let metric = selection.metric.as_str();
+                if !completed.report.metrics.contains_key(metric) {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "Methods HPO completed trial {} has no `{metric}` OOF metric",
+                        completed.trial_id
+                    )));
+                }
+                let score = candidate_scores
+                    .get(&completed.trial_id)
+                    .copied()
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "Methods HPO completed trial {} has no candidate OOF evidence",
+                            completed.trial_id
+                        ))
+                    })?;
+                Ok(MethodsHpoCompletedReport {
+                    trial_id: completed.trial_id,
+                    variant_id: completed.variant_id.clone(),
+                    terminal_state: MethodsHpoCompletedState::Completed,
+                    score,
+                    report: completed.report.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let candidates = candidates
+            .into_iter()
+            .map(|candidate| {
+                let average = candidate
+                    .validation_predictions
+                    .oof_average
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "Methods HPO trial {} has no cross-fold OOF average",
+                            candidate.proposal.trial_id
+                        ))
+                    })?;
+                Ok(MethodsHpoCandidateEvidence {
+                    trial_id: candidate.proposal.trial_id,
+                    variant_id: candidate.proposal.variant.variant_id.clone(),
+                    variant_label: candidate.validation_predictions.variant_label,
+                    predictions: candidate.validation_predictions.predictions,
+                    regression_targets: candidate.validation_predictions.regression_targets,
+                    oof_average: MethodsHpoOofAverage {
+                        predictions: average.predictions,
+                        y_true: average.y_true,
+                    },
+                    lineage: candidate.lineage,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let state = Self {
+            schema_version: METHODS_HPO_RESUME_STATE_SCHEMA_VERSION,
+            checkpoint: checkpoint.artifact,
+            provenance: MethodsHpoResumeProvenance {
+                graph_fingerprint: checkpoint.provenance.graph_fingerprint,
+                campaign_fingerprint: checkpoint.provenance.campaign_fingerprint,
+                controller_fingerprint: checkpoint.provenance.controller_fingerprint,
+                data_identities_fingerprint: checkpoint.provenance.data_identities_fingerprint,
+                fold_set_fingerprint: checkpoint.provenance.fold_set_fingerprint.ok_or_else(
+                    || {
+                        DagMlError::RuntimeValidation(
+                            "Methods HPO resume requires an attested fold-set fingerprint"
+                                .to_string(),
+                        )
+                    },
+                )?,
+                training_influence_fingerprint: checkpoint
+                    .provenance
+                    .training_influence_fingerprint,
+                relation_fingerprint: checkpoint.provenance.relation_fingerprint,
+                selection,
+            },
+            operation_id: checkpoint.operation_id,
+            controller_id: checkpoint.controller_id,
+            target_node_id: checkpoint.target_node_id,
+            incumbent: MethodsHpoNativeIncumbent {
+                trial_id: incumbent.trial_id,
+                score: incumbent.score,
+                metric: incumbent.metric,
+                direction: incumbent.direction,
+                variant_id: incumbent.variant_id,
+            },
+            trial_history_len: checkpoint.trial_history_len,
+            terminal_trials: terminal_trials
+                .into_iter()
+                .map(|snapshot| MethodsHpoTerminalEvidence {
+                    trial: snapshot.trial,
+                    variant_id: snapshot.variant_id,
+                })
+                .collect(),
+            completed_proposals,
+            completed_reports,
+            candidates,
+        };
+        state.validate()?;
+        Ok(state)
+    }
+
+    /// Validate internal one-to-one coverage and report-grade OOF evidence.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != METHODS_HPO_RESUME_STATE_SCHEMA_VERSION {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "Methods HPO resume state has unsupported schema_version {}",
+                self.schema_version
+            )));
+        }
+        self.checkpoint.validate().map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "Methods HPO resume checkpoint is invalid: {error}"
+            ))
+        })?;
+        if self.checkpoint.binding.controller_id.trim().is_empty()
+            || self.checkpoint.binding.study_id.trim().is_empty()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO resume checkpoint binding has an empty controller or study identity"
+                    .to_string(),
+            ));
+        }
+        if self.operation_id.trim().is_empty()
+            || self.trial_history_len == 0
+            || self.completed_proposals.len() > self.trial_history_len as usize
+            || self.controller_id.as_str() != self.checkpoint.binding.controller_id
+            || self.target_node_id != self.provenance.selection.target_node_id
+            || self.incumbent.metric != self.provenance.selection.metric
+            || !self.incumbent.score.is_finite()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO resume campaign operation or incumbent identity is invalid"
+                    .to_string(),
+            ));
+        }
+        if self.terminal_trials.len() != self.trial_history_len as usize
+            || self
+                .terminal_trials
+                .windows(2)
+                .any(|pair| pair[0].trial.id >= pair[1].trial.id)
+            || self.terminal_trials.iter().any(|evidence| {
+                !matches!(
+                    evidence.trial.status,
+                    crate::hpo::HpoTrialStatus::Completed
+                        | crate::hpo::HpoTrialStatus::Pruned
+                        | crate::hpo::HpoTrialStatus::Failed
+                )
+            })
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO terminal trial evidence must exactly cover a strictly ordered terminal native history"
+                    .to_string(),
+            ));
+        }
+        for (label, ids) in [
+            (
+                "completed proposals",
+                self.completed_proposals
+                    .iter()
+                    .map(|item| item.trial_id)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "completed reports",
+                self.completed_reports
+                    .iter()
+                    .map(|item| item.trial_id)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "candidate evidence",
+                self.candidates
+                    .iter()
+                    .map(|item| item.trial_id)
+                    .collect::<Vec<_>>(),
+            ),
+        ] {
+            if ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Methods HPO resume {label} must be strictly sorted by trial_id"
+                )));
+            }
+        }
+        validate_resume_sha256(
+            "checkpoint search-space",
+            &self.checkpoint.binding.search_space_fingerprint,
+        )?;
+        validate_resume_sha256(
+            "checkpoint optimizer",
+            &self.checkpoint.binding.optimizer_fingerprint,
+        )?;
+        for (label, value) in [
+            ("graph", self.provenance.graph_fingerprint.as_str()),
+            ("campaign", self.provenance.campaign_fingerprint.as_str()),
+            (
+                "controller",
+                self.provenance.controller_fingerprint.as_str(),
+            ),
+            (
+                "data identities",
+                self.provenance.data_identities_fingerprint.as_str(),
+            ),
+            ("fold set", self.provenance.fold_set_fingerprint.as_str()),
+            (
+                "training influence",
+                self.provenance.training_influence_fingerprint.as_str(),
+            ),
+            ("relation", self.provenance.relation_fingerprint.as_str()),
+        ] {
+            validate_resume_sha256(label, value)?;
+        }
+        for (label, value) in [
+            (
+                "selection id",
+                self.provenance.selection.selection_id.as_str(),
+            ),
+            (
+                "selection producer port",
+                self.provenance.selection.producer_port.as_str(),
+            ),
+            (
+                "selection metric",
+                self.provenance.selection.metric.as_str(),
+            ),
+        ] {
+            if value.trim().is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Methods HPO resume {label} must not be empty"
+                )));
+            }
+        }
+        let mut proposals = BTreeMap::new();
+        for proposal in &self.completed_proposals {
+            proposal.variant.validate()?;
+            if proposals
+                .insert(proposal.trial_id, &proposal.variant)
+                .is_some()
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Methods HPO resume has duplicate completed proposal for trial {}",
+                    proposal.trial_id
+                )));
+            }
+        }
+        if proposals.is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO resume requires at least one completed proposal".to_string(),
+            ));
+        }
+        let terminal_by_trial = self
+            .terminal_trials
+            .iter()
+            .map(|evidence| (evidence.trial.id, evidence))
+            .collect::<BTreeMap<_, _>>();
+        let completed_terminal_ids = self
+            .terminal_trials
+            .iter()
+            .filter(|evidence| evidence.trial.status == crate::hpo::HpoTrialStatus::Completed)
+            .map(|evidence| evidence.trial.id)
+            .collect::<BTreeSet<_>>();
+        if completed_terminal_ids != proposals.keys().copied().collect()
+            || proposals.iter().any(|(trial_id, variant)| {
+                terminal_by_trial
+                    .get(trial_id)
+                    .and_then(|evidence| evidence.variant_id.as_ref())
+                    != Some(&variant.variant_id)
+            })
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO completed proposal evidence must exactly match terminal native trials"
+                    .to_string(),
+            ));
+        }
+        let mut reports = BTreeSet::new();
+        for completed in &self.completed_reports {
+            let Some(variant) = proposals.get(&completed.trial_id) else {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Methods HPO resume report for trial {} is orphaned",
+                    completed.trial_id
+                )));
+            };
+            if !matches!(
+                completed.terminal_state,
+                MethodsHpoCompletedState::Completed
+            ) || variant.variant_id != completed.variant_id
+                || !completed.score.is_finite()
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Methods HPO resume report for trial {} does not match its proposal",
+                    completed.trial_id
+                )));
+            }
+            let terminal = terminal_by_trial[&completed.trial_id];
+            if terminal.trial.score.map(f64::to_bits) != Some(completed.score.to_bits())
+                || terminal
+                    .trial
+                    .intermediates
+                    .iter()
+                    .any(|value| !value.score.is_finite())
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Methods HPO terminal trial {} score/intermediate evidence is inconsistent",
+                    completed.trial_id
+                )));
+            }
+            validate_resume_report(completed, &self.provenance.selection)?;
+            if !reports.insert(completed.trial_id) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Methods HPO resume has duplicate completed report for trial {}",
+                    completed.trial_id
+                )));
+            }
+        }
+        if reports != proposals.keys().copied().collect() {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO resume completed reports must exactly cover completed proposals"
+                    .to_string(),
+            ));
+        }
+        let incumbent = self
+            .completed_reports
+            .iter()
+            .find(|report| report.trial_id == self.incumbent.trial_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "Methods HPO resume incumbent is not a completed scheduler trial".to_string(),
+                )
+            })?;
+        if incumbent.variant_id != self.incumbent.variant_id
+            || incumbent.score.to_bits() != self.incumbent.score.to_bits()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO resume incumbent does not exactly match its completed report"
+                    .to_string(),
+            ));
+        }
+        let mut evidence = BTreeSet::new();
+        for candidate in &self.candidates {
+            let Some(variant) = proposals.get(&candidate.trial_id) else {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Methods HPO candidate evidence for trial {} is orphaned",
+                    candidate.trial_id
+                )));
+            };
+            if variant.variant_id != candidate.variant_id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Methods HPO candidate evidence for trial {} does not match its proposal",
+                    candidate.trial_id
+                )));
+            }
+            validate_resume_candidate(candidate, &self.provenance.selection)?;
+            if !evidence.insert(candidate.trial_id) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Methods HPO resume has duplicate candidate evidence for trial {}",
+                    candidate.trial_id
+                )));
+            }
+        }
+        if evidence != proposals.keys().copied().collect() {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO candidate evidence must exactly cover completed proposals".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate state against the plan embedded in its containing package.
+    pub fn validate_against_plan(&self, plan: &ExecutionPlan) -> Result<()> {
+        self.validate()?;
+        if self.provenance.graph_fingerprint != plan.graph_fingerprint
+            || self.provenance.campaign_fingerprint
+                != crate::hpo::campaign_provenance_fingerprint(&plan.campaign)?
+            || self.provenance.controller_fingerprint != plan.controller_fingerprint
+            || plan
+                .fold_set
+                .as_ref()
+                .map(stable_json_fingerprint)
+                .transpose()?
+                .as_deref()
+                != Some(self.provenance.fold_set_fingerprint.as_str())
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO resume provenance does not match execution plan".to_string(),
+            ));
+        }
+        let target = plan.node_plans.get(&self.target_node_id).ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "Methods HPO resume target node is absent from execution plan".to_string(),
+            )
+        })?;
+        if self.operation_id.trim().is_empty()
+            || target.kind != crate::graph::NodeKind::Model
+            || self.controller_id.as_str() != self.checkpoint.binding.controller_id
+            || self.target_node_id != self.provenance.selection.target_node_id
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO resume campaign/target/checkpoint binding does not match execution plan"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_resume_sha256(label: &str, value: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "Methods HPO resume {label} fingerprint must be lowercase SHA-256"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_resume_report(
+    completed: &MethodsHpoCompletedReport,
+    selection: &MethodsHpoResumeSelection,
+) -> Result<()> {
+    completed.report.validate()?;
+    let report = &completed.report;
+    let metric = report.metrics.get(&selection.metric).ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "Methods HPO report for trial {} omits selection metric `{}`",
+            completed.trial_id, selection.metric
+        ))
+    })?;
+    if report.variant_id.as_ref() != Some(&completed.variant_id)
+        || report.producer_node != selection.target_node_id
+        || report.producer_port.as_deref() != Some(selection.producer_port.as_str())
+        || report.partition != PredictionPartition::Validation
+        || report.fold_id.as_ref().map(FoldId::as_str) != Some("avg")
+        || report.level != PredictionLevel::Sample
+        || (metric - completed.score).abs() > 1e-12
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "Methods HPO report for trial {} must be the exact sample-level validation OOF average",
+            completed.trial_id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_resume_candidate(
+    candidate: &MethodsHpoCandidateEvidence,
+    selection: &MethodsHpoResumeSelection,
+) -> Result<()> {
+    if candidate.predictions.is_empty()
+        || candidate.predictions.len() != candidate.regression_targets.len()
+        || candidate.lineage.is_empty()
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "Methods HPO candidate evidence requires paired fold OOF predictions, targets and lineage"
+                .to_string(),
+        ));
+    }
+    for (prediction, target) in candidate
+        .predictions
+        .iter()
+        .zip(&candidate.regression_targets)
+    {
+        prediction.validate_shape()?;
+        target.validate_shape()?;
+        if prediction.partition != PredictionPartition::Validation
+            || prediction.producer_node != selection.target_node_id
+            || prediction.producer_port.as_deref() != Some(selection.producer_port.as_str())
+            || prediction.sample_ids
+                != target
+                    .unit_ids
+                    .iter()
+                    .filter_map(|unit| match unit {
+                        PredictionUnitId::Sample(id) => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO candidate fold evidence is not exact validation OOF data for selection"
+                    .to_string(),
+            ));
+        }
+    }
+    candidate.oof_average.predictions.validate_shape()?;
+    candidate.oof_average.y_true.validate_shape()?;
+    if candidate.oof_average.predictions.producer_node != selection.target_node_id
+        || candidate.oof_average.predictions.producer_port.as_deref()
+            != Some(selection.producer_port.as_str())
+        || candidate.oof_average.predictions.partition != PredictionPartition::Validation
+        || candidate
+            .oof_average
+            .predictions
+            .fold_id
+            .as_ref()
+            .map(FoldId::as_str)
+            != Some("avg")
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "Methods HPO candidate OOF average does not match selection output".to_string(),
+        ));
+    }
+    let mut lineage_ids = BTreeSet::new();
+    let mut has_target = false;
+    for record in &candidate.lineage {
+        record.validate()?;
+        if !lineage_ids.insert(record.record_id.clone()) {
+            return Err(DagMlError::RuntimeValidation(
+                "Methods HPO candidate evidence has duplicate lineage record ids".to_string(),
+            ));
+        }
+        has_target |= record.node_id == selection.target_node_id
+            && record.variant_id.as_ref() == Some(&candidate.variant_id);
+    }
+    if !has_target {
+        return Err(DagMlError::RuntimeValidation(
+            "Methods HPO candidate lineage does not include its selected target variant"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
 
 pub const EXECUTION_BUNDLE_SCHEMA_VERSION: u32 = 2;
 pub const PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION: u32 = 2;
@@ -1063,6 +1744,7 @@ impl RefitArtifactRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionBundle {
     pub bundle_id: BundleId,
     #[serde(default = "default_execution_bundle_schema_version")]
@@ -1081,6 +1763,14 @@ pub struct ExecutionBundle {
     pub prediction_requirements: Vec<BundlePredictionRequirement>,
     #[serde(default)]
     pub prediction_caches: Vec<BundlePredictionCacheRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub methods_hpo_resume_state: Option<MethodsHpoResumeState>,
+    /// Typed reference to the outcome-owned conformal state.  Keeping only a
+    /// reference here prevents stale duplicate quantiles in a replay package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conformal_calibration: Option<ConformalCalibrationRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub raw_artifact_payloads: BTreeMap<ArtifactId, Vec<u8>>,
     /// Native, cross-language score record for this run (per (node, partition, fold, level)).
     /// Scores are scalars derived from `y_true`, safe for every partition — distinct from the
     /// Validation-only `prediction_caches`. Optional + additive (legacy bundles have `None`).
@@ -1097,6 +1787,25 @@ pub struct ExecutionBundle {
 impl ExecutionBundle {
     /// Parse the published object-only bundle JSON representation and validate it.
     pub fn from_json(json: &str) -> Result<Self> {
+        crate::canonical::parse_typed_json(json).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "execution bundle is not strict TCV1 JSON: {error}"
+            ))
+        })?;
+        let raw: serde_json::Value = serde_json::from_str(json)?;
+        if raw
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(u64::from(LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION))
+            && raw
+                .as_object()
+                .is_some_and(|object| object.contains_key("conformal_calibration"))
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "execution bundle V1 JSON cannot contain conformal_calibration, including null"
+                    .to_string(),
+            ));
+        }
         let bundle: Self =
             deserialize_external_contract(json, "execution bundle", DagMlError::RuntimeValidation)?;
         bundle.validate()?;
@@ -1115,6 +1824,61 @@ impl ExecutionBundle {
         validate_fingerprint("graph", &self.graph_fingerprint)?;
         validate_fingerprint("campaign", &self.campaign_fingerprint)?;
         validate_fingerprint("controller", &self.controller_fingerprint)?;
+        if let Some(state) = &self.methods_hpo_resume_state {
+            state.validate().map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` has invalid Methods HPO resume state: {error}",
+                    self.bundle_id
+                ))
+            })?;
+        }
+        if let Some(calibration) = &self.conformal_calibration {
+            if self.schema_version == LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION {
+                return Err(DagMlError::RuntimeValidation(
+                    "execution bundle V1 cannot carry conformal state; migrate to V2".to_string(),
+                ));
+            }
+            calibration.validate()?;
+        }
+        let expected_raw_artifacts = self
+            .refit_artifacts
+            .iter()
+            .filter(|record| record.artifact.backend == Some(ArtifactBackend::Raw))
+            .map(|record| &record.artifact.id)
+            .collect::<BTreeSet<_>>();
+        let actual_raw_artifacts = self.raw_artifact_payloads.keys().collect::<BTreeSet<_>>();
+        if expected_raw_artifacts != actual_raw_artifacts {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "bundle `{}` raw artifact payload keys must exactly cover RAW refit artifacts (expected {:?}, got {:?})",
+                self.bundle_id, expected_raw_artifacts, actual_raw_artifacts
+            )));
+        }
+        for record in &self.refit_artifacts {
+            if record.artifact.backend == Some(ArtifactBackend::Raw) {
+                let payload = self
+                    .raw_artifact_payloads
+                    .get(&record.artifact.id)
+                    .expect("exact raw payload coverage was checked");
+                let expected = record
+                    .artifact
+                    .content_fingerprint
+                    .as_deref()
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "raw artifact `{}` has no content fingerprint",
+                            record.artifact.id
+                        ))
+                    })?;
+                if format!("{:x}", sha2::Sha256::digest(payload)) != expected
+                    || record.artifact.size_bytes != Some(payload.len() as u64)
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "raw artifact payload `{}` does not match its bundle reference",
+                        record.artifact.id
+                    )));
+                }
+            }
+        }
         if let Some(scores) = &self.scores {
             scores.validate()?;
             if scores.schema_version != self.schema_version {
@@ -1283,6 +2047,9 @@ impl ExecutionBundle {
             None => None,
         };
         self.validate_selections_against_plan(plan)?;
+        if let Some(state) = &self.methods_hpo_resume_state {
+            state.validate_against_plan(plan)?;
+        }
         let expected_requirements = collect_data_requirements(plan)?;
         let expected_by_key = expected_requirements
             .iter()
@@ -2050,12 +2817,25 @@ pub fn build_execution_bundle_with_prediction_contracts(
         refit_artifacts,
         prediction_requirements,
         prediction_caches,
+        methods_hpo_resume_state: None,
+        conformal_calibration: None,
+        raw_artifact_payloads: BTreeMap::new(),
         scores: None,
         data_requirements: collect_data_requirements(plan)?,
         unsafe_flags: BTreeSet::new(),
         metadata: BTreeMap::new(),
     };
-    bundle.validate_against_plan(plan)?;
+    // Raw artifacts are exported by their controller immediately after this
+    // structural bundle is staged.  Do not validate payload coverage before
+    // that one-shot transfer; the final bundle validation remains mandatory
+    // and rejects both missing and orphan payloads.
+    if !bundle
+        .refit_artifacts
+        .iter()
+        .any(|record| record.artifact.backend == Some(ArtifactBackend::Raw))
+    {
+        bundle.validate_against_plan(plan)?;
+    }
     Ok(bundle)
 }
 
@@ -2678,7 +3458,7 @@ mod tests {
     };
     use crate::dsl::{compile_pipeline_dsl_with_generation, PipelineDslSpec};
     use crate::graph::GraphSpec;
-    use crate::ids::{ArtifactId, FoldId, SampleId, TargetId};
+    use crate::ids::{ArtifactId, ControllerId, FoldId, LineageId, RunId, SampleId, TargetId};
     use crate::plan::{build_execution_plan, CampaignSpec};
     use crate::relation::EntityUnitLevel;
     use crate::selection::{
@@ -2687,14 +3467,16 @@ mod tests {
 
     fn plan() -> ExecutionPlan {
         let graph: GraphSpec =
-            serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
+            serde_json::from_str(include_str!("../tests/fixtures/package/minimal_graph.json"))
+                .unwrap();
         let campaign: CampaignSpec = serde_json::from_str(include_str!(
-            "../../../examples/campaign_oof_generation.json"
+            "../tests/fixtures/package/campaign_oof_generation.json"
         ))
         .unwrap();
-        let manifests: Vec<ControllerManifest> =
-            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
-                .unwrap();
+        let manifests: Vec<ControllerManifest> = serde_json::from_str(include_str!(
+            "../tests/fixtures/package/controller_manifests.json"
+        ))
+        .unwrap();
         let mut registry = ControllerRegistry::new();
         for manifest in manifests {
             registry.register(manifest).unwrap();
@@ -2702,18 +3484,170 @@ mod tests {
         build_execution_plan("plan:bundle", graph, campaign, &registry).unwrap()
     }
 
+    fn methods_hpo_resume_state() -> MethodsHpoResumeState {
+        let node = NodeId::new("model:hpo").unwrap();
+        let variant = crate::generation::VariantPlan {
+            variant_id: VariantId::new("hpo:trial:1").unwrap(),
+            choices: BTreeMap::new(),
+            fingerprint: "c".repeat(64),
+            seed: Some(7),
+        };
+        let sample = SampleId::new("sample:hpo.1").unwrap();
+        let target = RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: vec![PredictionUnitId::Sample(sample.clone())],
+            values: vec![vec![1.0]],
+            target_names: vec!["y".to_string()],
+        };
+        let report = RegressionMetricReport {
+            prediction_id: Some("prediction:model:hpo.avg".to_string()),
+            producer_node: node.clone(),
+            producer_port: Some("prediction".to_string()),
+            variant_id: Some(variant.variant_id.clone()),
+            variant_label: None,
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("avg").unwrap()),
+            level: PredictionLevel::Sample,
+            row_count: 1,
+            target_width: 1,
+            target_names: vec!["y".to_string()],
+            metrics: BTreeMap::from([("rmse".to_string(), 0.25)]),
+        };
+        let payload = vec![1_u8, 2, 3];
+        MethodsHpoResumeState {
+            schema_version: METHODS_HPO_RESUME_STATE_SCHEMA_VERSION,
+            checkpoint: crate::hpo::N4moptCheckpointArtifact {
+                schema_version: crate::hpo::N4MOPT_CHECKPOINT_SCHEMA_VERSION,
+                artifact_kind: crate::hpo::N4MOPT_ARTIFACT_KIND.to_string(),
+                format: crate::hpo::N4MOPT_FORMAT.to_string(),
+                binding: crate::hpo::HpoStudyBinding {
+                    controller_id: "controller:hpo".to_string(),
+                    study_id: "study:hpo".to_string(),
+                    search_space_fingerprint: "a".repeat(64),
+                    optimizer_fingerprint: "b".repeat(64),
+                },
+                methods_abi: "n4m:1".to_string(),
+                payload_sha256: format!("{:x}", sha2::Sha256::digest(&payload)),
+                opaque_payload: payload,
+            },
+            provenance: MethodsHpoResumeProvenance {
+                graph_fingerprint: "d".repeat(64),
+                campaign_fingerprint: "e".repeat(64),
+                controller_fingerprint: "f".repeat(64),
+                data_identities_fingerprint: "1".repeat(64),
+                fold_set_fingerprint: "2".repeat(64),
+                training_influence_fingerprint: "3".repeat(64),
+                relation_fingerprint: "4".repeat(64),
+                selection: MethodsHpoResumeSelection {
+                    selection_id: "selection:hpo".to_string(),
+                    target_node_id: node.clone(),
+                    producer_port: "prediction".to_string(),
+                    metric: "rmse".to_string(),
+                },
+            },
+            operation_id: "hpo:bundle-test".to_string(),
+            controller_id: ControllerId::new("controller:hpo").unwrap(),
+            target_node_id: node.clone(),
+            incumbent: MethodsHpoNativeIncumbent {
+                trial_id: 1,
+                score: 0.25,
+                metric: "rmse".to_string(),
+                direction: crate::hpo::HpoDirection::Minimize,
+                variant_id: variant.variant_id.clone(),
+            },
+            trial_history_len: 1,
+            terminal_trials: vec![MethodsHpoTerminalEvidence {
+                trial: crate::hpo::HpoTrial {
+                    id: 1,
+                    ask_sequence: 1,
+                    terminal_sequence: Some(1),
+                    parameters: BTreeMap::new(),
+                    parameter_order: Vec::new(),
+                    status: crate::hpo::HpoTrialStatus::Completed,
+                    score: Some(0.25),
+                    rung: 0,
+                    duration: 0.0,
+                    intermediates: Vec::new(),
+                    failure: None,
+                },
+                variant_id: Some(variant.variant_id.clone()),
+            }],
+            completed_proposals: vec![MethodsHpoCompletedProposal {
+                trial_id: 1,
+                variant: variant.clone(),
+            }],
+            completed_reports: vec![MethodsHpoCompletedReport {
+                trial_id: 1,
+                variant_id: variant.variant_id.clone(),
+                terminal_state: MethodsHpoCompletedState::Completed,
+                score: 0.25,
+                report,
+            }],
+            candidates: vec![MethodsHpoCandidateEvidence {
+                trial_id: 1,
+                variant_id: variant.variant_id.clone(),
+                variant_label: None,
+                predictions: vec![PredictionBlock {
+                    prediction_id: Some("prediction:model:hpo.fold0".to_string()),
+                    producer_node: node.clone(),
+                    producer_port: Some("prediction".to_string()),
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(FoldId::new("fold:0").unwrap()),
+                    sample_ids: vec![sample.clone()],
+                    values: vec![vec![1.25]],
+                    target_names: vec!["y".to_string()],
+                }],
+                regression_targets: vec![target.clone()],
+                oof_average: MethodsHpoOofAverage {
+                    predictions: AggregatedPredictionBlock {
+                        prediction_id: Some("prediction:model:hpo.avg".to_string()),
+                        producer_node: node.clone(),
+                        producer_port: Some("prediction".to_string()),
+                        partition: PredictionPartition::Validation,
+                        fold_id: Some(FoldId::new("avg").unwrap()),
+                        level: PredictionLevel::Sample,
+                        unit_ids: vec![PredictionUnitId::Sample(sample)],
+                        values: vec![vec![1.25]],
+                        target_names: vec!["y".to_string()],
+                    },
+                    y_true: target,
+                },
+                lineage: vec![crate::runtime::LineageRecord {
+                    record_id: LineageId::new("lineage:hpo.1").unwrap(),
+                    run_id: RunId::new("run:hpo").unwrap(),
+                    node_id: node,
+                    phase: Phase::FitCv,
+                    controller_id: ControllerId::new("controller:methods.pls").unwrap(),
+                    controller_version: "1".to_string(),
+                    variant_id: Some(variant.variant_id),
+                    fold_id: Some(FoldId::new("fold:0").unwrap()),
+                    branch_path: Vec::new(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: "5".repeat(64),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: Some(7),
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                }],
+            }],
+        }
+    }
+
     fn branch_merge_plan() -> ExecutionPlan {
         let graph: GraphSpec = serde_json::from_str(include_str!(
-            "../../../examples/branch_merge_oof_graph.json"
+            "../tests/fixtures/package/branch_merge_oof_graph.json"
         ))
         .unwrap();
         let campaign: CampaignSpec = serde_json::from_str(include_str!(
-            "../../../examples/campaign_branch_merge_oof.json"
+            "../tests/fixtures/package/campaign_branch_merge_oof.json"
         ))
         .unwrap();
-        let manifests: Vec<ControllerManifest> =
-            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
-                .unwrap();
+        let manifests: Vec<ControllerManifest> = serde_json::from_str(include_str!(
+            "../tests/fixtures/package/controller_manifests.json"
+        ))
+        .unwrap();
         let mut registry = ControllerRegistry::new();
         for manifest in manifests {
             registry.register(manifest).unwrap();
@@ -2729,16 +3663,17 @@ mod tests {
     /// shape the partition-aware requirement validation must accept.
     fn separation_concat_merge_plan() -> ExecutionPlan {
         let graph: GraphSpec = serde_json::from_str(include_str!(
-            "../../../examples/separation_branch_concat_merge_oof_graph.json"
+            "../tests/fixtures/package/separation_branch_concat_merge_oof_graph.json"
         ))
         .unwrap();
         let campaign: CampaignSpec = serde_json::from_str(include_str!(
-            "../../../examples/campaign_separation_branch_concat_merge_oof.json"
+            "../tests/fixtures/package/campaign_separation_branch_concat_merge_oof.json"
         ))
         .unwrap();
-        let manifests: Vec<ControllerManifest> =
-            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
-                .unwrap();
+        let manifests: Vec<ControllerManifest> = serde_json::from_str(include_str!(
+            "../tests/fixtures/package/controller_manifests.json"
+        ))
+        .unwrap();
         let mut registry = ControllerRegistry::new();
         for manifest in manifests {
             registry.register(manifest).unwrap();
@@ -2816,13 +3751,14 @@ mod tests {
 
     fn executable_dsl_plan() -> ExecutionPlan {
         let spec: PipelineDslSpec = serde_json::from_str(include_str!(
-            "../../../examples/pipeline_dsl_branch_merge_executable.json"
+            "../tests/fixtures/package/pipeline_dsl_branch_merge_executable.json"
         ))
         .unwrap();
         let compiled = compile_pipeline_dsl_with_generation(&spec).unwrap();
-        let manifests: Vec<ControllerManifest> =
-            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
-                .unwrap();
+        let manifests: Vec<ControllerManifest> = serde_json::from_str(include_str!(
+            "../tests/fixtures/package/controller_manifests.json"
+        ))
+        .unwrap();
         let mut registry = ControllerRegistry::new();
         for manifest in manifests {
             registry.register(manifest).unwrap();
@@ -2838,7 +3774,7 @@ mod tests {
 
     fn branch_merge_selection_decisions() -> BTreeMap<String, SelectionDecision> {
         serde_json::from_str(include_str!(
-            "../../../examples/fixtures/bundle/selection_decisions_branch_merge.json"
+            "../tests/fixtures/package/bundle/selection_decisions_branch_merge.json"
         ))
         .unwrap()
     }
@@ -4011,7 +4947,7 @@ mod tests {
         )
         .unwrap();
         let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
 
@@ -4307,5 +5243,100 @@ mod tests {
         requirement.prediction_level = PredictionLevel::Group;
         let group = serde_json::to_value(&requirement).unwrap();
         assert_eq!(group["prediction_level"], serde_json::json!("group"));
+    }
+
+    #[test]
+    fn methods_hpo_resume_state_round_trips_and_rejects_orphan_or_score_drift() {
+        let state = methods_hpo_resume_state();
+        state.validate().unwrap();
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: MethodsHpoResumeState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, state);
+
+        let mut orphan = state.clone();
+        orphan.completed_reports.clear();
+        assert!(orphan
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("exactly cover"));
+
+        let mut score_drift = state;
+        score_drift.completed_reports[0].score += 1.1e-12;
+        assert!(score_drift
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("score/intermediate evidence is inconsistent"));
+
+        let mut failed = serde_json::to_value(methods_hpo_resume_state()).unwrap();
+        failed["completed_reports"][0]["terminal_state"] = serde_json::json!("failed");
+        assert!(serde_json::from_value::<MethodsHpoResumeState>(failed).is_err());
+
+        let mut uppercase_binding = methods_hpo_resume_state();
+        uppercase_binding.checkpoint.binding.optimizer_fingerprint = "A".repeat(64);
+        assert!(uppercase_binding
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("lowercase SHA-256"));
+    }
+
+    #[test]
+    fn methods_hpo_resume_state_rejects_unknown_and_duplicate_json_members() {
+        let plan = plan();
+        let bundle = build_execution_bundle(
+            BundleId::new("bundle:hpo.strict").unwrap(),
+            &plan,
+            None,
+            BTreeMap::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut raw = serde_json::to_value(bundle).unwrap();
+        raw.as_object_mut()
+            .unwrap()
+            .insert("unknown_hpo_member".to_string(), serde_json::json!(true));
+        assert!(ExecutionBundle::from_json(&serde_json::to_string(&raw).unwrap()).is_err());
+
+        let encoded = serde_json::to_string(&raw).unwrap();
+        let duplicated = encoded.replacen(
+            "\"bundle_id\":\"bundle:hpo.strict\"",
+            "\"bundle_id\":\"bundle:hpo.strict\",\"bundle_id\":\"bundle:hpo.strict\"",
+            1,
+        );
+        let error = ExecutionBundle::from_json(&duplicated)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate JSON object key"), "{error}");
+
+        let mut state = serde_json::to_value(methods_hpo_resume_state()).unwrap();
+        state.as_object_mut().unwrap().insert(
+            "unexpected_candidate_side_channel".to_string(),
+            serde_json::json!(true),
+        );
+        assert!(serde_json::from_value::<MethodsHpoResumeState>(state).is_err());
+    }
+
+    #[test]
+    fn execution_bundle_v1_json_rejects_null_conformal_member() {
+        let plan = plan();
+        let mut bundle = build_execution_bundle(
+            BundleId::new("bundle:v1.strict-conformal").unwrap(),
+            &plan,
+            None,
+            BTreeMap::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        bundle.schema_version = LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION;
+        let mut raw = serde_json::to_value(bundle).unwrap();
+        raw.as_object_mut()
+            .unwrap()
+            .insert("conformal_calibration".to_string(), serde_json::Value::Null);
+        let error = ExecutionBundle::from_json(&serde_json::to_string(&raw).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("including null"), "{error}");
     }
 }

@@ -1,0 +1,14 @@
+{
+    "bundle_format_version": "1.0",
+    "nirs4all_version": "fixture-only",
+    "created_at": "2020-01-01T00:00:00+00:00",
+    "pipeline_uid": "fixture:historical-loader",
+    "source_type": "synthetic_contract_fixture",
+    "model_step_index": null,
+    "fold_strategy": "weighted_average",
+    "preprocessing_chain": "",
+    "trace_id": null,
+    "original_manifest": {},
+    "partitioner_routing": {},
+    "relation_replay_manifest": {}
+}

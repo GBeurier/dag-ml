@@ -95,6 +95,22 @@
       "pattern": "^[A-Za-z0-9_.:-]+$"
     },
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "conformal_calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "binding_id", "target_names", "sample_ids", "coverages", "multi_target_policy", "small_sample_policy", "quantiles", "calibration_fingerprint"],
+      "properties": {
+        "schema_version": { "type": "integer", "const": 1 },
+        "binding_id": { "$ref": "#/$defs/identifier" },
+        "target_names": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "sample_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+        "coverages": { "type": "array", "minItems": 1, "items": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 } },
+        "multi_target_policy": { "enum": ["marginal", "joint_max"] },
+        "small_sample_policy": { "enum": ["error", "unbounded"] },
+        "quantiles": { "type": "array", "minItems": 1, "items": { "type": "object" } },
+        "calibration_fingerprint": { "$ref": "#/$defs/sha256" }
+      }
+    },
     "predictor_template": {
       "type": "object",
       "additionalProperties": false,

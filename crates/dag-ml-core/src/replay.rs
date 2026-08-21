@@ -6,17 +6,25 @@
 //! phase API; these types are the public training-owned replay surface.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::bundle::{ExecutionBundle, ReplayPhaseRequest};
+use crate::bundle::{ExecutionBundle, MethodsHpoResumeState, ReplayPhaseRequest};
 use crate::campaign::stable_json_fingerprint;
-use crate::canonical::parse_typed_json;
+use crate::canonical::{deserialize_external_contract, parse_typed_json};
+use crate::conformal::{ConformalMultiTargetPolicy, ConformalSmallSamplePolicy};
+use crate::conformal_runtime::{
+    ConformalCalibration, ConformalCalibrationContext, ConformalCalibrationTruth,
+    ConformalIntervalBlock,
+};
 use crate::data::ExternalDataPlanEnvelope;
 use crate::error::{DagMlError, Result};
-use crate::ids::{ArtifactId, BundleId, RunId};
+use crate::fold::fold_set_fingerprint;
+use crate::ids::{ArtifactId, BundleId, ControllerId, RunId};
 use crate::phase::Phase;
 use crate::plan::ExecutionPlan;
+use crate::relation::SampleRelationSet;
 use crate::runtime::{
     ArtifactMaterializationRequest, BundleReplayExecution, ExplanationBlock, HandleRef,
     LineageRecord, RunContext, RuntimeArtifactStore, RuntimeControllerRegistry,
@@ -30,7 +38,54 @@ use crate::training_runtime::{
 };
 
 pub const TRAINING_REPLAY_REQUEST_SCHEMA_VERSION: u32 = 1;
-pub const TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 1;
+/// V2 owns the typed conformal-interval closure. V1 remains readable only
+/// when it contains no conformal field values.
+pub const TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 2;
+pub const LEGACY_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 1;
+pub const MIN_READABLE_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 1;
+
+/// Strictly decode the complete, current Methods HPO resume state.
+///
+/// The resume state has no legacy migration branch: the scheduler-owned
+/// operation/controller/target identity, incumbent, and terminal native trace
+/// are atomic with the N4MOPT checkpoint. In particular, a historical
+/// `tuner_node_id` sentinel is an unknown member, not an alias.
+pub fn methods_hpo_resume_state_from_json(json: &str) -> Result<MethodsHpoResumeState> {
+    parse_typed_json(json).map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "Methods HPO resume state is not strict TCV1 JSON: {error}"
+        ))
+    })?;
+    let state: MethodsHpoResumeState = deserialize_external_contract(
+        json,
+        "Methods HPO resume state",
+        DagMlError::RuntimeValidation,
+    )?;
+    state.validate()?;
+    Ok(state)
+}
+
+/// Deserialize a portable predictor package and extract its complete Methods
+/// HPO resume state.  This deliberately accepts package JSON rather than a
+/// checkpoint/descriptor value: a resume is authorized only by state that has
+/// survived the package's strict deserialization and cross-link validation.
+pub fn methods_hpo_resume_state_from_package_json(json: &str) -> Result<MethodsHpoResumeState> {
+    let package = PortablePredictorPackage::from_json(json)?;
+    let state = package
+        .execution_bundle
+        .methods_hpo_resume_state
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "portable predictor package has no typed Methods HPO resume state; legacy checkpoint fields are not resumable"
+                    .to_string(),
+            )
+        })?;
+    // Package parsing already validates the nested state; keep the replay
+    // reader fail-closed if this call path is ever supplied a constructed
+    // package instead of its strict external JSON representation.
+    state.validate()?;
+    Ok(state)
+}
 
 pub struct AttachedTrainingReplayInput<'a> {
     pub source: &'a TrainingOutcome,
@@ -146,6 +201,8 @@ pub struct TrainingReplayOutcome {
     pub controller_count: usize,
     pub prediction_cache_store: bool,
     pub outputs: Vec<BoundTrainingOutput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conformal_intervals: Vec<ConformalIntervalBlock>,
     pub explanations: Vec<ExplanationBlock>,
     pub lineage: Vec<LineageRecord>,
     pub warnings: Vec<String>,
@@ -175,7 +232,9 @@ impl TrainingReplayOutcome {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION {
+        if self.schema_version < MIN_READABLE_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+            || self.schema_version > TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+        {
             return unsupported_version(
                 "training replay outcome",
                 self.schema_version,
@@ -204,8 +263,49 @@ impl TrainingReplayOutcome {
         validate_sorted_unique_text("training replay warnings", &self.warnings, false)?;
         validate_diagnostics(&self.diagnostics)?;
         validate_output_order_and_version(&self.outputs)?;
+        if self.schema_version == LEGACY_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+            && (!self.conformal_intervals.is_empty()
+                || self
+                    .source_training_outcome
+                    .pre_conformal_outcome_fingerprint
+                    .is_some())
+        {
+            return contract_error(
+                "training replay outcome V1 cannot carry conformal state; migrate to V2",
+            );
+        }
         for output in &self.outputs {
             validate_replay_bound_output_blocks(output)?;
+        }
+        for interval in &self.conformal_intervals {
+            let output = self
+                .outputs
+                .iter()
+                .find(|output| output.binding.binding_id == interval.binding_id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "conformal interval references an absent replay output binding".to_string(),
+                    )
+                })?;
+            let point = output
+                .predictions
+                .iter()
+                .find(|block| block.sample_ids == interval.sample_ids)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "conformal interval has no matching replay point prediction block"
+                            .to_string(),
+                    )
+                })?;
+            interval.validate()?;
+            if interval.point_prediction_fingerprint
+                != crate::conformal_runtime::point_prediction_fingerprint_for_runtime(point)?
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "conformal interval point prediction fingerprint does not match replay output"
+                        .to_string(),
+                ));
+            }
         }
         for explanation in &self.explanations {
             explanation.validate()?;
@@ -332,6 +432,19 @@ impl TrainingReplayOutcome {
             }
             output.validate(&source.effective_plan)?;
         }
+        match &source.conformal_calibration {
+            None if !self.conformal_intervals.is_empty() => {
+                return contract_error(
+                    "training replay intervals require source calibration context",
+                )
+            }
+            Some(calibration) => validate_replay_interval_closure(
+                calibration,
+                &self.outputs,
+                &self.conformal_intervals,
+            )?,
+            None => {}
+        }
         Ok(())
     }
 
@@ -426,6 +539,19 @@ impl TrainingReplayOutcome {
             }
             output.validate(&package.effective_plan)?;
         }
+        match &package.conformal_calibration {
+            None if !self.conformal_intervals.is_empty() => {
+                return contract_error(
+                    "training replay intervals require package calibration context",
+                )
+            }
+            Some(calibration) => validate_replay_interval_closure(
+                calibration,
+                &self.outputs,
+                &self.conformal_intervals,
+            )?,
+            None => {}
+        }
         Ok(())
     }
 
@@ -484,9 +610,124 @@ impl TrainingReplayOutcome {
     }
 }
 
+/// Reconstruct the complete signed request preimage retained transitively by
+/// a replay outcome. Validation of the returned request proves the replay did
+/// not merely self-attest an opaque request fingerprint.
+pub(crate) fn replay_request_from_outcome(replay: &TrainingReplayOutcome) -> TrainingReplayRequest {
+    TrainingReplayRequest {
+        schema_version: TRAINING_REPLAY_REQUEST_SCHEMA_VERSION,
+        request_id: replay.replay_request_id.clone(),
+        source_outcome_fingerprint: replay.source_training_outcome.outcome_fingerprint.clone(),
+        phase: replay.phase,
+        data_envelope_keys: replay
+            .input_data_identities
+            .iter()
+            .map(|identity| identity.requirement_key.clone())
+            .collect(),
+        output_binding_ids: replay
+            .outputs
+            .iter()
+            .map(|output| output.binding.binding_id.clone())
+            .collect(),
+        request_fingerprint: replay.replay_request_fingerprint.clone(),
+    }
+}
+
 struct LoadedPredictorArtifactStore<'a> {
     predictor: &'a LoadedPredictor<HandleRef>,
     records: BTreeMap<ArtifactId, crate::bundle::RefitArtifactRecord>,
+}
+
+/// Replays durable raw artifact members directly from an execution bundle.
+///
+/// The fallback store remains available for host-owned artifacts, but a raw
+/// bundle member always wins: its controller receives bytes from the newly
+/// deserialized bundle and returns a fresh, invocation-local handle. This is
+/// the public replay route for portable native artifacts and never consults a
+/// previous controller's process-local handle state.
+struct BundlePayloadArtifactStore<'a> {
+    bundle: &'a ExecutionBundle,
+    controllers: &'a RuntimeControllerRegistry,
+    fallback: &'a dyn RuntimeArtifactStore,
+    hydrated_handles: Mutex<Vec<(ControllerId, HandleRef)>>,
+}
+
+impl RuntimeArtifactStore for BundlePayloadArtifactStore<'_> {
+    fn materialize(&self, request: &ArtifactMaterializationRequest) -> Result<HandleRef> {
+        let Some(payload) = self.bundle.raw_artifact_payloads.get(&request.artifact.id) else {
+            return self.fallback.materialize(request);
+        };
+        let controller = self
+            .controllers
+            .get(&request.controller_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "bundle `{}` has no registered controller `{}` to hydrate raw artifact `{}`",
+                    self.bundle.bundle_id, request.controller_id, request.artifact.id
+                ))
+            })?;
+        let handle = controller.hydrate_artifact_payload(request, payload)?;
+        self.hydrated_handles
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(
+                    "bundle payload hydrated-handle registry lock poisoned".to_string(),
+                )
+            })?
+            .push((request.controller_id.clone(), handle.clone()));
+        Ok(handle)
+    }
+}
+
+impl BundlePayloadArtifactStore<'_> {
+    fn release_hydrated_handles(&self) -> Result<()> {
+        let handles = {
+            let mut handles = self.hydrated_handles.lock().map_err(|_| {
+                DagMlError::RuntimeValidation(
+                    "bundle payload hydrated-handle registry lock poisoned".to_string(),
+                )
+            })?;
+            std::mem::take(&mut *handles)
+        };
+        let mut failures = Vec::new();
+        for (controller_id, handle) in handles.into_iter().rev() {
+            let release = self
+                .controllers
+                .get(&controller_id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "hydrated artifact owner controller `{controller_id}` is no longer registered"
+                    ))
+                })
+                .and_then(|controller| controller.release_hydrated_artifact_payload(&handle));
+            if let Err(error) = release {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(DagMlError::RuntimeValidation(format!(
+                "failed to release replay-hydrated artifact handles: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+}
+
+fn finish_bundle_payload_replay<T>(
+    execution: Result<T>,
+    artifact_store: &BundlePayloadArtifactStore<'_>,
+) -> Result<T> {
+    let cleanup = artifact_store.release_hydrated_handles();
+    match (execution, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(error), Err(cleanup_error)) => Err(DagMlError::RuntimeValidation(format!(
+            "{error}; replay hydration cleanup also failed: {cleanup_error}"
+        ))),
+    }
 }
 
 impl<'a> LoadedPredictorArtifactStore<'a> {
@@ -593,8 +834,14 @@ pub fn execute_attached_training_replay(
         phase: input.request.phase,
         data_envelope_keys: input.request.data_envelope_keys.clone(),
     };
+    let artifact_store = BundlePayloadArtifactStore {
+        bundle: &replay_bundle,
+        controllers: input.controllers,
+        fallback: input.artifact_store,
+        hydrated_handles: Mutex::new(Vec::new()),
+    };
     let mut ctx = RunContext::new(input.run_id.clone(), None);
-    let results = SequentialScheduler.execute_bundle_replay(
+    let execution = SequentialScheduler.execute_bundle_replay(
         BundleReplayExecution {
             plan: &replay_plan,
             bundle: &replay_bundle,
@@ -602,11 +849,12 @@ pub fn execute_attached_training_replay(
             prediction_cache_store: None,
             controllers: input.controllers,
             data_provider: input.data_provider,
-            artifact_store: input.artifact_store,
+            artifact_store: &artifact_store,
             data_envelopes: input.data_envelopes,
         },
         &mut ctx,
-    )?;
+    );
+    let results = finish_bundle_payload_replay(execution, &artifact_store)?;
     if results
         .iter()
         .any(|result| !result.artifacts.is_empty() || !result.artifact_handles.is_empty())
@@ -615,6 +863,16 @@ pub fn execute_attached_training_replay(
     }
 
     let outputs = bind_attached_replay_outputs(input.source, input.request, &results)?;
+    let conformal_intervals = input
+        .source
+        .conformal_calibration
+        .as_ref()
+        .map(|calibration| apply_replay_conformal_intervals(calibration, &outputs))
+        .transpose()?
+        .unwrap_or_default();
+    if let Some(calibration) = input.source.conformal_calibration.as_ref() {
+        validate_replay_interval_closure(calibration, &outputs, &conformal_intervals)?;
+    }
     let explanations = bind_attached_replay_explanations(input.request, &results)?;
     let mut lineage = ctx.lineage.records().cloned().collect::<Vec<_>>();
     for record in &mut lineage {
@@ -655,6 +913,7 @@ pub fn execute_attached_training_replay(
             .len(),
         prediction_cache_store: false,
         outputs,
+        conformal_intervals,
         explanations,
         lineage,
         warnings: input.warnings,
@@ -703,9 +962,15 @@ pub fn execute_loaded_predictor_replay(
         phase: input.request.phase,
         data_envelope_keys: input.request.data_envelope_keys.clone(),
     };
-    let artifact_store = LoadedPredictorArtifactStore::new(input.predictor)?;
+    let loaded_artifact_store = LoadedPredictorArtifactStore::new(input.predictor)?;
+    let artifact_store = BundlePayloadArtifactStore {
+        bundle: &replay_bundle,
+        controllers: input.controllers,
+        fallback: &loaded_artifact_store,
+        hydrated_handles: Mutex::new(Vec::new()),
+    };
     let mut ctx = RunContext::new(input.run_id.clone(), None);
-    let results = SequentialScheduler.execute_bundle_replay(
+    let execution = SequentialScheduler.execute_bundle_replay(
         BundleReplayExecution {
             plan: &replay_plan,
             bundle: &replay_bundle,
@@ -717,7 +982,8 @@ pub fn execute_loaded_predictor_replay(
             data_envelopes: input.data_envelopes,
         },
         &mut ctx,
-    )?;
+    );
+    let results = finish_bundle_payload_replay(execution, &artifact_store)?;
     if results
         .iter()
         .any(|result| !result.artifacts.is_empty() || !result.artifact_handles.is_empty())
@@ -726,6 +992,15 @@ pub fn execute_loaded_predictor_replay(
     }
 
     let outputs = bind_package_replay_outputs(package, input.request, &results)?;
+    let conformal_intervals = package
+        .conformal_calibration
+        .as_ref()
+        .map(|calibration| apply_replay_conformal_intervals(calibration, &outputs))
+        .transpose()?
+        .unwrap_or_default();
+    if let Some(calibration) = package.conformal_calibration.as_ref() {
+        validate_replay_interval_closure(calibration, &outputs, &conformal_intervals)?;
+    }
     let explanations = bind_attached_replay_explanations(input.request, &results)?;
     let mut lineage = ctx.lineage.records().cloned().collect::<Vec<_>>();
     for record in &mut lineage {
@@ -766,6 +1041,7 @@ pub fn execute_loaded_predictor_replay(
             .len(),
         prediction_cache_store: false,
         outputs,
+        conformal_intervals,
         explanations,
         lineage,
         warnings: input.warnings,
@@ -775,6 +1051,185 @@ pub fn execute_loaded_predictor_replay(
     outcome.outcome_fingerprint = outcome.compute_fingerprint()?;
     outcome.validate_against_package(package, input.request)?;
     Ok(outcome)
+}
+
+/// Calibrate a just-replayed output, then persist the signed native state on
+/// the owning training outcome and its execution bundle.  The replay must have
+/// targeted the pre-calibration outcome; attachment deliberately produces a
+/// new outcome fingerprint for the portable predictor state.
+#[allow(clippy::too_many_arguments)]
+pub fn calibrate_attached_training_replay(
+    source: &mut TrainingOutcome,
+    replay: &TrainingReplayOutcome,
+    binding_id: &str,
+    calibration_relations: &SampleRelationSet,
+    truth: ConformalCalibrationTruth,
+    context: ConformalCalibrationContext,
+    coverages: Vec<f64>,
+    multi_target_policy: ConformalMultiTargetPolicy,
+    small_sample_policy: ConformalSmallSamplePolicy,
+) -> Result<ConformalCalibration> {
+    if replay.phase != Phase::Predict {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal calibration requires a PREDICT replay outcome".to_string(),
+        ));
+    }
+    replay.validate_against(source, &replay_request_from_outcome(replay))?;
+    let output = replay
+        .outputs
+        .iter()
+        .find(|output| output.binding.binding_id == binding_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "calibration replay has no requested output binding".to_string(),
+            )
+        })?;
+    let [point] = output.predictions.as_slice() else {
+        return Err(DagMlError::RuntimeValidation(
+            "calibration replay requires exactly one sample point-prediction block".to_string(),
+        ));
+    };
+    validate_calibration_context(
+        source,
+        replay,
+        output,
+        calibration_relations,
+        &truth,
+        &context,
+    )?;
+    let calibration = ConformalCalibration::calibrate_with_truth(
+        binding_id,
+        output.binding.target_names.clone(),
+        point,
+        &truth,
+        context,
+        coverages,
+        multi_target_policy,
+        small_sample_policy,
+    )?;
+    source.attach_conformal_calibration(calibration.clone(), replay.clone())?;
+    Ok(calibration)
+}
+
+fn validate_calibration_context(
+    source: &TrainingOutcome,
+    replay: &TrainingReplayOutcome,
+    output: &BoundTrainingOutput,
+    calibration_relations: &SampleRelationSet,
+    truth: &ConformalCalibrationTruth,
+    context: &ConformalCalibrationContext,
+) -> Result<()> {
+    context.validate_for_truth(truth, &output.binding.target_names)?;
+    calibration_relations.validate()?;
+    let relation_fingerprint = calibration_relations.fingerprint()?;
+    if context.relation_fingerprint != relation_fingerprint
+        || replay
+            .input_data_identities
+            .iter()
+            .any(|identity| identity.relation_fingerprint != relation_fingerprint)
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal calibration relation authority does not match context/replay provenance"
+                .to_string(),
+        ));
+    }
+    let origin_sample_ids = calibration_origin_closure(
+        &context.calibration_cohort.physical_sample_ids,
+        calibration_relations,
+    )?;
+    if context.calibration_cohort.origin_sample_ids != origin_sample_ids {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal calibration cohort origin closure does not match relation authority"
+                .to_string(),
+        ));
+    }
+    let fold_set = source.effective_plan.fold_set.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation("conformal calibration requires a source FoldSet".to_string())
+    })?;
+    let expected_fold = fold_set_fingerprint(fold_set)?;
+    if context.predictor_binding_fingerprint != output.binding.binding_fingerprint
+        || context.source_training_outcome_fingerprint != source.outcome_fingerprint
+        || context.calibration_replay_outcome_fingerprint != replay.outcome_fingerprint
+        || context.data_identities_fingerprint != source.data_identities_fingerprint()?
+        || context.fold_set_fingerprint != expected_fold
+        || context.training_influence_fingerprint != source.training_influence.manifest_fingerprint
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal calibration context does not exactly match source/replay provenance"
+                .to_string(),
+        ));
+    }
+    let cohort = &context.calibration_cohort;
+    let training: std::collections::BTreeSet<_> = source
+        .training_influence
+        .entries
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .physical_sample_ids
+                .iter()
+                .chain(entry.origin_sample_ids.iter())
+        })
+        .collect();
+    if cohort
+        .physical_sample_ids
+        .iter()
+        .chain(cohort.origin_sample_ids.iter())
+        .any(|id| training.contains(id))
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal calibration cohort overlaps training influence closure".to_string(),
+        ));
+    }
+    if relation_fingerprint == source.training_influence.relation_fingerprint {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal calibration relation authority must be distinct from development relations"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn calibration_origin_closure(
+    physical_sample_ids: &[crate::ids::SampleId],
+    relations: &SampleRelationSet,
+) -> Result<Vec<crate::ids::SampleId>> {
+    let requested = physical_sample_ids.iter().collect::<BTreeSet<_>>();
+    let mut by_sample = BTreeMap::new();
+    for relation in &relations.records {
+        if !requested.contains(&relation.sample_id) {
+            continue;
+        }
+        match by_sample.get(&relation.sample_id) {
+            Some(origin) if origin != &relation.origin_sample_id => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "conformal calibration sample `{}` has ambiguous origin relations",
+                    relation.sample_id
+                )));
+            }
+            Some(_) => {}
+            None => {
+                by_sample.insert(
+                    relation.sample_id.clone(),
+                    relation.origin_sample_id.clone(),
+                );
+            }
+        }
+    }
+    if let Some(missing) = physical_sample_ids
+        .iter()
+        .find(|sample_id| !by_sample.contains_key(*sample_id))
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "conformal calibration sample `{missing}` is absent from relation authority"
+        )));
+    }
+    Ok(by_sample
+        .into_values()
+        .flatten()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect())
 }
 
 fn replay_input_data_identities(
@@ -849,6 +1304,12 @@ fn replay_plan_and_bundle_for_current_cohort(
 ) -> Result<(ExecutionPlan, ExecutionBundle)> {
     let mut replay_plan = plan.clone();
     let mut replay_bundle = bundle.clone();
+    // A fresh-cohort PREDICT/EXPLAIN replay intentionally changes data
+    // relations and therefore the campaign fingerprint below.  Methods HPO
+    // state is resume-only and remains valid only in the source package used
+    // by the training descriptor; it must never be carried into this derived
+    // replay bundle or validated against a different cohort.
+    replay_bundle.methods_hpo_resume_state = None;
     for requirement in &mut replay_bundle.data_requirements {
         let key = requirement.key();
         if request.data_envelope_keys.contains(&key) {
@@ -882,8 +1343,15 @@ fn replay_plan_and_bundle_for_current_cohort(
             }
         }
     }
+    replay_plan.graph_fingerprint = stable_json_fingerprint(&replay_plan.graph_plan.graph)?;
     replay_plan.campaign_fingerprint = stable_json_fingerprint(&replay_plan.campaign)?;
+    replay_plan.controller_fingerprint =
+        stable_json_fingerprint(&replay_plan.controller_manifests)?;
+    replay_plan.validate()?;
+    replay_bundle.graph_fingerprint = replay_plan.graph_fingerprint.clone();
     replay_bundle.campaign_fingerprint = replay_plan.campaign_fingerprint.clone();
+    replay_bundle.controller_fingerprint = replay_plan.controller_fingerprint.clone();
+    replay_bundle.validate_against_plan(&replay_plan)?;
     Ok((replay_plan, replay_bundle))
 }
 
@@ -1033,6 +1501,62 @@ fn bind_package_replay_outputs(
     }
     outputs.sort_by(|left, right| left.binding.binding_id.cmp(&right.binding.binding_id));
     Ok(outputs)
+}
+
+fn apply_replay_conformal_intervals(
+    calibration: &ConformalCalibration,
+    outputs: &[BoundTrainingOutput],
+) -> Result<Vec<ConformalIntervalBlock>> {
+    let Some(output) = outputs
+        .iter()
+        .find(|output| output.binding.binding_id == calibration.binding_id)
+    else {
+        // A replay may request a different output.  Silence is correct here;
+        // an interval must never be copied to an unrelated binding.
+        return Ok(Vec::new());
+    };
+    if output.binding.target_names != calibration.target_names {
+        return contract_error("replay conformal binding target order differs from calibration");
+    }
+    output
+        .predictions
+        .iter()
+        .map(|block| calibration.apply(block))
+        .collect()
+}
+
+fn validate_replay_interval_closure(
+    calibration: &ConformalCalibration,
+    outputs: &[BoundTrainingOutput],
+    intervals: &[ConformalIntervalBlock],
+) -> Result<()> {
+    let expected = apply_replay_conformal_intervals(calibration, outputs)?;
+    if intervals != expected {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal intervals do not exactly cover replay point predictions".to_string(),
+        ));
+    }
+    for interval in intervals {
+        let output = outputs
+            .iter()
+            .find(|output| output.binding.binding_id == interval.binding_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "conformal interval references an absent replay output binding".to_string(),
+                )
+            })?;
+        let point = output
+            .predictions
+            .iter()
+            .find(|point| point.sample_ids == interval.sample_ids)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "conformal interval has no matching replay point block".to_string(),
+                )
+            })?;
+        interval.validate_against(calibration, point)?;
+    }
+    Ok(())
 }
 
 fn bind_attached_replay_explanations(
@@ -1279,12 +1803,47 @@ fn contract_error<T>(message: impl Into<String>) -> Result<T> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::path::PathBuf;
-
+mod methods_hpo_resume_state_tests {
     use super::*;
 
+    #[test]
+    fn methods_hpo_resume_state_reader_refuses_unknown_legacy_and_noncanonical_json() {
+        let unknown = r#"{"schema_version":1,"unknown_resume_side_channel":true}"#;
+        assert!(methods_hpo_resume_state_from_json(unknown).is_err());
+
+        // Duplicate members are non-canonical TCV1 JSON and must fail before
+        // serde could choose one duplicate value.
+        let duplicate = r#"{"schema_version":1,"schema_version":1}"#;
+        let error = methods_hpo_resume_state_from_json(duplicate)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate JSON object key"), "{error}");
+
+        // No fallback maps the retired node sentinel to the campaign
+        // operation identity. Even before full state validation, strict serde
+        // refuses the free legacy field.
+        let legacy = r#"{"schema_version":1,"tuner_node_id":"tuner:legacy"}"#;
+        assert!(methods_hpo_resume_state_from_json(legacy).is_err());
+    }
+
+    #[test]
+    fn methods_hpo_resume_state_reader_refuses_tampered_schema_version() {
+        let tampered = r#"{"schema_version":2,"operation_id":"campaign:hpo"}"#;
+        assert!(methods_hpo_resume_state_from_json(tampered).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(dag_ml_workspace_contract_fixtures)]
+    use std::fs;
+    #[cfg(dag_ml_workspace_contract_fixtures)]
+    use std::path::PathBuf;
+
+    #[cfg(dag_ml_workspace_contract_fixtures)]
+    use super::*;
+
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     fn root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1293,6 +1852,7 @@ mod tests {
             .to_path_buf()
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     fn fixture(name: &str) -> String {
         fs::read_to_string(
             root()
@@ -1305,6 +1865,7 @@ mod tests {
         .expect(name)
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     fn training_fixture(name: &str) -> String {
         fs::read_to_string(
             root()
@@ -1316,6 +1877,7 @@ mod tests {
         .expect(name)
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn training_replay_contract_fixtures_parse_and_cross_validate() {
         let predict_source =
@@ -1353,6 +1915,7 @@ mod tests {
             .expect("explain-only cross-links");
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn training_replay_request_rejects_refit_and_unsorted_bindings() {
         let mut request: serde_json::Value =
@@ -1374,6 +1937,7 @@ mod tests {
         assert!(err.contains("strictly sorted"));
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn training_replay_outcome_rejects_counter_and_source_transplants() {
         let source =

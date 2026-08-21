@@ -1,13 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "methods-optimizer-local")]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "methods-optimizer-local")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use dag_ml_core::training::PredictionSource;
 use dag_ml_core::*;
+#[cfg(feature = "methods-optimizer-local")]
+use nirs4all_archive_core::{
+    load_archive, load_archive_v2, write_archive_v2, ArchivePayload, ArchiveV2WriteRequest,
+    LoadedArchive,
+};
 use sha2::{Digest, Sha256};
 
-const REQUEST_FIXTURE: &str =
-    include_str!("../../../examples/fixtures/training/training_request_refit.v1.json");
+#[cfg(dag_ml_workspace_contract_fixtures)]
 const PACKAGE_FIXTURE: &str =
     include_str!("../../../examples/fixtures/training/portable_predictor_package.v1.json");
 
@@ -22,7 +30,19 @@ struct CallState {
     score_auxiliary: Mutex<bool>,
     emit_extra_fit_cv_partitions: Mutex<bool>,
     emit_explicit_model_ports: Mutex<bool>,
+    predict_sample_ids: Mutex<Option<Vec<SampleId>>>,
     observed_model_patch_values: Mutex<Vec<Option<serde_json::Value>>>,
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+fn archive_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "dag-ml-{name}-{}.n4a",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_nanos()
+    ))
 }
 
 impl CallState {
@@ -46,12 +66,63 @@ impl CallState {
     }
 }
 
+#[cfg(feature = "methods-optimizer-local")]
+struct SharedMethodsPlsController(Arc<MethodsPlsController>);
+
+#[cfg(feature = "methods-optimizer-local")]
+impl RuntimeController for SharedMethodsPlsController {
+    fn controller_id(&self) -> &ControllerId {
+        self.0.controller_id()
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        self.0.invoke(task)
+    }
+
+    fn export_artifact_payload(&self, artifact_id: &ArtifactId) -> Result<Option<Vec<u8>>> {
+        self.0.export_artifact_payload(artifact_id)
+    }
+
+    fn hydrate_artifact_payload(
+        &self,
+        request: &ArtifactMaterializationRequest,
+        payload: &[u8],
+    ) -> Result<HandleRef> {
+        self.0.hydrate_artifact_payload(request, payload)
+    }
+
+    fn release_hydrated_artifact_payload(&self, handle: &HandleRef) -> Result<()> {
+        self.0.release_hydrated_artifact_payload(handle)
+    }
+
+    fn invoke_with_data_provider(
+        &self,
+        task: &NodeTask,
+        provider: &dyn RuntimeDataProvider,
+    ) -> Result<NodeResult> {
+        self.0.invoke_with_data_provider(task, provider)
+    }
+}
+
 struct AttestedProvider {
     identity: TrainingDataIdentity,
     relations: SampleRelationSet,
     contradictory_relations: Option<SampleRelationSet>,
     omit_relations: bool,
     next_handle: AtomicU64,
+    methods_pls_enabled: bool,
+    /// Provider-owned numerical source.  Deliberately keyed by the signed
+    /// sample identity instead of deriving values from a sample-id spelling.
+    methods_rows: BTreeMap<SampleId, [f64; 4]>,
+    methods_pls_feature_count: usize,
+    /// Variant-attested OOF target offsets for the native-HPO test operation.
+    /// The scheduler still computes the report from real Methods PLS
+    /// predictions; this provider only supplies the selected validation labels.
+    methods_hpo_oof_target_offsets: BTreeMap<i64, f64>,
+    /// A real provider-boundary refusal keyed by the scheduler-attested HPO
+    /// variant identity. It is used only after native Median has terminalized
+    /// its pruned candidate; the optimizer itself never fabricates a failure.
+    fail_methods_hpo_trial_id: Option<i64>,
 }
 
 impl RuntimeDataProvider for AttestedProvider {
@@ -79,6 +150,105 @@ impl RuntimeDataProvider for AttestedProvider {
                 .clone()
                 .unwrap_or_else(|| self.relations.clone()),
         ))
+    }
+
+    fn methods_pls_capability(&self) -> Result<()> {
+        if self.methods_pls_enabled {
+            Ok(())
+        } else {
+            Err(DagMlError::RuntimeValidation(
+                "test provider intentionally has no portable Methods PLS view".to_string(),
+            ))
+        }
+    }
+
+    fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> Result<MethodsPlsData> {
+        self.methods_pls_capability()?;
+        if self.fail_methods_hpo_trial_id.is_some_and(|trial_id| {
+            request
+                .variant_id
+                .as_ref()
+                .is_some_and(|variant| variant.as_str() == format!("hpo:trial:{trial_id}"))
+        }) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "test provider refused attested Methods HPO variant `{}`",
+                request.variant_id.as_ref().expect("checked above")
+            )));
+        }
+        let hpo_target_offset = request.variant_id.as_ref().and_then(|variant| {
+            variant
+                .as_str()
+                .strip_prefix("hpo:trial:")
+                .and_then(|trial_id| trial_id.parse::<i64>().ok())
+                .and_then(|trial_id| self.methods_hpo_oof_target_offsets.get(&trial_id))
+                .copied()
+        });
+        let rows = |view: &DataProviderViewSpec,
+                    include_targets: bool,
+                    prediction_targets: bool|
+         -> Result<MethodsPlsDataset> {
+            // Replay PREDICT deliberately delegates the new cohort to the
+            // provider, so it has no training-fold sample-id list.  This
+            // fixture treats an absent Predict view selection as its current
+            // attested cohort in stable identity order.
+            let sample_ids = view
+                .sample_ids
+                .clone()
+                .unwrap_or_else(|| self.methods_rows.keys().cloned().collect::<Vec<SampleId>>());
+            let mut x = Vec::with_capacity(sample_ids.len() * self.methods_pls_feature_count);
+            let mut y = Vec::with_capacity(sample_ids.len());
+            for sample_id in &sample_ids {
+                let row = self.methods_rows.get(sample_id).ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "portable Methods PLS provider has no attested numerical row for `{sample_id}`"
+                    ))
+                })?;
+                // These values are provider-owned source rows.  DAG-ML only
+                // supplies the scheduler-selected identity view.
+                x.extend_from_slice(&row[..self.methods_pls_feature_count]);
+                if include_targets {
+                    y.push(match hpo_target_offset {
+                        // A small non-constant native fit target keeps Methods
+                        // PLS numerically well-posed. The provider then
+                        // supplies an attested validation target offset for
+                        // this HPO variant, and DAG-ML's ordinary RMSE
+                        // collector emits the score delivered to native Median.
+                        Some(offset) if request.phase == Phase::FitCv => {
+                            let baseline = row[0] * 1e-3;
+                            if prediction_targets {
+                                baseline + offset
+                            } else {
+                                baseline
+                            }
+                        }
+                        _ => row[3],
+                    });
+                }
+            }
+            let row_count = sample_ids.len();
+            Ok(MethodsPlsDataset {
+                sample_ids,
+                x: MethodsPlsMatrix {
+                    values: x,
+                    rows: row_count,
+                    cols: self.methods_pls_feature_count,
+                },
+                y: include_targets.then_some(MethodsPlsMatrix {
+                    values: y,
+                    rows: row_count,
+                    cols: 1,
+                }),
+                target_names: vec!["protein".to_string()],
+            })
+        };
+        Ok(MethodsPlsData {
+            fit: rows(&request.fit_view, request.phase != Phase::Predict, false)?,
+            prediction: request
+                .prediction_view
+                .as_ref()
+                .map(|view| rows(view, true, true))
+                .transpose()?,
+        })
     }
 }
 
@@ -122,6 +292,17 @@ impl RuntimeController for TrainingController {
         let sample_ids = match task.fold_id.as_ref().map(FoldId::as_str) {
             Some("fold:0") => vec![sample("sample:1"), sample("sample:2")],
             Some("fold:1") => vec![sample("sample:3"), sample("sample:4")],
+            None if task.phase == Phase::Predict => self
+                .state
+                .predict_sample_ids
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| {
+                    (1..=4)
+                        .map(|index| sample(&format!("sample:{index}")))
+                        .collect()
+                }),
             _ => (1..=4)
                 .map(|index| sample(&format!("sample:{index}")))
                 .collect(),
@@ -370,10 +551,85 @@ struct Fixture {
 }
 
 fn fixture(refit: bool, stacking: bool) -> Fixture {
-    let mut request_json: serde_json::Value = serde_json::from_str(REQUEST_FIXTURE).unwrap();
-    request_json["options"]["selection_output_id"] =
-        serde_json::Value::String("output:prediction".to_string());
-    let mut request: TrainingRequest = serde_json::from_value(request_json).unwrap();
+    let graph: GraphSpec =
+        serde_json::from_str(include_str!("fixtures/package/minimal_graph.json")).unwrap();
+    let mut campaign: CampaignSpec = serde_json::from_str(include_str!(
+        "fixtures/package/campaign_oof_generation.json"
+    ))
+    .unwrap();
+    let mut controller_manifests: Vec<ControllerManifest> =
+        serde_json::from_str(include_str!("fixtures/package/controller_manifests.json")).unwrap();
+    controller_manifests.sort_by(|left, right| left.controller_id.cmp(&right.controller_id));
+    let relations = relations();
+    let relation_fingerprint = relations.fingerprint().unwrap();
+    for bindings in campaign.data_bindings.values_mut() {
+        for binding in bindings {
+            binding.relation_fingerprint = Some(relation_fingerprint.clone());
+        }
+    }
+    let mut data_identities = campaign
+        .data_bindings
+        .values()
+        .flatten()
+        .map(|binding| {
+            let mut identity = TrainingDataIdentity {
+                requirement_key: data_binding_requirement_key(
+                    &binding.node_id,
+                    &binding.input_name,
+                ),
+                schema_fingerprint: binding.schema_fingerprint.clone(),
+                plan_fingerprint: binding.plan_fingerprint.clone(),
+                relation_fingerprint: relation_fingerprint.clone(),
+                data_content_fingerprint: "a".repeat(64),
+                target_content_fingerprint: "b".repeat(64),
+                identity_fingerprint: "0".repeat(64),
+            };
+            identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+            identity
+        })
+        .collect::<Vec<_>>();
+    data_identities.sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
+    let options: TrainingOptions = serde_json::from_value(serde_json::json!({
+        "refit": refit,
+        "refit_strategy": if refit { serde_json::json!("refit_one") } else { serde_json::Value::Null },
+        "seed": 12345,
+        "selection": {
+            "id": "selection:rmse",
+            "metric": {"name": "rmse", "objective": "minimize"},
+            "require_finite": true
+        },
+        "selection_output_id": "output:prediction",
+        "outputs": [{
+            "output_id": "output:prediction",
+            "node_id": "model:base",
+            "prediction_level": "sample",
+            "unit_level": "physical_sample",
+            "prediction_kind": "regression_point",
+            "target_names": ["protein"],
+            "target_units": ["percent"],
+            "class_labels": [[]],
+            "output_order": "target_order",
+            "target_space": "raw"
+        }],
+        "scheduler": {"kind": "sequential", "backend": null, "workers": 1},
+        "resources": {"cpu_threads": 1, "memory_bytes": null, "gpu_devices": [], "wall_time_ms": null},
+        "artifacts": {"cv_artifacts": "discard", "prediction_caches": "retain", "fitted_artifacts": "allow_host_sidecar"}
+    }))
+    .unwrap();
+    let mut request = TrainingRequest {
+        schema_version: TRAINING_REQUEST_SCHEMA_VERSION,
+        request_id: "training:package.synthetic".to_string(),
+        plan_id: "plan:training.package.synthetic".to_string(),
+        graph,
+        campaign,
+        controller_manifests,
+        data_identities,
+        parameter_patches: Vec::new(),
+        patch_policies: Vec::new(),
+        influence_requirements: Vec::new(),
+        options,
+        request_fingerprint: "0".repeat(64),
+    };
     request.options.refit = refit;
     request.options.refit_strategy = refit.then_some(RefitStrategy::RefitOne);
     request.options.selection.required_metric_level = Some(PredictionLevel::Sample);
@@ -397,18 +653,6 @@ fn fixture(refit: bool, stacking: bool) -> Fixture {
     }
     if stacking {
         add_stacking_edge(&mut request);
-    }
-    let relations = relations();
-    let relation_fingerprint = relations.fingerprint().unwrap();
-    for bindings in request.campaign.data_bindings.values_mut() {
-        for binding in bindings {
-            binding.relation_fingerprint = Some(relation_fingerprint.clone());
-        }
-    }
-    for identity in &mut request.data_identities {
-        identity.relation_fingerprint = relation_fingerprint.clone();
-        identity.identity_fingerprint = "0".repeat(64);
-        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
     }
     resign_request(&mut request);
     let projection = request.project().unwrap();
@@ -487,6 +731,175 @@ fn add_stacking_edge(request: &mut TrainingRequest) {
     model.input_ports.push(input_port);
 }
 
+fn add_portable_methods_hpo(fixture: &mut Fixture) {
+    fixture.request.campaign.generation.dimensions.clear();
+    fixture.request.campaign.generation.strategy = GenerationStrategy::None;
+    fixture
+        .request
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:base")
+        .unwrap()
+        .operator = Some(serde_json::json!("pls"));
+    fixture.request.campaign.metadata.insert(
+        "methods_hpo_operation".to_string(),
+        serde_json::json!({
+            "operation_id": "hpo:methods",
+            "study": {
+                "controller_id": "controller:tuner.methods",
+                "study_id": "study:training.test",
+                "methods_abi": "libn4m:dev-debug",
+                "search_space": {
+                    "parameters": [{
+                        "kind": "int",
+                        "name": "n_components",
+                        "low": 1,
+                        "high": 3,
+                        "step": 1,
+                        "log": false
+                    }]
+                },
+                "optimizer": {
+                    "sampler": "random",
+                    "pruner": "none",
+                    "direction": "minimize",
+                    "metric": "rmse",
+                    "seed": 7,
+                    "n_startup_trials": 0,
+                    "max_resource": 0,
+                    "reduction_factor": 0
+                }
+            },
+            "trials": 2,
+            "target_node_id": "model:base",
+            "parameter_paths": {"n_components": "n_components"}
+        }),
+    );
+    let mut tuner_manifest = fixture
+        .request
+        .controller_manifests
+        .iter()
+        .find(|manifest| manifest.controller_id.as_str() == "controller:model.mock")
+        .unwrap()
+        .clone();
+    tuner_manifest.controller_id = ControllerId::new("controller:tuner.methods").unwrap();
+    tuner_manifest.operator_kind = NodeKind::Tuner;
+    tuner_manifest.input_ports.clear();
+    tuner_manifest.output_ports.clear();
+    fixture.request.controller_manifests.push(tuner_manifest);
+    let model = fixture
+        .request
+        .controller_manifests
+        .iter_mut()
+        .find(|manifest| manifest.controller_id.as_str() == "controller:model.mock")
+        .unwrap();
+    model.controller_id = ControllerId::new(METHODS_PLS_CONTROLLER_ID).unwrap();
+    model.controller_version = "libn4m-2.2".to_string();
+    rebuild(fixture);
+    fixture.preferred = VariantId::new("hpo:trial:0").unwrap();
+}
+
+/// HPO is a scheduler campaign operation, so tests alter its explicit
+/// descriptor rather than reintroducing a control-only graph node.
+fn methods_hpo_descriptor_mut(fixture: &mut Fixture) -> &mut serde_json::Value {
+    fixture
+        .request
+        .campaign
+        .metadata
+        .get_mut("methods_hpo_operation")
+        .expect("portable Methods HPO fixture has its campaign operation")
+}
+
+/// Use two ordinary four-row training folds with three provider-owned feature
+/// columns. That makes all V1 `n_components=1..=3` candidates genuinely
+/// evaluable; the alternating third feature is intentionally out-of-fold
+/// hostile, making component 3 the deterministic bad Median candidate.
+#[cfg(feature = "methods-optimizer-local")]
+fn give_methods_hpo_four_train_rows(fixture: &mut Fixture) {
+    let fold_set = fixture
+        .request
+        .campaign
+        .split_invocation
+        .as_mut()
+        .unwrap()
+        .fold_set
+        .as_mut()
+        .unwrap();
+    fold_set.sample_ids = (1..=8)
+        .map(|index| sample(&format!("sample:{index}")))
+        .collect();
+    fold_set.folds = vec![
+        FoldAssignment {
+            fold_id: FoldId::new("fold:0").unwrap(),
+            train_sample_ids: vec![
+                sample("sample:5"),
+                sample("sample:6"),
+                sample("sample:7"),
+                sample("sample:8"),
+            ],
+            validation_sample_ids: vec![
+                sample("sample:1"),
+                sample("sample:2"),
+                sample("sample:3"),
+                sample("sample:4"),
+            ],
+            metadata: BTreeMap::new(),
+        },
+        FoldAssignment {
+            fold_id: FoldId::new("fold:1").unwrap(),
+            train_sample_ids: vec![
+                sample("sample:1"),
+                sample("sample:2"),
+                sample("sample:3"),
+                sample("sample:4"),
+            ],
+            validation_sample_ids: vec![
+                sample("sample:5"),
+                sample("sample:6"),
+                sample("sample:7"),
+                sample("sample:8"),
+            ],
+            metadata: BTreeMap::new(),
+        },
+    ];
+    for index in 5..=8 {
+        fixture.relations.records.push(SampleRelation::new(
+            ObservationId::new(format!("observation:{index}")).unwrap(),
+            sample(&format!("sample:{index}")),
+        ));
+    }
+    let relation_fingerprint = fixture.relations.fingerprint().unwrap();
+    for bindings in fixture.request.campaign.data_bindings.values_mut() {
+        for binding in bindings {
+            binding.relation_fingerprint = Some(relation_fingerprint.clone());
+        }
+    }
+    for identity in &mut fixture.request.data_identities {
+        identity.relation_fingerprint = relation_fingerprint.clone();
+        identity.identity_fingerprint = "0".repeat(64);
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    }
+}
+
+/// Configure a fully attested, deterministic OOF scoring provider for native
+/// HPO. The provider returns fit/validation target blocks; Methods PLS still
+/// predicts them, DAG-ML still calculates the OOF RMSE report, and libn4m
+/// alone makes the Median pruning decision. No optimizer status or score is
+/// injected into the tuner session.
+#[cfg(feature = "methods-optimizer-local")]
+fn configure_deterministic_hpo_oof_provider(provider: &mut AttestedProvider) {
+    provider.methods_pls_feature_count = 3;
+    provider.methods_hpo_oof_target_offsets = BTreeMap::from([
+        // Native TPE seed 51 asks components 2, 1, then 3. The true
+        // provider-generated OOF RMSEs make 3 worse than the completed peer
+        // median, so `report_intermediate` terminalizes it as PRUNED.
+        (0, 0.25),
+        (1, 0.5),
+        (2, 10.0),
+    ]);
+}
+
 fn run(
     fixture: &Fixture,
     state: Arc<CallState>,
@@ -551,7 +964,18 @@ fn controllers(
             prediction_name: "aux".to_string(),
         }))
         .unwrap();
-    if complete {
+    if complete
+        && fixture
+            .request
+            .controller_manifests
+            .iter()
+            .any(|manifest| manifest.controller_id.as_str() == METHODS_PLS_CONTROLLER_ID)
+    {
+        #[cfg(feature = "methods-optimizer-local")]
+        controllers
+            .register(Box::new(MethodsPlsController::new()))
+            .unwrap();
+    } else if complete {
         controllers
             .register(Box::new(TrainingController {
                 id: ControllerId::new("controller:model.mock").unwrap(),
@@ -559,6 +983,29 @@ fn controllers(
                 emits_predictions: true,
                 emits_artifact: true,
                 prediction_name: "protein".to_string(),
+            }))
+            .unwrap();
+    }
+    if fixture
+        .request
+        .controller_manifests
+        .iter()
+        .any(|manifest| manifest.controller_id.as_str() == "controller:tuner.methods")
+    {
+        #[cfg(feature = "methods-optimizer-local")]
+        controllers
+            .register(Box::new(MethodsHpoController::new(
+                ControllerId::new("controller:tuner.methods").unwrap(),
+            )))
+            .unwrap();
+        #[cfg(not(feature = "methods-optimizer-local"))]
+        controllers
+            .register(Box::new(TrainingController {
+                id: ControllerId::new("controller:tuner.methods").unwrap(),
+                state: Arc::new(CallState::default()),
+                emits_predictions: false,
+                emits_artifact: false,
+                prediction_name: "unused".to_string(),
             }))
             .unwrap();
     }
@@ -572,6 +1019,30 @@ fn provider(fixture: &Fixture) -> AttestedProvider {
         contradictory_relations: None,
         omit_relations: false,
         next_handle: AtomicU64::new(0),
+        methods_pls_enabled: fixture
+            .request
+            .controller_manifests
+            .iter()
+            .any(|manifest| manifest.controller_id.as_str() == METHODS_PLS_CONTROLLER_ID),
+        methods_rows: BTreeMap::from([
+            (SampleId::new("sample:1").unwrap(), [1.0, 1.0, 2.0, 2.0]),
+            (SampleId::new("sample:2").unwrap(), [2.0, 4.0, -1.0, 1.0]),
+            (SampleId::new("sample:3").unwrap(), [3.0, 9.0, 2.0, -2.0]),
+            (SampleId::new("sample:4").unwrap(), [4.0, 16.0, -1.0, -7.0]),
+            (
+                SampleId::new("sample:5").unwrap(),
+                [5.0, 25.0, -14.0, -14.0],
+            ),
+            (SampleId::new("sample:6").unwrap(), [6.0, 36.0, 23.0, -23.0]),
+            (
+                SampleId::new("sample:7").unwrap(),
+                [7.0, 49.0, -14.0, -34.0],
+            ),
+            (SampleId::new("sample:8").unwrap(), [8.0, 64.0, 23.0, -47.0]),
+        ]),
+        methods_pls_feature_count: 2,
+        methods_hpo_oof_target_offsets: BTreeMap::new(),
+        fail_methods_hpo_trial_id: None,
     }
 }
 
@@ -599,6 +1070,93 @@ fn replay_envelopes_with_relation(
             )
         })
         .collect()
+}
+
+fn replay_envelopes_with_relations(
+    outcome: &TrainingOutcome,
+    relations: &SampleRelationSet,
+) -> BTreeMap<String, ExternalDataPlanEnvelope> {
+    let relation_fingerprint = relations.fingerprint().unwrap();
+    outcome
+        .execution_bundle
+        .data_requirements
+        .iter()
+        .map(|requirement| {
+            let key = requirement.key();
+            (
+                key.clone(),
+                ExternalDataPlanEnvelope {
+                    schema_version: EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION,
+                    schema_fingerprint: requirement.schema_fingerprint.clone(),
+                    plan_fingerprint: requirement.plan_fingerprint.clone(),
+                    relation_fingerprint: Some(relation_fingerprint.clone()),
+                    data_content_fingerprint: Some(content_hash(&format!("{key}:data"))),
+                    target_content_fingerprint: Some(content_hash(&format!("{key}:target"))),
+                    coordinator_relations: Some(relations.clone()),
+                },
+            )
+        })
+        .collect()
+}
+
+fn calibration_relations(sample_ids: &[SampleId]) -> SampleRelationSet {
+    SampleRelationSet {
+        records: sample_ids
+            .iter()
+            .enumerate()
+            .map(|(index, sample_id)| {
+                let mut relation = SampleRelation::new(
+                    ObservationId::new(format!("observation:calibration:{}", index + 1)).unwrap(),
+                    sample_id.clone(),
+                );
+                relation.origin_sample_id =
+                    Some(sample(&format!("origin:calibration:{}", index + 1)));
+                relation
+            })
+            .collect(),
+    }
+}
+
+fn calibration_context(
+    source: &TrainingOutcome,
+    replay: &TrainingReplayOutcome,
+    relations: &SampleRelationSet,
+) -> ConformalCalibrationContext {
+    let output = &replay.outputs[0];
+    let point = &output.predictions[0];
+    let physical = point.sample_ids.iter().collect::<BTreeSet<_>>();
+    let origin_sample_ids = relations
+        .records
+        .iter()
+        .filter(|relation| physical.contains(&relation.sample_id))
+        .filter_map(|relation| relation.origin_sample_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut cohort = ConformalCalibrationCohort {
+        role: "calibration".to_string(),
+        physical_sample_ids: point.sample_ids.clone(),
+        origin_sample_ids,
+        target_names: output.binding.target_names.clone(),
+        manifest_fingerprint: String::new(),
+    };
+    cohort.manifest_fingerprint = cohort.compute_fingerprint().unwrap();
+    let mut context = ConformalCalibrationContext {
+        predictor_binding_fingerprint: output.binding.binding_fingerprint.clone(),
+        source_training_outcome_fingerprint: source.outcome_fingerprint.clone(),
+        calibration_replay_outcome_fingerprint: replay.outcome_fingerprint.clone(),
+        data_identities_fingerprint: source.data_identities_fingerprint().unwrap(),
+        fold_set_fingerprint: dag_ml_core::fold::fold_set_fingerprint(
+            source.effective_plan.fold_set.as_ref().unwrap(),
+        )
+        .unwrap(),
+        training_influence_fingerprint: source.training_influence.manifest_fingerprint.clone(),
+        relation_fingerprint: relations.fingerprint().unwrap(),
+        calibration_cohort: cohort,
+        context_fingerprint: String::new(),
+    };
+    context.context_fingerprint = context.compute_fingerprint().unwrap();
+    context
 }
 
 fn replay_request(outcome: &TrainingOutcome, phase: Phase) -> TrainingReplayRequest {
@@ -777,6 +1335,10 @@ fn resign_request(request: &mut TrainingRequest) {
 }
 
 fn rebuild(fixture: &mut Fixture) {
+    fixture
+        .request
+        .controller_manifests
+        .sort_by(|left, right| left.controller_id.cmp(&right.controller_id));
     resign_request(&mut fixture.request);
     let projection = fixture.request.project().unwrap();
     fixture.preferred = projection.plan.variants[0].variant_id.clone();
@@ -791,11 +1353,74 @@ fn resign_outcome(outcome: &mut TrainingOutcome) {
     outcome.outcome_fingerprint = outcome.compute_fingerprint().unwrap();
 }
 
+fn resign_runtime_calibration(calibration: &mut ConformalCalibration) {
+    calibration.context.context_fingerprint = "0".repeat(64);
+    calibration.context.context_fingerprint = calibration.context.compute_fingerprint().unwrap();
+    calibration.calibration_fingerprint = "0".repeat(64);
+    calibration.calibration_fingerprint = calibration.compute_fingerprint().unwrap();
+}
+
+fn resign_package(package: &mut PortablePredictorPackage) {
+    package.training_outcome.execution_bundle_fingerprint =
+        parse_typed_json(&serde_json::to_string(&package.execution_bundle).unwrap())
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+    package.package_fingerprint = "0".repeat(64);
+    package.package_fingerprint = package.compute_fingerprint().unwrap();
+}
+
+fn resign_replay_outcome(outcome: &mut TrainingReplayOutcome) {
+    outcome.outcome_fingerprint = "0".repeat(64);
+    outcome.outcome_fingerprint = outcome.compute_fingerprint().unwrap();
+}
+
+fn rewrite_replay_relation_fingerprint(
+    replay: &mut TrainingReplayOutcome,
+    relation_fingerprint: &str,
+) {
+    for identity in &mut replay.input_data_identities {
+        identity.relation_fingerprint = relation_fingerprint.to_string();
+        identity.identity_fingerprint = "0".repeat(64);
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    }
+    resign_replay_outcome(replay);
+}
+
+fn resign_outcome_conformal_closure(outcome: &mut TrainingOutcome) {
+    let replay_fingerprint = outcome
+        .conformal_calibration_replay
+        .as_ref()
+        .unwrap()
+        .outcome_fingerprint
+        .clone();
+    let calibration = outcome.conformal_calibration.as_mut().unwrap();
+    calibration.context.calibration_replay_outcome_fingerprint = replay_fingerprint;
+    resign_runtime_calibration(calibration);
+    outcome.execution_bundle.conformal_calibration = Some(calibration.reference().unwrap());
+    resign_outcome(outcome);
+}
+
+fn resign_package_conformal_closure(package: &mut PortablePredictorPackage) {
+    let replay_fingerprint = package
+        .conformal_calibration_replay
+        .as_ref()
+        .unwrap()
+        .outcome_fingerprint
+        .clone();
+    let calibration = package.conformal_calibration.as_mut().unwrap();
+    calibration.context.calibration_replay_outcome_fingerprint = replay_fingerprint;
+    resign_runtime_calibration(calibration);
+    package.execution_bundle.conformal_calibration = Some(calibration.reference().unwrap());
+    resign_package(package);
+}
+
 fn legacy_serde_fingerprint(value: &impl serde::Serialize) -> String {
     let digest = Sha256::digest(serde_json::to_vec(value).unwrap());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 fn typed_fingerprint(value: &impl serde::Serialize) -> String {
     let json = serde_json::to_string(value).unwrap();
     parse_typed_json(&json).unwrap().fingerprint().unwrap()
@@ -803,6 +1428,92 @@ fn typed_fingerprint(value: &impl serde::Serialize) -> String {
 
 fn sample(value: &str) -> SampleId {
     SampleId::new(value).unwrap()
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+fn first_json_difference(
+    path: &str,
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> Option<String> {
+    match (left, right) {
+        (serde_json::Value::Object(left), serde_json::Value::Object(right)) => left
+            .keys()
+            .chain(right.keys())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .find_map(|key| match (left.get(key), right.get(key)) {
+                (Some(left), Some(right)) => {
+                    first_json_difference(&format!("{path}.{key}"), left, right)
+                }
+                _ => Some(format!("{path}.{key}: missing on one side")),
+            }),
+        (serde_json::Value::Array(left), serde_json::Value::Array(right)) => {
+            if left.len() != right.len() {
+                return Some(format!(
+                    "{path}: array length {} != {}",
+                    left.len(),
+                    right.len()
+                ));
+            }
+            left.iter()
+                .zip(right)
+                .enumerate()
+                .find_map(|(index, (left, right))| {
+                    first_json_difference(&format!("{path}[{index}]"), left, right)
+                })
+        }
+        _ if left == right => None,
+        _ => Some(format!("{path}: {left} != {right}")),
+    }
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+fn first_tcv_difference(
+    path: &str,
+    left: &dag_ml_core::canonical::TypedCanonicalValue,
+    right: &dag_ml_core::canonical::TypedCanonicalValue,
+) -> Option<String> {
+    use dag_ml_core::canonical::TypedCanonicalValue;
+
+    match (left, right) {
+        (TypedCanonicalValue::Array(left), TypedCanonicalValue::Array(right)) => left
+            .iter()
+            .zip(right)
+            .enumerate()
+            .find_map(|(index, (left, right))| {
+                first_tcv_difference(&format!("{path}[{index}]"), left, right)
+            })
+            .or_else(|| {
+                (left.len() != right.len())
+                    .then(|| format!("{path}: array length {} != {}", left.len(), right.len()))
+            }),
+        (TypedCanonicalValue::Object(left), TypedCanonicalValue::Object(right)) => {
+            let keys = left
+                .iter()
+                .chain(right)
+                .map(|(key, _)| key.as_str())
+                .collect::<BTreeSet<_>>();
+            keys.into_iter().find_map(|key| {
+                let left = left
+                    .iter()
+                    .find(|(candidate, _)| candidate == key)
+                    .map(|(_, value)| value);
+                let right = right
+                    .iter()
+                    .find(|(candidate, _)| candidate == key)
+                    .map(|(_, value)| value);
+                match (left, right) {
+                    (Some(left), Some(right)) => {
+                        first_tcv_difference(&format!("{path}.{key}"), left, right)
+                    }
+                    _ => Some(format!("{path}.{key}: missing on one side")),
+                }
+            })
+        }
+        _ if left == right => None,
+        _ => Some(format!("{path}: {left:?} != {right:?}")),
+    }
 }
 
 fn node(value: &str) -> NodeId {
@@ -880,6 +1591,949 @@ fn native_training_refit_and_no_refit_are_deterministic_and_auditable() {
     assert_eq!(no_refit_state.count(Phase::Refit, "model:base"), 0);
 }
 
+#[cfg(not(feature = "methods-optimizer-local"))]
+#[test]
+fn native_methods_hpo_fails_closed_without_the_local_methods_overlay() {
+    let mut fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut fixture);
+    let state = Arc::new(CallState::default());
+    let mut store = InMemoryArtifactStore::new();
+
+    let error = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("Methods optimizer support is disabled"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        state.total(),
+        0,
+        "HPO preflight must precede task execution"
+    );
+    assert!(store.is_empty());
+}
+
+#[cfg(not(feature = "methods-optimizer-local"))]
+#[test]
+fn native_methods_hpo_refuses_a_non_v1_search_space_before_overlay_preflight() {
+    let mut fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut fixture);
+    let descriptor = methods_hpo_descriptor_mut(&mut fixture);
+    descriptor["study"]["search_space"]["parameters"][0]["high"] = serde_json::json!(2);
+    rebuild(&mut fixture);
+    let state = Arc::new(CallState::default());
+    let mut store = InMemoryArtifactStore::new();
+
+    let error = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("active `n_components` integer bounds 1..=3"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(state.total(), 0);
+    assert!(store.is_empty());
+}
+
+#[cfg(not(feature = "methods-optimizer-local"))]
+#[test]
+fn native_methods_hpo_refuses_legacy_free_resume_fields() {
+    let mut fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut fixture);
+    let descriptor = methods_hpo_descriptor_mut(&mut fixture)
+        .as_object_mut()
+        .unwrap();
+    descriptor.insert("resume_checkpoint".to_string(), serde_json::Value::Null);
+    rebuild(&mut fixture);
+    let state = Arc::new(CallState::default());
+    let mut store = InMemoryArtifactStore::new();
+
+    let error = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("unknown field `resume_checkpoint`"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(state.total(), 0);
+    assert!(store.is_empty());
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_methods_hpo_runs_inside_training_and_refits_the_selected_pls_once() {
+    let mut fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut fixture);
+    let state = Arc::new(CallState::default());
+    let mut store = InMemoryArtifactStore::new();
+    let outcome = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap();
+
+    outcome.validate().unwrap();
+    assert!(outcome
+        .selected_variant_id
+        .as_str()
+        .starts_with("hpo:trial:"));
+    let native_oof_rmse = outcome
+        .score_set
+        .reports
+        .iter()
+        .find(|report| {
+            report.producer_node.as_str() == "model:base"
+                && report.partition == PredictionPartition::Validation
+                && report
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold| fold.as_str() == "avg")
+        })
+        .unwrap()
+        .metrics["rmse"];
+    // Golden generated by libn4m 2.2 on the provider-owned four-row view.
+    // PLS may use a platform BLAS, so retain numerical evidence without
+    // requiring bitwise equality across supported native toolchains.
+    assert!((native_oof_rmse - 3.328_227_381_906_01).abs() < 1.0e-10);
+    assert!(outcome
+        .execution_bundle
+        .refit_artifacts
+        .iter()
+        .any(|record| record.artifact.kind == "n4m_model"));
+    let resume_state = outcome
+        .methods_hpo_resume_state
+        .as_ref()
+        .expect("native HPO persists its complete resumable state in the outcome");
+    resume_state.validate().unwrap();
+    assert!(
+        !resume_state.completed_proposals.is_empty(),
+        "an initial native HPO outcome must never persist a report without its exact proposal"
+    );
+    assert_eq!(
+        resume_state.completed_proposals.len(),
+        resume_state.completed_reports.len(),
+        "completed proposals and terminal OOF reports must remain one-to-one"
+    );
+    assert_eq!(
+        resume_state.completed_proposals.len(),
+        resume_state.candidates.len(),
+        "completed proposals and candidate OOF evidence must remain one-to-one"
+    );
+    assert_eq!(
+        resume_state.trial_history_len, 2,
+        "initial total HPO budget is two"
+    );
+    assert_eq!(
+        resume_state.completed_proposals.len(),
+        1,
+        "only one asked trial completed and supplied selectable OOF evidence"
+    );
+    assert_eq!(
+        resume_state.trial_history_len as usize - resume_state.completed_proposals.len(),
+        1,
+        "the invalid native candidate stops after its first transform fold"
+    );
+    // Two transform folds for the completed candidate, one before the failed
+    // candidate is rejected, then two selected FIT_CV folds. REFIT remains a
+    // separate exactly-once full-data call.
+    assert_eq!(state.count(Phase::FitCv, "transform:snv"), 5);
+    assert_eq!(state.count(Phase::Refit, "transform:snv"), 1);
+    // HPO provenance is a campaign artifact, never a control-only graph node
+    // or special predictor-closure lineage record.
+    assert_eq!(resume_state.operation_id, "hpo:methods");
+    assert_eq!(resume_state.target_node_id, node("model:base"));
+    assert_eq!(
+        outcome.execution_bundle.methods_hpo_resume_state.as_ref(),
+        Some(resume_state)
+    );
+    assert!(outcome
+        .execution_bundle
+        .raw_artifact_payloads
+        .values()
+        .any(|payload| !payload.is_empty()));
+    // A JSON round trip models a new process/controller receiving only the
+    // durable outcome rather than any in-memory optimizer state.
+    let replayed = TrainingOutcome::from_json(&serde_json::to_string(&outcome).unwrap()).unwrap();
+    assert_eq!(
+        replayed.methods_hpo_resume_state,
+        outcome.methods_hpo_resume_state
+    );
+    assert_eq!(
+        outcome.effective_plan.node_plans[&node("model:base")].params["n_components"],
+        outcome.parameter_patches[0].value
+    );
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_methods_hpo_training_resume_keeps_selected_rerun_reports_identical() {
+    let mut first_fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut first_fixture);
+    let mut first_store = InMemoryArtifactStore::new();
+    let first = run(
+        &first_fixture,
+        Arc::new(CallState::default()),
+        &provider(&first_fixture),
+        &mut first_store,
+    )
+    .unwrap();
+    let first = TrainingOutcome::from_json(&serde_json::to_string(&first).unwrap()).unwrap();
+    let package = first
+        .to_portable_predictor_package(
+            "predictor:resume.segment",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .unwrap();
+    let first_resume_state = first
+        .methods_hpo_resume_state
+        .as_ref()
+        .expect("initial native HPO outcome must persist resume state");
+    assert_eq!(
+        first_resume_state.provenance.graph_fingerprint,
+        package.effective_plan.graph_fingerprint
+    );
+    assert_eq!(
+        first_resume_state.provenance.controller_fingerprint,
+        package.effective_plan.controller_fingerprint
+    );
+    PortablePredictorPackage::from_json(&serde_json::to_string(&package).unwrap())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut resumed_fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut resumed_fixture);
+    let descriptor = methods_hpo_descriptor_mut(&mut resumed_fixture)
+        .as_object_mut()
+        .unwrap();
+    descriptor.insert("trials".into(), serde_json::json!(4));
+    descriptor.insert(
+        "resume_package_json".into(),
+        serde_json::to_value(serde_json::to_string(&package).unwrap()).unwrap(),
+    );
+    rebuild(&mut resumed_fixture);
+    resumed_fixture.request =
+        TrainingRequest::from_json(&serde_json::to_string(&resumed_fixture.request).unwrap())
+            .unwrap();
+    let state = Arc::new(CallState::default());
+    let mut store = InMemoryArtifactStore::new();
+    let resumed = run(
+        &resumed_fixture,
+        state.clone(),
+        &provider(&resumed_fixture),
+        &mut store,
+    )
+    .expect("checkpoint resume must preserve selected rerun evidence");
+    let resumed_resume_state = resumed
+        .methods_hpo_resume_state
+        .as_ref()
+        .expect("resumed native HPO outcome must persist resume state");
+    assert_eq!(
+        resumed_resume_state.provenance.graph_fingerprint,
+        resumed.effective_plan.graph_fingerprint
+    );
+    assert_eq!(
+        resumed_resume_state.provenance.controller_fingerprint,
+        resumed.effective_plan.controller_fingerprint
+    );
+    assert_eq!(
+        resumed_resume_state.provenance.graph_fingerprint,
+        first_resume_state.provenance.graph_fingerprint,
+        "resume-package bytes and requested total trial count must not alter immutable HPO plan provenance",
+    );
+    assert_eq!(resumed.selected_variant_id, first.selected_variant_id);
+    assert_eq!(state.count(Phase::Refit, "transform:snv"), 1);
+    let resumed_terminal_reports = resumed_resume_state
+        .completed_reports
+        .iter()
+        .map(|completed| completed.report.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        resumed.score_set.reports, resumed_terminal_reports,
+        "the outcome ScoreSet must retain the merged terminal HPO report identities verbatim",
+    );
+    // The persisted selection evidence is deliberately the terminal
+    // sample-level OOF average, not an invented per-fold score transcript.
+    // `execute_training` must therefore match this exact report identity on
+    // the selected rerun; this regression previously failed with the rerun's
+    // full fold transcript compared against this one retained terminal report.
+    let selected_terminal_reports = resumed
+        .score_set
+        .reports
+        .iter()
+        .filter(|report| report.variant_id.as_ref() == Some(&resumed.selected_variant_id))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        selected_terminal_reports.len(),
+        1,
+        "selected terminal HPO reports: {selected_terminal_reports:#?}"
+    );
+    let selected_terminal_report = selected_terminal_reports[0];
+    assert_eq!(
+        selected_terminal_report.producer_node.as_str(),
+        "model:base"
+    );
+    assert_eq!(
+        selected_terminal_report.producer_port.as_deref(),
+        // `model:base` declares its sole prediction output as `oof` in the
+        // fixture. The scheduler resolves the omitted request output port to
+        // that declared graph port, and HPO terminal reports must preserve the
+        // same canonical identity through resume and SELECT.
+        Some("oof")
+    );
+    assert_eq!(
+        selected_terminal_report.partition,
+        PredictionPartition::Validation
+    );
+    assert!(selected_terminal_report
+        .fold_id
+        .as_ref()
+        .is_some_and(|fold| fold.as_str() == "avg"));
+    assert_eq!(selected_terminal_report.level, PredictionLevel::Sample);
+    assert_eq!(resumed_resume_state.trial_history_len, 4);
+
+    let mut uninterrupted_fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut uninterrupted_fixture);
+    methods_hpo_descriptor_mut(&mut uninterrupted_fixture)
+        .as_object_mut()
+        .unwrap()
+        .insert("trials".into(), serde_json::json!(4));
+    rebuild(&mut uninterrupted_fixture);
+    let mut uninterrupted_store = InMemoryArtifactStore::new();
+    let uninterrupted = run(
+        &uninterrupted_fixture,
+        Arc::new(CallState::default()),
+        &provider(&uninterrupted_fixture),
+        &mut uninterrupted_store,
+    )
+    .unwrap();
+    let uninterrupted_resume_state = uninterrupted.methods_hpo_resume_state.as_ref().unwrap();
+    assert_eq!(
+        resumed_resume_state.trial_history_len,
+        uninterrupted_resume_state.trial_history_len
+    );
+    assert_eq!(
+        resumed_resume_state.completed_proposals,
+        uninterrupted_resume_state.completed_proposals
+    );
+    assert_eq!(
+        resumed_resume_state.completed_reports,
+        uninterrupted_resume_state.completed_reports
+    );
+    assert_eq!(
+        resumed_resume_state.incumbent,
+        uninterrupted_resume_state.incumbent
+    );
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_methods_hpo_tpe_median_operation_preserves_terminal_ledger_through_package_resume() {
+    // This runs the production-shaped operation end-to-end: an attested
+    // provider feeds the Methods PLS controller, proposals are evaluated by
+    // the sequential scheduler, and the registered Methods tuner owns the
+    // native TPE/Median study.  It must not regress to a test-only evaluator
+    // or a synthetic optimizer transcript.
+    // First establish, through the same real controller/provider/fold path but
+    // with no pruner, that trial 2's `n_components=3` OOF score is worse than
+    // the completed component-2 baseline. The following TPE/Median operation
+    // uses the identical space, seed and data, so its PRUNED state is native
+    // evidence rather than a test-injected optimizer outcome.
+    let mut baseline_fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut baseline_fixture);
+    give_methods_hpo_four_train_rows(&mut baseline_fixture);
+    let descriptor = methods_hpo_descriptor_mut(&mut baseline_fixture);
+    descriptor["study"]["optimizer"]["sampler"] = serde_json::json!("tpe");
+    descriptor["study"]["optimizer"]["pruner"] = serde_json::json!("none");
+    descriptor["study"]["optimizer"]["seed"] = serde_json::json!(51);
+    descriptor["study"]["optimizer"]["n_startup_trials"] = serde_json::json!(2);
+    descriptor["trials"] = serde_json::json!(3);
+    rebuild(&mut baseline_fixture);
+    let mut baseline_provider = provider(&baseline_fixture);
+    configure_deterministic_hpo_oof_provider(&mut baseline_provider);
+    let baseline = run(
+        &baseline_fixture,
+        Arc::new(CallState::default()),
+        &baseline_provider,
+        &mut InMemoryArtifactStore::new(),
+    )
+    .expect("unpruned TPE baseline evaluates the third PLS component");
+    let baseline_trials = &baseline
+        .methods_hpo_resume_state
+        .as_ref()
+        .expect("baseline preserves native terminal evidence")
+        .terminal_trials;
+    assert_eq!(
+        baseline_trials
+            .iter()
+            .map(|entry| (entry.trial.id, entry.trial.status))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, HpoTrialStatus::Completed),
+            (1, HpoTrialStatus::Completed),
+            (2, HpoTrialStatus::Completed),
+        ],
+        "no-pruner baseline must evaluate native TPE trial 2"
+    );
+    let trial_score = |trial_id| {
+        baseline_trials
+            .iter()
+            .find(|entry| entry.trial.id == trial_id)
+            .and_then(|entry| entry.trial.score)
+            .expect("completed baseline trial has a native score")
+    };
+    assert!(
+        trial_score(2) > trial_score(0),
+        "component 3 must be demonstrably worse OOF than component 2 before Median pruning"
+    );
+
+    let mut initial_fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut initial_fixture);
+    give_methods_hpo_four_train_rows(&mut initial_fixture);
+    let descriptor = methods_hpo_descriptor_mut(&mut initial_fixture);
+    descriptor["study"]["optimizer"]["sampler"] = serde_json::json!("tpe");
+    descriptor["study"]["optimizer"]["pruner"] = serde_json::json!("median");
+    descriptor["study"]["optimizer"]["seed"] = serde_json::json!(51);
+    descriptor["study"]["optimizer"]["n_startup_trials"] = serde_json::json!(2);
+    descriptor["trials"] = serde_json::json!(3);
+    rebuild(&mut initial_fixture);
+
+    let mut initial_provider = provider(&initial_fixture);
+    configure_deterministic_hpo_oof_provider(&mut initial_provider);
+    let mut initial_store = InMemoryArtifactStore::new();
+    let initial = run(
+        &initial_fixture,
+        Arc::new(CallState::default()),
+        &initial_provider,
+        &mut initial_store,
+    )
+    .expect("initial TPE/Median native HPO operation");
+    assert_eq!(
+        initial.compute_fingerprint().unwrap(),
+        initial.outcome_fingerprint,
+        "operation returned a self-inconsistent outcome",
+    );
+    let initial_json = serde_json::to_string(&initial).unwrap();
+    let round_tripped: TrainingOutcome = serde_json::from_str(&initial_json).unwrap();
+    let initial_value: serde_json::Value = serde_json::from_str(&initial_json).unwrap();
+    let round_tripped_value = serde_json::to_value(&round_tripped).unwrap();
+    let reserialized_json = serde_json::to_string(&round_tripped).unwrap();
+    assert_eq!(
+        round_tripped.compute_fingerprint().unwrap(),
+        initial.outcome_fingerprint,
+        "native TPE/Median outcome fingerprint must survive its JSON boundary; first JSON difference: {:?}",
+        (
+            first_json_difference("$", &initial_value, &round_tripped_value),
+            first_tcv_difference(
+                "$",
+                &parse_typed_json(&initial_json).unwrap(),
+                &parse_typed_json(&reserialized_json).unwrap(),
+            ),
+        ),
+    );
+    let initial = TrainingOutcome::from_json(&initial_json)
+        .expect("initial terminal evidence survives its outcome JSON boundary");
+    let package = initial
+        .to_portable_predictor_package(
+            "predictor:tpe-median.resume",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .expect("portable package carries the complete native resume state");
+    let package_json = serde_json::to_string(&package).unwrap();
+    PortablePredictorPackage::from_json(&package_json)
+        .expect("package JSON is the only accepted resume boundary")
+        .validate()
+        .unwrap();
+
+    let mut resumed_fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut resumed_fixture);
+    give_methods_hpo_four_train_rows(&mut resumed_fixture);
+    let descriptor = methods_hpo_descriptor_mut(&mut resumed_fixture);
+    descriptor["study"]["optimizer"]["sampler"] = serde_json::json!("tpe");
+    descriptor["study"]["optimizer"]["pruner"] = serde_json::json!("median");
+    descriptor["study"]["optimizer"]["seed"] = serde_json::json!(51);
+    descriptor["study"]["optimizer"]["n_startup_trials"] = serde_json::json!(2);
+    descriptor["trials"] = serde_json::json!(4);
+    descriptor["resume_package_json"] = serde_json::json!(package_json);
+    rebuild(&mut resumed_fixture);
+    resumed_fixture.request =
+        TrainingRequest::from_json(&serde_json::to_string(&resumed_fixture.request).unwrap())
+            .unwrap();
+
+    let resumed_state = Arc::new(CallState::default());
+    let mut resumed_provider = provider(&resumed_fixture);
+    configure_deterministic_hpo_oof_provider(&mut resumed_provider);
+    // Trial 3 is requested only after the native TPE/Median sequence has
+    // completed trials 0/1 and terminalized trial 2 as PRUNED. This is a real
+    // data-provider refusal keyed by `MethodsPlsDataRequest.variant_id`, not a
+    // fabricated optimizer terminal transition.
+    resumed_provider.fail_methods_hpo_trial_id = Some(3);
+    let mut resumed_store = InMemoryArtifactStore::new();
+    let resumed = run(
+        &resumed_fixture,
+        resumed_state.clone(),
+        &resumed_provider,
+        &mut resumed_store,
+    )
+    .expect("TPE/Median package resume must execute through the scheduler");
+    resumed.validate().unwrap();
+    let resumed_ledger = &resumed
+        .methods_hpo_resume_state
+        .as_ref()
+        .expect("resumed operation persists its terminal native ledger")
+        .terminal_trials;
+    assert_eq!(
+        resumed_ledger
+            .iter()
+            .map(|entry| (entry.trial.id, entry.trial.status))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, HpoTrialStatus::Completed),
+            (1, HpoTrialStatus::Completed),
+            (2, HpoTrialStatus::Pruned),
+            (3, HpoTrialStatus::Failed),
+        ],
+        "native TPE/Median terminal order/reasons: {resumed_ledger:#?}"
+    );
+    assert!(resumed_ledger.iter().any(|entry| {
+        entry
+            .trial
+            .intermediates
+            .iter()
+            .any(|intermediate| intermediate.step == 0)
+    }));
+
+    // The normal DAG-ML SELECT decision, not a tuner-side marker, must agree
+    // exactly with the native incumbent; the campaign performs one SELECT and
+    // the selected variant is refit once after (never inside) optimization.
+    assert_eq!(resumed.execution_bundle.selections.len(), 1);
+    let decision = resumed.execution_bundle.selections.values().next().unwrap();
+    let incumbent = &resumed.methods_hpo_resume_state.as_ref().unwrap().incumbent;
+    assert_eq!(
+        decision.selected_candidate_id,
+        incumbent.variant_id.as_str()
+    );
+    assert_eq!(decision.selected_score.to_bits(), incumbent.score.to_bits());
+    assert_eq!(resumed.selected_variant_id, incumbent.variant_id);
+    assert_eq!(resumed_state.count(Phase::Refit, "transform:snv"), 1);
+
+    let mut uninterrupted_fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut uninterrupted_fixture);
+    give_methods_hpo_four_train_rows(&mut uninterrupted_fixture);
+    let descriptor = methods_hpo_descriptor_mut(&mut uninterrupted_fixture);
+    descriptor["study"]["optimizer"]["sampler"] = serde_json::json!("tpe");
+    descriptor["study"]["optimizer"]["pruner"] = serde_json::json!("median");
+    descriptor["study"]["optimizer"]["seed"] = serde_json::json!(51);
+    descriptor["study"]["optimizer"]["n_startup_trials"] = serde_json::json!(2);
+    descriptor["trials"] = serde_json::json!(4);
+    rebuild(&mut uninterrupted_fixture);
+    let uninterrupted_state = Arc::new(CallState::default());
+    let mut uninterrupted_provider = provider(&uninterrupted_fixture);
+    configure_deterministic_hpo_oof_provider(&mut uninterrupted_provider);
+    uninterrupted_provider.fail_methods_hpo_trial_id = Some(3);
+    let mut uninterrupted_store = InMemoryArtifactStore::new();
+    let uninterrupted = run(
+        &uninterrupted_fixture,
+        uninterrupted_state.clone(),
+        &uninterrupted_provider,
+        &mut uninterrupted_store,
+    )
+    .expect("uninterrupted TPE/Median native HPO operation");
+    let uninterrupted_resume = uninterrupted.methods_hpo_resume_state.as_ref().unwrap();
+    let resumed_resume = resumed.methods_hpo_resume_state.as_ref().unwrap();
+    // Native wall-clock duration is observability rather than semantic optimizer
+    // identity: two independently executed, otherwise identical TPE runs have
+    // distinct elapsed times. Every durable trial is still required to carry a
+    // finite non-negative duration; compare all remaining terminal evidence
+    // exactly, including IDs, ordering, parameters, statuses, scores,
+    // intermediates, structured failures, and variant identity.
+    let semantic_ledger = |ledger: &Vec<dag_ml_core::MethodsHpoTerminalEvidence>| {
+        let mut semantic = ledger.clone();
+        for entry in &mut semantic {
+            assert!(
+                entry.trial.duration.is_finite() && entry.trial.duration >= 0.0,
+                "native trial {} has an invalid duration",
+                entry.trial.id
+            );
+            entry.trial.duration = 0.0;
+        }
+        semantic
+    };
+    assert_eq!(
+        semantic_ledger(&resumed_resume.terminal_trials),
+        semantic_ledger(&uninterrupted_resume.terminal_trials)
+    );
+    assert_eq!(resumed_resume.incumbent, uninterrupted_resume.incumbent);
+    assert_eq!(
+        resumed.selected_variant_id,
+        uninterrupted.selected_variant_id
+    );
+    assert_eq!(uninterrupted.execution_bundle.selections.len(), 1);
+    assert_eq!(uninterrupted_state.count(Phase::Refit, "transform:snv"), 1);
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller() {
+    let mut fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut fixture);
+    // Keep the live REFIT output as an independent numerical oracle for every
+    // host-resolved PREDICT row. Without this expansion REFIT covers samples
+    // 1..=4 while this provider's inference cohort correctly covers 1..=8.
+    give_methods_hpo_four_train_rows(&mut fixture);
+    rebuild(&mut fixture);
+    let mut source_store = InMemoryArtifactStore::new();
+    let source = run(
+        &fixture,
+        Arc::new(CallState::default()),
+        &provider(&fixture),
+        &mut source_store,
+    )
+    .expect("source native Methods HPO training");
+    assert!(source.replayable_phases.contains(&Phase::Predict));
+    assert!(!source.execution_bundle.raw_artifact_payloads.is_empty());
+    let mut missing_payload = source.execution_bundle.clone();
+    missing_payload.raw_artifact_payloads.clear();
+    assert!(missing_payload
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("must exactly cover RAW refit artifacts"));
+    let mut orphan_payload = source.execution_bundle.clone();
+    orphan_payload
+        .raw_artifact_payloads
+        .insert(ArtifactId::new("artifact:orphan.n4mm").unwrap(), vec![0]);
+    assert!(orphan_payload
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("must exactly cover RAW refit artifacts"));
+
+    // A JSON boundary models a different process.  The replay registry is new
+    // and the fallback store deliberately has no old fitted-model handles;
+    // only `ExecutionBundle::raw_artifact_payloads` may make PREDICT work.
+    let source = TrainingOutcome::from_json(&serde_json::to_string(&source).unwrap()).unwrap();
+    let request = replay_request(&source, Phase::Predict);
+    let fresh_state = Arc::new(CallState::default());
+    let methods_controller = Arc::new(MethodsPlsController::new());
+    let mut fresh_controllers = controllers(&fixture, fresh_state.clone(), false);
+    fresh_controllers
+        .register(Box::new(SharedMethodsPlsController(
+            methods_controller.clone(),
+        )))
+        .unwrap();
+    let empty_fallback_store = InMemoryArtifactStore::new();
+
+    // Artifact hydration precedes graph execution. A provider refusal after
+    // hydration must roll the invocation-local payload back instead of
+    // growing controller state on every failed replay.
+    let mut refusing_provider = provider(&fixture);
+    refusing_provider.methods_pls_enabled = false;
+    let error = execute_attached_training_replay(AttachedTrainingReplayInput {
+        source: &source,
+        request: &request,
+        outcome_id: "replay:methods-hpo.n4mm.provider-refusal".to_string(),
+        run_id: RunId::new("run:methods-hpo.replay.provider-refusal").unwrap(),
+        controllers: &fresh_controllers,
+        data_provider: &refusing_provider,
+        artifact_store: &empty_fallback_store,
+        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect_err("provider refusal must abort after N4MM hydration");
+    assert!(error
+        .to_string()
+        .contains("test provider intentionally has no portable Methods PLS view"));
+    assert_eq!(methods_controller.hydrated_payload_count().unwrap(), 0);
+    let failed_replay_transform_calls = fresh_state.count(Phase::Predict, "transform:snv");
+
+    let replay = execute_attached_training_replay(AttachedTrainingReplayInput {
+        source: &source,
+        request: &request,
+        outcome_id: "replay:methods-hpo.n4mm".to_string(),
+        run_id: RunId::new("run:methods-hpo.replay").unwrap(),
+        controllers: &fresh_controllers,
+        data_provider: &provider(&fixture),
+        artifact_store: &empty_fallback_store,
+        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("fresh controller should hydrate durable N4MM payload");
+
+    // PREDICT is host-resolved (`sample_ids == None`), so matching REFIT and
+    // replay cohorts is a fixture choice rather than a scheduler assumption.
+    // It lets the live native model attest every imported N4MM output row.
+    let expected = &source.outputs[0].predictions[0];
+    let actual = &replay.outputs[0].predictions[0];
+    assert_eq!(
+        expected.sample_ids,
+        (1..=8)
+            .map(|index| sample(&format!("sample:{index}")))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(expected.sample_ids, actual.sample_ids);
+    assert_eq!(expected.values.len(), actual.values.len());
+    for ((sample_id, expected), actual) in expected
+        .sample_ids
+        .iter()
+        .zip(&expected.values)
+        .zip(&actual.values)
+    {
+        assert_eq!(expected.len(), actual.len());
+        for (expected, actual) in expected.iter().zip(actual.iter()) {
+            assert!(
+                (expected - actual).abs() < 1.0e-12,
+                "hydrated N4MM prediction for {sample_id} drifted: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    // Hydrated handles are invocation-local and consumed once. Reusing the
+    // same otherwise-fresh registry must hydrate a distinct capability from
+    // the durable bundle rather than depend on state left by the first replay.
+    let replay_again = execute_attached_training_replay(AttachedTrainingReplayInput {
+        source: &source,
+        request: &request,
+        outcome_id: "replay:methods-hpo.n4mm.again".to_string(),
+        run_id: RunId::new("run:methods-hpo.replay.again").unwrap(),
+        controllers: &fresh_controllers,
+        data_provider: &provider(&fixture),
+        artifact_store: &empty_fallback_store,
+        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("same controller should rehydrate N4MM for each replay invocation");
+    assert_eq!(replay_again.outputs[0].predictions[0], *actual);
+
+    // The deployable package follows the same raw-payload route. Native
+    // portable loading must never ask a host-sidecar resolver for a handle.
+    let package = source
+        .to_portable_predictor_package(
+            "predictor:methods-hpo.n4mm",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .unwrap();
+    let package =
+        PortablePredictorPackage::from_json(&serde_json::to_string(&package).unwrap()).unwrap();
+    let archive =
+        build_archive_v2_native_portable_payloads("archive:methods-hpo.n4mm", &source, &package)
+            .expect("real native Methods outcome must close the Archive V2 P0 member set");
+    assert_eq!(
+        archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap(),
+        serde_json::to_vec(&package).unwrap().as_slice()
+    );
+    assert!(archive
+        .members
+        .keys()
+        .all(|path| path.starts_with("dagml/") || path.starts_with("methods/")));
+    assert_eq!(
+        archive.manifest["payloads"]["methods"]["n4mm"][0]["semantic_profile"],
+        "n4mm_raw_sha256"
+    );
+    assert_eq!(
+        archive.manifest["replay"]["training_artifacts"]["training_outcome"]
+            ["semantic_fingerprint"],
+        source.outcome_fingerprint
+    );
+    assert_eq!(
+        archive.manifest["member_inventory"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|member| member["path"] == ARCHIVE_V2_OUTCOME_MEMBER)
+            .unwrap()["semantic_fingerprint"],
+        source.outcome_fingerprint
+    );
+    // Core owns only bounded ZIP/inventory storage. Its returned Package V2
+    // bytes cross back into DAG-ML for semantic parsing and fresh replay.
+    let core_archive_path = archive_path("crossrepo-methods-package");
+    let core_reference = write_archive_v2(
+        &core_archive_path,
+        ArchiveV2WriteRequest {
+            manifest: archive.manifest.clone(),
+            payloads: archive
+                .members
+                .iter()
+                .map(|(path, bytes)| ArchivePayload {
+                    path: path.clone(),
+                    bytes: bytes.clone(),
+                })
+                .collect(),
+        },
+    )
+    .expect("Core must store the strict DAG-ML Archive V2 closure as opaque bytes");
+    let loaded_archive =
+        load_archive_v2(&core_archive_path).expect("Core must load its V2 archive");
+    assert_eq!(loaded_archive.reference(), &core_reference);
+    assert_eq!(
+        loaded_archive.portable_predictor_package().unwrap(),
+        archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap()
+    );
+    assert!(matches!(
+        load_archive(&core_archive_path).unwrap(),
+        LoadedArchive::V2(_)
+    ));
+    let archived_package = PortablePredictorPackage::from_json(
+        std::str::from_utf8(loaded_archive.portable_predictor_package().unwrap()).unwrap(),
+    )
+    .expect("DAG-ML must validate Core-returned Package V2 bytes");
+    let archived_loaded = archived_package
+        .load_with(|record| {
+            panic!(
+                "Core-loaded native artifact `{}` unexpectedly requested a host-sidecar handle",
+                record.artifact.id
+            )
+        })
+        .unwrap();
+    let archive_replay_state = Arc::new(CallState::default());
+    let archive_methods = Arc::new(MethodsPlsController::new());
+    let mut archive_controllers = controllers(&fixture, archive_replay_state, false);
+    archive_controllers
+        .register(Box::new(SharedMethodsPlsController(
+            archive_methods.clone(),
+        )))
+        .unwrap();
+    let archive_replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &archived_loaded,
+        request: &request,
+        outcome_id: "replay:core-archive.methods-hpo.n4mm".to_string(),
+        run_id: RunId::new("run:core-archive.methods-hpo.replay").unwrap(),
+        controllers: &archive_controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("fresh controller must replay the Core-loaded native package");
+    assert_eq!(archive_replay.outputs[0].predictions[0], *actual);
+    assert_eq!(archive_methods.hydrated_payload_count().unwrap(), 0);
+
+    // A raw member bit flip is rejected by Core before a package parser or a
+    // host fallback can receive it.
+    let tampered_path = archive_path("crossrepo-methods-package-tampered");
+    let mut tampered = std::fs::read(&core_archive_path).unwrap();
+    let package_bytes = archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap();
+    let offset = tampered
+        .windows(package_bytes.len())
+        .position(|window| window == package_bytes.as_slice())
+        .expect("stored ZIP contains exact Package V2 bytes");
+    tampered[offset] ^= 1;
+    std::fs::write(&tampered_path, tampered).unwrap();
+    assert!(load_archive_v2(&tampered_path).is_err());
+    let _ = std::fs::remove_file(&core_archive_path);
+    let _ = std::fs::remove_file(&tampered_path);
+    let mut host_sidecar = package.clone();
+    host_sidecar.fitted_artifact_mode = FittedArtifactMode::AllowHostSidecar;
+    for binding in &mut host_sidecar.artifact_bindings {
+        binding.load_mode = ArtifactLoadMode::HostSidecar;
+    }
+    host_sidecar.package_fingerprint = host_sidecar.compute_fingerprint().unwrap();
+    assert!(build_archive_v2_native_portable_payloads(
+        "archive:methods-hpo.host-sidecar",
+        &source,
+        &host_sidecar,
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("host-sidecar"));
+    let mut missing_raw_payload = package.clone();
+    missing_raw_payload
+        .execution_bundle
+        .raw_artifact_payloads
+        .clear();
+    missing_raw_payload.package_fingerprint = missing_raw_payload.compute_fingerprint().unwrap();
+    assert!(build_archive_v2_native_portable_payloads(
+        "archive:methods-hpo.missing-raw",
+        &source,
+        &missing_raw_payload,
+    )
+    .is_err());
+    let loaded = package
+        .clone()
+        .load_with(|record| {
+            panic!(
+                "native-portable artifact `{}` unexpectedly requested a host-sidecar handle",
+                record.artifact.id
+            )
+        })
+        .unwrap();
+    let unknown_controllers = RuntimeControllerRegistry::new();
+    assert!(execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &loaded,
+        request: &request,
+        outcome_id: "replay:loaded.methods-hpo.unknown-controller".to_string(),
+        run_id: RunId::new("run:loaded.methods-hpo.unknown-controller").unwrap(),
+        controllers: &unknown_controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .unwrap_err()
+    .to_string()
+    .contains("is not registered"));
+    let loaded_replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &loaded,
+        request: &request,
+        outcome_id: "replay:loaded.methods-hpo.n4mm".to_string(),
+        run_id: RunId::new("run:loaded.methods-hpo.replay").unwrap(),
+        controllers: &fresh_controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("loaded package should hydrate durable N4MM payload");
+    assert_eq!(loaded_replay.outputs[0].predictions[0], *actual);
+    assert_eq!(
+        fresh_state.count(Phase::Predict, "transform:snv"),
+        failed_replay_transform_calls + 3
+    );
+    assert_eq!(methods_controller.hydrated_payload_count().unwrap(), 0);
+}
+
+#[cfg(not(feature = "methods-optimizer-local"))]
+#[test]
+fn native_training_refuses_methods_hpo_before_provider_data_work() {
+    let mut fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut fixture);
+    let state = Arc::new(CallState::default());
+    let provider = provider(&fixture);
+    let mut store = InMemoryArtifactStore::new();
+    let error = run(&fixture, state.clone(), &provider, &mut store).unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("native Methods HPO preflight failed before data access"));
+    assert_eq!(provider.next_handle.load(Ordering::SeqCst), 0);
+    assert_eq!(state.total(), 0);
+    assert!(store.is_empty());
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_training_refuses_hpo_without_the_provider_pls_capability_before_data_work() {
+    let mut fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut fixture);
+    let state = Arc::new(CallState::default());
+    let mut provider = provider(&fixture);
+    provider.methods_pls_enabled = false;
+    let mut store = InMemoryArtifactStore::new();
+    let error = run(&fixture, state.clone(), &provider, &mut store).unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("test provider intentionally has no portable Methods PLS view"));
+    assert_eq!(provider.next_handle.load(Ordering::SeqCst), 0);
+    assert_eq!(state.total(), 0);
+    assert!(store.is_empty());
+}
+
 #[test]
 fn attached_training_replay_predict_rebinds_current_cohort_without_mutating_source() {
     let mut fixture = fixture(true, false);
@@ -952,6 +2606,688 @@ fn attached_training_replay_predict_rebinds_current_cohort_without_mutating_sour
             .sum::<usize>()
     );
     assert!(state.count(Phase::Predict, "model:base") > 0);
+}
+
+#[test]
+fn native_calibration_refuses_training_cohort_reuse() {
+    let fixture = fixture(true, false);
+    let state = Arc::new(CallState::default());
+    let mut store = InMemoryArtifactStore::new();
+    let mut source = run(&fixture, state.clone(), &provider(&fixture), &mut store)
+        .expect("source training outcome");
+    let calibration_relation_fingerprint = fixture.relations.fingerprint().unwrap();
+    let envelopes = replay_envelopes_with_relation(&source, &calibration_relation_fingerprint);
+    let request = replay_request(&source, Phase::Predict);
+    let controllers = controllers(&fixture, state.clone(), true);
+    let replay = execute_attached_training_replay(AttachedTrainingReplayInput {
+        source: &source,
+        request: &request,
+        outcome_id: "replay:calibration.input".to_string(),
+        run_id: RunId::new("run:calibration.input").unwrap(),
+        controllers: &controllers,
+        data_provider: &provider(&fixture),
+        artifact_store: &store,
+        data_envelopes: &envelopes,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("calibration replay");
+    let point = &replay.outputs[0].predictions[0];
+    let mut cohort = ConformalCalibrationCohort {
+        role: "calibration".to_string(),
+        physical_sample_ids: point.sample_ids.clone(),
+        origin_sample_ids: Vec::new(),
+        target_names: replay.outputs[0].binding.target_names.clone(),
+        manifest_fingerprint: String::new(),
+    };
+    cohort.manifest_fingerprint = cohort.compute_fingerprint().unwrap();
+    let mut context = ConformalCalibrationContext {
+        predictor_binding_fingerprint: replay.outputs[0].binding.binding_fingerprint.clone(),
+        source_training_outcome_fingerprint: source.outcome_fingerprint.clone(),
+        calibration_replay_outcome_fingerprint: replay.outcome_fingerprint.clone(),
+        data_identities_fingerprint: source.data_identities_fingerprint().unwrap(),
+        fold_set_fingerprint: dag_ml_core::fold::fold_set_fingerprint(
+            source.effective_plan.fold_set.as_ref().unwrap(),
+        )
+        .unwrap(),
+        training_influence_fingerprint: source.training_influence.manifest_fingerprint.clone(),
+        relation_fingerprint: source.training_influence.relation_fingerprint.clone(),
+        calibration_cohort: cohort,
+        context_fingerprint: String::new(),
+    };
+    context.context_fingerprint = context.compute_fingerprint().unwrap();
+    let error = calibrate_attached_training_replay(
+        &mut source,
+        &replay,
+        replay.outputs[0].binding.binding_id.as_str(),
+        &fixture.relations,
+        ConformalCalibrationTruth {
+            sample_ids: point.sample_ids.clone(),
+            values: point.values.clone(),
+        },
+        context,
+        vec![0.5],
+        ConformalMultiTargetPolicy::Marginal,
+        ConformalSmallSamplePolicy::Error,
+    )
+    .expect_err("calibration must not reuse a training cohort");
+    assert!(
+        error.to_string().contains("overlaps training influence"),
+        "{error}"
+    );
+    assert!(source.conformal_calibration.is_none());
+}
+
+#[test]
+fn loaded_v2_conformal_package_replays_intervals_and_rejects_resigned_tampering() {
+    let fixture = fixture(true, false);
+    let state = Arc::new(CallState::default());
+    let calibration_sample_ids = (1..=4)
+        .map(|index| sample(&format!("sample:calibration:{index}")))
+        .collect::<Vec<_>>();
+    *state.predict_sample_ids.lock().unwrap() = Some(calibration_sample_ids.clone());
+    let mut store = InMemoryArtifactStore::new();
+    let mut source = run(&fixture, state.clone(), &provider(&fixture), &mut store)
+        .expect("source training outcome");
+    let relations = calibration_relations(&calibration_sample_ids);
+    let envelopes = replay_envelopes_with_relations(&source, &relations);
+    let calibration_request = replay_request(&source, Phase::Predict);
+    let controllers = controllers(&fixture, state.clone(), true);
+    let calibration_replay = execute_attached_training_replay(AttachedTrainingReplayInput {
+        source: &source,
+        request: &calibration_request,
+        outcome_id: "replay:calibration.v2".to_string(),
+        run_id: RunId::new("run:calibration.v2").unwrap(),
+        controllers: &controllers,
+        data_provider: &provider(&fixture),
+        artifact_store: &store,
+        data_envelopes: &envelopes,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("calibration replay");
+    let point = &calibration_replay.outputs[0].predictions[0];
+    let context = calibration_context(&source, &calibration_replay, &relations);
+    let calibration = calibrate_attached_training_replay(
+        &mut source,
+        &calibration_replay,
+        calibration_replay.outputs[0].binding.binding_id.as_str(),
+        &relations,
+        ConformalCalibrationTruth {
+            sample_ids: point.sample_ids.clone(),
+            values: vec![vec![1.0], vec![2.0], vec![3.0], vec![4.0]],
+        },
+        context,
+        vec![0.5],
+        ConformalMultiTargetPolicy::Marginal,
+        ConformalSmallSamplePolicy::Error,
+    )
+    .expect("authoritative calibration attachment");
+    assert_eq!(
+        calibration.context.relation_fingerprint,
+        relations.fingerprint().unwrap()
+    );
+    source.validate().unwrap();
+    assert_eq!(
+        source.conformal_calibration_replay.as_ref(),
+        Some(&calibration_replay)
+    );
+
+    let development_relation_fingerprint = source.training_influence.relation_fingerprint.clone();
+    let mut equal_relation_outcome = source.clone();
+    rewrite_replay_relation_fingerprint(
+        equal_relation_outcome
+            .conformal_calibration_replay
+            .as_mut()
+            .unwrap(),
+        &development_relation_fingerprint,
+    );
+    equal_relation_outcome
+        .conformal_calibration
+        .as_mut()
+        .unwrap()
+        .context
+        .relation_fingerprint = development_relation_fingerprint.clone();
+    resign_outcome_conformal_closure(&mut equal_relation_outcome);
+    assert!(equal_relation_outcome
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("distinct from development relations"));
+
+    let influenced_sample = source.training_influence.entries[0].physical_sample_ids[0].clone();
+    let mut overlapping_outcome = source.clone();
+    let binding_id = overlapping_outcome
+        .conformal_calibration
+        .as_ref()
+        .unwrap()
+        .binding_id
+        .clone();
+    overlapping_outcome
+        .conformal_calibration_replay
+        .as_mut()
+        .unwrap()
+        .outputs
+        .iter_mut()
+        .find(|output| output.binding.binding_id == binding_id)
+        .unwrap()
+        .predictions[0]
+        .sample_ids[0] = influenced_sample.clone();
+    resign_replay_outcome(
+        overlapping_outcome
+            .conformal_calibration_replay
+            .as_mut()
+            .unwrap(),
+    );
+    let overlapping_calibration = overlapping_outcome.conformal_calibration.as_mut().unwrap();
+    overlapping_calibration.sample_ids[0] = influenced_sample.clone();
+    overlapping_calibration
+        .context
+        .calibration_cohort
+        .physical_sample_ids[0] = influenced_sample.clone();
+    overlapping_calibration
+        .context
+        .calibration_cohort
+        .manifest_fingerprint = overlapping_calibration
+        .context
+        .calibration_cohort
+        .compute_fingerprint()
+        .unwrap();
+    resign_outcome_conformal_closure(&mut overlapping_outcome);
+    assert!(overlapping_outcome
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("overlaps training influence closure"));
+
+    let mut foreign_outcome = source.clone();
+    let foreign_calibration = foreign_outcome.conformal_calibration.as_mut().unwrap();
+    foreign_calibration
+        .context
+        .source_training_outcome_fingerprint = "f".repeat(64);
+    resign_runtime_calibration(foreign_calibration);
+    foreign_outcome.execution_bundle.conformal_calibration =
+        Some(foreign_calibration.reference().unwrap());
+    resign_outcome(&mut foreign_outcome);
+    assert!(foreign_outcome
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("pre-calibration source"));
+
+    let package = source
+        .to_portable_predictor_package(
+            "predictor:conformal.v2",
+            FittedArtifactMode::AllowHostSidecar,
+            ArtifactLoadMode::HostSidecar,
+        )
+        .expect("V2 conformal package");
+    let package = PortablePredictorPackage::from_json(
+        &serde_json::to_string(&package).expect("serialize V2 package"),
+    )
+    .expect("load strict V2 package");
+    assert_eq!(
+        package.conformal_calibration_replay.as_ref(),
+        Some(&calibration_replay)
+    );
+
+    let mut equal_relation_package = package.clone();
+    rewrite_replay_relation_fingerprint(
+        equal_relation_package
+            .conformal_calibration_replay
+            .as_mut()
+            .unwrap(),
+        &development_relation_fingerprint,
+    );
+    equal_relation_package
+        .conformal_calibration
+        .as_mut()
+        .unwrap()
+        .context
+        .relation_fingerprint = development_relation_fingerprint.clone();
+    resign_package_conformal_closure(&mut equal_relation_package);
+    assert!(equal_relation_package
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("distinct from development relations"));
+
+    let mut overlapping_package = package.clone();
+    let binding_id = overlapping_package
+        .conformal_calibration
+        .as_ref()
+        .unwrap()
+        .binding_id
+        .clone();
+    overlapping_package
+        .conformal_calibration_replay
+        .as_mut()
+        .unwrap()
+        .outputs
+        .iter_mut()
+        .find(|output| output.binding.binding_id == binding_id)
+        .unwrap()
+        .predictions[0]
+        .sample_ids[0] = influenced_sample.clone();
+    resign_replay_outcome(
+        overlapping_package
+            .conformal_calibration_replay
+            .as_mut()
+            .unwrap(),
+    );
+    let overlapping_calibration = overlapping_package.conformal_calibration.as_mut().unwrap();
+    overlapping_calibration.sample_ids[0] = influenced_sample.clone();
+    overlapping_calibration
+        .context
+        .calibration_cohort
+        .physical_sample_ids[0] = influenced_sample;
+    overlapping_calibration
+        .context
+        .calibration_cohort
+        .manifest_fingerprint = overlapping_calibration
+        .context
+        .calibration_cohort
+        .compute_fingerprint()
+        .unwrap();
+    resign_package_conformal_closure(&mut overlapping_package);
+    assert!(overlapping_package
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("overlaps training influence closure"));
+
+    let mut foreign_replay_package = package.clone();
+    let foreign_replay = foreign_replay_package
+        .conformal_calibration_replay
+        .as_mut()
+        .unwrap();
+    foreign_replay.source_training_outcome.outcome_fingerprint = "f".repeat(64);
+    let mut foreign_request = TrainingReplayRequest {
+        schema_version: TRAINING_REPLAY_REQUEST_SCHEMA_VERSION,
+        request_id: foreign_replay.replay_request_id.clone(),
+        source_outcome_fingerprint: foreign_replay
+            .source_training_outcome
+            .outcome_fingerprint
+            .clone(),
+        phase: foreign_replay.phase,
+        data_envelope_keys: foreign_replay
+            .input_data_identities
+            .iter()
+            .map(|identity| identity.requirement_key.clone())
+            .collect(),
+        output_binding_ids: foreign_replay
+            .outputs
+            .iter()
+            .map(|output| output.binding.binding_id.clone())
+            .collect(),
+        request_fingerprint: "0".repeat(64),
+    };
+    foreign_request.request_fingerprint = foreign_request.compute_fingerprint().unwrap();
+    foreign_replay.replay_request_fingerprint = foreign_request.request_fingerprint;
+    resign_replay_outcome(foreign_replay);
+    resign_package_conformal_closure(&mut foreign_replay_package);
+    assert!(foreign_replay_package
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("cross-link package provenance"));
+
+    let mut injected_output_package = package.clone();
+    let persisted_replay = injected_output_package
+        .conformal_calibration_replay
+        .as_mut()
+        .unwrap();
+    let mut foreign_output = persisted_replay.outputs[0].clone();
+    foreign_output.binding.binding_id = "zz:foreign.calibration.output".to_string();
+    foreign_output.binding.binding_fingerprint = "0".repeat(64);
+    foreign_output.binding.binding_fingerprint =
+        foreign_output.binding.compute_fingerprint().unwrap();
+    persisted_replay.prediction_block_count += foreign_output.predictions.len();
+    persisted_replay.observation_prediction_block_count +=
+        foreign_output.observation_predictions.len();
+    persisted_replay.aggregated_prediction_block_count +=
+        foreign_output.aggregated_predictions.len();
+    persisted_replay.outputs.push(foreign_output);
+    let mut injected_request = TrainingReplayRequest {
+        schema_version: TRAINING_REPLAY_REQUEST_SCHEMA_VERSION,
+        request_id: persisted_replay.replay_request_id.clone(),
+        source_outcome_fingerprint: persisted_replay
+            .source_training_outcome
+            .outcome_fingerprint
+            .clone(),
+        phase: persisted_replay.phase,
+        data_envelope_keys: persisted_replay
+            .input_data_identities
+            .iter()
+            .map(|identity| identity.requirement_key.clone())
+            .collect(),
+        output_binding_ids: persisted_replay
+            .outputs
+            .iter()
+            .map(|output| output.binding.binding_id.clone())
+            .collect(),
+        request_fingerprint: "0".repeat(64),
+    };
+    injected_request.request_fingerprint = injected_request.compute_fingerprint().unwrap();
+    persisted_replay.replay_request_fingerprint = injected_request.request_fingerprint;
+    resign_replay_outcome(persisted_replay);
+    resign_package_conformal_closure(&mut injected_output_package);
+    assert!(injected_output_package
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("output binding absent from the package"));
+    let loaded = package
+        .clone()
+        .load_with(|record| {
+            store
+                .get(&record.artifact.id)
+                .map(|record| record.handle.clone())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "missing sidecar handle for `{}`",
+                        record.artifact.id
+                    ))
+                })
+        })
+        .unwrap();
+
+    let production_sample_ids = vec![sample("sample:production:1"), sample("sample:production:2")];
+    *state.predict_sample_ids.lock().unwrap() = Some(production_sample_ids.clone());
+    let production_relations = calibration_relations(&production_sample_ids);
+    let production_envelopes = replay_envelopes_with_relations(&source, &production_relations);
+    let production_request = replay_request(&source, Phase::Predict);
+    let replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &loaded,
+        request: &production_request,
+        outcome_id: "replay:loaded.conformal.v2".to_string(),
+        run_id: RunId::new("run:loaded.conformal.v2").unwrap(),
+        controllers: &controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &production_envelopes,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("loaded V2 predictor replay");
+    assert_eq!(
+        replay.schema_version,
+        TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+    );
+    assert_eq!(replay.conformal_intervals.len(), 1);
+    assert_eq!(
+        replay.conformal_intervals[0].sample_ids,
+        production_sample_ids
+    );
+    replay
+        .validate_against_package(loaded.package(), &production_request)
+        .unwrap();
+
+    let mut deleted = replay.clone();
+    deleted.conformal_intervals.clear();
+    resign_replay_outcome(&mut deleted);
+    assert!(deleted
+        .validate_against_package(loaded.package(), &production_request)
+        .unwrap_err()
+        .to_string()
+        .contains("exactly cover"));
+
+    let mut injected = replay.clone();
+    injected
+        .conformal_intervals
+        .push(injected.conformal_intervals[0].clone());
+    resign_replay_outcome(&mut injected);
+    assert!(injected
+        .validate_against_package(loaded.package(), &production_request)
+        .unwrap_err()
+        .to_string()
+        .contains("exactly cover"));
+
+    let mut transplant = package.clone();
+    let foreign = transplant.conformal_calibration.as_mut().unwrap();
+    foreign.context.source_training_outcome_fingerprint = "f".repeat(64);
+    resign_runtime_calibration(foreign);
+    transplant.execution_bundle.conformal_calibration = Some(foreign.reference().unwrap());
+    resign_package(&mut transplant);
+    assert!(transplant
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("cross-link package provenance"));
+
+    let mut v1_with_conformal = package;
+    v1_with_conformal.schema_version = LEGACY_PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION;
+    resign_package(&mut v1_with_conformal);
+    assert!(v1_with_conformal
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("V1 cannot carry conformal state"));
+}
+
+#[test]
+fn calibration_attachment_rejects_missing_ambiguous_and_forged_origin_authority() {
+    let fixture = fixture(true, false);
+    let state = Arc::new(CallState::default());
+    let sample_ids = (1..=4)
+        .map(|index| sample(&format!("sample:authority:{index}")))
+        .collect::<Vec<_>>();
+    *state.predict_sample_ids.lock().unwrap() = Some(sample_ids.clone());
+    let mut store = InMemoryArtifactStore::new();
+    let mut source = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap();
+    let controllers = controllers(&fixture, state, true);
+    let request = replay_request(&source, Phase::Predict);
+    let replay_for = |source: &TrainingOutcome, relations: &SampleRelationSet, suffix: &str| {
+        let envelopes = replay_envelopes_with_relations(source, relations);
+        execute_attached_training_replay(AttachedTrainingReplayInput {
+            source,
+            request: &request,
+            outcome_id: format!("replay:authority.{suffix}"),
+            run_id: RunId::new(format!("run:authority.{suffix}")).unwrap(),
+            controllers: &controllers,
+            data_provider: &provider(&fixture),
+            artifact_store: &store,
+            data_envelopes: &envelopes,
+            warnings: Vec::new(),
+            diagnostics: BTreeMap::new(),
+        })
+        .unwrap()
+    };
+
+    let mut missing = calibration_relations(&sample_ids);
+    missing.records.pop();
+    let replay = replay_for(&source, &missing, "missing");
+    let point = &replay.outputs[0].predictions[0];
+    let context = calibration_context(&source, &replay, &missing);
+    let error = calibrate_attached_training_replay(
+        &mut source,
+        &replay,
+        replay.outputs[0].binding.binding_id.as_str(),
+        &missing,
+        ConformalCalibrationTruth {
+            sample_ids: point.sample_ids.clone(),
+            values: point.values.clone(),
+        },
+        context,
+        vec![0.5],
+        ConformalMultiTargetPolicy::Marginal,
+        ConformalSmallSamplePolicy::Error,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("absent from relation authority"));
+
+    let mut ambiguous = calibration_relations(&sample_ids);
+    let mut conflicting = ambiguous.records[0].clone();
+    conflicting.observation_id = ObservationId::new("observation:authority:conflict").unwrap();
+    conflicting.origin_sample_id = Some(sample("origin:authority:conflict"));
+    ambiguous.records.push(conflicting);
+    let replay = replay_for(&source, &ambiguous, "ambiguous");
+    let point = &replay.outputs[0].predictions[0];
+    let context = calibration_context(&source, &replay, &ambiguous);
+    let error = calibrate_attached_training_replay(
+        &mut source,
+        &replay,
+        replay.outputs[0].binding.binding_id.as_str(),
+        &ambiguous,
+        ConformalCalibrationTruth {
+            sample_ids: point.sample_ids.clone(),
+            values: point.values.clone(),
+        },
+        context,
+        vec![0.5],
+        ConformalMultiTargetPolicy::Marginal,
+        ConformalSmallSamplePolicy::Error,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("ambiguous origin relations"));
+
+    let relations = calibration_relations(&sample_ids);
+    let replay = replay_for(&source, &relations, "forged");
+    let point = &replay.outputs[0].predictions[0];
+    for inject in [false, true] {
+        let mut context = calibration_context(&source, &replay, &relations);
+        if inject {
+            context
+                .calibration_cohort
+                .origin_sample_ids
+                .push(sample("origin:authority:injected"));
+        } else {
+            context.calibration_cohort.origin_sample_ids.pop();
+        }
+        context.calibration_cohort.origin_sample_ids.sort();
+        context.calibration_cohort.manifest_fingerprint =
+            context.calibration_cohort.compute_fingerprint().unwrap();
+        context.context_fingerprint = context.compute_fingerprint().unwrap();
+        let error = calibrate_attached_training_replay(
+            &mut source,
+            &replay,
+            replay.outputs[0].binding.binding_id.as_str(),
+            &relations,
+            ConformalCalibrationTruth {
+                sample_ids: point.sample_ids.clone(),
+                values: point.values.clone(),
+            },
+            context,
+            vec![0.5],
+            ConformalMultiTargetPolicy::Marginal,
+            ConformalSmallSamplePolicy::Error,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("origin closure"), "{error}");
+    }
+
+    let mut context = calibration_context(&source, &replay, &relations);
+    context.relation_fingerprint = "e".repeat(64);
+    context.context_fingerprint = context.compute_fingerprint().unwrap();
+    let error = calibrate_attached_training_replay(
+        &mut source,
+        &replay,
+        replay.outputs[0].binding.binding_id.as_str(),
+        &relations,
+        ConformalCalibrationTruth {
+            sample_ids: point.sample_ids.clone(),
+            values: point.values.clone(),
+        },
+        context,
+        vec![0.5],
+        ConformalMultiTargetPolicy::Marginal,
+        ConformalSmallSamplePolicy::Error,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("relation authority"));
+
+    let mut non_predict = replay.clone();
+    non_predict.phase = Phase::Explain;
+    let context = calibration_context(&source, &replay, &relations);
+    let error = calibrate_attached_training_replay(
+        &mut source,
+        &non_predict,
+        replay.outputs[0].binding.binding_id.as_str(),
+        &relations,
+        ConformalCalibrationTruth {
+            sample_ids: point.sample_ids.clone(),
+            values: point.values.clone(),
+        },
+        context,
+        vec![0.5],
+        ConformalMultiTargetPolicy::Marginal,
+        ConformalSmallSamplePolicy::Error,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("requires a PREDICT replay"));
+    assert!(source.conformal_calibration.is_none());
+}
+
+#[test]
+fn calibration_attachment_rejects_development_relation_authority_with_disjoint_extra_rows() {
+    let mut fixture = fixture(true, false);
+    let state = Arc::new(CallState::default());
+    let calibration_sample_ids = (1..=4)
+        .map(|index| sample(&format!("sample:shared-authority:{index}")))
+        .collect::<Vec<_>>();
+    fixture
+        .relations
+        .records
+        .extend(calibration_relations(&calibration_sample_ids).records);
+    fixture.relations.records.sort_by(|left, right| {
+        left.observation_id
+            .as_str()
+            .cmp(right.observation_id.as_str())
+    });
+    let shared_relation_fingerprint = fixture.relations.fingerprint().unwrap();
+    for bindings in fixture.request.campaign.data_bindings.values_mut() {
+        for binding in bindings {
+            binding.relation_fingerprint = Some(shared_relation_fingerprint.clone());
+        }
+    }
+    for identity in &mut fixture.request.data_identities {
+        identity.relation_fingerprint = shared_relation_fingerprint.clone();
+        identity.identity_fingerprint = "0".repeat(64);
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    }
+    rebuild(&mut fixture);
+    *state.predict_sample_ids.lock().unwrap() = Some(calibration_sample_ids);
+    let mut store = InMemoryArtifactStore::new();
+    let mut source = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap();
+    let envelopes = replay_envelopes_with_relations(&source, &fixture.relations);
+    let request = replay_request(&source, Phase::Predict);
+    let controllers = controllers(&fixture, state, true);
+    let replay = execute_attached_training_replay(AttachedTrainingReplayInput {
+        source: &source,
+        request: &request,
+        outcome_id: "replay:shared-authority".to_string(),
+        run_id: RunId::new("run:shared-authority").unwrap(),
+        controllers: &controllers,
+        data_provider: &provider(&fixture),
+        artifact_store: &store,
+        data_envelopes: &envelopes,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .unwrap();
+    let point = &replay.outputs[0].predictions[0];
+    let context = calibration_context(&source, &replay, &fixture.relations);
+    let error = calibrate_attached_training_replay(
+        &mut source,
+        &replay,
+        replay.outputs[0].binding.binding_id.as_str(),
+        &fixture.relations,
+        ConformalCalibrationTruth {
+            sample_ids: point.sample_ids.clone(),
+            values: point.values.clone(),
+        },
+        context,
+        vec![0.5],
+        ConformalMultiTargetPolicy::Marginal,
+        ConformalSmallSamplePolicy::Error,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("distinct from development relations"),
+        "{error}"
+    );
+    assert!(source.conformal_calibration.is_none());
 }
 
 #[test]
@@ -1389,6 +3725,11 @@ fn provider_identity_and_relation_mismatches_fail_before_controllers() {
         contradictory_relations: None,
         omit_relations: false,
         next_handle: AtomicU64::new(0),
+        methods_pls_enabled: false,
+        methods_rows: BTreeMap::new(),
+        methods_pls_feature_count: 2,
+        methods_hpo_oof_target_offsets: BTreeMap::new(),
+        fail_methods_hpo_trial_id: None,
     };
     let mut store = InMemoryArtifactStore::new();
     assert!(run(&fixture, state.clone(), &bad_identity_provider, &mut store).is_err());
@@ -1402,6 +3743,11 @@ fn provider_identity_and_relation_mismatches_fail_before_controllers() {
         contradictory_relations: Some(contradictory),
         omit_relations: false,
         next_handle: AtomicU64::new(0),
+        methods_pls_enabled: false,
+        methods_rows: BTreeMap::new(),
+        methods_pls_feature_count: 2,
+        methods_hpo_oof_target_offsets: BTreeMap::new(),
+        fail_methods_hpo_trial_id: None,
     };
     assert!(run(&fixture, state.clone(), &bad_relations_provider, &mut store).is_err());
     assert_eq!(state.total(), 0);
@@ -2089,6 +4435,7 @@ fn re_signed_plan_topology_and_adjacency_drift_are_rejected() {
     );
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn portable_package_independently_requires_predict_replayability() {
     let mut package: PortablePredictorPackage = serde_json::from_str(PACKAGE_FIXTURE).unwrap();
@@ -2141,6 +4488,10 @@ fn d8_training_outcome_exports_loadable_host_sidecar_package() {
             ArtifactLoadMode::HostSidecar,
         )
         .unwrap();
+    assert_eq!(
+        package.schema_version,
+        PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
+    );
     package.validate().unwrap();
     assert_eq!(
         package.artifact_bindings.len(),
@@ -2243,6 +4594,14 @@ fn d8_loaded_predictor_replays_predict_without_source_training_outcome() {
     })
     .expect("loaded package replay");
 
+    assert_eq!(
+        package.schema_version,
+        PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
+    );
+    assert_eq!(
+        replay.schema_version,
+        TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+    );
     assert_eq!(replay.phase, Phase::Predict);
     assert_eq!(replay.source_training_outcome, package.training_outcome);
     assert_eq!(
@@ -2299,6 +4658,7 @@ fn d8_loaded_predictor_replays_predict_without_source_training_outcome() {
     assert!(state.count(Phase::Explain, "model:base") > 0);
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 fn positional_struct(
     value: &serde_json::Value,
     fields: &[(&str, serde_json::Value)],
@@ -2317,6 +4677,7 @@ fn positional_struct(
     )
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn standalone_contract_readers_reject_serde_positional_struct_wires() {
     let package: serde_json::Value = serde_json::from_str(PACKAGE_FIXTURE).unwrap();
@@ -2372,6 +4733,8 @@ fn standalone_contract_readers_reject_serde_positional_struct_wires() {
         ("refit_artifacts", serde_json::json!([])),
         ("prediction_requirements", serde_json::json!([])),
         ("prediction_caches", serde_json::json!([])),
+        ("methods_hpo_resume_state", serde_json::Value::Null),
+        ("raw_artifact_payloads", serde_json::json!({})),
         ("scores", serde_json::Value::Null),
         ("data_requirements", serde_json::json!([])),
         ("unsafe_flags", serde_json::json!([])),

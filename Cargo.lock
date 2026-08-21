@@ -366,7 +366,16 @@ dependencies = [
 name = "dag-ml"
 version = "0.2.7"
 dependencies = [
- "dag-ml-core",
+ "dag-ml-core 0.2.7",
+]
+
+[[package]]
+name = "dag-ml"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e9908a5aee71f15c7617963eca83a19592e4969363ec44d7340e358931442ad"
+dependencies = [
+ "dag-ml-core 0.2.7 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -376,7 +385,7 @@ dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
- "dag-ml-core",
+ "dag-ml-core 0.2.7",
  "serde",
  "serde_json",
  "sha2",
@@ -386,7 +395,7 @@ dependencies = [
 name = "dag-ml-capi"
 version = "0.2.7"
 dependencies = [
- "dag-ml-core",
+ "dag-ml-core 0.2.7",
  "serde",
  "serde_json",
  "tracing-subscriber",
@@ -398,7 +407,7 @@ version = "0.2.7"
 dependencies = [
  "anyhow",
  "clap",
- "dag-ml-core",
+ "dag-ml-core 0.2.7",
  "serde",
  "serde_json",
  "sha2",
@@ -410,6 +419,7 @@ name = "dag-ml-core"
 version = "0.2.7"
 dependencies = [
  "indexmap",
+ "nirs4all",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -421,10 +431,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "dag-ml-core"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9439d7bb644539543e4a7790be3b63e9466bd751ff4edfe5c524b56ea8308b62"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tracing",
+ "yaml_serde",
+]
+
+[[package]]
+name = "dag-ml-data"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fe2f58ead53b1523249e44fca8da56b5a5c718854dfbc8e254c33a90239b9ae"
+dependencies = [
+ "dag-ml-data-core",
+]
+
+[[package]]
+name = "dag-ml-data-core"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "001a3de1ea4046c75ed78347ecd7a65cacc6ab1bc9030d98935d5d9e6cd0a3aa"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "dag-ml-wasm"
 version = "0.2.7"
 dependencies = [
- "dag-ml-core",
+ "dag-ml-core 0.2.7",
  "js-sys",
  "serde",
  "serde_json",
@@ -677,6 +723,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -708,6 +764,20 @@ name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
+
+[[package]]
+name = "nirs4all"
+version = "0.3.11"
+dependencies = [
+ "dag-ml 0.2.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dag-ml-data",
+ "libloading",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "unicode-normalization",
+]
 
 [[package]]
 name = "nu-ansi-term"
@@ -932,6 +1002,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1133,6 +1216,12 @@ checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
 dependencies = [
  "tinyvec",
 ]
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "utf8parse"

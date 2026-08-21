@@ -59,6 +59,8 @@ pub const METADATA_KEY_PREDICTION_LEVEL: &str = "dag_ml.prediction_cache.predict
 pub const METADATA_KEY_CONTENT_FINGERPRINT: &str = "dag_ml.prediction_cache.content_fingerprint";
 pub const METADATA_KEY_BLOCK_COUNT: &str = "dag_ml.prediction_cache.block_count";
 pub const METADATA_KEY_ROW_COUNT: &str = "dag_ml.prediction_cache.row_count";
+pub const METADATA_KEY_CACHE_NAMESPACE_FINGERPRINTS: &str =
+    "dag_ml.prediction_cache.cache_namespace_fingerprints";
 
 fn cache_schema(payload: &BundlePredictionCachePayload) -> Result<Schema> {
     let mut metadata = HashMap::new();
@@ -95,6 +97,14 @@ fn cache_schema(payload: &BundlePredictionCachePayload) -> Result<Schema> {
     metadata.insert(
         METADATA_KEY_ROW_COUNT.to_string(),
         payload.row_count.to_string(),
+    );
+    metadata.insert(
+        METADATA_KEY_CACHE_NAMESPACE_FINGERPRINTS.to_string(),
+        serde_json::to_string(&payload.cache_namespace_fingerprints).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to serialize cache namespace fingerprints for Arrow metadata: {error}"
+            ))
+        })?,
     );
 
     let fields = vec![
@@ -226,6 +236,20 @@ pub fn predictions_from_arrow_ipc(bytes: &[u8]) -> Result<BundlePredictionCacheP
     let content_fingerprint = parse_metadata(&metadata, METADATA_KEY_CONTENT_FINGERPRINT)?;
     let block_count = parse_usize_metadata(&metadata, METADATA_KEY_BLOCK_COUNT)?;
     let row_count = parse_usize_metadata(&metadata, METADATA_KEY_ROW_COUNT)?;
+    // This key was added after the initial v1 Arrow IPC payload. Its absence
+    // is the historical empty namespace list, so old cache members remain
+    // readable while new D10-enriched payloads round-trip losslessly.
+    let cache_namespace_fingerprints = metadata
+        .get(METADATA_KEY_CACHE_NAMESPACE_FINGERPRINTS)
+        .map(|raw| {
+            serde_json::from_str(raw).map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "Arrow prediction cache metadata `{METADATA_KEY_CACHE_NAMESPACE_FINGERPRINTS}` is not valid JSON: {error}"
+                ))
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
 
     let mut blocks: Vec<PredictionBlock> = Vec::new();
     let mut aggregated_blocks: Vec<AggregatedPredictionBlock> = Vec::new();
@@ -287,6 +311,7 @@ pub fn predictions_from_arrow_ipc(bytes: &[u8]) -> Result<BundlePredictionCacheP
         format: dag_ml_core::bundle::BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
         partition,
         prediction_level,
+        cache_namespace_fingerprints,
         block_count,
         row_count,
         content_fingerprint,
@@ -360,6 +385,7 @@ mod tests {
             format: dag_ml_core::bundle::BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
             partition: PredictionPartition::Validation,
             prediction_level: PredictionLevel::Sample,
+            cache_namespace_fingerprints: vec!["a".repeat(64)],
             block_count: blocks.len(),
             row_count: blocks.iter().map(|block| block.sample_ids.len()).sum(),
             content_fingerprint: fingerprint(&blocks),
@@ -376,6 +402,7 @@ mod tests {
             format: dag_ml_core::bundle::BUNDLE_PREDICTION_CACHE_FORMAT.to_string(),
             partition: PredictionPartition::Validation,
             prediction_level: PredictionLevel::Target,
+            cache_namespace_fingerprints: Vec::new(),
             block_count: aggregated_blocks.len(),
             row_count: aggregated_blocks
                 .iter()

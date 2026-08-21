@@ -60,7 +60,7 @@
     },
     {
       "path": "docs/contracts/execution_bundle.schema.json",
-      "sha256": "3a0f66ee65c27a35809e2e8ce485c368c7f5042e55c100502e531ba83a1761bf",
+      "sha256": "61b0dee81f4c8fedcf0bdb92283fa1136c0e48e57cf8d590d48086e98c842ae7",
       "kind": "schema_dependency"
     },
     {
@@ -125,7 +125,7 @@
     },
     {
       "path": "docs/contracts/training_outcome.schema.json",
-      "sha256": "cf9223520d6aa089beaf661934a520f65fcda6c882a9ff99c250a83bd3efe2eb",
+      "sha256": "884a55016d4a3504fe67012084e90f202c46060eceabfd58f9d3122aeb847436",
       "kind": "schema"
     },
     {
@@ -408,5 +408,5 @@
       ]
     }
   ],
-  "pack_checksum": "f5f0d3103094b4633e3e2e4d99b3a50c5291874134a8af5952f052a45b650a4d"
+  "pack_checksum": "1a2d7b1b5beda26edbdcddb2154fcdc47703f4d66f5308349a6f4bf92c84ff95"
 }

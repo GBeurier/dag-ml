@@ -39,7 +39,7 @@ pub(crate) use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
 pub(crate) use crate::generation::{
     enumerate_variants, GenerationChoice, OperatorVariantModel, VariantPlan,
 };
-pub(crate) use crate::graph::{EdgeSpec, PortKind};
+pub(crate) use crate::graph::{EdgeSpec, NodeKind, PortKind};
 pub(crate) use crate::ids::{
     ArtifactId, BranchId, BundleId, ControllerId, FoldId, LineageId, NodeId, RunId, SampleId,
     VariantId,
@@ -486,6 +486,7 @@ where
 /// Select a plan variant using only the cross-fold OOF average emitted by one
 /// explicitly resolved score-target producer. All producers' validation
 /// reports remain retained in the returned outcome for audit.
+#[allow(clippy::too_many_arguments)]
 pub fn select_best_variant_outcome_by_cv_for_target<F>(
     plan: &ExecutionPlan,
     run_id: &RunId,
@@ -855,7 +856,7 @@ where
 /// paired row-for-row with `regression_targets.values`), so the y_true is REBUILT in `block.sample_ids`
 /// order here — exactly as [`oof_average_block`](crate::metrics) does for the avg — so a host pairs
 /// y_pred ↔ y_true per sample without re-sorting.
-fn capture_variant_validation_predictions(
+pub(crate) fn capture_variant_validation_predictions(
     variant_id: &VariantId,
     variant_label: Option<String>,
     ctx: &RunContext,

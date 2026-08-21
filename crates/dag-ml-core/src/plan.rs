@@ -2364,6 +2364,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_campaign_spec_schema_declares_current_contract() {
         let schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -2403,6 +2404,7 @@ mod tests {
             .contains_key("selector"));
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_execution_plan_schema_declares_current_contract() {
         let schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -2430,6 +2432,7 @@ mod tests {
             .contains_key("choices"));
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_execution_plan_fixture_validates_current_contract() {
         let plan: ExecutionPlan = serde_json::from_str(include_str!(

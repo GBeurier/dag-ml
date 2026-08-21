@@ -86,6 +86,332 @@ pub struct NodeTask {
     pub seed: Option<u64>,
 }
 
+/// Typed scheduler operation used to create one invocation-local HPO session.
+/// It deliberately contains no graph `NodePlan`: the session controls variant
+/// campaigns for `target_node_id`, while all predictor work remains in the
+/// ordinary graph execution plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeHpoCampaignTask {
+    pub run_id: RunId,
+    pub operation_id: String,
+    pub controller_id: ControllerId,
+    pub target_node_id: NodeId,
+    pub seed: Option<u64>,
+}
+
+/// Immutable coordinator evidence for one execution-local HPO campaign.
+///
+/// This is deliberately passed beside the tuner [`NodeTask`] rather than
+/// stored in the controller registry or serialized through a generic
+/// controller invocation.  A tuner session may retain thread-affine native
+/// state, but this context contains only portable coordinator facts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeHpoExecutionContext {
+    /// Stable identity of this scheduler-owned campaign operation.  This is
+    /// deliberately not a graph node: HPO controls variants of a predictor,
+    /// it is not part of the predictor topology.
+    pub operation_id: String,
+    /// Registered controller which owns the invocation-local native session.
+    pub controller_id: ControllerId,
+    /// The model node evaluated for every proposal.
+    pub target_node_id: NodeId,
+    /// The unexpanded variant from which the tuner proposes candidates.
+    pub base_variant: VariantPlan,
+    /// Total native study budget across the initial run and every resumed
+    /// scheduler call. This is never a per-call proposal count.
+    pub trial_budget_total: u32,
+    /// Typed native-study configuration owned by the registered tuner
+    /// controller.  The scheduler never constructs or restores this study.
+    pub study: crate::hpo::MethodsHpoStudyConfig,
+    /// Native search-space output name -> direct target-model parameter key.
+    /// The controller converts each proposal through this explicit mapping;
+    /// the scheduler only receives the resulting normal [`VariantPlan`].
+    pub parameter_paths: BTreeMap<String, String>,
+    /// Optional opaque native state from a prior compatible campaign.  It is
+    /// consumed only by the controller-local session factory and is never
+    /// sent to scheduler workers.
+    pub resume_checkpoint: Option<crate::hpo::N4moptCheckpointArtifact>,
+    /// Completed scheduler proposals restored with the opaque optimizer. They
+    /// give a native `best()` result its stable variant identity on resume.
+    pub resume_variants: BTreeMap<i64, VariantId>,
+    /// Full controller-attested native terminal ledger from the package being
+    /// restored. The session compares this before it may ask another trial.
+    pub resume_terminal_trials: Vec<RuntimeHpoTerminalSnapshot>,
+    /// The OOF report produced by the scheduler which is fed back to the
+    /// session after each candidate evaluation.
+    pub selection: RuntimeHpoSelectionTarget,
+    /// Immutable fingerprints which bind this campaign to the already
+    /// attested plan, data identities, fold set and influence manifest.
+    pub provenance: RuntimeHpoProvenance,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeHpoSelectionTarget {
+    pub producer_node: NodeId,
+    pub producer_port: String,
+    pub metric: RegressionMetricKind,
+    pub direction: crate::hpo::HpoDirection,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeHpoProvenance {
+    pub graph_fingerprint: String,
+    pub campaign_fingerprint: String,
+    pub controller_fingerprint: String,
+    pub data_identities_fingerprint: String,
+    pub fold_set_fingerprint: Option<String>,
+    pub training_influence_fingerprint: String,
+    pub relation_fingerprint: String,
+}
+
+impl RuntimeHpoExecutionContext {
+    pub fn validate_for_plan(&self, plan: &ExecutionPlan) -> Result<()> {
+        if self.trial_budget_total == 0 {
+            return Err(DagMlError::RuntimeValidation(
+                "runtime HPO trial_budget_total must be positive".to_string(),
+            ));
+        }
+        if self.study.controller_id.trim().is_empty()
+            || self.study.study_id.trim().is_empty()
+            || self.study.methods_abi.trim().is_empty()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "runtime HPO study identity must not be empty".to_string(),
+            ));
+        }
+        self.study.search_space.validate().map_err(|error| {
+            DagMlError::RuntimeValidation(format!("runtime HPO search space is invalid: {error}"))
+        })?;
+        if self.parameter_paths.is_empty()
+            || self.parameter_paths.keys().any(|key| key.trim().is_empty())
+            || self
+                .parameter_paths
+                .values()
+                .any(|value| value.trim().is_empty())
+            || self.parameter_paths.values().collect::<BTreeSet<_>>().len()
+                != self.parameter_paths.len()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "runtime HPO parameter_paths must be non-empty and map each target parameter once"
+                    .to_string(),
+            ));
+        }
+        if let Some(checkpoint) = &self.resume_checkpoint {
+            checkpoint.validate().map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "runtime HPO resume checkpoint is invalid: {error}"
+                ))
+            })?;
+        }
+        if self.operation_id.trim().is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "runtime HPO operation_id must not be empty".to_string(),
+            ));
+        }
+        if self.selection.producer_port.trim().is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "runtime HPO selection producer_port must not be empty".to_string(),
+            ));
+        }
+        if self.selection.producer_node != self.target_node_id {
+            return Err(DagMlError::RuntimeValidation(
+                "runtime HPO selection producer must be the evaluated target node".to_string(),
+            ));
+        }
+        if self.study.controller_id != self.controller_id.as_str() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime HPO study controller `{}` does not match campaign controller `{}`",
+                self.study.controller_id, self.controller_id
+            )));
+        }
+        let target = plan.node_plans.get(&self.target_node_id).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "runtime HPO target node `{}` is absent from the execution plan",
+                self.target_node_id
+            ))
+        })?;
+        if target.kind != crate::graph::NodeKind::Model {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "runtime HPO target `{}` must be a model node",
+                self.target_node_id
+            )));
+        }
+        if !plan
+            .variants
+            .iter()
+            .any(|variant| variant == &self.base_variant)
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "runtime HPO base_variant is not present in the execution plan".to_string(),
+            ));
+        }
+        self.provenance.validate_for_plan(plan)
+    }
+}
+
+impl RuntimeHpoProvenance {
+    pub fn validate_for_plan(&self, plan: &ExecutionPlan) -> Result<()> {
+        let campaign_fingerprint = crate::hpo::campaign_provenance_fingerprint(&plan.campaign)?;
+        for (label, actual, expected) in [
+            (
+                "graph",
+                plan.graph_fingerprint.as_str(),
+                self.graph_fingerprint.as_str(),
+            ),
+            (
+                "campaign",
+                campaign_fingerprint.as_str(),
+                self.campaign_fingerprint.as_str(),
+            ),
+            (
+                "controller",
+                plan.controller_fingerprint.as_str(),
+                self.controller_fingerprint.as_str(),
+            ),
+        ] {
+            if expected.trim().is_empty() || actual != expected {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "runtime HPO provenance does not match the execution-plan {label} fingerprint"
+                )));
+            }
+        }
+        for (label, value) in [
+            ("data identities", self.data_identities_fingerprint.as_str()),
+            (
+                "training influence",
+                self.training_influence_fingerprint.as_str(),
+            ),
+            ("relation", self.relation_fingerprint.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "runtime HPO provenance has an empty {label} fingerprint"
+                )));
+            }
+        }
+        let actual_fold_fingerprint = plan
+            .fold_set
+            .as_ref()
+            .map(stable_json_fingerprint)
+            .transpose()?;
+        if self.fold_set_fingerprint != actual_fold_fingerprint {
+            return Err(DagMlError::RuntimeValidation(
+                "runtime HPO provenance does not match the execution-plan fold set".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One candidate proposed by a local tuner session.  It contains a normal
+/// plan variant only; no native optimizer/context can cross the scheduler
+/// boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeHpoProposal {
+    pub trial_id: i64,
+    pub variant: VariantPlan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeHpoIntermediate {
+    pub trial_id: i64,
+    pub step: i32,
+    pub score: f64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeHpoFailure {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RuntimeHpoTerminal {
+    Completed { score: f64 },
+    Failed { failure: RuntimeHpoFailure },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeHpoIntermediateOutcome {
+    Continue,
+    Pruned,
+}
+
+/// Scheduler-owned evidence retained for a successfully completed trial.
+/// Candidate OOF data remains report-only and is never reused as a training
+/// input; final SELECT/REFIT is intentionally outside this campaign call.
+#[derive(Clone, Debug)]
+pub struct RuntimeHpoCandidateEvaluation {
+    pub proposal: RuntimeHpoProposal,
+    pub score: f64,
+    pub validation_reports: Vec<RegressionMetricReport>,
+    pub validation_predictions: VariantValidationPredictions,
+    pub lineage: Vec<LineageRecord>,
+}
+
+/// The one cross-fold OOF report which terminalized a completed native trial.
+/// Keeping the native trial id beside report-grade scheduler evidence makes a
+/// checkpoint resumable without asking libn4m to invent coordinator scores.
+#[derive(Clone, Debug)]
+pub struct RuntimeHpoCompletedReport {
+    pub trial_id: i64,
+    pub variant_id: VariantId,
+    pub report: RegressionMetricReport,
+}
+
+/// Durable native optimizer state paired with exact coordinator evidence. No
+/// native Context or Optimizer object crosses this boundary.
+#[derive(Clone, Debug)]
+pub struct RuntimeHpoCheckpointResult {
+    pub artifact: crate::hpo::N4moptCheckpointArtifact,
+    pub provenance: RuntimeHpoProvenance,
+    pub operation_id: String,
+    pub controller_id: ControllerId,
+    pub target_node_id: NodeId,
+    /// Exact completed proposals, including their patched model parameters and
+    /// content fingerprints. A resumed coordinator must consume these values
+    /// directly; reconstructing trial variants from a checkpoint is refused.
+    pub completed_proposals: Vec<RuntimeHpoProposal>,
+    pub completed_reports: Vec<RuntimeHpoCompletedReport>,
+    /// Native study trial count after this scheduler call, including opaque
+    /// historical failed/pruned trials restored by the local session.
+    pub trial_history_len: u32,
+}
+
+/// One typed native incumbent, derived from the optimizer's `best()` only
+/// after every scheduler-observed proposal has reached a terminal state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeHpoIncumbent {
+    pub trial_id: i64,
+    pub score: f64,
+    pub metric: String,
+    pub direction: crate::hpo::HpoDirection,
+    pub variant_id: VariantId,
+}
+
+/// A controller-attested terminal native trial.  The native record is never
+/// reconstructed from checkpoint bytes by DAG-ML; it is obtained only from
+/// the invocation-local session which owns that checkpoint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeHpoTerminalSnapshot {
+    pub trial: crate::hpo::HpoTrial,
+    pub variant_id: Option<VariantId>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RuntimeHpoCampaignResult {
+    pub operation_id: String,
+    pub controller_id: ControllerId,
+    pub target_node_id: NodeId,
+    pub candidates: Vec<RuntimeHpoCandidateEvaluation>,
+    /// Emitted only after all proposed trials have a scheduler-observed
+    /// terminal state and their report evidence validates.
+    pub checkpoint: RuntimeHpoCheckpointResult,
+    pub incumbent: RuntimeHpoIncumbent,
+    pub terminal_trials: Vec<RuntimeHpoTerminalSnapshot>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FitInfluenceMechanism {
@@ -217,7 +543,7 @@ impl FitInfluenceDiagnostic {
                 task.fit_influence.row_weights.len()
             )));
         }
-        if self.fallback_used != !task.fit_influence.warnings.is_empty() {
+        if self.fallback_used == task.fit_influence.warnings.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "fit influence diagnostic fallback_used does not match task warnings".to_string(),
             ));

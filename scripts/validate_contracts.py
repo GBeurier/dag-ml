@@ -37,6 +37,14 @@ from parity.schema_dependencies import (  # noqa: E402
     SchemaDependencyError,
     missing_schema_dependencies,
 )
+from scripts.validate_archive_v1_contract import (  # noqa: E402
+    ArchiveContractError,
+    validate_archive_v1_contract,
+)
+from scripts.validate_archive_v2_contract import (  # noqa: E402
+    ArchiveV2ContractError,
+    validate_archive_v2_contract,
+)
 
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
@@ -18697,17 +18705,27 @@ def validate_w10_training_pack(pack: Any, negatives: dict[str, Any]) -> None:
     validate_artifact_pack_schema_dependency_closure(paths, "W1 training pack")
     required_paths = {
         "docs/TRAINING_CONTRACTS.md",
+        "docs/HPO_METHODS_ADAPTER.md",
         "docs/contracts/training_request.schema.json",
         "docs/contracts/cache_namespace.schema.json",
         "docs/contracts/parameter_projection.schema.json",
         "docs/contracts/portable_predictor_package.schema.json",
         "docs/contracts/training_outcome.schema.json",
         "crates/dag-ml-core/src/training_runtime.rs",
+        "crates/dag-ml-core/src/conformal.rs",
+        "crates/dag-ml-core/src/conformal_runtime.rs",
+        "crates/dag-ml-core/src/hpo.rs",
+        "crates/dag-ml-core/src/runtime/dataview.rs",
+        "crates/dag-ml-core/src/runtime/mod.rs",
+        "crates/dag-ml-core/src/runtime/scheduler.rs",
+        "crates/dag-ml-core/Cargo.toml",
+        "crates/dag-ml-core/Cargo.toml.methods-local",
         "examples/fixtures/training/negative_cases.v1.json",
         "parity/training/generate_fixtures.py",
         "parity/training/oracle.py",
         "parity/training/tests/test_training_contracts.py",
         "parity/schema_dependencies.py",
+        "scripts/test_methods_optimizer_local.sh",
     }
     missing = required_paths - set(paths)
     require(
@@ -18787,6 +18805,16 @@ def sibling_root(explicit_root: Path | None = None) -> Path | None:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
+        try:
+            validate_archive_v1_contract(ROOT)
+        except ArchiveContractError as exc:
+            raise ContractError(f"SAVE-001 archive/workspace V1: {exc}") from exc
+        try:
+            validate_archive_v2_contract(ROOT)
+        except ArchiveV2ContractError as exc:
+            raise ContractError(
+                f"Archive V2 native-portable contract: {exc}"
+            ) from exc
         local_schema = load_json(ROOT / SCHEMA_REL)
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_branch_view_schema = load_json(ROOT / BRANCH_VIEW_SCHEMA_REL)

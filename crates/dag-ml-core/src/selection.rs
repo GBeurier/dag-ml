@@ -715,6 +715,7 @@ mod tests {
         assert!(unsafe_reuse_required.validate().is_err());
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_selection_schemas_declare_current_contracts() {
         let policy_schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -760,24 +761,14 @@ mod tests {
 
     #[test]
     fn selects_sklearn_demo_branch_and_merge_variants() {
-        let report: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../examples/generated/sklearn_complex_report.json"
-        ))
-        .unwrap();
-        let branch_metrics = report["branch_variant_metrics"].as_object().unwrap();
-        let candidates = branch_metrics
-            .iter()
-            .map(|(candidate_id, metrics)| CandidateScore {
-                candidate_id: candidate_id.clone(),
-                metrics: metrics
-                    .as_object()
-                    .unwrap()
-                    .iter()
-                    .map(|(name, value)| (name.clone(), value.as_f64().unwrap()))
-                    .collect(),
-                metadata: BTreeMap::new(),
-            })
-            .collect::<Vec<_>>();
+        let candidates = vec![
+            candidate("branch:b0.variant:pca10_ridge_a03", 0.41),
+            candidate("branch:b0.variant:pca16_ridge_a12", 0.32),
+            candidate("branch:b1.variant:rf_select_k28", 0.29),
+            candidate("branch:b1.variant:rf_select_k40", 0.21),
+            candidate("branch:b2.variant:poly_extra_k45", 0.38),
+            candidate("branch:b2.variant:poly_extra_k80", 0.34),
+        ];
         let groups = BTreeMap::from([
             (
                 "branch:b0".to_string(),
@@ -808,20 +799,10 @@ mod tests {
             "branch:b1.variant:rf_select_k40"
         );
 
-        let merge_metrics = report["merge_variant_metrics"].as_object().unwrap();
-        let merge_candidates = merge_metrics
-            .iter()
-            .map(|(candidate_id, metrics)| CandidateScore {
-                candidate_id: candidate_id.clone(),
-                metrics: metrics
-                    .as_object()
-                    .unwrap()
-                    .iter()
-                    .map(|(name, value)| (name.clone(), value.as_f64().unwrap()))
-                    .collect(),
-                metadata: BTreeMap::new(),
-            })
-            .collect::<Vec<_>>();
+        let merge_candidates = vec![
+            candidate("merge:m0.pred_meta.meta:ridge", 0.26),
+            candidate("merge:m1.pred_meta_original.meta:ridge", 0.18),
+        ];
         let merge_decision = select_candidate(&rmse_policy(), &merge_candidates).unwrap();
         assert_eq!(
             merge_decision.selected_candidate_id,

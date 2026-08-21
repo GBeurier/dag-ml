@@ -12,18 +12,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::bundle::{bundle_prediction_requirement_key, ExecutionBundle, RefitArtifactRecord};
 use crate::canonical::parse_typed_json;
+use crate::conformal_runtime::ConformalCalibration;
 use crate::controller::{
     ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
     ControllerRegistry,
 };
 use crate::data::{data_binding_requirement_key, DataBinding, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
+use crate::fold::fold_set_fingerprint;
 use crate::graph::{GraphSpec, NodeKind, PortKind};
 use crate::ids::{ArtifactId, BundleId, FoldId, GroupId, NodeId, SampleId};
 use crate::phase::Phase;
 use crate::plan::{build_execution_plan, CampaignSpec, ExecutionPlan};
 use crate::policy::PredictionLevel;
 use crate::relation::{EntityUnitLevel, SampleRelationSet};
+use crate::replay::{replay_request_from_outcome, TrainingReplayOutcome};
 use crate::selection::{RefitStrategy, SelectionPolicy};
 
 pub const TRAINING_REQUEST_SCHEMA_VERSION: u32 = 1;
@@ -32,7 +35,10 @@ pub const TRAINING_REQUEST_SCHEMA_ID: &str =
 pub const CACHE_NAMESPACE_SCHEMA_VERSION: u32 = 1;
 pub const CACHE_NAMESPACE_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/cache_namespace.v1.schema.json";
-pub const PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION: u32 = 1;
+/// V2 is the first package family permitted to carry closed conformal state.
+pub const PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION: u32 = 2;
+pub const LEGACY_PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION: u32 = 1;
+pub const MIN_READABLE_PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION: u32 = 1;
 pub const PORTABLE_PREDICTOR_PACKAGE_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/portable_predictor_package.v1.schema.json";
 pub const OUTPUT_BINDING_SCHEMA_VERSION: u32 = 1;
@@ -1417,6 +1423,11 @@ impl PredictorTemplate {
 pub struct TrainingOutcomeRef {
     pub outcome_id: String,
     pub outcome_fingerprint: String,
+    /// Non-recursive source identity for outcome-owned conformal state. It is
+    /// absent before calibration and retains the exact calibration-free
+    /// TrainingOutcome fingerprint after attachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_conformal_outcome_fingerprint: Option<String>,
     pub training_request_fingerprint: String,
     pub effective_plan_fingerprint: String,
     pub execution_bundle_id: BundleId,
@@ -1453,6 +1464,9 @@ impl TrainingOutcomeRef {
             ),
         ] {
             validate_sha256(label, fingerprint)?;
+        }
+        if let Some(fingerprint) = &self.pre_conformal_outcome_fingerprint {
+            validate_sha256("pre-conformal training outcome", fingerprint)?;
         }
         if self.output_binding_fingerprints.is_empty() {
             return contract_error(
@@ -1493,6 +1507,13 @@ pub struct PortablePredictorPackage {
     pub training_outcome: TrainingOutcomeRef,
     pub effective_plan: ExecutionPlan,
     pub execution_bundle: ExecutionBundle,
+    /// Complete native calibration state for standalone package replay.  The
+    /// nested execution bundle carries the matching typed reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conformal_calibration: Option<ConformalCalibration>,
+    /// Complete pre-calibration PREDICT replay evidence retained by V2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conformal_calibration_replay: Option<TrainingReplayOutcome>,
     pub output_bindings: Vec<OutputBinding>,
     pub predictor_node_ids: Vec<NodeId>,
     pub training_influence: TrainingInfluenceManifest,
@@ -1525,11 +1546,20 @@ impl PortablePredictorPackage {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION {
+        if self.schema_version < MIN_READABLE_PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
+            || self.schema_version > PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
+        {
             return unsupported_version(
                 "portable predictor package",
                 self.schema_version,
                 PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION,
+            );
+        }
+        if self.schema_version == LEGACY_PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
+            && (self.conformal_calibration.is_some() || self.conformal_calibration_replay.is_some())
+        {
+            return contract_error(
+                "portable predictor package V1 cannot carry conformal state; migrate to a published V2 package schema".to_string(),
             );
         }
         validate_identifier_text("portable predictor package_id", &self.package_id)?;
@@ -1557,6 +1587,204 @@ impl PortablePredictorPackage {
         }
         self.execution_bundle
             .validate_against_plan(&self.effective_plan)?;
+        if self.schema_version == PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
+            && self.execution_bundle.schema_version
+                != crate::bundle::EXECUTION_BUNDLE_SCHEMA_VERSION
+        {
+            return contract_error(
+                "portable predictor package V2 requires an execution bundle V2".to_string(),
+            );
+        }
+        match (
+            &self.conformal_calibration,
+            &self.conformal_calibration_replay,
+            &self.execution_bundle.conformal_calibration,
+        ) {
+            (Some(calibration), Some(replay), Some(reference)) => {
+                reference.validate_against(calibration)?;
+                calibration.validate()?;
+                replay.validate()?;
+                let binding = self
+                    .output_bindings
+                    .iter()
+                    .find(|binding| binding.binding_id == calibration.binding_id)
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "portable predictor conformal binding is absent".to_string(),
+                        )
+                    })?;
+                let fold_set = self.effective_plan.fold_set.as_ref().ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "portable predictor conformal calibration requires FoldSet".to_string(),
+                    )
+                })?;
+                let context = &calibration.context;
+                let mut pre_conformal_bundle = self.execution_bundle.clone();
+                pre_conformal_bundle.conformal_calibration = None;
+                let pre_conformal_outcome_fingerprint = self
+                    .training_outcome
+                    .pre_conformal_outcome_fingerprint
+                    .as_ref()
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "portable predictor conformal state has no pre-conformal source anchor"
+                                .to_string(),
+                        )
+                    })?;
+                let expected_replay_source = TrainingOutcomeRef {
+                    outcome_id: self.training_outcome.outcome_id.clone(),
+                    outcome_fingerprint: pre_conformal_outcome_fingerprint.clone(),
+                    pre_conformal_outcome_fingerprint: None,
+                    training_request_fingerprint: self
+                        .training_outcome
+                        .training_request_fingerprint
+                        .clone(),
+                    effective_plan_fingerprint: self
+                        .training_outcome
+                        .effective_plan_fingerprint
+                        .clone(),
+                    execution_bundle_id: self.training_outcome.execution_bundle_id.clone(),
+                    execution_bundle_fingerprint: tcv1_fingerprint(
+                        &pre_conformal_bundle,
+                        "portable predictor pre-conformal execution bundle",
+                    )?,
+                    output_binding_fingerprints: self
+                        .training_outcome
+                        .output_binding_fingerprints
+                        .clone(),
+                    training_influence_fingerprint: self
+                        .training_outcome
+                        .training_influence_fingerprint
+                        .clone(),
+                    data_identities_fingerprint: self
+                        .training_outcome
+                        .data_identities_fingerprint
+                        .clone(),
+                };
+                let replay_request = replay_request_from_outcome(replay);
+                replay_request.validate()?;
+                if context.predictor_binding_fingerprint != binding.binding_fingerprint
+                    || self
+                        .training_outcome
+                        .pre_conformal_outcome_fingerprint
+                        .as_deref()
+                        != Some(context.source_training_outcome_fingerprint.as_str())
+                    || context.data_identities_fingerprint
+                        != self.training_outcome.data_identities_fingerprint
+                    || context.training_influence_fingerprint
+                        != self.training_influence.manifest_fingerprint
+                    || context.fold_set_fingerprint != fold_set_fingerprint(fold_set)?
+                    || context.calibration_replay_outcome_fingerprint != replay.outcome_fingerprint
+                    || replay.source_training_outcome != expected_replay_source
+                    || replay_request.source_outcome_fingerprint
+                        != *pre_conformal_outcome_fingerprint
+                    || replay.replay_request_id != replay_request.request_id
+                    || replay.phase != Phase::Predict
+                    || replay.bundle_id != self.execution_bundle.bundle_id
+                    || replay.plan_id != self.effective_plan.id
+                {
+                    return contract_error("portable predictor conformal context does not exactly cross-link package provenance".to_string());
+                }
+                if context.relation_fingerprint == self.training_influence.relation_fingerprint {
+                    return contract_error(
+                        "portable predictor calibration relation authority must be distinct from development relations"
+                            .to_string(),
+                    );
+                }
+                let package_bindings = self
+                    .output_bindings
+                    .iter()
+                    .map(|binding| (binding.binding_id.as_str(), binding))
+                    .collect::<BTreeMap<_, _>>();
+                for replay_output in &replay.outputs {
+                    let package_binding = package_bindings
+                        .get(replay_output.binding.binding_id.as_str())
+                        .ok_or_else(|| {
+                            DagMlError::RuntimeValidation(
+                                "portable predictor calibration replay contains an output binding absent from the package"
+                                    .to_string(),
+                            )
+                        })?;
+                    if &replay_output.binding != *package_binding {
+                        return contract_error(
+                            "portable predictor calibration replay output binding does not exactly match the package"
+                                .to_string(),
+                        );
+                    }
+                    replay_output.validate(&self.effective_plan)?;
+                }
+                let replay_output = replay
+                    .outputs
+                    .iter()
+                    .find(|output| output.binding.binding_id == calibration.binding_id)
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "portable predictor calibration replay is missing its selected binding"
+                                .to_string(),
+                        )
+                    })?;
+                let [point] = replay_output.predictions.as_slice() else {
+                    return contract_error(
+                        "portable predictor calibration replay requires exactly one selected point block"
+                            .to_string(),
+                    );
+                };
+                if replay_output.binding != *binding
+                    || point.sample_ids != calibration.sample_ids
+                    || point.sample_ids != context.calibration_cohort.physical_sample_ids
+                    || !replay.conformal_intervals.is_empty()
+                    || replay.input_data_identities.iter().any(|identity| {
+                        identity.relation_fingerprint != context.relation_fingerprint
+                    })
+                {
+                    return contract_error(
+                        "portable predictor calibration replay evidence does not match its selected binding, samples, or relation authority"
+                            .to_string(),
+                    );
+                }
+                let training_ids = self
+                    .training_influence
+                    .entries
+                    .iter()
+                    .flat_map(|entry| {
+                        entry
+                            .physical_sample_ids
+                            .iter()
+                            .chain(entry.origin_sample_ids.iter())
+                    })
+                    .collect::<BTreeSet<_>>();
+                if context
+                    .calibration_cohort
+                    .physical_sample_ids
+                    .iter()
+                    .chain(context.calibration_cohort.origin_sample_ids.iter())
+                    .any(|sample_id| training_ids.contains(sample_id))
+                {
+                    return contract_error(
+                        "portable predictor calibration cohort overlaps training influence closure"
+                            .to_string(),
+                    );
+                }
+            }
+            (None, None, None) => {
+                if self
+                    .training_outcome
+                    .pre_conformal_outcome_fingerprint
+                    .is_some()
+                {
+                    return contract_error(
+                        "portable predictor pre-conformal source requires conformal state"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {
+                return contract_error(
+                    "portable predictor package and execution bundle conformal state disagree"
+                        .to_string(),
+                )
+            }
+        }
         let effective_plan_fingerprint =
             tcv1_fingerprint(&self.effective_plan, "portable predictor effective plan")?;
         if effective_plan_fingerprint != self.training_outcome.effective_plan_fingerprint {
@@ -2778,14 +3006,17 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::ids::{ControllerId, ObservationId};
+    #[cfg(dag_ml_workspace_contract_fixtures)]
+    use crate::ids::ControllerId;
+    use crate::ids::ObservationId;
     use crate::relation::SampleRelation;
     use crate::selection::{MetricObjective, SelectionMetric};
 
     fn manifests() -> Vec<ControllerManifest> {
-        let all: Vec<ControllerManifest> =
-            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
-                .unwrap();
+        let all: Vec<ControllerManifest> = serde_json::from_str(include_str!(
+            "../tests/fixtures/package/controller_manifests.json"
+        ))
+        .unwrap();
         let mut selected = all
             .into_iter()
             .filter(|manifest| {
@@ -2816,9 +3047,10 @@ mod tests {
 
     fn request() -> TrainingRequest {
         let graph: GraphSpec =
-            serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
+            serde_json::from_str(include_str!("../tests/fixtures/package/minimal_graph.json"))
+                .unwrap();
         let campaign: CampaignSpec = serde_json::from_str(include_str!(
-            "../../../examples/campaign_oof_generation.json"
+            "../tests/fixtures/package/campaign_oof_generation.json"
         ))
         .unwrap();
         let mut request = TrainingRequest {
@@ -3933,6 +4165,7 @@ mod tests {
         request.validate().unwrap();
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     fn package() -> PortablePredictorPackage {
         let outcome: Value = serde_json::from_str(include_str!(
             "../../../examples/fixtures/estimator/training_outcome_refit.v1.json"
@@ -4005,6 +4238,7 @@ mod tests {
             training_outcome: TrainingOutcomeRef {
                 outcome_id: outcome["outcome_id"].as_str().unwrap().to_string(),
                 outcome_fingerprint: outcome["outcome_fingerprint"].as_str().unwrap().to_string(),
+                pre_conformal_outcome_fingerprint: None,
                 training_request_fingerprint: "5".repeat(64),
                 effective_plan_fingerprint: outcome["effective_plan_fingerprint"]
                     .as_str()
@@ -4018,6 +4252,8 @@ mod tests {
             },
             effective_plan,
             execution_bundle,
+            conformal_calibration: None,
+            conformal_calibration_replay: None,
             output_bindings,
             predictor_node_ids: closure.into_iter().collect(),
             training_influence,
@@ -4030,6 +4266,7 @@ mod tests {
         package
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn portable_package_round_trips_loads_sidecar_and_rejects_tamper_and_future() {
         let package = package();
@@ -4063,6 +4300,7 @@ mod tests {
         assert!(serde_json::from_value::<PortablePredictorPackage>(binary64).is_err());
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn portable_package_strict_parser_rejects_duplicate_and_nfc_colliding_keys() {
         let json = serde_json::to_string(&package()).unwrap();
@@ -4087,6 +4325,7 @@ mod tests {
             .contains("NFC-colliding"));
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn portable_package_rejects_refingerprinted_crosslink_and_relation_drift() {
         let mut plan_drift = package();
@@ -4155,6 +4394,7 @@ mod tests {
             .contains("execution bundle content"));
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn portable_required_package_has_no_host_sidecar_subset() {
         let mut package = package();
@@ -4169,6 +4409,7 @@ mod tests {
         assert!(loaded.artifacts.is_empty());
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn package_refuses_runtime_handle_shape_even_when_nested_in_metadata() {
         for payload in [
@@ -4193,6 +4434,7 @@ mod tests {
         }
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn portable_w0_output_binding_and_influence_fingerprints_match_production_tcv1() {
         let package = package();
@@ -4208,6 +4450,7 @@ mod tests {
         );
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn portable_package_accepts_multi_scope_base_influence_per_node() {
         let mut package = package();
@@ -4249,6 +4492,7 @@ mod tests {
         package.validate().unwrap();
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn controller_id_import_remains_the_same_public_type() {
         // Guards the package/template key type against accidental string-only
@@ -4257,6 +4501,7 @@ mod tests {
         assert!(package().template.controller_manifests.contains_key(&id));
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn committed_w1_fixtures_match_rust_and_independent_tcv1_oracle() {
         let refit_json =
@@ -4332,12 +4577,21 @@ mod tests {
 
     #[test]
     fn projection_strict_parsers_reject_duplicate_and_nfc_colliding_keys() {
-        let parameter_json =
-            include_str!("../../../examples/fixtures/training/parameter_projection_empty.v1.json");
-        ParameterProjection::from_json(parameter_json).unwrap();
+        let mut projection = ParameterProjection {
+            schema_version: PARAMETER_PROJECTION_SCHEMA_VERSION,
+            nodes: BTreeMap::new(),
+            requires_recompile: false,
+            structural_patch_count: 0,
+            patches_fingerprint: tcv1_fingerprint(&Vec::<ParameterPatch>::new(), "test patches")
+                .unwrap(),
+            projection_fingerprint: zero_fingerprint(),
+        };
+        projection.projection_fingerprint = projection.compute_fingerprint().unwrap();
+        let parameter_json = serde_json::to_string(&projection).unwrap();
+        ParameterProjection::from_json(&parameter_json).unwrap();
         let duplicate = parameter_json.replacen(
-            "\"schema_version\": 1",
-            "\"schema_version\": 1, \"schema_version\": 1",
+            "\"schema_version\":1",
+            "\"schema_version\":1,\"schema_version\":1",
             1,
         );
         assert!(ParameterProjection::from_json(&duplicate)

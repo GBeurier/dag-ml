@@ -730,7 +730,7 @@ mod tests {
 
     #[test]
     fn shared_fold_set_fixture_fingerprint_is_locked() {
-        let fixture = include_str!("../../../examples/fixtures/shared/fold_set_cv_partition.json");
+        let fixture = include_str!("../tests/fixtures/package/fold_set_cv_partition.json");
         let fold_set = serde_json::from_str::<FoldSet>(fixture).unwrap();
 
         assert_eq!(

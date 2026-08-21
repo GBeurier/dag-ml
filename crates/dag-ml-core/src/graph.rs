@@ -1131,6 +1131,7 @@ mod tests {
         assert!(graph.validate().is_err());
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn published_graph_spec_schema_declares_current_contract() {
         let schema: serde_json::Value = serde_json::from_str(include_str!(

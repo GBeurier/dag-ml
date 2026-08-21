@@ -4889,7 +4889,7 @@ fn cli_executes_mixed_branch_merge_with_minimal_aliases() {
 }
 
 #[test]
-fn cli_executes_tuner_operator_with_minimal_aliases() {
+fn cli_refuses_process_tuner_operator_without_native_hpo_context() {
     let root = repo_root();
     let suffix = unique_suffix();
     let temp_plan = std::env::temp_dir().join(format!(
@@ -4998,30 +4998,22 @@ fn cli_executes_tuner_operator_with_minimal_aliases() {
         .output()
         .expect("failed to run tuner DSL bundle");
     assert!(
-        run.status.success(),
-        "tuner DSL bundle failed\nstdout:\n{}\nstderr:\n{}",
+        !run.status.success(),
+        "process adapter tuner unexpectedly ran without a native HPO context\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr)
     );
-    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(
-        stdout.contains("process DSL cv refit bundle run: 8 fit_cv result(s)")
-            && stdout.contains("4 OOF prediction block(s)")
-            && stdout.contains("4 refit result(s)")
-            && stdout.contains("2 captured artifact handle(s)")
-            && stdout.contains("1 prediction cache(s)"),
-        "unexpected tuner DSL bundle output: {}",
-        stdout
+        stderr.contains("runtime validation failed:")
+            && stderr.contains(
+                "tuner node `tuner:optuna` requires execute_hpo_campaign with an explicit RuntimeHpoExecutionContext"
+            ),
+        "unexpected process adapter tuner refusal: {stderr}"
     );
-
-    let prediction_cache_json = std::fs::read_to_string(&temp_prediction_cache)
-        .expect("tuner prediction cache was written");
     assert!(
-        prediction_cache_json.contains(&format!("\"bundle_id\": \"{bundle_id}\""))
-            && prediction_cache_json
-                .contains("prediction-cache:tuner:optuna.oof->merge:tuned_features.tuned_oof"),
-        "unexpected tuner prediction cache JSON: {}",
-        prediction_cache_json
+        !temp_prediction_cache.exists(),
+        "process adapter tuner refusal unexpectedly wrote a prediction cache"
     );
 
     let _ = std::fs::remove_file(temp_plan);

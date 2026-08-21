@@ -1,0 +1,239 @@
+{
+  "profile": "nirs4all.archive_workspace.refusals.v2",
+  "cases": [
+    {
+      "id": "archive_v2_package_v1_mixing_is_refused",
+      "base": "archive_v2",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": ["replay", "portable_predictor_package", "schema_id"],
+          "value": "https://github.com/GBeurier/dag-ml/schemas/portable_predictor_package.v1.schema.json"
+        },
+        {
+          "op": "replace",
+          "path": ["replay", "portable_predictor_package", "schema_version"],
+          "value": 1
+        },
+        {
+          "op": "delete",
+          "path": ["replay", "portable_predictor_package", "producer_port_required"]
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "archive_v1_package_v2_mixing_is_refused",
+      "base": "archive_v1",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": ["replay", "portable_predictor_package", "schema_id"],
+          "value": "https://github.com/GBeurier/dag-ml/schemas/portable_predictor_package.v2.schema.json"
+        },
+        {
+          "op": "replace",
+          "path": ["replay", "portable_predictor_package", "schema_version"],
+          "value": 2
+        },
+        {
+          "op": "add",
+          "path": ["replay", "portable_predictor_package", "producer_port_required"],
+          "value": true
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "manifest_host_reference_is_refused",
+      "base": "archive_v2",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": ["payloads", "host_artifacts"],
+          "value": [
+            {
+              "artifact_id": "artifact:host-sidecar",
+              "host_state": "host_sidecar",
+              "serialization_backend": "joblib",
+              "load_policy": "host_opt_in",
+              "member_path": "host/model.joblib",
+              "raw_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+              "semantic_fingerprint": null,
+              "semantic_profile": "none"
+            }
+          ]
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "package_host_sidecar_is_refused_pre_write",
+      "base": "archive_v2",
+      "package_mutations": [
+        {
+          "op": "replace",
+          "path": ["fitted_artifact_mode"],
+          "value": "allow_host_sidecar"
+        },
+        {
+          "op": "replace_all",
+          "path": ["artifact_bindings"],
+          "field": "load_mode",
+          "value": "host_sidecar"
+        }
+      ],
+      "rebind_package_integrity": true,
+      "expected_error": "host_artifact_refusal"
+    },
+    {
+      "id": "package_reference_hash_mismatch_is_refused",
+      "base": "archive_v2",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": ["replay", "portable_predictor_package", "raw_sha256"],
+          "value": "8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      ],
+      "expected_error": "member_integrity_refusal"
+    },
+    {
+      "id": "package_payload_tamper_is_refused",
+      "base": "archive_v2",
+      "physical_tamper_member": "dagml/portable_predictor_package.json",
+      "expected_error": "member_integrity_refusal"
+    },
+    {
+      "id": "n4mm_payload_tamper_is_refused",
+      "base": "archive_v2",
+      "physical_tamper_member": "methods/branch-b0-ridge.n4mm",
+      "expected_error": "member_integrity_refusal"
+    },
+    {
+      "id": "n4mm_package_byte_divergence_is_refused",
+      "base": "archive_v2",
+      "physical_tamper_member": "methods/branch-b0-ridge.n4mm",
+      "rebind_tampered_member_integrity": true,
+      "expected_error": "native_model_refusal"
+    },
+    {
+      "id": "n4mm_abi_mismatch_is_refused",
+      "base": "archive_v2",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": ["payloads", "methods", "n4mm", 0, "abi_major"],
+          "value": 1
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "package_python_plugin_fallback_is_refused",
+      "base": "archive_v2",
+      "package_mutations": [
+        {
+          "op": "add",
+          "path": ["execution_bundle", "refit_artifacts", 0, "artifact", "plugin"],
+          "value": "dagml.python_process"
+        },
+        {
+          "op": "add",
+          "path": ["execution_bundle", "refit_artifacts", 0, "artifact", "plugin_version"],
+          "value": "1.0.0"
+        }
+      ],
+      "rebind_package_integrity": true,
+      "expected_error": "host_artifact_refusal"
+    },
+    {
+      "id": "package_raw_payload_semantic_mismatch_is_refused",
+      "base": "archive_v2",
+      "package_mutations": [
+        {
+          "op": "replace",
+          "path": ["execution_bundle", "raw_artifact_payloads", "artifact:branch:b0.model:ridge:refit", 0],
+          "value": 79
+        }
+      ],
+      "rebind_package_integrity": true,
+      "expected_error": "native_model_refusal"
+    },
+    {
+      "id": "future_archive_v3_is_refused",
+      "base": "archive_v2",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": ["schema_version"],
+          "value": 3
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "unknown_core_field_is_refused",
+      "base": "archive_v2",
+      "mutations": [
+        {
+          "op": "add",
+          "path": ["implementation_status"],
+          "value": "complete"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "package_wrong_producer_port_policy_is_refused",
+      "base": "archive_v2",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": ["replay", "portable_predictor_package", "producer_port_required"],
+          "value": false
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "runtime_wrong_producer_port_policy_is_refused",
+      "base": "archive_v2",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": ["replay", "training_artifacts", "execution_bundle", "producer_port_required"],
+          "value": false
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "archive_level_conformal_sidecar_is_refused",
+      "base": "archive_v2",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": ["payloads", "conformal"],
+          "value": {
+            "owner": "dag-ml",
+            "schema_version": 1
+          }
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "missing_native_n4mm_is_refused",
+      "base": "archive_v2",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": ["payloads", "methods", "n4mm"],
+          "value": []
+        }
+      ],
+      "expected_error": "schema_refusal"
+    }
+  ]
+}
