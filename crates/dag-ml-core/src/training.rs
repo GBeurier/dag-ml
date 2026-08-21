@@ -4173,8 +4173,21 @@ mod tests {
         .unwrap();
         let effective_plan: ExecutionPlan =
             serde_json::from_value(outcome["effective_plan"].clone()).unwrap();
-        let execution_bundle: ExecutionBundle =
+        let mut execution_bundle: ExecutionBundle =
             serde_json::from_value(outcome["execution_bundle"].clone()).unwrap();
+        // The checked-in fixture is an R1 outcome carrying a readable V1
+        // bundle.  This package fixture exercises the current V2 writer
+        // contract, whose additive fields are all absent/empty here.
+        execution_bundle.schema_version = crate::bundle::EXECUTION_BUNDLE_SCHEMA_VERSION;
+        if let Some(scores) = &mut execution_bundle.scores {
+            scores.schema_version = crate::metrics::SCORE_SET_SCHEMA_VERSION;
+            for report in &mut scores.reports {
+                report.producer_port = Some("oof".to_string());
+            }
+        }
+        for cache in &mut execution_bundle.prediction_caches {
+            cache.format = crate::bundle::BUNDLE_PREDICTION_CACHE_FORMAT.to_string();
+        }
         let output_bindings = outcome["outputs"]
             .as_array()
             .unwrap()
