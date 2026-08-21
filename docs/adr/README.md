@@ -27,6 +27,7 @@ Phase 0 of the nirs4all integration roadmap closes the load-bearing decisions be
 | 21 | [Public training replay ownership and port-explicit wire evolution](ADR-21-forward-replay-ownership.md) | accepted | replay D4-D9 |
 | 22 | [Native-backend V1 scope and portability boundary](ADR-22-native-backend-v1-scope.md) | accepted | R1-R4 + ADR-17 retention |
 | 23 | [Archive V2 dual-read and native-portable replay](ADR-23-archive-v2-native-portable-replay.md) | accepted | Archive V2 implementation + SAVE cutover |
+| 24 | [V1 four-release rollback mapping](ADR-24-v1-four-release-rollback-mapping.md) | accepted | ARCH-002, R3/R4 and DROP-* |
 
 ADR-19 onward extends the registry for feature roadmaps that build on this
 Phase-0 baseline; ADR-19 freezes the unit vocabulary and migration posture for
@@ -64,4 +65,5 @@ ADR-20-conformal-calibration-ownership
 ADR-21-forward-replay-ownership
 ADR-22-native-backend-v1-scope
 ADR-23-archive-v2-native-portable-replay
+ADR-24-v1-four-release-rollback-mapping
 ```
