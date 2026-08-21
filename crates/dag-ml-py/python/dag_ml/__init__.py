@@ -34,6 +34,7 @@ from ._dag_ml import (
     fold_set_fingerprint_json,
     project_training_request_json,
     sample_relation_set_fingerprint_json,
+    sign_training_replay_request_json as _native_sign_training_replay_request_json,
     sign_training_request_json as _native_sign_training_request_json,
     validate_campaign_json,
     validate_cache_namespace_json,
@@ -91,6 +92,7 @@ _FACADE_EXPORTS = [
     "build_execution_plan",
     "project_training_request",
     "sign_training_request",
+    "sign_training_replay_request",
     "execute_training",
     "execute_training_json",
     "replay_loaded_predictor_package",
@@ -771,6 +773,18 @@ def sign_training_request(request: Any) -> TrainingRequest:
     return TrainingRequest(sign_training_request_json(request))
 
 
+def sign_training_replay_request_json(request: Any) -> str:
+    """Sign PREDICT/EXPLAIN replay authorization through DAG-ML core."""
+
+    return _native_sign_training_replay_request_json(_coerce_json(request))
+
+
+def sign_training_replay_request(request: Any) -> TrainingReplayRequest:
+    """Return a typed, signed PREDICT/EXPLAIN replay authorization."""
+
+    return TrainingReplayRequest(sign_training_replay_request_json(request))
+
+
 def execute_training_json(
     request_json: str,
     data_envelopes_json: str,
@@ -968,6 +982,8 @@ __all__ = [
     "project_training_request_json",
     "sign_training_request",
     "sign_training_request_json",
+    "sign_training_replay_request",
+    "sign_training_replay_request_json",
     "validate_campaign_json",
     "validate_cache_namespace_json",
     "validate_controller_manifest_json",
