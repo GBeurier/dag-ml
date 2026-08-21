@@ -409,7 +409,7 @@
     },
     "artifact_ref": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": ["id", "kind", "controller_id", "size_bytes"],
       "properties": {
         "id": {
