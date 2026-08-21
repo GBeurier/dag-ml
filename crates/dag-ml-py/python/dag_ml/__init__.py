@@ -21,6 +21,7 @@ from ._dag_ml import (
     DagMlValidationError,
     TrainingResult as _NativeTrainingResult,
     build_execution_plan_json,
+    build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
     canonical_operator_variant_label,
     contract_manifest_json as _native_contract_manifest_json,
     compile_pipeline_dsl_artifact_json,
@@ -84,6 +85,7 @@ _FACADE_EXPORTS = [
     "PortablePredictorPackage",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
+    "build_archive_v2_native_portable_payloads",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_with_controllers",
     "derive_controller_manifest",
@@ -785,6 +787,39 @@ def sign_training_replay_request(request: Any) -> TrainingReplayRequest:
     return TrainingReplayRequest(sign_training_replay_request_json(request))
 
 
+def build_archive_v2_native_portable_payloads(
+    archive_id: str,
+    outcome: Any,
+    package: Any,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    """Build the exact Core Archive V2 write inputs for a native Package V2.
+
+    DAG-ML validates and assembles every manifest reference and member byte.
+    Core must receive the returned mapping unchanged and remains the sole ZIP
+    writer/reader.  Host-sidecar packages and incomplete native closures are
+    refused by the native assembler.
+    """
+
+    payloads = json.loads(
+        _native_build_archive_v2_native_portable_payloads_json(
+            archive_id, _coerce_json(outcome), _coerce_json(package)
+        )
+    )
+    manifest = payloads.get("manifest")
+    members = payloads.get("members")
+    if not isinstance(manifest, dict) or not isinstance(members, dict):
+        raise _facade_contract_error("native Archive V2 assembler returned an invalid payload object")
+    byte_members: dict[str, bytes] = {}
+    for path, value in members.items():
+        if not isinstance(path, str) or not isinstance(value, list):
+            raise _facade_contract_error("native Archive V2 assembler returned an invalid member")
+        try:
+            byte_members[path] = bytes(value)
+        except ValueError as error:
+            raise _facade_contract_error("native Archive V2 assembler returned invalid member bytes") from error
+    return manifest, byte_members
+
+
 def execute_training_json(
     request_json: str,
     data_envelopes_json: str,
@@ -957,6 +992,7 @@ __all__ = [
     "TrainingResult",
     "TrainingRequest",
     "build_execution_plan",
+    "build_archive_v2_native_portable_payloads",
     "build_execution_plan_json",
     "canonical_operator_variant_label",
     "contract_manifest_json",
