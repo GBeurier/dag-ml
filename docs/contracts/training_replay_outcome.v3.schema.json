@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/GBeurier/dag-ml/schemas/training_replay_outcome.v3.schema.json",
   "title": "DAG-ML TrainingReplayOutcome v3",
-  "description": "Closed V3 replay outcome. PREDICT and EXPLAIN may attest a fresh unlabeled cohort; target_content_fingerprint is therefore nullable only in replay input identities.",
+  "description": "Closed V3 replay outcome. PREDICT and EXPLAIN may attest a fresh unlabeled cohort, so target_content_fingerprint is nullable only in replay input identities. Typed conformal intervals remain available only when all replay identities are target-bound.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "outcome_id", "run_id", "source_training_outcome", "replay_request_id", "replay_request_fingerprint", "input_data_identities", "bundle_id", "plan_id", "phase", "result_count", "lineage_record_count", "prediction_block_count", "observation_prediction_block_count", "aggregated_prediction_block_count", "explanation_block_count", "controller_count", "prediction_cache_store", "outputs", "explanations", "lineage", "warnings", "diagnostics", "outcome_fingerprint"],
@@ -26,7 +26,7 @@
     "controller_count": {"type": "integer", "minimum": 0},
     "prediction_cache_store": {"const": false},
     "outputs": {"type": "array", "items": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/bound_training_output.v2.schema.json"}},
-    "conformal_intervals": {"type": "array", "maxItems": 0},
+    "conformal_intervals": {"type": "array", "items": {"$ref": "#/$defs/interval"}},
     "explanations": {"type": "array", "items": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/explanation_block"}},
     "lineage": {"type": "array", "items": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/lineage_record"}},
     "warnings": {"type": "array", "items": {"type": "string"}},
@@ -49,6 +49,9 @@
         "target_content_fingerprint": {"anyOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]},
         "identity_fingerprint": {"$ref": "#/$defs/sha"}
       }
-    }
+    },
+    "ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "cell": {"oneOf": [{"type": "object", "additionalProperties": false, "required": ["status", "lower", "upper"], "properties": {"status": {"const": "finite"}, "lower": {"type": "number"}, "upper": {"type": "number"}}}, {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"const": "unbounded"}}}]},
+    "interval": {"type": "object", "additionalProperties": false, "required": ["schema_version", "binding_id", "sample_ids", "intervals", "calibration_fingerprint", "point_prediction_fingerprint"], "properties": {"schema_version": {"const": 2}, "binding_id": {"$ref": "#/$defs/id"}, "sample_ids": {"$ref": "#/$defs/ids"}, "intervals": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["coverage", "cells"], "properties": {"coverage": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}, "cells": {"type": "array", "items": {"type": "array", "items": {"$ref": "#/$defs/cell"}}}}}}, "calibration_fingerprint": {"$ref": "#/$defs/sha"}, "point_prediction_fingerprint": {"$ref": "#/$defs/sha"}}}
   }
 }

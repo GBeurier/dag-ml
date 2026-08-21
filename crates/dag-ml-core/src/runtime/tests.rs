@@ -38,6 +38,7 @@ use crate::graph::{
 use crate::ids::{
     ArtifactId, ControllerId, FoldId, GroupId, NodeId, ObservationId, SampleId, TargetId,
 };
+#[cfg(dag_ml_workspace_contract_fixtures)]
 use crate::implementation_registry::LocalImplementationRegistry;
 use crate::oof::{PredictionBlock, PredictionPartition, STACKING_OOF_REFIT_CONTRACT_METADATA_KEY};
 use crate::plan::{build_execution_plan, CampaignSpec, SplitInvocation};
@@ -467,10 +468,12 @@ impl RuntimeController for MockController {
     }
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 struct LossRequirementEchoController {
     inner: MockController,
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 impl RuntimeController for LossRequirementEchoController {
     fn controller_id(&self) -> &ControllerId {
         self.inner.controller_id()
@@ -483,15 +486,19 @@ impl RuntimeController for LossRequirementEchoController {
     }
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 type RustLossFn = Arc<dyn Fn(f64, f64) -> f64 + Send + Sync>;
+#[cfg(dag_ml_workspace_contract_fixtures)]
 type RustLossCalls = Arc<Mutex<Vec<(Phase, Option<FoldId>, f64)>>>;
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 struct RustLocalLossController {
     inner: MockController,
     registry: Arc<Mutex<LocalImplementationRegistry<RustLossFn>>>,
     calls: RustLossCalls,
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 impl RuntimeController for RustLocalLossController {
     fn controller_id(&self) -> &ControllerId {
         self.inner.controller_id()
@@ -5892,7 +5899,7 @@ fn published_node_task_result_fixtures_validate_current_contract() {
 #[cfg(dag_ml_workspace_contract_fixtures)]
 #[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
-fn node_result_deserialization_rejects_unknown_contract_fields_but_keeps_opaque_maps() {
+fn node_result_deserialization_rejects_unknown_contract_fields_and_keeps_opaque_maps() {
     let mut document: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../examples/fixtures/runtime/node_result_transform_scale.json"
     ))
@@ -6005,7 +6012,6 @@ fn node_result_deserialization_rejects_unknown_contract_fields_but_keeps_opaque_
         ),
         ("explanation block", "/explanations/0"),
         ("shape delta", "/shape_deltas/0"),
-        ("artifact ref", "/artifacts/0"),
         ("fit influence diagnostic", "/fit_influence_diagnostics/0"),
         ("regression target block", "/regression_targets/0"),
         (

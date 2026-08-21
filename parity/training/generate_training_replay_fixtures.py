@@ -45,8 +45,8 @@ PACK_PATH = (
 BASE_PACK_ID = "dag-ml.training-contracts.v1"
 # Derived from the current base pack by generate_fixtures.py.  Keep the replay
 # pack pinned to those bytes/checksum; do not edit a replay artifact hash by hand.
-BASE_PACK_SHA256 = "b5d9f48345feedc4d7ac8a9e9cc2f6a1125f5e6b8a676c74c99446236a1f6d35"
-BASE_PACK_CHECKSUM = "69f818bfdb00f533bcd2f793ec803abf426976a17bc8944fe6102c0a5bf9eec6"
+BASE_PACK_SHA256 = "2d0f69d8c613fe68ff82658b0436e761c2736491221033018d9459fdb7a9a974"
+BASE_PACK_CHECKSUM = "fd070c1742c5d5e0dbc2c63117e184a5e6c7595cdf3df345a5df31f179fa380d"
 serde_json_sha256 = _serde_sha256
 LEGACY_AUTHORITY_SHA256 = {
     "docs/contracts/replay_outcome.schema.json": "c57279e8c76e4e2467af0eca5eb59804a2f7bb97bec6cce9d8b23975f223c36a",
@@ -80,6 +80,7 @@ D4_ARTIFACTS = {
     "docs/contracts/replay_outcome.schema.json": "legacy_schema_context",
     "docs/contracts/training_outcome.v2.schema.json": "schema",
     "docs/contracts/training_replay_outcome.schema.json": "schema",
+    "docs/contracts/training_replay_outcome.v3.schema.json": "schema",
     "docs/contracts/training_replay_request.schema.json": "schema",
     "examples/fixtures/training/replay/training_replay_input_envelopes.v1.json": "fixture",
     "examples/fixtures/training/replay/training_replay_multi_port_outputs.v1.json": "fixture",
@@ -87,6 +88,7 @@ D4_ARTIFACTS = {
     "examples/fixtures/training/replay/training_replay_outcome_explain.v1.json": "fixture",
     "examples/fixtures/training/replay/training_replay_outcome_explain_only.v1.json": "fixture",
     "examples/fixtures/training/replay/training_replay_outcome_predict.v1.json": "fixture",
+    "examples/fixtures/training/replay/training_replay_outcome_predict_unlabeled.v3.json": "fixture",
     "examples/fixtures/training/replay/training_replay_output_class_label.v1.json": "fixture",
     "examples/fixtures/training/replay/training_replay_output_class_probability.v1.json": "fixture",
     "examples/fixtures/training/replay/training_replay_output_observation.v1.json": "fixture",
@@ -529,6 +531,20 @@ def replay_explanation_only_outcome(source: dict[str, Any]) -> dict[str, Any]:
     outcome["observation_prediction_block_count"] = 0
     outcome["aggregated_prediction_block_count"] = 0
     outcome["outcome_id"] = "replay:outcome.explain-only"
+    outcome["outcome_fingerprint"] = fingerprint_without(outcome, "outcome_fingerprint")
+    return outcome
+
+
+def targetless_predict_replay_outcome(source: dict[str, Any]) -> dict[str, Any]:
+    """Derive the canonical V3 PREDICT evidence for an unlabeled cohort."""
+
+    outcome = copy.deepcopy(source)
+    outcome["schema_version"] = 3
+    for identity in outcome["input_data_identities"]:
+        identity["target_content_fingerprint"] = None
+        identity["identity_fingerprint"] = fingerprint_without(
+            identity, "identity_fingerprint"
+        )
     outcome["outcome_fingerprint"] = fingerprint_without(outcome, "outcome_fingerprint")
     return outcome
 
@@ -1609,6 +1625,7 @@ def generate(output_dir: Path = OUT) -> None:
         explanations=replay_explanations(),
     )
     explain_only_outcome = replay_explanation_only_outcome(explain_outcome)
+    targetless_predict_outcome = targetless_predict_replay_outcome(predict_outcome)
     class_probability = replay_class_probability_output(source)
     class_label = replay_class_label_output(source)
     observation_output = replay_observation_output()
@@ -1634,6 +1651,7 @@ def generate(output_dir: Path = OUT) -> None:
         "training_replay_request_predict.v1.json": predict_request,
         "training_replay_request_explain.v1.json": explain_request,
         "training_replay_outcome_predict.v1.json": predict_outcome,
+        "training_replay_outcome_predict_unlabeled.v3.json": targetless_predict_outcome,
         "training_replay_outcome_explain.v1.json": explain_outcome,
         "training_replay_outcome_explain_only.v1.json": explain_only_outcome,
         "training_replay_output_class_probability.v1.json": class_probability,
@@ -1715,6 +1733,7 @@ def build_conformance_pack() -> dict[str, Any]:
                 "training_replay_outcome_explain.v1",
                 "training_replay_outcome_explain_only.v1",
                 "training_replay_outcome_predict.v1",
+                "training_replay_outcome_predict_unlabeled.v3",
                 "training_replay_output_class_label.v1",
                 "training_replay_output_class_probability.v1",
                 "training_replay_output_observation.v1",

@@ -36,9 +36,10 @@ use crate::training_runtime::{
 };
 
 pub const TRAINING_REPLAY_REQUEST_SCHEMA_VERSION: u32 = 1;
-/// V3 permits target-free external data identities for PREDICT/EXPLAIN.  The
-/// training-only identity remains deliberately target-bound; a replay on a
-/// fresh unlabeled cohort must not invent a target fingerprint simply to fit
+/// V3 permits target-free external data identities for PREDICT/EXPLAIN while
+/// retaining V2's typed conformal-interval closure for target-bound replays.
+/// The training-only identity remains deliberately target-bound; a replay on
+/// a fresh unlabeled cohort must not invent a target fingerprint simply to fit
 /// that training attestation type.
 pub const TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 3;
 pub const LEGACY_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 1;
@@ -334,11 +335,14 @@ impl TrainingReplayOutcome {
                 "training replay outcome V1 cannot carry conformal state; migrate to V2 or V3",
             );
         }
-        if self.schema_version == TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+        if self
+            .input_data_identities
+            .iter()
+            .any(|identity| identity.target_content_fingerprint.is_none())
             && !self.conformal_intervals.is_empty()
         {
             return contract_error(
-                "training replay outcome V3 is target-free inference evidence and cannot carry conformal intervals",
+                "target-free training replay evidence cannot carry conformal intervals",
             );
         }
         for output in &self.outputs {
@@ -1367,15 +1371,8 @@ fn replay_input_data_identities(
         .collect()
 }
 
-fn replay_outcome_schema_version(identities: &[ReplayDataIdentity]) -> u32 {
-    if identities
-        .iter()
-        .any(|identity| identity.target_content_fingerprint.is_none())
-    {
-        TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
-    } else {
-        CONFORMAL_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
-    }
+fn replay_outcome_schema_version(_identities: &[ReplayDataIdentity]) -> u32 {
+    TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
 }
 
 fn replay_plan_and_bundle_for_current_cohort(
@@ -1955,14 +1952,14 @@ mod replay_identity_tests {
     }
 
     #[test]
-    fn replay_schema_version_is_v3_only_for_a_target_free_cohort() {
+    fn replay_schema_version_is_v3_for_target_bound_and_target_free_cohorts() {
         assert_eq!(
             replay_outcome_schema_version(&[replay_identity(None)]),
             TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
         );
         assert_eq!(
             replay_outcome_schema_version(&[replay_identity(Some(&"5".repeat(64)))]),
-            CONFORMAL_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
+            TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION
         );
     }
 }
