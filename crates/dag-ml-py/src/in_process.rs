@@ -44,12 +44,13 @@ use dag_ml_core::{
     compile_pipeline_dsl_with_generation_and_controller_registry, enumerate_variants,
     fan_out_data_aware_branches, parse_pipeline_dsl_json, plan_oof_partition_mode,
     prune_plan_to_active, select_best_operator_variant_from_models, select_best_variant_by_cv,
-    AggregationControllerResult, AggregationControllerTask, ControllerId, ControllerRegistry,
-    DagMlError as CoreDagMlError, ExecutionPlan, ExternalDataPlanEnvelope, InMemoryArtifactStore,
-    InMemoryDataProvider, NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
+    AggregationControllerResult, AggregationControllerTask, ArtifactMaterializationRequest,
+    ControllerId, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan,
+    ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
+    NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
     RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    ScoreSet, SequentialScheduler, TrainingLossRoleReference, VariantId, VariantValidationPredictions,
-    SCORE_SET_SCHEMA_VERSION,
+    ScoreSet, SequentialScheduler, TrainingLossRoleReference, VariantId,
+    VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -147,6 +148,20 @@ where
 struct PyOperatorController {
     controller_id: ControllerId,
     op_callback: Py<PyAny>,
+    artifact_callback: Option<Py<PyAny>>,
+}
+
+#[derive(serde::Serialize)]
+struct PyArtifactHydrationRequest<'a> {
+    operation: &'static str,
+    request: &'a ArtifactMaterializationRequest,
+    payload: &'a [u8],
+}
+
+#[derive(serde::Serialize)]
+struct PyArtifactReleaseRequest<'a> {
+    operation: &'static str,
+    handle: &'a HandleRef,
 }
 
 impl RuntimeController for PyOperatorController {
@@ -167,6 +182,66 @@ impl RuntimeController for PyOperatorController {
             task,
             "aggregation",
         )
+    }
+
+    fn hydrate_artifact_payload(
+        &self,
+        request: &ArtifactMaterializationRequest,
+        payload: &[u8],
+    ) -> Result<HandleRef, CoreDagMlError> {
+        let callback = self.artifact_callback.as_ref().ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(format!(
+                "Python runtime controller `{}` cannot hydrate a raw portable artifact without artifact_callback",
+                self.controller_id
+            ))
+        })?;
+        let handle = call_py_bridge::<PyArtifactHydrationRequest<'_>, HandleRef>(
+            callback,
+            &PyArtifactHydrationRequest {
+                operation: "hydrate",
+                request,
+                payload,
+            },
+            "artifact hydration",
+        )?;
+        if handle.owner_controller != self.controller_id
+            || !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact)
+        {
+            return Err(CoreDagMlError::RuntimeValidation(format!(
+                "Python artifact_callback returned an invalid handle for controller `{}`",
+                self.controller_id
+            )));
+        }
+        Ok(handle)
+    }
+
+    fn release_hydrated_artifact_payload(&self, handle: &HandleRef) -> Result<(), CoreDagMlError> {
+        let callback = self.artifact_callback.as_ref().ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(format!(
+                "Python runtime controller `{}` cannot release a raw portable artifact without artifact_callback",
+                self.controller_id
+            ))
+        })?;
+        if handle.owner_controller != self.controller_id {
+            return Err(CoreDagMlError::RuntimeValidation(format!(
+                "Python artifact_callback release handle is not owned by controller `{}`",
+                self.controller_id
+            )));
+        }
+        let response = call_py_bridge::<PyArtifactReleaseRequest<'_>, serde_json::Value>(
+            callback,
+            &PyArtifactReleaseRequest {
+                operation: "release",
+                handle,
+            },
+            "artifact release",
+        )?;
+        if !response.is_null() {
+            return Err(CoreDagMlError::RuntimeValidation(
+                "Python artifact_callback release must return null".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -192,11 +267,25 @@ pub(crate) fn build_runtime_controllers(
     plan: &ExecutionPlan,
     op_callback: &Py<PyAny>,
 ) -> Result<RuntimeControllerRegistry, CoreDagMlError> {
+    build_runtime_controllers_with_artifact_callback(py, plan, op_callback, None)
+}
+
+/// Build the Python-backed registry with an optional portable-artifact bridge.
+/// The bridge is deliberately separate from ordinary node execution: packages
+/// with durable raw artifacts must opt in explicitly, while historical
+/// host-sidecar controllers retain their fail-closed behavior.
+pub(crate) fn build_runtime_controllers_with_artifact_callback(
+    py: Python<'_>,
+    plan: &ExecutionPlan,
+    op_callback: &Py<PyAny>,
+    artifact_callback: Option<&Py<PyAny>>,
+) -> Result<RuntimeControllerRegistry, CoreDagMlError> {
     let mut runtime_controllers = RuntimeControllerRegistry::new();
     for controller_id in plan.controller_manifests.keys() {
         runtime_controllers.register(Box::new(PyOperatorController {
             controller_id: controller_id.clone(),
             op_callback: op_callback.clone_ref(py),
+            artifact_callback: artifact_callback.map(|callback| callback.clone_ref(py)),
         }))?;
     }
     Ok(runtime_controllers)
@@ -552,6 +641,7 @@ pub fn run_cv_refit_in_process(
 /// The roles remain contract data; process-local callable resolution still
 /// happens in the host callback that receives the exact native `NodeTask`.
 #[pyfunction]
+#[allow(dead_code)]
 pub fn run_cv_refit_in_process_with_training_losses(
     py: Python<'_>,
     dsl_json: &str,
@@ -767,11 +857,11 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use dag_ml_core::{
-        ArtifactId, ArtifactRef, ControllerManifest, ExecutionPlan, HandleKind, HandleRef,
-        LineageId, LineageRecord, NodeId, NodeKind, NodeResult, NodeTask, OperatorVariantModel,
-        Phase, PredictionBlock, PredictionLevel, PredictionPartition, PredictionUnitId,
-        RegressionMetricKind, RegressionTargetBlock, RunId, RuntimeController,
-        RuntimeControllerRegistry, SampleId,
+        ArtifactId, ArtifactMaterializationRequest, ArtifactRef, BundleId, ControllerId,
+        ControllerManifest, ExecutionPlan, HandleKind, HandleRef, LineageId, LineageRecord,
+        NodeId, NodeKind, NodeResult, NodeTask, OperatorVariantModel, Phase, PredictionBlock,
+        PredictionLevel, PredictionPartition, PredictionUnitId, RegressionMetricKind,
+        RegressionTargetBlock, RunId, RuntimeController, RuntimeControllerRegistry, SampleId,
     };
 
     use super::*;
@@ -781,6 +871,93 @@ mod tests {
     // model onto the winner + loser reports through the in-process resolution path.
     const CHOICE0_LABEL: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const CHOICE1_LABEL: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    #[derive(Default)]
+    #[pyclass]
+    struct ArtifactCallback {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[pymethods]
+    impl ArtifactCallback {
+        fn __call__(&self, py: Python<'_>, payload: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+            let request: serde_json::Value = pythonize::depythonize(payload)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+            let operation = request
+                .get("operation")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing operation"))?;
+            self.calls.lock().unwrap().push(operation.to_string());
+            match operation {
+                "hydrate" => {
+                    assert_eq!(request["payload"], serde_json::json!([1, 2, 3]));
+                    let owner: ControllerId = serde_json::from_value(
+                        request["request"]["controller_id"].clone(),
+                    )
+                    .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+                    pythonize(
+                        py,
+                        &HandleRef {
+                            handle: 41,
+                            kind: HandleKind::Model,
+                            owner_controller: owner,
+                        },
+                    )
+                    .map(|value| value.unbind())
+                    .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+                }
+                "release" => Ok(py.None()),
+                _ => Err(pyo3::exceptions::PyValueError::new_err("unexpected operation")),
+            }
+        }
+    }
+
+    #[test]
+    fn python_artifact_callback_hydrates_and_releases_invocation_local_handles() {
+        Python::initialize();
+        Python::attach(|py| {
+            let controller_id = ControllerId::new("controller:python.native").unwrap();
+            let callback = Py::new(py, ArtifactCallback::default()).unwrap();
+            let callback_any = callback.clone_ref(py).into_any();
+            let controller = PyOperatorController {
+                controller_id: controller_id.clone(),
+                op_callback: callback_any.clone_ref(py),
+                artifact_callback: Some(callback_any),
+            };
+            let request = ArtifactMaterializationRequest {
+                run_id: RunId::new("run:python.native").unwrap(),
+                bundle_id: BundleId::new("bundle:python.native").unwrap(),
+                node_id: NodeId::new("model:python.native").unwrap(),
+                phase: Phase::Predict,
+                variant_id: None,
+                controller_id: controller_id.clone(),
+                artifact: ArtifactRef {
+                    id: ArtifactId::new("artifact:python.native").unwrap(),
+                    kind: "n4m_model".to_string(),
+                    controller_id: controller_id.clone(),
+                    backend: None,
+                    uri: None,
+                    content_fingerprint: None,
+                    size_bytes: Some(3),
+                    plugin: None,
+                    plugin_version: None,
+                },
+                params_fingerprint: "a".repeat(64),
+                training_loss_fingerprint: None,
+            };
+            let handle = controller.hydrate_artifact_payload(&request, &[1, 2, 3]).unwrap();
+            assert_eq!(handle.handle, 41);
+            controller.release_hydrated_artifact_payload(&handle).unwrap();
+            let calls = callback
+                .bind(py)
+                .borrow()
+                .calls
+                .lock()
+                .unwrap()
+                .clone();
+            assert_eq!(calls, ["hydrate", "release"]);
+        });
+    }
 
     #[test]
     fn in_process_callback_result_preserves_closed_object_shapes() {
