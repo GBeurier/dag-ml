@@ -14,7 +14,7 @@ mod in_process;
 mod training;
 
 use dag_ml_core::{
-    build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
+    build_archive_v2_native_portable_payloads, build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
     parse_pipeline_dsl_json, CacheNamespace, CampaignSpec, ControllerManifest, ControllerRegistry,
@@ -164,6 +164,26 @@ fn sign_training_replay_request_json(json: &str) -> PyResult<String> {
     request.request_fingerprint = request.compute_fingerprint().map_err(py_core_error)?;
     request.validate().map_err(py_core_error)?;
     serde_json::to_string(&request).map_err(py_serde_error)
+}
+
+/// Assemble the opaque manifest and exact member bytes for a Core Archive V2.
+/// DAG-ML owns this contract assembly; the caller must hand the result without
+/// alteration to the Core writer, which owns ZIP storage and integrity checks.
+#[pyfunction]
+fn build_archive_v2_native_portable_payloads_json(
+    archive_id: &str,
+    outcome_json: &str,
+    package_json: &str,
+) -> PyResult<String> {
+    let outcome = TrainingOutcome::from_json(outcome_json).map_err(py_core_error)?;
+    let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
+    let payloads = build_archive_v2_native_portable_payloads(archive_id, &outcome, &package)
+        .map_err(py_core_error)?;
+    serde_json::to_string(&serde_json::json!({
+        "manifest": payloads.manifest,
+        "members": payloads.members,
+    }))
+    .map_err(py_serde_error)
 }
 
 #[pyfunction]
@@ -358,6 +378,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_function(wrap_pyfunction!(sign_training_request_json, module)?)?;
     module.add_function(wrap_pyfunction!(sign_training_replay_request_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        build_archive_v2_native_portable_payloads_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(project_training_request_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_training_contract_projection_json,
@@ -472,6 +496,7 @@ fn contract_manifest() -> serde_json::Value {
             "sample_relation_set_fingerprint_json",
             "sign_training_request_json",
             "sign_training_replay_request_json",
+            "build_archive_v2_native_portable_payloads_json",
             "project_training_request_json",
             "validate_training_contract_projection_json",
             "validate_parameter_projection_json",
