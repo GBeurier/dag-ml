@@ -13,10 +13,10 @@ exclude = ["Cargo.toml.methods-local"]
 
 [features]
 default = []
-# Published, dynamically loaded Methods runtime.  Callers must configure an
-# exact libn4m file before constructing its controllers; no link-time sibling
-# or worktree dependency is used.
 methods-optimizer = ["dep:n4m"]
+# Native integration tests are deliberately excluded from the publishable
+# manifest and run only through scripts/test_methods_optimizer_local.sh.
+methods-optimizer-local = ["methods-optimizer"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("methods-optimizer", "methods-optimizer-local"))', 'cfg(dag_ml_workspace_contract_fixtures)'] }
@@ -34,6 +34,4 @@ unicode-normalization.workspace = true
 n4m = { version = "0.1.1", default-features = false, features = ["dynamic"], optional = true }
 
 [dev-dependencies]
-# Test-only bridge: DAG-ML owns the member contracts/replay; Core is invoked
-# solely through its public opaque Archive V2 storage API.
 nirs4all_archive_core = { package = "nirs4all", version = "0.3.15" }

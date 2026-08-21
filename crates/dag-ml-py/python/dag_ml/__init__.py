@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -19,10 +20,12 @@ from ._dag_ml import (
     DagMlRuntimeError,
     DagMlSecurityError,
     DagMlValidationError,
+    LocalImplementationRegistry as _NativeLocalImplementationRegistry,
     TrainingResult as _NativeTrainingResult,
     build_execution_plan_json,
     build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
     canonical_operator_variant_label,
+    configure_methods_runtime as _native_configure_methods_runtime,
     contract_manifest_json as _native_contract_manifest_json,
     compile_pipeline_dsl_artifact_json,
     compile_pipeline_dsl_artifact_with_controllers_json,
@@ -33,7 +36,9 @@ from ._dag_ml import (
     execute_training_json as _native_execute_training_json,
     fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
+    loss_execution_attestation_json as _native_loss_execution_attestation_json,
     project_training_request_json,
+    run_cv_refit_in_process_with_training_losses as _native_run_cv_refit_in_process_with_training_losses,
     sample_relation_set_fingerprint_json,
     sign_training_replay_request_json as _native_sign_training_replay_request_json,
     sign_training_request_json as _native_sign_training_request_json,
@@ -64,6 +69,8 @@ __version__ = _native_version()
 
 _FACADE_EXPORTS = [
     "JsonContract",
+    "LocalImplementationRegistry",
+    "loss_execution_attestation",
     "GraphSpec",
     "CampaignSpec",
     "ControllerManifest",
@@ -85,6 +92,7 @@ _FACADE_EXPORTS = [
     "PortablePredictorPackage",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
+    "configure_methods_runtime",
     "build_archive_v2_native_portable_payloads",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_with_controllers",
@@ -99,6 +107,7 @@ _FACADE_EXPORTS = [
     "execute_training_json",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
+    "run_cv_refit_in_process_with_training_losses",
 ]
 
 
@@ -135,6 +144,17 @@ def _facade_contract_error(message: str) -> DagMlError:
         descriptor, sort_keys=True, separators=(",", ":")
     )
     return error
+
+
+def configure_methods_runtime(library_path: str | PathLike[str]) -> str:
+    """Configure the exact dynamically loaded Methods library for this process.
+
+    The extension must have been built with its optional ``methods-optimizer``
+    feature.  This performs no controller registration and never searches a
+    sibling checkout or the process ``PATH``.
+    """
+
+    return _native_configure_methods_runtime(str(library_path))
 
 
 class JsonContract:
@@ -364,6 +384,32 @@ def loss_execution_attestation(training_loss_role: Any, phase: str) -> dict[str,
 
     return json.loads(
         _native_loss_execution_attestation_json(_coerce_json(training_loss_role), phase)
+    )
+
+
+def run_cv_refit_in_process_with_training_losses(
+    dsl: Any,
+    envelope: Any,
+    controller_manifests: Any,
+    training_loss_roles: Any,
+    op_callback: Any,
+    selection_metric: str,
+) -> dict[str, Any]:
+    """Run one in-process CV/refit campaign with typed local-loss roles.
+
+    The native scheduler owns the plan patching and phase order.  Python owns
+    only the explicitly supplied process-local callback.
+    """
+
+    return json.loads(
+        _native_run_cv_refit_in_process_with_training_losses(
+            _coerce_json(dsl),
+            _coerce_json(envelope),
+            _coerce_json(controller_manifests),
+            _coerce_json(training_loss_roles),
+            op_callback,
+            selection_metric,
+        )
     )
 
 
@@ -1013,6 +1059,8 @@ __all__ = [
     "fan_out_data_aware_branches",
     "fan_out_data_aware_branches_json",
     "fold_set_fingerprint_json",
+    "loss_execution_attestation",
+    "run_cv_refit_in_process_with_training_losses",
     "sample_relation_set_fingerprint_json",
     "project_training_request",
     "project_training_request_json",
