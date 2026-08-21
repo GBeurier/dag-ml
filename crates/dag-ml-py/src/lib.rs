@@ -154,6 +154,18 @@ fn sign_training_request_json(json: &str) -> PyResult<String> {
     serde_json::to_string(&request).map_err(py_serde_error)
 }
 
+/// Sign a PREDICT/EXPLAIN replay authorization without exposing TCV1 details
+/// to a host binding. The host may assemble only current-cohort envelope keys
+/// and output bindings; DAG-ML remains the sole authority for fingerprinting
+/// and validation.
+#[pyfunction]
+fn sign_training_replay_request_json(json: &str) -> PyResult<String> {
+    let mut request = serde_json::from_str::<TrainingReplayRequest>(json).map_err(py_serde_error)?;
+    request.request_fingerprint = request.compute_fingerprint().map_err(py_core_error)?;
+    request.validate().map_err(py_core_error)?;
+    serde_json::to_string(&request).map_err(py_serde_error)
+}
+
 #[pyfunction]
 fn project_training_request_json(json: &str) -> PyResult<String> {
     let request = TrainingRequest::from_json(json).map_err(py_core_error)?;
@@ -345,6 +357,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(sign_training_request_json, module)?)?;
+    module.add_function(wrap_pyfunction!(sign_training_replay_request_json, module)?)?;
     module.add_function(wrap_pyfunction!(project_training_request_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_training_contract_projection_json,
@@ -458,6 +471,7 @@ fn contract_manifest() -> serde_json::Value {
             "validate_training_request_json",
             "sample_relation_set_fingerprint_json",
             "sign_training_request_json",
+            "sign_training_replay_request_json",
             "project_training_request_json",
             "validate_training_contract_projection_json",
             "validate_parameter_projection_json",
@@ -598,6 +612,26 @@ mod tests {
         assert!(request_error
             .to_string()
             .contains("duplicate field `schema_version`"));
+
+        let replay_error = sign_training_replay_request_json(
+            r#"{"schema_version":1,"schema_version":1}"#,
+        )
+        .expect_err("duplicate replay-request keys must be rejected");
+        assert!(replay_error
+            .to_string()
+            .contains("duplicate field `schema_version`"));
+    }
+
+    #[test]
+    fn replay_request_signer_owns_the_tcv1_fingerprint() {
+        let source = "a".repeat(64);
+        let raw = format!(
+            r#"{{"schema_version":1,"request_id":"replay:portable","source_outcome_fingerprint":"{source}","phase":"PREDICT","data_envelope_keys":["model:base.x"],"output_binding_ids":["output:prediction"],"request_fingerprint":"{}"}}"#,
+            "0".repeat(64),
+        );
+        let signed = sign_training_replay_request_json(&raw).unwrap();
+        let request = TrainingReplayRequest::from_json(&signed).unwrap();
+        assert_ne!(request.request_fingerprint, "0".repeat(64));
     }
 
     #[test]
