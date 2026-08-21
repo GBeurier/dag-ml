@@ -435,8 +435,14 @@ pub struct MethodsPlsDataRequest {
     /// The exact signed data-plan binding selected by the scheduler.  Native
     /// numerical adapters must not manufacture a dataset from sample IDs.
     pub binding: DataBinding,
-    /// Content identity attested by the provider for `binding`.
-    pub identity: crate::training::TrainingDataIdentity,
+    /// Complete training identity attested by the provider for `binding`.
+    ///
+    /// FIT_CV and REFIT require this evidence because they fit or score against
+    /// targets. A fresh PREDICT cohort may legitimately be X-only, in which
+    /// case the scheduler's replay-envelope path carries the nullable target
+    /// evidence and this field is `None`. No synthetic target fingerprint is
+    /// permitted to fill that gap.
+    pub identity: Option<crate::training::TrainingDataIdentity>,
     pub fit_view: DataProviderViewSpec,
     pub prediction_view: Option<DataProviderViewSpec>,
 }
@@ -444,16 +450,28 @@ pub struct MethodsPlsDataRequest {
 impl MethodsPlsDataRequest {
     pub fn validate(&self) -> Result<()> {
         self.binding.validate()?;
-        self.identity.validate()?;
-        if self.identity.requirement_key
-            != crate::data::data_binding_requirement_key(
-                &self.binding.node_id,
-                &self.binding.input_name,
-            )
-        {
-            return Err(DagMlError::RuntimeValidation(
-                "portable Methods PLS identity is not bound to its data binding".to_string(),
-            ));
+        match &self.identity {
+            Some(identity) => {
+                identity.validate()?;
+                if identity.requirement_key
+                    != crate::data::data_binding_requirement_key(
+                        &self.binding.node_id,
+                        &self.binding.input_name,
+                    )
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "portable Methods PLS identity is not bound to its data binding"
+                            .to_string(),
+                    ));
+                }
+            }
+            None if self.phase != Phase::Predict => {
+                return Err(DagMlError::RuntimeValidation(
+                    "portable Methods PLS FIT_CV/REFIT requires a target-bound training data identity"
+                        .to_string(),
+                ));
+            }
+            None => {}
         }
         self.fit_view.validate()?;
         if let Some(view) = &self.prediction_view {
@@ -528,11 +546,15 @@ impl MethodsPlsDataRequest {
 struct EnvelopeAttestation {
     binding: DataBinding,
     envelope: ExternalDataPlanEnvelope,
-    identity: crate::training::TrainingDataIdentity,
+    /// `None` is valid only for a target-free fresh PREDICT envelope. Training
+    /// execution requests the identity through `RuntimeDataProvider` and
+    /// rejects absence before any numerical controller is invoked.
+    identity: Option<crate::training::TrainingDataIdentity>,
 }
 
-/// Owns a host data provider while supplying exact, envelope-backed training
-/// attestations at the runtime trust boundary.
+/// Owns a host data provider while supplying envelope-backed identities at the
+/// runtime trust boundary. A complete training identity is available only
+/// when the envelope carries feature, target and relation fingerprints.
 ///
 /// Construction validates the complete binding/envelope set before the inner
 /// provider can be invoked. Runtime calls are delegated only when their full
@@ -595,8 +617,18 @@ impl<P> EnvelopeAttestedRuntimeDataProvider<P> {
             let envelope = envelopes
                 .remove(&key)
                 .expect("exact key coverage was checked above");
-            let identity =
-                crate::training::TrainingDataIdentity::from_binding_envelope(&binding, &envelope)?;
+            let identity = if envelope.relation_fingerprint.is_some()
+                && envelope.data_content_fingerprint.is_some()
+                && envelope.target_content_fingerprint.is_some()
+            {
+                Some(
+                    crate::training::TrainingDataIdentity::from_binding_envelope(
+                        &binding, &envelope,
+                    )?,
+                )
+            } else {
+                None
+            };
             attestations.insert(
                 key,
                 EnvelopeAttestation {
@@ -670,9 +702,7 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeData
         &self,
         binding: &DataBinding,
     ) -> Result<Option<crate::training::TrainingDataIdentity>> {
-        Ok(Some(
-            self.attestation_for_binding(binding)?.identity.clone(),
-        ))
+        Ok(self.attestation_for_binding(binding)?.identity.clone())
     }
 
     fn coordinator_relations(&self, binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
@@ -1194,6 +1224,31 @@ mod envelope_attested_provider_tests {
     }
 
     #[test]
+    fn envelope_attested_provider_preserves_target_free_predict_envelopes() {
+        let mut envelope = complete_envelope();
+        envelope.target_content_fingerprint = None;
+        let binding = binding_for("model:base", "x", &envelope);
+        let provider = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![binding.clone()],
+            envelopes_for(&binding, envelope.clone()),
+        )
+        .unwrap();
+
+        // An X-only PREDICT cohort deliberately has no training identity. It
+        // remains fully envelope-bound for materialization and relation use;
+        // FIT_CV/REFIT reject identity absence in their callers.
+        assert_eq!(provider.training_data_identity(&binding).unwrap(), None);
+        assert_eq!(
+            provider.coordinator_relations(&binding).unwrap(),
+            envelope.coordinator_relations
+        );
+        let mut request = materialization_request(&binding);
+        request.phase = Phase::Predict;
+        assert_eq!(provider.materialize(&request).unwrap().handle, 41);
+    }
+
+    #[test]
     fn envelope_attested_provider_requires_exact_envelope_coverage() {
         let envelope = complete_envelope();
         let binding = binding_for("model:base", "x", &envelope);
@@ -1260,16 +1315,52 @@ mod envelope_attested_provider_tests {
     }
 
     #[test]
-    fn envelope_attested_provider_refuses_incomplete_training_envelope() {
+    fn envelope_attested_provider_marks_incomplete_envelope_as_non_training() {
         let mut envelope = complete_envelope();
         envelope.data_content_fingerprint = None;
         let binding = binding_for("model:base", "x", &envelope);
-        let error = EnvelopeAttestedRuntimeDataProvider::new(
+        let provider = EnvelopeAttestedRuntimeDataProvider::new(
             ProbeProvider::default(),
             vec![binding.clone()],
             envelopes_for(&binding, envelope),
         )
-        .unwrap_err();
-        assert!(error.to_string().contains("data content fingerprint"));
+        .unwrap();
+        assert_eq!(provider.training_data_identity(&binding).unwrap(), None);
+    }
+
+    #[test]
+    fn methods_pls_request_allows_target_free_predict_but_not_training() {
+        let envelope = complete_envelope();
+        let binding = binding_for("model:base", "x", &envelope);
+        let predict_view = DataProviderViewSpec {
+            sample_ids: Some(vec![SampleId::new("sample:1").unwrap()]),
+            partition: DataRequestPartition::Predict,
+            fold_id: None,
+            source_ids: None,
+            columns: None,
+            include_augmented: false,
+            include_excluded: false,
+            branch_view: None,
+            extra: BTreeMap::new(),
+        };
+        let request = MethodsPlsDataRequest {
+            node_id: binding.node_id.clone(),
+            phase: Phase::Predict,
+            variant_id: None,
+            fold_id: None,
+            binding: binding.clone(),
+            identity: None,
+            fit_view: predict_view.clone(),
+            prediction_view: None,
+        };
+        request.validate().unwrap();
+
+        let mut refit = request;
+        refit.phase = Phase::Refit;
+        refit.fit_view.partition = DataRequestPartition::FullTrain;
+        let error = refit.validate().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("FIT_CV/REFIT requires a target-bound training data identity"));
     }
 }

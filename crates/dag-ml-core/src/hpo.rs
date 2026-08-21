@@ -1221,12 +1221,13 @@ mod pls_controller {
                     task.node_plan.node_id
                 )));
             };
-            let identity = provider.training_data_identity(binding)?.ok_or_else(|| {
-                DagMlError::RuntimeValidation(format!(
-                    "portable Methods PLS provider did not attest DataBinding `{}.{}`",
-                    binding.node_id, binding.input_name
-                ))
-            })?;
+            let identity = provider.training_data_identity(binding)?;
+            if task.phase != Phase::Predict && identity.is_none() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS provider did not attest target-bound DataBinding `{}.{}` for {:?}",
+                    binding.node_id, binding.input_name, task.phase
+                )));
+            }
             let fit_view = task.data_views.get("x").or_else(|| task.data_views.get("data:x")).cloned().ok_or_else(|| {
                 DagMlError::RuntimeValidation(format!(
                     "portable Methods PLS node `{}` requires its scheduler-created `x` data view (available: {:?})",
@@ -1433,6 +1434,8 @@ mod pls_controller {
                     seed: task.seed,
                     unsafe_flags: BTreeSet::new(),
                     metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
                 },
             })
         }
@@ -2226,6 +2229,7 @@ mod tests {
                 plugin_version: None,
             },
             params_fingerprint: "params:methods-pls.release".to_string(),
+            training_loss_fingerprint: None,
         };
 
         let first = controller

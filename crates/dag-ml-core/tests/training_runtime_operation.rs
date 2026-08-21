@@ -105,7 +105,7 @@ impl RuntimeController for SharedMethodsPlsController {
 }
 
 struct AttestedProvider {
-    identity: TrainingDataIdentity,
+    identity: Option<TrainingDataIdentity>,
     relations: SampleRelationSet,
     contradictory_relations: Option<SampleRelationSet>,
     omit_relations: bool,
@@ -138,7 +138,7 @@ impl RuntimeDataProvider for AttestedProvider {
         &self,
         _binding: &DataBinding,
     ) -> Result<Option<TrainingDataIdentity>> {
-        Ok(Some(self.identity.clone()))
+        Ok(self.identity.clone())
     }
 
     fn coordinator_relations(&self, _binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
@@ -1016,7 +1016,7 @@ fn controllers(
 
 fn provider(fixture: &Fixture) -> AttestedProvider {
     AttestedProvider {
-        identity: fixture.request.data_identities[0].clone(),
+        identity: Some(fixture.request.data_identities[0].clone()),
         relations: fixture.relations.clone(),
         contradictory_relations: None,
         omit_relations: false,
@@ -2293,6 +2293,35 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         }
     }
 
+    // A fresh inference cohort is intentionally target-free. The exact same
+    // native N4MM controller must accept it without replacing the absent
+    // target identity with a training-time sentinel.
+    let mut target_free_provider = provider(&fixture);
+    target_free_provider.identity = None;
+    let mut target_free_envelopes = replay_envelopes_with_relation(&source, &"a".repeat(64));
+    for envelope in target_free_envelopes.values_mut() {
+        envelope.target_content_fingerprint = None;
+    }
+    let target_free = execute_attached_training_replay(AttachedTrainingReplayInput {
+        source: &source,
+        request: &request,
+        outcome_id: "replay:methods-hpo.n4mm.target-free".to_string(),
+        run_id: RunId::new("run:methods-hpo.replay.target-free").unwrap(),
+        controllers: &fresh_controllers,
+        data_provider: &target_free_provider,
+        artifact_store: &empty_fallback_store,
+        data_envelopes: &target_free_envelopes,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("fresh native Methods PREDICT must accept an X-only cohort");
+    assert!(target_free
+        .input_data_identities
+        .iter()
+        .all(|identity| identity.target_content_fingerprint.is_none()));
+    assert_eq!(target_free.outputs[0].predictions[0], *actual);
+    assert_eq!(methods_controller.hydrated_payload_count().unwrap(), 0);
+
     // Hydrated handles are invocation-local and consumed once. Reusing the
     // same otherwise-fresh registry must hydrate a distinct capability from
     // the durable bundle rather than depend on state left by the first replay.
@@ -2494,7 +2523,10 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     assert_eq!(loaded_replay.outputs[0].predictions[0], *actual);
     assert_eq!(
         fresh_state.count(Phase::Predict, "transform:snv"),
-        failed_replay_transform_calls + 3
+        // target-bound, target-free, repeated attached, then loaded-package
+        // replay all use the same fresh registry; the Core archive route owns
+        // a separate registry below.
+        failed_replay_transform_calls + 4
     );
     assert_eq!(methods_controller.hydrated_payload_count().unwrap(), 0);
 }
@@ -3722,7 +3754,7 @@ fn provider_identity_and_relation_mismatches_fail_before_controllers() {
     bad_identity.identity_fingerprint = "0".repeat(64);
     bad_identity.identity_fingerprint = bad_identity.compute_fingerprint().unwrap();
     let bad_identity_provider = AttestedProvider {
-        identity: bad_identity,
+        identity: Some(bad_identity),
         relations: fixture.relations.clone(),
         contradictory_relations: None,
         omit_relations: false,
@@ -3740,7 +3772,7 @@ fn provider_identity_and_relation_mismatches_fail_before_controllers() {
     let mut contradictory = relations();
     contradictory.records.pop();
     let bad_relations_provider = AttestedProvider {
-        identity: fixture.request.data_identities[0].clone(),
+        identity: Some(fixture.request.data_identities[0].clone()),
         relations: fixture.relations.clone(),
         contradictory_relations: Some(contradictory),
         omit_relations: false,
