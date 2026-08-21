@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Run the unpublished n4m integration without putting its pinned Git dependency
-# in the publishable dag-ml-core manifest. The trap restores both files
-# byte-for-byte so this is safe in a developer checkout with unrelated changes.
+# Run native Methods integration without putting a local runtime or linker
+# dependency in the publishable dag-ml-core manifest. The trap restores both
+# files byte-for-byte so this is safe in a developer checkout with unrelated
+# changes.
 set -euo pipefail
 
-readonly N4M_METHODS_PIN="0ef355e6f74573ed07a6920bdeed1a052a6e8312"
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 core_manifest="$repo_root/crates/dag-ml-core/Cargo.toml"
 local_manifest="$repo_root/crates/dag-ml-core/Cargo.toml.methods-local"
-methods_root=${N4M_METHODS_REPO:-}
-methods_sha=${N4M_BINDING_SHA:-$N4M_METHODS_PIN}
+library_path=${N4M_LIBRARY_PATH:-}
 probe_only=false
 
 if [[ "${1:-}" == "--probe" ]]; then
@@ -21,50 +20,24 @@ if [[ ! -f "$local_manifest" ]]; then
   echo "missing Methods-local manifest overlay: $local_manifest" >&2
   exit 2
 fi
-if [[ -z "$methods_root" ]]; then
-  echo "N4M_METHODS_REPO must explicitly point to the pinned nirs4all-methods checkout" >&2
+if [[ -z "$library_path" ]]; then
+  echo "N4M_LIBRARY_PATH must explicitly name the libn4m shared-library file" >&2
   exit 2
 fi
-if [[ ! -d "$methods_root" ]]; then
-  echo "N4M_METHODS_REPO must point to a nirs4all-methods checkout (got $methods_root)" >&2
+if [[ "$library_path" != /* ]]; then
+  echo "N4M_LIBRARY_PATH must be an absolute path" >&2
   exit 2
 fi
-methods_root=$(cd "$methods_root" && pwd -P)
-if [[ ! -f "$methods_root/bindings/rust/n4m/Cargo.toml" ]]; then
-  echo "N4M_METHODS_REPO must point to a nirs4all-methods checkout (got $methods_root)" >&2
-  exit 2
-fi
-if [[ ! "$methods_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
-  echo "N4M_BINDING_SHA must be a full 40-character commit SHA" >&2
-  exit 2
-fi
-methods_sha=${methods_sha,,}
-if [[ "$methods_sha" != "$N4M_METHODS_PIN" ]]; then
-  echo "N4M_BINDING_SHA must match the reviewed Methods pin $N4M_METHODS_PIN" >&2
-  exit 2
-fi
-if ! actual_binding_sha=$(git -C "$methods_root" rev-parse HEAD 2>/dev/null); then
-  echo "N4M_METHODS_REPO must be a Git checkout at $N4M_METHODS_PIN" >&2
-  exit 2
-fi
-if [[ "$actual_binding_sha" != "$methods_sha" ]]; then
-  echo "Methods binding SHA mismatch: expected $methods_sha, got $actual_binding_sha" >&2
-  exit 2
-fi
-if [[ -n "$(git -C "$methods_root" status --porcelain=v1 --untracked-files=all -- \
-  Cargo.toml Cargo.lock CMakeLists.txt Makefile cmake cpp bindings/rust/n4m)" ]]; then
-  echo "pinned Methods build or binding inputs are dirty in $methods_root" >&2
+if [[ ! -f "$library_path" ]]; then
+  echo "N4M_LIBRARY_PATH must name a regular libn4m file (got $library_path)" >&2
   exit 2
 fi
 if [[ "$probe_only" == true ]]; then
-  printf 'N4M_METHODS_REPO=%s\n' "$methods_root"
-  printf 'N4M_BINDING_SHA=%s\n' "$methods_sha"
+  printf 'N4M_LIBRARY_PATH=%s\n' "$library_path"
   exit 0
 fi
-if [[ -z "${N4M_LIB_DIR:-}" ]]; then
-  echo "N4M_LIB_DIR must point to the directory containing libn4m.so (or platform equivalent)" >&2
-  exit 2
-fi
+
+export N4M_LIBRARY_PATH="$library_path"
 
 manifest_backup=$(mktemp)
 lock_backup=$(mktemp)

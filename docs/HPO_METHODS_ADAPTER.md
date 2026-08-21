@@ -88,38 +88,35 @@ creates a fresh invocation-local handle, and then predicts. This lets a
 JSON-deserialized outcome replay in a new process/controller without retaining
 the refit controller's in-memory handles.
 
-The publishable `dag-ml-core/Cargo.toml` has no Methods feature or sibling path
-dependency, so standalone default builds and extracted crates do not require a
-Methods checkout. The isolated overlay resolves the unpublished `n4m` crate
-from the reviewed Methods commit
-`0ef355e6f74573ed07a6920bdeed1a052a6e8312`; it never follows a branch. Until
-the official `n4m` crate is published, this is a local prerelease integration
-only. Build that exact checkout, then run the overlay from the workspace root:
+The publishable `dag-ml-core/Cargo.toml` offers an opt-in
+`methods-optimizer` feature backed by the published dynamic `n4m` 0.1.1
+binding. Default builds and extracted crates do not link, load, or require a
+Methods checkout. A caller must explicitly configure an absolute `libn4m`
+file through `MethodsRuntime::configure` before constructing either Methods
+controller; there is no `PATH`, current-directory, sibling-checkout, or
+legacy fallback.
+
+The local integration overlay adds only test selection. It uses the release
+source commit `aabdecfdd76d1a4d12cfbbade4eeee0d30a6ea47` to build the explicit
+runtime file, but resolves the Rust binding from crates.io. Build that checkout
+and invoke the helper from the workspace root:
 
 ```bash
-METHODS_SHA=0ef355e6f74573ed07a6920bdeed1a052a6e8312
+METHODS_SHA=aabdecfdd76d1a4d12cfbbade4eeee0d30a6ea47
 git -C /absolute/path/to/nirs4all-methods fetch --depth=1 origin "$METHODS_SHA"
 git -C /absolute/path/to/nirs4all-methods checkout --detach "$METHODS_SHA"
 make -C /absolute/path/to/nirs4all-methods build PRESET=dev-release
 
-N4M_BINDING_SHA="$METHODS_SHA" \
-N4M_METHODS_REPO=/absolute/path/to/nirs4all-methods \
-N4M_LIB_DIR=/absolute/path/to/nirs4all-methods/build/dev-release/cpp/src \
+N4M_LIBRARY_PATH=/absolute/path/to/nirs4all-methods/build/dev-release/cpp/src/libn4m.so \
 LD_LIBRARY_PATH=/absolute/path/to/nirs4all-methods/build/dev-release/cpp/src${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
 dag-ml/scripts/test_methods_optimizer_local.sh
 ```
 
-The helper canonicalizes `N4M_METHODS_REPO`, requires the checkout HEAD to equal
-the reviewed SHA, and refuses a missing, malformed, overridden, non-Git,
-mismatched, or dirty build/binding source. `--probe` performs those checks and
-prints the canonical checkout path and SHA without requiring a native library.
-The helper temporarily overlays the feature-only manifest, runs feature-local
-clippy with `-D warnings`, and restores the normal manifest and lockfile
-byte-for-byte. CI checks out and builds the same immutable SHA; default CI does
-not link or resolve Methods.
-**Do not publish a dag-ml release enabling this feature until the official
-`n4m` crate is published and the Methods ABI identity can be obtained from its
-public binding API.**
+The helper refuses a missing, relative, or non-file `N4M_LIBRARY_PATH`; `--probe`
+checks exactly that boundary without loading native code. It temporarily overlays
+the test-only manifest, runs feature-local clippy with `-D warnings`, and restores
+the primary manifest and lockfile byte-for-byte. CI builds the same immutable
+Methods source commit and passes only the resulting absolute library path.
 
 ## Checkpoint contract
 
