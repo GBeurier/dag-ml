@@ -1691,6 +1691,41 @@ mod pls_controller {
 #[cfg(feature = "methods-optimizer")]
 pub use pls_controller::MethodsPlsController;
 
+/// Register the complete native Methods controller pair for one process.
+///
+/// The caller supplies the already-configured runtime and the controller id
+/// attested by its native HPO campaign.  Registration is preflighted before
+/// mutating the registry, so a duplicate id cannot leave a half-registered
+/// Methods runtime behind.  No study, model, or artifact handle is created by
+/// this operation.
+#[cfg(feature = "methods-optimizer")]
+pub fn register_methods_runtime_controllers(
+    registry: &mut crate::runtime::RuntimeControllerRegistry,
+    hpo_controller_id: crate::ControllerId,
+    runtime: MethodsRuntime,
+) -> crate::Result<()> {
+    let pls_controller_id = crate::ControllerId::new(METHODS_PLS_CONTROLLER_ID)
+        .expect("the fixed Methods PLS controller id is valid");
+    if hpo_controller_id == pls_controller_id {
+        return Err(crate::DagMlError::RuntimeValidation(
+            "Methods HPO controller id must differ from the Methods PLS controller id".to_string(),
+        ));
+    }
+    for controller_id in [&pls_controller_id, &hpo_controller_id] {
+        if registry.get(controller_id).is_some() {
+            return Err(crate::DagMlError::RuntimeValidation(format!(
+                "duplicate runtime controller `{controller_id}`"
+            )));
+        }
+    }
+    registry.register(Box::new(MethodsPlsController::new(runtime.clone())))?;
+    registry.register(Box::new(MethodsHpoController::new(
+        hpo_controller_id,
+        runtime,
+    )))?;
+    Ok(())
+}
+
 #[cfg(feature = "methods-optimizer")]
 mod native {
     use super::*;
@@ -2272,6 +2307,26 @@ mod tests {
             Err(HpoError::RuntimeConfiguration { reason })
                 if reason == "libn4m path must be absolute"
         ));
+    }
+
+    #[cfg(feature = "methods-optimizer-local")]
+    #[test]
+    fn methods_runtime_registers_both_controllers_atomically() {
+        let runtime = native_runtime();
+        let hpo_id = crate::ControllerId::new("controller:tuner.methods").unwrap();
+        let mut registry = RuntimeControllerRegistry::new();
+
+        register_methods_runtime_controllers(&mut registry, hpo_id.clone(), runtime.clone())
+            .unwrap();
+        let pls_id = crate::ControllerId::new(METHODS_PLS_CONTROLLER_ID).unwrap();
+        assert!(registry.get(&pls_id).is_some());
+        assert!(registry.get(&hpo_id).is_some());
+
+        let error = register_methods_runtime_controllers(&mut registry, hpo_id.clone(), runtime)
+            .unwrap_err();
+        assert!(error.to_string().contains("duplicate runtime controller"));
+        assert!(registry.get(&pls_id).is_some());
+        assert!(registry.get(&hpo_id).is_some());
     }
 
     #[cfg(feature = "methods-optimizer-local")]
