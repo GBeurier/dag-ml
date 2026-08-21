@@ -45,6 +45,13 @@ fn archive_path(name: &str) -> PathBuf {
     ))
 }
 
+#[cfg(feature = "methods-optimizer-local")]
+fn methods_runtime() -> MethodsRuntime {
+    let library_path = std::env::var_os("N4M_LIBRARY_PATH")
+        .expect("methods native tests require an explicit N4M_LIBRARY_PATH");
+    MethodsRuntime::configure(library_path).expect("configure explicit Methods test runtime")
+}
+
 impl CallState {
     fn count(&self, phase: Phase, node: &str) -> usize {
         self.calls
@@ -975,7 +982,7 @@ fn controllers(
     {
         #[cfg(feature = "methods-optimizer-local")]
         controllers
-            .register(Box::new(MethodsPlsController::new()))
+            .register(Box::new(MethodsPlsController::new(methods_runtime())))
             .unwrap();
     } else if complete {
         controllers
@@ -998,6 +1005,7 @@ fn controllers(
         controllers
             .register(Box::new(MethodsHpoController::new(
                 ControllerId::new("controller:tuner.methods").unwrap(),
+                methods_runtime(),
             )))
             .unwrap();
         #[cfg(not(feature = "methods-optimizer-local"))]
@@ -2297,7 +2305,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     let source = TrainingOutcome::from_json(&serde_json::to_string(&source).unwrap()).unwrap();
     let request = replay_request(&source, Phase::Predict);
     let fresh_state = Arc::new(CallState::default());
-    let methods_controller = Arc::new(MethodsPlsController::new());
+    let methods_controller = Arc::new(MethodsPlsController::new(methods_runtime()));
     let mut fresh_controllers = controllers(&fixture, fresh_state.clone(), false);
     fresh_controllers
         .register(Box::new(SharedMethodsPlsController(
@@ -2501,7 +2509,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         })
         .unwrap();
     let archive_replay_state = Arc::new(CallState::default());
-    let archive_methods = Arc::new(MethodsPlsController::new());
+    let archive_methods = Arc::new(MethodsPlsController::new(methods_runtime()));
     let mut archive_controllers = controllers(&fixture, archive_replay_state, false);
     archive_controllers
         .register(Box::new(SharedMethodsPlsController(

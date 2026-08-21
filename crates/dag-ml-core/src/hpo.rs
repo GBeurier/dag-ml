@@ -63,6 +63,9 @@ pub struct HpoNativeError {
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum HpoError {
     MethodsOptimizerFeatureDisabled,
+    RuntimeConfiguration {
+        reason: String,
+    },
     InvalidManifest {
         reason: String,
     },
@@ -95,8 +98,11 @@ impl std::fmt::Display for HpoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MethodsOptimizerFeatureDisabled => f.write_str(
-                "Methods optimizer support is disabled; `methods-optimizer` is available only to dag-ml-core's local native test harness",
+                "Methods optimizer support is disabled; enable the published `methods-optimizer` feature",
             ),
+            Self::RuntimeConfiguration { reason } => {
+                write!(f, "invalid Methods runtime configuration: {reason}")
+            }
             Self::InvalidManifest { reason } => write!(f, "invalid HPO manifest: {reason}"),
             Self::InvalidSearchSpace { reason } => write!(f, "invalid HPO search space: {reason}"),
             Self::InvalidTrial { reason } => write!(f, "invalid native HPO trial: {reason}"),
@@ -316,9 +322,9 @@ impl HpoSearchSpace {
     }
 }
 
-/// Configuration that creates one official native optimizer. The optional
-/// dependency is intentionally local/provisional: `n4m` is not on crates.io;
-/// production builds must supply the matching libn4m through its build script.
+/// Configuration that creates one official native optimizer. The production
+/// binding is dynamically loaded from an explicit caller-supplied library
+/// path; it never links to a sibling checkout at build time.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MethodsHpoStudyConfig {
@@ -333,7 +339,7 @@ pub struct MethodsHpoStudyConfig {
 }
 
 impl MethodsHpoStudyConfig {
-    #[cfg(feature = "methods-optimizer-local")]
+    #[cfg(feature = "methods-optimizer")]
     fn methods_abi_identity(&self) -> HpoResult<String> {
         if self.methods_abi.trim().is_empty() {
             return Err(HpoError::InvalidManifest {
@@ -359,7 +365,7 @@ pub struct HpoOptimizerConfig {
 }
 
 impl HpoOptimizerConfig {
-    #[cfg(feature = "methods-optimizer-local")]
+    #[cfg(feature = "methods-optimizer")]
     fn fingerprint(&self) -> HpoResult<String> {
         let json = serde_json::to_string(self).map_err(|error| HpoError::InvalidManifest {
             reason: error.to_string(),
@@ -502,7 +508,7 @@ pub struct HpoTrial {
 /// spelling without changing any optimizer decision.  Everything except a
 /// score remains byte-for-byte structural evidence; score comparisons are
 /// deliberately limited to one ULP below.
-#[cfg(any(test, feature = "methods-optimizer-local"))]
+#[cfg(any(test, feature = "methods-optimizer"))]
 fn canonical_hpo_terminal_ledger(trials: Vec<HpoTrial>) -> crate::Result<Vec<HpoTrial>> {
     let json = serde_json::to_string(&trials)?;
     parse_typed_json(&json).map_err(|error| {
@@ -513,7 +519,7 @@ fn canonical_hpo_terminal_ledger(trials: Vec<HpoTrial>) -> crate::Result<Vec<Hpo
     Ok(serde_json::from_str(&json)?)
 }
 
-#[cfg(any(test, feature = "methods-optimizer-local"))]
+#[cfg(any(test, feature = "methods-optimizer"))]
 fn scores_within_one_ulp(left: f64, right: f64) -> bool {
     if left == right {
         return true;
@@ -532,7 +538,7 @@ fn scores_within_one_ulp(left: f64, right: f64) -> bool {
     (ordered(left) - ordered(right)).abs() <= 1
 }
 
-#[cfg(any(test, feature = "methods-optimizer-local"))]
+#[cfg(any(test, feature = "methods-optimizer"))]
 fn optional_scores_within_one_ulp(left: Option<f64>, right: Option<f64>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => scores_within_one_ulp(left, right),
@@ -541,7 +547,7 @@ fn optional_scores_within_one_ulp(left: Option<f64>, right: Option<f64>) -> bool
     }
 }
 
-#[cfg(any(test, feature = "methods-optimizer-local"))]
+#[cfg(any(test, feature = "methods-optimizer"))]
 fn hpo_terminal_trials_match(native: &[HpoTrial], persisted: &[HpoTrial]) -> bool {
     native.len() == persisted.len()
         && native.iter().zip(persisted).all(|(native, persisted)| {
@@ -704,7 +710,7 @@ pub struct N4moptCheckpointArtifact {
 }
 
 impl N4moptCheckpointArtifact {
-    #[cfg(feature = "methods-optimizer-local")]
+    #[cfg(feature = "methods-optimizer")]
     fn new(
         binding: HpoStudyBinding,
         methods_abi: String,
@@ -795,11 +801,11 @@ fn payload_sha256(payload: &[u8]) -> String {
 /// A default-build preflight that fails before allocation, host data work, or
 /// any attempted replacement optimizer.
 pub fn methods_optimizer_preflight() -> HpoResult<()> {
-    #[cfg(feature = "methods-optimizer-local")]
+    #[cfg(feature = "methods-optimizer")]
     {
         Ok(())
     }
-    #[cfg(not(feature = "methods-optimizer-local"))]
+    #[cfg(not(feature = "methods-optimizer"))]
     {
         Err(HpoError::MethodsOptimizerFeatureDisabled)
     }
@@ -811,22 +817,82 @@ pub fn methods_optimizer_preflight() -> HpoResult<()> {
 /// by a fixture or a replacement implementation.
 pub const METHODS_PLS_CONTROLLER_ID: &str = "controller:methods.pls";
 
-/// Factory controller for the native optimizer.  It is deliberately distinct
-/// from the PLS model controller: only this registered tuner controller may
-/// create the thread-affine `MethodsHpoStudy` used by training.
-#[cfg(feature = "methods-optimizer-local")]
-pub struct MethodsHpoController {
-    id: crate::ControllerId,
+/// Process-scoped binding to the exact Methods shared library used by native
+/// controllers. The official `n4m` binding refuses a second, different
+/// library, so a caller must configure this before constructing any Methods
+/// controller. Relative paths, PATH lookup, and a sibling/worktree fallback
+/// are deliberately not supported.
+#[cfg(feature = "methods-optimizer")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MethodsRuntime {
+    library_path: std::path::PathBuf,
 }
 
-#[cfg(feature = "methods-optimizer-local")]
-impl MethodsHpoController {
-    pub fn new(id: crate::ControllerId) -> Self {
-        Self { id }
+#[cfg(feature = "methods-optimizer")]
+impl MethodsRuntime {
+    pub fn configure(library_path: impl AsRef<std::path::Path>) -> HpoResult<Self> {
+        let library_path = library_path.as_ref();
+        if !library_path.is_absolute() {
+            return Err(HpoError::RuntimeConfiguration {
+                reason: "libn4m path must be absolute".to_string(),
+            });
+        }
+        let canonical = std::fs::canonicalize(library_path).map_err(|error| {
+            HpoError::RuntimeConfiguration {
+                reason: format!(
+                    "cannot resolve libn4m path `{}`: {error}",
+                    library_path.display()
+                ),
+            }
+        })?;
+        let metadata =
+            std::fs::metadata(&canonical).map_err(|error| HpoError::RuntimeConfiguration {
+                reason: format!(
+                    "cannot inspect libn4m path `{}`: {error}",
+                    canonical.display()
+                ),
+            })?;
+        if !metadata.is_file() {
+            return Err(HpoError::RuntimeConfiguration {
+                reason: format!(
+                    "libn4m path `{}` is not a regular file",
+                    canonical.display()
+                ),
+            });
+        }
+        n4m::configure_library(&canonical).map_err(|error| HpoError::RuntimeConfiguration {
+            reason: format!("cannot load libn4m `{}`: {error}", canonical.display()),
+        })?;
+        Ok(Self {
+            library_path: canonical,
+        })
+    }
+
+    pub fn library_path(&self) -> &std::path::Path {
+        &self.library_path
     }
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+/// Factory controller for the native optimizer.  It is deliberately distinct
+/// from the PLS model controller: only this registered tuner controller may
+/// create the thread-affine `MethodsHpoStudy` used by training.
+#[cfg(feature = "methods-optimizer")]
+pub struct MethodsHpoController {
+    id: crate::ControllerId,
+    _runtime: MethodsRuntime,
+}
+
+#[cfg(feature = "methods-optimizer")]
+impl MethodsHpoController {
+    pub fn new(id: crate::ControllerId, runtime: MethodsRuntime) -> Self {
+        Self {
+            id,
+            _runtime: runtime,
+        }
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
 impl crate::runtime::RuntimeController for MethodsHpoController {
     fn controller_id(&self) -> &crate::ControllerId {
         &self.id
@@ -893,14 +959,14 @@ impl crate::runtime::RuntimeController for MethodsHpoController {
     }
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 struct MethodsHpoSession {
     study: MethodsHpoStudy,
     context: crate::runtime::RuntimeHpoExecutionContext,
     controller_id: crate::ControllerId,
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 impl crate::runtime::RuntimeTunerSession for MethodsHpoSession {
     fn trial_history_len(&self) -> crate::Result<u32> {
         let count = self
@@ -1133,7 +1199,7 @@ impl crate::runtime::RuntimeTunerSession for MethodsHpoSession {
     }
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 mod pls_controller {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1157,6 +1223,7 @@ mod pls_controller {
     /// scheduler transfers them into the execution bundle.
     pub struct MethodsPlsController {
         id: ControllerId,
+        _runtime: MethodsRuntime,
         next_handle: AtomicU64,
         /// Refit export is a one-shot transfer into the bundle.  It is never
         /// consulted by replay and is removed immediately by the scheduler.
@@ -1167,17 +1234,12 @@ mod pls_controller {
         hydrated_n4mm_by_handle: Mutex<BTreeMap<u64, Vec<u8>>>,
     }
 
-    impl Default for MethodsPlsController {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
     impl MethodsPlsController {
-        pub fn new() -> Self {
+        pub fn new(runtime: MethodsRuntime) -> Self {
             Self {
                 id: ControllerId::new(METHODS_PLS_CONTROLLER_ID)
                     .expect("Methods PLS controller id is valid"),
+                _runtime: runtime,
                 next_handle: AtomicU64::new(0),
                 exported_n4mm_by_artifact: Mutex::new(BTreeMap::new()),
                 hydrated_n4mm_by_handle: Mutex::new(BTreeMap::new()),
@@ -1626,10 +1688,10 @@ mod pls_controller {
     }
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 pub use pls_controller::MethodsPlsController;
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 mod native {
     use super::*;
     use n4m::{
@@ -2156,7 +2218,7 @@ mod native {
     }
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 use native::MethodsHpoStudy;
 
 #[cfg(test)]
@@ -2182,11 +2244,19 @@ mod tests {
         RuntimeHpoIntermediateOutcome, RuntimeHpoProvenance, RuntimeHpoSelectionTarget,
         RuntimeHpoTerminal,
     };
+
+    #[cfg(feature = "methods-optimizer-local")]
+    fn native_runtime() -> MethodsRuntime {
+        let library_path = std::env::var_os("N4M_LIBRARY_PATH")
+            .expect("methods native tests require an explicit N4M_LIBRARY_PATH");
+        MethodsRuntime::configure(library_path).expect("configure explicit Methods test runtime")
+    }
+
     #[test]
     fn default_build_refuses_before_any_native_or_host_work() {
         assert_eq!(
             methods_optimizer_preflight(),
-            if cfg!(feature = "methods-optimizer-local") {
+            if cfg!(feature = "methods-optimizer") {
                 Ok(())
             } else {
                 Err(HpoError::MethodsOptimizerFeatureDisabled)
@@ -2194,9 +2264,20 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "methods-optimizer")]
+    #[test]
+    fn methods_runtime_refuses_relative_library_paths_before_native_loading() {
+        assert!(matches!(
+            MethodsRuntime::configure("libn4m.so"),
+            Err(HpoError::RuntimeConfiguration { reason })
+                if reason == "libn4m path must be absolute"
+        ));
+    }
+
     #[cfg(feature = "methods-optimizer-local")]
     #[test]
     fn methods_pls_hydrated_payload_release_is_idempotent_and_handle_local() {
+        let runtime = native_runtime();
         let context = n4m::Context::new().unwrap();
         let mut config = n4m::Config::new().unwrap();
         config.set_n_components(1).unwrap();
@@ -2208,7 +2289,7 @@ mod tests {
             .unwrap()
             .export_n4mm()
             .unwrap();
-        let controller = MethodsPlsController::new();
+        let controller = MethodsPlsController::new(runtime);
         let controller_id = controller.controller_id().clone();
         let request = ArtifactMaterializationRequest {
             run_id: crate::RunId::new("run:methods-pls.release").unwrap(),
@@ -2504,11 +2585,15 @@ mod tests {
     #[cfg(feature = "methods-optimizer-local")]
     #[test]
     fn registered_methods_session_checkpoints_restores_and_refuses_tampering() {
+        let runtime = native_runtime();
         let (plan, context, task) = attested_native_hpo_context();
         let controller_id = task.controller_id.clone();
         let mut controllers = RuntimeControllerRegistry::new();
         controllers
-            .register(Box::new(MethodsHpoController::new(controller_id.clone())))
+            .register(Box::new(MethodsHpoController::new(
+                controller_id.clone(),
+                runtime,
+            )))
             .unwrap();
         let controller = controllers.get(&controller_id).unwrap();
 
@@ -2661,6 +2746,7 @@ mod tests {
     #[cfg(feature = "methods-optimizer-local")]
     #[test]
     fn real_n4m_lifecycle_batch_trials_best_and_checkpoint() {
+        let _runtime = native_runtime();
         let config = native_config();
         let mut study = MethodsHpoStudy::create(config.clone()).unwrap();
         let batch = study.ask_batch(2).unwrap();
@@ -2708,6 +2794,7 @@ mod tests {
     #[cfg(feature = "methods-optimizer-local")]
     #[test]
     fn real_tpe_pruner_failure_trace_and_checkpoint_resume_are_native() {
+        let _runtime = native_runtime();
         let mut config = native_config();
         config.optimizer.sampler = HpoSampler::Tpe;
         config.optimizer.pruner = HpoPruner::Median;
@@ -2779,6 +2866,7 @@ mod tests {
     #[cfg(feature = "methods-optimizer-local")]
     #[test]
     fn malformed_checkpoint_reaches_native_n4mopt_decoder_as_typed_error() {
+        let _runtime = native_runtime();
         let config = native_config();
         let study = MethodsHpoStudy::create(config.clone()).unwrap();
         let mut checkpoint = study.save_checkpoint().unwrap();
