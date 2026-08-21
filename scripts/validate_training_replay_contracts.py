@@ -1807,6 +1807,23 @@ def validate_schema_contracts(
         == 3,
         "training-replay ReplayOutcome V3 schema drifted",
     )
+    targetless_with_intervals = copy.deepcopy(
+        _load("training_replay_outcome_predict_unlabeled.v3.json")
+    )
+    targetless_with_intervals["conformal_intervals"] = [{}]
+    try:
+        validate_draft_2020_instance(
+            targetless_with_intervals,
+            outcome_v3_schema,
+            registry,
+            "outcome.predict-unlabeled-with-intervals",
+        )
+    except ContractError:
+        pass
+    else:
+        raise ContractError(
+            "training-replay V3 schema accepted conformal intervals for target-free evidence"
+        )
     node_v1 = _schema(
         schemas,
         "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json",

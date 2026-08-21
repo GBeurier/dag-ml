@@ -33,6 +33,25 @@
     "diagnostics": {"type": "object", "additionalProperties": true},
     "outcome_fingerprint": {"$ref": "#/$defs/sha"}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "input_data_identities": {
+            "contains": {
+              "type": "object",
+              "required": ["target_content_fingerprint"],
+              "properties": {"target_content_fingerprint": {"type": "null"}}
+            }
+          }
+        },
+        "required": ["input_data_identities"]
+      },
+      "then": {
+        "properties": {"conformal_intervals": {"maxItems": 0}}
+      }
+    }
+  ],
   "$defs": {
     "id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_.:-]+$"},
     "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
