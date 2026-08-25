@@ -116,6 +116,17 @@ class TrainingResult:
         warnings: list[str] | None = None,
         diagnostics: dict[str, Any] | None = None,
     ) -> TrainingReplayOutcome: ...
+    def attach_conformal_calibration(
+        self,
+        replay: Any,
+        *,
+        binding_id: str,
+        calibration_relations: Any,
+        truth: Any,
+        coverages: Any,
+        multi_target_policy: str = "marginal",
+        small_sample_policy: str = "error",
+    ) -> dict[str, Any]: ...
 
 class FoldSet(JsonContract):
     def fingerprint(self) -> str: ...
