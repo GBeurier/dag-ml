@@ -11,6 +11,11 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Fixed
 
+- Release patch 0.3.6: the published Python Methods runtime now registers the
+  native HPO controller alongside the PLS controller when an attested Methods
+  HPO campaign requests it, preserving controller-owned scheduling, checkpoint
+  and resume semantics.
+
 - Release patch 0.3.5: public Python Methods PLS training and stateless native
   package replay now expose the portable runtime path without a host callback.
 
