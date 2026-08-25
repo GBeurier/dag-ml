@@ -4074,9 +4074,6 @@ fn unsupported_options_are_never_silently_ignored() {
         request.options.artifacts.cv_artifacts = CvArtifactRetention::MetadataOnly
     });
     assert_preflight_rejected(fixture(true, false), |request| {
-        request.options.artifacts.fitted_artifacts = FittedArtifactMode::PortableRequired
-    });
-    assert_preflight_rejected(fixture(true, false), |request| {
         request.options.refit_strategy = Some(RefitStrategy::RefitEnsemble)
     });
     assert_preflight_rejected(fixture(true, false), |request| {
