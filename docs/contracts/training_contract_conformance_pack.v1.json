@@ -171,7 +171,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/training.rs",
-      "sha256": "b07af6f7ccaadf3605ee7b85f3e0b5b96b9f930953f2df42f9592aab5d2b33b2",
+      "sha256": "2be785543799a0740229efd9f1e7717f52fdaa867fcd4a8889095f40df7f08c8",
       "kind": "native_contract"
     },
     {
@@ -241,7 +241,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "20fc7348723e5b42eff267ebec59795d7e7238f9d29c7862f93e4ba7c5b7e03d",
+      "sha256": "eb0a112b7649f8c18ab6c01d89ca7060133a8953a6ba76d3552c74ed5e97a857",
       "kind": "c_abi_snapshot"
     },
     {
@@ -481,7 +481,7 @@
     },
     {
       "path": "scripts/smoke_python_bindings.py",
-      "sha256": "d798ad3d4c6077cf6b19e398c94597c1e56c3d887b363d631f4eaa9c13610b24",
+      "sha256": "05debb701257429db0c63cbe37d82867f7ce560168edd1d56e1d699bec9f122f",
       "kind": "binding_smoke"
     },
     {
@@ -569,5 +569,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "117fd93d655fccca92b5537446b9fa1b8d5993a668e9dbadeddde978d3728ecc"
+  "pack_checksum": "ec6fc96518a32ef92fd95a566948e28fb28ce7292abf0a83a278aff6bc0dbf73"
 }

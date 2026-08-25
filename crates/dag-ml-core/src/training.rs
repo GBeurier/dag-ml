@@ -969,7 +969,7 @@ pub struct TrainingRequest {
     /// execution plan before controller tasks are constructed.  They remain
     /// optional for existing V1 requests, whose canonical meaning is no
     /// process-local training loss.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub training_losses: Vec<TrainingLossRoleReference>,
     pub options: TrainingOptions,
     pub request_fingerprint: String,
