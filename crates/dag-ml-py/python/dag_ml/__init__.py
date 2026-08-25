@@ -617,6 +617,43 @@ class TrainingResult:
             )
         )
 
+    def attach_conformal_calibration(
+        self,
+        replay: Any,
+        *,
+        binding_id: str,
+        calibration_relations: Any,
+        truth: Any,
+        context: Any,
+        coverages: Any,
+        multi_target_policy: str = "marginal",
+        small_sample_policy: str = "error",
+    ) -> dict[str, Any]:
+        """Attach native identity-bound split-conformal state to this result.
+
+        The inputs are typed, self-validating DAG-ML contracts. Python passes
+        them to the native coordinator unchanged; it never calculates
+        residuals, quantiles, or interval bounds itself.
+        """
+
+        replay_outcome = TrainingReplayOutcome(replay)
+        payload = self._native.attach_conformal_calibration_json(
+            replay_outcome.json(),
+            binding_id,
+            _coerce_json(calibration_relations),
+            _coerce_json(truth),
+            _coerce_json(context),
+            _coerce_json(coverages),
+            _coerce_json(multi_target_policy),
+            _coerce_json(small_sample_policy),
+        )
+        calibration = json.loads(payload)
+        if not isinstance(calibration, dict):
+            raise _facade_contract_error(
+                "native conformal calibration returned a non-object contract"
+            )
+        return calibration
+
     def export_portable_predictor_package(
         self,
         package_id: str,
