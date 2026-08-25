@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::aggregation::{AggregatedPredictionBlock, ObservationPredictionBlock, PredictionUnitId};
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 use crate::bundle::MethodsHpoResumeSelection;
 use crate::bundle::{
     build_aggregated_prediction_cache_payload, build_aggregated_prediction_cache_record,
@@ -37,7 +37,7 @@ use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
 use crate::plan::ExecutionPlan;
 use crate::policy::PredictionLevel;
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 use crate::replay::methods_hpo_resume_state_from_package_json;
 use crate::replay::{replay_request_from_outcome, TrainingReplayOutcome};
 use crate::runtime::{
@@ -45,7 +45,7 @@ use crate::runtime::{
     LineageRecord, NodeResult, ParallelScheduler, RunContext, RuntimeControllerRegistry,
     RuntimeDataProvider, SequentialScheduler, VariantExecutionSpec,
 };
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 use crate::runtime::{
     RuntimeHpoExecutionContext, RuntimeHpoProvenance, RuntimeHpoSelectionTarget, VariantSelection,
     VariantSelectionOutcome,
@@ -176,7 +176,7 @@ struct HpoExecutionContext<'a> {
     selection: &'a SelectionPolicy,
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 impl HpoExecutionContext<'_> {
     /// Assemble the explicit, attested scheduler contract for one native HPO
     /// campaign.  This is deliberately the only route from training into an
@@ -549,7 +549,7 @@ impl HpoExecutionContext<'_> {
     }
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 #[allow(clippy::too_many_arguments)]
 fn validate_methods_hpo_resume_state(
     state: &MethodsHpoResumeState,
@@ -606,7 +606,7 @@ struct PortableMethodsHpoDescriptor {
     /// cross-links validate through the replay-owned loader; callers cannot
     /// inject a free checkpoint, report, or proposal list here.
     #[serde(default)]
-    #[cfg_attr(not(feature = "methods-optimizer-local"), allow(dead_code))]
+    #[cfg_attr(not(feature = "methods-optimizer"), allow(dead_code))]
     resume_package_json: Option<String>,
     target_node_id: NodeId,
     /// Native parameter name -> direct model parameter key.  Nested paths are
@@ -638,6 +638,17 @@ impl HpoExecutionContext<'_> {
             })?;
         validate_portable_methods_hpo_descriptor(&descriptor, &self.projection.plan)?;
         validate_methods_hpo_selection_alignment(&descriptor, self.selection)?;
+
+        // Check the feature-owned native runtime before consulting controller
+        // registration or any provider capability.  A portable HPO descriptor
+        // must fail closed when the local Methods overlay is absent, and that
+        // refusal must not be masked by unrelated host state.
+        methods_optimizer_preflight().map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "native Methods HPO preflight failed before data access: {error}"
+            ))
+        })?;
+
         let controller_id = crate::ControllerId::new(descriptor.study.controller_id.clone())
             .map_err(|error| {
                 DagMlError::RuntimeValidation(format!(
@@ -681,11 +692,6 @@ impl HpoExecutionContext<'_> {
             self.training_influence,
             self.selection.id.as_str(),
         );
-        methods_optimizer_preflight().map_err(|error| {
-            DagMlError::RuntimeValidation(format!(
-                "native Methods HPO preflight failed before data access: {error}"
-            ))
-        })?;
         Ok(Some(descriptor))
     }
 }
@@ -1023,10 +1029,10 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     let selection_producer = selection_output.node_id.clone();
     let selection_producer_port = selection_output.port_name.clone();
     validate_selection_prediction_kind(selection_metric, selection_output.prediction_kind)?;
-    #[cfg(feature = "methods-optimizer-local")]
+    #[cfg(feature = "methods-optimizer")]
     let mut methods_hpo_resume_state = None;
-    #[cfg(feature = "methods-optimizer-local")]
-    #[cfg(feature = "methods-optimizer-local")]
+    #[cfg(feature = "methods-optimizer")]
+    #[cfg(feature = "methods-optimizer")]
     let selection = if let Some(descriptor) = native_hpo_descriptor.as_ref() {
         let hpo_execution = HpoExecutionContext {
             request: input.request,
@@ -1076,7 +1082,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             "native training SELECT received no scored candidate; controllers must emit targets".to_string(),
         ))?
     };
-    #[cfg(not(feature = "methods-optimizer-local"))]
+    #[cfg(not(feature = "methods-optimizer"))]
     let selection = {
         let _ = native_hpo_descriptor;
         select_best_variant_outcome_by_cv_for_target(
@@ -1206,7 +1212,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         prediction_requirements,
         prediction_caches,
     )?;
-    #[cfg(feature = "methods-optimizer-local")]
+    #[cfg(feature = "methods-optimizer")]
     {
         execution_bundle.methods_hpo_resume_state = methods_hpo_resume_state.clone();
         for record in &execution_bundle.refit_artifacts {
@@ -1313,9 +1319,9 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         execution_bundle,
         conformal_calibration: None,
         conformal_calibration_replay: None,
-        #[cfg(feature = "methods-optimizer-local")]
+        #[cfg(feature = "methods-optimizer")]
         methods_hpo_resume_state,
-        #[cfg(not(feature = "methods-optimizer-local"))]
+        #[cfg(not(feature = "methods-optimizer"))]
         methods_hpo_resume_state: None,
         replayable_phases,
         warnings: input.warnings,

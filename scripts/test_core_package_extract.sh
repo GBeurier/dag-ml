@@ -22,20 +22,20 @@ fi
 crate_archive=${archives[0]}
 archive_contents="$scratch_dir/archive-contents.txt"
 tar -tzf "$crate_archive" > "$archive_contents"
-if rg -q '/(examples|docs)/|negative_cases\.v1\.json' "$archive_contents"; then
+if grep -Eq '/(examples|docs)/|negative_cases\.v1\.json' "$archive_contents"; then
   echo 'package unexpectedly contains workspace fixtures or the W1 corpus' >&2
   exit 1
 fi
-if rg '(^|/)[^/]+\.v[0-9]+\.json$' "$archive_contents" \
-  | rg -vq '/tests/fixtures/conformal_w0_golden\.v1\.json$'; then
+if grep -E '(^|/)[^/]+\.v[0-9]+\.json$' "$archive_contents" \
+  | grep -Evq '/tests/fixtures/conformal_w0_golden\.v1\.json$'; then
   echo 'package unexpectedly contains an unapproved protocol-versioned fixture' >&2
   exit 1
 fi
-if ! rg -q '(^|/)README\.md$' "$archive_contents"; then
+if ! grep -Eq '(^|/)README\.md$' "$archive_contents"; then
   echo 'package is missing its package-local README' >&2
   exit 1
 fi
-if ! rg -q '(^|/)LICENSE$' "$archive_contents"; then
+if ! grep -Eq '(^|/)LICENSE$' "$archive_contents"; then
   echo 'package is missing its package-local LICENSE' >&2
   exit 1
 fi

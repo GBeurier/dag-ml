@@ -11,6 +11,7 @@ use pyo3::types::{PyAny, PyType};
 use serde::de::DeserializeOwned;
 
 mod in_process;
+mod local_implementation;
 mod training;
 
 use dag_ml_core::{
@@ -64,6 +65,28 @@ const SHARED_FOLD_SET_FINGERPRINT: &str =
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// Configure the process-scoped Methods runtime from one explicit library
+/// path. This entry point performs no controller registration or model work;
+/// hosts must still register their native controllers before execution.
+#[pyfunction]
+fn configure_methods_runtime(library_path: &str) -> PyResult<String> {
+    #[cfg(feature = "methods-optimizer")]
+    {
+        let runtime = dag_ml_core::MethodsRuntime::configure(library_path).map_err(|error| {
+            py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
+        })?;
+        return Ok(runtime.library_path().display().to_string());
+    }
+    #[cfg(not(feature = "methods-optimizer"))]
+    {
+        let _ = library_path;
+        Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "Methods runtime support is not compiled into this dag-ml binding; rebuild with the `methods-optimizer` feature"
+                .to_string(),
+        )))
+    }
 }
 
 #[pyfunction]
@@ -355,6 +378,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add("DagMlInternalError", py.get_type::<DagMlInternalError>())?;
     module.add_function(wrap_pyfunction!(version, module)?)?;
+    module.add_function(wrap_pyfunction!(configure_methods_runtime, module)?)?;
     module.add_function(wrap_pyfunction!(contract_manifest_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_graph_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_campaign_json, module)?)?;
@@ -427,6 +451,15 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         in_process::run_cv_refit_in_process,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(
+        in_process::run_cv_refit_in_process_with_training_losses,
+        module
+    )?)?;
+    module.add_class::<local_implementation::PyLocalImplementationRegistry>()?;
+    module.add_function(wrap_pyfunction!(
+        local_implementation::loss_execution_attestation_json,
+        module
+    )?)?;
     module.add_class::<training::TrainingResult>()?;
     module.add_function(wrap_pyfunction!(training::execute_training_json, module)?)?;
     module.add_function(wrap_pyfunction!(
@@ -475,13 +508,15 @@ fn contract_manifest() -> serde_json::Value {
             "execute_training_replay",
             "execute_loaded_predictor_replay",
             "owning_training_result",
-            "structured_error_descriptors"
+            "structured_error_descriptors",
+            "configure_methods_runtime"
         ],
         "shared": {
             "fold_set_fixture_fingerprint": SHARED_FOLD_SET_FINGERPRINT
         },
         "python_exports": [
             "version",
+            "configure_methods_runtime",
             "contract_manifest_json",
             "validate_graph_json",
             "validate_campaign_json",
@@ -514,6 +549,7 @@ fn contract_manifest() -> serde_json::Value {
             "canonical_operator_variant_label",
             "canonical_operator_variant_value_json",
             "run_cv_refit_in_process",
+            "run_cv_refit_in_process_with_training_losses",
             "TrainingResult",
             "execute_training_json",
             "execute_loaded_predictor_replay_json"
@@ -971,6 +1007,10 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("owning_training_result")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("configure_methods_runtime")));
         assert!(manifest["wasm_exports"]
             .as_array()
             .unwrap()
@@ -978,6 +1018,32 @@ mod tests {
         assert_eq!(
             manifest["shared"]["fold_set_fixture_fingerprint"],
             SHARED_FOLD_SET_FINGERPRINT
+        );
+    }
+
+    #[cfg(not(feature = "methods-optimizer"))]
+    #[test]
+    fn default_binding_refuses_methods_runtime_configuration() {
+        Python::initialize();
+        let error = configure_methods_runtime("/absolute/libn4m.so").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Methods runtime support is not compiled"));
+    }
+
+    #[cfg(feature = "methods-optimizer")]
+    #[test]
+    fn methods_binding_configures_the_explicit_native_library() {
+        Python::initialize();
+        let library_path = std::env::var("N4M_LIBRARY_PATH")
+            .expect("Methods binding test requires an explicit N4M_LIBRARY_PATH");
+        let configured = configure_methods_runtime(&library_path).unwrap();
+        assert_eq!(
+            configured,
+            std::fs::canonicalize(library_path)
+                .unwrap()
+                .display()
+                .to_string()
         );
     }
 }

@@ -286,7 +286,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: GBeurier/nirs4all-methods
-          ref: 0ef355e6f74573ed07a6920bdeed1a052a6e8312
+          # Source used only to build the explicit runtime file below.  The
+          # Rust binding itself is the published n4m 0.1.1 crate.
+          ref: aabdecfdd76d1a4d12cfbbade4eeee0d30a6ea47
           path: external/nirs4all-methods
       - uses: dtolnay/rust-toolchain@stable
       - name: Build ABI-matched Methods library
@@ -294,10 +296,7 @@ jobs:
         run: make build PRESET=dev-release
       - name: Native TPE, pruner, checkpoint, and N4MM replay
         env:
-          N4M_BINDING_SHA: 0ef355e6f74573ed07a6920bdeed1a052a6e8312
-          N4M_METHODS_REPO: ${{ github.workspace }}/external/nirs4all-methods
-          N4M_LIB_DIR: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src
-          N4M_RUNTIME_RPATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src
+          N4M_LIBRARY_PATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src/libn4m.so
           LD_LIBRARY_PATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src
         run: scripts/test_methods_optimizer_local.sh
 
