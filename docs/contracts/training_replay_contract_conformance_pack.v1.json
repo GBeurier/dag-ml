@@ -706,7 +706,7 @@
     },
     {
       "path": "parity/training/tests/test_training_replay_contracts.py",
-      "sha256": "a512d8366519a9f221c0ebc4f41ea8f30b34e98f16d07999d5d05de8faaa3563",
+      "sha256": "d96cd0e963154c0a51f74e0cccae22b918947b77482e9c4c27d5c9df5d3f568d",
       "kind": "test"
     },
     {
@@ -826,5 +826,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "b22a209b711ffa95825514ecab90033da6c30e2cfe9eee60506b2e146065548f"
+  "pack_checksum": "949501b12f8b9ac63558f9eefa24caeab0b7a42217faa399caffcfa257b48565"
 }
