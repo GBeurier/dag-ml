@@ -891,8 +891,7 @@ pub fn execute_methods_training_json(
         let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path)
             .map_err(|error| py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string())))?;
         let mut controllers = RuntimeControllerRegistry::new();
-        controllers
-            .register(Box::new(dag_ml_core::MethodsPlsController::new(runtime)))
+        register_methods_training_controllers(&projection, runtime, &mut controllers)
             .map_err(py_core_error)?;
         let run_id = RunId::new(run_id).map_err(py_core_error)?;
         let bundle_id = BundleId::new(bundle_id).map_err(py_core_error)?;
@@ -926,6 +925,56 @@ pub fn execute_methods_training_json(
             resources: Mutex::new(Some(resources)),
         })
     }
+}
+
+/// Register the native PLS controller and, when attested by the campaign,
+/// its controller-owned Methods HPO companion.  The scheduler creates the
+/// thread-affine optimizer session later from the complete training context;
+/// this binding only establishes the exact controller identities before any
+/// operation can reach the provider.
+#[cfg(feature = "methods-optimizer")]
+fn register_methods_training_controllers(
+    projection: &dag_ml_core::TrainingContractProjection,
+    runtime: dag_ml_core::MethodsRuntime,
+    controllers: &mut RuntimeControllerRegistry,
+) -> dag_ml_core::Result<()> {
+    let Some(hpo_controller_id) = methods_hpo_controller_id(&projection.plan.campaign.metadata)? else {
+        controllers.register(Box::new(dag_ml_core::MethodsPlsController::new(runtime)))?;
+        return Ok(());
+    };
+    dag_ml_core::register_methods_runtime_controllers(controllers, hpo_controller_id, runtime)
+}
+
+/// Extract only the controller identity that must be registered locally.
+/// Descriptor semantics themselves remain owned by `dag-ml-core` training
+/// preflight; accepting a partial descriptor here would otherwise turn a
+/// malformed request into an unrelated missing-controller error.
+#[cfg(feature = "methods-optimizer")]
+fn methods_hpo_controller_id(
+    metadata: &BTreeMap<String, serde_json::Value>,
+) -> dag_ml_core::Result<Option<dag_ml_core::ControllerId>> {
+    let Some(value) = metadata.get("methods_hpo_operation") else {
+        return Ok(None);
+    };
+    let controller_id = value
+        .as_object()
+        .and_then(|descriptor| descriptor.get("study"))
+        .and_then(serde_json::Value::as_object)
+        .and_then(|study| study.get("controller_id"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            dag_ml_core::DagMlError::RuntimeValidation(
+                "native Methods HPO descriptor must declare study.controller_id before controller registration"
+                    .to_string(),
+            )
+        })?;
+    dag_ml_core::ControllerId::new(controller_id)
+        .map(Some)
+        .map_err(|error| {
+            dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "native Methods HPO descriptor controller id is invalid: {error}"
+            ))
+        })
 }
 
 #[cfg(feature = "methods-optimizer")]
@@ -1333,6 +1382,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("absent from its attested input"));
+    }
+
+    #[cfg(feature = "methods-optimizer")]
+    #[test]
+    fn methods_hpo_controller_identity_is_required_and_canonical_before_registration() {
+        let absent = BTreeMap::new();
+        assert!(methods_hpo_controller_id(&absent).unwrap().is_none());
+
+        let valid = BTreeMap::from([(
+            "methods_hpo_operation".to_string(),
+            serde_json::json!({"study": {"controller_id": "controller:methods.hpo"}}),
+        )]);
+        assert_eq!(
+            methods_hpo_controller_id(&valid).unwrap().unwrap().as_str(),
+            "controller:methods.hpo"
+        );
+
+        for descriptor in [
+            serde_json::json!({}),
+            serde_json::json!({"study": {}}),
+            serde_json::json!({"study": {"controller_id": "not canonical"}}),
+        ] {
+            let metadata = BTreeMap::from([("methods_hpo_operation".to_string(), descriptor)]);
+            assert!(
+                methods_hpo_controller_id(&metadata).is_err(),
+                "partial or non-canonical Methods HPO descriptor must fail before registration"
+            );
+        }
     }
 
     const REQUEST_FIXTURE: &str =
