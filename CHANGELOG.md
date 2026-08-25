@@ -9,6 +9,13 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Release patch 0.3.3: Methods HPO now verifies the native runtime overlay
+  before consulting host controller or provider state, preserving fail-closed
+  behavior when native optimizer support is unavailable. This is a dag-ml-only
+  hotfix; the pinned `dag-ml-data` contract is unchanged.
+
 ### Added
 
 - ADR-20 and W0 JSON contracts for conformal calibration ownership,
