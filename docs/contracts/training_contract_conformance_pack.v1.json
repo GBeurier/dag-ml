@@ -176,7 +176,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/training_runtime.rs",
-      "sha256": "6253a0a287164b225727bb7c49e7ea55b503aea5e58e8bef8e1327f38a5a5349",
+      "sha256": "b753357fefe905601b434a8e87361a86ab720fbe2713a072383a759a4fa9ac57",
       "kind": "native_runtime_contract"
     },
     {
@@ -569,5 +569,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "a614c615af79e91da1050f27b56ead0acdb20b4ffdd249af0455c2d6d798758a"
+  "pack_checksum": "7ae63bdd86de04c9db100454c6489e1814b307b2cb5eddbc6d1079c01942cfb0"
 }
