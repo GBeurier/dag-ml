@@ -583,7 +583,7 @@ pub struct MethodsPlsPredictInput {
 /// Native, in-memory data provider for target-free Methods PLS PREDICT.
 ///
 /// It is deliberately PREDICT-only: training must use a provider that can
-/// produce the complete target-bound [`TrainingDataIdentity`]. The provider
+/// produce the complete target-bound [`crate::training::TrainingDataIdentity`]. The provider
 /// owns only row-major values already materialized by the upstream IO layer;
 /// it delegates data/view handles and envelope identity checks to the normal
 /// runtime provider rather than bypassing the scheduler.
