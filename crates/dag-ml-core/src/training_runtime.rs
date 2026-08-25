@@ -1350,6 +1350,14 @@ fn stabilize_training_outcome_for_tcv1(mut outcome: TrainingOutcome) -> Result<T
         })?;
         let mut normalized = serde_json::from_str::<TrainingOutcome>(&json)?;
         normalized.outcome_fingerprint = zero_fingerprint();
+        if let Some(calibration) = normalized.conformal_calibration.as_mut() {
+            // A nested conformal record has its own TCV1 self-fingerprint.
+            // Outcome normalization can canonicalize its binary64 lexical
+            // representation, so re-sign it before emitting the enclosing
+            // outcome and refresh the matching bundle reference atomically.
+            calibration.calibration_fingerprint = calibration.compute_fingerprint()?;
+            normalized.execution_bundle.conformal_calibration = Some(calibration.reference()?);
+        }
         let normalized_json = serde_json::to_string(&normalized)?;
         let after = parse_typed_json(&normalized_json).map_err(|error| {
             DagMlError::CampaignValidation(format!(
