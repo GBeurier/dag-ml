@@ -165,7 +165,7 @@
     },
     {
       "path": "docs/contracts/training_request.schema.json",
-      "sha256": "363ee1009772115b84d11b9e3b9db37ef00d5255958e097b9d8b24349b6be6a9",
+      "sha256": "69d88080156c0b865f379d10c4313477d769a869b4ee652af8e867bcc44b3c10",
       "kind": "schema_dependency"
     },
     {
@@ -443,5 +443,5 @@
       ]
     }
   ],
-  "pack_checksum": "23ad3fe8062e94f58eda3f9afc69c56d45baeb9390795107aef366ef63c9215a"
+  "pack_checksum": "fdbca0f60b4ee90306830c13d17fb746ee518b03b84b0a7e1ae95ca55b7cdb8d"
 }

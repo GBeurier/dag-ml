@@ -59,6 +59,14 @@
       "items": { "$ref": "#/$defs/controller_influence_requirement" },
       "description": "Explicit sample sources for capability-driven early stopping, internal HPO and weighting, sorted by (kind, scope_id, node_id)."
     },
+    "training_losses": {
+      "type": "array",
+      "items": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/training_loss_role.v1.schema.json"
+      },
+      "default": [],
+      "description": "Optional V1 request-level native loss roles, canonically lowered into matching model NodePlans before task construction."
+    },
     "options": { "$ref": "#/$defs/training_options" },
     "request_fingerprint": {
       "$ref": "#/$defs/sha256",
