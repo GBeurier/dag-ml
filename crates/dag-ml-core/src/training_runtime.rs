@@ -1399,9 +1399,12 @@ fn validate_native_training_options(request: &TrainingRequest) -> Result<()> {
             "native training V1 supports only artifacts.cv_artifacts=discard".to_string(),
         ));
     }
-    if request.options.artifacts.fitted_artifacts != FittedArtifactMode::AllowHostSidecar {
+    if !matches!(
+        request.options.artifacts.fitted_artifacts,
+        FittedArtifactMode::AllowHostSidecar | FittedArtifactMode::PortableRequired
+    ) {
         return Err(DagMlError::RuntimeValidation(
-            "native training V1 cannot prove portable fitted payloads and currently requires artifacts.fitted_artifacts=allow_host_sidecar"
+            "native training V1 requires artifacts.fitted_artifacts=allow_host_sidecar or portable_required"
                 .to_string(),
         ));
     }
