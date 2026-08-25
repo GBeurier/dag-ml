@@ -891,9 +891,9 @@ pub fn execute_methods_training_json(
             warnings_json,
             diagnostics_json,
         );
-        return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+        Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
             "Methods training support is not compiled into this dag-ml binding; rebuild with the `methods-optimizer` feature".to_string(),
-        )));
+        )))
     }
     #[cfg(feature = "methods-optimizer")]
     {
@@ -1121,9 +1121,9 @@ pub fn execute_loaded_methods_predictor_replay_json(
             warnings_json,
             diagnostics_json,
         );
-        return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+        Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
             "Methods replay support is not compiled into this dag-ml binding; rebuild with the `methods-optimizer` feature".to_string(),
-        )));
+        )))
     }
     #[cfg(feature = "methods-optimizer")]
     {
