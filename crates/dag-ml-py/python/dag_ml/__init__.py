@@ -33,6 +33,8 @@ from ._dag_ml import (
     derive_controller_manifest_json,
     derive_controller_manifest_list_json,
     execute_loaded_predictor_replay_json as _native_execute_loaded_predictor_replay_json,
+    execute_methods_training_json as _native_execute_methods_training_json,
+    execute_loaded_methods_predictor_replay_json as _native_execute_loaded_methods_predictor_replay_json,
     execute_training_json as _native_execute_training_json,
     fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
@@ -103,6 +105,10 @@ _FACADE_EXPORTS = [
     "project_training_request",
     "sign_training_request",
     "sign_training_replay_request",
+    "execute_methods_training",
+    "execute_methods_training_json",
+    "replay_loaded_methods_predictor_package",
+    "execute_loaded_methods_predictor_replay_json",
     "execute_training",
     "execute_training_json",
     "replay_loaded_predictor_package",
@@ -892,6 +898,135 @@ def execute_training_json(
             bundle_id,
             warnings_json,
             diagnostics_json,
+        )
+    )
+
+
+def execute_methods_training_json(
+    request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> TrainingResult:
+    """Run the portable Methods PLS lane with no Python operator callback.
+
+    ``methods_inputs_json`` is a strict map of host-owned full datasets.  The
+    native scheduler selects FIT_CV/REFIT rows by its signed identity views;
+    a host cannot choose positional subsets.  ``methods_library_path`` must
+    name the exact absolute ``libn4m`` configured for this process.
+    """
+
+    return TrainingResult(
+        _native_execute_methods_training_json(
+            request_json,
+            data_envelopes_json,
+            relations_json,
+            training_influence_json,
+            methods_inputs_json,
+            str(methods_library_path),
+            outcome_id,
+            run_id,
+            bundle_id,
+            warnings_json,
+            diagnostics_json,
+        )
+    )
+
+
+def execute_methods_training(
+    request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> TrainingResult:
+    """Execute one strictly native Methods PLS training request.
+
+    The graph must contain only ``controller:methods.pls`` executable nodes.
+    Host-sidecar controllers and Python operator fallback are refused before
+    numerical execution.
+    """
+
+    return execute_methods_training_json(
+        _coerce_json(request),
+        _coerce_json(data_envelopes),
+        _coerce_json(relations),
+        _coerce_json(training_influence),
+        _coerce_json(methods_inputs),
+        methods_library_path,
+        outcome_id,
+        run_id,
+        bundle_id,
+        _coerce_json(warnings),
+        _coerce_json({} if diagnostics is None else diagnostics),
+    )
+
+
+def execute_loaded_methods_predictor_replay_json(
+    package_json: str,
+    request_json: str,
+    data_envelopes_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> TrainingReplayOutcome:
+    """Replay a portable Methods Package V2 without Python callbacks or sidecars."""
+
+    return _native_execute_loaded_methods_predictor_replay_json(
+        package_json,
+        request_json,
+        data_envelopes_json,
+        methods_inputs_json,
+        str(methods_library_path),
+        outcome_id,
+        run_id,
+        warnings_json,
+        diagnostics_json,
+    )
+
+
+def replay_loaded_methods_predictor_package(
+    package: Any,
+    request: Any,
+    data_envelopes: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> Any:
+    """Typed facade for native Methods PREDICT replay."""
+
+    return TrainingReplayOutcome(
+        execute_loaded_methods_predictor_replay_json(
+            _coerce_json(package),
+            _coerce_json(request),
+            _coerce_json(data_envelopes),
+            _coerce_json(methods_inputs),
+            methods_library_path,
+            outcome_id,
+            run_id,
+            _coerce_json(warnings),
+            _coerce_json({} if diagnostics is None else diagnostics),
         )
     )
 

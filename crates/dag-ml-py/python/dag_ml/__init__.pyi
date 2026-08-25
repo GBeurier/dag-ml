@@ -192,6 +192,56 @@ def execute_training_json(
     warnings_json: str = "[]",
     diagnostics_json: str = "{}",
 ) -> TrainingResult: ...
+def execute_methods_training_json(
+    request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> TrainingResult: ...
+def execute_methods_training(
+    request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> TrainingResult: ...
+def execute_loaded_methods_predictor_replay_json(
+    package_json: str,
+    request_json: str,
+    data_envelopes_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> TrainingReplayOutcome: ...
+def replay_loaded_methods_predictor_package(
+    package: Any,
+    request: Any,
+    data_envelopes: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> Any: ...
 def execute_training(
     request: Any,
     data_envelopes: Any,
