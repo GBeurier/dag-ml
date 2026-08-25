@@ -636,6 +636,7 @@ fn fixture(refit: bool, stacking: bool) -> Fixture {
         parameter_patches: Vec::new(),
         patch_policies: Vec::new(),
         influence_requirements: Vec::new(),
+        training_losses: Vec::new(),
         options,
         request_fingerprint: "0".repeat(64),
     };
