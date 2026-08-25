@@ -214,7 +214,7 @@ pub struct TrainingReplayOutcome {
 
 /// Content identity for one external replay input.
 ///
-/// This is intentionally distinct from [`TrainingDataIdentity`].  Training
+/// This is intentionally distinct from [`crate::training::TrainingDataIdentity`].  Training
 /// requires a target-content proof because it scores and selects models;
 /// PREDICT and EXPLAIN operate on a new, often unlabeled cohort and therefore
 /// attest only the feature content and relation authority.  A target proof is
