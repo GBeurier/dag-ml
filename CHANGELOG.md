@@ -11,6 +11,10 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Fixed
 
+- Release patch 0.3.4: native training-loss role references are now attested
+  in `TrainingRequest` and lowered into `ExecutionPlan` before FIT_CV/REFIT
+  task construction.
+
 - Release patch 0.3.3: Methods HPO now verifies the native runtime overlay
   before consulting host controller or provider state, preserving fail-closed
   behavior when native optimizer support is unavailable. This is a dag-ml-only
