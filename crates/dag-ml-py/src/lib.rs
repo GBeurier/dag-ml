@@ -77,7 +77,7 @@ fn configure_methods_runtime(library_path: &str) -> PyResult<String> {
         let runtime = dag_ml_core::MethodsRuntime::configure(library_path).map_err(|error| {
             py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
         })?;
-        return Ok(runtime.library_path().display().to_string());
+        Ok(runtime.library_path().display().to_string())
     }
     #[cfg(not(feature = "methods-optimizer"))]
     {
@@ -462,6 +462,11 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_class::<training::TrainingResult>()?;
     module.add_function(wrap_pyfunction!(training::execute_training_json, module)?)?;
+    module.add_function(wrap_pyfunction!(training::execute_methods_training_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        training::execute_loaded_methods_predictor_replay_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(
         training::execute_loaded_predictor_replay_json,
         module
@@ -507,9 +512,11 @@ fn contract_manifest() -> serde_json::Value {
             "execute_training",
             "execute_training_replay",
             "execute_loaded_predictor_replay",
+            "execute_loaded_methods_predictor_replay",
             "owning_training_result",
             "structured_error_descriptors",
-            "configure_methods_runtime"
+            "configure_methods_runtime",
+            "execute_methods_training"
         ],
         "shared": {
             "fold_set_fixture_fingerprint": SHARED_FOLD_SET_FINGERPRINT
@@ -552,6 +559,8 @@ fn contract_manifest() -> serde_json::Value {
             "run_cv_refit_in_process_with_training_losses",
             "TrainingResult",
             "execute_training_json",
+            "execute_methods_training_json",
+            "execute_loaded_methods_predictor_replay_json",
             "execute_loaded_predictor_replay_json"
         ],
         "wasm_exports": [
@@ -971,6 +980,8 @@ mod tests {
                 "validate_portable_predictor_package_json",
                 "validate_training_outcome_json",
                 "execute_training_json",
+                "execute_methods_training_json",
+                "execute_loaded_methods_predictor_replay_json",
                 "TrainingResult",
             ] {
                 assert!(
@@ -1003,6 +1014,14 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("execute_training_json")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("execute_methods_training_json")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("execute_methods_training")));
         assert!(manifest["capabilities"]
             .as_array()
             .unwrap()
