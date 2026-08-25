@@ -638,6 +638,17 @@ impl HpoExecutionContext<'_> {
             })?;
         validate_portable_methods_hpo_descriptor(&descriptor, &self.projection.plan)?;
         validate_methods_hpo_selection_alignment(&descriptor, self.selection)?;
+
+        // Check the feature-owned native runtime before consulting controller
+        // registration or any provider capability.  A portable HPO descriptor
+        // must fail closed when the local Methods overlay is absent, and that
+        // refusal must not be masked by unrelated host state.
+        methods_optimizer_preflight().map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "native Methods HPO preflight failed before data access: {error}"
+            ))
+        })?;
+
         let controller_id = crate::ControllerId::new(descriptor.study.controller_id.clone())
             .map_err(|error| {
                 DagMlError::RuntimeValidation(format!(
@@ -681,11 +692,6 @@ impl HpoExecutionContext<'_> {
             self.training_influence,
             self.selection.id.as_str(),
         );
-        methods_optimizer_preflight().map_err(|error| {
-            DagMlError::RuntimeValidation(format!(
-                "native Methods HPO preflight failed before data access: {error}"
-            ))
-        })?;
         Ok(Some(descriptor))
     }
 }
