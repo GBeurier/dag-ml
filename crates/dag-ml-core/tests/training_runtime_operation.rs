@@ -2829,7 +2829,17 @@ fn loaded_v2_conformal_package_replays_intervals_and_rejects_resigned_tampering(
     })
     .expect("calibration replay");
     let point = &calibration_replay.outputs[0].predictions[0];
-    let context = calibration_context(&source, &calibration_replay, &relations);
+    let context = derive_attached_conformal_calibration_context(
+        &source,
+        &calibration_replay,
+        calibration_replay.outputs[0].binding.binding_id.as_str(),
+        &relations,
+    )
+    .expect("native coordinator derives the calibration provenance closure");
+    assert_eq!(
+        context,
+        calibration_context(&source, &calibration_replay, &relations)
+    );
     let calibration = calibrate_attached_training_replay(
         &mut source,
         &calibration_replay,
