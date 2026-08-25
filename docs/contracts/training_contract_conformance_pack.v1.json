@@ -181,7 +181,7 @@
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "e21bc3a0f9680367fad5f5d789dc3dbd35fa8da4605275425482c13226fb0792",
+      "sha256": "ba930b7012c1facb9127aa09910c2b013a0540f2802fa53b1b7666e8fca2f041",
       "kind": "native_integration_test"
     },
     {
@@ -191,12 +191,12 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "01dd1b7b6bec5ae606d8a64bbc42a75ff5d299efc517b80bb894cbbe58590fe6",
+      "sha256": "258b0d1e97688d301363d9dd70980f185ad657f355018d71b779154126647f82",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "ae6fb53b51fa50bf38c38c6b599fee690d525158cdad61598bfa00b19ab44ab8",
+      "sha256": "7c88f6259a58de021cb3a03917687f816353b664a47aacf82966cf9832f14b11",
       "kind": "python_typing"
     },
     {
@@ -211,7 +211,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/training.rs",
-      "sha256": "53e438de526e8c7494af65e3bf49e703b77f1ab0352eb8b1e4ef7be98d81d175",
+      "sha256": "c2802ef39f2cec06e4c4930c373bd0e58a59593c7124e2de42d5d01a494aba39",
       "kind": "python_training_binding"
     },
     {
@@ -569,5 +569,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "e9890ce781cc0da479599da68849412f729196a30fdbf72917af18f68bad508f"
+  "pack_checksum": "1cbdeaf366a84d013e059b4a886024336f5a432af7a31ae36bc86fe64323353d"
 }
