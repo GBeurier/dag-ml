@@ -11,6 +11,9 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Fixed
 
+- Release patch 0.3.5: public Python Methods PLS training and stateless native
+  package replay now expose the portable runtime path without a host callback.
+
 - Release patch 0.3.4: native training-loss role references are now attested
   in `TrainingRequest` and lowered into `ExecutionPlan` before FIT_CV/REFIT
   task construction.
