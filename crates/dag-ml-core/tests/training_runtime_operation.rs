@@ -1680,7 +1680,7 @@ fn native_training_refit_and_no_refit_are_deterministic_and_auditable() {
     assert_eq!(no_refit_state.count(Phase::Refit, "model:base"), 0);
 }
 
-#[cfg(not(feature = "methods-optimizer-local"))]
+#[cfg(not(feature = "methods-optimizer"))]
 #[test]
 fn native_methods_hpo_fails_closed_without_the_local_methods_overlay() {
     let mut fixture = fixture(true, false);
@@ -2618,7 +2618,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     assert_eq!(methods_controller.hydrated_payload_count().unwrap(), 0);
 }
 
-#[cfg(not(feature = "methods-optimizer-local"))]
+#[cfg(not(feature = "methods-optimizer"))]
 #[test]
 fn native_training_refuses_methods_hpo_before_provider_data_work() {
     let mut fixture = fixture(true, false);
