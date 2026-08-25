@@ -11,6 +11,11 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Fixed
 
+- Release patch 0.3.7: the Python binding now exposes native conformal
+  calibration attachment. The Rust coordinator derives and validates the full
+  replay, cohort and provenance context; hosts supply only identity-keyed truth
+  values and relationships.
+
 - Release patch 0.3.6: the published Python Methods runtime now registers the
   native HPO controller alongside the PLS controller when an attested Methods
   HPO campaign requests it, preserving controller-owned scheduling, checkpoint
