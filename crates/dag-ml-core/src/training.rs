@@ -17,6 +17,7 @@ use crate::controller::{
     ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest,
     ControllerRegistry,
 };
+use crate::criteria::TrainingLossRoleReference;
 use crate::data::{data_binding_requirement_key, DataBinding, ExternalDataPlanEnvelope};
 use crate::error::{DagMlError, Result};
 use crate::fold::fold_set_fingerprint;
@@ -964,6 +965,12 @@ pub struct TrainingRequest {
     pub parameter_patches: Vec<ParameterPatch>,
     pub patch_policies: Vec<NodePatchPolicy>,
     pub influence_requirements: Vec<ControllerInfluenceRequirement>,
+    /// Native loss roles are attested in the request and lowered into the
+    /// execution plan before controller tasks are constructed.  They remain
+    /// optional for existing V1 requests, whose canonical meaning is no
+    /// process-local training loss.
+    #[serde(default)]
+    pub training_losses: Vec<TrainingLossRoleReference>,
     pub options: TrainingOptions,
     pub request_fingerprint: String,
 }
@@ -1133,7 +1140,8 @@ impl TrainingRequest {
             self.graph.clone(),
             self.campaign.clone(),
             &registry,
-        )?;
+        )?
+        .with_training_losses(self.training_losses.clone())?;
         validate_output_controllers(&plan, &outputs)?;
         validate_selection_output(&plan, &self.options, &outputs)?;
         validate_training_data_identities(self, &plan)?;
@@ -3064,6 +3072,7 @@ mod tests {
             parameter_patches: Vec::new(),
             patch_policies: Vec::new(),
             influence_requirements: Vec::new(),
+            training_losses: Vec::new(),
             options: TrainingOptions {
                 refit: true,
                 refit_strategy: Some(RefitStrategy::RefitOne),
