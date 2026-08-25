@@ -5,20 +5,28 @@
 //! lineage and artifact capture remain implemented once in `dag-ml-core`.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "methods-optimizer")]
+use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard};
 
 use dag_ml_core::{
     execute_attached_training_replay, execute_loaded_predictor_replay, execute_training,
     parse_typed_json, ArtifactId, ArtifactLoadMode, AttachedTrainingReplayInput, BundleId,
-    DataBinding, EnvelopeAttestedRuntimeDataProvider, ExternalDataPlanEnvelope,
-    FittedArtifactMode, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
-    LoadedPredictor, LoadedPredictorReplayInput, PortablePredictorPackage, RunId,
-    RuntimeControllerRegistry, SampleRelationSet, TrainingExecutionInput,
+    DataBinding, DataMaterializationRequest, DataViewRequest,
+    EnvelopeAttestedRuntimeDataProvider, ExternalDataPlanEnvelope, FittedArtifactMode,
+    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LoadedPredictor,
+    LoadedPredictorReplayInput, MethodsPlsData, MethodsPlsDataRequest,
+    PortablePredictorPackage, RunId, RuntimeControllerRegistry, RuntimeDataProvider,
+    SampleRelationSet, TrainingExecutionInput,
     TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest, TrainingRequest,
 };
+#[cfg(feature = "methods-optimizer")]
+use dag_ml_core::{MethodsPlsDataset, MethodsPlsMatrix, SampleId};
 use pyo3::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+#[cfg(feature = "methods-optimizer")]
+use serde::Deserialize;
 
 use crate::in_process::{
     build_runtime_controllers, build_runtime_controllers_with_artifact_callback,
@@ -27,12 +35,413 @@ use crate::{py_core_error, py_serde_error};
 
 const PY_DATA_PROVIDER_CONTROLLER_ID: &str = "controller:python.data.provider";
 
+/// Strict JSON representation of one raw, host-materialized Methods input.
+///
+/// Python remains the data owner: it supplies a finite row-major feature and
+/// target matrix only after constructing the signed request/envelope.  Core
+/// remains the sole owner of scheduler-selected row views; this payload is
+/// reindexed only by those views below and never by Python positions.
+#[cfg(feature = "methods-optimizer")]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MethodsTrainingInputJson {
+    sample_ids: Vec<String>,
+    x: Vec<Vec<f64>>,
+    #[serde(default)]
+    y: Option<Vec<Vec<f64>>>,
+    target_names: Vec<String>,
+}
+
+/// Native Methods training input provider for the Python binding.
+///
+/// This is deliberately separate from the generic Python callback provider.
+/// A native controller can consume only explicit numeric PLS views, while all
+/// ordinary nodes keep using opaque host handles and callbacks.
+#[cfg(feature = "methods-optimizer")]
+struct PyMethodsPlsTrainingProvider {
+    inner: EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>,
+    inputs: BTreeMap<String, MethodsPlsDataset>,
+}
+
+/// PREDICT-only counterpart which deliberately does not re-attest the
+/// training relation against a new replay cohort. Replay's signed envelope is
+/// validated by the scheduler; this provider only serves its identity-keyed
+/// numeric rows.
+#[cfg(feature = "methods-optimizer")]
+struct PyMethodsPlsReplayProvider {
+    inner: InMemoryDataProvider,
+    inputs: BTreeMap<String, MethodsPlsDataset>,
+}
+
+enum TrainingDataProvider {
+    Host(EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>),
+    #[cfg(feature = "methods-optimizer")]
+    Methods(PyMethodsPlsTrainingProvider),
+    #[cfg(feature = "methods-optimizer")]
+    MethodsReplay(PyMethodsPlsReplayProvider),
+}
+
+impl TrainingDataProvider {
+    fn data_handle_count(&self) -> usize {
+        match self {
+            Self::Host(provider) => provider.inner().handle_records().len(),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.inner.inner().handle_records().len(),
+            #[cfg(feature = "methods-optimizer")]
+            Self::MethodsReplay(provider) => provider.inner.handle_records().len(),
+        }
+    }
+
+    fn data_view_count(&self) -> usize {
+        match self {
+            Self::Host(provider) => provider.inner().view_records().len(),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.inner.inner().view_records().len(),
+            #[cfg(feature = "methods-optimizer")]
+            Self::MethodsReplay(provider) => provider.inner.view_records().len(),
+        }
+    }
+}
+
+impl RuntimeDataProvider for TrainingDataProvider {
+    fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
+        match self {
+            Self::Host(provider) => provider.materialize(request),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.materialize(request),
+            #[cfg(feature = "methods-optimizer")]
+            Self::MethodsReplay(provider) => provider.materialize(request),
+        }
+    }
+
+    fn make_view(&self, request: &DataViewRequest) -> dag_ml_core::Result<HandleRef> {
+        match self {
+            Self::Host(provider) => provider.make_view(request),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.make_view(request),
+            #[cfg(feature = "methods-optimizer")]
+            Self::MethodsReplay(provider) => provider.make_view(request),
+        }
+    }
+
+    fn training_data_identity(
+        &self,
+        binding: &DataBinding,
+    ) -> dag_ml_core::Result<Option<dag_ml_core::TrainingDataIdentity>> {
+        match self {
+            Self::Host(provider) => provider.training_data_identity(binding),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.training_data_identity(binding),
+            #[cfg(feature = "methods-optimizer")]
+            Self::MethodsReplay(provider) => provider.training_data_identity(binding),
+        }
+    }
+
+    fn coordinator_relations(
+        &self,
+        binding: &DataBinding,
+    ) -> dag_ml_core::Result<Option<SampleRelationSet>> {
+        match self {
+            Self::Host(provider) => provider.coordinator_relations(binding),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.coordinator_relations(binding),
+            #[cfg(feature = "methods-optimizer")]
+            Self::MethodsReplay(provider) => provider.coordinator_relations(binding),
+        }
+    }
+
+    fn methods_pls_capability(&self) -> dag_ml_core::Result<()> {
+        match self {
+            Self::Host(provider) => provider.methods_pls_capability(),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.methods_pls_capability(),
+            #[cfg(feature = "methods-optimizer")]
+            Self::MethodsReplay(provider) => provider.methods_pls_capability(),
+        }
+    }
+
+    fn preflight_methods_pls(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<()> {
+        match self {
+            Self::Host(provider) => provider.preflight_methods_pls(request),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.preflight_methods_pls(request),
+            #[cfg(feature = "methods-optimizer")]
+            Self::MethodsReplay(provider) => provider.preflight_methods_pls(request),
+        }
+    }
+
+    fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<MethodsPlsData> {
+        match self {
+            Self::Host(provider) => provider.methods_pls_data(request),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.methods_pls_data(request),
+            #[cfg(feature = "methods-optimizer")]
+            Self::MethodsReplay(provider) => provider.methods_pls_data(request),
+        }
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+impl PyMethodsPlsTrainingProvider {
+    fn new(
+        bindings: Vec<DataBinding>,
+        envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
+        inputs: BTreeMap<String, MethodsPlsDataset>,
+    ) -> dag_ml_core::Result<Self> {
+        let expected_keys = bindings
+            .iter()
+            .map(|binding| {
+                dag_ml_core::data_binding_requirement_key(&binding.node_id, &binding.input_name)
+            })
+            .collect::<BTreeSet<_>>();
+        let actual_keys = inputs.keys().cloned().collect::<BTreeSet<_>>();
+        if expected_keys != actual_keys {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "native Methods training inputs must exactly cover runtime bindings (missing: [{}]; unexpected: [{}])",
+                expected_keys
+                    .difference(&actual_keys)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                actual_keys
+                    .difference(&expected_keys)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )));
+        }
+
+        let mut raw = InMemoryDataProvider::new(
+            dag_ml_core::ControllerId::new(PY_DATA_PROVIDER_CONTROLLER_ID)?,
+        );
+        for envelope in envelopes.values().cloned() {
+            raw.register_envelope(envelope)?;
+        }
+        let inner = EnvelopeAttestedRuntimeDataProvider::new(raw, bindings, envelopes)?;
+        for (key, dataset) in &inputs {
+            // PREDICT inputs legitimately carry no target matrix. FIT_CV and
+            // REFIT demand it again at the exact scheduler request below.
+            dataset.validate(&format!("native Methods input `{key}`"), false)?;
+        }
+        Ok(Self { inner, inputs })
+    }
+
+    fn dataset_for_view(
+        dataset: &MethodsPlsDataset,
+        sample_ids: &[SampleId],
+        require_targets: bool,
+        label: &str,
+    ) -> dag_ml_core::Result<MethodsPlsDataset> {
+        let index_by_id = dataset
+            .sample_ids
+            .iter()
+            .enumerate()
+            .map(|(index, sample_id)| (sample_id, index))
+            .collect::<BTreeMap<_, _>>();
+        let indices = sample_ids
+            .iter()
+            .map(|sample_id| {
+                index_by_id.get(sample_id).copied().ok_or_else(|| {
+                    dag_ml_core::DagMlError::RuntimeValidation(format!(
+                        "native Methods training {label} view requests sample `{sample_id}` absent from its attested input"
+                    ))
+                })
+            })
+            .collect::<dag_ml_core::Result<Vec<_>>>()?;
+        let select = |matrix: &MethodsPlsMatrix| MethodsPlsMatrix {
+            values: indices
+                .iter()
+                .flat_map(|index| {
+                    let start = index * matrix.cols;
+                    matrix.values[start..start + matrix.cols].iter().copied()
+                })
+                .collect(),
+            rows: indices.len(),
+            cols: matrix.cols,
+        };
+        let y = match &dataset.y {
+            Some(matrix) => Some(select(matrix)),
+            None if require_targets => {
+                return Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+                    "native Methods training {label} view requires targets"
+                )))
+            }
+            None => None,
+        };
+        Ok(MethodsPlsDataset {
+            sample_ids: sample_ids.to_vec(),
+            x: select(&dataset.x),
+            y,
+            target_names: dataset.target_names.clone(),
+        })
+    }
+
+    fn data_for(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<MethodsPlsData> {
+        request.validate()?;
+        if !matches!(
+            request.phase,
+            dag_ml_core::Phase::FitCv | dag_ml_core::Phase::Refit | dag_ml_core::Phase::Predict
+        ) {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(
+                "native Methods provider supports FIT_CV, REFIT, and PREDICT only".to_string(),
+            ));
+        }
+        if request.identity.is_none() {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(
+                "native Methods training requires a target-bound data identity".to_string(),
+            ));
+        }
+        let key = dag_ml_core::data_binding_requirement_key(
+            &request.binding.node_id,
+            &request.binding.input_name,
+        );
+        let dataset = self.inputs.get(&key).ok_or_else(|| {
+            dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "native Methods training has no input for `{key}`"
+            ))
+        })?;
+        let fit_ids = request.fit_view.sample_ids.as_deref().ok_or_else(|| {
+            dag_ml_core::DagMlError::RuntimeValidation(
+                "native Methods training fit view lacks scheduler-selected sample identities".to_string(),
+            )
+        })?;
+        let requires_targets = matches!(request.phase, dag_ml_core::Phase::FitCv | dag_ml_core::Phase::Refit);
+        let prediction = match &request.prediction_view {
+            Some(view) => Some(Self::dataset_for_view(
+                dataset,
+                view.sample_ids.as_deref().ok_or_else(|| {
+                    dag_ml_core::DagMlError::RuntimeValidation(
+                        "native Methods training prediction view lacks scheduler-selected sample identities".to_string(),
+                    )
+                })?,
+                requires_targets,
+                "prediction",
+            )?),
+            None => None,
+        };
+        Ok(MethodsPlsData {
+            fit: Self::dataset_for_view(dataset, fit_ids, requires_targets, "fit")?,
+            prediction,
+        })
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+impl RuntimeDataProvider for PyMethodsPlsTrainingProvider {
+    fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
+        self.inner.materialize(request)
+    }
+
+    fn make_view(&self, request: &DataViewRequest) -> dag_ml_core::Result<HandleRef> {
+        self.inner.make_view(request)
+    }
+
+    fn training_data_identity(
+        &self,
+        binding: &DataBinding,
+    ) -> dag_ml_core::Result<Option<dag_ml_core::TrainingDataIdentity>> {
+        self.inner.training_data_identity(binding)
+    }
+
+    fn coordinator_relations(
+        &self,
+        binding: &DataBinding,
+    ) -> dag_ml_core::Result<Option<SampleRelationSet>> {
+        self.inner.coordinator_relations(binding)
+    }
+
+    fn methods_pls_capability(&self) -> dag_ml_core::Result<()> {
+        Ok(())
+    }
+
+    fn preflight_methods_pls(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<()> {
+        self.data_for(request).map(|_| ())
+    }
+
+    fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<MethodsPlsData> {
+        self.data_for(request)
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+impl PyMethodsPlsReplayProvider {
+    fn new(
+        envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
+        inputs: BTreeMap<String, MethodsPlsDataset>,
+    ) -> dag_ml_core::Result<Self> {
+        let mut inner = InMemoryDataProvider::new(
+            dag_ml_core::ControllerId::new(PY_DATA_PROVIDER_CONTROLLER_ID)?,
+        );
+        for envelope in envelopes.into_values() {
+            inner.register_envelope(envelope)?;
+        }
+        for (key, dataset) in &inputs {
+            dataset.validate(&format!("native Methods replay input `{key}`"), false)?;
+        }
+        Ok(Self { inner, inputs })
+    }
+
+    fn data_for(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<MethodsPlsData> {
+        request.validate()?;
+        if request.phase != dag_ml_core::Phase::Predict {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(
+                "native Methods replay provider supports PREDICT only".to_string(),
+            ));
+        }
+        let key = dag_ml_core::data_binding_requirement_key(
+            &request.binding.node_id,
+            &request.binding.input_name,
+        );
+        let dataset = self.inputs.get(&key).ok_or_else(|| {
+            dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "native Methods replay has no input for `{key}`"
+            ))
+        })?;
+        // PREDICT's scheduler view intentionally has no fold subset. The
+        // caller's strictly keyed input is therefore the complete requested
+        // cohort; retain its explicit sample-id order rather than inventing
+        // positional IDs or borrowing a training fold.
+        let ids = request
+            .fit_view
+            .sample_ids
+            .as_deref()
+            .unwrap_or(&dataset.sample_ids);
+        Ok(MethodsPlsData {
+            fit: PyMethodsPlsTrainingProvider::dataset_for_view(dataset, ids, false, "replay")?,
+            prediction: None,
+        })
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+impl RuntimeDataProvider for PyMethodsPlsReplayProvider {
+    fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
+        self.inner.materialize(request)
+    }
+
+    fn make_view(&self, request: &DataViewRequest) -> dag_ml_core::Result<HandleRef> {
+        self.inner.make_view(request)
+    }
+
+    fn methods_pls_capability(&self) -> dag_ml_core::Result<()> {
+        Ok(())
+    }
+
+    fn preflight_methods_pls(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<()> {
+        self.data_for(request).map(|_| ())
+    }
+
+    fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<MethodsPlsData> {
+        self.data_for(request)
+    }
+}
+
 /// Process-local resources which make the retained artifact handles and data
 /// views meaningful. Field order intentionally drops the handle stores before
 /// the Python-backed controller registry.
 struct TrainingResources {
     artifact_store: InMemoryArtifactStore,
-    data_provider: EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>,
+    data_provider: TrainingDataProvider,
     controllers: RuntimeControllerRegistry,
 }
 
@@ -73,7 +482,7 @@ impl TrainingResult {
         Ok(self
             .lock_resources()?
             .as_ref()
-            .map(|resources| resources.data_provider.inner().handle_records().len()))
+            .map(|resources| resources.data_provider.data_handle_count()))
     }
 
     /// Number of materialized data-view handles retained for replay/audit.
@@ -82,7 +491,7 @@ impl TrainingResult {
         Ok(self
             .lock_resources()?
             .as_ref()
-            .map(|resources| resources.data_provider.inner().view_records().len()))
+            .map(|resources| resources.data_provider.data_view_count()))
     }
 
     /// Release every process-local resource while preserving portable output.
@@ -322,9 +731,10 @@ pub fn execute_training_json(
             .register_envelope(envelope)
             .map_err(py_core_error)?;
     }
-    let data_provider =
+    let data_provider = TrainingDataProvider::Host(
         EnvelopeAttestedRuntimeDataProvider::new(inner_provider, bindings, envelopes)
-            .map_err(py_core_error)?;
+            .map_err(py_core_error)?,
+    );
     let controllers =
         build_runtime_controllers(py, &projection.plan, &op_callback).map_err(py_core_error)?;
     let run_id = RunId::new(run_id).map_err(py_core_error)?;
@@ -361,6 +771,312 @@ pub fn execute_training_json(
         outcome,
         resources: Mutex::new(Some(resources)),
     })
+}
+
+/// Execute the narrow portable Methods PLS training lane.
+///
+/// Unlike [`execute_training_json`], this entry point does not accept a Python
+/// operator callback. Every executable node must be the registered native
+/// Methods PLS controller, and numeric rows are supplied through the typed
+/// `methods_inputs_json` provider. This is the public bridge for hosts that
+/// want a durable N4MM Package V2 rather than a process-local sidecar.
+#[pyfunction]
+#[pyo3(signature = (
+    request_json,
+    data_envelopes_json,
+    relations_json,
+    training_influence_json,
+    methods_inputs_json,
+    methods_library_path,
+    outcome_id,
+    run_id,
+    bundle_id,
+    warnings_json = "[]",
+    diagnostics_json = "{}"
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn execute_methods_training_json(
+    py: Python<'_>,
+    request_json: &str,
+    data_envelopes_json: &str,
+    relations_json: &str,
+    training_influence_json: &str,
+    methods_inputs_json: &str,
+    methods_library_path: &str,
+    outcome_id: &str,
+    run_id: &str,
+    bundle_id: &str,
+    warnings_json: &str,
+    diagnostics_json: &str,
+) -> PyResult<TrainingResult> {
+    #[cfg(not(feature = "methods-optimizer"))]
+    {
+        let _ = (
+            py,
+            request_json,
+            data_envelopes_json,
+            relations_json,
+            training_influence_json,
+            methods_inputs_json,
+            methods_library_path,
+            outcome_id,
+            run_id,
+            bundle_id,
+            warnings_json,
+            diagnostics_json,
+        );
+        return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+            "Methods training support is not compiled into this dag-ml binding; rebuild with the `methods-optimizer` feature".to_string(),
+        )));
+    }
+    #[cfg(feature = "methods-optimizer")]
+    {
+        let request = TrainingRequest::from_json(request_json).map_err(py_core_error)?;
+        let projection = request.project().map_err(py_core_error)?;
+        let envelopes = parse_strict_json::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+            data_envelopes_json,
+            "native Methods training data envelope map",
+        )?;
+        for envelope in envelopes.values() {
+            envelope.validate().map_err(py_core_error)?;
+        }
+        let relations = parse_strict_json::<SampleRelationSet>(
+            relations_json,
+            "native Methods training sample relations",
+        )?;
+        relations.validate().map_err(py_core_error)?;
+        let training_influence = parse_strict_json::<TrainingInfluenceManifest>(
+            training_influence_json,
+            "native Methods training influence manifest",
+        )?;
+        training_influence.validate().map_err(py_core_error)?;
+        let warnings = parse_strict_json::<Vec<String>>(warnings_json, "native Methods training warnings")?;
+        let diagnostics = parse_strict_json::<BTreeMap<String, serde_json::Value>>(
+            diagnostics_json,
+            "native Methods training diagnostics",
+        )?;
+        let bindings = projection
+            .plan
+            .node_plans
+            .values()
+            .flat_map(|node_plan| node_plan.data_bindings.iter().cloned())
+            .collect::<Vec<DataBinding>>();
+        let methods_controller = dag_ml_core::ControllerId::new(
+            dag_ml_core::METHODS_PLS_CONTROLLER_ID,
+        )
+        .map_err(py_core_error)?;
+        if projection
+            .plan
+            .node_plans
+            .values()
+            .any(|node_plan| node_plan.controller_id != methods_controller)
+        {
+            return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+                "native Methods training requires every executable node to use controller:methods.pls; host controller fallback is forbidden".to_string(),
+            )));
+        }
+        let raw_inputs = parse_strict_json::<BTreeMap<String, MethodsTrainingInputJson>>(
+            methods_inputs_json,
+            "native Methods training input map",
+        )?;
+        let inputs = raw_inputs
+            .into_iter()
+            .map(|(key, input)| Ok((key, methods_dataset_from_json(input, true)?)))
+            .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
+            .map_err(py_core_error)?;
+        let data_provider = TrainingDataProvider::Methods(
+            PyMethodsPlsTrainingProvider::new(bindings, envelopes, inputs)
+                .map_err(py_core_error)?,
+        );
+        let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path)
+            .map_err(|error| py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string())))?;
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(dag_ml_core::MethodsPlsController::new(runtime)))
+            .map_err(py_core_error)?;
+        let run_id = RunId::new(run_id).map_err(py_core_error)?;
+        let bundle_id = BundleId::new(bundle_id).map_err(py_core_error)?;
+        let resources = TrainingResources {
+            artifact_store: InMemoryArtifactStore::new(),
+            data_provider,
+            controllers,
+        };
+        let outcome_id = outcome_id.to_string();
+        let (outcome, resources) = py
+            .detach(move || {
+                let mut resources = resources;
+                let outcome = execute_training(TrainingExecutionInput {
+                    request: &request,
+                    outcome_id,
+                    run_id,
+                    bundle_id,
+                    controllers: &resources.controllers,
+                    data_provider: &resources.data_provider,
+                    relations: &relations,
+                    training_influence: &training_influence,
+                    artifact_store: &mut resources.artifact_store,
+                    warnings,
+                    diagnostics,
+                })?;
+                Ok::<_, dag_ml_core::DagMlError>((outcome, resources))
+            })
+            .map_err(py_core_error)?;
+        Ok(TrainingResult {
+            outcome,
+            resources: Mutex::new(Some(resources)),
+        })
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn methods_dataset_from_json(
+    input: MethodsTrainingInputJson,
+    require_targets: bool,
+) -> dag_ml_core::Result<MethodsPlsDataset> {
+    let rows_to_matrix = |rows: Vec<Vec<f64>>, label: &str| -> dag_ml_core::Result<MethodsPlsMatrix> {
+        let row_count = rows.len();
+        let columns = rows.first().map(Vec::len).unwrap_or(0);
+        if row_count == 0 || columns == 0 || rows.iter().any(|row| row.len() != columns) {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "native Methods training input `{label}` is not a non-empty rectangular matrix"
+            )));
+        }
+        let values = rows.into_iter().flatten().collect::<Vec<_>>();
+        Ok(MethodsPlsMatrix { values, rows: row_count, cols: columns })
+    };
+    let sample_ids = input
+        .sample_ids
+        .into_iter()
+        .map(SampleId::new)
+        .collect::<dag_ml_core::Result<Vec<_>>>()?;
+    let dataset = MethodsPlsDataset {
+        sample_ids,
+        x: rows_to_matrix(input.x, "x")?,
+        y: input
+            .y
+            .map(|rows| rows_to_matrix(rows, "y"))
+            .transpose()?,
+        target_names: input.target_names,
+    };
+    dataset.validate("native Methods input", require_targets)?;
+    Ok(dataset)
+}
+
+/// Replay a raw N4MM Package V2 through the registered native Methods PLS controller.
+///
+/// This is deliberately distinct from the generic callback replay API.  It
+/// accepts only typed numeric PREDICT views and never constructs a Python
+/// operator or host-side artifact callback.
+#[pyfunction]
+#[pyo3(signature = (
+    package_json,
+    request_json,
+    data_envelopes_json,
+    methods_inputs_json,
+    methods_library_path,
+    outcome_id,
+    run_id,
+    warnings_json = "[]",
+    diagnostics_json = "{}"
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn execute_loaded_methods_predictor_replay_json(
+    py: Python<'_>,
+    package_json: &str,
+    request_json: &str,
+    data_envelopes_json: &str,
+    methods_inputs_json: &str,
+    methods_library_path: &str,
+    outcome_id: &str,
+    run_id: &str,
+    warnings_json: &str,
+    diagnostics_json: &str,
+) -> PyResult<String> {
+    #[cfg(not(feature = "methods-optimizer"))]
+    {
+        let _ = (
+            py,
+            package_json,
+            request_json,
+            data_envelopes_json,
+            methods_inputs_json,
+            methods_library_path,
+            outcome_id,
+            run_id,
+            warnings_json,
+            diagnostics_json,
+        );
+        return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+            "Methods replay support is not compiled into this dag-ml binding; rebuild with the `methods-optimizer` feature".to_string(),
+        )));
+    }
+    #[cfg(feature = "methods-optimizer")]
+    {
+        let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
+        let request = TrainingReplayRequest::from_json(request_json).map_err(py_core_error)?;
+        let envelopes = parse_strict_json::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+            data_envelopes_json,
+            "native Methods replay data envelope map",
+        )?;
+        for envelope in envelopes.values() {
+            envelope.validate().map_err(py_core_error)?;
+        }
+        let raw_inputs = parse_strict_json::<BTreeMap<String, MethodsTrainingInputJson>>(
+            methods_inputs_json,
+            "native Methods replay input map",
+        )?;
+        let inputs = raw_inputs
+            .into_iter()
+            .map(|(key, input)| Ok((key, methods_dataset_from_json(input, false)?)))
+            .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
+            .map_err(py_core_error)?;
+        let methods_controller = dag_ml_core::ControllerId::new(dag_ml_core::METHODS_PLS_CONTROLLER_ID)
+            .map_err(py_core_error)?;
+        if package
+            .effective_plan
+            .node_plans
+            .values()
+            .any(|node_plan| node_plan.controller_id != methods_controller)
+        {
+            return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+                "native Methods replay requires every executable node to use controller:methods.pls".to_string(),
+            )));
+        }
+        let data_provider = TrainingDataProvider::MethodsReplay(
+            PyMethodsPlsReplayProvider::new(envelopes.clone(), inputs)
+                .map_err(py_core_error)?,
+        );
+        let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path)
+            .map_err(|error| py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string())))?;
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(dag_ml_core::MethodsPlsController::new(runtime)))
+            .map_err(py_core_error)?;
+        let warnings = parse_strict_json::<Vec<String>>(warnings_json, "native Methods replay warnings")?;
+        let diagnostics = parse_strict_json::<BTreeMap<String, serde_json::Value>>(
+            diagnostics_json,
+            "native Methods replay diagnostics",
+        )?;
+        let predictor = LoadedPredictor::new(package, BTreeMap::new()).map_err(py_core_error)?;
+        let outcome_id = outcome_id.to_string();
+        let run_id = RunId::new(run_id).map_err(py_core_error)?;
+        let outcome = py
+            .detach(move || {
+                execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+                    predictor: &predictor,
+                    request: &request,
+                    outcome_id,
+                    run_id,
+                    controllers: &controllers,
+                    data_provider: &data_provider,
+                    data_envelopes: &envelopes,
+                    warnings,
+                    diagnostics,
+                })
+            })
+            .map_err(py_core_error)?;
+        serialize_json(&outcome)
+    }
 }
 
 /// Execute stateless PREDICT/EXPLAIN replay from a loaded portable predictor package.
@@ -567,6 +1283,57 @@ mod tests {
     use pyo3::exceptions::PyValueError;
 
     use super::*;
+
+    #[cfg(feature = "methods-optimizer")]
+    #[test]
+    fn methods_training_views_follow_scheduler_identities_not_host_positions() {
+        let dataset = MethodsPlsDataset {
+            sample_ids: vec![
+                SampleId::new("sample:a").unwrap(),
+                SampleId::new("sample:b").unwrap(),
+                SampleId::new("sample:c").unwrap(),
+            ],
+            x: MethodsPlsMatrix {
+                values: vec![1.0, 2.0, 3.0],
+                rows: 3,
+                cols: 1,
+            },
+            y: Some(MethodsPlsMatrix {
+                values: vec![10.0, 20.0, 30.0],
+                rows: 3,
+                cols: 1,
+            }),
+            target_names: vec!["protein".to_string()],
+        };
+        let selected = PyMethodsPlsTrainingProvider::dataset_for_view(
+            &dataset,
+            &[
+                SampleId::new("sample:c").unwrap(),
+                SampleId::new("sample:a").unwrap(),
+            ],
+            true,
+            "test",
+        )
+        .unwrap();
+        assert_eq!(
+            selected.sample_ids,
+            vec![
+                SampleId::new("sample:c").unwrap(),
+                SampleId::new("sample:a").unwrap(),
+            ]
+        );
+        assert_eq!(selected.x.values, vec![3.0, 1.0]);
+        assert_eq!(selected.y.unwrap().values, vec![30.0, 10.0]);
+
+        let error = PyMethodsPlsTrainingProvider::dataset_for_view(
+            &dataset,
+            &[SampleId::new("sample:absent").unwrap()],
+            true,
+            "test",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("absent from its attested input"));
+    }
 
     const REQUEST_FIXTURE: &str =
         include_str!("../../../examples/fixtures/training/training_request_refit.v1.json");
