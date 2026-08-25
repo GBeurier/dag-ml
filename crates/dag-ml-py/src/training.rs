@@ -10,15 +10,17 @@ use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard};
 
 use dag_ml_core::{
-    execute_attached_training_replay, execute_loaded_predictor_replay, execute_training,
-    parse_typed_json, ArtifactId, ArtifactLoadMode, AttachedTrainingReplayInput, BundleId,
+    calibrate_attached_training_replay, execute_attached_training_replay,
+    execute_loaded_predictor_replay, execute_training, parse_typed_json, ArtifactId,
+    ArtifactLoadMode, AttachedTrainingReplayInput, BundleId, ConformalCalibrationContext,
+    ConformalCalibrationTruth, ConformalMultiTargetPolicy, ConformalSmallSamplePolicy,
     DataBinding, DataMaterializationRequest, DataViewRequest,
     EnvelopeAttestedRuntimeDataProvider, ExternalDataPlanEnvelope, FittedArtifactMode,
     HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LoadedPredictor,
     LoadedPredictorReplayInput, MethodsPlsData, MethodsPlsDataRequest,
     PortablePredictorPackage, RunId, RuntimeControllerRegistry, RuntimeDataProvider,
-    SampleRelationSet, TrainingExecutionInput,
-    TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest, TrainingRequest,
+    SampleRelationSet, TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome,
+    TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
 };
 #[cfg(feature = "methods-optimizer")]
 use dag_ml_core::{MethodsPlsDataset, MethodsPlsMatrix, SampleId};
@@ -631,6 +633,77 @@ impl TrainingResult {
         })
         .map_err(py_core_error)?;
         serialize_json(&outcome)
+    }
+
+    /// Attach a validated native split-conformal calibration to this outcome.
+    ///
+    /// Every argument is a strict external JSON contract.  The core owns the
+    /// calibration algorithm and validates the exact replay, relation, truth
+    /// and provenance closure before it updates the signed outcome.
+    #[pyo3(signature = (
+        replay_json,
+        binding_id,
+        calibration_relations_json,
+        truth_json,
+        context_json,
+        coverages_json,
+        multi_target_policy_json,
+        small_sample_policy_json
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn attach_conformal_calibration_json(
+        &mut self,
+        replay_json: &str,
+        binding_id: &str,
+        calibration_relations_json: &str,
+        truth_json: &str,
+        context_json: &str,
+        coverages_json: &str,
+        multi_target_policy_json: &str,
+        small_sample_policy_json: &str,
+    ) -> PyResult<String> {
+        let replay = parse_strict_json::<TrainingReplayOutcome>(
+            replay_json,
+            "conformal calibration replay outcome",
+        )?;
+        let relations = parse_strict_json::<SampleRelationSet>(
+            calibration_relations_json,
+            "conformal calibration relations",
+        )?;
+        let truth = parse_strict_json::<ConformalCalibrationTruth>(
+            truth_json,
+            "conformal calibration truth",
+        )?;
+        let context = parse_strict_json::<ConformalCalibrationContext>(
+            context_json,
+            "conformal calibration context",
+        )?;
+        let coverages = parse_strict_json::<Vec<f64>>(
+            coverages_json,
+            "conformal calibration coverages",
+        )?;
+        let multi_target_policy = parse_strict_json::<ConformalMultiTargetPolicy>(
+            multi_target_policy_json,
+            "conformal multi-target policy",
+        )?;
+        let small_sample_policy = parse_strict_json::<ConformalSmallSamplePolicy>(
+            small_sample_policy_json,
+            "conformal small-sample policy",
+        )?;
+
+        let calibration = calibrate_attached_training_replay(
+            &mut self.outcome,
+            &replay,
+            binding_id,
+            &relations,
+            truth,
+            context,
+            coverages,
+            multi_target_policy,
+            small_sample_policy,
+        )
+        .map_err(py_core_error)?;
+        serialize_json(&calibration)
     }
 
     /// Stable fingerprint of the complete outcome.
