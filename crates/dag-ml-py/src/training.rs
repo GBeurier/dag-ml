@@ -10,9 +10,9 @@ use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard};
 
 use dag_ml_core::{
-    calibrate_attached_training_replay, execute_attached_training_replay,
+    calibrate_attached_training_replay_with_derived_context, execute_attached_training_replay,
     execute_loaded_predictor_replay, execute_training, parse_typed_json, ArtifactId,
-    ArtifactLoadMode, AttachedTrainingReplayInput, BundleId, ConformalCalibrationContext,
+    ArtifactLoadMode, AttachedTrainingReplayInput, BundleId,
     ConformalCalibrationTruth, ConformalMultiTargetPolicy, ConformalSmallSamplePolicy,
     DataBinding, DataMaterializationRequest, DataViewRequest,
     EnvelopeAttestedRuntimeDataProvider, ExternalDataPlanEnvelope, FittedArtifactMode,
@@ -645,7 +645,6 @@ impl TrainingResult {
         binding_id,
         calibration_relations_json,
         truth_json,
-        context_json,
         coverages_json,
         multi_target_policy_json,
         small_sample_policy_json
@@ -657,7 +656,6 @@ impl TrainingResult {
         binding_id: &str,
         calibration_relations_json: &str,
         truth_json: &str,
-        context_json: &str,
         coverages_json: &str,
         multi_target_policy_json: &str,
         small_sample_policy_json: &str,
@@ -674,10 +672,6 @@ impl TrainingResult {
             truth_json,
             "conformal calibration truth",
         )?;
-        let context = parse_strict_json::<ConformalCalibrationContext>(
-            context_json,
-            "conformal calibration context",
-        )?;
         let coverages = parse_strict_json::<Vec<f64>>(
             coverages_json,
             "conformal calibration coverages",
@@ -691,13 +685,12 @@ impl TrainingResult {
             "conformal small-sample policy",
         )?;
 
-        let calibration = calibrate_attached_training_replay(
+        let calibration = calibrate_attached_training_replay_with_derived_context(
             &mut self.outcome,
             &replay,
             binding_id,
             &relations,
             truth,
-            context,
             coverages,
             multi_target_policy,
             small_sample_policy,

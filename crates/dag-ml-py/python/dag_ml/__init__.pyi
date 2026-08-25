@@ -123,7 +123,6 @@ class TrainingResult:
         binding_id: str,
         calibration_relations: Any,
         truth: Any,
-        context: Any,
         coverages: Any,
         multi_target_policy: str = "marginal",
         small_sample_policy: str = "error",

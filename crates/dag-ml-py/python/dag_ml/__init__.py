@@ -624,16 +624,16 @@ class TrainingResult:
         binding_id: str,
         calibration_relations: Any,
         truth: Any,
-        context: Any,
         coverages: Any,
         multi_target_policy: str = "marginal",
         small_sample_policy: str = "error",
     ) -> dict[str, Any]:
         """Attach native identity-bound split-conformal state to this result.
 
-        The inputs are typed, self-validating DAG-ML contracts. Python passes
-        them to the native coordinator unchanged; it never calculates
-        residuals, quantiles, or interval bounds itself.
+        The inputs are typed, self-validating DAG-ML contracts. The native
+        coordinator derives every provenance fingerprint from the source and
+        replay; Python never calculates identities, residuals, quantiles, or
+        interval bounds itself.
         """
 
         replay_outcome = TrainingReplayOutcome(replay)
@@ -642,7 +642,6 @@ class TrainingResult:
             binding_id,
             _coerce_json(calibration_relations),
             _coerce_json(truth),
-            _coerce_json(context),
             _coerce_json(coverages),
             _coerce_json(multi_target_policy),
             _coerce_json(small_sample_policy),
