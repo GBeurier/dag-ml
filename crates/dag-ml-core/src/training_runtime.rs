@@ -869,6 +869,10 @@ impl NativeTrainingScheduler {
         data_provider: &dyn RuntimeDataProvider,
         ctx: &mut RunContext,
     ) -> Result<Vec<NodeResult>> {
+        // Register target/group aggregation before executing the folds.  The runtime applies this
+        // only after the raw sample OOF rows have been reassembled, so an aggregate unit is never
+        // accidentally reduced one fold at a time.
+        ctx.configure_global_oof_aggregation(plan, data_provider)?;
         match self {
             Self::Sequential(scheduler) => scheduler.execute_campaign_phase_with_data_provider(
                 plan,
