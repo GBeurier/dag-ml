@@ -806,6 +806,13 @@ fn add_portable_methods_hpo(fixture: &mut Fixture) {
         .unwrap();
     model.controller_id = ControllerId::new(METHODS_PLS_CONTROLLER_ID).unwrap();
     model.controller_version = "libn4m-2.2".to_string();
+    // This is a controller-declared Archive/Package V3 capability, not an
+    // implication of merely supporting the scheduler REFIT phase.  The test
+    // fixture uses the production N4MM controller, which is portable across
+    // a fresh process and can therefore honestly opt in.
+    model
+        .capabilities
+        .insert(ControllerCapability::SupportsPortableFullRefit);
     rebuild(fixture);
     fixture.preferred = VariantId::new("hpo:trial:0").unwrap();
 }
@@ -2617,6 +2624,68 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         failed_replay_transform_calls + 4
     );
     assert_eq!(methods_controller.hydrated_payload_count().unwrap(), 0);
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
+    let mut fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut fixture);
+    fixture
+        .request
+        .controller_manifests
+        .iter_mut()
+        .find(|manifest| manifest.controller_id.as_str() == "controller:transform.mock")
+        .expect("fixture transform manifest")
+        .capabilities
+        .insert(ControllerCapability::SupportsPortableFullRefit);
+    give_methods_hpo_four_train_rows(&mut fixture);
+    rebuild(&mut fixture);
+    let mut source_store = InMemoryArtifactStore::new();
+    let source = run(
+        &fixture,
+        Arc::new(CallState::default()),
+        &provider(&fixture),
+        &mut source_store,
+    )
+    .expect("source native Methods training");
+    let package = source
+        .to_portable_predictor_package(
+            "predictor:methods.full-refit.source",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .expect("portable Methods source package");
+    let recipe = PortableRefitRecipe::derive_from_package(&package, "recipe:methods.full")
+        .expect("Methods controller explicitly supports portable full refit");
+
+    let mut target_identities = fixture.request.data_identities.clone();
+    for identity in &mut target_identities {
+        identity.data_content_fingerprint = "c".repeat(64);
+        identity.target_content_fingerprint = "d".repeat(64);
+        identity.identity_fingerprint = "0".repeat(64);
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    }
+    let mut target_provider = provider(&fixture);
+    target_provider.identity = Some(target_identities[0].clone());
+    let execution = execute_portable_full_refit(PortableFullRefitExecutionInput {
+        recipe: &recipe,
+        source_package: &package,
+        target_plan: &source.effective_plan,
+        target_training_request_fingerprint: "e".repeat(64),
+        target_data_identities: &target_identities,
+        target_training_influence: &fixture.influence,
+        run_id: RunId::new("run:methods.full-refit.target").unwrap(),
+        controllers: &controllers(&fixture, Arc::new(CallState::default()), true),
+        data_provider: &target_provider,
+    })
+    .expect("fresh target cohort executes exactly one portable full refit");
+    assert!(!execution.results.is_empty());
+    assert!(!execution.refit_artifacts.is_empty());
+    assert_ne!(
+        execution.provenance.target_data_identities_fingerprint,
+        recipe.parent_outcome.data_identities_fingerprint
+    );
 }
 
 #[cfg(not(feature = "methods-optimizer"))]
