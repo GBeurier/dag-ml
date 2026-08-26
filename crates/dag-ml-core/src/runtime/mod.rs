@@ -260,6 +260,17 @@ pub struct RunContext {
     /// average reports — one per scored producer. Surfaced so the host can fill the `(validation, avg)`
     /// row's per-sample y_pred; populated by `collect_cross_fold_validation_scores`, empty otherwise.
     pub oof_average_blocks: Vec<OofAverageBlock>,
+    /// Declarative per-producer aggregation contracts that are applied only after every
+    /// validation fold has contributed its raw sample-level OOF block.  This is deliberately
+    /// separate from the per-task aggregation path: a semantic unit may span CV folds, so
+    /// reducing it inside one fold would change the experiment being scored.
+    pub(crate) global_oof_aggregation: BTreeMap<NodeId, GlobalOofAggregationSpec>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GlobalOofAggregationSpec {
+    pub(crate) policy: AggregationPolicy,
+    pub(crate) relations: SampleRelationSet,
 }
 
 impl RunContext {
@@ -274,7 +285,21 @@ impl RunContext {
             score_collector: Vec::new(),
             regression_target_records: Vec::new(),
             oof_average_blocks: Vec::new(),
+            global_oof_aggregation: BTreeMap::new(),
         }
+    }
+
+    /// Bind the relation-attested aggregation policies needed for global OOF scoring before the
+    /// caller executes `FIT_CV`.  The provider remains the authority for relations; this method
+    /// only records a validated, immutable snapshot in the run context so finalisation cannot
+    /// silently use a different grouping from execution.
+    pub(crate) fn configure_global_oof_aggregation(
+        &mut self,
+        plan: &ExecutionPlan,
+        data_provider: &dyn RuntimeDataProvider,
+    ) -> Result<()> {
+        self.global_oof_aggregation = global_oof_aggregation_specs(plan, data_provider)?;
+        Ok(())
     }
 
     /// Score the cross-fold OOF average from the collected per-fold validation predictions + targets
@@ -298,6 +323,7 @@ impl RunContext {
             SCORE_METRICS,
             partition_mode,
         )?;
+        let outcome = apply_global_oof_aggregation(outcome, &self.global_oof_aggregation)?;
         self.score_collector.extend(outcome.reports);
         self.oof_average_blocks.extend(outcome.oof_averages);
         Ok(())
@@ -890,7 +916,16 @@ pub(crate) fn capture_variant_validation_predictions(
         variant_label,
         predictions,
         regression_targets,
-        oof_average: ctx.oof_average_blocks.first().cloned(),
+        // A target/group global OOF aggregate is appended after its source sample average.  Prefer
+        // that semantic score surface when present; legacy/sample-only executions retain the
+        // historical first average unchanged.
+        oof_average: ctx
+            .oof_average_blocks
+            .iter()
+            .rev()
+            .find(|block| block.predictions.level != PredictionLevel::Sample)
+            .cloned()
+            .or_else(|| ctx.oof_average_blocks.first().cloned()),
     }
 }
 

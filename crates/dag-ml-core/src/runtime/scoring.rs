@@ -10,6 +10,232 @@ pub(crate) const SCORE_METRICS: &[RegressionMetricKind] = &[
     RegressionMetricKind::BalancedAccuracy,
 ];
 
+/// Resolve the aggregation contracts that must run after all CV folds have emitted their OOF
+/// rows.  A `Target` or `Group` unit is allowed to span folds; aggregating it inside an individual
+/// fold would make the score depend on the splitter rather than on the declared semantic unit.
+///
+/// This is generic runtime machinery.  Hosts only attest relations and choose an existing
+/// aggregation policy; no host-side reducer or domain-specific grouping is involved.
+pub(crate) fn global_oof_aggregation_specs(
+    plan: &ExecutionPlan,
+    data_provider: &dyn RuntimeDataProvider,
+) -> Result<BTreeMap<NodeId, GlobalOofAggregationSpec>> {
+    let mut specs = BTreeMap::new();
+    let resources = PhaseScopeResources {
+        data_provider: Some(data_provider),
+        ..Default::default()
+    };
+    for (node_id, node_plan) in &plan.node_plans {
+        let Some(shape_plan) = &node_plan.shape_plan else {
+            continue;
+        };
+        let policy = &shape_plan.aggregation_policy;
+        if matches!(
+            policy.aggregation_level,
+            PredictionLevel::Observation | PredictionLevel::Sample
+        ) || policy.selection_metric_level != policy.aggregation_level
+        {
+            continue;
+        }
+        policy.validate()?;
+        let relations = coordinator_relations_for_node(node_plan, &resources)?.ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "node `{node_id}` declares global {:?} aggregation but has no relation-attested data binding",
+                policy.aggregation_level
+            ))
+        })?;
+        let actual_fingerprint = crate::relation::relation_set_fingerprint(&relations)?;
+        for binding in &node_plan.data_bindings {
+            if (binding.require_relations || binding.relation_fingerprint.is_some())
+                && binding.relation_fingerprint.as_deref() != Some(actual_fingerprint.as_str())
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{node_id}` global OOF aggregation relation fingerprint does not match binding `{}`",
+                    binding.input_name
+                )));
+            }
+        }
+        specs.insert(
+            node_id.clone(),
+            GlobalOofAggregationSpec {
+                policy: policy.clone(),
+                relations,
+            },
+        );
+    }
+    Ok(specs)
+}
+
+/// Add target/group OOF reports after the normal sample-level OOF average has been reassembled.
+/// The input average is already identity-checked across folds.  Ground truth is then collapsed only
+/// when every member of an aggregate unit has the exact same target vector; averaging or voting
+/// labels would be a data transformation, not an attested scoring operation, so it is refused.
+pub(crate) fn apply_global_oof_aggregation(
+    mut outcome: crate::metrics::CrossFoldValidation,
+    specs: &BTreeMap<NodeId, GlobalOofAggregationSpec>,
+) -> Result<crate::metrics::CrossFoldValidation> {
+    if specs.is_empty() {
+        return Ok(outcome);
+    }
+    let sample_averages = outcome.oof_averages.clone();
+    for average in sample_averages {
+        if average.predictions.level != PredictionLevel::Sample {
+            continue;
+        }
+        let Some(spec) = specs.get(&average.predictions.producer_node) else {
+            continue;
+        };
+        let sample_ids = average
+            .predictions
+            .unit_ids
+            .iter()
+            .map(|unit| match unit {
+                PredictionUnitId::Sample(sample_id) => Ok(sample_id.clone()),
+                _ => Err(DagMlError::OofValidation(format!(
+                    "global OOF average for `{}` is not sample keyed",
+                    average.predictions.producer_node
+                ))),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let sample_block = PredictionBlock {
+            prediction_id: average.predictions.prediction_id.clone(),
+            producer_node: average.predictions.producer_node.clone(),
+            producer_port: average.predictions.producer_port.clone(),
+            partition: average.predictions.partition.clone(),
+            fold_id: average.predictions.fold_id.clone(),
+            sample_ids,
+            values: average.predictions.values.clone(),
+            target_names: average.predictions.target_names.clone(),
+        };
+        let requested_unit_order = requested_unit_order_for_sample_block(
+            spec.policy.aggregation_level,
+            &spec.relations,
+            &sample_block,
+        )?;
+        let aggregated = aggregate_sample_predictions_by_unit(
+            &sample_block,
+            &spec.relations,
+            &spec.policy,
+            &requested_unit_order,
+        )?;
+        let targets = aggregate_oof_targets_by_unit(
+            &average.y_true,
+            &sample_block.sample_ids,
+            &spec.relations,
+            spec.policy.aggregation_level,
+            &requested_unit_order,
+        )?;
+        outcome.reports.push(score_regression_aggregated_block(
+            &aggregated,
+            &targets,
+            SCORE_METRICS,
+        )?);
+        outcome.oof_averages.push(OofAverageBlock {
+            predictions: aggregated,
+            y_true: targets,
+        });
+    }
+    Ok(outcome)
+}
+
+fn aggregate_oof_targets_by_unit(
+    sample_targets: &RegressionTargetBlock,
+    sample_ids: &[SampleId],
+    relations: &SampleRelationSet,
+    level: PredictionLevel,
+    requested_unit_order: &[PredictionUnitId],
+) -> Result<RegressionTargetBlock> {
+    if sample_targets.level != PredictionLevel::Sample {
+        return Err(DagMlError::OofValidation(
+            "global OOF aggregation requires sample-level ground truth".to_string(),
+        ));
+    }
+    let mut target_by_sample = BTreeMap::<SampleId, Vec<f64>>::new();
+    for (unit, values) in sample_targets.unit_ids.iter().zip(&sample_targets.values) {
+        let PredictionUnitId::Sample(sample_id) = unit else {
+            return Err(DagMlError::OofValidation(
+                "sample-level OOF ground truth contains a non-sample unit".to_string(),
+            ));
+        };
+        if target_by_sample
+            .insert(sample_id.clone(), values.clone())
+            .is_some()
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "sample-level OOF ground truth duplicates sample `{sample_id}`"
+            )));
+        }
+    }
+
+    let mut target_by_unit = BTreeMap::<PredictionUnitId, Vec<f64>>::new();
+    for sample_id in sample_ids {
+        let values = target_by_sample.get(sample_id).ok_or_else(|| {
+            DagMlError::OofValidation(format!(
+                "global OOF aggregation is missing ground truth for sample `{sample_id}`"
+            ))
+        })?;
+        let unit = aggregation_unit_for_sample(level, relations, sample_id)?;
+        match target_by_unit.get(&unit) {
+            None => {
+                target_by_unit.insert(unit, values.clone());
+            }
+            Some(existing) if existing == values => {}
+            Some(_) => {
+                return Err(DagMlError::OofValidation(format!(
+                    "global OOF aggregate unit `{unit:?}` has conflicting ground truth across member samples"
+                )));
+            }
+        }
+    }
+    let values = requested_unit_order
+        .iter()
+        .map(|unit| {
+            target_by_unit.get(unit).cloned().ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "global OOF aggregate unit `{unit:?}` has no member ground truth"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RegressionTargetBlock {
+        level,
+        unit_ids: requested_unit_order.to_vec(),
+        values,
+        target_names: sample_targets.target_names.clone(),
+    })
+}
+
+fn aggregation_unit_for_sample(
+    level: PredictionLevel,
+    relations: &SampleRelationSet,
+    sample_id: &SampleId,
+) -> Result<PredictionUnitId> {
+    match level {
+        PredictionLevel::Sample => Ok(PredictionUnitId::Sample(sample_id.clone())),
+        PredictionLevel::Target => relations
+            .target_for_sample(sample_id)
+            .cloned()
+            .map(PredictionUnitId::Target)
+            .ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "sample `{sample_id}` is missing target id for global OOF aggregation"
+                ))
+            }),
+        PredictionLevel::Group => relations
+            .group_for_sample(sample_id)
+            .cloned()
+            .map(PredictionUnitId::Group)
+            .ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "sample `{sample_id}` is missing group id for global OOF aggregation"
+                ))
+            }),
+        PredictionLevel::Observation => Err(DagMlError::OofValidation(
+            "global OOF aggregation cannot target observation level".to_string(),
+        )),
+    }
+}
+
 /// True when a Sample-level target block covers EXACTLY the prediction block's samples — the pairing
 /// dag-ml's scoring requires (target units == prediction units). Lets one result carry several
 /// sample-level blocks (e.g. refit's final-train + final-test), each with its own y_true.
@@ -396,4 +622,124 @@ pub(crate) fn aggregation_task_id(
         "aggregation:{}:{}:{}:{}:{}",
         task.run_id, task.node_plan.node_id, producer_node, fold, stage
     )
+}
+
+#[cfg(test)]
+mod global_oof_tests {
+    use super::*;
+    use crate::aggregation::AggregatedPredictionBlock;
+    use crate::ids::{ObservationId, TargetId};
+    use crate::metrics::CrossFoldValidation;
+    use crate::policy::AggregationMethod;
+    use crate::relation::SampleRelation;
+
+    fn sid(value: &str) -> SampleId {
+        SampleId::new(value).unwrap()
+    }
+
+    fn target(value: &str) -> TargetId {
+        TargetId::new(value).unwrap()
+    }
+
+    fn average(samples: &[(&str, f64, f64)]) -> OofAverageBlock {
+        let sample_ids = samples
+            .iter()
+            .map(|(sample, _, _)| PredictionUnitId::Sample(sid(sample)))
+            .collect::<Vec<_>>();
+        OofAverageBlock {
+            predictions: AggregatedPredictionBlock {
+                prediction_id: Some("pred:model:avg".to_string()),
+                producer_node: NodeId::new("model:classifier").unwrap(),
+                producer_port: Some("prediction".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("avg").unwrap()),
+                level: PredictionLevel::Sample,
+                unit_ids: sample_ids.clone(),
+                values: samples
+                    .iter()
+                    .map(|(_, prediction, _)| vec![*prediction])
+                    .collect(),
+                target_names: vec!["class".to_string()],
+            },
+            y_true: RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: sample_ids,
+                values: samples.iter().map(|(_, _, truth)| vec![*truth]).collect(),
+                target_names: vec!["class".to_string()],
+            },
+        }
+    }
+
+    fn target_relations() -> SampleRelationSet {
+        let mut first =
+            SampleRelation::new(ObservationId::new("obs:fold0:s1").unwrap(), sid("sample:1"));
+        first.target_id = Some(target("target:positive"));
+        let mut second =
+            SampleRelation::new(ObservationId::new("obs:fold1:s2").unwrap(), sid("sample:2"));
+        second.target_id = Some(target("target:positive"));
+        SampleRelationSet {
+            records: vec![first, second],
+        }
+    }
+
+    #[test]
+    fn global_oof_vote_reduces_a_target_after_cross_fold_reassembly() {
+        // `sample:1` and `sample:2` intentionally represent validation rows from different
+        // folds.  The global step receives their already reassembled OOF rows and emits exactly
+        // one target-level score, rather than trying to vote inside either fold.
+        let specs = BTreeMap::from([(
+            NodeId::new("model:classifier").unwrap(),
+            GlobalOofAggregationSpec {
+                policy: AggregationPolicy {
+                    aggregation_level: PredictionLevel::Target,
+                    method: AggregationMethod::Vote,
+                    selection_metric_level: PredictionLevel::Target,
+                    ..AggregationPolicy::default()
+                },
+                relations: target_relations(),
+            },
+        )]);
+        let outcome = apply_global_oof_aggregation(
+            CrossFoldValidation {
+                reports: Vec::new(),
+                oof_averages: vec![average(&[("sample:1", 1.0, 1.0), ("sample:2", 1.0, 1.0)])],
+            },
+            &specs,
+        )
+        .unwrap();
+        assert_eq!(outcome.reports.len(), 1);
+        assert_eq!(outcome.reports[0].level, PredictionLevel::Target);
+        assert_eq!(outcome.reports[0].row_count, 1);
+        assert_eq!(outcome.oof_averages.len(), 2);
+        assert_eq!(
+            outcome.oof_averages[1].predictions.level,
+            PredictionLevel::Target
+        );
+        assert_eq!(outcome.oof_averages[1].predictions.values, vec![vec![1.0]]);
+    }
+
+    #[test]
+    fn global_oof_aggregation_refuses_conflicting_truth_inside_one_target() {
+        let specs = BTreeMap::from([(
+            NodeId::new("model:classifier").unwrap(),
+            GlobalOofAggregationSpec {
+                policy: AggregationPolicy {
+                    aggregation_level: PredictionLevel::Target,
+                    method: AggregationMethod::Vote,
+                    ..AggregationPolicy::default()
+                },
+                relations: target_relations(),
+            },
+        )]);
+        let error = apply_global_oof_aggregation(
+            CrossFoldValidation {
+                reports: Vec::new(),
+                oof_averages: vec![average(&[("sample:1", 1.0, 1.0), ("sample:2", 1.0, 2.0)])],
+            },
+            &specs,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("conflicting ground truth"), "{error}");
+    }
 }
