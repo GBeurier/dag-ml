@@ -37,10 +37,9 @@ use crate::training_runtime::{
 
 pub const TRAINING_REPLAY_REQUEST_SCHEMA_VERSION: u32 = 1;
 /// V3 permits target-free external data identities for PREDICT/EXPLAIN while
-/// retaining V2's typed conformal-interval closure for target-bound replays.
-/// The training-only identity remains deliberately target-bound; a replay on
-/// a fresh unlabeled cohort must not invent a target fingerprint simply to fit
-/// that training attestation type.
+/// retaining typed conformal-interval closure. Calibration evidence remains
+/// target-bound, but a fresh unlabeled cohort must not invent a target
+/// fingerprint merely to receive intervals derived from that calibration.
 pub const TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 3;
 pub const LEGACY_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 1;
 pub const CONFORMAL_TRAINING_REPLAY_OUTCOME_SCHEMA_VERSION: u32 = 2;
@@ -333,16 +332,6 @@ impl TrainingReplayOutcome {
         {
             return contract_error(
                 "training replay outcome V1 cannot carry conformal state; migrate to V2 or V3",
-            );
-        }
-        if self
-            .input_data_identities
-            .iter()
-            .any(|identity| identity.target_content_fingerprint.is_none())
-            && !self.conformal_intervals.is_empty()
-        {
-            return contract_error(
-                "target-free training replay evidence cannot carry conformal intervals",
             );
         }
         for output in &self.outputs {
