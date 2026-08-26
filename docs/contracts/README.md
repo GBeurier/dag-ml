@@ -5,6 +5,18 @@ DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
 validator: it checks fingerprints, campaign fold membership, OOF boundaries and
 leakage policies before any controller receives a handle.
 
+## Native Full Refit Package V3
+
+Schema: `portable_refit_package.v3.schema.json`
+
+This is a new child package family defined by ADR-25, not an extension of
+`PortablePredictorPackage` V1/V2. It records the closed parent recipe, a full
+fresh training request and cohort provenance, selected effective plan, refit
+artifacts and their detached raw payloads. It deliberately cannot represent
+parent CV scores, OOF caches, selection reports, conformal state or runtime
+handles. V1/V2 readers must reject it rather than attempting an in-place
+upgrade. A V3 reader/replay and Archive V3 remain separate publication gates.
+
 ## Loss, Metric and Early-Stopping Contracts
 
 Schemas: `loss_spec.schema.json`, `metric_spec.schema.json`,
