@@ -24,6 +24,7 @@ from ._dag_ml import (
     TrainingResult as _NativeTrainingResult,
     build_execution_plan_json,
     build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
+    build_archive_v3_native_refit_payloads_json as _native_build_archive_v3_native_refit_payloads_json,
     canonical_operator_variant_label,
     configure_methods_runtime as _native_configure_methods_runtime,
     contract_manifest_json as _native_contract_manifest_json,
@@ -55,6 +56,7 @@ from ._dag_ml import (
     validate_parameter_projection_json,
     validate_pipeline_dsl_json,
     validate_portable_predictor_package_json,
+    validate_portable_refit_package_v3_json,
     validate_training_contract_projection_json,
     validate_training_outcome_json,
     validate_training_replay_outcome_json,
@@ -92,10 +94,12 @@ _FACADE_EXPORTS = [
     "ParameterProjection",
     "CacheNamespace",
     "PortablePredictorPackage",
+    "PortableRefitPackageV3",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
     "configure_methods_runtime",
     "build_archive_v2_native_portable_payloads",
+    "build_archive_v3_native_refit_payloads",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_with_controllers",
     "derive_controller_manifest",
@@ -532,6 +536,14 @@ class PortablePredictorPackage(JsonContract):
         validate_portable_predictor_package_json(json_text)
 
 
+class PortableRefitPackageV3(JsonContract):
+    """Strict, target-bound native full-refit Package V3 contract."""
+
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_portable_refit_package_v3_json(json_text)
+
+
 class TrainingResult:
     """Owning native training result with explicit process-local detach."""
 
@@ -908,6 +920,37 @@ def build_archive_v2_native_portable_payloads(
     return manifest, byte_members
 
 
+def build_archive_v3_native_refit_payloads(
+    archive_id: str,
+    package: Any,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    """Build exact Core Archive V3 inputs from a refit Package V3.
+
+    DAG-ML validates and assembles every manifest reference and member byte.
+    Core is the sole ZIP writer/reader, and this target-bound V3 child is never
+    coerced into the V2 predictor-package family.
+    """
+
+    payloads = json.loads(
+        _native_build_archive_v3_native_refit_payloads_json(
+            archive_id, _coerce_json(package)
+        )
+    )
+    manifest = payloads.get("manifest")
+    members = payloads.get("members")
+    if not isinstance(manifest, dict) or not isinstance(members, dict):
+        raise _facade_contract_error("native Archive V3 assembler returned an invalid payload object")
+    byte_members: dict[str, bytes] = {}
+    for path, value in members.items():
+        if not isinstance(path, str) or not isinstance(value, list):
+            raise _facade_contract_error("native Archive V3 assembler returned an invalid member")
+        try:
+            byte_members[path] = bytes(value)
+        except ValueError as error:
+            raise _facade_contract_error("native Archive V3 assembler returned invalid member bytes") from error
+    return manifest, byte_members
+
+
 def execute_training_json(
     request_json: str,
     data_envelopes_json: str,
@@ -1202,6 +1245,7 @@ __all__ = [
     "ParameterProjection",
     "PipelineDslSpec",
     "PortablePredictorPackage",
+    "PortableRefitPackageV3",
     "TrainingContractProjection",
     "TrainingOutcome",
     "TrainingReplayOutcome",
@@ -1210,6 +1254,7 @@ __all__ = [
     "TrainingRequest",
     "build_execution_plan",
     "build_archive_v2_native_portable_payloads",
+    "build_archive_v3_native_refit_payloads",
     "build_execution_plan_json",
     "canonical_operator_variant_label",
     "contract_manifest_json",
