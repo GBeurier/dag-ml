@@ -69,6 +69,14 @@ class _FakeNativeTrainingResult:
         raise RuntimeError("fake native replay is not implemented")
 
 
+class ArchiveV3PythonSurfaceTests(unittest.TestCase):
+    def test_refit_package_surface_is_native_and_fail_closed(self) -> None:
+        self.assertIn("PortableRefitPackageV3", dag_ml.__all__)
+        self.assertIn("build_archive_v3_native_refit_payloads", dag_ml.__all__)
+        with self.assertRaises(dag_ml.DagMlError):
+            dag_ml.PortableRefitPackageV3('{"schema_version":3}')
+
+
 class _SuccessfulTrainingCallback:
     """Fixture controller that exercises the installed public training path."""
 
