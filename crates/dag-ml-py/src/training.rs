@@ -25,6 +25,7 @@ use dag_ml_core::{
 #[cfg(feature = "methods-optimizer")]
 use dag_ml_core::{
     LoadedPortableRefitReplayInputV3, MethodsPlsDataset, MethodsPlsMatrix,
+    MethodsPortablePredictorReplayInput,
     PortableFullRefitExecutionInput, PortableRefitPackageV3,
     PortableRefitPackageV3BuildInput, PortableRefitRecipe, SampleId,
     build_portable_refit_package_v3, derive_portable_full_refit_target_plan,
@@ -1323,49 +1324,30 @@ pub fn execute_loaded_methods_predictor_replay_json(
             .map(|(key, input)| Ok((key, methods_dataset_from_json(input, false)?)))
             .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
             .map_err(py_core_error)?;
-        let methods_controller = dag_ml_core::ControllerId::new(dag_ml_core::METHODS_PLS_CONTROLLER_ID)
-            .map_err(py_core_error)?;
-        if package
-            .effective_plan
-            .node_plans
-            .values()
-            .any(|node_plan| node_plan.controller_id != methods_controller)
-        {
-            return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
-                "native Methods replay requires every executable node to use controller:methods.pls".to_string(),
-            )));
-        }
-        let data_provider = TrainingDataProvider::MethodsReplay(
-            PyMethodsPlsReplayProvider::new(envelopes.clone(), inputs)
-                .map_err(py_core_error)?,
-        );
         let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path)
             .map_err(|error| py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string())))?;
-        let mut controllers = RuntimeControllerRegistry::new();
-        controllers
-            .register(Box::new(dag_ml_core::MethodsPlsController::new(runtime)))
-            .map_err(py_core_error)?;
         let warnings = parse_strict_json::<Vec<String>>(warnings_json, "native Methods replay warnings")?;
         let diagnostics = parse_strict_json::<BTreeMap<String, serde_json::Value>>(
             diagnostics_json,
             "native Methods replay diagnostics",
         )?;
-        let predictor = LoadedPredictor::new(package, BTreeMap::new()).map_err(py_core_error)?;
         let outcome_id = outcome_id.to_string();
         let run_id = RunId::new(run_id).map_err(py_core_error)?;
         let outcome = py
             .detach(move || {
-                execute_loaded_predictor_replay(LoadedPredictorReplayInput {
-                    predictor: &predictor,
+                dag_ml_core::execute_loaded_methods_predictor_replay(
+                    MethodsPortablePredictorReplayInput {
+                    package: &package,
                     request: &request,
+                    data_envelopes: &envelopes,
+                    methods_inputs: &inputs,
+                    runtime,
                     outcome_id,
                     run_id,
-                    controllers: &controllers,
-                    data_provider: &data_provider,
-                    data_envelopes: &envelopes,
                     warnings,
                     diagnostics,
-                })
+                    },
+                )
             })
             .map_err(py_core_error)?;
         serialize_json(&outcome)
