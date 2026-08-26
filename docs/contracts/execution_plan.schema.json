@@ -131,7 +131,8 @@
         "uses_training_weights",
         "uses_early_stopping",
         "performs_internal_tuning",
-        "trains_aggregation"
+        "trains_aggregation",
+        "supports_portable_full_refit"
       ]
     },
     "controller_fit_scope": {

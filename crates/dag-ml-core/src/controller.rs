@@ -47,6 +47,11 @@ pub enum ControllerCapability {
     PerformsInternalTuning,
     /// Prediction aggregation itself has fitted state.
     TrainsAggregation,
+    /// Controller can perform a portable, full native retrain from a closed
+    /// Package V3 recipe.  This is deliberately distinct from ordinary
+    /// `REFIT` scheduler support: a controller must opt in to the archive
+    /// boundary and attest that no host-sidecar state is required.
+    SupportsPortableFullRefit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
