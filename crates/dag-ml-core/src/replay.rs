@@ -32,7 +32,8 @@ use crate::runtime::{
 };
 use crate::training::{LoadedPredictor, PortablePredictorPackage, TrainingOutcomeRef};
 use crate::training_runtime::{
-    BoundTrainingOutput, TrainingOutcome, BOUND_TRAINING_OUTPUT_SCHEMA_VERSION,
+    BoundTrainingOutput, PortableRefitPackageV3, TrainingOutcome,
+    BOUND_TRAINING_OUTPUT_SCHEMA_VERSION,
 };
 
 pub const TRAINING_REPLAY_REQUEST_SCHEMA_VERSION: u32 = 1;
@@ -111,6 +112,175 @@ pub struct LoadedPredictorReplayInput<'a> {
     pub data_envelopes: &'a BTreeMap<String, ExternalDataPlanEnvelope>,
     pub warnings: Vec<String>,
     pub diagnostics: BTreeMap<String, serde_json::Value>,
+}
+
+/// Process-local replay input for a detached Package V3 full-refit child.
+/// V3 has no host-sidecar artifact mode: every artifact is rehydrated from the
+/// child bundle's raw native payloads for this invocation only.
+pub struct LoadedPortableRefitReplayInputV3<'a> {
+    pub package: &'a PortableRefitPackageV3,
+    pub request: &'a TrainingReplayRequest,
+    pub outcome_id: String,
+    pub run_id: RunId,
+    pub controllers: &'a RuntimeControllerRegistry,
+    pub data_provider: &'a dyn RuntimeDataProvider,
+    pub data_envelopes: &'a BTreeMap<String, ExternalDataPlanEnvelope>,
+    pub warnings: Vec<String>,
+    pub diagnostics: BTreeMap<String, serde_json::Value>,
+}
+
+/// V3 replay evidence. This remains separate from [`TrainingReplayOutcome`],
+/// whose source reference proves an original CV/SELECT training outcome.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableRefitReplayOutcomeV3 {
+    pub schema_version: u32,
+    pub outcome_id: String,
+    pub run_id: RunId,
+    pub source_package_fingerprint: String,
+    pub source_refit_outcome_fingerprint: String,
+    pub replay_request_id: String,
+    pub replay_request_fingerprint: String,
+    pub input_data_identities: Vec<ReplayDataIdentity>,
+    pub bundle_id: BundleId,
+    pub plan_id: String,
+    pub phase: Phase,
+    pub outputs: Vec<BoundTrainingOutput>,
+    pub explanations: Vec<ExplanationBlock>,
+    pub lineage: Vec<LineageRecord>,
+    pub warnings: Vec<String>,
+    pub diagnostics: BTreeMap<String, serde_json::Value>,
+    pub outcome_fingerprint: String,
+}
+
+impl PortableRefitReplayOutcomeV3 {
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        tcv1_fingerprint_without(
+            self,
+            "outcome_fingerprint",
+            "portable refit replay outcome V3",
+        )
+    }
+
+    pub fn validate_against(
+        &self,
+        package: &PortableRefitPackageV3,
+        request: &TrainingReplayRequest,
+    ) -> Result<()> {
+        if self.schema_version != 3 {
+            return contract_error(
+                "portable refit replay outcome V3 has unsupported schema_version".to_string(),
+            );
+        }
+        package.validate()?;
+        request.validate()?;
+        validate_replay_phase(request.phase)?;
+        validate_identifier("portable refit replay outcome_id", &self.outcome_id)?;
+        validate_sha256(
+            "portable refit replay source package",
+            &self.source_package_fingerprint,
+        )?;
+        validate_sha256(
+            "portable refit replay source outcome",
+            &self.source_refit_outcome_fingerprint,
+        )?;
+        validate_sha256(
+            "portable refit replay request",
+            &self.replay_request_fingerprint,
+        )?;
+        validate_sha256("portable refit replay", &self.outcome_fingerprint)?;
+        if self.source_package_fingerprint != package.package_fingerprint
+            || self.source_refit_outcome_fingerprint != package.outcome.outcome_fingerprint
+            || request.source_outcome_fingerprint != package.outcome.outcome_fingerprint
+            || self.replay_request_id != request.request_id
+            || self.replay_request_fingerprint != request.request_fingerprint
+            || self.bundle_id != package.outcome.execution_bundle.bundle_id
+            || self.plan_id != package.outcome.effective_plan.id
+            || self.phase != request.phase
+        {
+            return contract_error(
+                "portable refit replay outcome does not exactly bind its V3 package and request"
+                    .to_string(),
+            );
+        }
+        let identity_keys = self
+            .input_data_identities
+            .iter()
+            .map(|identity| identity.requirement_key.clone())
+            .collect::<Vec<_>>();
+        if identity_keys != request.data_envelope_keys {
+            return contract_error(
+                "portable refit replay identities do not exactly cover replay request envelopes"
+                    .to_string(),
+            );
+        }
+        for identity in &self.input_data_identities {
+            identity.validate()?;
+        }
+        validate_sorted_unique_text("portable refit replay warnings", &self.warnings, false)?;
+        validate_diagnostics(&self.diagnostics)?;
+        validate_output_order_and_version(&self.outputs)?;
+        let bindings = package
+            .outcome
+            .output_bindings
+            .iter()
+            .map(|binding| (binding.binding_id.as_str(), binding))
+            .collect::<BTreeMap<_, _>>();
+        let emitted_binding_ids = self
+            .outputs
+            .iter()
+            .map(|output| output.binding.binding_id.clone())
+            .collect::<Vec<_>>();
+        if self.phase == Phase::Predict && emitted_binding_ids != request.output_binding_ids {
+            return contract_error(
+                "portable refit PREDICT outputs do not exactly cover replay request bindings"
+                    .to_string(),
+            );
+        }
+        for output in &self.outputs {
+            let source = bindings
+                .get(output.binding.binding_id.as_str())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "portable refit replay emits an output absent from its V3 package"
+                            .to_string(),
+                    )
+                })?;
+            if &output.binding != *source {
+                return contract_error(
+                    "portable refit replay output binding differs from V3 package".to_string(),
+                );
+            }
+            output.validate(&package.outcome.effective_plan)?;
+            validate_replay_bound_output_blocks(output)?;
+        }
+        for explanation in &self.explanations {
+            explanation.validate()?;
+        }
+        for record in &self.lineage {
+            record.validate()?;
+        }
+        match self.phase {
+            Phase::Predict if self.outputs.is_empty() => {
+                return contract_error("portable refit PREDICT requires outputs".to_string());
+            }
+            Phase::Predict if !self.explanations.is_empty() => {
+                return contract_error(
+                    "portable refit PREDICT cannot emit explanations".to_string(),
+                );
+            }
+            Phase::Explain if self.explanations.is_empty() => {
+                return contract_error("portable refit EXPLAIN requires explanations".to_string());
+            }
+            _ => {}
+        }
+        if self.outcome_fingerprint != self.compute_fingerprint()? {
+            return contract_error(
+                "portable refit replay outcome fingerprint does not match TCV1 content".to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -790,6 +960,20 @@ fn finish_bundle_payload_replay<T>(
     }
 }
 
+/// Package V3 has no host-sidecar fallback.  Any scheduler request not backed
+/// by an exact detached raw payload is a contract violation before a provider
+/// can observe data.
+struct RejectRefitSidecarStore;
+
+impl RuntimeArtifactStore for RejectRefitSidecarStore {
+    fn materialize(&self, request: &ArtifactMaterializationRequest) -> Result<HandleRef> {
+        Err(DagMlError::RuntimeValidation(format!(
+            "portable refit V3 replay refuses non-raw or missing artifact `{}`",
+            request.artifact.id
+        )))
+    }
+}
+
 impl<'a> LoadedPredictorArtifactStore<'a> {
     fn new(predictor: &'a LoadedPredictor<HandleRef>) -> Result<Self> {
         predictor.package().validate()?;
@@ -1110,6 +1294,110 @@ pub fn execute_loaded_predictor_replay(
     };
     outcome.outcome_fingerprint = outcome.compute_fingerprint()?;
     outcome.validate_against_package(package, input.request)?;
+    Ok(outcome)
+}
+
+/// Execute a PREDICT or EXPLAIN replay from a Package V3 full-refit child.
+///
+/// This is intentionally a separate entry point from V1/V2 package replay:
+/// V3 binds a fresh refit outcome rather than a CV/SELECT outcome, and every
+/// artifact is rehydrated from the package's detached raw bytes.
+pub fn execute_loaded_portable_refit_replay_v3(
+    input: LoadedPortableRefitReplayInputV3<'_>,
+) -> Result<PortableRefitReplayOutcomeV3> {
+    input.package.validate()?;
+    input.request.validate()?;
+    validate_replay_phase(input.request.phase)?;
+    validate_sorted_unique_text("portable refit replay warnings", &input.warnings, false)?;
+    validate_diagnostics(&input.diagnostics)?;
+    if input.request.source_outcome_fingerprint != input.package.outcome.outcome_fingerprint {
+        return contract_error(
+            "portable refit replay request does not target the V3 child outcome".to_string(),
+        );
+    }
+    for node_plan in input.package.outcome.effective_plan.node_plans.values() {
+        if input.controllers.get(&node_plan.controller_id).is_none() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "portable refit replay controller `{}` for node `{}` is not registered",
+                node_plan.controller_id, node_plan.node_id
+            )));
+        }
+    }
+    let runtime_bundle = input.package.outcome.to_runtime_replay_bundle()?;
+    let input_data_identities =
+        replay_input_data_identities(&runtime_bundle, input.request, input.data_envelopes)?;
+    let (replay_plan, replay_bundle) = replay_plan_and_bundle_for_current_cohort(
+        &input.package.outcome.effective_plan,
+        &runtime_bundle,
+        input.request,
+        input.data_envelopes,
+    )?;
+    let phase_request = ReplayPhaseRequest {
+        bundle_id: replay_bundle.bundle_id.clone(),
+        phase: input.request.phase,
+        data_envelope_keys: input.request.data_envelope_keys.clone(),
+    };
+    let fallback = RejectRefitSidecarStore;
+    let artifact_store = BundlePayloadArtifactStore {
+        bundle: &replay_bundle,
+        controllers: input.controllers,
+        fallback: &fallback,
+        hydrated_handles: Mutex::new(Vec::new()),
+    };
+    let mut ctx = RunContext::new(input.run_id.clone(), None);
+    let execution = SequentialScheduler.execute_bundle_replay(
+        BundleReplayExecution {
+            plan: &replay_plan,
+            bundle: &replay_bundle,
+            replay_request: &phase_request,
+            prediction_cache_store: None,
+            controllers: input.controllers,
+            data_provider: input.data_provider,
+            artifact_store: &artifact_store,
+            data_envelopes: input.data_envelopes,
+        },
+        &mut ctx,
+    );
+    let results = finish_bundle_payload_replay(execution, &artifact_store)?;
+    if results
+        .iter()
+        .any(|result| !result.artifacts.is_empty() || !result.artifact_handles.is_empty())
+    {
+        return contract_error(
+            "portable refit replay PREDICT/EXPLAIN cannot emit artifacts".to_string(),
+        );
+    }
+    let outputs = bind_refit_package_replay_outputs(input.package, input.request, &results)?;
+    let explanations = bind_attached_replay_explanations(input.request, &results)?;
+    let mut lineage = ctx.lineage.records().cloned().collect::<Vec<_>>();
+    for record in &mut lineage {
+        record.input_lineage.sort();
+        record
+            .artifact_refs
+            .sort_by(|left, right| left.id.cmp(&right.id));
+    }
+    lineage.sort_by(|left, right| left.record_id.cmp(&right.record_id));
+    let mut outcome = PortableRefitReplayOutcomeV3 {
+        schema_version: 3,
+        outcome_id: input.outcome_id,
+        run_id: input.run_id,
+        source_package_fingerprint: input.package.package_fingerprint.clone(),
+        source_refit_outcome_fingerprint: input.package.outcome.outcome_fingerprint.clone(),
+        replay_request_id: input.request.request_id.clone(),
+        replay_request_fingerprint: input.request.request_fingerprint.clone(),
+        input_data_identities,
+        bundle_id: input.package.outcome.execution_bundle.bundle_id.clone(),
+        plan_id: input.package.outcome.effective_plan.id.clone(),
+        phase: input.request.phase,
+        outputs,
+        explanations,
+        lineage,
+        warnings: input.warnings,
+        diagnostics: input.diagnostics,
+        outcome_fingerprint: zero_fingerprint(),
+    };
+    outcome.outcome_fingerprint = outcome.compute_fingerprint()?;
+    outcome.validate_against(input.package, input.request)?;
     Ok(outcome)
 }
 
@@ -1615,10 +1903,36 @@ fn bind_package_replay_outputs(
     request: &TrainingReplayRequest,
     results: &[crate::runtime::NodeResult],
 ) -> Result<Vec<BoundTrainingOutput>> {
+    bind_replay_outputs(
+        &package.effective_plan,
+        &package.output_bindings,
+        request,
+        results,
+    )
+}
+
+fn bind_refit_package_replay_outputs(
+    package: &PortableRefitPackageV3,
+    request: &TrainingReplayRequest,
+    results: &[crate::runtime::NodeResult],
+) -> Result<Vec<BoundTrainingOutput>> {
+    bind_replay_outputs(
+        &package.outcome.effective_plan,
+        &package.outcome.output_bindings,
+        request,
+        results,
+    )
+}
+
+fn bind_replay_outputs(
+    plan: &ExecutionPlan,
+    bindings: &[crate::training::OutputBinding],
+    request: &TrainingReplayRequest,
+    results: &[crate::runtime::NodeResult],
+) -> Result<Vec<BoundTrainingOutput>> {
     let mut outputs = Vec::new();
     for binding_id in &request.output_binding_ids {
-        let binding = package
-            .output_bindings
+        let binding = bindings
             .iter()
             .find(|binding| binding.binding_id == *binding_id)
             .ok_or_else(|| {
@@ -1676,7 +1990,7 @@ fn bind_package_replay_outputs(
             || !output.observation_predictions.is_empty()
             || !output.aggregated_predictions.is_empty()
         {
-            output.validate(&package.effective_plan)?;
+            output.validate(plan)?;
             outputs.push(output);
         }
     }
