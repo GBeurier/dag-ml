@@ -11,6 +11,10 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Fixed
 
+- Release patch 0.3.8: conformal calibration fingerprints now stabilize their
+  strict TCV1 float representation before signing, so native residuals remain
+  self-validating after JSON serialization and replay.
+
 - Release patch 0.3.7: the Python binding now exposes native conformal
   calibration attachment. The Rust coordinator derives and validates the full
   replay, cohort and provenance context; hosts supply only identity-keyed truth
