@@ -26,7 +26,7 @@
     },
     {
       "path": "crates/dag-ml-capi/tests/training_execute.rs",
-      "sha256": "23126f92fafe4b98b9f8cc96ece01cca58b36d57fe32e2e1fd29d879e933a542",
+      "sha256": "631b5e8c637369c2b903b4316f46222eb10921c685995474671723f9e2fc6726",
       "kind": "c_training_test"
     },
     {
@@ -81,7 +81,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/data.rs",
-      "sha256": "8df0d2a1a6d22796984c096feb410919e4a0113f56935e647d0830cddc805111",
+      "sha256": "c1977a6cad20b816139a6d781d8411449e1b261fec97f06964b9a9698a34d810",
       "kind": "typed_contract_dependency"
     },
     {
@@ -126,7 +126,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/plan.rs",
-      "sha256": "7fe8c7f88d326971feaae6c04541c2b977df58b97ebc45349b73b18756252c13",
+      "sha256": "2badb3459430059c93c26773972b0b1399703bb5590a3ba28ee713606b5fc2a1",
       "kind": "native_plan_validator"
     },
     {
@@ -186,7 +186,7 @@
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "27ac5528185f244a13dbe5f23d186804336adf6d57b571b4be30e3d4145ba92e",
+      "sha256": "ebca67b77f06b403713526a61247973a7b5ba847263e005cb4902231dca8971c",
       "kind": "native_integration_test"
     },
     {
@@ -589,5 +589,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "4be7ce36f8df705aaa6837415cf49015bfe8cf4ee864bad3d27ac7cad1600c4e"
+  "pack_checksum": "41af10693a1fda317f7c804bd99e94c49d3681fe3e90073e273cb882b60cab0b"
 }
