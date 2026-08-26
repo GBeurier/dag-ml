@@ -452,6 +452,7 @@ impl SequentialScheduler {
         ctx: &mut RunContext,
     ) -> Result<Vec<NodeResult>> {
         let candidate_plan = plan;
+        ctx.configure_global_oof_aggregation(candidate_plan, data_provider)?;
         let fold_ids = candidate_plan
             .fold_set
             .as_ref()
@@ -603,6 +604,9 @@ impl SequentialScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
+        if phase == Phase::FitCv {
+            ctx.configure_global_oof_aggregation(plan, data_provider)?;
+        }
         let mut results = Vec::new();
         let fold_ids = if phase == Phase::FitCv {
             plan.fold_set
@@ -659,6 +663,9 @@ impl SequentialScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
+        if phase == Phase::FitCv {
+            ctx.configure_global_oof_aggregation(plan, data_provider)?;
+        }
         let mut results = Vec::new();
         let fold_ids = if phase == Phase::FitCv {
             plan.fold_set
@@ -1127,6 +1134,9 @@ impl ParallelScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
+        if phase == Phase::FitCv {
+            ctx.configure_global_oof_aggregation(plan, data_provider)?;
+        }
         let mut results = Vec::new();
         let fold_ids = if phase == Phase::FitCv {
             plan.fold_set

@@ -51,12 +51,12 @@ def _sha256(path: Path) -> str:
 def test_base_pack_remains_byte_current() -> None:
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "bc991f8daac4a902c270e1c7606890d741332ef55f630236c176d7ce4877fa9d"
+        "fc2af490c238146a6ed3e1795da16d61d696970d28d85de2a7d8749c2d13c432"
     )
     assert pack["pack_checksum"] == (
-        "3115525dad1cf44213a71f4f686fb965d91ffbd5278db2245e6a67735cab949f"
+        "95ab64a153f7075ec7587be2aba206ada104bc8aa457efb274a5717043bdf30f"
     )
-    assert len(pack["artifacts"]) == 100
+    assert len(pack["artifacts"]) == 101
     assert all(
         _sha256(ROOT / artifact["path"]) == artifact["sha256"]
         for artifact in pack["artifacts"]
@@ -93,6 +93,7 @@ def test_temp_base_pack_byte_mutation_is_rejected_by_both_validators(
     (
         "crates/dag-ml-core/src/conformal.rs",
         "crates/dag-ml-core/src/conformal_runtime.rs",
+        "crates/dag-ml-core/src/runtime/scoring.rs",
     ),
 )
 def test_conformal_runtime_source_mutation_is_rejected_by_both_validators(
