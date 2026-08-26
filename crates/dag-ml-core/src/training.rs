@@ -46,6 +46,7 @@ pub const MIN_READABLE_PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION: u32 = 1;
 /// the V1/V2 reader until the complete Archive V3 execution path lands.
 pub const PORTABLE_PREDICTOR_PACKAGE_V3_SCHEMA_VERSION: u32 = 3;
 pub const PORTABLE_REFIT_RECIPE_SCHEMA_VERSION: u32 = 1;
+pub const PORTABLE_REFIT_PROVENANCE_SCHEMA_VERSION: u32 = 1;
 pub const PORTABLE_PREDICTOR_PACKAGE_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/portable_predictor_package.v1.schema.json";
 pub const OUTPUT_BINDING_SCHEMA_VERSION: u32 = 1;
@@ -1813,6 +1814,156 @@ impl PortableRefitRecipe {
         if self != &expected {
             return contract_error(
                 "portable refit recipe does not exactly match its source package".to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// New-cohort evidence carried by a future V3 outcome and execution bundle.
+/// It is intentionally separate from [`PortableRefitRecipe`]: the recipe
+/// identifies the immutable parent, while this record proves the child did
+/// not reuse the parent's training request, identity set, or influence state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableRefitProvenance {
+    pub schema_version: u32,
+    pub parent_recipe_id: String,
+    pub parent_recipe_fingerprint: String,
+    pub parent_package_fingerprint: String,
+    pub parent_outcome: TrainingOutcomeRef,
+    pub target_training_request_fingerprint: String,
+    pub target_data_identities_fingerprint: String,
+    pub target_training_influence_fingerprint: String,
+    pub target_relation_fingerprint: String,
+    pub provenance_fingerprint: String,
+}
+
+impl PortableRefitProvenance {
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        tcv1_fingerprint_without(self, "provenance_fingerprint", "portable refit provenance")
+    }
+
+    pub fn from_target_cohort(
+        recipe: &PortableRefitRecipe,
+        target_training_request_fingerprint: String,
+        data_identities: &[TrainingDataIdentity],
+        training_influence: &TrainingInfluenceManifest,
+    ) -> Result<Self> {
+        recipe.validate()?;
+        if data_identities.is_empty()
+            || !data_identities
+                .windows(2)
+                .all(|pair| pair[0].requirement_key < pair[1].requirement_key)
+        {
+            return contract_error(
+                "portable refit target data identities must be non-empty and strictly sorted"
+                    .to_string(),
+            );
+        }
+        for identity in data_identities {
+            identity.validate()?;
+        }
+        training_influence.validate()?;
+        let target_data_identities_fingerprint =
+            tcv1_fingerprint(data_identities, "portable refit target data identities")?;
+        let target_relation_fingerprint = training_influence.relation_fingerprint.clone();
+        if data_identities
+            .iter()
+            .any(|identity| identity.relation_fingerprint != target_relation_fingerprint)
+        {
+            return contract_error(
+                "portable refit target data identities do not exactly bind target influence relations"
+                    .to_string(),
+            );
+        }
+        if target_training_request_fingerprint == recipe.parent_outcome.training_request_fingerprint
+            || target_data_identities_fingerprint
+                == recipe.parent_outcome.data_identities_fingerprint
+        {
+            return contract_error(
+                "portable refit target cohort must not reuse the parent training request or data identities"
+                    .to_string(),
+            );
+        }
+        let mut provenance = Self {
+            schema_version: PORTABLE_REFIT_PROVENANCE_SCHEMA_VERSION,
+            parent_recipe_id: recipe.recipe_id.clone(),
+            parent_recipe_fingerprint: recipe.recipe_fingerprint.clone(),
+            parent_package_fingerprint: recipe.parent_package_fingerprint.clone(),
+            parent_outcome: recipe.parent_outcome.clone(),
+            target_training_request_fingerprint,
+            target_data_identities_fingerprint,
+            target_training_influence_fingerprint: training_influence.manifest_fingerprint.clone(),
+            target_relation_fingerprint,
+            provenance_fingerprint: zero_fingerprint(),
+        };
+        provenance.provenance_fingerprint = provenance.compute_fingerprint()?;
+        provenance.validate_against_recipe(recipe)?;
+        Ok(provenance)
+    }
+
+    pub fn validate_against_recipe(&self, recipe: &PortableRefitRecipe) -> Result<()> {
+        if self.schema_version != PORTABLE_REFIT_PROVENANCE_SCHEMA_VERSION {
+            return unsupported_version(
+                "portable refit provenance",
+                self.schema_version,
+                PORTABLE_REFIT_PROVENANCE_SCHEMA_VERSION,
+            );
+        }
+        recipe.validate()?;
+        self.parent_outcome.validate()?;
+        validate_identifier_text("portable refit parent recipe_id", &self.parent_recipe_id)?;
+        for (label, fingerprint) in [
+            (
+                "portable refit parent recipe",
+                &self.parent_recipe_fingerprint,
+            ),
+            (
+                "portable refit parent package",
+                &self.parent_package_fingerprint,
+            ),
+            (
+                "portable refit target training request",
+                &self.target_training_request_fingerprint,
+            ),
+            (
+                "portable refit target data identities",
+                &self.target_data_identities_fingerprint,
+            ),
+            (
+                "portable refit target training influence",
+                &self.target_training_influence_fingerprint,
+            ),
+            (
+                "portable refit target relation",
+                &self.target_relation_fingerprint,
+            ),
+            ("portable refit provenance", &self.provenance_fingerprint),
+        ] {
+            validate_sha256(label, fingerprint)?;
+        }
+        if self.parent_recipe_id != recipe.recipe_id
+            || self.parent_recipe_fingerprint != recipe.recipe_fingerprint
+            || self.parent_package_fingerprint != recipe.parent_package_fingerprint
+            || self.parent_outcome != recipe.parent_outcome
+        {
+            return contract_error(
+                "portable refit provenance does not exactly bind its parent recipe".to_string(),
+            );
+        }
+        if self.target_training_request_fingerprint
+            == recipe.parent_outcome.training_request_fingerprint
+            || self.target_data_identities_fingerprint
+                == recipe.parent_outcome.data_identities_fingerprint
+        {
+            return contract_error(
+                "portable refit provenance reuses parent training evidence".to_string(),
+            );
+        }
+        if self.provenance_fingerprint != self.compute_fingerprint()? {
+            return contract_error(
+                "portable refit provenance fingerprint does not match TCV1 content".to_string(),
             );
         }
         Ok(())
@@ -4554,6 +4705,37 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("supports_portable_full_refit"));
+    }
+
+    #[test]
+    fn portable_refit_provenance_requires_a_fresh_target_cohort() {
+        let recipe = portable_refit_recipe();
+        let request = request();
+        let projection = request.project().unwrap();
+        let relations = relations();
+        let influence = influence_manifest(&request, &projection, &relations);
+        let mut identity = data_identity(&request.campaign);
+        identity.relation_fingerprint = influence.relation_fingerprint.clone();
+        identity.identity_fingerprint = zero_fingerprint();
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+        let provenance = PortableRefitProvenance::from_target_cohort(
+            &recipe,
+            "e".repeat(64),
+            &[identity.clone()],
+            &influence,
+        )
+        .unwrap();
+        provenance.validate_against_recipe(&recipe).unwrap();
+
+        let error = PortableRefitProvenance::from_target_cohort(
+            &recipe,
+            recipe.parent_outcome.training_request_fingerprint.clone(),
+            &[identity],
+            &influence,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("must not reuse the parent"));
     }
 
     #[cfg(dag_ml_workspace_contract_fixtures)]
