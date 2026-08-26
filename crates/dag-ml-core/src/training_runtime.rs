@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::aggregation::{AggregatedPredictionBlock, ObservationPredictionBlock, PredictionUnitId};
 #[cfg(feature = "methods-optimizer")]
@@ -16,7 +17,7 @@ use crate::bundle::{
     build_execution_bundle_with_prediction_contracts, build_prediction_cache_payload,
     build_prediction_cache_record, validate_prediction_cache_payload_matches_record,
     BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
-    BundlePredictionRequirement, ExecutionBundle, MethodsHpoResumeState,
+    BundlePredictionRequirement, ExecutionBundle, MethodsHpoResumeState, RefitArtifactRecord,
     EXECUTION_BUNDLE_SCHEMA_VERSION, LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION,
     LEGACY_PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION, PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
 };
@@ -71,6 +72,11 @@ pub const MIN_READABLE_TRAINING_OUTCOME_SCHEMA_VERSION: u32 = 1;
 pub const BOUND_TRAINING_OUTPUT_SCHEMA_VERSION: u32 = 2;
 pub const TRAINING_OUTCOME_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/training_outcome.v2.schema.json";
+/// V3 is a new refit-child family, not a readable variant of `TrainingOutcome`
+/// or `PortablePredictorPackage` V1/V2.
+pub const PORTABLE_REFIT_OUTCOME_V3_SCHEMA_VERSION: u32 = 3;
+pub const PORTABLE_REFIT_EXECUTION_BUNDLE_V3_SCHEMA_VERSION: u32 = 3;
+pub const PORTABLE_REFIT_PACKAGE_V3_SCHEMA_VERSION: u32 = 3;
 
 /// One resolved output binding and the actual portable blocks it selected.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -928,11 +934,472 @@ pub struct PortableFullRefitExecutionInput<'a> {
     pub data_provider: &'a dyn RuntimeDataProvider,
 }
 
+/// Refit-only child execution bundle for Package V3.
+///
+/// Unlike [`ExecutionBundle`], this contract cannot carry a prior selection,
+/// CV score, OOF cache, calibration state, or process-local handle.  Its only
+/// durable payloads are the artifacts produced by the newly requested REFIT.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableRefitExecutionBundleV3 {
+    pub schema_version: u32,
+    pub bundle_id: BundleId,
+    pub effective_plan_fingerprint: String,
+    pub selected_variant_id: VariantId,
+    pub refit_artifacts: Vec<RefitArtifactRecord>,
+    pub raw_artifact_payloads: BTreeMap<ArtifactId, Vec<u8>>,
+    pub bundle_fingerprint: String,
+}
+
+impl PortableRefitExecutionBundleV3 {
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        tcv1_fingerprint_without(
+            self,
+            "bundle_fingerprint",
+            "portable refit execution bundle V3",
+        )
+    }
+
+    pub fn validate(
+        &self,
+        recipe: &PortableRefitRecipe,
+        effective_plan: &ExecutionPlan,
+    ) -> Result<()> {
+        if self.schema_version != PORTABLE_REFIT_EXECUTION_BUNDLE_V3_SCHEMA_VERSION {
+            return contract_error(format!(
+                "portable refit execution bundle V3 has unsupported schema_version {}; expected {}",
+                self.schema_version, PORTABLE_REFIT_EXECUTION_BUNDLE_V3_SCHEMA_VERSION
+            ));
+        }
+        BundleId::new(self.bundle_id.as_str().to_string()).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "portable refit execution bundle id is not portable: {error}"
+            ))
+        })?;
+        recipe.validate()?;
+        effective_plan.validate()?;
+        validate_sha256(
+            "portable refit execution bundle plan",
+            &self.effective_plan_fingerprint,
+        )?;
+        validate_sha256("portable refit execution bundle", &self.bundle_fingerprint)?;
+        if self.effective_plan_fingerprint
+            != tcv1_fingerprint(effective_plan, "portable refit execution bundle plan")?
+            || self.effective_plan_fingerprint != recipe.effective_plan_fingerprint
+        {
+            return contract_error(
+                "portable refit execution bundle does not exactly bind the recipe effective plan"
+                    .to_string(),
+            );
+        }
+        if self.selected_variant_id != recipe.selected_variant_id {
+            return contract_error(
+                "portable refit execution bundle selected variant does not match recipe"
+                    .to_string(),
+            );
+        }
+        if self.refit_artifacts.is_empty()
+            || !self.refit_artifacts.windows(2).all(|pair| {
+                (pair[0].node_id.clone(), pair[0].artifact.id.clone())
+                    < (pair[1].node_id.clone(), pair[1].artifact.id.clone())
+            })
+        {
+            return contract_error(
+                "portable refit execution bundle artifacts must be non-empty and strictly sorted by node and artifact"
+                    .to_string(),
+            );
+        }
+        let expected_artifact_ids = self
+            .refit_artifacts
+            .iter()
+            .map(|record| record.artifact.id.clone())
+            .collect::<BTreeSet<_>>();
+        if expected_artifact_ids.len() != self.refit_artifacts.len()
+            || expected_artifact_ids.len() != self.raw_artifact_payloads.len()
+            || expected_artifact_ids != self.raw_artifact_payloads.keys().cloned().collect()
+        {
+            return contract_error(
+                "portable refit execution bundle raw artifacts do not exactly cover refit records"
+                    .to_string(),
+            );
+        }
+        for record in &self.refit_artifacts {
+            record.validate()?;
+            record.artifact.validate_portable()?;
+            let node = effective_plan
+                .node_plans
+                .get(&record.node_id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "portable refit artifact `{}` references node absent from effective plan",
+                        record.artifact.id
+                    ))
+                })?;
+            if node.controller_id != record.controller_id
+                || node.controller_id != record.artifact.controller_id
+            {
+                return contract_error(format!(
+                    "portable refit artifact `{}` controller does not match effective plan",
+                    record.artifact.id
+                ));
+            }
+            if !recipe.controllers.iter().any(|controller| {
+                controller.node_id == record.node_id
+                    && controller.controller_id == record.controller_id
+            }) {
+                return contract_error(format!(
+                    "portable refit artifact `{}` is not owned by a recipe controller",
+                    record.artifact.id
+                ));
+            }
+            let payload = self
+                .raw_artifact_payloads
+                .get(&record.artifact.id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "portable refit artifact `{}` has no detached raw payload",
+                        record.artifact.id
+                    ))
+                })?;
+            if payload.is_empty() {
+                return contract_error(format!(
+                    "portable refit artifact `{}` has an empty raw payload",
+                    record.artifact.id
+                ));
+            }
+            if record.artifact.size_bytes != Some(payload.len() as u64)
+                || record.artifact.content_fingerprint.as_deref()
+                    != Some(format!("{:x}", Sha256::digest(payload)).as_str())
+            {
+                return contract_error(format!(
+                    "portable refit artifact `{}` raw payload does not match its durable descriptor",
+                    record.artifact.id
+                ));
+            }
+        }
+        if self.bundle_fingerprint != self.compute_fingerprint()? {
+            return contract_error(
+                "portable refit execution bundle fingerprint does not match TCV1 content"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// A new V3 training outcome produced by a target-bound full refit.
+///
+/// It deliberately omits selection reports, OOF predictions, source lineage,
+/// and conformal state.  Those prove the parent selection, not the new cohort.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableRefitOutcomeV3 {
+    pub schema_version: u32,
+    pub outcome_id: String,
+    pub run_id: RunId,
+    pub recipe: PortableRefitRecipe,
+    pub provenance: PortableRefitProvenance,
+    pub effective_plan: ExecutionPlan,
+    pub effective_plan_fingerprint: String,
+    pub selected_variant_id: VariantId,
+    pub selected_variant_fingerprint: String,
+    pub output_bindings: Vec<OutputBinding>,
+    pub predictor_node_ids: Vec<NodeId>,
+    pub data_identities: Vec<TrainingDataIdentity>,
+    pub training_influence: TrainingInfluenceManifest,
+    pub execution_bundle: PortableRefitExecutionBundleV3,
+    pub outcome_fingerprint: String,
+}
+
+impl PortableRefitOutcomeV3 {
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        tcv1_fingerprint_without(self, "outcome_fingerprint", "portable refit outcome V3")
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != PORTABLE_REFIT_OUTCOME_V3_SCHEMA_VERSION {
+            return contract_error(format!(
+                "portable refit outcome V3 has unsupported schema_version {}; expected {}",
+                self.schema_version, PORTABLE_REFIT_OUTCOME_V3_SCHEMA_VERSION
+            ));
+        }
+        RunId::new(self.outcome_id.clone()).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "portable refit outcome id is not portable: {error}"
+            ))
+        })?;
+        self.recipe.validate()?;
+        self.provenance.validate_against_recipe(&self.recipe)?;
+        self.effective_plan.validate()?;
+        validate_sha256(
+            "portable refit outcome effective plan",
+            &self.effective_plan_fingerprint,
+        )?;
+        validate_sha256("portable refit outcome", &self.outcome_fingerprint)?;
+        if self.effective_plan_fingerprint
+            != tcv1_fingerprint(
+                &self.effective_plan,
+                "portable refit outcome effective plan",
+            )?
+            || self.effective_plan_fingerprint != self.recipe.effective_plan_fingerprint
+        {
+            return contract_error(
+                "portable refit outcome effective plan does not exactly match its recipe"
+                    .to_string(),
+            );
+        }
+        let selected = self
+            .effective_plan
+            .variants
+            .iter()
+            .find(|variant| variant.variant_id == self.selected_variant_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "portable refit outcome selected variant is absent from effective plan"
+                        .to_string(),
+                )
+            })?;
+        if self.selected_variant_id != self.recipe.selected_variant_id
+            || self.selected_variant_fingerprint != selected.fingerprint
+            || self.selected_variant_fingerprint != self.recipe.selected_variant_fingerprint
+        {
+            return contract_error(
+                "portable refit outcome selected variant does not exactly match its recipe"
+                    .to_string(),
+            );
+        }
+        if self.output_bindings.is_empty() || self.predictor_node_ids.is_empty() {
+            return contract_error(
+                "portable refit outcome requires output bindings and predictor nodes".to_string(),
+            );
+        }
+        let mut binding_fingerprints = Vec::with_capacity(self.output_bindings.len());
+        for binding in &self.output_bindings {
+            binding.validate(&self.effective_plan.graph_plan.graph)?;
+            binding_fingerprints.push(binding.binding_fingerprint.clone());
+        }
+        binding_fingerprints.sort();
+        if binding_fingerprints != self.recipe.target_binding_fingerprints {
+            return contract_error(
+                "portable refit outcome output bindings do not exactly match recipe targets"
+                    .to_string(),
+            );
+        }
+        if self
+            .predictor_node_ids
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+            || self
+                .predictor_node_ids
+                .iter()
+                .any(|node_id| !self.effective_plan.node_plans.contains_key(node_id))
+        {
+            return contract_error(
+                "portable refit outcome predictor nodes must be strictly sorted plan nodes"
+                    .to_string(),
+            );
+        }
+        if self.data_identities.is_empty()
+            || !self
+                .data_identities
+                .windows(2)
+                .all(|pair| pair[0].requirement_key < pair[1].requirement_key)
+        {
+            return contract_error(
+                "portable refit outcome data identities must be non-empty and strictly sorted"
+                    .to_string(),
+            );
+        }
+        for identity in &self.data_identities {
+            identity.validate()?;
+        }
+        self.training_influence.validate()?;
+        if tcv1_fingerprint(
+            &self.data_identities,
+            "portable refit outcome data identities",
+        )? != self.provenance.target_data_identities_fingerprint
+            || self.training_influence.manifest_fingerprint
+                != self.provenance.target_training_influence_fingerprint
+            || self.training_influence.relation_fingerprint
+                != self.provenance.target_relation_fingerprint
+            || self.data_identities.iter().any(|identity| {
+                identity.relation_fingerprint != self.provenance.target_relation_fingerprint
+            })
+        {
+            return contract_error(
+                "portable refit outcome target cohort does not exactly match its provenance"
+                    .to_string(),
+            );
+        }
+        self.execution_bundle
+            .validate(&self.recipe, &self.effective_plan)?;
+        if self.execution_bundle.selected_variant_id != self.selected_variant_id {
+            return contract_error(
+                "portable refit outcome bundle selected variant does not match outcome".to_string(),
+            );
+        }
+        if self.outcome_fingerprint != self.compute_fingerprint()? {
+            return contract_error(
+                "portable refit outcome fingerprint does not match TCV1 content".to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Closed Package V3 child created by a successful full refit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableRefitPackageV3 {
+    pub schema_version: u32,
+    pub package_id: String,
+    pub outcome: PortableRefitOutcomeV3,
+    pub package_fingerprint: String,
+}
+
+impl PortableRefitPackageV3 {
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        tcv1_fingerprint_without(self, "package_fingerprint", "portable refit package V3")
+    }
+
+    pub fn from_json(json: &str) -> Result<Self> {
+        let raw_fingerprint = parse_typed_json(json)
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "portable refit package V3 is not strict TCV1 JSON: {error}"
+                ))
+            })?
+            .fingerprint_without("package_fingerprint")
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "portable refit package V3 fingerprint preimage is invalid: {error}"
+                ))
+            })?;
+        let package: Self = serde_json::from_str(json)?;
+        if package.package_fingerprint != raw_fingerprint {
+            return contract_error(
+                "portable refit package V3 fingerprint does not match original TCV1 JSON"
+                    .to_string(),
+            );
+        }
+        package.validate()?;
+        Ok(package)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != PORTABLE_REFIT_PACKAGE_V3_SCHEMA_VERSION {
+            return contract_error(format!(
+                "portable refit package V3 has unsupported schema_version {}; expected {}",
+                self.schema_version, PORTABLE_REFIT_PACKAGE_V3_SCHEMA_VERSION
+            ));
+        }
+        RunId::new(self.package_id.clone()).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "portable refit package id is not portable: {error}"
+            ))
+        })?;
+        validate_sha256("portable refit package", &self.package_fingerprint)?;
+        self.outcome.validate()?;
+        if self.package_fingerprint != self.compute_fingerprint()? {
+            return contract_error(
+                "portable refit package V3 fingerprint does not match TCV1 content".to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Input for the DAG-ML-owned V3 child writer.  The caller supplies only
+/// fresh execution evidence and identifiers; source-package content is used
+/// exclusively to revalidate the closed parent recipe and output projection.
+pub struct PortableRefitPackageV3BuildInput<'a> {
+    pub package_id: String,
+    pub outcome_id: String,
+    pub bundle_id: BundleId,
+    pub recipe: &'a PortableRefitRecipe,
+    pub source_package: &'a PortablePredictorPackage,
+    pub target_plan: &'a ExecutionPlan,
+    pub target_data_identities: &'a [TrainingDataIdentity],
+    pub target_training_influence: &'a TrainingInfluenceManifest,
+    pub execution: &'a PortableFullRefitExecution,
+}
+
+/// Atomically construct the outcome, execution bundle and package child of a
+/// successful full refit.  No V2 score, selection, prediction cache,
+/// conformal state or process-local handle is copied into this V3 family.
+pub fn build_portable_refit_package_v3(
+    input: PortableRefitPackageV3BuildInput<'_>,
+) -> Result<PortableRefitPackageV3> {
+    input
+        .recipe
+        .validate_against_source_package(input.source_package)?;
+    if input.source_package.schema_version != PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION {
+        return contract_error(
+            "portable refit package V3 requires an exact Package V2 parent".to_string(),
+        );
+    }
+    input
+        .execution
+        .provenance
+        .validate_against_recipe(input.recipe)?;
+    if input
+        .execution
+        .provenance
+        .target_training_request_fingerprint
+        == input.recipe.parent_outcome.training_request_fingerprint
+    {
+        return contract_error(
+            "portable refit package V3 execution reuses its parent training request".to_string(),
+        );
+    }
+    let mut bundle = PortableRefitExecutionBundleV3 {
+        schema_version: PORTABLE_REFIT_EXECUTION_BUNDLE_V3_SCHEMA_VERSION,
+        bundle_id: input.bundle_id,
+        effective_plan_fingerprint: tcv1_fingerprint(
+            input.target_plan,
+            "portable refit package V3 effective plan",
+        )?,
+        selected_variant_id: input.recipe.selected_variant_id.clone(),
+        refit_artifacts: input.execution.refit_artifacts.clone(),
+        raw_artifact_payloads: input.execution.raw_artifact_payloads.clone(),
+        bundle_fingerprint: zero_fingerprint(),
+    };
+    bundle.bundle_fingerprint = bundle.compute_fingerprint()?;
+    let mut outcome = PortableRefitOutcomeV3 {
+        schema_version: PORTABLE_REFIT_OUTCOME_V3_SCHEMA_VERSION,
+        outcome_id: input.outcome_id,
+        run_id: input.execution.run_id.clone(),
+        recipe: input.recipe.clone(),
+        provenance: input.execution.provenance.clone(),
+        effective_plan: input.target_plan.clone(),
+        effective_plan_fingerprint: bundle.effective_plan_fingerprint.clone(),
+        selected_variant_id: input.recipe.selected_variant_id.clone(),
+        selected_variant_fingerprint: input.recipe.selected_variant_fingerprint.clone(),
+        output_bindings: input.source_package.output_bindings.clone(),
+        predictor_node_ids: input.source_package.predictor_node_ids.clone(),
+        data_identities: input.target_data_identities.to_vec(),
+        training_influence: input.target_training_influence.clone(),
+        execution_bundle: bundle,
+        outcome_fingerprint: zero_fingerprint(),
+    };
+    outcome.outcome_fingerprint = outcome.compute_fingerprint()?;
+    let mut package = PortableRefitPackageV3 {
+        schema_version: PORTABLE_REFIT_PACKAGE_V3_SCHEMA_VERSION,
+        package_id: input.package_id,
+        outcome,
+        package_fingerprint: zero_fingerprint(),
+    };
+    package.package_fingerprint = package.compute_fingerprint()?;
+    package.validate()?;
+    Ok(package)
+}
+
 /// Native artifacts and execution evidence produced by the first, scheduler
 /// only step of a V3 full refit.  The V3 outcome/package writer consumes this
 /// result to create a new durable child; it must not mutate the parent.
 #[derive(Clone, Debug)]
 pub struct PortableFullRefitExecution {
+    pub run_id: RunId,
     pub provenance: PortableRefitProvenance,
     pub results: Vec<NodeResult>,
     pub refit_artifacts: Vec<crate::bundle::RefitArtifactRecord>,
@@ -985,7 +1452,7 @@ pub fn execute_portable_full_refit(
             "portable full refit target selected variant does not match parent recipe".to_string(),
         );
     }
-    let mut ctx = RunContext::new(input.run_id, input.target_plan.campaign.root_seed);
+    let mut ctx = RunContext::new(input.run_id.clone(), input.target_plan.campaign.root_seed);
     ctx.variant_id = Some(input.recipe.selected_variant_id.clone());
     let mut artifact_store = InMemoryArtifactStore::new();
     let results = SequentialScheduler
@@ -1033,6 +1500,7 @@ pub fn execute_portable_full_refit(
         }
     }
     Ok(PortableFullRefitExecution {
+        run_id: input.run_id,
         provenance,
         results,
         refit_artifacts,

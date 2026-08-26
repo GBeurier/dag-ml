@@ -2693,6 +2693,48 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
             .get(&record.artifact.id)
             .is_some_and(|payload| !payload.is_empty())
     }));
+    let refit_package = build_portable_refit_package_v3(PortableRefitPackageV3BuildInput {
+        package_id: "predictor:methods.full-refit.child".to_string(),
+        outcome_id: "outcome:methods.full-refit.child".to_string(),
+        bundle_id: BundleId::new("bundle:methods.full-refit.child").unwrap(),
+        recipe: &recipe,
+        source_package: &package,
+        target_plan: &source.effective_plan,
+        target_data_identities: &target_identities,
+        target_training_influence: &fixture.influence,
+        execution: &execution,
+    })
+    .expect("fresh full refit writes a detached V3 child package");
+    refit_package.validate().unwrap();
+    let refit_json = serde_json::to_string(&refit_package).unwrap();
+    assert_eq!(
+        PortableRefitPackageV3::from_json(&refit_json).unwrap(),
+        refit_package,
+        "V3 child package round-trips through strict TCV1 JSON"
+    );
+    assert_eq!(
+        refit_package.outcome.execution_bundle.raw_artifact_payloads,
+        execution.raw_artifact_payloads,
+        "V3 package owns the exact detached REFIT bytes, not controller handles"
+    );
+    let mut missing_payload = execution.clone();
+    missing_payload
+        .raw_artifact_payloads
+        .remove(&missing_payload.refit_artifacts[0].artifact.id);
+    assert!(
+        build_portable_refit_package_v3(PortableRefitPackageV3BuildInput {
+            package_id: "predictor:methods.full-refit.missing".to_string(),
+            outcome_id: "outcome:methods.full-refit.missing".to_string(),
+            bundle_id: BundleId::new("bundle:methods.full-refit.missing").unwrap(),
+            recipe: &recipe,
+            source_package: &package,
+            target_plan: &source.effective_plan,
+            target_data_identities: &target_identities,
+            target_training_influence: &fixture.influence,
+            execution: &missing_payload,
+        })
+        .is_err()
+    );
     assert_ne!(
         execution.provenance.target_data_identities_fingerprint,
         recipe.parent_outcome.data_identities_fingerprint
