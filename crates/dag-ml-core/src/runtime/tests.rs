@@ -13751,6 +13751,7 @@ fn sample_relations_envelope(rows: &[(&str, &str)]) -> ExternalDataPlanEnvelope 
         data_content_fingerprint: None,
         target_content_fingerprint: None,
         coordinator_relations: Some(relations),
+        predict_cohort: None,
     }
 }
 

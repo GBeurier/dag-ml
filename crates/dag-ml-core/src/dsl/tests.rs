@@ -4046,6 +4046,7 @@ fn fanout_envelope(rows: &[(&str, &str, &[&str])]) -> crate::data::ExternalDataP
         data_content_fingerprint: None,
         target_content_fingerprint: None,
         coordinator_relations: Some(relations),
+        predict_cohort: None,
     }
 }
 
@@ -4233,6 +4234,7 @@ fn fan_out_requires_relations_in_envelope() {
         data_content_fingerprint: None,
         target_content_fingerprint: None,
         coordinator_relations: None,
+        predict_cohort: None,
     };
     let error = fan_out_data_aware_branches(&spec, &envelope)
         .unwrap_err()
@@ -4260,6 +4262,7 @@ fn fan_out_errors_when_no_partition_values_discovered() {
         data_content_fingerprint: None,
         target_content_fingerprint: None,
         coordinator_relations: Some(relations),
+        predict_cohort: None,
     };
     let error = fan_out_data_aware_branches(&spec, &envelope)
         .unwrap_err()
