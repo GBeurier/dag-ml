@@ -2757,6 +2757,17 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
     v3_replay
         .validate_against(&refit_package, &v3_replay_request)
         .unwrap();
+    let v3_replay_json = serde_json::to_string(&v3_replay).unwrap();
+    assert_eq!(
+        PortableRefitReplayOutcomeV3::from_json_for_package(
+            &v3_replay_json,
+            &refit_package,
+            &v3_replay_request,
+        )
+        .unwrap(),
+        v3_replay,
+        "V3 replay evidence strict-round-trips only with its exact child package and request"
+    );
     let mut missing_payload = execution.clone();
     missing_payload
         .raw_artifact_payloads
