@@ -241,7 +241,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "07b526d1083a675b614ae86964e41e95116c60f6f12c08e56c8ba8114edbee53",
+      "sha256": "bfc0f25545fd8e788594d5fbc327f9f042e80de031a5b899205a85aac4fe9c60",
       "kind": "c_abi_snapshot"
     },
     {
@@ -481,7 +481,7 @@
     },
     {
       "path": "scripts/smoke_python_bindings.py",
-      "sha256": "65eebe57e8d04bbb8b47a80e8b0d4a9fed421a10f3b29d5d733c8456130a61bb",
+      "sha256": "929427d26b5a208da32ec8b24664059a6eac4f7a8d9bfeebe78938884ea498f8",
       "kind": "binding_smoke"
     },
     {
@@ -569,5 +569,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "ba83e32a9b49efbaf446ce1ef7eaeda50d07ee16a5d5422c66214c89efa5bf67"
+  "pack_checksum": "f19e7d45c1439cc14162a27894c0de110331649498124e37e6d5542454402fda"
 }
