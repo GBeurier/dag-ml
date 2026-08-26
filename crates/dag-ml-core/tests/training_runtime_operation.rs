@@ -3154,6 +3154,20 @@ fn loaded_v2_conformal_package_replays_intervals_and_rejects_resigned_tampering(
         .validate_against_package(loaded.package(), &production_request)
         .unwrap();
 
+    // A production PREDICT cohort has no authoritative y_true.  V3 preserves
+    // that target-free identity while applying intervals derived from the
+    // separately attested calibration cohort; it must not fabricate a target
+    // fingerprint merely to satisfy the conformal closure.
+    let mut target_free_replay = replay.clone();
+    for identity in &mut target_free_replay.input_data_identities {
+        identity.target_content_fingerprint = None;
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    }
+    target_free_replay.outcome_fingerprint = target_free_replay.compute_fingerprint().unwrap();
+    target_free_replay
+        .validate_against_package(loaded.package(), &production_request)
+        .unwrap();
+
     let mut deleted = replay.clone();
     deleted.conformal_intervals.clear();
     resign_replay_outcome(&mut deleted);
