@@ -89,6 +89,7 @@ BASE_PACK_ARTIFACTS = {
     "docs/contracts/campaign_spec.schema.json": "schema_dependency",
     "docs/contracts/controller_manifest.schema.json": "schema_dependency",
     "docs/contracts/coordinator_data_plan_envelope.schema.json": "schema_dependency",
+    "docs/contracts/coordinator_data_plan_envelope.v2.schema.json": "schema_dependency",
     "docs/contracts/execution_plan.schema.json": "schema_dependency",
     "docs/contracts/graph_spec.schema.json": "schema_dependency",
     "docs/contracts/node_result.schema.json": "schema_dependency",
@@ -132,6 +133,7 @@ BASE_PACK_ARTIFACTS = {
     "scripts/validate_contracts.py": "production_validator",
     "crates/dag-ml-core/Cargo.toml.methods-local": "native_hpo_overlay_manifest",
     "scripts/test_methods_optimizer_local.sh": "native_hpo_overlay_helper",
+    "tests/test_predict_cohort_envelope_v2_contract.py": "contract_test",
 }
 
 PACK_ARTIFACTS = with_transitive_schema_dependencies(ROOT, BASE_PACK_ARTIFACTS)

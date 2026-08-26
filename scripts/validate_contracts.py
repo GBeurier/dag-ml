@@ -47,6 +47,9 @@ from scripts.validate_archive_v2_contract import (  # noqa: E402
 )
 
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
+PREDICT_COHORT_ENVELOPE_V2_SCHEMA_REL = Path(
+    "docs/contracts/coordinator_data_plan_envelope.v2.schema.json"
+)
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 BRANCH_VIEW_SCHEMA_REL = Path("docs/contracts/coordinator_branch_view.schema.json")
 FITTED_ADAPTER_SCHEMA_REL = Path("docs/contracts/fitted_adapter_ref.schema.json")
@@ -311,6 +314,10 @@ LOCAL_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "coordinator_data_plan_envelope.v1.schema.json"
 )
+LOCAL_PREDICT_COHORT_ENVELOPE_V2_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml/schemas/"
+    "coordinator_data_plan_envelope.v2.schema.json"
+)
 LOCAL_FEATURE_FUSION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/feature_fusion_selector.v1.schema.json"
 )
@@ -350,6 +357,10 @@ SELECTION_DECISION_SCHEMA_ID = (
 SIBLING_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml-data/schemas/"
     "coordinator_data_plan_envelope.v1.schema.json"
+)
+SIBLING_PREDICT_COHORT_ENVELOPE_V2_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml-data/schemas/"
+    "coordinator_data_plan_envelope.v2.schema.json"
 )
 SIBLING_FEATURE_FUSION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml-data/schemas/"
@@ -1217,6 +1228,85 @@ def validate_schema_artifact(schema: Any, expected_id: str, label: str) -> None:
     require(
         relation.get("additionalProperties") is False,
         f"{label} relation must reject unknown identity fields",
+    )
+
+
+def validate_predict_cohort_envelope_v2_schema(
+    schema: Any, expected_id: str, label: str
+) -> None:
+    require(isinstance(schema, dict), f"{label} V2 schema must be a JSON object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} V2 schema must declare Draft 2020-12",
+    )
+    require(schema.get("$id") == expected_id, f"{label} V2 schema has unexpected $id")
+    require(schema.get("type") == "object", f"{label} V2 schema root must be an object")
+    require(
+        schema.get("additionalProperties") is False,
+        f"{label} V2 envelope root must be closed",
+    )
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} V2 required list is missing")
+    for field in (
+        "schema_version",
+        "schema_fingerprint",
+        "plan_fingerprint",
+        "plan",
+        "predict_cohort",
+    ):
+        require(field in required, f"{label} V2 does not require `{field}`")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} V2 properties are missing")
+    require(
+        properties.get("schema_version", {}).get("const") == 2,
+        f"{label} V2 schema_version const must be 2",
+    )
+    require(
+        properties.get("predict_cohort", {}).get("$ref") == "#/$defs/predict_cohort",
+        f"{label} V2 must reference the closed predict_cohort definition",
+    )
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} V2 schema defs are missing")
+    cohort = defs.get("predict_cohort")
+    require(isinstance(cohort, dict), f"{label} V2 predict_cohort definition is missing")
+    require(
+        cohort.get("additionalProperties") is False,
+        f"{label} V2 predict_cohort must reject unknown fields",
+    )
+    cohort_required = cohort.get("required")
+    require(
+        isinstance(cohort_required, list),
+        f"{label} V2 predict_cohort required list is missing",
+    )
+    for field in (
+        "role",
+        "physical_sample_ids",
+        "origin_sample_ids",
+        "target_names",
+        "relation_fingerprint",
+        "relations",
+        "data_content_fingerprint",
+        "cohort_fingerprint",
+    ):
+        require(
+            field in cohort_required,
+            f"{label} V2 predict_cohort does not require `{field}`",
+        )
+    cohort_properties = cohort.get("properties")
+    require(
+        isinstance(cohort_properties, dict)
+        and cohort_properties.get("role", {}).get("enum")
+        == ["external_test", "inference"],
+        f"{label} V2 predict_cohort roles must be external_test/inference",
+    )
+    require(
+        cohort_properties.get("relations", {}).get("$ref")
+        == "#/$defs/coordinator_relation_set",
+        f"{label} V2 predict_cohort must carry closed relation records",
+    )
+    require(
+        isinstance(cohort.get("allOf"), list) and cohort["allOf"],
+        f"{label} V2 predict_cohort must distinguish external_test targets from inference",
     )
 
 
@@ -18809,6 +18899,7 @@ def validate_w10_training_pack(pack: Any, negatives: dict[str, Any]) -> None:
         "docs/contracts/training_request.schema.json",
         "docs/contracts/cache_namespace.schema.json",
         "docs/contracts/conformal_presentation.v1.schema.json",
+        "docs/contracts/coordinator_data_plan_envelope.v2.schema.json",
         "docs/contracts/parameter_projection.schema.json",
         "docs/contracts/portable_predictor_package.schema.json",
         "docs/contracts/training_outcome.schema.json",
@@ -18918,6 +19009,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"Archive V2 native-portable contract: {exc}"
             ) from exc
         local_schema = load_json(ROOT / SCHEMA_REL)
+        local_predict_cohort_envelope_v2_schema = load_json(
+            ROOT / PREDICT_COHORT_ENVELOPE_V2_SCHEMA_REL
+        )
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_branch_view_schema = load_json(ROOT / BRANCH_VIEW_SCHEMA_REL)
         local_fitted_adapter_schema = load_json(ROOT / FITTED_ADAPTER_SCHEMA_REL)
@@ -19103,6 +19197,11 @@ def main(argv: list[str] | None = None) -> int:
             local_w10_training_negatives,
         )
         validate_schema_artifact(local_schema, LOCAL_SCHEMA_ID, "dag-ml")
+        validate_predict_cohort_envelope_v2_schema(
+            local_predict_cohort_envelope_v2_schema,
+            LOCAL_PREDICT_COHORT_ENVELOPE_V2_SCHEMA_ID,
+            "dag-ml",
+        )
         validate_feature_fusion_schema_artifact(
             local_feature_fusion_schema,
             LOCAL_FEATURE_FUSION_SCHEMA_ID,
@@ -19308,6 +19407,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         sibling_schema = load_json(sibling / SCHEMA_REL)
+        sibling_predict_cohort_envelope_v2_schema = load_json(
+            sibling / PREDICT_COHORT_ENVELOPE_V2_SCHEMA_REL
+        )
         sibling_feature_fusion_schema = load_json(sibling / FEATURE_FUSION_SCHEMA_REL)
         sibling_pack = load_json(sibling / CONFORMANCE_PACK_REL)
         sibling_parity_oracle = load_json(sibling / PARITY_ORACLE_REL)
@@ -19324,6 +19426,11 @@ def main(argv: list[str] | None = None) -> int:
         sibling_fold_set_fixture = load_json(sibling / SHARED_FOLD_SET_FIXTURE_REL)
         sibling_header = load_text(sibling / SIBLING_C_HEADER_REL)
         validate_schema_artifact(sibling_schema, SIBLING_SCHEMA_ID, "dag-ml-data")
+        validate_predict_cohort_envelope_v2_schema(
+            sibling_predict_cohort_envelope_v2_schema,
+            SIBLING_PREDICT_COHORT_ENVELOPE_V2_SCHEMA_ID,
+            "dag-ml-data",
+        )
         validate_feature_fusion_schema_artifact(
             sibling_feature_fusion_schema,
             SIBLING_FEATURE_FUSION_SCHEMA_ID,
@@ -19367,6 +19474,11 @@ def main(argv: list[str] | None = None) -> int:
         require(
             normalize_schema(local_schema) == normalize_schema(sibling_schema),
             "coordinator envelope schemas diverge beyond repository-specific $id",
+        )
+        require(
+            normalize_schema(local_predict_cohort_envelope_v2_schema)
+            == normalize_schema(sibling_predict_cohort_envelope_v2_schema),
+            "predict-cohort V2 envelope schemas diverge beyond repository-specific $id",
         )
         require(
             normalize_schema(local_feature_fusion_schema)
