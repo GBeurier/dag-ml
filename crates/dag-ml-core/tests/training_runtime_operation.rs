@@ -2723,6 +2723,17 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
         execution.raw_artifact_payloads,
         "V3 package owns the exact detached REFIT bytes, not controller handles"
     );
+    let runtime_bundle = refit_package
+        .outcome
+        .to_runtime_replay_bundle()
+        .expect("validated V3 child derives a scheduler-only replay bundle");
+    runtime_bundle
+        .validate_against_plan(&refit_package.outcome.effective_plan)
+        .unwrap();
+    assert_eq!(
+        runtime_bundle.raw_artifact_payloads, execution.raw_artifact_payloads,
+        "runtime projection preserves the exact V3 raw artifact inventory"
+    );
     let mut missing_payload = execution.clone();
     missing_payload
         .raw_artifact_payloads

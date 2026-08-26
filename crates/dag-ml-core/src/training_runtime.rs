@@ -1086,6 +1086,32 @@ impl PortableRefitExecutionBundleV3 {
         }
         Ok(())
     }
+
+    /// Recreate the scheduler's internal bundle shape for a V3 PREDICT or
+    /// EXPLAIN invocation.  This projection is deliberately process-local:
+    /// it is derived anew from the V3 child and is never persisted as a V2
+    /// `ExecutionBundle` or exposed through a V1/V2 package reader.
+    pub fn to_runtime_replay_bundle(
+        &self,
+        recipe: &PortableRefitRecipe,
+        effective_plan: &ExecutionPlan,
+    ) -> Result<ExecutionBundle> {
+        self.validate(recipe, effective_plan)?;
+        let mut bundle = build_execution_bundle_with_prediction_contracts(
+            self.bundle_id.clone(),
+            effective_plan,
+            Some(self.selected_variant_id.clone()),
+            BTreeMap::new(),
+            self.refit_artifacts.clone(),
+            Vec::new(),
+            Vec::new(),
+        )?;
+        bundle.raw_artifact_payloads = self.raw_artifact_payloads.clone();
+        // Validate the concrete runtime projection against the V3 plan.  This
+        // is an execution-only conversion; it cannot serialize the result.
+        bundle.validate_against_plan(effective_plan)?;
+        Ok(bundle)
+    }
 }
 
 /// A new V3 training outcome produced by a target-bound full refit.
@@ -1256,6 +1282,15 @@ impl PortableRefitOutcomeV3 {
             );
         }
         Ok(())
+    }
+
+    /// Derive the scheduler-only replay bundle from this validated V3 child.
+    /// The returned object is an internal execution projection and must not be
+    /// serialized as an `ExecutionBundle` package artifact.
+    pub fn to_runtime_replay_bundle(&self) -> Result<ExecutionBundle> {
+        self.validate()?;
+        self.execution_bundle
+            .to_runtime_replay_bundle(&self.recipe, &self.effective_plan)
     }
 }
 
