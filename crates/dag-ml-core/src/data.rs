@@ -3,8 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::campaign::stable_json_fingerprint;
 use crate::error::{DagMlError, Result};
-use crate::ids::{ControllerId, FoldId, NodeId, RunId, VariantId};
+use crate::fold::FoldSet;
+use crate::ids::{ControllerId, FoldId, NodeId, RunId, SampleId, VariantId};
 use crate::phase::Phase;
 use crate::policy::FitInfluencePolicy;
 use crate::relation::{EntityUnitLevel, SampleRelationSet};
@@ -13,7 +15,15 @@ use crate::runtime::{
     RuntimeDataProvider,
 };
 
-pub const EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION: u32 = 1;
+/// The frozen CV/OOF-only external-envelope format.
+pub const EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V1: u32 = 1;
+/// The additive envelope format that can carry a separately attested PREDICT
+/// cohort. It never broadens the V1 coordinator relation universe.
+pub const EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2: u32 = 2;
+/// Existing writers deliberately remain V1 until the PREDICT-cohort scheduler
+/// route is implemented. This alias preserves their exact wire output.
+pub const EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION: u32 =
+    EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V1;
 pub const MODEL_INPUT_SPEC_SCHEMA_VERSION: u32 = 1;
 pub const MODEL_INPUT_SPEC_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/model_input_spec.v1.schema.json";
@@ -23,7 +33,7 @@ pub const DATA_PLAN_SCHEMA_ID: &str =
 pub const SOURCE_INDEX_METADATA_KEY: &str = "source_index";
 
 fn default_external_data_plan_envelope_schema_version() -> u32 {
-    EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
+    EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V1
 }
 
 fn default_model_input_spec_schema_version() -> u32 {
@@ -1490,6 +1500,223 @@ pub(crate) fn validate_source_index_metadata(
     Ok(())
 }
 
+/// The only roles a relation cohort outside the CV fold universe may have.
+///
+/// This is deliberately distinct from [`DataRequestPartition`]: the latter is
+/// a scheduler request while this role determines whether a cohort may carry
+/// score-bearing targets at all.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PredictCohortRole {
+    ExternalTest,
+    Inference,
+}
+
+#[derive(Serialize)]
+struct PredictCohortFingerprintInput<'a> {
+    role: PredictCohortRole,
+    physical_sample_ids: &'a [SampleId],
+    origin_sample_ids: &'a [SampleId],
+    target_names: &'a [String],
+    relation_fingerprint: &'a str,
+    relations: &'a SampleRelationSet,
+    data_content_fingerprint: &'a str,
+    target_content_fingerprint: Option<&'a str>,
+}
+
+/// Closed, PREDICT-only relation authority introduced by envelope V2.
+///
+/// It is never a supplement to `coordinator_relations`: CV, OOF, SELECT and
+/// training influence continue to consume only the latter. The explicit
+/// physical/origin lists prevent a producer from silently changing a cohort by
+/// reordering or dropping relation records.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PredictCohort {
+    pub role: PredictCohortRole,
+    pub physical_sample_ids: Vec<SampleId>,
+    pub origin_sample_ids: Vec<SampleId>,
+    pub target_names: Vec<String>,
+    pub relation_fingerprint: String,
+    pub relations: SampleRelationSet,
+    pub data_content_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_content_fingerprint: Option<String>,
+    pub cohort_fingerprint: String,
+}
+
+impl PredictCohort {
+    fn validate_members(&self) -> Result<()> {
+        validate_sorted_unique_sample_ids(
+            "predict cohort physical_sample_ids",
+            &self.physical_sample_ids,
+        )?;
+        validate_sorted_unique_sample_ids(
+            "predict cohort origin_sample_ids",
+            &self.origin_sample_ids,
+        )?;
+        validate_string_list_entries("predict cohort target_names", &self.target_names)?;
+        validate_unique_strings("predict cohort target_names", &self.target_names)?;
+        validate_fingerprint("predict cohort relation", &self.relation_fingerprint)?;
+        validate_fingerprint(
+            "predict cohort data content",
+            &self.data_content_fingerprint,
+        )?;
+        if let Some(target_content_fingerprint) = &self.target_content_fingerprint {
+            validate_fingerprint("predict cohort target content", target_content_fingerprint)?;
+        }
+        match self.role {
+            PredictCohortRole::ExternalTest if self.target_content_fingerprint.is_none() => {
+                return Err(DagMlError::CampaignValidation(
+                    "external_test predict cohort requires target_content_fingerprint".to_string(),
+                ));
+            }
+            PredictCohortRole::Inference if self.target_content_fingerprint.is_some() => {
+                return Err(DagMlError::CampaignValidation(
+                    "inference predict cohort must not carry target_content_fingerprint"
+                        .to_string(),
+                ));
+            }
+            _ => {}
+        }
+        self.relations.validate()?;
+        let relation_fingerprint = self.relations.fingerprint()?;
+        if self.relation_fingerprint != relation_fingerprint {
+            return Err(DagMlError::CampaignValidation(
+                "predict cohort relation_fingerprint does not match relations".to_string(),
+            ));
+        }
+        let relation_samples = self
+            .relations
+            .records
+            .iter()
+            .map(|record| record.sample_id.clone())
+            .collect::<BTreeSet<_>>();
+        let relation_origins = self
+            .relations
+            .records
+            .iter()
+            .map(|record| {
+                record
+                    .origin_sample_id
+                    .clone()
+                    .unwrap_or_else(|| record.sample_id.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        if relation_samples != self.physical_sample_ids.iter().cloned().collect() {
+            return Err(DagMlError::CampaignValidation(
+                "predict cohort physical_sample_ids do not exactly cover relation samples"
+                    .to_string(),
+            ));
+        }
+        if relation_origins != self.origin_sample_ids.iter().cloned().collect() {
+            return Err(DagMlError::CampaignValidation(
+                "predict cohort origin_sample_ids do not exactly cover relation origins"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn fingerprint(&self) -> Result<String> {
+        self.validate_members()?;
+        stable_json_fingerprint(&PredictCohortFingerprintInput {
+            role: self.role,
+            physical_sample_ids: &self.physical_sample_ids,
+            origin_sample_ids: &self.origin_sample_ids,
+            target_names: &self.target_names,
+            relation_fingerprint: &self.relation_fingerprint,
+            relations: &self.relations,
+            data_content_fingerprint: &self.data_content_fingerprint,
+            target_content_fingerprint: self.target_content_fingerprint.as_deref(),
+        })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.validate_members()?;
+        validate_fingerprint("predict cohort", &self.cohort_fingerprint)?;
+        if self.cohort_fingerprint != self.fingerprint()? {
+            return Err(DagMlError::CampaignValidation(
+                "predict cohort fingerprint does not match canonical content".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// External-test rows must never share a physical or origin identity with
+    /// the CV universe. Inference is intentionally allowed to replay a known
+    /// sample, but cannot carry targets or selection evidence.
+    pub fn validate_against_cv_fold_set(&self, fold_set: &FoldSet) -> Result<()> {
+        self.validate()?;
+        fold_set.validate()?;
+        if self.role == PredictCohortRole::Inference {
+            return Ok(());
+        }
+        let cv_ids = fold_set.sample_ids.iter().collect::<BTreeSet<_>>();
+        for sample_id in self
+            .physical_sample_ids
+            .iter()
+            .chain(self.origin_sample_ids.iter())
+        {
+            if cv_ids.contains(sample_id) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "external_test predict cohort overlaps CV fold sample or origin `{sample_id}`"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse an external-test cohort that intersects the full physical-or-origin
+    /// identity closure of the CV relation authority.
+    ///
+    /// `FoldSet` carries only physical sample ids. The coordinator relation set
+    /// is therefore additionally required to prove that a held-out row did not
+    /// arrive through a CV origin alias.
+    pub fn validate_against_cv_relations(&self, cv_relations: &SampleRelationSet) -> Result<()> {
+        self.validate()?;
+        cv_relations.validate()?;
+        if self.role == PredictCohortRole::Inference {
+            return Ok(());
+        }
+        let cv_identity_closure = cv_relations
+            .records
+            .iter()
+            .flat_map(|record| {
+                std::iter::once(record.sample_id.clone()).chain(record.origin_sample_id.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        for sample_id in self
+            .physical_sample_ids
+            .iter()
+            .chain(self.origin_sample_ids.iter())
+        {
+            if cv_identity_closure.contains(sample_id) {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "external_test predict cohort overlaps CV relation identity closure `{sample_id}`"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_sorted_unique_sample_ids(label: &str, values: &[SampleId]) -> Result<()> {
+    if values.is_empty() {
+        return Err(DagMlError::CampaignValidation(format!(
+            "{label} must not be empty"
+        )));
+    }
+    for pair in values.windows(2) {
+        if pair[0] >= pair[1] {
+            return Err(DagMlError::CampaignValidation(format!(
+                "{label} must be strictly sorted and unique"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExternalDataPlanEnvelope {
     #[serde(default = "default_external_data_plan_envelope_schema_version")]
@@ -1510,15 +1737,36 @@ pub struct ExternalDataPlanEnvelope {
     pub target_content_fingerprint: Option<String>,
     #[serde(default)]
     pub coordinator_relations: Option<SampleRelationSet>,
+    /// V2-only PREDICT relation authority. It is intentionally not merged with
+    /// coordinator_relations, which remains exact to the CV fold universe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predict_cohort: Option<PredictCohort>,
 }
 
 impl ExternalDataPlanEnvelope {
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION {
+        if !matches!(
+            self.schema_version,
+            EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V1
+                | EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2
+        ) {
             return Err(DagMlError::CampaignValidation(format!(
-                "external data-plan envelope uses unsupported schema_version {}, expected {}",
-                self.schema_version, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
+                "external data-plan envelope uses unsupported schema_version {}",
+                self.schema_version
             )));
+        }
+        match (self.schema_version, &self.predict_cohort) {
+            (EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V1, Some(_)) => {
+                return Err(DagMlError::CampaignValidation(
+                    "external data-plan envelope V1 cannot carry predict_cohort".to_string(),
+                ));
+            }
+            (EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2, None) => {
+                return Err(DagMlError::CampaignValidation(
+                    "external data-plan envelope V2 requires predict_cohort".to_string(),
+                ));
+            }
+            _ => {}
         }
         validate_fingerprint("schema", &self.schema_fingerprint)?;
         validate_fingerprint("plan", &self.plan_fingerprint)?;
@@ -1538,6 +1786,18 @@ impl ExternalDataPlanEnvelope {
         }
         if let Some(relations) = &self.coordinator_relations {
             relations.validate()?;
+        }
+        if let Some(predict_cohort) = &self.predict_cohort {
+            predict_cohort.validate()?;
+            if predict_cohort.role == PredictCohortRole::ExternalTest {
+                let cv_relations = self.coordinator_relations.as_ref().ok_or_else(|| {
+                    DagMlError::CampaignValidation(
+                        "external_test predict cohort requires coordinator_relations to prove CV disjointness"
+                            .to_string(),
+                    )
+                })?;
+                predict_cohort.validate_against_cv_relations(cv_relations)?;
+            }
         }
         Ok(())
     }
@@ -1905,7 +2165,8 @@ fn validate_unique_strings(label: &str, values: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::NodeId;
+    use crate::fold::{FoldAssignment, FoldPartitionMode};
+    use crate::ids::{FoldId, NodeId};
     use crate::runtime::DataMaterializationRequest;
 
     fn binding() -> DataBinding {
@@ -2083,6 +2344,151 @@ mod tests {
         binding().validate_envelope(&envelope).unwrap();
         assert!(envelope.data_content_fingerprint.is_none());
         assert!(envelope.target_content_fingerprint.is_none());
+    }
+
+    fn external_test_predict_cohort() -> PredictCohort {
+        let records = vec![
+            crate::relation::SampleRelation::new(
+                crate::ids::ObservationId::new("obs:holdout:1").unwrap(),
+                SampleId::new("sample:holdout:1").unwrap(),
+            ),
+            crate::relation::SampleRelation::new(
+                crate::ids::ObservationId::new("obs:holdout:2").unwrap(),
+                SampleId::new("sample:holdout:2").unwrap(),
+            ),
+        ];
+        let relations = SampleRelationSet { records };
+        let mut cohort = PredictCohort {
+            role: PredictCohortRole::ExternalTest,
+            physical_sample_ids: vec![
+                SampleId::new("sample:holdout:1").unwrap(),
+                SampleId::new("sample:holdout:2").unwrap(),
+            ],
+            origin_sample_ids: vec![
+                SampleId::new("sample:holdout:1").unwrap(),
+                SampleId::new("sample:holdout:2").unwrap(),
+            ],
+            target_names: vec!["classification:y".to_string()],
+            relation_fingerprint: relations.fingerprint().unwrap(),
+            relations,
+            data_content_fingerprint: "c".repeat(64),
+            target_content_fingerprint: Some("d".repeat(64)),
+            cohort_fingerprint: String::new(),
+        };
+        cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+        cohort
+    }
+
+    fn cv_fold_set(sample_ids: [&str; 2]) -> FoldSet {
+        let sample_ids = sample_ids
+            .into_iter()
+            .map(|sample_id| SampleId::new(sample_id).unwrap())
+            .collect::<Vec<_>>();
+        FoldSet {
+            id: "foldset:cv".to_string(),
+            sample_ids: sample_ids.clone(),
+            folds: vec![
+                FoldAssignment {
+                    fold_id: FoldId::new("fold:0").unwrap(),
+                    train_sample_ids: vec![sample_ids[1].clone()],
+                    validation_sample_ids: vec![sample_ids[0].clone()],
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("fold:1").unwrap(),
+                    train_sample_ids: vec![sample_ids[0].clone()],
+                    validation_sample_ids: vec![sample_ids[1].clone()],
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
+        }
+    }
+
+    #[test]
+    fn external_data_envelope_v2_closes_predict_cohort_identity() {
+        let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        let cohort = external_test_predict_cohort();
+        envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+        envelope.predict_cohort = Some(cohort.clone());
+        envelope.validate().unwrap();
+
+        let mut v1 = envelope.clone();
+        v1.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V1;
+        assert!(v1
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("V1 cannot carry predict_cohort"));
+
+        let mut fingerprint_drift = cohort;
+        fingerprint_drift.cohort_fingerprint = "0".repeat(64);
+        envelope.predict_cohort = Some(fingerprint_drift);
+        assert!(envelope
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("predict cohort fingerprint"));
+    }
+
+    #[test]
+    fn predict_cohort_refuses_noncanonical_identity_and_inference_targets() {
+        let mut cohort = external_test_predict_cohort();
+        cohort.physical_sample_ids.reverse();
+        assert!(cohort
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("strictly sorted and unique"));
+
+        let mut inference = external_test_predict_cohort();
+        inference.role = PredictCohortRole::Inference;
+        assert!(inference
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("inference predict cohort must not carry target_content_fingerprint"));
+    }
+
+    #[test]
+    fn external_test_predict_cohort_is_disjoint_from_cv_identity_closure() {
+        let cohort = external_test_predict_cohort();
+        cohort
+            .validate_against_cv_fold_set(&cv_fold_set(["sample:cv:1", "sample:cv:2"]))
+            .unwrap();
+        let error = cohort
+            .validate_against_cv_fold_set(&cv_fold_set(["sample:holdout:1", "sample:cv:2"]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("overlaps CV fold sample or origin"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn external_test_predict_cohort_refuses_cv_origin_alias() {
+        let cohort = external_test_predict_cohort();
+        let mut cv_relation = crate::relation::SampleRelation::new(
+            crate::ids::ObservationId::new("obs:cv:1").unwrap(),
+            SampleId::new("sample:cv:1").unwrap(),
+        );
+        cv_relation.origin_sample_id = Some(SampleId::new("sample:holdout:1").unwrap());
+        let cv_relations = SampleRelationSet {
+            records: vec![cv_relation],
+        };
+        let error = cohort
+            .validate_against_cv_relations(&cv_relations)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("overlaps CV relation identity closure"),
+            "{error}"
+        );
     }
 
     #[test]
