@@ -1903,6 +1903,26 @@ impl PortableRefitProvenance {
         Ok(provenance)
     }
 
+    /// Parse target-cohort provenance only in the presence of its already
+    /// attested parent recipe.  A standalone parser would make the parent
+    /// fields self-attested and is therefore intentionally not exposed.
+    pub fn from_json_for_recipe(json: &str, recipe: &PortableRefitRecipe) -> Result<Self> {
+        let raw_fingerprint = strict_tcv1_fingerprint_without(
+            json,
+            "provenance_fingerprint",
+            "portable refit provenance",
+        )?;
+        let provenance: Self = serde_json::from_str(json)?;
+        if provenance.provenance_fingerprint != raw_fingerprint {
+            return contract_error(
+                "portable refit provenance fingerprint does not match original TCV1 JSON"
+                    .to_string(),
+            );
+        }
+        provenance.validate_against_recipe(recipe)?;
+        Ok(provenance)
+    }
+
     pub fn validate_against_recipe(&self, recipe: &PortableRefitRecipe) -> Result<()> {
         if self.schema_version != PORTABLE_REFIT_PROVENANCE_SCHEMA_VERSION {
             return unsupported_version(
@@ -4726,6 +4746,11 @@ mod tests {
         )
         .unwrap();
         provenance.validate_against_recipe(&recipe).unwrap();
+        PortableRefitProvenance::from_json_for_recipe(
+            &serde_json::to_string(&provenance).unwrap(),
+            &recipe,
+        )
+        .unwrap();
 
         let error = PortableRefitProvenance::from_target_cohort(
             &recipe,
