@@ -520,6 +520,7 @@ fn envelopes_for(fixture: &Fixture) -> BTreeMap<String, ExternalDataPlanEnvelope
                     data_content_fingerprint: Some(identity.data_content_fingerprint.clone()),
                     target_content_fingerprint: Some(identity.target_content_fingerprint.clone()),
                     coordinator_relations: Some(fixture.relations.clone()),
+                    predict_cohort: None,
                 },
             );
         }
