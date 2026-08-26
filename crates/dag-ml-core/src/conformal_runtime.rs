@@ -175,7 +175,7 @@ impl ConformalCalibration {
         .map_err(|error| {
             DagMlError::RuntimeValidation(format!("conformal calibration failed: {error}"))
         })?;
-        let mut calibration = Self {
+        let calibration = Self {
             schema_version: CONFORMAL_RUNTIME_SCHEMA_VERSION,
             binding_id: binding_id.into(),
             target_names,
@@ -187,9 +187,7 @@ impl ConformalCalibration {
             context,
             calibration_fingerprint: String::new(),
         };
-        calibration.calibration_fingerprint = calibration.compute_fingerprint()?;
-        calibration.validate()?;
-        Ok(calibration)
+        stabilize_calibration_for_tcv1(calibration)
     }
 
     pub fn reference(&self) -> Result<ConformalCalibrationRef> {
@@ -504,6 +502,48 @@ fn fingerprint_without<T: Serialize>(value: &T, field: &str, label: &str) -> Res
         .map_err(|error| DagMlError::RuntimeValidation(format!("{label} is outside TCV1: {error}")))
 }
 
+fn stabilize_calibration_for_tcv1(
+    mut calibration: ConformalCalibration,
+) -> Result<ConformalCalibration> {
+    // TCV1 fingerprints the lexical binary64 token.  A radius produced by
+    // native arithmetic can need one serde round-trip before that token is the
+    // same one a strict JSON reader will observe.  Sign only that fixed point;
+    // otherwise a newly created calibration can reject its own serialized form.
+    calibration.calibration_fingerprint = "0".repeat(64);
+    for _ in 0..8 {
+        let json = serde_json::to_string(&calibration)?;
+        let before = parse_typed_json(&json).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "conformal calibration is outside TCV1 while normalizing: {error}"
+            ))
+        })?;
+        let mut normalized = serde_json::from_str::<ConformalCalibration>(&json)?;
+        normalized.calibration_fingerprint = "0".repeat(64);
+        let normalized_json = serde_json::to_string(&normalized)?;
+        let after = parse_typed_json(&normalized_json).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "conformal calibration is outside TCV1 after normalization: {error}"
+            ))
+        })?;
+        if before != after {
+            calibration = normalized;
+            continue;
+        }
+        normalized.calibration_fingerprint = after
+            .fingerprint_without("calibration_fingerprint")
+            .map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "conformal calibration TCV1 fingerprint failed after normalization: {error}"
+            ))
+        })?;
+        let signed_json = serde_json::to_string(&normalized)?;
+        return ConformalCalibration::from_json(&signed_json);
+    }
+    Err(DagMlError::RuntimeValidation(
+        "conformal calibration TCV1 JSON did not reach a serde canonical fixed point".to_string(),
+    ))
+}
+
 pub(crate) fn point_prediction_fingerprint_for_runtime(
     predictions: &PredictionBlock,
 ) -> Result<String> {
@@ -602,6 +642,39 @@ mod tests {
         assert_eq!(intervals.intervals.len(), 1);
         let cell = intervals.intervals[0].cells[0][0];
         assert_eq!(cell.endpoints(), (Some(9.0), Some(11.0)));
+    }
+
+    #[test]
+    fn calibration_preserves_non_binary_coverage_fingerprint() {
+        let calibration = ConformalCalibration::calibrate_with_truth(
+            "output:main",
+            vec!["y".to_string()],
+            &block(&["s1", "s2", "s3", "s4"], &[57.28, 69.52, 82.78, 97.06]),
+            &ConformalCalibrationTruth {
+                sample_ids: vec![
+                    SampleId::new("s1").unwrap(),
+                    SampleId::new("s2").unwrap(),
+                    SampleId::new("s3").unwrap(),
+                    SampleId::new("s4").unwrap(),
+                ],
+                values: vec![vec![64.0], vec![81.0], vec![100.0], vec![121.0]],
+            },
+            context(
+                vec![
+                    SampleId::new("s1").unwrap(),
+                    SampleId::new("s2").unwrap(),
+                    SampleId::new("s3").unwrap(),
+                    SampleId::new("s4").unwrap(),
+                ],
+                vec!["y".to_string()],
+            ),
+            vec![0.8],
+            ConformalMultiTargetPolicy::Marginal,
+            ConformalSmallSamplePolicy::Error,
+        );
+        let calibration = calibration.unwrap();
+        let json = serde_json::to_string(&calibration).unwrap();
+        assert!(ConformalCalibration::from_json(&json).is_ok());
     }
 
     #[test]
