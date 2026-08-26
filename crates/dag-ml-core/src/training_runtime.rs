@@ -57,8 +57,9 @@ use crate::selection::{
 use crate::training::{
     contains_runtime_handle, ArtifactLoadMode, CacheNamespace, CvArtifactRetention,
     FittedArtifactMode, OutputBinding, PackageArtifactBinding, ParameterNamespace, ParameterPatch,
-    PortablePredictorPackage, PredictionCacheRetention, PredictionKind, PredictionSource,
-    PredictorTemplate, ResolvedTrainingOutput, TrainingContractProjection, TrainingDataIdentity,
+    PortablePredictorPackage, PortableRefitProvenance, PortableRefitRecipe,
+    PredictionCacheRetention, PredictionKind, PredictionSource, PredictorTemplate,
+    ResolvedTrainingOutput, TrainingContractProjection, TrainingDataIdentity,
     TrainingInfluenceKind, TrainingInfluenceManifest, TrainingOutcomeRef, TrainingRequest,
     TrainingSchedulerBackend, TrainingSchedulerKind, OUTPUT_BINDING_SCHEMA_VERSION,
     PARAMETER_PATCH_SCHEMA_VERSION, PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION,
@@ -909,6 +910,99 @@ impl NativeTrainingScheduler {
                 ),
         }
     }
+}
+
+/// Target-bound input for the scheduler-owned full-refit half of Package V3.
+/// This is deliberately not a replay request: it accepts a new training
+/// cohort attestation and never touches a source execution bundle, source
+/// scores, source predictions, or source artifacts.
+pub struct PortableFullRefitExecutionInput<'a> {
+    pub recipe: &'a PortableRefitRecipe,
+    pub source_package: &'a PortablePredictorPackage,
+    pub target_plan: &'a ExecutionPlan,
+    pub target_training_request_fingerprint: String,
+    pub target_data_identities: &'a [TrainingDataIdentity],
+    pub target_training_influence: &'a TrainingInfluenceManifest,
+    pub run_id: RunId,
+    pub controllers: &'a RuntimeControllerRegistry,
+    pub data_provider: &'a dyn RuntimeDataProvider,
+}
+
+/// Native artifacts and execution evidence produced by the first, scheduler
+/// only step of a V3 full refit.  The V3 outcome/package writer consumes this
+/// result to create a new durable child; it must not mutate the parent.
+#[derive(Clone, Debug)]
+pub struct PortableFullRefitExecution {
+    pub provenance: PortableRefitProvenance,
+    pub results: Vec<NodeResult>,
+    pub refit_artifacts: Vec<crate::bundle::RefitArtifactRecord>,
+}
+
+/// Execute exactly one portable native full refit from a closed recipe.
+///
+/// The function has no V2 replay input and uses the scheduler's ordinary
+/// `REFIT` phase directly. All source/recipe/cohort checks occur before the
+/// data provider is queried. It intentionally returns execution evidence
+/// rather than synthesising a TrainingOutcome: V3 persistence must add the
+/// new outcome/bundle/package atomically in its owning writer.
+pub fn execute_portable_full_refit(
+    input: PortableFullRefitExecutionInput<'_>,
+) -> Result<PortableFullRefitExecution> {
+    input
+        .recipe
+        .validate_against_source_package(input.source_package)?;
+    let provenance = PortableRefitProvenance::from_target_cohort(
+        input.recipe,
+        input.target_training_request_fingerprint,
+        input.target_data_identities,
+        input.target_training_influence,
+    )?;
+    input.target_plan.validate()?;
+    let target_plan_fingerprint =
+        tcv1_fingerprint(input.target_plan, "portable full refit effective plan")?;
+    if target_plan_fingerprint != input.recipe.effective_plan_fingerprint {
+        return contract_error(
+            "portable full refit target plan does not exactly match the parent recipe".to_string(),
+        );
+    }
+    let selected_variant = input
+        .target_plan
+        .variants
+        .iter()
+        .find(|variant| variant.variant_id == input.recipe.selected_variant_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "portable full refit selected variant is absent from target plan".to_string(),
+            )
+        })?;
+    if selected_variant.fingerprint != input.recipe.selected_variant_fingerprint {
+        return contract_error(
+            "portable full refit target selected variant does not match parent recipe".to_string(),
+        );
+    }
+    let mut ctx = RunContext::new(input.run_id, input.target_plan.campaign.root_seed);
+    ctx.variant_id = Some(input.recipe.selected_variant_id.clone());
+    let mut artifact_store = InMemoryArtifactStore::new();
+    let results = SequentialScheduler
+        .execute_campaign_phase_with_data_provider_and_artifact_store(
+            input.target_plan,
+            input.controllers,
+            input.data_provider,
+            &mut artifact_store,
+            &mut ctx,
+            Phase::Refit,
+        )?;
+    let refit_artifacts = artifact_store.refit_artifacts();
+    if refit_artifacts.is_empty() {
+        return contract_error(
+            "portable full refit produced no durable native artifact".to_string(),
+        );
+    }
+    Ok(PortableFullRefitExecution {
+        provenance,
+        results,
+        refit_artifacts,
+    })
 }
 
 /// Execute COMPILE/PLAN -> FIT_CV -> SELECT -> optional REFIT and return the
