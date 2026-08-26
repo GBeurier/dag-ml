@@ -2734,6 +2734,29 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
         runtime_bundle.raw_artifact_payloads, execution.raw_artifact_payloads,
         "runtime projection preserves the exact V3 raw artifact inventory"
     );
+    let mut v3_replay_request = replay_request(&source, Phase::Predict);
+    v3_replay_request.request_id = "replay:methods.full-refit.v3".to_string();
+    v3_replay_request.source_outcome_fingerprint =
+        refit_package.outcome.outcome_fingerprint.clone();
+    v3_replay_request.request_fingerprint = "0".repeat(64);
+    v3_replay_request.request_fingerprint = v3_replay_request.compute_fingerprint().unwrap();
+    let fresh_replay_controllers = controllers(&fixture, Arc::new(CallState::default()), true);
+    let v3_replay = execute_loaded_portable_refit_replay_v3(LoadedPortableRefitReplayInputV3 {
+        package: &refit_package,
+        request: &v3_replay_request,
+        outcome_id: "replay:methods.full-refit.v3".to_string(),
+        run_id: RunId::new("run:methods.full-refit.v3").unwrap(),
+        controllers: &fresh_replay_controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("a fresh Methods registry rehydrates and predicts from V3 raw artifacts");
+    assert!(!v3_replay.outputs.is_empty());
+    v3_replay
+        .validate_against(&refit_package, &v3_replay_request)
+        .unwrap();
     let mut missing_payload = execution.clone();
     missing_payload
         .raw_artifact_payloads
