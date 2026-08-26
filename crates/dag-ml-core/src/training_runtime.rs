@@ -29,7 +29,7 @@ use crate::error::{DagMlError, Result};
 use crate::fold::fold_set_fingerprint;
 use crate::graph::{NodeKind, PortKind};
 use crate::hpo::{methods_optimizer_preflight, MethodsHpoStudyConfig};
-use crate::ids::{BundleId, FoldId, LineageId, NodeId, RunId, SampleId, VariantId};
+use crate::ids::{ArtifactId, BundleId, FoldId, LineageId, NodeId, RunId, SampleId, VariantId};
 use crate::metrics::{
     RegressionMetricKind, ScoreSet, LEGACY_SCORE_SET_SCHEMA_VERSION, SCORE_SET_SCHEMA_VERSION,
 };
@@ -936,6 +936,11 @@ pub struct PortableFullRefitExecution {
     pub provenance: PortableRefitProvenance,
     pub results: Vec<NodeResult>,
     pub refit_artifacts: Vec<crate::bundle::RefitArtifactRecord>,
+    /// Raw bytes are detached from their process-local controller immediately
+    /// after the refit phase.  A future Package/Archive V3 writer consumes
+    /// this map atomically with `refit_artifacts`; it must never ask a source
+    /// controller to re-export an artifact after the execution has ended.
+    pub raw_artifact_payloads: BTreeMap<ArtifactId, Vec<u8>>,
 }
 
 /// Execute exactly one portable native full refit from a closed recipe.
@@ -998,10 +1003,40 @@ pub fn execute_portable_full_refit(
             "portable full refit produced no durable native artifact".to_string(),
         );
     }
+    let mut raw_artifact_payloads = BTreeMap::new();
+    for record in &refit_artifacts {
+        record.validate()?;
+        let controller = input
+            .controllers
+            .get(&record.controller_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                "portable full refit artifact `{}` has no registered controller `{}` for export",
+                record.artifact.id, record.controller_id
+            ))
+            })?;
+        let payload = controller
+            .export_artifact_payload(&record.artifact.id)?
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "portable full refit controller `{}` did not export durable payload `{}`",
+                    record.controller_id, record.artifact.id
+                ))
+            })?;
+        if raw_artifact_payloads
+            .insert(record.artifact.id.clone(), payload)
+            .is_some()
+        {
+            return contract_error(
+                "portable full refit produced duplicate durable artifact identifiers".to_string(),
+            );
+        }
+    }
     Ok(PortableFullRefitExecution {
         provenance,
         results,
         refit_artifacts,
+        raw_artifact_payloads,
     })
 }
 
