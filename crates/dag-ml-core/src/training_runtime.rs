@@ -986,13 +986,13 @@ impl PortableRefitExecutionBundleV3 {
         validate_sha256("portable refit execution bundle", &self.bundle_fingerprint)?;
         if self.effective_plan_fingerprint
             != tcv1_fingerprint(effective_plan, "portable refit execution bundle plan")?
-            || self.effective_plan_fingerprint != recipe.effective_plan_fingerprint
         {
             return contract_error(
-                "portable refit execution bundle does not exactly bind the recipe effective plan"
+                "portable refit execution bundle does not exactly bind its effective plan"
                     .to_string(),
             );
         }
+        validate_portable_refit_target_plan(recipe, effective_plan)?;
         if self.selected_variant_id != recipe.selected_variant_id {
             return contract_error(
                 "portable refit execution bundle selected variant does not match recipe"
@@ -1179,13 +1179,13 @@ impl PortableRefitOutcomeV3 {
                 &self.effective_plan,
                 "portable refit outcome effective plan",
             )?
-            || self.effective_plan_fingerprint != self.recipe.effective_plan_fingerprint
         {
             return contract_error(
-                "portable refit outcome effective plan does not exactly match its recipe"
+                "portable refit outcome effective plan fingerprint does not match its content"
                     .to_string(),
             );
         }
+        validate_portable_refit_target_plan(&self.recipe, &self.effective_plan)?;
         let selected = self
             .effective_plan
             .variants
@@ -1413,6 +1413,19 @@ pub fn build_portable_refit_package_v3(
             "portable refit package V3 execution reuses its parent training request".to_string(),
         );
     }
+    let expected_target_plan = derive_portable_full_refit_target_plan(
+        input.recipe,
+        input.source_package,
+        input.target_training_request,
+    )?;
+    if input.target_plan != &expected_target_plan
+        || input.execution.effective_plan != expected_target_plan
+    {
+        return contract_error(
+            "portable refit package V3 plan is not the deterministic parent-plus-cohort derivation"
+                .to_string(),
+        );
+    }
     let mut bundle = PortableRefitExecutionBundleV3 {
         schema_version: PORTABLE_REFIT_EXECUTION_BUNDLE_V3_SCHEMA_VERSION,
         bundle_id: input.bundle_id,
@@ -1463,6 +1476,10 @@ pub fn build_portable_refit_package_v3(
 pub struct PortableFullRefitExecution {
     pub run_id: RunId,
     pub provenance: PortableRefitProvenance,
+    /// Exact target-cohort plan derived from the parent recipe.  The child
+    /// writer cross-checks this value so execution evidence cannot be paired
+    /// with a different plan after REFIT completed.
+    pub effective_plan: ExecutionPlan,
     pub results: Vec<NodeResult>,
     pub refit_artifacts: Vec<crate::bundle::RefitArtifactRecord>,
     /// Raw bytes are detached from their process-local controller immediately
@@ -1470,6 +1487,227 @@ pub struct PortableFullRefitExecution {
     /// this map atomically with `refit_artifacts`; it must never ask a source
     /// controller to re-export an artifact after the execution has ended.
     pub raw_artifact_payloads: BTreeMap<ArtifactId, Vec<u8>>,
+}
+
+/// Derive the only execution plan a V3 full REFIT may use for a new cohort.
+///
+/// The parent Package V2 remains the authority for graph topology, selected
+/// parameters, variants and controller policy.  A freshly signed target
+/// request is authoritative only for the cohort-bound data bindings and fold
+/// universe.  This is deliberately a derivation rather than a permissive
+/// comparison: callers cannot choose a plan that happens to look compatible.
+pub fn derive_portable_full_refit_target_plan(
+    recipe: &PortableRefitRecipe,
+    source_package: &PortablePredictorPackage,
+    target_training_request: &TrainingRequest,
+) -> Result<ExecutionPlan> {
+    recipe.validate_against_source_package(source_package)?;
+    if !target_training_request.parameter_patches.is_empty()
+        || !target_training_request.patch_policies.is_empty()
+    {
+        return contract_error(
+            "portable full refit target request must not carry parameter patches".to_string(),
+        );
+    }
+    let target_projection = target_training_request.project()?;
+    let target_plan = target_projection.plan;
+    let source_plan = &source_package.effective_plan;
+
+    if source_plan.graph_plan.graph != target_plan.graph_plan.graph
+        || source_plan.controller_manifests != target_plan.controller_manifests
+    {
+        return contract_error(
+            "portable full refit target request does not match the parent graph/controller topology"
+                .to_string(),
+        );
+    }
+    validate_portable_refit_node_shape(source_plan, &target_plan)?;
+    validate_portable_refit_binding_shape(source_plan, &target_plan)?;
+
+    let mut derived = source_plan.clone();
+    derived.campaign.data_bindings = target_plan.campaign.data_bindings.clone();
+    derived.fold_set = target_plan.fold_set.clone();
+    match (
+        derived.campaign.split_invocation.as_mut(),
+        target_plan.campaign.split_invocation.as_ref(),
+    ) {
+        (Some(source_split), Some(target_split)) => {
+            source_split.fold_set = target_split.fold_set.clone();
+        }
+        (None, None) => {}
+        _ => {
+            return contract_error(
+                "portable full refit target request changes whether the parent has a fold universe"
+                    .to_string(),
+            );
+        }
+    }
+    for (node_id, node) in &mut derived.node_plans {
+        node.data_bindings = target_plan
+            .node_plans
+            .get(node_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "portable full refit target plan is missing parent node `{node_id}`"
+                ))
+            })?
+            .data_bindings
+            .clone();
+    }
+    derived.campaign_fingerprint = stable_json_fingerprint(&derived.campaign)?;
+    derived.validate()?;
+    validate_portable_refit_target_plan(recipe, &derived)?;
+    Ok(derived)
+}
+
+/// Validate a persisted V3 target plan against the parent recipe without
+/// reusing the parent's cohort-specific plan fingerprint.
+pub fn validate_portable_refit_target_plan(
+    recipe: &PortableRefitRecipe,
+    plan: &ExecutionPlan,
+) -> Result<()> {
+    recipe.validate()?;
+    plan.validate()?;
+    let selected_variant = plan
+        .variants
+        .iter()
+        .find(|variant| variant.variant_id == recipe.selected_variant_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "portable full refit selected variant is absent from target plan".to_string(),
+            )
+        })?;
+    let selected_parameters = plan
+        .node_plans
+        .iter()
+        .map(|(node_id, node)| (node_id.clone(), node.params.clone()))
+        .collect::<BTreeMap<_, _>>();
+    if selected_variant.fingerprint != recipe.selected_variant_fingerprint
+        || tcv1_fingerprint(
+            &(selected_variant.fingerprint.clone(), selected_parameters),
+            "portable refit selected parameter projection",
+        )? != recipe.selected_parameter_projection_fingerprint
+    {
+        return contract_error(
+            "portable full refit target selected parameters do not match the parent recipe"
+                .to_string(),
+        );
+    }
+    for controller in &recipe.controllers {
+        let node = plan.node_plans.get(&controller.node_id).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "portable full refit recipe controller node `{}` is absent from target plan",
+                controller.node_id
+            ))
+        })?;
+        let manifest = plan
+            .controller_manifests
+            .get(&node.controller_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "portable full refit target node `{}` has no controller manifest",
+                    node.node_id
+                ))
+            })?;
+        if node.controller_id != controller.controller_id
+            || node.controller_version != controller.controller_version
+            || node.controller_capabilities != controller.capabilities
+            || tcv1_fingerprint(manifest, "portable refit controller manifest")?
+                != controller.manifest_fingerprint
+        {
+            return contract_error(format!(
+                "portable full refit target controller `{}` does not match the parent recipe",
+                controller.node_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_portable_refit_node_shape(
+    source: &ExecutionPlan,
+    target: &ExecutionPlan,
+) -> Result<()> {
+    if source.node_plans.keys().collect::<BTreeSet<_>>()
+        != target.node_plans.keys().collect::<BTreeSet<_>>()
+    {
+        return contract_error(
+            "portable full refit target request node set differs from the parent".to_string(),
+        );
+    }
+    for node_id in source.node_plans.keys() {
+        let mut parent = source.node_plans[node_id].clone();
+        let mut candidate = target.node_plans[node_id].clone();
+        // Parent parameter values are the selected model.  The new cohort's
+        // request is not allowed to override them, so they are intentionally
+        // excluded from the target-request shape comparison.
+        parent.params.clear();
+        candidate.params.clear();
+        parent.params_fingerprint = stable_json_fingerprint(&parent.params)?;
+        candidate.params_fingerprint = stable_json_fingerprint(&candidate.params)?;
+        parent.data_bindings.clear();
+        candidate.data_bindings.clear();
+        if parent != candidate {
+            return contract_error(format!(
+                "portable full refit target node `{node_id}` changes parent execution shape"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_portable_refit_binding_shape(
+    source: &ExecutionPlan,
+    target: &ExecutionPlan,
+) -> Result<()> {
+    let source_bindings = portable_refit_binding_map(source)?;
+    let target_bindings = portable_refit_binding_map(target)?;
+    if source_bindings.keys().collect::<BTreeSet<_>>()
+        != target_bindings.keys().collect::<BTreeSet<_>>()
+    {
+        return contract_error(
+            "portable full refit target request data-binding coordinates differ from the parent"
+                .to_string(),
+        );
+    }
+    for (key, parent) in source_bindings {
+        let candidate = &target_bindings[&key];
+        let mut parent = parent.clone();
+        let mut candidate = candidate.clone();
+        // Cohort identity is deliberately re-attested by the target request,
+        // data identities and influence manifest.  All actual execution/data
+        // view semantics remain exact below.
+        parent.request_id = "portable_refit:target_cohort".to_string();
+        candidate.request_id = parent.request_id.clone();
+        parent.schema_fingerprint = "0".repeat(64);
+        candidate.schema_fingerprint = parent.schema_fingerprint.clone();
+        parent.relation_fingerprint = parent.relation_fingerprint.as_ref().map(|_| "0".repeat(64));
+        candidate.relation_fingerprint = candidate
+            .relation_fingerprint
+            .as_ref()
+            .map(|_| "0".repeat(64));
+        if parent != candidate {
+            return contract_error(format!(
+                "portable full refit target binding `{key}` changes parent data-view semantics"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn portable_refit_binding_map(
+    plan: &ExecutionPlan,
+) -> Result<BTreeMap<String, crate::data::DataBinding>> {
+    let mut bindings = BTreeMap::new();
+    for binding in plan.campaign.data_bindings.values().flatten() {
+        let key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
+        if bindings.insert(key.clone(), binding.clone()).is_some() {
+            return contract_error(format!(
+                "portable full refit plan has duplicate data-binding key `{key}`"
+            ));
+        }
+    }
+    Ok(bindings)
 }
 
 /// Execute exactly one portable native full refit from a closed recipe.
@@ -1501,12 +1739,15 @@ pub fn execute_portable_full_refit(
         input.target_data_identities,
         input.target_training_influence,
     )?;
-    input.target_plan.validate()?;
-    let target_plan_fingerprint =
-        tcv1_fingerprint(input.target_plan, "portable full refit effective plan")?;
-    if target_plan_fingerprint != input.recipe.effective_plan_fingerprint {
+    let derived_target_plan = derive_portable_full_refit_target_plan(
+        input.recipe,
+        input.source_package,
+        input.target_training_request,
+    )?;
+    if input.target_plan != &derived_target_plan {
         return contract_error(
-            "portable full refit target plan does not exactly match the parent recipe".to_string(),
+            "portable full refit target plan is not the deterministic parent-plus-cohort derivation"
+                .to_string(),
         );
     }
     let selected_variant = input
@@ -1524,12 +1765,12 @@ pub fn execute_portable_full_refit(
             "portable full refit target selected variant does not match parent recipe".to_string(),
         );
     }
-    let mut ctx = RunContext::new(input.run_id.clone(), input.target_plan.campaign.root_seed);
+    let mut ctx = RunContext::new(input.run_id.clone(), derived_target_plan.campaign.root_seed);
     ctx.variant_id = Some(input.recipe.selected_variant_id.clone());
     let mut artifact_store = InMemoryArtifactStore::new();
     let results = SequentialScheduler
         .execute_campaign_phase_with_data_provider_and_artifact_store(
-            input.target_plan,
+            &derived_target_plan,
             input.controllers,
             input.data_provider,
             &mut artifact_store,
@@ -1574,6 +1815,7 @@ pub fn execute_portable_full_refit(
     Ok(PortableFullRefitExecution {
         run_id: input.run_id,
         provenance,
+        effective_plan: derived_target_plan,
         results,
         refit_artifacts,
         raw_artifact_payloads,

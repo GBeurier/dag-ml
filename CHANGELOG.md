@@ -11,9 +11,11 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Added
 
-- Release patch 0.3.11: Python hosts can now validate target-bound native
-  full-refit Package V3 contracts and assemble the exact Core Archive V3
-  member closure. ZIP persistence remains owned by `nirs4all-core`.
+- Release patch 0.3.13: Python hosts can validate and replay target-bound
+  native full-refit Package V3 contracts without a host callback. The native
+  coordinator retains the exact refit recipe, portable Methods artifact
+  closure and conformal presentation evidence; ZIP persistence remains owned
+  by `nirs4all-core`.
 
 ### Fixed
 - Release patch 0.3.9: target-free PREDICT replay retains the validated

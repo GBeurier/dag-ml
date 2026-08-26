@@ -69,6 +69,7 @@ pub(crate) use crate::selection::{
 mod artifact;
 mod dataview;
 mod merge;
+mod methods_replay;
 mod oof;
 mod prediction_store;
 mod scheduler;
@@ -78,6 +79,8 @@ mod task;
 pub use artifact::*;
 pub use dataview::*;
 pub(crate) use merge::*;
+#[cfg(feature = "methods-optimizer")]
+pub use methods_replay::*;
 pub use oof::*;
 pub use prediction_store::*;
 pub use scheduler::*;
