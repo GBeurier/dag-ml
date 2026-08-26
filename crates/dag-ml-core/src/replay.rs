@@ -162,6 +162,30 @@ impl PortableRefitReplayOutcomeV3 {
         )
     }
 
+    /// Parse replay evidence only in the presence of the exact V3 child and
+    /// replay request it claims to describe. A standalone deserializer would
+    /// make both source fingerprints self-attested.
+    pub fn from_json_for_package(
+        json: &str,
+        package: &PortableRefitPackageV3,
+        request: &TrainingReplayRequest,
+    ) -> Result<Self> {
+        let raw_fingerprint = strict_tcv1_fingerprint_without(
+            json,
+            "outcome_fingerprint",
+            "portable refit replay outcome V3",
+        )?;
+        let outcome: Self = serde_json::from_str(json)?;
+        if outcome.outcome_fingerprint != raw_fingerprint {
+            return contract_error(
+                "portable refit replay outcome fingerprint does not match original TCV1 JSON"
+                    .to_string(),
+            );
+        }
+        outcome.validate_against(package, request)?;
+        Ok(outcome)
+    }
+
     pub fn validate_against(
         &self,
         package: &PortableRefitPackageV3,
