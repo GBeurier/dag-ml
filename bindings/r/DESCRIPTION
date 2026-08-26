@@ -1,6 +1,6 @@
 Package: dagml
 Title: R Binding for DAG-ML Local Implementations
-Version: 0.3.9
+Version: 0.3.10
 Authors@R: person("Gregory", "Beurier", email = "gregory.beurier@cirad.fr", role = c("aut", "cre"))
 Description: Retains R loss and metric functions in process-local registries
     keyed by validated DAG-ML implementation descriptors. Training controllers
