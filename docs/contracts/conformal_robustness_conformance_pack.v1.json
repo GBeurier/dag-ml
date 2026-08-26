@@ -44,6 +44,11 @@
       "kind": "schema"
     },
     {
+      "path": "docs/contracts/conformal_presentation.v1.schema.json",
+      "sha256": "80af16bf3f2886856579f59b530e70a9d232f21a44807c14acc270cb5d27eb2a",
+      "kind": "schema"
+    },
+    {
       "path": "docs/contracts/controller_manifest.schema.json",
       "sha256": "c63895118a7676b874a646d46558eceba456180194b05ab8089d250fef6e067f",
       "kind": "schema_dependency"
@@ -275,7 +280,7 @@
     },
     {
       "path": "parity/conformal/generate_fixtures.py",
-      "sha256": "11c4e8267534c9b444ffd1ec38c5534d98c4fea0d86d2da1ed2698ed897e914e",
+      "sha256": "a55f53b31b5e5e0650464566677878ffbc4f85f43b7ea155d2e68e7e1f26a8a6",
       "kind": "generator"
     },
     {
@@ -443,5 +448,5 @@
       ]
     }
   ],
-  "pack_checksum": "d7d86890402f648527ed9ac3f0b3cddff5d583f99cb732639b99c9e7e979f4a9"
+  "pack_checksum": "f28993b51264de183b0b15305b54a661bad05cdfa9dc8c419f627aff535cae4a"
 }

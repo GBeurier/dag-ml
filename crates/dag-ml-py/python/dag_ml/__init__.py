@@ -25,6 +25,7 @@ from ._dag_ml import (
     build_execution_plan_json,
     build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
     build_archive_v3_native_refit_payloads_json as _native_build_archive_v3_native_refit_payloads_json,
+    build_conformal_presentation_v1_json as _native_build_conformal_presentation_v1_json,
     canonical_operator_variant_label,
     configure_methods_runtime as _native_configure_methods_runtime,
     contract_manifest_json as _native_contract_manifest_json,
@@ -931,6 +932,32 @@ def build_archive_v2_native_portable_payloads(
     return manifest, byte_members
 
 
+def build_conformal_presentation_v1(
+    package: Any,
+    request: Any,
+    replay: Any,
+) -> dict[str, Any]:
+    """Project one verified scalar Conformal PREDICT replay for presentation.
+
+    DAG-ML validates the package/replay/interval closure and returns exact
+    sample IDs, points and bounds.  Callers must not derive IDs, radii or
+    endpoints themselves.
+    """
+
+    presentation = json.loads(
+        _native_build_conformal_presentation_v1_json(
+            _coerce_json(package),
+            _coerce_json(request),
+            _coerce_json(replay),
+        )
+    )
+    if not isinstance(presentation, dict):
+        raise _facade_contract_error(
+            "native conformal presentation returned a non-object contract"
+        )
+    return presentation
+
+
 def build_archive_v3_native_refit_payloads(
     archive_id: str,
     package: Any,
@@ -1396,6 +1423,7 @@ __all__ = [
     "build_execution_plan",
     "build_archive_v2_native_portable_payloads",
     "build_archive_v3_native_refit_payloads",
+    "build_conformal_presentation_v1",
     "build_execution_plan_json",
     "canonical_operator_variant_label",
     "contract_manifest_json",

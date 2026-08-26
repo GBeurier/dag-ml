@@ -71,7 +71,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/conformal_runtime.rs",
-      "sha256": "9e45b3fb2a6d0300fa0435ac51304eb34d958dee7b9740df7b878e9c115e6d85",
+      "sha256": "6df3cb783e2208e852e65a531e10bde9befa2e87e4f80fc6baac1026289bbf7d",
       "kind": "native_conformal_runtime_contract"
     },
     {
@@ -181,7 +181,7 @@
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "29f184de270d04468057837c0aa7377e00dafd5405604de2871bf792c2683735",
+      "sha256": "27ac5528185f244a13dbe5f23d186804336adf6d57b571b4be30e3d4145ba92e",
       "kind": "native_integration_test"
     },
     {
@@ -191,12 +191,12 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "33a916b0260d96b166c5cf6f6c7335f726e33aed34820e27eb45df858bcc27ce",
+      "sha256": "8f6c479fd5a2ff71f1f6896addd9339f18a0c63b6a33f10a1ee53047d8c3d765",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "737aaa25353236de9cd1b0693c1a4ffb4e6be730525170a2a5ab431851adb3b4",
+      "sha256": "796cd25cdcd011575c836594ec4f6509ccd5905068420565378024f45591d44d",
       "kind": "python_typing"
     },
     {
@@ -206,7 +206,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "8291cb44ac61ef764ca52bfceb7d66a7b729d9507042103a723659a3e747b9bc",
+      "sha256": "9032eb20d1c4991ccf846641ca277921340f428c276e53051171792780aaecc6",
       "kind": "python_binding"
     },
     {
@@ -236,7 +236,7 @@
     },
     {
       "path": "docs/contracts/README.md",
-      "sha256": "cbf1993307ab1efc5c13dff208c3ed125ce2ac4c603ae7037590fd55d6142728",
+      "sha256": "96cdaaf70bc6d199a3d8444251d6840008021df3b6ae20b1f6d4325d5f7ced3c",
       "kind": "contract_index_documentation"
     },
     {
@@ -253,6 +253,11 @@
       "path": "docs/contracts/campaign_spec.schema.json",
       "sha256": "3f40f734122b842da1c0ee8e2e0ddace9e58f02cdfcd2cf631cda13ffa4aa869",
       "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/conformal_presentation.v1.schema.json",
+      "sha256": "80af16bf3f2886856579f59b530e70a9d232f21a44807c14acc270cb5d27eb2a",
+      "kind": "schema"
     },
     {
       "path": "docs/contracts/controller_manifest.schema.json",
@@ -446,7 +451,7 @@
     },
     {
       "path": "parity/conformal/generate_fixtures.py",
-      "sha256": "11c4e8267534c9b444ffd1ec38c5534d98c4fea0d86d2da1ed2698ed897e914e",
+      "sha256": "a55f53b31b5e5e0650464566677878ffbc4f85f43b7ea155d2e68e7e1f26a8a6",
       "kind": "generator_dependency"
     },
     {
@@ -461,7 +466,7 @@
     },
     {
       "path": "parity/training/generate_fixtures.py",
-      "sha256": "bc00833472490e0880ef860cdcb30de2bbe5f0bd8a9102dd180ec93afc940e0f",
+      "sha256": "45702bb737cc571b4f6d92d1794aee617371faab09a763780427385c8ac07a91",
       "kind": "generator"
     },
     {
@@ -496,7 +501,7 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "e90d18b9010d5dc7a3baddc6e755db2db4837ec166476ce113b803f89bbf9c8e",
+      "sha256": "f2eef01b1204c6195fa48f3d524b7c2ca8367f58396d0fec637b17a1529706a7",
       "kind": "production_validator"
     }
   ],
@@ -569,5 +574,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "0ed3b8bec5538535623283836fd00c54b4d4e2b4b21ad30332675330ebbcd0f2"
+  "pack_checksum": "c07bbbf59206196e7920668edff8fc48c653a6c05a57b48a6588a2caff49ab49"
 }

@@ -3406,6 +3406,17 @@ fn loaded_v2_conformal_package_replays_intervals_and_rejects_resigned_tampering(
     replay
         .validate_against_package(loaded.package(), &production_request)
         .unwrap();
+    let presentation =
+        build_conformal_presentation_v1(loaded.package(), &production_request, &replay)
+            .expect("native conformal presentation");
+    assert_eq!(presentation.sample_ids, production_sample_ids);
+    assert_eq!(presentation.point_predictions.len(), 2);
+    assert_eq!(presentation.intervals.len(), 1);
+    assert_eq!(presentation.intervals[0].lower.len(), 2);
+    assert_eq!(
+        ConformalPresentationV1::from_json(&serde_json::to_string(&presentation).unwrap()).unwrap(),
+        presentation
+    );
 
     // A production PREDICT cohort has no authoritative y_true.  V3 preserves
     // that target-free identity while applying intervals derived from the
