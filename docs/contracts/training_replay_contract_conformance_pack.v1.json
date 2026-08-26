@@ -271,7 +271,7 @@
     },
     {
       "path": "docs/adr/README.md",
-      "sha256": "50bd301a52b2b6d8294c3db92b4a8027bcb135164e5b386b6ed7d03241369d1e",
+      "sha256": "7b89756612d6f64f940c2eeb2e6ead113e662dff53acca95ba700d6493edbb93",
       "kind": "documentation_index"
     },
     {
@@ -836,5 +836,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "9bfab93c6e887b0f603fb7965b63f7345acac11670679a33a57ebd68ca65acf8"
+  "pack_checksum": "399a0b92429815f29485070390255965548f50d1a3effe17641b8ba07258877d"
 }
