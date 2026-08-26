@@ -1,7 +1,7 @@
 # Supported Surface
 
-This page is the 0.2.x RC support contract for `dag-ml` (current package
-version: 0.3.11). It separates
+This page is the 0.3.x RC support contract for `dag-ml` (current package
+version: 0.3.13). It separates
 production-facing surfaces from conformance fixtures and backlog work. It does
 not change any public ABI, JSON schema, Rust, Python or WASM signature.
 
@@ -25,6 +25,7 @@ not change any public ABI, JSON schema, Rust, Python or WASM signature.
 | C ABI JSON contract helpers | Supported | Header snapshot, C conformance and non-mock replay paths are gated. |
 | Runtime process adapter protocol | Supported | JSONL frames, describe handshake, timeouts, retries and worker pools are covered by CLI tests. It is not an HPO protocol: process controllers cannot attest native optimizer state, trial history, checkpoints or terminalization and therefore refuse tuner-session creation. |
 | Native Methods HPO session (R1) | Experimental | Only the native Methods controller may create a `RuntimeHpoExecutionContext`-bound HPO session. Plugin/process controllers, including Optuna adapters, are not release-promised for HPO. |
+| Callback-free Methods Package V2 PREDICT replay | Experimental | `dag_ml_core::execute_loaded_methods_predictor_replay` accepts only signed replay contracts, explicitly attested numeric input views and an exact `MethodsRuntime`; it registers and releases the native controller per invocation. This is the Rust bridge for Core/Studio, not a generic host-callback route. |
 | Python and WASM JSON-contract bindings | Supported | Wheel/package metadata and smoke tests are CI-gated; object-native Python DSL frontend is not included. |
 | Pipeline DSL JSON compiler | Supported | Canonical JSON plus nirs4all-compatible serialized JSON descriptors are covered. |
 | Direct Python/YAML object DSL frontend | Backlog | Host object resolution remains binding-owned. |
@@ -36,7 +37,7 @@ not change any public ABI, JSON schema, Rust, Python or WASM signature.
 
 ## dag-ml-data Dependency
 
-`dag-ml` 0.3.11 consumes the sibling `dag-ml-data` contracts through
+`dag-ml` 0.3.13 consumes the sibling `dag-ml-data` contracts through
 JSON-identical schemas and fixtures. The supported cross-repo contract for this
 release is:
 

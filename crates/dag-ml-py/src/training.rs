@@ -23,7 +23,14 @@ use dag_ml_core::{
     TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
 };
 #[cfg(feature = "methods-optimizer")]
-use dag_ml_core::{MethodsPlsDataset, MethodsPlsMatrix, SampleId};
+use dag_ml_core::{
+    LoadedPortableRefitReplayInputV3, MethodsPlsDataset, MethodsPlsMatrix,
+    MethodsPortablePredictorReplayInput,
+    PortableFullRefitExecutionInput, PortableRefitPackageV3,
+    PortableRefitPackageV3BuildInput, PortableRefitRecipe, SampleId,
+    build_portable_refit_package_v3, derive_portable_full_refit_target_plan,
+    execute_loaded_portable_refit_replay_v3, execute_portable_full_refit,
+};
 use pyo3::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -993,6 +1000,178 @@ pub fn execute_methods_training_json(
     }
 }
 
+/// Execute one fresh, target-bound full refit from a portable Methods Package
+/// V2 and return its durable Package V3 child.
+///
+/// This is deliberately not a replay: the caller supplies a newly signed
+/// training request, its relation/influence evidence, and full target cohort
+/// inputs.  The core derives the only accepted recipe from the V2 parent,
+/// runs exactly `REFIT` for its selected variant, and writes the V3 child from
+/// the fresh execution evidence.  No source score, cache, artifact handle, or
+/// training cohort is reused.
+#[pyfunction]
+#[pyo3(signature = (
+    source_package_json,
+    target_request_json,
+    data_envelopes_json,
+    relations_json,
+    training_influence_json,
+    methods_inputs_json,
+    methods_library_path,
+    recipe_id,
+    package_id,
+    outcome_id,
+    run_id,
+    bundle_id
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn execute_methods_portable_full_refit_json(
+    py: Python<'_>,
+    source_package_json: &str,
+    target_request_json: &str,
+    data_envelopes_json: &str,
+    relations_json: &str,
+    training_influence_json: &str,
+    methods_inputs_json: &str,
+    methods_library_path: &str,
+    recipe_id: &str,
+    package_id: &str,
+    outcome_id: &str,
+    run_id: &str,
+    bundle_id: &str,
+) -> PyResult<String> {
+    #[cfg(not(feature = "methods-optimizer"))]
+    {
+        let _ = (
+            py,
+            source_package_json,
+            target_request_json,
+            data_envelopes_json,
+            relations_json,
+            training_influence_json,
+            methods_inputs_json,
+            methods_library_path,
+            recipe_id,
+            package_id,
+            outcome_id,
+            run_id,
+            bundle_id,
+        );
+        Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+            "Methods full refit support is absent from this dag-ml binding; install a wheel rebuilt with the `methods-optimizer` feature".to_string(),
+        )))
+    }
+    #[cfg(feature = "methods-optimizer")]
+    {
+        let source_package =
+            PortablePredictorPackage::from_json(source_package_json).map_err(py_core_error)?;
+        let recipe = PortableRefitRecipe::derive_from_package(&source_package, recipe_id)
+            .map_err(py_core_error)?;
+        let target_request = TrainingRequest::from_json(target_request_json).map_err(py_core_error)?;
+        let projection = target_request.project().map_err(py_core_error)?;
+        let envelopes = parse_strict_json::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+            data_envelopes_json,
+            "native Methods full refit data envelope map",
+        )?;
+        for envelope in envelopes.values() {
+            envelope.validate().map_err(py_core_error)?;
+        }
+        let relations = parse_strict_json::<SampleRelationSet>(
+            relations_json,
+            "native Methods full refit sample relations",
+        )?;
+        relations.validate().map_err(py_core_error)?;
+        let training_influence = parse_strict_json::<TrainingInfluenceManifest>(
+            training_influence_json,
+            "native Methods full refit influence manifest",
+        )?;
+        training_influence
+            .validate_for_projection(&projection, &target_request, &relations)
+            .map_err(py_core_error)?;
+        // The parent package owns the selected topology and parameter values;
+        // the fresh request contributes only its independently attested data
+        // bindings/fold universe.  Core derives the exact combined plan before
+        // any provider object is constructed.
+        let target_plan = derive_portable_full_refit_target_plan(
+            &recipe,
+            &source_package,
+            &target_request,
+        )
+        .map_err(py_core_error)?;
+        let bindings = target_plan
+            .node_plans
+            .values()
+            .flat_map(|node_plan| node_plan.data_bindings.iter().cloned())
+            .collect::<Vec<DataBinding>>();
+        let methods_controller = dag_ml_core::ControllerId::new(dag_ml_core::METHODS_PLS_CONTROLLER_ID)
+            .map_err(py_core_error)?;
+        if source_package
+            .effective_plan
+            .node_plans
+            .values()
+            .any(|node_plan| node_plan.controller_id != methods_controller)
+        {
+            return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+                "native Methods full refit requires every executable node to use controller:methods.pls; host controller fallback is forbidden".to_string(),
+            )));
+        }
+        let raw_inputs = parse_strict_json::<BTreeMap<String, MethodsTrainingInputJson>>(
+            methods_inputs_json,
+            "native Methods full refit input map",
+        )?;
+        let inputs = raw_inputs
+            .into_iter()
+            .map(|(key, input)| Ok((key, methods_dataset_from_json(input, true)?)))
+            .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
+            .map_err(py_core_error)?;
+        let data_provider = TrainingDataProvider::Methods(
+            PyMethodsPlsTrainingProvider::new(bindings, envelopes, inputs)
+                .map_err(py_core_error)?,
+        );
+        let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path).map_err(|error| {
+            py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string()))
+        })?;
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(dag_ml_core::MethodsPlsController::new(runtime)))
+            .map_err(py_core_error)?;
+        let run_id = RunId::new(run_id).map_err(py_core_error)?;
+        let bundle_id = BundleId::new(bundle_id).map_err(py_core_error)?;
+        let package_id = package_id.to_string();
+        let outcome_id = outcome_id.to_string();
+
+        let package = py
+            .detach(move || {
+                let execution = execute_portable_full_refit(PortableFullRefitExecutionInput {
+                    recipe: &recipe,
+                    source_package: &source_package,
+                    target_plan: &target_plan,
+                    target_training_request: &target_request,
+                    target_training_request_fingerprint: target_request.request_fingerprint.clone(),
+                    target_data_identities: &target_request.data_identities,
+                    target_training_influence: &training_influence,
+                    run_id,
+                    controllers: &controllers,
+                    data_provider: &data_provider,
+                })?;
+                build_portable_refit_package_v3(PortableRefitPackageV3BuildInput {
+                    package_id,
+                    outcome_id,
+                    bundle_id,
+                    recipe: &recipe,
+                    source_package: &source_package,
+                    target_plan: &target_plan,
+                    target_training_request: &target_request,
+                    target_data_identities: &target_request.data_identities,
+                    target_training_influence: &training_influence,
+                    execution: &execution,
+                })
+            })
+            .map_err(py_core_error)?;
+        serialize_json(&package)
+    }
+}
+
 /// Register the native PLS controller and, when attested by the campaign,
 /// its controller-owned Methods HPO companion.  The scheduler creates the
 /// thread-affine optimizer session later from the complete training context;
@@ -1145,16 +1324,119 @@ pub fn execute_loaded_methods_predictor_replay_json(
             .map(|(key, input)| Ok((key, methods_dataset_from_json(input, false)?)))
             .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
             .map_err(py_core_error)?;
+        let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path)
+            .map_err(|error| py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string())))?;
+        let warnings = parse_strict_json::<Vec<String>>(warnings_json, "native Methods replay warnings")?;
+        let diagnostics = parse_strict_json::<BTreeMap<String, serde_json::Value>>(
+            diagnostics_json,
+            "native Methods replay diagnostics",
+        )?;
+        let outcome_id = outcome_id.to_string();
+        let run_id = RunId::new(run_id).map_err(py_core_error)?;
+        let outcome = py
+            .detach(move || {
+                dag_ml_core::execute_loaded_methods_predictor_replay(
+                    MethodsPortablePredictorReplayInput {
+                    package: &package,
+                    request: &request,
+                    data_envelopes: &envelopes,
+                    methods_inputs: &inputs,
+                    runtime,
+                    outcome_id,
+                    run_id,
+                    warnings,
+                    diagnostics,
+                    },
+                )
+            })
+            .map_err(py_core_error)?;
+        serialize_json(&outcome)
+    }
+}
+
+/// Replay a detached Package V3 full-refit child through the native Methods
+/// controller registered for this invocation.
+///
+/// V3 deliberately has a separate wire family from Package V2: it represents
+/// a fresh target-cohort refit, not the original CV/SELECT outcome.  The
+/// binding therefore parses the strict child package itself and delegates only
+/// to Core's V3 scheduler-owned replay entry point.  Its raw N4MM artifact is
+/// hydrated and released within this call; Python never supplies a handle or
+/// callback.
+#[pyfunction]
+#[pyo3(signature = (
+    package_json,
+    request_json,
+    data_envelopes_json,
+    methods_inputs_json,
+    methods_library_path,
+    outcome_id,
+    run_id,
+    warnings_json = "[]",
+    diagnostics_json = "{}"
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn execute_loaded_methods_portable_refit_replay_v3_json(
+    py: Python<'_>,
+    package_json: &str,
+    request_json: &str,
+    data_envelopes_json: &str,
+    methods_inputs_json: &str,
+    methods_library_path: &str,
+    outcome_id: &str,
+    run_id: &str,
+    warnings_json: &str,
+    diagnostics_json: &str,
+) -> PyResult<String> {
+    #[cfg(not(feature = "methods-optimizer"))]
+    {
+        let _ = (
+            py,
+            package_json,
+            request_json,
+            data_envelopes_json,
+            methods_inputs_json,
+            methods_library_path,
+            outcome_id,
+            run_id,
+            warnings_json,
+            diagnostics_json,
+        );
+        Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+            "Methods V3 refit replay support is absent from this dag-ml binding; install a wheel rebuilt with the `methods-optimizer` feature".to_string(),
+        )))
+    }
+    #[cfg(feature = "methods-optimizer")]
+    {
+        let package = PortableRefitPackageV3::from_json(package_json).map_err(py_core_error)?;
+        let request = TrainingReplayRequest::from_json(request_json).map_err(py_core_error)?;
+        let envelopes = parse_strict_json::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+            data_envelopes_json,
+            "native Methods V3 refit replay data envelope map",
+        )?;
+        for envelope in envelopes.values() {
+            envelope.validate().map_err(py_core_error)?;
+        }
+        let raw_inputs = parse_strict_json::<BTreeMap<String, MethodsTrainingInputJson>>(
+            methods_inputs_json,
+            "native Methods V3 refit replay input map",
+        )?;
+        let inputs = raw_inputs
+            .into_iter()
+            .map(|(key, input)| Ok((key, methods_dataset_from_json(input, false)?)))
+            .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
+            .map_err(py_core_error)?;
         let methods_controller = dag_ml_core::ControllerId::new(dag_ml_core::METHODS_PLS_CONTROLLER_ID)
             .map_err(py_core_error)?;
         if package
+            .outcome
             .effective_plan
             .node_plans
             .values()
             .any(|node_plan| node_plan.controller_id != methods_controller)
         {
             return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
-                "native Methods replay requires every executable node to use controller:methods.pls".to_string(),
+                "native Methods V3 refit replay requires every executable node to use controller:methods.pls".to_string(),
             )));
         }
         let data_provider = TrainingDataProvider::MethodsReplay(
@@ -1167,18 +1449,20 @@ pub fn execute_loaded_methods_predictor_replay_json(
         controllers
             .register(Box::new(dag_ml_core::MethodsPlsController::new(runtime)))
             .map_err(py_core_error)?;
-        let warnings = parse_strict_json::<Vec<String>>(warnings_json, "native Methods replay warnings")?;
+        let warnings = parse_strict_json::<Vec<String>>(
+            warnings_json,
+            "native Methods V3 refit replay warnings",
+        )?;
         let diagnostics = parse_strict_json::<BTreeMap<String, serde_json::Value>>(
             diagnostics_json,
-            "native Methods replay diagnostics",
+            "native Methods V3 refit replay diagnostics",
         )?;
-        let predictor = LoadedPredictor::new(package, BTreeMap::new()).map_err(py_core_error)?;
         let outcome_id = outcome_id.to_string();
         let run_id = RunId::new(run_id).map_err(py_core_error)?;
         let outcome = py
             .detach(move || {
-                execute_loaded_predictor_replay(LoadedPredictorReplayInput {
-                    predictor: &predictor,
+                execute_loaded_portable_refit_replay_v3(LoadedPortableRefitReplayInputV3 {
+                    package: &package,
                     request: &request,
                     outcome_id,
                     run_id,
@@ -1398,6 +1682,57 @@ mod tests {
     use pyo3::exceptions::PyValueError;
 
     use super::*;
+
+    #[cfg(not(feature = "methods-optimizer"))]
+    #[test]
+    fn methods_portable_full_refit_fails_closed_without_native_methods_support() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = execute_methods_portable_full_refit_json(
+                py,
+                "{}",
+                "{}",
+                "{}",
+                "{}",
+                "{}",
+                "{}",
+                "/missing/libn4m.so",
+                "recipe:refit",
+                "package:refit",
+                "outcome:refit",
+                "run:refit",
+                "bundle:refit",
+            )
+            .expect_err("portable builds must not emulate a native full refit");
+            assert!(error
+                .to_string()
+                .contains("Methods full refit support is absent"));
+        });
+    }
+
+    #[cfg(not(feature = "methods-optimizer"))]
+    #[test]
+    fn methods_portable_refit_replay_fails_closed_without_native_methods_support() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = execute_loaded_methods_portable_refit_replay_v3_json(
+                py,
+                "{}",
+                "{}",
+                "{}",
+                "{}",
+                "/missing/libn4m.so",
+                "outcome:refit.replay",
+                "run:refit.replay",
+                "[]",
+                "{}",
+            )
+            .expect_err("portable builds must not emulate a native V3 replay");
+            assert!(error
+                .to_string()
+                .contains("Methods V3 refit replay support is absent"));
+        });
+    }
 
     #[cfg(feature = "methods-optimizer")]
     #[test]
