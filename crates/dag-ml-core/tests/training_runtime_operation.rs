@@ -806,6 +806,13 @@ fn add_portable_methods_hpo(fixture: &mut Fixture) {
         .unwrap();
     model.controller_id = ControllerId::new(METHODS_PLS_CONTROLLER_ID).unwrap();
     model.controller_version = "libn4m-2.2".to_string();
+    // This is a controller-declared Archive/Package V3 capability, not an
+    // implication of merely supporting the scheduler REFIT phase.  The test
+    // fixture uses the production N4MM controller, which is portable across
+    // a fresh process and can therefore honestly opt in.
+    model
+        .capabilities
+        .insert(ControllerCapability::SupportsPortableFullRefit);
     rebuild(fixture);
     fixture.preferred = VariantId::new("hpo:trial:0").unwrap();
 }
@@ -2617,6 +2624,207 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         failed_replay_transform_calls + 4
     );
     assert_eq!(methods_controller.hydrated_payload_count().unwrap(), 0);
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
+    let mut fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut fixture);
+    fixture
+        .request
+        .controller_manifests
+        .iter_mut()
+        .find(|manifest| manifest.controller_id.as_str() == "controller:transform.mock")
+        .expect("fixture transform manifest")
+        .capabilities
+        .insert(ControllerCapability::SupportsPortableFullRefit);
+    give_methods_hpo_four_train_rows(&mut fixture);
+    rebuild(&mut fixture);
+    let mut source_store = InMemoryArtifactStore::new();
+    let source = run(
+        &fixture,
+        Arc::new(CallState::default()),
+        &provider(&fixture),
+        &mut source_store,
+    )
+    .expect("source native Methods training");
+    let package = source
+        .to_portable_predictor_package(
+            "predictor:methods.full-refit.source",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .expect("portable Methods source package");
+    let recipe = PortableRefitRecipe::derive_from_package(&package, "recipe:methods.full")
+        .expect("Methods controller explicitly supports portable full refit");
+
+    let mut target_identities = fixture.request.data_identities.clone();
+    for identity in &mut target_identities {
+        identity.data_content_fingerprint = "c".repeat(64);
+        identity.target_content_fingerprint = "d".repeat(64);
+        identity.identity_fingerprint = "0".repeat(64);
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    }
+    let mut target_request = fixture.request.clone();
+    target_request.data_identities = target_identities.clone();
+    target_request.request_fingerprint = "0".repeat(64);
+    target_request.request_fingerprint = target_request.compute_fingerprint().unwrap();
+    let mut target_provider = provider(&fixture);
+    target_provider.identity = Some(target_identities[0].clone());
+    let execution = execute_portable_full_refit(PortableFullRefitExecutionInput {
+        recipe: &recipe,
+        source_package: &package,
+        target_plan: &source.effective_plan,
+        target_training_request: &target_request,
+        target_training_request_fingerprint: target_request.request_fingerprint.clone(),
+        target_data_identities: &target_identities,
+        target_training_influence: &fixture.influence,
+        run_id: RunId::new("run:methods.full-refit.target").unwrap(),
+        controllers: &controllers(&fixture, Arc::new(CallState::default()), true),
+        data_provider: &target_provider,
+    })
+    .expect("fresh target cohort executes exactly one portable full refit");
+    assert!(!execution.results.is_empty());
+    assert!(!execution.refit_artifacts.is_empty());
+    assert_eq!(
+        execution.raw_artifact_payloads.len(),
+        execution.refit_artifacts.len(),
+        "every refit artifact must be detached from the execution-local controller"
+    );
+    assert!(execution.refit_artifacts.iter().all(|record| {
+        execution
+            .raw_artifact_payloads
+            .get(&record.artifact.id)
+            .is_some_and(|payload| !payload.is_empty())
+    }));
+    let refit_package = build_portable_refit_package_v3(PortableRefitPackageV3BuildInput {
+        package_id: "predictor:methods.full-refit.child".to_string(),
+        outcome_id: "outcome:methods.full-refit.child".to_string(),
+        bundle_id: BundleId::new("bundle:methods.full-refit.child").unwrap(),
+        recipe: &recipe,
+        source_package: &package,
+        target_plan: &source.effective_plan,
+        target_training_request: &target_request,
+        target_data_identities: &target_identities,
+        target_training_influence: &fixture.influence,
+        execution: &execution,
+    })
+    .expect("fresh full refit writes a detached V3 child package");
+    refit_package.validate().unwrap();
+    let refit_json = serde_json::to_string(&refit_package).unwrap();
+    assert_eq!(
+        PortableRefitPackageV3::from_json(&refit_json).unwrap(),
+        refit_package,
+        "V3 child package round-trips through strict TCV1 JSON"
+    );
+    assert_eq!(
+        refit_package.outcome.execution_bundle.raw_artifact_payloads,
+        execution.raw_artifact_payloads,
+        "V3 package owns the exact detached REFIT bytes, not controller handles"
+    );
+    let archive_v3 =
+        build_archive_v3_native_refit_payloads("archive:methods.full-refit.child", &refit_package)
+            .expect("DAG-ML assembles the exact Archive V3 refit closure");
+    assert_eq!(
+        archive_v3.manifest["schema_version"],
+        serde_json::json!(3),
+        "a V3 full-refit child is never serialized as an Archive V2 predictor"
+    );
+    assert_eq!(
+        archive_v3.manifest["replay"]["portable_refit_package"]["semantic_fingerprint"],
+        refit_package.package_fingerprint,
+    );
+    assert_eq!(
+        PortableRefitPackageV3::from_json(
+            std::str::from_utf8(
+                archive_v3
+                    .members
+                    .get(ARCHIVE_V3_PACKAGE_MEMBER)
+                    .expect("Archive V3 package member"),
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+        refit_package,
+        "the Archive V3 member remains DAG-ML's strict child package"
+    );
+    for record in &execution.refit_artifacts {
+        let path = record.artifact.uri.as_deref().expect("portable N4MM URI");
+        assert_eq!(
+            archive_v3.members.get(path),
+            execution.raw_artifact_payloads.get(&record.artifact.id),
+            "Archive V3 N4MM member must byte-equal the detached V3 payload"
+        );
+    }
+    let runtime_bundle = refit_package
+        .outcome
+        .to_runtime_replay_bundle()
+        .expect("validated V3 child derives a scheduler-only replay bundle");
+    runtime_bundle
+        .validate_against_plan(&refit_package.outcome.effective_plan)
+        .unwrap();
+    assert_eq!(
+        runtime_bundle.raw_artifact_payloads, execution.raw_artifact_payloads,
+        "runtime projection preserves the exact V3 raw artifact inventory"
+    );
+    let mut v3_replay_request = replay_request(&source, Phase::Predict);
+    v3_replay_request.request_id = "replay:methods.full-refit.v3".to_string();
+    v3_replay_request.source_outcome_fingerprint =
+        refit_package.outcome.outcome_fingerprint.clone();
+    v3_replay_request.request_fingerprint = "0".repeat(64);
+    v3_replay_request.request_fingerprint = v3_replay_request.compute_fingerprint().unwrap();
+    let fresh_replay_controllers = controllers(&fixture, Arc::new(CallState::default()), true);
+    let v3_replay = execute_loaded_portable_refit_replay_v3(LoadedPortableRefitReplayInputV3 {
+        package: &refit_package,
+        request: &v3_replay_request,
+        outcome_id: "replay:methods.full-refit.v3".to_string(),
+        run_id: RunId::new("run:methods.full-refit.v3").unwrap(),
+        controllers: &fresh_replay_controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("a fresh Methods registry rehydrates and predicts from V3 raw artifacts");
+    assert!(!v3_replay.outputs.is_empty());
+    v3_replay
+        .validate_against(&refit_package, &v3_replay_request)
+        .unwrap();
+    let v3_replay_json = serde_json::to_string(&v3_replay).unwrap();
+    assert_eq!(
+        PortableRefitReplayOutcomeV3::from_json_for_package(
+            &v3_replay_json,
+            &refit_package,
+            &v3_replay_request,
+        )
+        .unwrap(),
+        v3_replay,
+        "V3 replay evidence strict-round-trips only with its exact child package and request"
+    );
+    let mut missing_payload = execution.clone();
+    missing_payload
+        .raw_artifact_payloads
+        .remove(&missing_payload.refit_artifacts[0].artifact.id);
+    assert!(
+        build_portable_refit_package_v3(PortableRefitPackageV3BuildInput {
+            package_id: "predictor:methods.full-refit.missing".to_string(),
+            outcome_id: "outcome:methods.full-refit.missing".to_string(),
+            bundle_id: BundleId::new("bundle:methods.full-refit.missing").unwrap(),
+            recipe: &recipe,
+            source_package: &package,
+            target_plan: &source.effective_plan,
+            target_training_request: &target_request,
+            target_data_identities: &target_identities,
+            target_training_influence: &fixture.influence,
+            execution: &missing_payload,
+        })
+        .is_err()
+    );
+    assert_ne!(
+        execution.provenance.target_data_identities_fingerprint,
+        recipe.parent_outcome.data_identities_fingerprint
+    );
 }
 
 #[cfg(not(feature = "methods-optimizer"))]

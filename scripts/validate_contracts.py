@@ -440,6 +440,7 @@ CONTROLLER_CAPABILITIES = {
     "uses_early_stopping",
     "performs_internal_tuning",
     "trains_aggregation",
+    "supports_portable_full_refit",
 }
 MISSINGNESS_POLICIES = {
     "strict",

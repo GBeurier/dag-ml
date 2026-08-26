@@ -103,6 +103,7 @@ contracts/archive-v1/README
 contracts/archive-v1/THREAT_MODEL
 contracts/archive-v2/README
 contracts/archive-v2/THREAT_MODEL
+contracts/archive-v3/README
 ```
 
 ```{toctree}

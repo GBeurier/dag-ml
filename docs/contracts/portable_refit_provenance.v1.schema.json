@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/portable_refit_provenance.v1.schema.json",
+  "title": "DAG-ML PortableRefitProvenance v1",
+  "description": "Closed parent-child provenance for a future Package/Archive V3 full-refit result. V2 readers never consume this member.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "parent_recipe_id", "parent_recipe_fingerprint", "parent_package_fingerprint", "parent_outcome", "target_training_request_fingerprint", "target_data_identities_fingerprint", "target_training_influence_fingerprint", "target_relation_fingerprint", "provenance_fingerprint"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "parent_recipe_id": {"$ref": "#/$defs/id"},
+    "parent_recipe_fingerprint": {"$ref": "#/$defs/sha256"},
+    "parent_package_fingerprint": {"$ref": "#/$defs/sha256"},
+    "parent_outcome": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/portable_refit_recipe.v1.schema.json#/$defs/training_outcome_ref"},
+    "target_training_request_fingerprint": {"$ref": "#/$defs/sha256"},
+    "target_data_identities_fingerprint": {"$ref": "#/$defs/sha256"},
+    "target_training_influence_fingerprint": {"$ref": "#/$defs/sha256"},
+    "target_relation_fingerprint": {"$ref": "#/$defs/sha256"},
+    "provenance_fingerprint": {"$ref": "#/$defs/sha256", "description": "TCV1 SHA-256 with only provenance_fingerprint omitted."}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_.:-]+$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
