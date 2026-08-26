@@ -5,6 +5,27 @@ DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
 validator: it checks fingerprints, campaign fold membership, OOF boundaries and
 leakage policies before any controller receives a handle.
 
+## Native Full Refit Package V3
+
+Schemas: `portable_refit_package.v3.schema.json`,
+`portable_refit_execution_bundle.v3.schema.json`,
+`portable_refit_outcome.v3.schema.json` and
+`portable_refit_replay_outcome.v3.schema.json`. The Archive V3 container
+identity and its exact member closure are separately frozen under
+`archive-v3/`; Core owns bounded ZIP persistence while DAG-ML owns the
+semantic package/refit/replay reader.
+
+This is a new child package family defined by ADR-25, not an extension of
+`PortablePredictorPackage` V1/V2. It records the closed parent recipe, a full
+fresh training request and cohort provenance, selected effective plan, refit
+artifacts and their detached raw payloads. It deliberately cannot represent
+parent CV scores, OOF caches, selection reports, conformal state or runtime
+handles. V1/V2 readers must reject it rather than attempting an in-place
+upgrade. A V3 reader/replay and Archive V3 remain separate publication gates.
+Its replay evidence is likewise a V3-specific contract: it binds the child
+package/outcome fingerprints and the replay request, rather than pretending to
+be a replay of the parent CV/selection outcome.
+
 ## Loss, Metric and Early-Stopping Contracts
 
 Schemas: `loss_spec.schema.json`, `metric_spec.schema.json`,

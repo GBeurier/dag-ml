@@ -14,7 +14,7 @@ use crate::canonical::parse_typed_json;
 use crate::error::{DagMlError, Result};
 use crate::runtime::ArtifactBackend;
 use crate::training::{ArtifactLoadMode, FittedArtifactMode, PortablePredictorPackage};
-use crate::training_runtime::TrainingOutcome;
+use crate::training_runtime::{PortableRefitPackageV3, TrainingOutcome};
 
 pub const ARCHIVE_V2_PACKAGE_MEMBER: &str = "dagml/portable_predictor_package.json";
 pub const ARCHIVE_V2_GRAPH_MEMBER: &str = "dagml/graph.json";
@@ -22,6 +22,13 @@ pub const ARCHIVE_V2_BUNDLE_MEMBER: &str = "dagml/execution_bundle.json";
 pub const ARCHIVE_V2_OUTCOME_MEMBER: &str = "dagml/training_outcome.json";
 pub const ARCHIVE_V2_CACHE_MEMBER: &str = "dagml/prediction_cache_payload_set.json";
 pub const ARCHIVE_V2_SCORE_MEMBER: &str = "dagml/score_set.json";
+
+/// Archive V3 keeps the V2 predictor family immutable and carries a distinct,
+/// target-bound full-refit child package defined by ADR-25.
+pub const ARCHIVE_V3_PACKAGE_MEMBER: &str = "dagml/portable_refit_package.json";
+pub const ARCHIVE_V3_GRAPH_MEMBER: &str = "dagml/graph.json";
+pub const ARCHIVE_V3_BUNDLE_MEMBER: &str = "dagml/portable_refit_execution_bundle.json";
+pub const ARCHIVE_V3_OUTCOME_MEMBER: &str = "dagml/portable_refit_outcome.json";
 
 const PACKAGE_SCHEMA: &str =
     "https://github.com/GBeurier/dag-ml/schemas/portable_predictor_package.v2.schema.json";
@@ -33,12 +40,171 @@ const OUTCOME_SCHEMA: &str =
 const CACHE_SCHEMA: &str =
     "https://github.com/GBeurier/dag-ml/schemas/prediction_cache_payload_set.v2.schema.json";
 const SCORE_SCHEMA: &str = "https://github.com/GBeurier/dag-ml/schemas/score_set.v2.schema.json";
+const REFIT_PACKAGE_V3_SCHEMA: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/portable_refit_package.v3.schema.json";
+const REFIT_BUNDLE_V3_SCHEMA: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/portable_refit_execution_bundle.v3.schema.json";
+const REFIT_OUTCOME_V3_SCHEMA: &str =
+    "https://github.com/GBeurier/dag-ml/schemas/portable_refit_outcome.v3.schema.json";
 
 /// Exact bytes and manifest handed to the Core Archive V2 writer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArchiveV2ReplayPayloads {
     pub manifest: Value,
     pub members: BTreeMap<String, Vec<u8>>,
+}
+
+/// Exact bytes and manifest handed to the future Core Archive V3 writer.
+///
+/// This is intentionally a separate family from [`ArchiveV2ReplayPayloads`]:
+/// V3 contains a new target-bound refit outcome and can never be fed to a V2
+/// reader as a predictor package.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArchiveV3RefitPayloads {
+    pub manifest: Value,
+    pub members: BTreeMap<String, Vec<u8>>,
+}
+
+/// Assemble the strict ADR-25 full-refit closure for an Archive V3 writer.
+///
+/// DAG-ML owns the semantic member set and all exact cross-links.  Core owns
+/// ZIP persistence, bounded reads and container integrity only; it must not
+/// reinterpret the refit plan or native artifact bytes.  The V3 package still
+/// owns its detached raw map, while the archive additionally exposes each raw
+/// N4MM as an independently inventory-bound member for fresh-process hydration.
+pub fn build_archive_v3_native_refit_payloads(
+    archive_id: impl Into<String>,
+    package: &PortableRefitPackageV3,
+) -> Result<ArchiveV3RefitPayloads> {
+    package.validate()?;
+    let archive_id = archive_id.into();
+    if archive_id.is_empty()
+        || archive_id.len() > 128
+        || !archive_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-'))
+    {
+        return refuse("archive V3 archive_id is not a portable identifier");
+    }
+    if package.schema_version != 3 || package.outcome.schema_version != 3 {
+        return refuse("Archive V3 requires an exact PortableRefitPackage and outcome V3");
+    }
+
+    let outcome = &package.outcome;
+    let bundle = &outcome.execution_bundle;
+    let mut members = BTreeMap::new();
+    insert_json(&mut members, ARCHIVE_V3_PACKAGE_MEMBER, package)?;
+    insert_json(
+        &mut members,
+        ARCHIVE_V3_GRAPH_MEMBER,
+        &outcome.effective_plan.graph_plan.graph,
+    )?;
+    insert_json(&mut members, ARCHIVE_V3_BUNDLE_MEMBER, bundle)?;
+    insert_json(&mut members, ARCHIVE_V3_OUTCOME_MEMBER, outcome)?;
+
+    let mut n4mm = Vec::new();
+    for record in &bundle.refit_artifacts {
+        let artifact = &record.artifact;
+        if artifact.kind != "n4m_model"
+            || artifact.backend != Some(ArtifactBackend::Raw)
+            || artifact.plugin.is_some()
+            || artifact.plugin_version.is_some()
+        {
+            return refuse("Archive V3 accepts only raw plugin-free n4m_model refit artifacts");
+        }
+        let path = artifact.uri.as_deref().ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "Archive V3 N4MM artifact has no archive member URI".to_string(),
+            )
+        })?;
+        if !safe_n4mm_path(path) {
+            return refuse("Archive V3 N4MM URI must be a safe methods/*.n4mm path");
+        }
+        let bytes = bundle
+            .raw_artifact_payloads
+            .get(&artifact.id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "Archive V3 lacks raw N4MM payload `{}`",
+                    artifact.id
+                ))
+            })?
+            .clone();
+        let raw = sha256(&bytes);
+        if artifact.size_bytes != Some(bytes.len() as u64)
+            || artifact.content_fingerprint.as_deref() != Some(raw.as_str())
+        {
+            return refuse("Archive V3 N4MM descriptor does not match its raw payload");
+        }
+        if members.insert(path.to_owned(), bytes).is_some() {
+            return refuse("Archive V3 N4MM paths must be unique");
+        }
+        n4mm.push(json!({
+            "artifact_id": artifact.id,
+            "kind": "N4MM",
+            "owner": "nirs4all-methods",
+            "format_version": 1,
+            "abi_major": 2,
+            "member_path": path,
+            "raw_sha256": raw,
+            "semantic_fingerprint": raw,
+            "semantic_profile": "n4mm_raw_sha256"
+        }));
+    }
+    if n4mm.is_empty()
+        || bundle.raw_artifact_payloads.len() != n4mm.len()
+        || bundle.refit_artifacts.len() != n4mm.len()
+    {
+        return refuse("Archive V3 N4MM members must exactly cover all refit artifacts");
+    }
+
+    let mut manifest = json!({
+        "schema_version": 3,
+        "profile": "nirs4all.archive_workspace.v3",
+        "archive_id": archive_id,
+        "persistence_kind": "n4a_archive",
+        "writer": {"product_aggregate_owner": "nirs4all-core", "canonical_writer_id": "nirs4all-core.archive_workspace_writer.v3"},
+        "reader_dispatch": {
+            "archive_v3": {"accepted_versions": [3], "future_versions": "refuse", "dispatch_before_extraction": true},
+            "archive_v2": {"accepted_versions": [2], "read_mode": "immutable_dual_read", "mutation": "never_in_place"},
+            "archive_v1": {"accepted_versions": [1], "read_mode": "immutable_dual_read", "mutation": "never_in_place"}
+        },
+        "physical_profile": {"container": "zip", "manifest_member": "manifest.json", "regular_files_only": true, "limits": {"max_entries": 256, "max_total_uncompressed_bytes": 536870912_u64, "max_member_uncompressed_bytes": 134217728_u64, "max_compression_ratio": 100}},
+        "replay": {
+            "portable_refit_package": dag_ref(ARCHIVE_V3_PACKAGE_MEMBER, REFIT_PACKAGE_V3_SCHEMA, 3, true, "dagml_tcv1", package.package_fingerprint.clone()),
+            "refit_artifacts": {
+                "graph": dag_ref(ARCHIVE_V3_GRAPH_MEMBER, GRAPH_SCHEMA, 1, false, "dagml_historical_serde_json_v1", historical_fingerprint(members.get(ARCHIVE_V3_GRAPH_MEMBER).expect("inserted graph"))),
+                "execution_bundle": dag_ref(ARCHIVE_V3_BUNDLE_MEMBER, REFIT_BUNDLE_V3_SCHEMA, 3, true, "dagml_tcv1", bundle.bundle_fingerprint.clone()),
+                "refit_outcome": dag_ref(ARCHIVE_V3_OUTCOME_MEMBER, REFIT_OUTCOME_V3_SCHEMA, 3, true, "dagml_tcv1", outcome.outcome_fingerprint.clone())
+            },
+            "future_artifacts": []
+        },
+        "payloads": {"methods": {"n4mm": n4mm, "n4mopt": []}, "n4d_aggregate_reference": null, "conformal": null, "robustness": null, "host_artifacts": []},
+        "member_inventory": [],
+        "migration_provenance": null,
+        "security": {"integrity_profile": "sha256_raw_member_inventory_v3", "signature": null},
+        "workspace": null
+    });
+    let inventory = members
+        .iter()
+        .map(|(path, bytes)| {
+            let (semantic_profile, semantic_fingerprint) = if path == ARCHIVE_V3_PACKAGE_MEMBER {
+                ("dagml_tcv1", package.package_fingerprint.clone())
+            } else if path.ends_with(".n4mm") {
+                ("n4mm_raw_sha256", sha256(bytes))
+            } else if path == ARCHIVE_V3_BUNDLE_MEMBER {
+                ("dagml_tcv1", bundle.bundle_fingerprint.clone())
+            } else if path == ARCHIVE_V3_OUTCOME_MEMBER {
+                ("dagml_tcv1", outcome.outcome_fingerprint.clone())
+            } else {
+                ("dagml_historical_serde_json_v1", historical_fingerprint(bytes))
+            };
+            json!({"path": path, "regular_file": true, "raw_sha256": sha256(bytes), "uncompressed_size_bytes": bytes.len(), "semantic_fingerprint": semantic_fingerprint, "semantic_profile": semantic_profile})
+        })
+        .collect::<Vec<_>>();
+    manifest["member_inventory"] = Value::Array(inventory);
+    bind_raw_hashes(&mut manifest, &members);
+    Ok(ArchiveV3RefitPayloads { manifest, members })
 }
 
 /// Assemble the strict ADR-23 P0 replay closure from real DAG-ML contracts.

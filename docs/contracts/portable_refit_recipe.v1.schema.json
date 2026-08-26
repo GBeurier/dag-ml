@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/portable_refit_recipe.v1.schema.json",
+  "title": "DAG-ML PortableRefitRecipe v1",
+  "description": "Closed capability-gated parent evidence for a future Package/Archive V3 full refit. It contains no target cohort, runtime handle, validation result, or fitted artifact.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "recipe_id", "mode", "parent_package_fingerprint", "parent_outcome", "effective_plan_fingerprint", "selected_variant_id", "selected_variant_fingerprint", "selected_parameter_projection_fingerprint", "target_binding_fingerprints", "target_schema_fingerprint", "controllers", "recipe_fingerprint"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "recipe_id": {"$ref": "#/$defs/id"},
+    "mode": {"const": "full"},
+    "parent_package_fingerprint": {"$ref": "#/$defs/sha256"},
+    "parent_outcome": {"$ref": "#/$defs/training_outcome_ref"},
+    "effective_plan_fingerprint": {"$ref": "#/$defs/sha256"},
+    "selected_variant_id": {"$ref": "#/$defs/id"},
+    "selected_variant_fingerprint": {"$ref": "#/$defs/sha256"},
+    "selected_parameter_projection_fingerprint": {"$ref": "#/$defs/sha256"},
+    "target_binding_fingerprints": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+    "target_schema_fingerprint": {"$ref": "#/$defs/sha256"},
+    "controllers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/controller"}},
+    "recipe_fingerprint": {"$ref": "#/$defs/sha256", "description": "TCV1 SHA-256 with only recipe_fingerprint omitted."}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_.:-]+$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "training_outcome_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome_id", "outcome_fingerprint", "training_request_fingerprint", "effective_plan_fingerprint", "execution_bundle_id", "execution_bundle_fingerprint", "output_binding_fingerprints", "training_influence_fingerprint", "data_identities_fingerprint"],
+      "properties": {
+        "outcome_id": {"$ref": "#/$defs/id"},
+        "outcome_fingerprint": {"$ref": "#/$defs/sha256"},
+        "pre_conformal_outcome_fingerprint": {"$ref": "#/$defs/sha256"},
+        "training_request_fingerprint": {"$ref": "#/$defs/sha256"},
+        "effective_plan_fingerprint": {"$ref": "#/$defs/sha256"},
+        "execution_bundle_id": {"$ref": "#/$defs/id"},
+        "execution_bundle_fingerprint": {"$ref": "#/$defs/sha256"},
+        "output_binding_fingerprints": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/sha256"}},
+        "training_influence_fingerprint": {"$ref": "#/$defs/sha256"},
+        "data_identities_fingerprint": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "controller_id", "controller_version", "manifest_fingerprint", "capabilities"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/id"},
+        "controller_id": {"$ref": "#/$defs/id"},
+        "controller_version": {"type": "string", "minLength": 1},
+        "manifest_fingerprint": {"$ref": "#/$defs/sha256"},
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/controller_manifest.v1.schema.json#/$defs/controller_capability"},
+          "contains": {"const": "supports_portable_full_refit"}
+        }
+      }
+    }
+  }
+}
