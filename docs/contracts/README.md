@@ -7,8 +7,13 @@ leakage policies before any controller receives a handle.
 
 ## Native Full Refit Package V3
 
-Schemas: `portable_refit_package.v3.schema.json` and
-`portable_refit_replay_outcome.v3.schema.json`
+Schemas: `portable_refit_package.v3.schema.json`,
+`portable_refit_execution_bundle.v3.schema.json`,
+`portable_refit_outcome.v3.schema.json` and
+`portable_refit_replay_outcome.v3.schema.json`. The Archive V3 container
+identity and its exact member closure are separately frozen under
+`archive-v3/`; Core owns bounded ZIP persistence while DAG-ML owns the
+semantic package/refit/replay reader.
 
 This is a new child package family defined by ADR-25, not an extension of
 `PortablePredictorPackage` V1/V2. It records the closed parent recipe, a full
