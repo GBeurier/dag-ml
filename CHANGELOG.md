@@ -11,6 +11,9 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Fixed
 
+- Release patch 0.3.9: target-free PREDICT replay retains the validated
+  conformal intervals calibrated from the source training evidence.
+
 - Release patch 0.3.8: conformal calibration fingerprints now stabilize their
   strict TCV1 float representation before signing, so native residuals remain
   self-validating after JSON serialization and replay.
