@@ -2666,13 +2666,18 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
         identity.identity_fingerprint = "0".repeat(64);
         identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
     }
+    let mut target_request = fixture.request.clone();
+    target_request.data_identities = target_identities.clone();
+    target_request.request_fingerprint = "0".repeat(64);
+    target_request.request_fingerprint = target_request.compute_fingerprint().unwrap();
     let mut target_provider = provider(&fixture);
     target_provider.identity = Some(target_identities[0].clone());
     let execution = execute_portable_full_refit(PortableFullRefitExecutionInput {
         recipe: &recipe,
         source_package: &package,
         target_plan: &source.effective_plan,
-        target_training_request_fingerprint: "e".repeat(64),
+        target_training_request: &target_request,
+        target_training_request_fingerprint: target_request.request_fingerprint.clone(),
         target_data_identities: &target_identities,
         target_training_influence: &fixture.influence,
         run_id: RunId::new("run:methods.full-refit.target").unwrap(),
@@ -2700,6 +2705,7 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
         recipe: &recipe,
         source_package: &package,
         target_plan: &source.effective_plan,
+        target_training_request: &target_request,
         target_data_identities: &target_identities,
         target_training_influence: &fixture.influence,
         execution: &execution,
@@ -2729,6 +2735,7 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
             recipe: &recipe,
             source_package: &package,
             target_plan: &source.effective_plan,
+            target_training_request: &target_request,
             target_data_identities: &target_identities,
             target_training_influence: &fixture.influence,
             execution: &missing_payload,

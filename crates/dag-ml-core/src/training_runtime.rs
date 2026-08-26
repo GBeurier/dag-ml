@@ -926,6 +926,7 @@ pub struct PortableFullRefitExecutionInput<'a> {
     pub recipe: &'a PortableRefitRecipe,
     pub source_package: &'a PortablePredictorPackage,
     pub target_plan: &'a ExecutionPlan,
+    pub target_training_request: &'a TrainingRequest,
     pub target_training_request_fingerprint: String,
     pub target_data_identities: &'a [TrainingDataIdentity],
     pub target_training_influence: &'a TrainingInfluenceManifest,
@@ -1099,6 +1100,7 @@ pub struct PortableRefitOutcomeV3 {
     pub run_id: RunId,
     pub recipe: PortableRefitRecipe,
     pub provenance: PortableRefitProvenance,
+    pub target_training_request: TrainingRequest,
     pub effective_plan: ExecutionPlan,
     pub effective_plan_fingerprint: String,
     pub selected_variant_id: VariantId,
@@ -1130,6 +1132,16 @@ impl PortableRefitOutcomeV3 {
         })?;
         self.recipe.validate()?;
         self.provenance.validate_against_recipe(&self.recipe)?;
+        self.target_training_request.validate()?;
+        if self.target_training_request.request_fingerprint
+            != self.provenance.target_training_request_fingerprint
+            || self.target_training_request.data_identities != self.data_identities
+        {
+            return contract_error(
+                "portable refit outcome target training request does not exactly match target provenance"
+                    .to_string(),
+            );
+        }
         self.effective_plan.validate()?;
         validate_sha256(
             "portable refit outcome effective plan",
@@ -1319,6 +1331,7 @@ pub struct PortableRefitPackageV3BuildInput<'a> {
     pub recipe: &'a PortableRefitRecipe,
     pub source_package: &'a PortablePredictorPackage,
     pub target_plan: &'a ExecutionPlan,
+    pub target_training_request: &'a TrainingRequest,
     pub target_data_identities: &'a [TrainingDataIdentity],
     pub target_training_influence: &'a TrainingInfluenceManifest,
     pub execution: &'a PortableFullRefitExecution,
@@ -1342,6 +1355,19 @@ pub fn build_portable_refit_package_v3(
         .execution
         .provenance
         .validate_against_recipe(input.recipe)?;
+    input.target_training_request.validate()?;
+    if input.target_training_request.request_fingerprint
+        != input
+            .execution
+            .provenance
+            .target_training_request_fingerprint
+        || input.target_training_request.data_identities != input.target_data_identities
+    {
+        return contract_error(
+            "portable refit package V3 target request does not exactly bind target cohort evidence"
+                .to_string(),
+        );
+    }
     if input
         .execution
         .provenance
@@ -1371,6 +1397,7 @@ pub fn build_portable_refit_package_v3(
         run_id: input.execution.run_id.clone(),
         recipe: input.recipe.clone(),
         provenance: input.execution.provenance.clone(),
+        target_training_request: input.target_training_request.clone(),
         effective_plan: input.target_plan.clone(),
         effective_plan_fingerprint: bundle.effective_plan_fingerprint.clone(),
         selected_variant_id: input.recipe.selected_variant_id.clone(),
@@ -1423,6 +1450,16 @@ pub fn execute_portable_full_refit(
     input
         .recipe
         .validate_against_source_package(input.source_package)?;
+    input.target_training_request.validate()?;
+    if input.target_training_request.request_fingerprint
+        != input.target_training_request_fingerprint
+        || input.target_training_request.data_identities != input.target_data_identities
+    {
+        return contract_error(
+            "portable full refit target request does not exactly bind provided cohort evidence"
+                .to_string(),
+        );
+    }
     let provenance = PortableRefitProvenance::from_target_cohort(
         input.recipe,
         input.target_training_request_fingerprint,
