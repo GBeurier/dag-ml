@@ -316,6 +316,18 @@ pub trait RuntimeDataProvider {
         Ok(None)
     }
 
+    /// Return the separately attested cohort that may be consumed by one
+    /// top-level PREDICT request. It is unavailable to every phase that can
+    /// fit, validate, rank, or calibrate a model.
+    fn predict_cohort(
+        &self,
+        _binding: &DataBinding,
+        phase: Phase,
+    ) -> Result<Option<crate::data::PredictCohort>> {
+        validate_predict_cohort_phase(phase)?;
+        Ok(None)
+    }
+
     /// Confirm that this provider can supply the deliberately narrow numeric
     /// view consumed by the portable Methods PLS controller.  The default is a
     /// refusal, so an ordinary data provider can never accidentally expose its
@@ -342,6 +354,15 @@ pub trait RuntimeDataProvider {
                 .to_string(),
         ))
     }
+}
+
+fn validate_predict_cohort_phase(phase: Phase) -> Result<()> {
+    if phase != Phase::Predict {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "predict cohort may be requested only during PREDICT, got {phase:?}"
+        )));
+    }
+    Ok(())
 }
 
 /// Row-major `f64` matrix passed from an explicitly capable provider to the
@@ -723,6 +744,14 @@ impl RuntimeDataProvider for MethodsPlsPredictDataProvider {
         self.inner.coordinator_relations(binding)
     }
 
+    fn predict_cohort(
+        &self,
+        binding: &DataBinding,
+        phase: Phase,
+    ) -> Result<Option<crate::data::PredictCohort>> {
+        self.inner.predict_cohort(binding, phase)
+    }
+
     fn methods_pls_capability(&self) -> Result<()> {
         Ok(())
     }
@@ -922,6 +951,19 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeData
             .attestation_for_binding(binding)?
             .envelope
             .coordinator_relations
+            .clone())
+    }
+
+    fn predict_cohort(
+        &self,
+        binding: &DataBinding,
+        phase: Phase,
+    ) -> Result<Option<crate::data::PredictCohort>> {
+        validate_predict_cohort_phase(phase)?;
+        Ok(self
+            .attestation_for_binding(binding)?
+            .envelope
+            .predict_cohort
             .clone())
     }
 

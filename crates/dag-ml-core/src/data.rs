@@ -2091,6 +2091,25 @@ impl RuntimeDataProvider for InMemoryDataProvider {
         binding.validate_envelope(envelope)?;
         Ok(envelope.coordinator_relations.clone())
     }
+
+    fn predict_cohort(&self, binding: &DataBinding, phase: Phase) -> Result<Option<PredictCohort>> {
+        if phase != Phase::Predict {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "predict cohort may be requested only during PREDICT, got {phase:?}"
+            )));
+        }
+        let envelope = self
+            .envelopes
+            .get(&DataEnvelopeKey::from_binding(binding))
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "no external data-plan envelope registered for binding `{}` on `{}`",
+                    binding.input_name, binding.node_id
+                ))
+            })?;
+        binding.validate_envelope(envelope)?;
+        Ok(envelope.predict_cohort.clone())
+    }
 }
 
 fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
@@ -2166,8 +2185,8 @@ fn validate_unique_strings(label: &str, values: &[String]) -> Result<()> {
 mod tests {
     use super::*;
     use crate::fold::{FoldAssignment, FoldPartitionMode};
-    use crate::ids::{FoldId, NodeId};
-    use crate::runtime::DataMaterializationRequest;
+    use crate::ids::{ControllerId, FoldId, NodeId};
+    use crate::runtime::{DataMaterializationRequest, RuntimeDataProvider};
 
     fn binding() -> DataBinding {
         DataBinding {
@@ -2489,6 +2508,30 @@ mod tests {
             error.contains("overlaps CV relation identity closure"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn in_memory_provider_exposes_predict_cohort_only_to_predict() {
+        let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        let cohort = external_test_predict_cohort();
+        envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+        envelope.predict_cohort = Some(cohort.clone());
+        let mut provider =
+            InMemoryDataProvider::new(ControllerId::new("controller:data.v2").unwrap());
+        provider.register_envelope(envelope).unwrap();
+
+        assert_eq!(
+            provider.predict_cohort(&binding(), Phase::Predict).unwrap(),
+            Some(cohort)
+        );
+        let error = provider
+            .predict_cohort(&binding(), Phase::Refit)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("only during PREDICT"), "{error}");
     }
 
     #[test]
