@@ -32,6 +32,17 @@ request's independently attested bindings and fold universe. A raw complete
 plan fingerprint therefore remains source-cohort evidence; it is not reused as
 the target-cohort plan fingerprint.
 
+## Conformal Presentation V1
+
+Schema: `conformal_presentation.v1.schema.json`. This is a transport-only,
+single-target projection of a verified Package V2 PREDICT replay. It carries
+the exact replay `sample_ids`, scalar point predictions, native interval bounds
+and the package/replay/calibration fingerprints that close them. Consumers such
+as Core and Studio may validate, transport and render this object, but they
+must neither synthesize IDs nor recalculate residuals, radii or endpoints.
+Multi-target replay is refused at projection rather than silently selecting a
+target. The calibrated Package V2 and replay remain the semantic authority.
+
 ## Loss, Metric and Early-Stopping Contracts
 
 Schemas: `loss_spec.schema.json`, `metric_spec.schema.json`,

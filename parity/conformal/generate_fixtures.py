@@ -42,6 +42,7 @@ BASE_PACK_ARTIFACTS = {
     "docs/contracts/conformal_calibration.schema.json": "schema",
     "docs/contracts/conformal_metric_set.schema.json": "schema",
     "docs/contracts/conformal_prediction_block.schema.json": "schema",
+    "docs/contracts/conformal_presentation.v1.schema.json": "schema",
     "docs/contracts/decision_block.schema.json": "schema",
     "docs/contracts/domain_assessment_block.schema.json": "schema",
     "docs/contracts/output_binding.schema.json": "schema",

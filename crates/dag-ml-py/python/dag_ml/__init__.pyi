@@ -344,4 +344,9 @@ def replay_loaded_predictor_package(
     warnings: Any = (),
     diagnostics: Any = None,
 ) -> TrainingReplayOutcome: ...
+def build_conformal_presentation_v1(
+    package: Any,
+    request: Any,
+    replay: Any,
+) -> dict[str, Any]: ...
 def canonical_operator_variant_label(steps_json: str) -> str: ...

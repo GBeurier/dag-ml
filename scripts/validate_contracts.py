@@ -18808,6 +18808,7 @@ def validate_w10_training_pack(pack: Any, negatives: dict[str, Any]) -> None:
         "docs/HPO_METHODS_ADAPTER.md",
         "docs/contracts/training_request.schema.json",
         "docs/contracts/cache_namespace.schema.json",
+        "docs/contracts/conformal_presentation.v1.schema.json",
         "docs/contracts/parameter_projection.schema.json",
         "docs/contracts/portable_predictor_package.schema.json",
         "docs/contracts/training_outcome.schema.json",

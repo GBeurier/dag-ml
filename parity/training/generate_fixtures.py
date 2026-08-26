@@ -84,6 +84,7 @@ BASE_PACK_ARTIFACTS = {
     "docs/contracts/abi_snapshot.v1.json": "c_abi_snapshot",
     "docs/contracts/README.md": "contract_index_documentation",
     "docs/contracts/cache_namespace.schema.json": "schema",
+    "docs/contracts/conformal_presentation.v1.schema.json": "schema",
     "docs/contracts/campaign_spec.schema.json": "schema_dependency",
     "docs/contracts/controller_manifest.schema.json": "schema_dependency",
     "docs/contracts/coordinator_data_plan_envelope.schema.json": "schema_dependency",

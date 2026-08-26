@@ -19,10 +19,47 @@ use crate::conformal::{
 use crate::error::{DagMlError, Result};
 use crate::ids::SampleId;
 use crate::oof::PredictionBlock;
+use crate::phase::Phase;
+use crate::replay::{TrainingReplayOutcome, TrainingReplayRequest};
+use crate::training::PortablePredictorPackage;
 
 /// V1 did not bind calibration to the training/replay provenance closure.  It
 /// is deliberately not accepted: callers must migrate to this closed V2 form.
 pub const CONFORMAL_RUNTIME_SCHEMA_VERSION: u32 = 2;
+
+/// Stable, presentation-only projection of one validated single-target
+/// conformal PREDICT replay.  It contains no calibration algorithm input and
+/// no mutable model handle: Core and Studio may transport or render it, but
+/// must never recalculate its bounds.
+pub const CONFORMAL_PRESENTATION_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConformalPresentationInterval {
+    pub coverage: f64,
+    /// `None` represents a deliberately unbounded interval, never an
+    /// infinity/sentinel endpoint.
+    pub lower: Vec<Option<f64>>,
+    pub upper: Vec<Option<f64>>,
+    /// Exact native split-conformal radius for this coverage, or `None` for
+    /// the declared unbounded small-sample policy.
+    pub qhat: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConformalPresentationV1 {
+    pub schema_version: u32,
+    pub package_fingerprint: String,
+    pub replay_outcome_fingerprint: String,
+    pub binding_id: String,
+    pub target_name: String,
+    pub sample_ids: Vec<SampleId>,
+    pub point_predictions: Vec<f64>,
+    pub intervals: Vec<ConformalPresentationInterval>,
+    pub calibration_fingerprint: String,
+    pub presentation_fingerprint: String,
+}
 
 /// Relation-derived calibration cohort. Physical and origin identities are
 /// both retained so a relation-expanded training cohort cannot be bypassed by
@@ -130,6 +167,236 @@ impl ConformalIntervalBlock {
         validate_sha256(&self.calibration_fingerprint)?;
         validate_sha256(&self.point_prediction_fingerprint)
     }
+}
+
+impl ConformalPresentationV1 {
+    pub fn from_json(json: &str) -> Result<Self> {
+        let raw_fingerprint = parse_typed_json(json)
+            .and_then(|value| value.fingerprint_without("presentation_fingerprint"))
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "conformal presentation is outside strict TCV1 JSON: {error}"
+                ))
+            })?;
+        let presentation: Self = serde_json::from_str(json)?;
+        if presentation.presentation_fingerprint != raw_fingerprint {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation fingerprint does not match original TCV1 JSON".to_string(),
+            ));
+        }
+        presentation.validate()?;
+        Ok(presentation)
+    }
+
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        let json = serde_json::to_string(self)?;
+        parse_typed_json(&json)
+            .and_then(|value| value.fingerprint_without("presentation_fingerprint"))
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "conformal presentation is outside strict TCV1 JSON: {error}"
+                ))
+            })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != CONFORMAL_PRESENTATION_SCHEMA_VERSION
+            || self.binding_id.trim().is_empty()
+            || self.target_name.trim().is_empty()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation has an unsupported version or empty binding metadata"
+                    .to_string(),
+            ));
+        }
+        for fingerprint in [
+            &self.package_fingerprint,
+            &self.replay_outcome_fingerprint,
+            &self.calibration_fingerprint,
+            &self.presentation_fingerprint,
+        ] {
+            validate_sha256(fingerprint)?;
+        }
+        validate_unique_samples(&self.sample_ids)?;
+        if self.sample_ids.is_empty()
+            || self.point_predictions.len() != self.sample_ids.len()
+            || self
+                .point_predictions
+                .iter()
+                .any(|value| !value.is_finite())
+            || self.intervals.is_empty()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation does not exactly cover finite point predictions"
+                    .to_string(),
+            ));
+        }
+        let mut prior_coverage = None;
+        for interval in &self.intervals {
+            if !(interval.coverage.is_finite()
+                && 0.0 < interval.coverage
+                && interval.coverage < 1.0)
+                || prior_coverage.is_some_and(|prior| prior >= interval.coverage)
+                || interval.lower.len() != self.sample_ids.len()
+                || interval.upper.len() != self.sample_ids.len()
+                || interval
+                    .qhat
+                    .is_some_and(|value| !value.is_finite() || value < 0.0)
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "conformal presentation has invalid coverage or interval cardinality"
+                        .to_string(),
+                ));
+            }
+            for ((point, lower), upper) in self
+                .point_predictions
+                .iter()
+                .zip(&interval.lower)
+                .zip(&interval.upper)
+            {
+                match (lower, upper) {
+                    (Some(lower), Some(upper))
+                        if lower.is_finite()
+                            && upper.is_finite()
+                            && lower <= point
+                            && point <= upper => {}
+                    (None, None) if interval.qhat.is_none() => {}
+                    _ => {
+                        return Err(DagMlError::RuntimeValidation(
+                            "conformal presentation interval endpoints are inconsistent"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            prior_coverage = Some(interval.coverage);
+        }
+        if self.presentation_fingerprint != self.compute_fingerprint()? {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation fingerprint does not match TCV1 content".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Project a verified Package V2 and PREDICT replay into the exact scalar
+/// representation consumed by the shared UI.  Multi-target output is refused
+/// instead of selecting or reshaping a target implicitly.
+pub fn build_conformal_presentation_v1(
+    package: &PortablePredictorPackage,
+    request: &TrainingReplayRequest,
+    replay: &TrainingReplayOutcome,
+) -> Result<ConformalPresentationV1> {
+    package.validate()?;
+    request.validate()?;
+    replay.validate_against_package(package, request)?;
+    if replay.phase != Phase::Predict {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation requires a PREDICT replay".to_string(),
+        ));
+    }
+    let calibration = package.conformal_calibration.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(
+            "conformal presentation requires package calibration state".to_string(),
+        )
+    })?;
+    if calibration.target_names.len() != 1 {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation refuses multi-target output".to_string(),
+        ));
+    }
+    let output = replay
+        .outputs
+        .iter()
+        .find(|output| output.binding.binding_id == calibration.binding_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "conformal presentation replay is missing the calibrated binding".to_string(),
+            )
+        })?;
+    if output.binding.target_names != calibration.target_names || output.predictions.len() != 1 {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation requires exactly one matching scalar point block".to_string(),
+        ));
+    }
+    let point = &output.predictions[0];
+    point.validate_content()?;
+    if point
+        .values
+        .iter()
+        .any(|row| row.len() != 1 || !row[0].is_finite())
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation requires finite single-target point predictions".to_string(),
+        ));
+    }
+    let intervals = replay
+        .conformal_intervals
+        .iter()
+        .filter(|interval| interval.binding_id == calibration.binding_id)
+        .collect::<Vec<_>>();
+    if intervals.len() != 1 {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation requires exactly one calibrated interval block".to_string(),
+        ));
+    }
+    let interval_block = intervals[0];
+    interval_block.validate_against(calibration, point)?;
+    let mut presentation_intervals = Vec::with_capacity(interval_block.intervals.len());
+    for interval in &interval_block.intervals {
+        let quantile = calibration
+            .quantiles
+            .iter()
+            .find(|quantile| quantile.coverage == interval.coverage)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "conformal presentation interval coverage is absent from calibration"
+                        .to_string(),
+                )
+            })?;
+        if quantile.radii.len() != 1 || interval.cells.iter().any(|row| row.len() != 1) {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation requires scalar calibration radii and cells".to_string(),
+            ));
+        }
+        let qhat = match quantile.radii[0] {
+            crate::conformal::ConformalRadius::Finite(value)
+                if value.is_finite() && value >= 0.0 =>
+            {
+                Some(value)
+            }
+            crate::conformal::ConformalRadius::Unbounded => None,
+            _ => {
+                return Err(DagMlError::RuntimeValidation(
+                    "conformal presentation calibration radius is invalid".to_string(),
+                ));
+            }
+        };
+        let (lower, upper) = interval.cells.iter().map(|row| row[0].endpoints()).unzip();
+        presentation_intervals.push(ConformalPresentationInterval {
+            coverage: interval.coverage,
+            lower,
+            upper,
+            qhat,
+        });
+    }
+    presentation_intervals.sort_by(|left, right| left.coverage.total_cmp(&right.coverage));
+    let mut presentation = ConformalPresentationV1 {
+        schema_version: CONFORMAL_PRESENTATION_SCHEMA_VERSION,
+        package_fingerprint: package.package_fingerprint.clone(),
+        replay_outcome_fingerprint: replay.outcome_fingerprint.clone(),
+        binding_id: calibration.binding_id.clone(),
+        target_name: calibration.target_names[0].clone(),
+        sample_ids: point.sample_ids.clone(),
+        point_predictions: point.values.iter().map(|row| row[0]).collect(),
+        intervals: presentation_intervals,
+        calibration_fingerprint: calibration.calibration_fingerprint.clone(),
+        presentation_fingerprint: "0".repeat(64),
+    };
+    presentation.presentation_fingerprint = presentation.compute_fingerprint()?;
+    presentation.validate()?;
+    Ok(presentation)
 }
 
 impl ConformalCalibration {
@@ -760,5 +1027,39 @@ mod tests {
         let mut missing_context = serde_json::to_value(&calibration).unwrap();
         missing_context.as_object_mut().unwrap().remove("context");
         assert!(ConformalCalibration::from_json(&missing_context.to_string()).is_err());
+    }
+
+    #[test]
+    fn presentation_round_trips_and_refuses_resigned_interval_tampering() {
+        let mut presentation = ConformalPresentationV1 {
+            schema_version: CONFORMAL_PRESENTATION_SCHEMA_VERSION,
+            package_fingerprint: "1".repeat(64),
+            replay_outcome_fingerprint: "2".repeat(64),
+            binding_id: "output:main".to_string(),
+            target_name: "y".to_string(),
+            sample_ids: vec![SampleId::new("predict:1").unwrap()],
+            point_predictions: vec![10.0],
+            intervals: vec![ConformalPresentationInterval {
+                coverage: 0.8,
+                lower: vec![Some(8.0)],
+                upper: vec![Some(12.0)],
+                qhat: Some(2.0),
+            }],
+            calibration_fingerprint: "3".repeat(64),
+            presentation_fingerprint: "0".repeat(64),
+        };
+        presentation.presentation_fingerprint = presentation.compute_fingerprint().unwrap();
+        let json = serde_json::to_string(&presentation).unwrap();
+        assert_eq!(
+            ConformalPresentationV1::from_json(&json).unwrap(),
+            presentation
+        );
+
+        let mut tampered: ConformalPresentationV1 = serde_json::from_str(&json).unwrap();
+        tampered.intervals[0].lower[0] = Some(11.0);
+        tampered.presentation_fingerprint = tampered.compute_fingerprint().unwrap();
+        assert!(
+            ConformalPresentationV1::from_json(&serde_json::to_string(&tampered).unwrap()).is_err()
+        );
     }
 }
