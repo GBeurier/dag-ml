@@ -21,10 +21,11 @@ could let an off-fold observation influence OOF scoring or model selection.
 
 ## Decision
 
-1. A future external-data-envelope **V2** adds an optional,
+1. A future external-data-envelope **V2** carries a required,
    `PREDICT`-only `predict_cohort` object. V1 remains readable and has no
-   predict cohort. A V1 document carrying this member, a V2 document with an
-   incomplete member, or an unknown role is refused before materialization.
+   predict cohort. A V1 document carrying this member, a V2 document without
+   it or with incomplete content, or an unknown role is refused before
+   materialization.
 2. `predict_cohort` is a closed, separately fingerprinted relation contract:
    `role` (`external_test` or `inference`), stable physical sample IDs,
    origin IDs, target names, its `SampleRelationSet`, data-content
