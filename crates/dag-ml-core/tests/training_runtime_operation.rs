@@ -2723,6 +2723,40 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
         execution.raw_artifact_payloads,
         "V3 package owns the exact detached REFIT bytes, not controller handles"
     );
+    let archive_v3 =
+        build_archive_v3_native_refit_payloads("archive:methods.full-refit.child", &refit_package)
+            .expect("DAG-ML assembles the exact Archive V3 refit closure");
+    assert_eq!(
+        archive_v3.manifest["schema_version"],
+        serde_json::json!(3),
+        "a V3 full-refit child is never serialized as an Archive V2 predictor"
+    );
+    assert_eq!(
+        archive_v3.manifest["replay"]["portable_refit_package"]["semantic_fingerprint"],
+        refit_package.package_fingerprint,
+    );
+    assert_eq!(
+        PortableRefitPackageV3::from_json(
+            std::str::from_utf8(
+                archive_v3
+                    .members
+                    .get(ARCHIVE_V3_PACKAGE_MEMBER)
+                    .expect("Archive V3 package member"),
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+        refit_package,
+        "the Archive V3 member remains DAG-ML's strict child package"
+    );
+    for record in &execution.refit_artifacts {
+        let path = record.artifact.uri.as_deref().expect("portable N4MM URI");
+        assert_eq!(
+            archive_v3.members.get(path),
+            execution.raw_artifact_payloads.get(&record.artifact.id),
+            "Archive V3 N4MM member must byte-equal the detached V3 payload"
+        );
+    }
     let runtime_bundle = refit_package
         .outcome
         .to_runtime_replay_bundle()
