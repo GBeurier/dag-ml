@@ -45,8 +45,8 @@ PACK_PATH = (
 BASE_PACK_ID = "dag-ml.training-contracts.v1"
 # Derived from the current base pack by generate_fixtures.py.  Keep the replay
 # pack pinned to those bytes/checksum; do not edit a replay artifact hash by hand.
-BASE_PACK_SHA256 = "b8bfe7c9d3df9dcd9bea6f4ec629446294b22115efbd699ecbf8c27fb11cc947"
-BASE_PACK_CHECKSUM = "9750bc9e98cb8b56143d5b7c4441a0810a908202f3fd745dec2c5aab0008ea11"
+BASE_PACK_SHA256 = "9dfb764eb78d97bcede378a0af5ad7a28e7ff346ef5ffbd10f0ce96256d7b38d"
+BASE_PACK_CHECKSUM = "4be7ce36f8df705aaa6837415cf49015bfe8cf4ee864bad3d27ac7cad1600c4e"
 serde_json_sha256 = _serde_sha256
 LEGACY_AUTHORITY_SHA256 = {
     "docs/contracts/replay_outcome.schema.json": "c57279e8c76e4e2467af0eca5eb59804a2f7bb97bec6cce9d8b23975f223c36a",
@@ -1679,6 +1679,7 @@ def _base_pack() -> dict[str, Any]:
     required_runtime_sources = {
         "crates/dag-ml-core/src/conformal.rs",
         "crates/dag-ml-core/src/conformal_runtime.rs",
+        "docs/contracts/coordinator_data_plan_envelope.v2.schema.json",
         "crates/dag-ml-core/src/runtime/scoring.rs",
     }
     artifact_paths = {artifact["path"] for artifact in pack.get("artifacts", [])}
