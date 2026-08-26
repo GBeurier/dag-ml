@@ -11,7 +11,7 @@ from pathlib import Path
 import dag_ml
 import dag_ml._dag_ml as native
 
-EXPECTED_NATIVE_VERSION = "0.3.11"
+EXPECTED_NATIVE_VERSION = "0.3.13"
 SHARED_FOLD_SET_FINGERPRINT = (
     "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c"
 )
