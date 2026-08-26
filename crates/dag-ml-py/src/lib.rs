@@ -15,15 +15,15 @@ mod local_implementation;
 mod training;
 
 use dag_ml_core::{
-    build_archive_v2_native_portable_payloads, build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
+    build_archive_v2_native_portable_payloads, build_archive_v3_native_refit_payloads,
+    build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
     parse_pipeline_dsl_json, CacheNamespace, CampaignSpec, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
     FoldSet, GraphSpec, HostControllerSpec, ParameterProjection, PortablePredictorPackage,
-    SampleRelationSet,
-    TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
-    TrainingRequest,
+    PortableRefitPackageV3, SampleRelationSet, TrainingContractProjection, TrainingOutcome,
+    TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -209,6 +209,23 @@ fn build_archive_v2_native_portable_payloads_json(
     .map_err(py_serde_error)
 }
 
+/// Assemble the opaque manifest and exact member bytes for a Core Archive V3.
+/// DAG-ML owns the refit package semantics; Core remains the ZIP writer.
+#[pyfunction]
+fn build_archive_v3_native_refit_payloads_json(
+    archive_id: &str,
+    package_json: &str,
+) -> PyResult<String> {
+    let package = PortableRefitPackageV3::from_json(package_json).map_err(py_core_error)?;
+    let payloads = build_archive_v3_native_refit_payloads(archive_id, &package)
+        .map_err(py_core_error)?;
+    serde_json::to_string(&serde_json::json!({
+        "manifest": payloads.manifest,
+        "members": payloads.members,
+    }))
+    .map_err(py_serde_error)
+}
+
 #[pyfunction]
 fn project_training_request_json(json: &str) -> PyResult<String> {
     let request = TrainingRequest::from_json(json).map_err(py_core_error)?;
@@ -240,6 +257,13 @@ fn validate_cache_namespace_json(json: &str) -> PyResult<()> {
 #[pyfunction]
 fn validate_portable_predictor_package_json(json: &str) -> PyResult<()> {
     PortablePredictorPackage::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_portable_refit_package_v3_json(json: &str) -> PyResult<()> {
+    PortableRefitPackageV3::from_json(json)
         .map(|_| ())
         .map_err(py_core_error)
 }
@@ -406,6 +430,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         build_archive_v2_native_portable_payloads_json,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(
+        build_archive_v3_native_refit_payloads_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(project_training_request_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_training_contract_projection_json,
@@ -418,6 +446,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(validate_cache_namespace_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_portable_predictor_package_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_portable_refit_package_v3_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(validate_training_outcome_json, module)?)?;
@@ -539,11 +571,13 @@ fn contract_manifest() -> serde_json::Value {
             "sign_training_request_json",
             "sign_training_replay_request_json",
             "build_archive_v2_native_portable_payloads_json",
+            "build_archive_v3_native_refit_payloads_json",
             "project_training_request_json",
             "validate_training_contract_projection_json",
             "validate_parameter_projection_json",
             "validate_cache_namespace_json",
             "validate_portable_predictor_package_json",
+            "validate_portable_refit_package_v3_json",
             "validate_training_outcome_json",
             "validate_training_replay_request_json",
             "validate_training_replay_outcome_json",
