@@ -1799,6 +1799,24 @@ impl PortableRefitRecipe {
         recipe.validate()?;
         Ok(recipe)
     }
+
+    /// Refuse a recipe unless it is the exact deterministic projection of its
+    /// source package.  Future Archive V3 executors call this before they ask
+    /// a provider for a target cohort, so an attacker cannot transplant a
+    /// valid recipe onto another package by re-signing only the outer object.
+    pub fn validate_against_source_package(
+        &self,
+        package: &PortablePredictorPackage,
+    ) -> Result<()> {
+        self.validate()?;
+        let expected = Self::derive_from_package(package, self.recipe_id.clone())?;
+        if self != &expected {
+            return contract_error(
+                "portable refit recipe does not exactly match its source package".to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Portable deployment package. It contains only JSON-safe contracts and
