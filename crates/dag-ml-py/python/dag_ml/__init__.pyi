@@ -50,6 +50,8 @@ class TrainingReplayOutcome(JsonContract): ...
 class ParameterProjection(JsonContract): ...
 class CacheNamespace(JsonContract): ...
 class PortablePredictorPackage(JsonContract): ...
+class PortableRefitPackageV3(JsonContract): ...
+class PortableRefitReplayOutcomeV3(JsonContract): ...
 
 class TrainingResult:
     def __init__(self, native: Any) -> None: ...
@@ -230,6 +232,58 @@ def execute_methods_training(
     warnings: Any = (),
     diagnostics: Any = None,
 ) -> TrainingResult: ...
+def execute_methods_portable_full_refit_json(
+    source_package_json: str,
+    target_request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    recipe_id: str,
+    package_id: str,
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+) -> PortableRefitPackageV3: ...
+def execute_methods_portable_full_refit(
+    source_package: Any,
+    target_request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    recipe_id: str,
+    package_id: str,
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+) -> PortableRefitPackageV3: ...
+def execute_loaded_methods_portable_refit_replay_v3_json(
+    package_json: str,
+    request_json: str,
+    data_envelopes_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings_json: str = ...,
+    diagnostics_json: str = ...,
+) -> PortableRefitReplayOutcomeV3: ...
+def replay_loaded_methods_portable_refit_package_v3(
+    package: Any,
+    request: Any,
+    data_envelopes: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings: Any = ...,
+    diagnostics: Any = ...,
+) -> PortableRefitReplayOutcomeV3: ...
 def execute_loaded_methods_predictor_replay_json(
     package_json: str,
     request_json: str,

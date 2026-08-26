@@ -496,7 +496,15 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(training::execute_training_json, module)?)?;
     module.add_function(wrap_pyfunction!(training::execute_methods_training_json, module)?)?;
     module.add_function(wrap_pyfunction!(
+        training::execute_methods_portable_full_refit_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
         training::execute_loaded_methods_predictor_replay_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        training::execute_loaded_methods_portable_refit_replay_v3_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
@@ -545,10 +553,12 @@ fn contract_manifest() -> serde_json::Value {
             "execute_training_replay",
             "execute_loaded_predictor_replay",
             "execute_loaded_methods_predictor_replay",
+            "execute_loaded_methods_portable_refit_replay_v3",
             "owning_training_result",
             "structured_error_descriptors",
             "configure_methods_runtime",
-            "execute_methods_training"
+            "execute_methods_training",
+            "execute_methods_portable_full_refit"
         ],
         "shared": {
             "fold_set_fixture_fingerprint": SHARED_FOLD_SET_FINGERPRINT
@@ -594,7 +604,9 @@ fn contract_manifest() -> serde_json::Value {
             "TrainingResult",
             "execute_training_json",
             "execute_methods_training_json",
+            "execute_methods_portable_full_refit_json",
             "execute_loaded_methods_predictor_replay_json",
+            "execute_loaded_methods_portable_refit_replay_v3_json",
             "execute_loaded_predictor_replay_json"
         ],
         "wasm_exports": [
@@ -1015,7 +1027,9 @@ mod tests {
                 "validate_training_outcome_json",
                 "execute_training_json",
                 "execute_methods_training_json",
+                "execute_methods_portable_full_refit_json",
                 "execute_loaded_methods_predictor_replay_json",
+                "execute_loaded_methods_portable_refit_replay_v3_json",
                 "TrainingResult",
             ] {
                 assert!(
@@ -1052,10 +1066,30 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("execute_methods_training_json")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("execute_methods_portable_full_refit_json")));
         assert!(manifest["capabilities"]
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("execute_methods_training")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("execute_methods_portable_full_refit")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "execute_loaded_methods_portable_refit_replay_v3_json"
+            )));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "execute_loaded_methods_portable_refit_replay_v3"
+            )));
         assert!(manifest["capabilities"]
             .as_array()
             .unwrap()
