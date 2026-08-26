@@ -11,7 +11,7 @@ from pathlib import Path
 import dag_ml
 import dag_ml._dag_ml as native
 
-EXPECTED_NATIVE_VERSION = "0.3.1"
+EXPECTED_NATIVE_VERSION = "0.3.11"
 SHARED_FOLD_SET_FINGERPRINT = (
     "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c"
 )
@@ -88,6 +88,14 @@ def main() -> None:
         )
     if "execute_training_json" not in manifest["python_exports"]:
         raise SystemExit("contract manifest is missing owning Python training export")
+    if "execute_methods_portable_full_refit_json" not in manifest["python_exports"]:
+        raise SystemExit(
+            "contract manifest is missing native Methods portable full-refit export"
+        )
+    if "execute_loaded_methods_portable_refit_replay_v3_json" not in manifest["python_exports"]:
+        raise SystemExit(
+            "contract manifest is missing native Methods Package V3 replay export"
+        )
     if "compile_pipeline_dsl_artifact_json" not in manifest["wasm_exports"]:
         raise SystemExit("contract manifest is missing WASM DSL export")
     if "structured_error_descriptors" not in manifest["capabilities"]:
@@ -104,6 +112,14 @@ def main() -> None:
         raise SystemExit("contract manifest is missing Python TrainingResult facade")
     if "owning_training_result" not in manifest["capabilities"]:
         raise SystemExit("contract manifest is missing owning training capability")
+    if "execute_methods_portable_full_refit" not in manifest["capabilities"]:
+        raise SystemExit(
+            "contract manifest is missing native Methods portable full-refit capability"
+        )
+    if "execute_loaded_methods_portable_refit_replay_v3" not in manifest["capabilities"]:
+        raise SystemExit(
+            "contract manifest is missing native Methods Package V3 replay capability"
+        )
     if (
         manifest["shared"]["fold_set_fixture_fingerprint"]
         != SHARED_FOLD_SET_FINGERPRINT

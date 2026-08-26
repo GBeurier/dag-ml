@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dag-ml"
-version = "0.3.1"
+version = "0.3.11"
 description = "Python bindings for DAG-ML JSON contracts."
 requires-python = ">=3.11"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
@@ -21,6 +21,9 @@ classifiers = [
 ]
 
 [tool.maturin]
-features = ["extension-module"]
+# The published Python wheel exposes the portable native Methods PLS lane.
+# Its dynamic N4M library remains explicit process configuration; no local
+# checkout, path dependency, or library path is embedded in the wheel.
+features = ["extension-module", "methods-optimizer"]
 module-name = "dag_ml._dag_ml"
 python-source = "python"

@@ -11,18 +11,20 @@ use pyo3::types::{PyAny, PyType};
 use serde::de::DeserializeOwned;
 
 mod in_process;
+mod local_implementation;
 mod training;
 
 use dag_ml_core::{
-    build_archive_v2_native_portable_payloads, build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
+    build_archive_v2_native_portable_payloads, build_archive_v3_native_refit_payloads,
+    build_conformal_presentation_v1,
+    build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
     parse_pipeline_dsl_json, CacheNamespace, CampaignSpec, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
     FoldSet, GraphSpec, HostControllerSpec, ParameterProjection, PortablePredictorPackage,
-    SampleRelationSet,
-    TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
-    TrainingRequest,
+    PortableRefitPackageV3, SampleRelationSet, TrainingContractProjection, TrainingOutcome,
+    TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -64,6 +66,28 @@ const SHARED_FOLD_SET_FINGERPRINT: &str =
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// Configure the process-scoped Methods runtime from one explicit library
+/// path. This entry point performs no controller registration or model work;
+/// hosts must still register their native controllers before execution.
+#[pyfunction]
+fn configure_methods_runtime(library_path: &str) -> PyResult<String> {
+    #[cfg(feature = "methods-optimizer")]
+    {
+        let runtime = dag_ml_core::MethodsRuntime::configure(library_path).map_err(|error| {
+            py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
+        })?;
+        Ok(runtime.library_path().display().to_string())
+    }
+    #[cfg(not(feature = "methods-optimizer"))]
+    {
+        let _ = library_path;
+        Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "Methods runtime support is not compiled into this dag-ml binding; rebuild with the `methods-optimizer` feature"
+                .to_string(),
+        )))
+    }
 }
 
 #[pyfunction]
@@ -186,6 +210,40 @@ fn build_archive_v2_native_portable_payloads_json(
     .map_err(py_serde_error)
 }
 
+/// Assemble the opaque manifest and exact member bytes for a Core Archive V3.
+/// DAG-ML owns the refit package semantics; Core remains the ZIP writer.
+#[pyfunction]
+fn build_archive_v3_native_refit_payloads_json(
+    archive_id: &str,
+    package_json: &str,
+) -> PyResult<String> {
+    let package = PortableRefitPackageV3::from_json(package_json).map_err(py_core_error)?;
+    let payloads = build_archive_v3_native_refit_payloads(archive_id, &package)
+        .map_err(py_core_error)?;
+    serde_json::to_string(&serde_json::json!({
+        "manifest": payloads.manifest,
+        "members": payloads.members,
+    }))
+    .map_err(py_serde_error)
+}
+
+/// Project a verified Package V2 PREDICT replay into the scalar, identity-bound
+/// conformal presentation contract.  The binding validates every package,
+/// replay and interval closure; Python only receives transport-ready JSON.
+#[pyfunction]
+fn build_conformal_presentation_v1_json(
+    package_json: &str,
+    request_json: &str,
+    replay_json: &str,
+) -> PyResult<String> {
+    let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
+    let request = TrainingReplayRequest::from_json(request_json).map_err(py_core_error)?;
+    let replay = TrainingReplayOutcome::from_json(replay_json).map_err(py_core_error)?;
+    let presentation = build_conformal_presentation_v1(&package, &request, &replay)
+        .map_err(py_core_error)?;
+    serde_json::to_string(&presentation).map_err(py_serde_error)
+}
+
 #[pyfunction]
 fn project_training_request_json(json: &str) -> PyResult<String> {
     let request = TrainingRequest::from_json(json).map_err(py_core_error)?;
@@ -217,6 +275,13 @@ fn validate_cache_namespace_json(json: &str) -> PyResult<()> {
 #[pyfunction]
 fn validate_portable_predictor_package_json(json: &str) -> PyResult<()> {
     PortablePredictorPackage::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_portable_refit_package_v3_json(json: &str) -> PyResult<()> {
+    PortableRefitPackageV3::from_json(json)
         .map(|_| ())
         .map_err(py_core_error)
 }
@@ -355,6 +420,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add("DagMlInternalError", py.get_type::<DagMlInternalError>())?;
     module.add_function(wrap_pyfunction!(version, module)?)?;
+    module.add_function(wrap_pyfunction!(configure_methods_runtime, module)?)?;
     module.add_function(wrap_pyfunction!(contract_manifest_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_graph_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_campaign_json, module)?)?;
@@ -382,6 +448,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         build_archive_v2_native_portable_payloads_json,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(
+        build_archive_v3_native_refit_payloads_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(project_training_request_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_training_contract_projection_json,
@@ -394,6 +464,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(validate_cache_namespace_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_portable_predictor_package_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_portable_refit_package_v3_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(validate_training_outcome_json, module)?)?;
@@ -427,12 +501,35 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         in_process::run_cv_refit_in_process,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(
+        in_process::run_cv_refit_in_process_with_training_losses,
+        module
+    )?)?;
+    module.add_class::<local_implementation::PyLocalImplementationRegistry>()?;
+    module.add_function(wrap_pyfunction!(
+        local_implementation::loss_execution_attestation_json,
+        module
+    )?)?;
     module.add_class::<training::TrainingResult>()?;
     module.add_function(wrap_pyfunction!(training::execute_training_json, module)?)?;
+    module.add_function(wrap_pyfunction!(training::execute_methods_training_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        training::execute_methods_portable_full_refit_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        training::execute_loaded_methods_predictor_replay_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        training::execute_loaded_methods_portable_refit_replay_v3_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(
         training::execute_loaded_predictor_replay_json,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(build_conformal_presentation_v1_json, module)?)?;
     Ok(())
 }
 
@@ -458,7 +555,8 @@ fn contract_manifest() -> serde_json::Value {
             {"id": "portable_predictor_package", "version": 1},
             {"id": "training_outcome", "version": 1},
             {"id": "training_replay_request", "version": 1},
-            {"id": "training_replay_outcome", "version": 1}
+            {"id": "training_replay_outcome", "version": 1},
+            {"id": "conformal_presentation", "version": 1}
         ],
         "capabilities": [
             "validate_json_contracts",
@@ -474,14 +572,21 @@ fn contract_manifest() -> serde_json::Value {
             "execute_training",
             "execute_training_replay",
             "execute_loaded_predictor_replay",
+            "execute_loaded_methods_predictor_replay",
+            "execute_loaded_methods_portable_refit_replay_v3",
             "owning_training_result",
-            "structured_error_descriptors"
+            "structured_error_descriptors",
+            "configure_methods_runtime",
+            "execute_methods_training",
+            "execute_methods_portable_full_refit",
+            "build_conformal_presentation"
         ],
         "shared": {
             "fold_set_fixture_fingerprint": SHARED_FOLD_SET_FINGERPRINT
         },
         "python_exports": [
             "version",
+            "configure_methods_runtime",
             "contract_manifest_json",
             "validate_graph_json",
             "validate_campaign_json",
@@ -497,11 +602,14 @@ fn contract_manifest() -> serde_json::Value {
             "sign_training_request_json",
             "sign_training_replay_request_json",
             "build_archive_v2_native_portable_payloads_json",
+            "build_archive_v3_native_refit_payloads_json",
+            "build_conformal_presentation_v1_json",
             "project_training_request_json",
             "validate_training_contract_projection_json",
             "validate_parameter_projection_json",
             "validate_cache_namespace_json",
             "validate_portable_predictor_package_json",
+            "validate_portable_refit_package_v3_json",
             "validate_training_outcome_json",
             "validate_training_replay_request_json",
             "validate_training_replay_outcome_json",
@@ -514,8 +622,13 @@ fn contract_manifest() -> serde_json::Value {
             "canonical_operator_variant_label",
             "canonical_operator_variant_value_json",
             "run_cv_refit_in_process",
+            "run_cv_refit_in_process_with_training_losses",
             "TrainingResult",
             "execute_training_json",
+            "execute_methods_training_json",
+            "execute_methods_portable_full_refit_json",
+            "execute_loaded_methods_predictor_replay_json",
+            "execute_loaded_methods_portable_refit_replay_v3_json",
             "execute_loaded_predictor_replay_json"
         ],
         "wasm_exports": [
@@ -935,6 +1048,11 @@ mod tests {
                 "validate_portable_predictor_package_json",
                 "validate_training_outcome_json",
                 "execute_training_json",
+                "execute_methods_training_json",
+                "execute_methods_portable_full_refit_json",
+                "execute_loaded_methods_predictor_replay_json",
+                "execute_loaded_methods_portable_refit_replay_v3_json",
+                "build_conformal_presentation_v1_json",
                 "TrainingResult",
             ] {
                 assert!(
@@ -967,10 +1085,50 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("execute_training_json")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("execute_methods_training_json")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("execute_methods_portable_full_refit_json")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("build_conformal_presentation_v1_json")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("build_conformal_presentation")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("execute_methods_training")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("execute_methods_portable_full_refit")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "execute_loaded_methods_portable_refit_replay_v3_json"
+            )));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "execute_loaded_methods_portable_refit_replay_v3"
+            )));
         assert!(manifest["capabilities"]
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("owning_training_result")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("configure_methods_runtime")));
         assert!(manifest["wasm_exports"]
             .as_array()
             .unwrap()
@@ -978,6 +1136,32 @@ mod tests {
         assert_eq!(
             manifest["shared"]["fold_set_fixture_fingerprint"],
             SHARED_FOLD_SET_FINGERPRINT
+        );
+    }
+
+    #[cfg(not(feature = "methods-optimizer"))]
+    #[test]
+    fn default_binding_refuses_methods_runtime_configuration() {
+        Python::initialize();
+        let error = configure_methods_runtime("/absolute/libn4m.so").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Methods runtime support is not compiled"));
+    }
+
+    #[cfg(feature = "methods-optimizer")]
+    #[test]
+    fn methods_binding_configures_the_explicit_native_library() {
+        Python::initialize();
+        let library_path = std::env::var("N4M_LIBRARY_PATH")
+            .expect("Methods binding test requires an explicit N4M_LIBRARY_PATH");
+        let configured = configure_methods_runtime(&library_path).unwrap();
+        assert_eq!(
+            configured,
+            std::fs::canonicalize(library_path)
+                .unwrap()
+                .display()
+                .to_string()
         );
     }
 }

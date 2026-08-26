@@ -34,6 +34,11 @@ they cannot be represented as aliases of full retrain.
    schema, and a recipe fingerprint. It permits only controllers declaring
    native portable full-refit capability. Missing, host-sidecar, ambiguous or
    nonportable inputs are refused before data access.
+   DAG-ML derives the child execution plan from that selected parent plan and
+   the target request's data bindings/fold universe. The source cohort's raw
+   data-envelope schema/relation and physical fold identities are never copied
+   into a new cohort, and a target request cannot supply topology, parameters,
+   variants or controller policy.
 4. The retrain request supplies a new, target-bound cohort with explicit stable
    sample identities, feature and target content fingerprints, relation set,
    fold policy and influence manifest. DAG-ML constructs and signs a fresh

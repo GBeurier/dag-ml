@@ -433,10 +433,14 @@ CONTROLLER_CAPABILITIES = {
     "supports_row_resampling",
     "supports_backend_loss_weights",
     "supports_missing_masks",
+    "supports_configurable_loss",
+    "supports_custom_loss",
+    "supports_differentiable_loss",
     "uses_training_weights",
     "uses_early_stopping",
     "performs_internal_tuning",
     "trains_aggregation",
+    "supports_portable_full_refit",
 }
 MISSINGNESS_POLICIES = {
     "strict",
@@ -18804,6 +18808,7 @@ def validate_w10_training_pack(pack: Any, negatives: dict[str, Any]) -> None:
         "docs/HPO_METHODS_ADAPTER.md",
         "docs/contracts/training_request.schema.json",
         "docs/contracts/cache_namespace.schema.json",
+        "docs/contracts/conformal_presentation.v1.schema.json",
         "docs/contracts/parameter_projection.schema.json",
         "docs/contracts/portable_predictor_package.schema.json",
         "docs/contracts/training_outcome.schema.json",

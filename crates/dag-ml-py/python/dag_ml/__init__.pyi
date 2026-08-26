@@ -50,6 +50,8 @@ class TrainingReplayOutcome(JsonContract): ...
 class ParameterProjection(JsonContract): ...
 class CacheNamespace(JsonContract): ...
 class PortablePredictorPackage(JsonContract): ...
+class PortableRefitPackageV3(JsonContract): ...
+class PortableRefitReplayOutcomeV3(JsonContract): ...
 
 class TrainingResult:
     def __init__(self, native: Any) -> None: ...
@@ -116,6 +118,17 @@ class TrainingResult:
         warnings: list[str] | None = None,
         diagnostics: dict[str, Any] | None = None,
     ) -> TrainingReplayOutcome: ...
+    def attach_conformal_calibration(
+        self,
+        replay: Any,
+        *,
+        binding_id: str,
+        calibration_relations: Any,
+        truth: Any,
+        coverages: Any,
+        multi_target_policy: str = "marginal",
+        small_sample_policy: str = "error",
+    ) -> dict[str, Any]: ...
 
 class FoldSet(JsonContract):
     def fingerprint(self) -> str: ...
@@ -178,6 +191,7 @@ def build_execution_plan(
     controller_manifests: Any,
 ) -> ExecutionPlan: ...
 def sign_training_request(request: Any) -> TrainingRequest: ...
+def configure_methods_runtime(library_path: str | PathLike[str]) -> str: ...
 def project_training_request(request: Any) -> TrainingContractProjection: ...
 def execute_training_json(
     request_json: str,
@@ -191,6 +205,108 @@ def execute_training_json(
     warnings_json: str = "[]",
     diagnostics_json: str = "{}",
 ) -> TrainingResult: ...
+def execute_methods_training_json(
+    request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> TrainingResult: ...
+def execute_methods_training(
+    request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> TrainingResult: ...
+def execute_methods_portable_full_refit_json(
+    source_package_json: str,
+    target_request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    recipe_id: str,
+    package_id: str,
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+) -> PortableRefitPackageV3: ...
+def execute_methods_portable_full_refit(
+    source_package: Any,
+    target_request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    recipe_id: str,
+    package_id: str,
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+) -> PortableRefitPackageV3: ...
+def execute_loaded_methods_portable_refit_replay_v3_json(
+    package_json: str,
+    request_json: str,
+    data_envelopes_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings_json: str = ...,
+    diagnostics_json: str = ...,
+) -> PortableRefitReplayOutcomeV3: ...
+def replay_loaded_methods_portable_refit_package_v3(
+    package: Any,
+    request: Any,
+    data_envelopes: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings: Any = ...,
+    diagnostics: Any = ...,
+) -> PortableRefitReplayOutcomeV3: ...
+def execute_loaded_methods_predictor_replay_json(
+    package_json: str,
+    request_json: str,
+    data_envelopes_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> TrainingReplayOutcome: ...
+def replay_loaded_methods_predictor_package(
+    package: Any,
+    request: Any,
+    data_envelopes: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> Any: ...
 def execute_training(
     request: Any,
     data_envelopes: Any,
@@ -228,4 +344,9 @@ def replay_loaded_predictor_package(
     warnings: Any = (),
     diagnostics: Any = None,
 ) -> TrainingReplayOutcome: ...
+def build_conformal_presentation_v1(
+    package: Any,
+    request: Any,
+    replay: Any,
+) -> dict[str, Any]: ...
 def canonical_operator_variant_label(steps_json: str) -> str: ...

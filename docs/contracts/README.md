@@ -5,6 +5,44 @@ DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
 validator: it checks fingerprints, campaign fold membership, OOF boundaries and
 leakage policies before any controller receives a handle.
 
+## Native Full Refit Package V3
+
+Schemas: `portable_refit_package.v3.schema.json`,
+`portable_refit_execution_bundle.v3.schema.json`,
+`portable_refit_outcome.v3.schema.json` and
+`portable_refit_replay_outcome.v3.schema.json`. The Archive V3 container
+identity and its exact member closure are separately frozen under
+`archive-v3/`; Core owns bounded ZIP persistence while DAG-ML owns the
+semantic package/refit/replay reader.
+
+This is a new child package family defined by ADR-25, not an extension of
+`PortablePredictorPackage` V1/V2. It records the closed parent recipe, a full
+fresh training request and cohort provenance, selected effective plan, refit
+artifacts and their detached raw payloads. It deliberately cannot represent
+parent CV scores, OOF caches, selection reports, conformal state or runtime
+handles. V1/V2 readers must reject it rather than attempting an in-place
+upgrade. A V3 reader/replay and Archive V3 remain separate publication gates.
+Its replay evidence is likewise a V3-specific contract: it binds the child
+package/outcome fingerprints and the replay request, rather than pretending to
+be a replay of the parent CV/selection outcome.
+
+For a fresh full refit, DAG-ML derives the child effective plan from the
+parent's selected graph/parameters/variants/controllers and the target
+request's independently attested bindings and fold universe. A raw complete
+plan fingerprint therefore remains source-cohort evidence; it is not reused as
+the target-cohort plan fingerprint.
+
+## Conformal Presentation V1
+
+Schema: `conformal_presentation.v1.schema.json`. This is a transport-only,
+single-target projection of a verified Package V2 PREDICT replay. It carries
+the exact replay `sample_ids`, scalar point predictions, native interval bounds
+and the package/replay/calibration fingerprints that close them. Consumers such
+as Core and Studio may validate, transport and render this object, but they
+must neither synthesize IDs nor recalculate residuals, radii or endpoints.
+Multi-target replay is refused at projection rather than silently selecting a
+target. The calibrated Package V2 and replay remain the semantic authority.
+
 ## Loss, Metric and Early-Stopping Contracts
 
 Schemas: `loss_spec.schema.json`, `metric_spec.schema.json`,

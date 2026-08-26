@@ -11,6 +11,42 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Added
 
+- Release patch 0.3.11: Python hosts can now validate target-bound native
+  full-refit Package V3 contracts and assemble the exact Core Archive V3
+  member closure. ZIP persistence remains owned by `nirs4all-core`.
+
+### Fixed
+- Release patch 0.3.9: target-free PREDICT replay retains the validated
+  conformal intervals calibrated from the source training evidence.
+
+- Release patch 0.3.8: conformal calibration fingerprints now stabilize their
+  strict TCV1 float representation before signing, so native residuals remain
+  self-validating after JSON serialization and replay.
+
+- Release patch 0.3.7: the Python binding now exposes native conformal
+  calibration attachment. The Rust coordinator derives and validates the full
+  replay, cohort and provenance context; hosts supply only identity-keyed truth
+  values and relationships.
+
+- Release patch 0.3.6: the published Python Methods runtime now registers the
+  native HPO controller alongside the PLS controller when an attested Methods
+  HPO campaign requests it, preserving controller-owned scheduling, checkpoint
+  and resume semantics.
+
+- Release patch 0.3.5: public Python Methods PLS training and stateless native
+  package replay now expose the portable runtime path without a host callback.
+
+- Release patch 0.3.4: native training-loss role references are now attested
+  in `TrainingRequest` and lowered into `ExecutionPlan` before FIT_CV/REFIT
+  task construction.
+
+- Release patch 0.3.3: Methods HPO now verifies the native runtime overlay
+  before consulting host controller or provider state, preserving fail-closed
+  behavior when native optimizer support is unavailable. This is a dag-ml-only
+  hotfix; the pinned `dag-ml-data` contract is unchanged.
+
+### Added
+
 - ADR-20 and W0 JSON contracts for conformal calibration ownership,
   `ParameterPatch`, `OutputBinding`, `TrainingInfluenceManifest`, complete
   `TrainingOutcome`/`ReplayOutcome` payloads, and the existing execution-bundle

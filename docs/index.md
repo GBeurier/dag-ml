@@ -94,9 +94,16 @@ CAPABILITY_MATRIX
 contracts/README
 TRAINING_CONTRACTS
 TRAINING_REPLAY_CONTRACTS
+CRITERIA_CONTRACTS
+HPO_METHODS_ADAPTER
 adr/README
 OOF_FIXTURES
 OBSERVABILITY
+contracts/archive-v1/README
+contracts/archive-v1/THREAT_MODEL
+contracts/archive-v2/README
+contracts/archive-v2/THREAT_MODEL
+contracts/archive-v3/README
 ```
 
 ```{toctree}

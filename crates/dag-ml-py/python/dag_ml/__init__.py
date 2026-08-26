@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -19,10 +20,14 @@ from ._dag_ml import (
     DagMlRuntimeError,
     DagMlSecurityError,
     DagMlValidationError,
+    LocalImplementationRegistry as _NativeLocalImplementationRegistry,
     TrainingResult as _NativeTrainingResult,
     build_execution_plan_json,
     build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
+    build_archive_v3_native_refit_payloads_json as _native_build_archive_v3_native_refit_payloads_json,
+    build_conformal_presentation_v1_json as _native_build_conformal_presentation_v1_json,
     canonical_operator_variant_label,
+    configure_methods_runtime as _native_configure_methods_runtime,
     contract_manifest_json as _native_contract_manifest_json,
     compile_pipeline_dsl_artifact_json,
     compile_pipeline_dsl_artifact_with_controllers_json,
@@ -30,10 +35,16 @@ from ._dag_ml import (
     derive_controller_manifest_json,
     derive_controller_manifest_list_json,
     execute_loaded_predictor_replay_json as _native_execute_loaded_predictor_replay_json,
+    execute_loaded_methods_portable_refit_replay_v3_json as _native_execute_loaded_methods_portable_refit_replay_v3_json,
+    execute_methods_portable_full_refit_json as _native_execute_methods_portable_full_refit_json,
+    execute_methods_training_json as _native_execute_methods_training_json,
+    execute_loaded_methods_predictor_replay_json as _native_execute_loaded_methods_predictor_replay_json,
     execute_training_json as _native_execute_training_json,
     fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
+    loss_execution_attestation_json as _native_loss_execution_attestation_json,
     project_training_request_json,
+    run_cv_refit_in_process_with_training_losses as _native_run_cv_refit_in_process_with_training_losses,
     sample_relation_set_fingerprint_json,
     sign_training_replay_request_json as _native_sign_training_replay_request_json,
     sign_training_request_json as _native_sign_training_request_json,
@@ -48,6 +59,7 @@ from ._dag_ml import (
     validate_parameter_projection_json,
     validate_pipeline_dsl_json,
     validate_portable_predictor_package_json,
+    validate_portable_refit_package_v3_json,
     validate_training_contract_projection_json,
     validate_training_outcome_json,
     validate_training_replay_outcome_json,
@@ -64,6 +76,8 @@ __version__ = _native_version()
 
 _FACADE_EXPORTS = [
     "JsonContract",
+    "LocalImplementationRegistry",
+    "loss_execution_attestation",
     "GraphSpec",
     "CampaignSpec",
     "ControllerManifest",
@@ -83,9 +97,13 @@ _FACADE_EXPORTS = [
     "ParameterProjection",
     "CacheNamespace",
     "PortablePredictorPackage",
+    "PortableRefitPackageV3",
+    "PortableRefitReplayOutcomeV3",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
+    "configure_methods_runtime",
     "build_archive_v2_native_portable_payloads",
+    "build_archive_v3_native_refit_payloads",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_with_controllers",
     "derive_controller_manifest",
@@ -95,10 +113,19 @@ _FACADE_EXPORTS = [
     "project_training_request",
     "sign_training_request",
     "sign_training_replay_request",
+    "execute_methods_training",
+    "execute_methods_training_json",
+    "execute_methods_portable_full_refit",
+    "execute_methods_portable_full_refit_json",
+    "execute_loaded_methods_portable_refit_replay_v3_json",
+    "replay_loaded_methods_portable_refit_package_v3",
+    "replay_loaded_methods_predictor_package",
+    "execute_loaded_methods_predictor_replay_json",
     "execute_training",
     "execute_training_json",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
+    "run_cv_refit_in_process_with_training_losses",
 ]
 
 
@@ -135,6 +162,17 @@ def _facade_contract_error(message: str) -> DagMlError:
         descriptor, sort_keys=True, separators=(",", ":")
     )
     return error
+
+
+def configure_methods_runtime(library_path: str | PathLike[str]) -> str:
+    """Configure the exact dynamically loaded Methods library for this process.
+
+    The extension must have been built with its optional ``methods-optimizer``
+    feature.  This performs no controller registration and never searches a
+    sibling checkout or the process ``PATH``.
+    """
+
+    return _native_configure_methods_runtime(str(library_path))
 
 
 class JsonContract:
@@ -367,6 +405,32 @@ def loss_execution_attestation(training_loss_role: Any, phase: str) -> dict[str,
     )
 
 
+def run_cv_refit_in_process_with_training_losses(
+    dsl: Any,
+    envelope: Any,
+    controller_manifests: Any,
+    training_loss_roles: Any,
+    op_callback: Any,
+    selection_metric: str,
+) -> dict[str, Any]:
+    """Run one in-process CV/refit campaign with typed local-loss roles.
+
+    The native scheduler owns the plan patching and phase order.  Python owns
+    only the explicitly supplied process-local callback.
+    """
+
+    return json.loads(
+        _native_run_cv_refit_in_process_with_training_losses(
+            _coerce_json(dsl),
+            _coerce_json(envelope),
+            _coerce_json(controller_manifests),
+            _coerce_json(training_loss_roles),
+            op_callback,
+            selection_metric,
+        )
+    )
+
+
 class GraphSpec(JsonContract):
     @classmethod
     def _validate_json(cls, json_text: str) -> None:
@@ -480,6 +544,18 @@ class PortablePredictorPackage(JsonContract):
         validate_portable_predictor_package_json(json_text)
 
 
+class PortableRefitPackageV3(JsonContract):
+    """Strict, target-bound native full-refit Package V3 contract."""
+
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_portable_refit_package_v3_json(json_text)
+
+
+class PortableRefitReplayOutcomeV3(JsonContract):
+    """Strict PREDICT/EXPLAIN evidence emitted from one Package V3 child."""
+
+
 class TrainingResult:
     """Owning native training result with explicit process-local detach."""
 
@@ -564,6 +640,42 @@ class TrainingResult:
                 diagnostics=diagnostics,
             )
         )
+
+    def attach_conformal_calibration(
+        self,
+        replay: Any,
+        *,
+        binding_id: str,
+        calibration_relations: Any,
+        truth: Any,
+        coverages: Any,
+        multi_target_policy: str = "marginal",
+        small_sample_policy: str = "error",
+    ) -> dict[str, Any]:
+        """Attach native identity-bound split-conformal state to this result.
+
+        The inputs are typed, self-validating DAG-ML contracts. The native
+        coordinator derives every provenance fingerprint from the source and
+        replay; Python never calculates identities, residuals, quantiles, or
+        interval bounds itself.
+        """
+
+        replay_outcome = TrainingReplayOutcome(replay)
+        payload = self._native.attach_conformal_calibration_json(
+            replay_outcome.json(),
+            binding_id,
+            _coerce_json(calibration_relations),
+            _coerce_json(truth),
+            _coerce_json(coverages),
+            _coerce_json(multi_target_policy),
+            _coerce_json(small_sample_policy),
+        )
+        calibration = json.loads(payload)
+        if not isinstance(calibration, dict):
+            raise _facade_contract_error(
+                "native conformal calibration returned a non-object contract"
+            )
+        return calibration
 
     def export_portable_predictor_package(
         self,
@@ -820,6 +932,63 @@ def build_archive_v2_native_portable_payloads(
     return manifest, byte_members
 
 
+def build_conformal_presentation_v1(
+    package: Any,
+    request: Any,
+    replay: Any,
+) -> dict[str, Any]:
+    """Project one verified scalar Conformal PREDICT replay for presentation.
+
+    DAG-ML validates the package/replay/interval closure and returns exact
+    sample IDs, points and bounds.  Callers must not derive IDs, radii or
+    endpoints themselves.
+    """
+
+    presentation = json.loads(
+        _native_build_conformal_presentation_v1_json(
+            _coerce_json(package),
+            _coerce_json(request),
+            _coerce_json(replay),
+        )
+    )
+    if not isinstance(presentation, dict):
+        raise _facade_contract_error(
+            "native conformal presentation returned a non-object contract"
+        )
+    return presentation
+
+
+def build_archive_v3_native_refit_payloads(
+    archive_id: str,
+    package: Any,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    """Build exact Core Archive V3 inputs from a refit Package V3.
+
+    DAG-ML validates and assembles every manifest reference and member byte.
+    Core is the sole ZIP writer/reader, and this target-bound V3 child is never
+    coerced into the V2 predictor-package family.
+    """
+
+    payloads = json.loads(
+        _native_build_archive_v3_native_refit_payloads_json(
+            archive_id, _coerce_json(package)
+        )
+    )
+    manifest = payloads.get("manifest")
+    members = payloads.get("members")
+    if not isinstance(manifest, dict) or not isinstance(members, dict):
+        raise _facade_contract_error("native Archive V3 assembler returned an invalid payload object")
+    byte_members: dict[str, bytes] = {}
+    for path, value in members.items():
+        if not isinstance(path, str) or not isinstance(value, list):
+            raise _facade_contract_error("native Archive V3 assembler returned an invalid member")
+        try:
+            byte_members[path] = bytes(value)
+        except ValueError as error:
+            raise _facade_contract_error("native Archive V3 assembler returned invalid member bytes") from error
+    return manifest, byte_members
+
+
 def execute_training_json(
     request_json: str,
     data_envelopes_json: str,
@@ -847,6 +1016,264 @@ def execute_training_json(
             warnings_json,
             diagnostics_json,
         )
+    )
+
+
+def execute_methods_training_json(
+    request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> TrainingResult:
+    """Run the portable Methods PLS lane with no Python operator callback.
+
+    ``methods_inputs_json`` is a strict map of host-owned full datasets.  The
+    native scheduler selects FIT_CV/REFIT rows by its signed identity views;
+    a host cannot choose positional subsets.  ``methods_library_path`` must
+    name the exact absolute ``libn4m`` configured for this process.
+    """
+
+    return TrainingResult(
+        _native_execute_methods_training_json(
+            request_json,
+            data_envelopes_json,
+            relations_json,
+            training_influence_json,
+            methods_inputs_json,
+            str(methods_library_path),
+            outcome_id,
+            run_id,
+            bundle_id,
+            warnings_json,
+            diagnostics_json,
+        )
+    )
+
+
+def execute_methods_training(
+    request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> TrainingResult:
+    """Execute one strictly native Methods PLS training request.
+
+    The graph must contain only ``controller:methods.pls`` executable nodes.
+    Host-sidecar controllers and Python operator fallback are refused before
+    numerical execution.
+    """
+
+    return execute_methods_training_json(
+        _coerce_json(request),
+        _coerce_json(data_envelopes),
+        _coerce_json(relations),
+        _coerce_json(training_influence),
+        _coerce_json(methods_inputs),
+        methods_library_path,
+        outcome_id,
+        run_id,
+        bundle_id,
+        _coerce_json(warnings),
+        _coerce_json({} if diagnostics is None else diagnostics),
+    )
+
+
+def execute_methods_portable_full_refit_json(
+    source_package_json: str,
+    target_request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    recipe_id: str,
+    package_id: str,
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+) -> PortableRefitPackageV3:
+    """Run one fresh native Methods full refit and return Package V3.
+
+    The V2 source package contributes only its validated selected recipe. The
+    target request, envelopes, relation set, influence manifest, and numeric
+    inputs must attest a distinct training cohort. The native scheduler then
+    executes only the selected `REFIT` phase and emits a new V3 child; no CV,
+    SELECT, source artifact, or host-sidecar is reused.
+    """
+
+    return PortableRefitPackageV3(
+        _native_execute_methods_portable_full_refit_json(
+            source_package_json,
+            target_request_json,
+            data_envelopes_json,
+            relations_json,
+            training_influence_json,
+            methods_inputs_json,
+            str(methods_library_path),
+            recipe_id,
+            package_id,
+            outcome_id,
+            run_id,
+            bundle_id,
+        )
+    )
+
+
+def execute_methods_portable_full_refit(
+    source_package: Any,
+    target_request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    recipe_id: str,
+    package_id: str,
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+) -> PortableRefitPackageV3:
+    """Typed facade for :func:`execute_methods_portable_full_refit_json`."""
+
+    return execute_methods_portable_full_refit_json(
+        PortablePredictorPackage(source_package).json(),
+        TrainingRequest(target_request).json(),
+        _coerce_json(data_envelopes),
+        _coerce_json(relations),
+        _coerce_json(training_influence),
+        _coerce_json(methods_inputs),
+        methods_library_path,
+        recipe_id,
+        package_id,
+        outcome_id,
+        run_id,
+        bundle_id,
+    )
+
+
+def execute_loaded_methods_predictor_replay_json(
+    package_json: str,
+    request_json: str,
+    data_envelopes_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> TrainingReplayOutcome:
+    """Replay a portable Methods Package V2 without Python callbacks or sidecars."""
+
+    return _native_execute_loaded_methods_predictor_replay_json(
+        package_json,
+        request_json,
+        data_envelopes_json,
+        methods_inputs_json,
+        str(methods_library_path),
+        outcome_id,
+        run_id,
+        warnings_json,
+        diagnostics_json,
+    )
+
+
+def replay_loaded_methods_predictor_package(
+    package: Any,
+    request: Any,
+    data_envelopes: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> Any:
+    """Typed facade for native Methods PREDICT replay."""
+
+    return TrainingReplayOutcome(
+        execute_loaded_methods_predictor_replay_json(
+            _coerce_json(package),
+            _coerce_json(request),
+            _coerce_json(data_envelopes),
+            _coerce_json(methods_inputs),
+            methods_library_path,
+            outcome_id,
+            run_id,
+            _coerce_json(warnings),
+            _coerce_json({} if diagnostics is None else diagnostics),
+        )
+    )
+
+
+def execute_loaded_methods_portable_refit_replay_v3_json(
+    package_json: str,
+    request_json: str,
+    data_envelopes_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> PortableRefitReplayOutcomeV3:
+    """Replay a native Methods Package V3 child without callbacks or sidecars."""
+
+    return PortableRefitReplayOutcomeV3(
+        _native_execute_loaded_methods_portable_refit_replay_v3_json(
+            package_json,
+            request_json,
+            data_envelopes_json,
+            methods_inputs_json,
+            str(methods_library_path),
+            outcome_id,
+            run_id,
+            warnings_json,
+            diagnostics_json,
+        )
+    )
+
+
+def replay_loaded_methods_portable_refit_package_v3(
+    package: Any,
+    request: Any,
+    data_envelopes: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> PortableRefitReplayOutcomeV3:
+    """Typed facade for replaying one fresh Package V3 child."""
+
+    return execute_loaded_methods_portable_refit_replay_v3_json(
+        PortableRefitPackageV3(package).json(),
+        TrainingReplayRequest(request).json(),
+        _coerce_json(data_envelopes),
+        _coerce_json(methods_inputs),
+        methods_library_path,
+        outcome_id,
+        run_id,
+        _coerce_json(warnings),
+        _coerce_json({} if diagnostics is None else diagnostics),
     )
 
 
@@ -985,6 +1412,8 @@ __all__ = [
     "ParameterProjection",
     "PipelineDslSpec",
     "PortablePredictorPackage",
+    "PortableRefitPackageV3",
+    "PortableRefitReplayOutcomeV3",
     "TrainingContractProjection",
     "TrainingOutcome",
     "TrainingReplayOutcome",
@@ -993,6 +1422,8 @@ __all__ = [
     "TrainingRequest",
     "build_execution_plan",
     "build_archive_v2_native_portable_payloads",
+    "build_archive_v3_native_refit_payloads",
+    "build_conformal_presentation_v1",
     "build_execution_plan_json",
     "canonical_operator_variant_label",
     "contract_manifest_json",
@@ -1008,11 +1439,17 @@ __all__ = [
     "derive_controller_manifests",
     "execute_training",
     "execute_training_json",
+    "execute_methods_portable_full_refit",
+    "execute_methods_portable_full_refit_json",
+    "execute_loaded_methods_portable_refit_replay_v3_json",
+    "replay_loaded_methods_portable_refit_package_v3",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
     "fan_out_data_aware_branches",
     "fan_out_data_aware_branches_json",
     "fold_set_fingerprint_json",
+    "loss_execution_attestation",
+    "run_cv_refit_in_process_with_training_losses",
     "sample_relation_set_fingerprint_json",
     "project_training_request",
     "project_training_request_json",
