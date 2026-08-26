@@ -22,7 +22,9 @@ use crate::data::{data_binding_requirement_key, DataBinding, ExternalDataPlanEnv
 use crate::error::{DagMlError, Result};
 use crate::fold::fold_set_fingerprint;
 use crate::graph::{GraphSpec, NodeKind, PortKind};
-use crate::ids::{ArtifactId, BundleId, FoldId, GroupId, NodeId, SampleId};
+use crate::ids::{
+    ArtifactId, BundleId, ControllerId, FoldId, GroupId, NodeId, SampleId, VariantId,
+};
 use crate::phase::Phase;
 use crate::plan::{build_execution_plan, CampaignSpec, ExecutionPlan};
 use crate::policy::PredictionLevel;
@@ -40,6 +42,10 @@ pub const CACHE_NAMESPACE_SCHEMA_ID: &str =
 pub const PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION: u32 = 2;
 pub const LEGACY_PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION: u32 = 1;
 pub const MIN_READABLE_PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION: u32 = 1;
+/// Reserved Package V3 wire version.  It is intentionally not accepted by
+/// the V1/V2 reader until the complete Archive V3 execution path lands.
+pub const PORTABLE_PREDICTOR_PACKAGE_V3_SCHEMA_VERSION: u32 = 3;
+pub const PORTABLE_REFIT_RECIPE_SCHEMA_VERSION: u32 = 1;
 pub const PORTABLE_PREDICTOR_PACKAGE_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/portable_predictor_package.v1.schema.json";
 pub const OUTPUT_BINDING_SCHEMA_VERSION: u32 = 1;
@@ -1500,6 +1506,299 @@ pub enum ArtifactLoadMode {
 pub struct PackageArtifactBinding {
     pub artifact_id: ArtifactId,
     pub load_mode: ArtifactLoadMode,
+}
+
+/// The only retrain mode currently representable by the portable archive
+/// boundary.  `Transfer` and `Finetune` are explicit values so a future wire
+/// cannot accidentally be interpreted as `Full` by an older caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortableRefitMode {
+    Full,
+    Transfer,
+    Finetune,
+}
+
+/// One exact controller attestation in a Package V3 full-refit recipe.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableRefitController {
+    pub node_id: NodeId,
+    pub controller_id: ControllerId,
+    pub controller_version: String,
+    pub manifest_fingerprint: String,
+    pub capabilities: BTreeSet<ControllerCapability>,
+}
+
+impl PortableRefitController {
+    fn validate(&self) -> Result<()> {
+        validate_identifier_text("portable refit controller node_id", self.node_id.as_str())?;
+        validate_identifier_text(
+            "portable refit controller controller_id",
+            self.controller_id.as_str(),
+        )?;
+        validate_non_empty(
+            "portable refit controller controller_version",
+            &self.controller_version,
+        )?;
+        validate_sha256(
+            "portable refit controller manifest",
+            &self.manifest_fingerprint,
+        )?;
+        if !self
+            .capabilities
+            .contains(&ControllerCapability::SupportsPortableFullRefit)
+        {
+            return contract_error(format!(
+                "portable refit controller `{}` is missing supports_portable_full_refit",
+                self.controller_id
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Closed, DAG-ML-owned evidence required to create an Archive/Package V3
+/// full-refit descendant.  It deliberately contains no cohort data and no
+/// fitted handle: the target-bound cohort and new artifacts belong to the
+/// subsequent V3 operation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableRefitRecipe {
+    pub schema_version: u32,
+    pub recipe_id: String,
+    pub mode: PortableRefitMode,
+    pub parent_package_fingerprint: String,
+    pub parent_outcome: TrainingOutcomeRef,
+    pub effective_plan_fingerprint: String,
+    pub selected_variant_id: VariantId,
+    pub selected_variant_fingerprint: String,
+    pub selected_parameter_projection_fingerprint: String,
+    pub target_binding_fingerprints: Vec<String>,
+    pub target_schema_fingerprint: String,
+    pub controllers: Vec<PortableRefitController>,
+    pub recipe_fingerprint: String,
+}
+
+impl PortableRefitRecipe {
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        tcv1_fingerprint_without(self, "recipe_fingerprint", "portable refit recipe")
+    }
+
+    pub fn from_json(json: &str) -> Result<Self> {
+        let raw_fingerprint =
+            strict_tcv1_fingerprint_without(json, "recipe_fingerprint", "portable refit recipe")?;
+        let recipe: Self = serde_json::from_str(json)?;
+        if recipe.recipe_fingerprint != raw_fingerprint {
+            return contract_error(
+                "portable refit recipe fingerprint does not match original TCV1 JSON".to_string(),
+            );
+        }
+        recipe.validate()?;
+        Ok(recipe)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != PORTABLE_REFIT_RECIPE_SCHEMA_VERSION {
+            return unsupported_version(
+                "portable refit recipe",
+                self.schema_version,
+                PORTABLE_REFIT_RECIPE_SCHEMA_VERSION,
+            );
+        }
+        if self.mode != PortableRefitMode::Full {
+            return contract_error(
+                "portable refit recipe currently supports only full mode; transfer and finetune require separate controller contracts".to_string(),
+            );
+        }
+        validate_identifier_text("portable refit recipe_id", &self.recipe_id)?;
+        validate_sha256(
+            "portable refit parent package",
+            &self.parent_package_fingerprint,
+        )?;
+        self.parent_outcome.validate()?;
+        for (label, fingerprint) in [
+            (
+                "portable refit effective plan",
+                &self.effective_plan_fingerprint,
+            ),
+            (
+                "portable refit selected variant",
+                &self.selected_variant_fingerprint,
+            ),
+            (
+                "portable refit selected parameter projection",
+                &self.selected_parameter_projection_fingerprint,
+            ),
+            (
+                "portable refit target schema",
+                &self.target_schema_fingerprint,
+            ),
+            ("portable refit recipe", &self.recipe_fingerprint),
+        ] {
+            validate_sha256(label, fingerprint)?;
+        }
+        validate_identifier_text(
+            "portable refit selected_variant_id",
+            self.selected_variant_id.as_str(),
+        )?;
+        if self.target_binding_fingerprints.is_empty()
+            || !self
+                .target_binding_fingerprints
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        {
+            return contract_error(
+                "portable refit target binding fingerprints must be non-empty, sorted, and unique"
+                    .to_string(),
+            );
+        }
+        for fingerprint in &self.target_binding_fingerprints {
+            validate_sha256("portable refit target binding", fingerprint)?;
+        }
+        if self.controllers.is_empty()
+            || !self
+                .controllers
+                .windows(2)
+                .all(|pair| pair[0].node_id < pair[1].node_id)
+        {
+            return contract_error(
+                "portable refit controllers must be non-empty and strictly sorted by node_id"
+                    .to_string(),
+            );
+        }
+        for controller in &self.controllers {
+            controller.validate()?;
+        }
+        if self.recipe_fingerprint != self.compute_fingerprint()? {
+            return contract_error(
+                "portable refit recipe fingerprint does not match TCV1 content".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Derive a closed future-V3 full-refit recipe from a portable predictor
+    /// package.  This does not execute a refit and intentionally does not
+    /// make Package V2 retrainable: a V3 request still needs a fresh,
+    /// target-bound cohort and its own scheduler entry point.
+    pub fn derive_from_package(
+        package: &PortablePredictorPackage,
+        recipe_id: impl Into<String>,
+    ) -> Result<Self> {
+        package.validate()?;
+        if package.fitted_artifact_mode != FittedArtifactMode::PortableRequired
+            || package
+                .artifact_bindings
+                .iter()
+                .any(|binding| binding.load_mode != ArtifactLoadMode::NativePortable)
+        {
+            return contract_error(
+                "portable full refit requires a package with only native_portable artifacts"
+                    .to_string(),
+            );
+        }
+        let selected_variant_id = package
+            .execution_bundle
+            .selected_variant_id
+            .clone()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "portable full refit requires a selected package variant".to_string(),
+                )
+            })?;
+        let selected_variant = package
+            .effective_plan
+            .variants
+            .iter()
+            .find(|variant| variant.variant_id == selected_variant_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "portable full refit selected variant is absent from the effective plan"
+                        .to_string(),
+                )
+            })?;
+        let selected_parameters = package
+            .effective_plan
+            .node_plans
+            .iter()
+            .map(|(node_id, node)| (node_id.clone(), node.params.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let selected_parameter_projection_fingerprint = tcv1_fingerprint(
+            &(selected_variant.fingerprint.clone(), selected_parameters),
+            "portable refit selected parameter projection",
+        )?;
+        let mut target_binding_fingerprints = package
+            .output_bindings
+            .iter()
+            .map(|binding| binding.binding_fingerprint.clone())
+            .collect::<Vec<_>>();
+        target_binding_fingerprints.sort();
+        if target_binding_fingerprints
+            .windows(2)
+            .any(|pair| pair[0] == pair[1])
+        {
+            return contract_error(
+                "portable full refit package has duplicate output binding fingerprints".to_string(),
+            );
+        }
+        let target_schema_fingerprint =
+            tcv1_fingerprint(&package.output_bindings, "portable refit target schema")?;
+        let mut controllers = Vec::with_capacity(package.predictor_node_ids.len());
+        for node_id in &package.predictor_node_ids {
+            let node = package.effective_plan.node_plans.get(node_id).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "portable full refit predictor node `{node_id}` is absent from the effective plan"
+                ))
+            })?;
+            let manifest = package
+                .effective_plan
+                .controller_manifests
+                .get(&node.controller_id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "portable full refit node `{node_id}` has no controller manifest"
+                    ))
+                })?;
+            if manifest.controller_id != node.controller_id
+                || manifest.controller_version != node.controller_version
+                || manifest.capabilities != node.controller_capabilities
+            {
+                return contract_error(format!(
+                    "portable full refit node `{node_id}` does not exactly match its controller manifest"
+                ));
+            }
+            controllers.push(PortableRefitController {
+                node_id: node_id.clone(),
+                controller_id: node.controller_id.clone(),
+                controller_version: node.controller_version.clone(),
+                manifest_fingerprint: tcv1_fingerprint(
+                    manifest,
+                    "portable refit controller manifest",
+                )?,
+                capabilities: node.controller_capabilities.clone(),
+            });
+        }
+        controllers.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+        let mut recipe = Self {
+            schema_version: PORTABLE_REFIT_RECIPE_SCHEMA_VERSION,
+            recipe_id: recipe_id.into(),
+            mode: PortableRefitMode::Full,
+            parent_package_fingerprint: package.package_fingerprint.clone(),
+            parent_outcome: package.training_outcome.clone(),
+            effective_plan_fingerprint: package.training_outcome.effective_plan_fingerprint.clone(),
+            selected_variant_id,
+            selected_variant_fingerprint: selected_variant.fingerprint.clone(),
+            selected_parameter_projection_fingerprint,
+            target_binding_fingerprints,
+            target_schema_fingerprint,
+            controllers,
+            recipe_fingerprint: zero_fingerprint(),
+        };
+        recipe.recipe_fingerprint = recipe.compute_fingerprint()?;
+        recipe.validate()?;
+        Ok(recipe)
+    }
 }
 
 /// Portable deployment package. It contains only JSON-safe contracts and
@@ -3014,9 +3313,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    #[cfg(dag_ml_workspace_contract_fixtures)]
-    use crate::ids::ControllerId;
-    use crate::ids::ObservationId;
+    use crate::ids::{BundleId, ControllerId, ObservationId, VariantId};
     use crate::relation::SampleRelation;
     use crate::selection::{MetricObjective, SelectionMetric};
 
@@ -4174,6 +4471,73 @@ mod tests {
         request.validate().unwrap();
     }
 
+    fn portable_refit_recipe() -> PortableRefitRecipe {
+        let mut recipe = PortableRefitRecipe {
+            schema_version: PORTABLE_REFIT_RECIPE_SCHEMA_VERSION,
+            recipe_id: "recipe:full.test".to_string(),
+            mode: PortableRefitMode::Full,
+            parent_package_fingerprint: "1".repeat(64),
+            parent_outcome: TrainingOutcomeRef {
+                outcome_id: "outcome:parent".to_string(),
+                outcome_fingerprint: "2".repeat(64),
+                pre_conformal_outcome_fingerprint: None,
+                training_request_fingerprint: "3".repeat(64),
+                effective_plan_fingerprint: "4".repeat(64),
+                execution_bundle_id: BundleId::new("bundle:parent").unwrap(),
+                execution_bundle_fingerprint: "5".repeat(64),
+                output_binding_fingerprints: vec!["6".repeat(64)],
+                training_influence_fingerprint: "7".repeat(64),
+                data_identities_fingerprint: "8".repeat(64),
+            },
+            effective_plan_fingerprint: "4".repeat(64),
+            selected_variant_id: VariantId::new("variant:selected").unwrap(),
+            selected_variant_fingerprint: "9".repeat(64),
+            selected_parameter_projection_fingerprint: "a".repeat(64),
+            target_binding_fingerprints: vec!["b".repeat(64)],
+            target_schema_fingerprint: "c".repeat(64),
+            controllers: vec![PortableRefitController {
+                node_id: NodeId::new("model:selected").unwrap(),
+                controller_id: ControllerId::new("controller:methods").unwrap(),
+                controller_version: "1.0.0".to_string(),
+                manifest_fingerprint: "d".repeat(64),
+                capabilities: BTreeSet::from([
+                    ControllerCapability::Deterministic,
+                    ControllerCapability::SupportsPortableFullRefit,
+                ]),
+            }],
+            recipe_fingerprint: zero_fingerprint(),
+        };
+        recipe.recipe_fingerprint = recipe.compute_fingerprint().unwrap();
+        recipe
+    }
+
+    #[test]
+    fn portable_refit_recipe_is_closed_full_only_and_tcv1_attested() {
+        let recipe = portable_refit_recipe();
+        recipe.validate().unwrap();
+        PortableRefitRecipe::from_json(&serde_json::to_string(&recipe).unwrap()).unwrap();
+
+        let mut transfer = recipe.clone();
+        transfer.mode = PortableRefitMode::Transfer;
+        transfer.recipe_fingerprint = transfer.compute_fingerprint().unwrap();
+        assert!(transfer
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("only full mode"));
+
+        let mut unqualified = recipe.clone();
+        unqualified.controllers[0]
+            .capabilities
+            .remove(&ControllerCapability::SupportsPortableFullRefit);
+        unqualified.recipe_fingerprint = unqualified.compute_fingerprint().unwrap();
+        assert!(unqualified
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("supports_portable_full_refit"));
+    }
+
     #[cfg(dag_ml_workspace_contract_fixtures)]
     fn package() -> PortablePredictorPackage {
         let outcome: Value = serde_json::from_str(include_str!(
@@ -4320,6 +4684,16 @@ mod tests {
         let mut binary64 = serde_json::to_value(package).unwrap();
         binary64["effective_plan"]["campaign"]["root_seed"] = json!(12345.0);
         assert!(serde_json::from_value::<PortablePredictorPackage>(binary64).is_err());
+    }
+
+    #[cfg(dag_ml_workspace_contract_fixtures)]
+    #[test]
+    fn portable_refit_recipe_refuses_host_sidecars_before_controller_inspection() {
+        let package = package();
+        let error = PortableRefitRecipe::derive_from_package(&package, "recipe:host-refusal")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("only native_portable artifacts"));
     }
 
     #[cfg(dag_ml_workspace_contract_fixtures)]
