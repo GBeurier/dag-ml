@@ -2682,6 +2682,17 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
     .expect("fresh target cohort executes exactly one portable full refit");
     assert!(!execution.results.is_empty());
     assert!(!execution.refit_artifacts.is_empty());
+    assert_eq!(
+        execution.raw_artifact_payloads.len(),
+        execution.refit_artifacts.len(),
+        "every refit artifact must be detached from the execution-local controller"
+    );
+    assert!(execution.refit_artifacts.iter().all(|record| {
+        execution
+            .raw_artifact_payloads
+            .get(&record.artifact.id)
+            .is_some_and(|payload| !payload.is_empty())
+    }));
     assert_ne!(
         execution.provenance.target_data_identities_fingerprint,
         recipe.parent_outcome.data_identities_fingerprint
