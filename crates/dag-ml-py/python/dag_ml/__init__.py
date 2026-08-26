@@ -34,6 +34,8 @@ from ._dag_ml import (
     derive_controller_manifest_json,
     derive_controller_manifest_list_json,
     execute_loaded_predictor_replay_json as _native_execute_loaded_predictor_replay_json,
+    execute_loaded_methods_portable_refit_replay_v3_json as _native_execute_loaded_methods_portable_refit_replay_v3_json,
+    execute_methods_portable_full_refit_json as _native_execute_methods_portable_full_refit_json,
     execute_methods_training_json as _native_execute_methods_training_json,
     execute_loaded_methods_predictor_replay_json as _native_execute_loaded_methods_predictor_replay_json,
     execute_training_json as _native_execute_training_json,
@@ -95,6 +97,7 @@ _FACADE_EXPORTS = [
     "CacheNamespace",
     "PortablePredictorPackage",
     "PortableRefitPackageV3",
+    "PortableRefitReplayOutcomeV3",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
     "configure_methods_runtime",
@@ -111,6 +114,10 @@ _FACADE_EXPORTS = [
     "sign_training_replay_request",
     "execute_methods_training",
     "execute_methods_training_json",
+    "execute_methods_portable_full_refit",
+    "execute_methods_portable_full_refit_json",
+    "execute_loaded_methods_portable_refit_replay_v3_json",
+    "replay_loaded_methods_portable_refit_package_v3",
     "replay_loaded_methods_predictor_package",
     "execute_loaded_methods_predictor_replay_json",
     "execute_training",
@@ -542,6 +549,10 @@ class PortableRefitPackageV3(JsonContract):
     @classmethod
     def _validate_json(cls, json_text: str) -> None:
         validate_portable_refit_package_v3_json(json_text)
+
+
+class PortableRefitReplayOutcomeV3(JsonContract):
+    """Strict PREDICT/EXPLAIN evidence emitted from one Package V3 child."""
 
 
 class TrainingResult:
@@ -1055,6 +1066,80 @@ def execute_methods_training(
     )
 
 
+def execute_methods_portable_full_refit_json(
+    source_package_json: str,
+    target_request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    recipe_id: str,
+    package_id: str,
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+) -> PortableRefitPackageV3:
+    """Run one fresh native Methods full refit and return Package V3.
+
+    The V2 source package contributes only its validated selected recipe. The
+    target request, envelopes, relation set, influence manifest, and numeric
+    inputs must attest a distinct training cohort. The native scheduler then
+    executes only the selected `REFIT` phase and emits a new V3 child; no CV,
+    SELECT, source artifact, or host-sidecar is reused.
+    """
+
+    return PortableRefitPackageV3(
+        _native_execute_methods_portable_full_refit_json(
+            source_package_json,
+            target_request_json,
+            data_envelopes_json,
+            relations_json,
+            training_influence_json,
+            methods_inputs_json,
+            str(methods_library_path),
+            recipe_id,
+            package_id,
+            outcome_id,
+            run_id,
+            bundle_id,
+        )
+    )
+
+
+def execute_methods_portable_full_refit(
+    source_package: Any,
+    target_request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    recipe_id: str,
+    package_id: str,
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+) -> PortableRefitPackageV3:
+    """Typed facade for :func:`execute_methods_portable_full_refit_json`."""
+
+    return execute_methods_portable_full_refit_json(
+        PortablePredictorPackage(source_package).json(),
+        TrainingRequest(target_request).json(),
+        _coerce_json(data_envelopes),
+        _coerce_json(relations),
+        _coerce_json(training_influence),
+        _coerce_json(methods_inputs),
+        methods_library_path,
+        recipe_id,
+        package_id,
+        outcome_id,
+        run_id,
+        bundle_id,
+    )
+
+
 def execute_loaded_methods_predictor_replay_json(
     package_json: str,
     request_json: str,
@@ -1107,6 +1192,61 @@ def replay_loaded_methods_predictor_package(
             _coerce_json(warnings),
             _coerce_json({} if diagnostics is None else diagnostics),
         )
+    )
+
+
+def execute_loaded_methods_portable_refit_replay_v3_json(
+    package_json: str,
+    request_json: str,
+    data_envelopes_json: str,
+    methods_inputs_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> PortableRefitReplayOutcomeV3:
+    """Replay a native Methods Package V3 child without callbacks or sidecars."""
+
+    return PortableRefitReplayOutcomeV3(
+        _native_execute_loaded_methods_portable_refit_replay_v3_json(
+            package_json,
+            request_json,
+            data_envelopes_json,
+            methods_inputs_json,
+            str(methods_library_path),
+            outcome_id,
+            run_id,
+            warnings_json,
+            diagnostics_json,
+        )
+    )
+
+
+def replay_loaded_methods_portable_refit_package_v3(
+    package: Any,
+    request: Any,
+    data_envelopes: Any,
+    methods_inputs: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> PortableRefitReplayOutcomeV3:
+    """Typed facade for replaying one fresh Package V3 child."""
+
+    return execute_loaded_methods_portable_refit_replay_v3_json(
+        PortableRefitPackageV3(package).json(),
+        TrainingReplayRequest(request).json(),
+        _coerce_json(data_envelopes),
+        _coerce_json(methods_inputs),
+        methods_library_path,
+        outcome_id,
+        run_id,
+        _coerce_json(warnings),
+        _coerce_json({} if diagnostics is None else diagnostics),
     )
 
 
@@ -1246,6 +1386,7 @@ __all__ = [
     "PipelineDslSpec",
     "PortablePredictorPackage",
     "PortableRefitPackageV3",
+    "PortableRefitReplayOutcomeV3",
     "TrainingContractProjection",
     "TrainingOutcome",
     "TrainingReplayOutcome",
@@ -1270,6 +1411,10 @@ __all__ = [
     "derive_controller_manifests",
     "execute_training",
     "execute_training_json",
+    "execute_methods_portable_full_refit",
+    "execute_methods_portable_full_refit_json",
+    "execute_loaded_methods_portable_refit_replay_v3_json",
+    "replay_loaded_methods_portable_refit_package_v3",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
     "fan_out_data_aware_branches",

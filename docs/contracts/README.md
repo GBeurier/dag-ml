@@ -26,6 +26,12 @@ Its replay evidence is likewise a V3-specific contract: it binds the child
 package/outcome fingerprints and the replay request, rather than pretending to
 be a replay of the parent CV/selection outcome.
 
+For a fresh full refit, DAG-ML derives the child effective plan from the
+parent's selected graph/parameters/variants/controllers and the target
+request's independently attested bindings and fold universe. A raw complete
+plan fingerprint therefore remains source-cohort evidence; it is not reused as
+the target-cohort plan fingerprint.
+
 ## Loss, Metric and Early-Stopping Contracts
 
 Schemas: `loss_spec.schema.json`, `metric_spec.schema.json`,

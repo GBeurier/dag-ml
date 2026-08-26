@@ -2672,10 +2672,55 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
     target_request.request_fingerprint = target_request.compute_fingerprint().unwrap();
     let mut target_provider = provider(&fixture);
     target_provider.identity = Some(target_identities[0].clone());
+    let mut binding_changed_request = target_request.clone();
+    let replacement_schema = "e".repeat(64);
+    for bindings in binding_changed_request.campaign.data_bindings.values_mut() {
+        for binding in bindings {
+            binding.schema_fingerprint = replacement_schema.clone();
+        }
+    }
+    for identity in &mut binding_changed_request.data_identities {
+        identity.schema_fingerprint = replacement_schema.clone();
+        identity.identity_fingerprint = "0".repeat(64);
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    }
+    binding_changed_request.request_fingerprint = "0".repeat(64);
+    binding_changed_request.request_fingerprint =
+        binding_changed_request.compute_fingerprint().unwrap();
+    let changed_binding_plan =
+        derive_portable_full_refit_target_plan(&recipe, &package, &binding_changed_request)
+            .expect("a new cohort binding derives a selected-parent REFIT plan");
+    assert_ne!(
+        changed_binding_plan.campaign_fingerprint, source.effective_plan.campaign_fingerprint,
+        "new cohort envelope identity must be retained in the V3 child plan"
+    );
+    assert_eq!(
+        changed_binding_plan
+            .campaign
+            .data_bindings
+            .values()
+            .next()
+            .unwrap()[0]
+            .schema_fingerprint,
+        replacement_schema,
+        "only the target request contributes the target binding identity"
+    );
+    let target_plan = derive_portable_full_refit_target_plan(&recipe, &package, &target_request)
+        .expect("target cohort plan derives from the selected parent recipe");
+    assert_eq!(
+        target_plan
+            .variants
+            .iter()
+            .find(|variant| variant.variant_id == recipe.selected_variant_id)
+            .expect("selected parent variant remains present")
+            .fingerprint,
+        recipe.selected_variant_fingerprint,
+        "the target cohort may replace bindings/folds but cannot select another variant"
+    );
     let execution = execute_portable_full_refit(PortableFullRefitExecutionInput {
         recipe: &recipe,
         source_package: &package,
-        target_plan: &source.effective_plan,
+        target_plan: &target_plan,
         target_training_request: &target_request,
         target_training_request_fingerprint: target_request.request_fingerprint.clone(),
         target_data_identities: &target_identities,
@@ -2704,7 +2749,7 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
         bundle_id: BundleId::new("bundle:methods.full-refit.child").unwrap(),
         recipe: &recipe,
         source_package: &package,
-        target_plan: &source.effective_plan,
+        target_plan: &target_plan,
         target_training_request: &target_request,
         target_data_identities: &target_identities,
         target_training_influence: &fixture.influence,
@@ -2813,7 +2858,7 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
             bundle_id: BundleId::new("bundle:methods.full-refit.missing").unwrap(),
             recipe: &recipe,
             source_package: &package,
-            target_plan: &source.effective_plan,
+            target_plan: &target_plan,
             target_training_request: &target_request,
             target_data_identities: &target_identities,
             target_training_influence: &fixture.influence,

@@ -176,12 +176,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/training_runtime.rs",
-      "sha256": "c0eb5ce515a1284e7208e8ea63e3415eefd9792570be8aeef414ac7ed2882ace",
+      "sha256": "d4ed176a205337a3feef661bf01146958c3ac5df4156ffe8955a0106b18ac1e3",
       "kind": "native_runtime_contract"
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "22612775b5b40321d045f93cfb7d0539bf9ff54709c63379967273bb30b51c33",
+      "sha256": "29f184de270d04468057837c0aa7377e00dafd5405604de2871bf792c2683735",
       "kind": "native_integration_test"
     },
     {
@@ -191,12 +191,12 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "8baf19968b66faa8b7adea1227497f0e743c998f346d353388bb774d3162b64d",
+      "sha256": "33a916b0260d96b166c5cf6f6c7335f726e33aed34820e27eb45df858bcc27ce",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "7c88f6259a58de021cb3a03917687f816353b664a47aacf82966cf9832f14b11",
+      "sha256": "737aaa25353236de9cd1b0693c1a4ffb4e6be730525170a2a5ab431851adb3b4",
       "kind": "python_typing"
     },
     {
@@ -206,17 +206,17 @@
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "c5a36127ed67fb9286d41a8d8a0f4269504046ada784279a34f74f0ca42aa72d",
+      "sha256": "8291cb44ac61ef764ca52bfceb7d66a7b729d9507042103a723659a3e747b9bc",
       "kind": "python_binding"
     },
     {
       "path": "crates/dag-ml-py/src/training.rs",
-      "sha256": "ae0e1ce608244aa659a51a1f6ae6fcf989113aa818986b11fa2838734a61ac59",
+      "sha256": "4625d939ba04e0da714e0024aa468aaaf65bdd3b134892d7fd63ad3f7b4d295e",
       "kind": "python_training_binding"
     },
     {
       "path": "crates/dag-ml-py/tests/test_training_result.py",
-      "sha256": "ccac5a036b2ac03f58e40e2df36f4af1452df2808ebe295e46d3e685a3514e8c",
+      "sha256": "f529232e1773dc3f9dd75e07ba8094b973116f11f59f7efc7cd396e93925d9eb",
       "kind": "python_binding_test"
     },
     {
@@ -236,7 +236,7 @@
     },
     {
       "path": "docs/contracts/README.md",
-      "sha256": "93344a0dbd2d7e7c4da056197d901edbabbe2647e36ad3c80044ee1fc48ef8cd",
+      "sha256": "cbf1993307ab1efc5c13dff208c3ed125ce2ac4c603ae7037590fd55d6142728",
       "kind": "contract_index_documentation"
     },
     {
@@ -481,7 +481,7 @@
     },
     {
       "path": "scripts/smoke_python_bindings.py",
-      "sha256": "59ac6f7a5a219351bc8bb21c80efa3aa4f54dad5cf65d884e68ab26a7afe7876",
+      "sha256": "d89800cc935439e1f38877e6315ed4c4cf52777bb4ba03173afb7b9f60b1c8d6",
       "kind": "binding_smoke"
     },
     {
@@ -569,5 +569,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "5dfe9346da4f5c45a101d6630b6304f7b51a58e2ee475c5f179d37e6a3a2663a"
+  "pack_checksum": "0ed3b8bec5538535623283836fd00c54b4d4e2b4b21ad30332675330ebbcd0f2"
 }
