@@ -1710,6 +1710,8 @@ mod pls_controller {
         hydrated_n4mm_by_handle: Mutex<BTreeMap<u64, Vec<u8>>>,
     }
 
+    type RidgePredictionInputs<'a> = BTreeMap<String, &'a PredictionInputSpec>;
+
     impl MethodsRidgeController {
         pub fn new(runtime: MethodsRuntime) -> Self {
             Self {
@@ -1807,10 +1809,7 @@ mod pls_controller {
         fn split_prediction_inputs<'a>(
             task: &'a NodeTask,
             suffix: &str,
-        ) -> Result<(
-            BTreeMap<String, &'a PredictionInputSpec>,
-            BTreeMap<String, &'a PredictionInputSpec>,
-        )> {
+        ) -> Result<(RidgePredictionInputs<'a>, RidgePredictionInputs<'a>)> {
             let mut fit = BTreeMap::new();
             let mut output = BTreeMap::new();
             for (key, spec) in &task.prediction_inputs {
@@ -1838,9 +1837,7 @@ mod pls_controller {
             Ok((fit, output))
         }
 
-        fn predict_only_inputs<'a>(
-            task: &'a NodeTask,
-        ) -> Result<BTreeMap<String, &'a PredictionInputSpec>> {
+        fn predict_only_inputs(task: &NodeTask) -> Result<RidgePredictionInputs<'_>> {
             let mut inputs = BTreeMap::new();
             for (key, spec) in &task.prediction_inputs {
                 let Some(base) = key.strip_suffix(":predict") else {
