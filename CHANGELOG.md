@@ -26,6 +26,11 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   by `nirs4all-core`.
 
 ### Fixed
+- Release patch 0.3.16: TCV1 replay fingerprints now preserve their exact
+  binary64 values across JSON serialization, including dynamic native Methods
+  score values, so saved native packages reload and predict without a
+  fingerprint drift.
+
 - Release patch 0.3.9: target-free PREDICT replay retains the validated
   conformal intervals calibrated from the source training evidence.
 
