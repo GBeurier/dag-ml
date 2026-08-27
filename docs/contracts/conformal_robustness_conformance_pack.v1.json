@@ -295,7 +295,7 @@
     },
     {
       "path": "parity/conformal/oracle.py",
-      "sha256": "301805fa1f8197f7ac253336e4cd7ab3a0ae03ca503c984850fee3a542007904",
+      "sha256": "69c0f4faf4bdb1d42300c4d4c06921dff41aad9ea295b7469c13d8b981f08584",
       "kind": "test_oracle"
     },
     {
@@ -448,5 +448,5 @@
       ]
     }
   ],
-  "pack_checksum": "72e49144cd0a80fded172bdc0b1dae8859383346c6ccf97a4b292a9759f49fbc"
+  "pack_checksum": "910a0222fd8bc78f84df78064599236c58f1c32a45af91595823899be0952de7"
 }
