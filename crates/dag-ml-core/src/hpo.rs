@@ -1723,6 +1723,13 @@ mod pls_controller {
 
     type RidgePredictionInputs<'a> = BTreeMap<String, &'a PredictionInputSpec>;
 
+    struct RidgePredictionOutput {
+        sample_ids: Vec<crate::SampleId>,
+        target_names: Vec<String>,
+        values: Vec<Vec<f64>>,
+        partition: PredictionPartition,
+    }
+
     impl MethodsRidgeController {
         pub fn new(runtime: MethodsRuntime) -> Self {
             Self {
@@ -1917,12 +1924,9 @@ mod pls_controller {
         fn result(
             &self,
             task: &NodeTask,
-            sample_ids: Vec<crate::SampleId>,
-            target_names: Vec<String>,
-            values: Vec<Vec<f64>>,
+            output: RidgePredictionOutput,
             targets: Option<&crate::runtime::MethodsPlsMatrix>,
             artifact: Option<(ArtifactRef, HandleRef)>,
-            partition: PredictionPartition,
         ) -> Result<NodeResult> {
             let regression_targets = if task.phase == Phase::FitCv {
                 let targets = targets.ok_or_else(|| {
@@ -1932,7 +1936,8 @@ mod pls_controller {
                 })?;
                 vec![RegressionTargetBlock {
                     level: PredictionLevel::Sample,
-                    unit_ids: sample_ids
+                    unit_ids: output
+                        .sample_ids
                         .iter()
                         .cloned()
                         .map(PredictionUnitId::Sample)
@@ -1942,7 +1947,7 @@ mod pls_controller {
                         .chunks(targets.cols)
                         .map(|row| row.to_vec())
                         .collect(),
-                    target_names: target_names.clone(),
+                    target_names: output.target_names.clone(),
                 }]
             } else {
                 Vec::new()
@@ -1972,13 +1977,13 @@ mod pls_controller {
                     )),
                     producer_node: task.node_plan.node_id.clone(),
                     producer_port: Some("oof".to_string()),
-                    partition,
+                    partition: output.partition,
                     fold_id: (task.phase == Phase::FitCv)
                         .then(|| task.fold_id.clone())
                         .flatten(),
-                    sample_ids,
-                    values,
-                    target_names,
+                    sample_ids: output.sample_ids,
+                    values: output.values,
+                    target_names: output.target_names,
                 }],
                 observation_predictions: Vec::new(),
                 aggregated_predictions: Vec::new(),
@@ -2160,12 +2165,14 @@ mod pls_controller {
                     Self::result(
                         self,
                         task,
-                        prediction.sample_ids.clone(),
-                        prediction.target_names.clone(),
-                        values,
+                        RidgePredictionOutput {
+                            sample_ids: prediction.sample_ids.clone(),
+                            target_names: prediction.target_names.clone(),
+                            values,
+                            partition: PredictionPartition::Validation,
+                        },
                         Some(validation_targets),
                         None,
-                        PredictionPartition::Validation,
                     )
                 }
                 Phase::Refit => {
@@ -2246,12 +2253,14 @@ mod pls_controller {
                     Self::result(
                         self,
                         task,
-                        output_ids,
-                        data.fit.target_names.clone(),
-                        values,
+                        RidgePredictionOutput {
+                            sample_ids: output_ids,
+                            target_names: data.fit.target_names.clone(),
+                            values,
+                            partition,
+                        },
                         None,
                         Some((artifact, handle)),
-                        partition,
                     )
                 }
                 Phase::Predict => {
@@ -2275,12 +2284,14 @@ mod pls_controller {
                     Self::result(
                         self,
                         task,
-                        data.fit.sample_ids.clone(),
-                        data.fit.target_names.clone(),
-                        values,
+                        RidgePredictionOutput {
+                            sample_ids: data.fit.sample_ids.clone(),
+                            target_names: data.fit.target_names.clone(),
+                            values,
+                            partition: PredictionPartition::Final,
+                        },
                         None,
                         None,
-                        PredictionPartition::Final,
                     )
                 }
                 _ => Err(DagMlError::RuntimeValidation(

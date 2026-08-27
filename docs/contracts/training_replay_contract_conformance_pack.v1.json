@@ -3,8 +3,8 @@
   "pack_id": "dag-ml.training-replay-contracts.v1",
   "mode": "current",
   "base_pack_id": "dag-ml.training-contracts.v1",
-  "base_pack_sha256": "d72185adbfab8dfe90853ea32b19064ee2c7059c0d29dec528b2b4542ebd7ff9",
-  "base_pack_checksum": "93592021a676660e35fc8439a1e87bae3a6f39e94cfdb84891fa48f072c99b7a",
+  "base_pack_sha256": "dd4181bc444fd03e63ffbd946006c427fd0bb1aa6057dc0fb4526e183b8ef635",
+  "base_pack_checksum": "bba7b3b2bae875f5baf86ce414c6b11e127b9fbbe2d7e920ce727b2e3de9f1cd",
   "base_pack_mode": "current",
   "hash_algorithm": "sha256-file-bytes",
   "canonical_profile": "DAG-ML TCV1",
@@ -61,7 +61,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/bundle.rs",
-      "sha256": "f295b392bf56e0468f54cf6d2e32eb03744f1d9c899f2a5eb4d34d9a74b09714",
+      "sha256": "1e3e6cd9cc6aff2c457d77ad56f0c2abda1d5c466d007e42aa2b907e321fac9c",
       "kind": "base_native_bundle_contract"
     },
     {
@@ -111,7 +111,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/hpo.rs",
-      "sha256": "e0971335f830b8369b4768f52c4d5212abb9dcf1417e320ed52f77551bdde750",
+      "sha256": "497250d0813ae4e9111a338658228715333347ce2f1c91c79180abd5ff7cfc87",
       "kind": "base_native_hpo_controller"
     },
     {
@@ -176,7 +176,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "c07cf765d786487c2e5de52065169e8c9b662ed77cb888ae4f6f54b138fc9363",
+      "sha256": "179b3072a655bbda6c431b4d27f11911759cdaadb43d07fc7b747aca13493eba",
       "kind": "base_native_hpo_scheduler"
     },
     {
@@ -201,12 +201,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/training_runtime.rs",
-      "sha256": "f2a0a5c14653c3004222744f642b84999004161519c12a46fb64eef04e49e4d3",
+      "sha256": "830cfe494a5d4d5519ae894ac5ba147848b0971e92af636358867cbb5eca5b30",
       "kind": "base_native_runtime_contract"
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "43ae581c67231608d0e4a8fa336bed0d20d6c7d4c8103aa4cba3335186a1123e",
+      "sha256": "ebc3c694e46b2205afd1231f9573617bd73d0422f187420de56518bcc818ee78",
       "kind": "base_native_integration_test"
     },
     {
@@ -236,7 +236,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/training.rs",
-      "sha256": "eb87777e1d0bdbdbaf6d6e3612e18033bb4b100c9611efeada0d47bb4c8c851e",
+      "sha256": "bcb3e480f9d984515b15333c28355a6e1e111b50772040f5201c129c5242f7a5",
       "kind": "base_python_training_binding"
     },
     {
@@ -481,7 +481,7 @@
     },
     {
       "path": "docs/contracts/training_contract_conformance_pack.v1.json",
-      "sha256": "d72185adbfab8dfe90853ea32b19064ee2c7059c0d29dec528b2b4542ebd7ff9",
+      "sha256": "dd4181bc444fd03e63ffbd946006c427fd0bb1aa6057dc0fb4526e183b8ef635",
       "kind": "base_conformance_pack"
     },
     {
@@ -706,7 +706,7 @@
     },
     {
       "path": "parity/training/generate_training_replay_fixtures.py",
-      "sha256": "5d40f4ebc8b8a479778efbe1b92faec55fd6cf05aaf00b8b6d36ef745c568b69",
+      "sha256": "6bdc7e6664b2e420350ae176337e912dedf4c4e2f27cbbf76267a74a74a8f408",
       "kind": "generator"
     },
     {
@@ -721,7 +721,7 @@
     },
     {
       "path": "parity/training/tests/test_training_replay_contracts.py",
-      "sha256": "be028dba82914d08eddc9b3b7ff47f728e9cb66152cd96626c87f13ba7dce842",
+      "sha256": "91ebaafd2eca5c1f55f356f41525cff07686981cf1f195915355f1941b0225bf",
       "kind": "test"
     },
     {
@@ -761,7 +761,7 @@
     },
     {
       "path": "scripts/validate_training_replay_contracts.py",
-      "sha256": "1a4af04278ee5685116d24b4f20becad9d3647cf5db4ff80aefaba484c49a416",
+      "sha256": "ddd3ae1b2f6637ae4233a9004c0d5b14be805863bc523e15b3a5410357dd907d",
       "kind": "production_validator"
     },
     {
@@ -846,5 +846,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "fd9ccea1d675e0c71b4c350b37ca058821279b8513bbe404e8d6e21bc9e0bd81"
+  "pack_checksum": "09306bedb380435ad68c5d99654eb39ee8d0a055ad22e58d7fdf04530d733ca1"
 }
