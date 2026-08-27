@@ -189,6 +189,14 @@ impl RuntimeDataProvider for MethodsPortableReplayProvider {
         self.inner.make_view(request)
     }
 
+    fn predict_cohort(
+        &self,
+        binding: &crate::data::DataBinding,
+        phase: Phase,
+    ) -> Result<Option<crate::data::PredictCohort>> {
+        self.inner.predict_cohort(binding, phase)
+    }
+
     fn methods_pls_capability(&self) -> Result<()> {
         Ok(())
     }
