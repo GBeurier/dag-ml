@@ -3029,6 +3029,10 @@ fn select_prediction_cache_blocks(
         .filter(|block| {
             block.producer_node == requirement.producer_node
                 && block.partition == requirement.partition
+                && block
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold_id| requirement.fold_ids.contains(fold_id))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -3068,6 +3072,10 @@ fn select_aggregated_prediction_cache_blocks(
             block.producer_node == requirement.producer_node
                 && block.partition == requirement.partition
                 && block.level == requirement.prediction_level
+                && block
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold_id| requirement.fold_ids.contains(fold_id))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -4681,6 +4689,20 @@ mod tests {
                 values: vec![vec![0.3], vec![0.4]],
                 target_names: vec!["y".to_string()],
             },
+            // Child OOF evidence from a nested stacking scope is valid while
+            // fitting that scope's meta-model, but it is not part of this
+            // outer-fold requirement.  The same samples deliberately prove
+            // cache construction cannot persist both evidence classes.
+            PredictionBlock {
+                prediction_id: Some("prediction:branch:b0.inner".to_string()),
+                producer_node: producer_node.clone(),
+                producer_port: Some("oof".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("nested:fold:0").unwrap()),
+                sample_ids: samples[0..2].to_vec(),
+                values: vec![vec![9.1], vec![9.2]],
+                target_names: vec!["y".to_string()],
+            },
         ];
         let cache = build_prediction_cache_record(&requirement, &prediction_blocks).unwrap();
         let payload = build_prediction_cache_payload(&requirement, &prediction_blocks).unwrap();
@@ -4690,6 +4712,14 @@ mod tests {
             .blocks
             .iter()
             .all(|block| block.prediction_level == PredictionLevel::Sample));
+        assert_eq!(cache.block_count, 2);
+        assert_eq!(cache.row_count, 4);
+        assert!(cache.blocks.iter().all(|block| {
+            block
+                .fold_id
+                .as_ref()
+                .is_some_and(|fold_id| requirement.fold_ids.contains(fold_id))
+        }));
         validate_prediction_cache_payload_matches_record(&payload, &cache).unwrap();
         let cache_namespace_fingerprints = vec!["a".repeat(64), "b".repeat(64)];
         let mut d10_cache = cache.clone();

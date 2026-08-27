@@ -42,9 +42,10 @@ use crate::policy::PredictionLevel;
 use crate::replay::methods_hpo_resume_state_from_package_json;
 use crate::replay::{replay_request_from_outcome, TrainingReplayOutcome};
 use crate::runtime::{
-    plan_oof_partition_mode, select_best_variant_outcome_by_cv_for_target, InMemoryArtifactStore,
-    LineageRecord, NodeResult, ParallelScheduler, RunContext, RuntimeControllerRegistry,
-    RuntimeDataProvider, SequentialScheduler, VariantExecutionSpec,
+    is_nested_stacking_meta_node, nested_stacking_campaign_plan, plan_oof_partition_mode,
+    select_best_variant_outcome_by_cv_for_target, InMemoryArtifactStore, LineageRecord, NodeResult,
+    ParallelScheduler, RunContext, RuntimeControllerRegistry, RuntimeDataProvider,
+    SequentialScheduler, VariantExecutionSpec,
 };
 #[cfg(feature = "methods-optimizer")]
 use crate::runtime::{
@@ -1430,6 +1431,16 @@ pub fn build_portable_refit_package_v3(
                 .to_string(),
         );
     }
+    // A V3 child is an already-trained REFIT artifact package.  Validation
+    // OOF inputs were necessary to fit a stacking meta-estimator, but they
+    // are neither a PREDICT dependency nor part of V3's deliberately
+    // cache-free contract.  Persisting their V2 cache keys would make the
+    // derived runtime bundle demand source-CV evidence that V3 correctly
+    // does not carry.
+    let mut refit_artifacts = input.execution.refit_artifacts.clone();
+    for record in &mut refit_artifacts {
+        record.prediction_requirement_keys.clear();
+    }
     let mut bundle = PortableRefitExecutionBundleV3 {
         schema_version: PORTABLE_REFIT_EXECUTION_BUNDLE_V3_SCHEMA_VERSION,
         bundle_id: input.bundle_id,
@@ -1438,7 +1449,7 @@ pub fn build_portable_refit_package_v3(
             "portable refit package V3 effective plan",
         )?,
         selected_variant_id: input.recipe.selected_variant_id.clone(),
-        refit_artifacts: input.execution.refit_artifacts.clone(),
+        refit_artifacts,
         raw_artifact_payloads: input.execution.raw_artifact_payloads.clone(),
         bundle_fingerprint: zero_fingerprint(),
     };
@@ -1716,11 +1727,14 @@ fn portable_refit_binding_map(
 
 /// Execute exactly one portable native full refit from a closed recipe.
 ///
-/// The function has no V2 replay input and uses the scheduler's ordinary
-/// `REFIT` phase directly. All source/recipe/cohort checks occur before the
-/// data provider is queried. It intentionally returns execution evidence
-/// rather than synthesising a TrainingOutcome: V3 persistence must add the
-/// new outcome/bundle/package atomically in its owning writer.
+/// The function has no V2 replay input. A declared nested-stacking target
+/// first rebuilds its own selected-variant inner/outer OOF evidence, then runs
+/// the ordinary `REFIT` phase. This is target-cohort execution only: it never
+/// resumes source CV, selection, scores, caches, or artifacts. Non-stacking
+/// plans retain the direct REFIT path. All source/recipe/cohort checks occur
+/// before the data provider is queried. It intentionally returns execution
+/// evidence rather than synthesising a TrainingOutcome: V3 persistence must
+/// add the new outcome/bundle/package atomically in its owning writer.
 pub fn execute_portable_full_refit(
     input: PortableFullRefitExecutionInput<'_>,
 ) -> Result<PortableFullRefitExecution> {
@@ -1771,6 +1785,62 @@ pub fn execute_portable_full_refit(
     }
     let mut ctx = RunContext::new(input.run_id.clone(), derived_target_plan.campaign.root_seed);
     ctx.variant_id = Some(input.recipe.selected_variant_id.clone());
+    if let Some(nested) = nested_stacking_campaign_plan(&derived_target_plan)? {
+        // Ridge's full refit trains only from target-cohort OOF base features.
+        // Recreate those scheduler-owned nested scopes for the already selected
+        // variant; this is not a CV/SELECT replay of the parent package.
+        SequentialScheduler.execute_campaign_phase_with_data_provider(
+            &derived_target_plan,
+            input.controllers,
+            input.data_provider,
+            &mut ctx,
+            Phase::FitCv,
+        )?;
+        // The following REFIT consumes only report-grade outer OOF rows. Check
+        // their presence at the phase boundary so a nested target cannot fall
+        // through to a less actionable generic OOF failure while rebuilding a
+        // stack on a fresh cohort.
+        let expected_outer_folds = nested
+            .outer_scopes
+            .iter()
+            .map(|scope| scope.outer_fold_id.clone())
+            .collect::<BTreeSet<_>>();
+        for edge in derived_target_plan
+            .graph_plan
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| edge.target.node_id == nested.meta_node_id && edge.contract.requires_oof)
+        {
+            let observed_outer_folds = ctx
+                .prediction_store
+                .find(
+                    Some(&edge.source.node_id),
+                    Some(&PredictionPartition::Validation),
+                    None,
+                )
+                .into_iter()
+                .filter(|block| {
+                    block
+                        .fold_id
+                        .as_ref()
+                        .is_some_and(|fold_id| expected_outer_folds.contains(fold_id))
+                })
+                .map(|block| block.fold_id.clone().expect("filtered above"))
+                .collect::<BTreeSet<_>>();
+            if observed_outer_folds != expected_outer_folds {
+                return Err(DagMlError::OofValidation(format!(
+                    "portable full refit nested FIT_CV did not retain exact outer OOF folds for `{}.{}` -> `{}.{}`; expected {:?}, observed {:?}",
+                    edge.source.node_id,
+                    edge.source.port_name,
+                    edge.target.node_id,
+                    edge.target.port_name,
+                    expected_outer_folds,
+                    observed_outer_folds,
+                )));
+            }
+        }
+    }
     let mut artifact_store = InMemoryArtifactStore::new();
     let results = SequentialScheduler
         .execute_campaign_phase_with_data_provider_and_artifact_store(
@@ -2987,6 +3057,30 @@ pub fn build_oof_prediction_requirements(
         .iter()
         .filter(|edge| edge.contract.requires_oof)
     {
+        // Nested stacking retains two validation-OOF evidence classes in one
+        // run context: parent outer-fold rows for report/refit, and child
+        // inner-fold rows used solely to train each outer-fold meta model.
+        // Portable caches are the refit pool, so they must retain only the
+        // report-grade outer rows.  Keeping child rows here would duplicate
+        // sample ids across outer scopes and violate the cache's exact OOF
+        // identity contract.
+        let report_fold_ids = if is_nested_stacking_meta_node(plan, &edge.target.node_id)? {
+            Some(
+                plan.fold_set
+                    .as_ref()
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "nested stacking requires an attested outer fold set".to_string(),
+                        )
+                    })?
+                    .folds
+                    .iter()
+                    .map(|fold| fold.fold_id.clone())
+                    .collect::<BTreeSet<_>>(),
+            )
+        } else {
+            None
+        };
         let source_plan = plan.node_plans.get(&edge.source.node_id).ok_or_else(|| {
             DagMlError::RuntimeValidation(format!(
                 "OOF edge source `{}` has no node plan",
@@ -3017,6 +3111,12 @@ pub fn build_oof_prediction_requirements(
                                 &block.producer_port,
                             )
                             && block.partition == PredictionPartition::Validation
+                            && report_fold_ids.as_ref().is_none_or(|fold_ids| {
+                                block
+                                    .fold_id
+                                    .as_ref()
+                                    .is_some_and(|fold_id| fold_ids.contains(fold_id))
+                            })
                     })
                     .collect::<Vec<_>>();
                 if selected.is_empty() {
@@ -3053,6 +3153,12 @@ pub fn build_oof_prediction_requirements(
                             )
                             && block.partition == PredictionPartition::Validation
                             && block.level == prediction_level
+                            && report_fold_ids.as_ref().is_none_or(|fold_ids| {
+                                block
+                                    .fold_id
+                                    .as_ref()
+                                    .is_some_and(|fold_id| fold_ids.contains(fold_id))
+                            })
                     })
                     .collect::<Vec<_>>();
                 if selected.is_empty() {
@@ -4869,6 +4975,30 @@ fn validate_lineage_coordinates(
                 .map(move |fold| (Phase::FitCv, Some(fold.fold_id.clone()), node_id.clone()))
         })
         .collect::<BTreeSet<_>>();
+    let mut expected_fit = expected_fit;
+    if let Some(nested) = nested_stacking_campaign_plan(&outcome.effective_plan)? {
+        // A nested stacking campaign has two explicit FIT_CV scopes. Every
+        // closure node still runs once on each report-grade outer fold, while
+        // base dependencies additionally run on each parent-bound inner fold
+        // to build the meta-model's training features. Those inner records are
+        // required evidence, not duplicate outer-fold lineage.
+        for outer in &nested.outer_scopes {
+            for inner_fold in &outer.inner.inner_fold_set.folds {
+                for node_id in nested.base_node_ids.intersection(closure) {
+                    if outcome.effective_plan.node_plans[node_id]
+                        .supported_phases
+                        .contains(&Phase::FitCv)
+                    {
+                        expected_fit.insert((
+                            Phase::FitCv,
+                            Some(inner_fold.fold_id.clone()),
+                            node_id.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
     let actual_fit = coordinates
         .keys()
         .filter(|(phase, _, _)| *phase == Phase::FitCv)
@@ -4906,6 +5036,63 @@ fn validate_lineage_coordinates(
             continue;
         }
         let plan = &outcome.effective_plan.node_plans[node_id];
+        if *phase == Phase::FitCv {
+            if let Some(nested) = nested_stacking_campaign_plan(&outcome.effective_plan)? {
+                if *node_id == nested.meta_node_id {
+                    let outer_fold = fold.as_ref().ok_or_else(|| {
+                        DagMlError::CampaignValidation(
+                            "nested stacking meta FIT_CV lineage has no outer fold".to_string(),
+                        )
+                    })?;
+                    let outer = nested
+                        .outer_scopes
+                        .iter()
+                        .find(|outer| outer.outer_fold_id == *outer_fold)
+                        .ok_or_else(|| {
+                            DagMlError::CampaignValidation(format!(
+                                "nested stacking meta FIT_CV lineage uses unknown outer fold `{outer_fold}`"
+                            ))
+                        })?;
+                    let mut expected_inputs = outcome
+                        .effective_plan
+                        .graph_plan
+                        .graph
+                        .edges
+                        .iter()
+                        .filter(|edge| {
+                            edge.target.node_id == *node_id && edge.contract.requires_oof
+                        })
+                        .flat_map(|edge| {
+                            outer.inner.inner_fold_set.folds.iter().map(move |inner| {
+                                coordinates
+                                    .get(&(
+                                        Phase::FitCv,
+                                        Some(inner.fold_id.clone()),
+                                        edge.source.node_id.clone(),
+                                    ))
+                                    .map(|upstream| upstream.record_id.clone())
+                                    .ok_or_else(|| {
+                                        DagMlError::CampaignValidation(format!(
+                                            "nested stacking lineage is missing inner upstream `{}` for outer fold `{outer_fold}`",
+                                            edge.source.node_id
+                                        ))
+                                    })
+                            })
+                        })
+                        .collect::<Result<Vec<LineageId>>>()?;
+                    expected_inputs.sort();
+                    if record.input_lineage != expected_inputs {
+                        return contract_error(
+                            "nested stacking meta lineage does not exactly match inner OOF inputs",
+                        );
+                    }
+                    if !record.artifact_refs.is_empty() {
+                        return contract_error("FIT_CV lineage must not retain refit artifacts");
+                    }
+                    continue;
+                }
+            }
+        }
         let expected_inputs = plan
             .input_nodes
             .iter()

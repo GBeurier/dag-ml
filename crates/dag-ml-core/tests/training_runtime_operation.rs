@@ -2759,6 +2759,15 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
     })
     .expect("fresh full refit writes a detached V3 child package");
     refit_package.validate().unwrap();
+    assert!(
+        refit_package
+            .outcome
+            .execution_bundle
+            .refit_artifacts
+            .iter()
+            .all(|record| record.prediction_requirement_keys.is_empty()),
+        "V3 owns trained REFIT artifacts, never the parent CV OOF cache dependencies"
+    );
     let refit_json = serde_json::to_string(&refit_package).unwrap();
     assert_eq!(
         PortableRefitPackageV3::from_json(&refit_json).unwrap(),
