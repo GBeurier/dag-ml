@@ -24,7 +24,8 @@ use crate::controller::{
 #[cfg(dag_ml_workspace_contract_fixtures)]
 use crate::criteria::{ImplementationCapability, TrainingLossRoleReference};
 use crate::data::{
-    DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider, SOURCE_INDEX_METADATA_KEY,
+    DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider, PredictCohort,
+    PredictCohortRole, SOURCE_INDEX_METADATA_KEY,
 };
 use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
 use crate::generation::{
@@ -7953,14 +7954,152 @@ fn make_data_view_handle_refuses_non_data_handle_kind() {
         &node_plan,
         &scope,
         &binding,
-        &data_handle,
-        &view,
+        DataViewHandleInput {
+            data_handle: &data_handle,
+            view: &view,
+            predict_cohort: None,
+        },
     )
     .unwrap_err()
     .to_string();
     assert!(
         error.contains("non-data/data-view handle kind"),
         "unexpected handle-kind error: {error}"
+    );
+}
+
+// ADR-26: a top-level PREDICT uses only its separately attested cohort.  It
+// must not touch the CV relation authority, even when the binding requires it
+// for FIT_CV/REFIT.  The exact cohort also reaches both provider boundaries.
+#[test]
+fn predict_uses_attested_cohort_without_resolving_cv_relations() {
+    struct PredictCohortProbe {
+        owner: ControllerId,
+        cohort: PredictCohort,
+        materialize_calls: std::cell::Cell<usize>,
+        make_view_calls: std::cell::Cell<usize>,
+        relation_calls: std::cell::Cell<usize>,
+    }
+
+    impl RuntimeDataProvider for PredictCohortProbe {
+        fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+            self.materialize_calls.set(self.materialize_calls.get() + 1);
+            assert_eq!(request.phase, Phase::Predict);
+            assert_eq!(request.predict_cohort.as_ref(), Some(&self.cohort));
+            Ok(HandleRef {
+                handle: 81,
+                kind: HandleKind::Data,
+                owner_controller: self.owner.clone(),
+            })
+        }
+
+        fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+            self.make_view_calls.set(self.make_view_calls.get() + 1);
+            assert_eq!(request.phase, Phase::Predict);
+            assert_eq!(request.predict_cohort.as_ref(), Some(&self.cohort));
+            assert_eq!(request.view.partition, DataRequestPartition::Predict);
+            assert_eq!(request.view.fold_id, None);
+            assert_eq!(
+                request.view.sample_ids,
+                Some(self.cohort.physical_sample_ids.clone())
+            );
+            Ok(HandleRef {
+                handle: 82,
+                kind: HandleKind::DataView,
+                owner_controller: self.owner.clone(),
+            })
+        }
+
+        fn coordinator_relations(
+            &self,
+            _binding: &crate::data::DataBinding,
+        ) -> Result<Option<SampleRelationSet>> {
+            self.relation_calls.set(self.relation_calls.get() + 1);
+            Err(DagMlError::RuntimeValidation(
+                "PREDICT must not resolve CV coordinator relations".to_string(),
+            ))
+        }
+
+        fn predict_cohort(
+            &self,
+            _binding: &crate::data::DataBinding,
+            phase: Phase,
+        ) -> Result<Option<PredictCohort>> {
+            assert_eq!(phase, Phase::Predict);
+            Ok(Some(self.cohort.clone()))
+        }
+    }
+
+    let held_out = SampleId::new("heldout:1").unwrap();
+    let relations = SampleRelationSet {
+        records: vec![crate::relation::SampleRelation::new(
+            ObservationId::new("obs:heldout.1").unwrap(),
+            held_out.clone(),
+        )],
+    };
+    let relation_fingerprint = relations.fingerprint().unwrap();
+    let mut cohort = PredictCohort {
+        role: PredictCohortRole::ExternalTest,
+        physical_sample_ids: vec![held_out.clone()],
+        origin_sample_ids: vec![held_out.clone()],
+        target_names: vec!["y".to_string()],
+        relation_fingerprint,
+        relations,
+        data_content_fingerprint: "a".repeat(64),
+        target_content_fingerprint: Some("b".repeat(64)),
+        cohort_fingerprint: String::new(),
+    };
+    cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+
+    let model_id = NodeId::new("model:pls").unwrap();
+    let mut campaign = oof_edge_campaign();
+    campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]);
+    let plan = build_execution_plan(
+        "plan:predict.cohort.only",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    cohort
+        .validate_against_cv_fold_set(plan.fold_set.as_ref().unwrap())
+        .unwrap();
+    let node_plan = plan.node_plans.get(&model_id).unwrap();
+    let provider = PredictCohortProbe {
+        owner: ControllerId::new("controller:data.predict-cohort").unwrap(),
+        cohort: cohort.clone(),
+        materialize_calls: std::cell::Cell::new(0),
+        make_view_calls: std::cell::Cell::new(0),
+        relation_calls: std::cell::Cell::new(0),
+    };
+    let resources = PhaseScopeResources {
+        data_provider: Some(&provider),
+        ..Default::default()
+    };
+    let ctx = RunContext::new(RunId::new("run:predict.cohort.only").unwrap(), Some(11));
+    let collected = collect_input_handles(
+        &plan,
+        node_plan,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &resources,
+        &ctx,
+        &PhaseScope {
+            phase: Phase::Predict,
+            variant_id: Some(VariantId::new("variant:base").unwrap()),
+            variant: None,
+            fold_id: None,
+            seed_root: Some(11),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(provider.materialize_calls.get(), 1);
+    assert_eq!(provider.make_view_calls.get(), 1);
+    assert_eq!(provider.relation_calls.get(), 0);
+    assert_eq!(
+        collected.data_views["data:x"].sample_ids,
+        Some(vec![held_out])
     );
 }
 

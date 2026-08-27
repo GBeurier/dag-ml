@@ -10,6 +10,11 @@ pub struct DataMaterializationRequest {
     pub variant_id: Option<VariantId>,
     pub fold_id: Option<FoldId>,
     pub binding: crate::data::DataBinding,
+    /// The optional, separately attested cohort selected only for a top-level
+    /// PREDICT operation.  It is absent for the V1 path and for every phase
+    /// that can fit, validate, select, refit, or calibrate a model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predict_cohort: Option<crate::data::PredictCohort>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -296,6 +301,11 @@ pub struct DataViewRequest {
     pub binding: crate::data::DataBinding,
     pub data_handle: HandleRef,
     pub view: DataProviderViewSpec,
+    /// The same PREDICT-only authority carried by the materialization
+    /// request.  The envelope-attested wrapper compares it exactly before a
+    /// host provider can observe a data view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predict_cohort: Option<crate::data::PredictCohort>,
 }
 
 pub trait RuntimeDataProvider {
@@ -925,17 +935,57 @@ impl<P> EnvelopeAttestedRuntimeDataProvider<P> {
         self.attestation_for_binding(binding)?;
         Ok(())
     }
+
+    fn validate_predict_cohort_request(
+        &self,
+        binding: &DataBinding,
+        phase: Phase,
+        supplied: &Option<crate::data::PredictCohort>,
+    ) -> Result<()> {
+        let attestation = self.attestation_for_binding(binding)?;
+        match phase {
+            Phase::Predict => {
+                if let Some(cohort) = supplied {
+                    cohort.validate()?;
+                }
+                if supplied != &attestation.envelope.predict_cohort {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "PREDICT cohort for runtime binding `{}` does not exactly match its envelope attestation",
+                        data_binding_requirement_key(&binding.node_id, &binding.input_name)
+                    )));
+                }
+            }
+            _ if supplied.is_some() => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "runtime binding `{}` carries a PREDICT cohort during non-PREDICT phase {phase:?}",
+                    data_binding_requirement_key(&binding.node_id, &binding.input_name)
+                )));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeDataProvider<P> {
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
         self.validate_request_binding(&request.node_id, &request.input_name, &request.binding)?;
+        self.validate_predict_cohort_request(
+            &request.binding,
+            request.phase,
+            &request.predict_cohort,
+        )?;
         self.inner.materialize(request)
     }
 
     fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
         request.view.validate()?;
         self.validate_request_binding(&request.node_id, &request.input_name, &request.binding)?;
+        self.validate_predict_cohort_request(
+            &request.binding,
+            request.phase,
+            &request.predict_cohort,
+        )?;
         self.inner.make_view(request)
     }
 
@@ -1248,16 +1298,22 @@ pub(crate) fn validation_output_data_view(task: &NodeTask) -> Option<&DataProvid
         .find(|view| view.partition == DataRequestPartition::FoldValidation)
 }
 
+/// Scheduler-selected provider inputs for one materialized data view.
+pub(crate) struct DataViewHandleInput<'a> {
+    pub(crate) data_handle: &'a HandleRef,
+    pub(crate) view: &'a DataProviderViewSpec,
+    pub(crate) predict_cohort: Option<&'a crate::data::PredictCohort>,
+}
+
 pub(crate) fn make_data_view_handle(
     data_provider: &dyn RuntimeDataProvider,
     ctx: &RunContext,
     node_plan: &NodePlan,
     scope: &PhaseScope,
     binding: &DataBinding,
-    data_handle: &HandleRef,
-    view: &DataProviderViewSpec,
+    input: DataViewHandleInput<'_>,
 ) -> Result<HandleRef> {
-    view.validate()?;
+    input.view.validate()?;
     let view_handle = data_provider.make_view(&DataViewRequest {
         run_id: ctx.run_id.clone(),
         node_id: node_plan.node_id.clone(),
@@ -1266,8 +1322,9 @@ pub(crate) fn make_data_view_handle(
         variant_id: scope.variant_id.clone(),
         fold_id: scope.fold_id.clone(),
         binding: binding.clone(),
-        data_handle: data_handle.clone(),
-        view: view.clone(),
+        data_handle: input.data_handle.clone(),
+        view: input.view.clone(),
+        predict_cohort: input.predict_cohort.cloned(),
     })?;
     // A data view is delivered to the controller as a data input, so the
     // provider must return a data-bearing handle. Refuse a model / artifact /
@@ -1304,6 +1361,27 @@ pub(crate) fn data_view_for_scope(
         role,
         excluded_samples,
     )
+}
+
+/// Bind a separately attested PREDICT cohort to a scheduler-created view.
+///
+/// This replaces, rather than merges with, ordinary partition-derived sample
+/// identities. Those identities are CV-derived and must never expand a
+/// held-out external-test cohort. The full cohort travels independently on
+/// the provider request, where the envelope-attested wrapper verifies it
+/// before host data is materialized or viewed.
+pub(crate) fn bind_predict_cohort_to_view(
+    view: &mut DataProviderViewSpec,
+    cohort: &crate::data::PredictCohort,
+) -> Result<()> {
+    cohort.validate()?;
+    if view.partition != DataRequestPartition::Predict || view.fold_id.is_some() {
+        return Err(DagMlError::RuntimeValidation(
+            "PREDICT cohort may only bind a top-level Predict data view".to_string(),
+        ));
+    }
+    view.sample_ids = Some(cohort.physical_sample_ids.clone());
+    view.validate()
 }
 
 pub(crate) fn validation_data_view_for_scope(
@@ -1375,6 +1453,45 @@ mod envelope_attested_provider_tests {
         envelope
     }
 
+    fn inference_predict_cohort(envelope: &ExternalDataPlanEnvelope) -> crate::data::PredictCohort {
+        let relations = envelope
+            .coordinator_relations
+            .clone()
+            .expect("complete test envelope carries coordinator relations");
+        let physical_sample_ids = relations
+            .records
+            .iter()
+            .map(|record| record.sample_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let origin_sample_ids = relations
+            .records
+            .iter()
+            .map(|record| {
+                record
+                    .origin_sample_id
+                    .clone()
+                    .unwrap_or_else(|| record.sample_id.clone())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut cohort = crate::data::PredictCohort {
+            role: crate::data::PredictCohortRole::Inference,
+            physical_sample_ids,
+            origin_sample_ids,
+            target_names: vec!["y".to_string()],
+            relation_fingerprint: relations.fingerprint().unwrap(),
+            relations,
+            data_content_fingerprint: "c".repeat(64),
+            target_content_fingerprint: None,
+            cohort_fingerprint: String::new(),
+        };
+        cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+        cohort
+    }
+
     fn binding_for(
         node_id: &str,
         input_name: &str,
@@ -1415,6 +1532,7 @@ mod envelope_attested_provider_tests {
             variant_id: None,
             fold_id: None,
             binding: binding.clone(),
+            predict_cohort: None,
         }
     }
 
@@ -1466,6 +1584,7 @@ mod envelope_attested_provider_tests {
                     branch_view: None,
                     extra: BTreeMap::new(),
                 },
+                predict_cohort: None,
             })
             .unwrap();
         assert_eq!(view_handle.handle, 42);
@@ -1475,6 +1594,42 @@ mod envelope_attested_provider_tests {
         let inner = provider.into_inner();
         assert_eq!(inner.materialize_calls.get(), 1);
         assert_eq!(inner.make_view_calls.get(), 1);
+    }
+
+    #[test]
+    fn envelope_attested_provider_refuses_substituted_or_non_predict_cohorts() {
+        let mut envelope = complete_envelope();
+        envelope.schema_version = crate::data::EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+        let expected = inference_predict_cohort(&envelope);
+        envelope.predict_cohort = Some(expected.clone());
+        envelope.validate().unwrap();
+        let binding = binding_for("model:base", "x", &envelope);
+        let provider = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![binding.clone()],
+            envelopes_for(&binding, envelope),
+        )
+        .unwrap();
+
+        let mut request = materialization_request(&binding);
+        request.phase = Phase::Predict;
+        request.predict_cohort = Some(expected.clone());
+        provider.materialize(&request).unwrap();
+        assert_eq!(provider.inner().materialize_calls.get(), 1);
+
+        let mut substituted = expected.clone();
+        substituted.data_content_fingerprint = "d".repeat(64);
+        substituted.cohort_fingerprint = substituted.fingerprint().unwrap();
+        request.predict_cohort = Some(substituted);
+        let error = provider.materialize(&request).unwrap_err().to_string();
+        assert!(error.contains("does not exactly match its envelope attestation"));
+        assert_eq!(provider.inner().materialize_calls.get(), 1);
+
+        request.phase = Phase::Refit;
+        request.predict_cohort = Some(expected);
+        let error = provider.materialize(&request).unwrap_err().to_string();
+        assert!(error.contains("during non-PREDICT phase"));
+        assert_eq!(provider.inner().materialize_calls.get(), 1);
     }
 
     #[test]

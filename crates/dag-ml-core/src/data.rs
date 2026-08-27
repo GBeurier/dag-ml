@@ -2690,6 +2690,7 @@ mod tests {
                 variant_id: Some(VariantId::new("variant:base").unwrap()),
                 fold_id: Some(FoldId::new("fold:0").unwrap()),
                 binding: binding(),
+                predict_cohort: None,
             })
             .unwrap();
 
@@ -2726,6 +2727,7 @@ mod tests {
                 variant_id: None,
                 fold_id: None,
                 binding: binding(),
+                predict_cohort: None,
             })
             .is_err());
     }

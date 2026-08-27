@@ -2534,13 +2534,23 @@ pub(crate) fn collect_input_handles(
         )));
     }
     if let Some(data_provider) = resources.data_provider {
-        // Samples excluded from training (sample-local) for this node, derived
-        // from its coordinator relations. Used to filter FIT view specs so the
-        // spec, the materialized view, and fit-influence row_weights agree.
-        let excluded_samples = coordinator_relations_for_node(node_plan, resources)?
-            .map(|relations| relations.excluded_sample_ids())
-            .unwrap_or_default();
+        // Samples excluded from training (sample-local) are relevant only to
+        // fitting scopes. A top-level PREDICT must not even resolve the CV
+        // relation authority: its separately attested cohort below owns the
+        // complete identity universe for that read.
+        let excluded_samples = if scope.phase == Phase::Predict {
+            BTreeSet::new()
+        } else {
+            coordinator_relations_for_node(node_plan, resources)?
+                .map(|relations| relations.excluded_sample_ids())
+                .unwrap_or_default()
+        };
         for binding in &node_plan.data_bindings {
+            let predict_cohort = if scope.phase == Phase::Predict {
+                data_provider.predict_cohort(binding, scope.phase)?
+            } else {
+                None
+            };
             let materialized = data_provider.materialize(&DataMaterializationRequest {
                 run_id: ctx.run_id.clone(),
                 node_id: node_plan.node_id.clone(),
@@ -2549,15 +2559,19 @@ pub(crate) fn collect_input_handles(
                 variant_id: scope.variant_id.clone(),
                 fold_id: scope.fold_id.clone(),
                 binding: binding.clone(),
+                predict_cohort: predict_cohort.clone(),
             })?;
             let branch_view_for_node = branch_view_from_node_metadata(plan, &node_plan.node_id)?;
-            let view = data_view_for_scope(
+            let mut view = data_view_for_scope(
                 binding,
                 plan.fold_set.as_ref(),
                 scope,
                 branch_view_for_node.as_ref(),
                 &excluded_samples,
             )?;
+            if let Some(cohort) = predict_cohort.as_ref() {
+                bind_predict_cohort_to_view(&mut view, cohort)?;
+            }
             let key = data_view_key(&binding.input_name);
             let view_handle = make_data_view_handle(
                 data_provider,
@@ -2565,8 +2579,11 @@ pub(crate) fn collect_input_handles(
                 node_plan,
                 scope,
                 binding,
-                &materialized,
-                &view,
+                DataViewHandleInput {
+                    data_handle: &materialized,
+                    view: &view,
+                    predict_cohort: predict_cohort.as_ref(),
+                },
             )?;
             if data_views.insert(key.clone(), view).is_some() {
                 return Err(DagMlError::RuntimeValidation(format!(
@@ -2595,8 +2612,11 @@ pub(crate) fn collect_input_handles(
                     node_plan,
                     scope,
                     binding,
-                    &materialized,
-                    &validation_view,
+                    DataViewHandleInput {
+                        data_handle: &materialized,
+                        view: &validation_view,
+                        predict_cohort: None,
+                    },
                 )?;
                 if data_views
                     .insert(validation_key.clone(), validation_view)
