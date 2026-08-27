@@ -1546,6 +1546,58 @@ pub struct PredictCohort {
 }
 
 impl PredictCohort {
+    /// Build the closed PREDICT-only authority from its authoritative relation
+    /// records.
+    ///
+    /// Producers must use this constructor instead of reimplementing the
+    /// relation, identity and cohort fingerprint algorithms in a host binding.
+    /// The relation records remain the sole source of physical and origin
+    /// identities; the derived lists are sorted sets so a producer cannot
+    /// accidentally make a cohort depend on host iteration order.
+    pub fn from_relations(
+        role: PredictCohortRole,
+        relations: SampleRelationSet,
+        target_names: Vec<String>,
+        data_content_fingerprint: String,
+        target_content_fingerprint: Option<String>,
+    ) -> Result<Self> {
+        relations.validate()?;
+        let physical_sample_ids = relations
+            .records
+            .iter()
+            .map(|record| record.sample_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let origin_sample_ids = relations
+            .records
+            .iter()
+            .map(|record| {
+                record
+                    .origin_sample_id
+                    .clone()
+                    .unwrap_or_else(|| record.sample_id.clone())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let relation_fingerprint = relations.fingerprint()?;
+        let mut cohort = Self {
+            role,
+            physical_sample_ids,
+            origin_sample_ids,
+            target_names,
+            relation_fingerprint,
+            relations,
+            data_content_fingerprint,
+            target_content_fingerprint,
+            cohort_fingerprint: String::new(),
+        };
+        cohort.validate_members()?;
+        cohort.cohort_fingerprint = cohort.fingerprint()?;
+        Ok(cohort)
+    }
+
     fn validate_members(&self) -> Result<()> {
         validate_sorted_unique_sample_ids(
             "predict cohort physical_sample_ids",
@@ -2376,26 +2428,14 @@ mod tests {
                 SampleId::new("sample:holdout:2").unwrap(),
             ),
         ];
-        let relations = SampleRelationSet { records };
-        let mut cohort = PredictCohort {
-            role: PredictCohortRole::ExternalTest,
-            physical_sample_ids: vec![
-                SampleId::new("sample:holdout:1").unwrap(),
-                SampleId::new("sample:holdout:2").unwrap(),
-            ],
-            origin_sample_ids: vec![
-                SampleId::new("sample:holdout:1").unwrap(),
-                SampleId::new("sample:holdout:2").unwrap(),
-            ],
-            target_names: vec!["classification:y".to_string()],
-            relation_fingerprint: relations.fingerprint().unwrap(),
-            relations,
-            data_content_fingerprint: "c".repeat(64),
-            target_content_fingerprint: Some("d".repeat(64)),
-            cohort_fingerprint: String::new(),
-        };
-        cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
-        cohort
+        PredictCohort::from_relations(
+            PredictCohortRole::ExternalTest,
+            SampleRelationSet { records },
+            vec!["classification:y".to_string()],
+            "c".repeat(64),
+            Some("d".repeat(64)),
+        )
+        .unwrap()
     }
 
     fn cv_fold_set(sample_ids: [&str; 2]) -> FoldSet {
@@ -2471,6 +2511,45 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("inference predict cohort must not carry target_content_fingerprint"));
+    }
+
+    #[test]
+    fn predict_cohort_constructor_derives_closed_identity_from_relations() {
+        let mut first = crate::relation::SampleRelation::new(
+            crate::ids::ObservationId::new("obs:holdout:one").unwrap(),
+            SampleId::new("sample:physical:two").unwrap(),
+        );
+        first.origin_sample_id = Some(SampleId::new("sample:origin:one").unwrap());
+        let second = crate::relation::SampleRelation::new(
+            crate::ids::ObservationId::new("obs:holdout:two").unwrap(),
+            SampleId::new("sample:physical:one").unwrap(),
+        );
+        let cohort = PredictCohort::from_relations(
+            PredictCohortRole::Inference,
+            SampleRelationSet {
+                records: vec![first, second],
+            },
+            vec!["classification:y".to_string()],
+            "e".repeat(64),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cohort.physical_sample_ids,
+            vec![
+                SampleId::new("sample:physical:one").unwrap(),
+                SampleId::new("sample:physical:two").unwrap(),
+            ]
+        );
+        assert_eq!(
+            cohort.origin_sample_ids,
+            vec![
+                SampleId::new("sample:origin:one").unwrap(),
+                SampleId::new("sample:physical:one").unwrap(),
+            ]
+        );
+        cohort.validate().unwrap();
     }
 
     #[test]
