@@ -1405,12 +1405,8 @@ mod pls_controller {
             dataset: &crate::runtime::MethodsPlsDataset,
             values: Vec<Vec<f64>>,
             artifact: Option<(ArtifactRef, HandleRef)>,
+            partition: PredictionPartition,
         ) -> Result<NodeResult> {
-            let partition = if task.phase == Phase::FitCv {
-                PredictionPartition::Validation
-            } else {
-                PredictionPartition::Final
-            };
             let prediction = PredictionBlock {
                 prediction_id: Some(format!(
                     "methods-pls:{}:{}:{}",
@@ -1668,7 +1664,17 @@ mod pls_controller {
                     } else {
                         None
                     };
-                    self.result(task, prediction_data, values, artifact)
+                    let partition = match task.phase {
+                        Phase::FitCv => PredictionPartition::Validation,
+                        // A REFIT prediction view is an explicitly held-out
+                        // output cohort.  Without one, the final model's
+                        // full-train output is a Final block and must never be
+                        // misdelivered as a stacking test feature.
+                        Phase::Refit if data.prediction.is_some() => PredictionPartition::Test,
+                        Phase::Refit | Phase::Predict => PredictionPartition::Final,
+                        _ => unreachable!("match arm admits only FIT_CV/REFIT"),
+                    };
+                    self.result(task, prediction_data, values, artifact, partition)
                 }
                 Phase::Predict => {
                     let artifact = task.artifact_inputs.values().find(|artifact| artifact.controller_id == self.id).ok_or_else(|| DagMlError::RuntimeValidation("portable Methods PLS PREDICT requires its retained N4MM artifact reference".to_string()))?;
@@ -1690,7 +1696,7 @@ mod pls_controller {
                     let model = Model::import_n4mm(&context, &bytes)
                         .map_err(|error| Self::native_error("import_n4mm", error))?;
                     let values = Self::predict(&context, &model, &data.fit)?;
-                    self.result(task, &data.fit, values, None)
+                    self.result(task, &data.fit, values, None, PredictionPartition::Final)
                 }
                 _ => Err(DagMlError::RuntimeValidation(
                     "portable Methods PLS supports FIT_CV, REFIT, and PREDICT only".to_string(),
@@ -1814,6 +1820,7 @@ mod pls_controller {
         fn split_prediction_inputs<'a>(
             task: &'a NodeTask,
             suffix: &str,
+            output_required: bool,
         ) -> Result<(RidgePredictionInputs<'a>, RidgePredictionInputs<'a>)> {
             let mut fit = BTreeMap::new();
             let mut output = BTreeMap::new();
@@ -1833,10 +1840,14 @@ mod pls_controller {
                     )));
                 }
             }
-            if fit.is_empty() || fit.keys().collect::<Vec<_>>() != output.keys().collect::<Vec<_>>()
+            if fit.is_empty()
+                || (output_required
+                    && fit.keys().collect::<Vec<_>>() != output.keys().collect::<Vec<_>>())
+                || (!output.is_empty()
+                    && fit.keys().collect::<Vec<_>>() != output.keys().collect::<Vec<_>>())
             {
                 return Err(DagMlError::RuntimeValidation(format!(
-                    "portable Methods Ridge requires exactly paired base OOF and `{suffix}` prediction inputs"
+                    "portable Methods Ridge requires base OOF inputs and, when present, exactly paired `{suffix}` prediction inputs"
                 )));
             }
             Ok((fit, output))
@@ -1911,12 +1922,8 @@ mod pls_controller {
             values: Vec<Vec<f64>>,
             targets: Option<&crate::runtime::MethodsPlsMatrix>,
             artifact: Option<(ArtifactRef, HandleRef)>,
+            partition: PredictionPartition,
         ) -> Result<NodeResult> {
-            let partition = if task.phase == Phase::FitCv {
-                PredictionPartition::Validation
-            } else {
-                PredictionPartition::Final
-            };
             let regression_targets = if task.phase == Phase::FitCv {
                 let targets = targets.ok_or_else(|| {
                     DagMlError::RuntimeValidation(
@@ -2119,7 +2126,7 @@ mod pls_controller {
             match task.phase {
                 Phase::FitCv => {
                     let (fit_specs, validation_specs) =
-                        Self::split_prediction_inputs(task, ":outer")?;
+                        Self::split_prediction_inputs(task, ":outer", true)?;
                     let prediction = data.prediction.as_ref().ok_or_else(|| {
                         DagMlError::RuntimeValidation(
                             "portable Methods Ridge FIT_CV requires a validation data view"
@@ -2158,27 +2165,17 @@ mod pls_controller {
                         values,
                         Some(validation_targets),
                         None,
+                        PredictionPartition::Validation,
                     )
                 }
                 Phase::Refit => {
-                    let (fit_specs, refit_specs) = Self::split_prediction_inputs(task, ":refit")?;
+                    let (fit_specs, refit_specs) =
+                        Self::split_prediction_inputs(task, ":refit", false)?;
                     let fit_features = Self::feature_matrix(
                         &fit_specs,
                         &data.fit.sample_ids,
                         PredictionPartition::Validation,
                         "REFIT",
-                    )?;
-                    let output_ids = refit_specs
-                        .values()
-                        .next()
-                        .expect("paired inputs checked")
-                        .sample_ids
-                        .clone();
-                    let refit_features = Self::feature_matrix(
-                        &refit_specs,
-                        &output_ids,
-                        PredictionPartition::Test,
-                        "REFIT output",
                     )?;
                     let targets = data.fit.y.as_ref().ok_or_else(|| {
                         DagMlError::RuntimeValidation(
@@ -2186,7 +2183,35 @@ mod pls_controller {
                         )
                     })?;
                     let (context, model) = Self::fit(task, &fit_features, targets)?;
-                    let values = Self::predict(&context, &model, &refit_features)?;
+                    let (output_ids, values, partition) = if refit_specs.is_empty() {
+                        // A normal native full refit has no held-out test
+                        // cohort.  Reuse the OOF feature rows only to expose
+                        // the final model's training-universe output; they are
+                        // never delivered back into FIT_CV or as a test input.
+                        (
+                            data.fit.sample_ids.clone(),
+                            Self::predict(&context, &model, &fit_features)?,
+                            PredictionPartition::Final,
+                        )
+                    } else {
+                        let output_ids = refit_specs
+                            .values()
+                            .next()
+                            .expect("paired inputs checked")
+                            .sample_ids
+                            .clone();
+                        let refit_features = Self::feature_matrix(
+                            &refit_specs,
+                            &output_ids,
+                            PredictionPartition::Test,
+                            "REFIT output",
+                        )?;
+                        (
+                            output_ids,
+                            Self::predict(&context, &model, &refit_features)?,
+                            PredictionPartition::Test,
+                        )
+                    };
                     let bytes = model.export_n4mm().map_err(|error| {
                         MethodsPlsController::native_error("ridge_export_n4mm", error)
                     })?;
@@ -2226,6 +2251,7 @@ mod pls_controller {
                         values,
                         None,
                         Some((artifact, handle)),
+                        partition,
                     )
                 }
                 Phase::Predict => {
@@ -2254,6 +2280,7 @@ mod pls_controller {
                         values,
                         None,
                         None,
+                        PredictionPartition::Final,
                     )
                 }
                 _ => Err(DagMlError::RuntimeValidation(
