@@ -16,7 +16,7 @@
     },
     {
       "path": "crates/dag-ml-capi/src/lib.rs",
-      "sha256": "5fef9b1ea8cc648cd3b073a6a656c7207c793e922277397607fb2b3c5f26b4a4",
+      "sha256": "761d31a3677dbc714e3e979d4927fa84b262d5a077c9c0a37aedc0c4bdb996d4",
       "kind": "c_training_binding"
     },
     {
@@ -81,7 +81,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/data.rs",
-      "sha256": "efb9f43266a99286e13f0688262b71b720fe4f53d4fe437a739ba6006b837751",
+      "sha256": "78f2d3cd80f4e4de11fa7378b42dea10a64f41271a7bd466d0d42b2d0fcd1f41",
       "kind": "typed_contract_dependency"
     },
     {
@@ -146,7 +146,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/dataview.rs",
-      "sha256": "40f5e5e3e6ac8ffac6f250ea12cbaebe07e19390031db8bf7af96cf3011a262f",
+      "sha256": "edcc1484874967301f9c9b5ded6649449b254a567c3a7c6181285575e4a25917",
       "kind": "native_hpo_runtime_session"
     },
     {
@@ -156,7 +156,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "ae0af8b35e9abdcc26897e26a1f0e960ea264ec7ed83d4e444817553e0a6e0ba",
+      "sha256": "1d0f5be9f5c16e10283764b091e6845e14eadf199d56f34e713ab128cb59814a",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -589,5 +589,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "9dc1daae7d01a698b349ea02b8c3b967cb5ddab0354d2d3e8f602ea3c0e765bb"
+  "pack_checksum": "bbe2afd36182b5f971a604080c92d99b8443e35c86c0810d9ef2e48e597ddcb0"
 }
