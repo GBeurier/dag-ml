@@ -8,7 +8,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyType};
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 mod in_process;
 mod local_implementation;
@@ -23,8 +23,9 @@ use dag_ml_core::{
     parse_pipeline_dsl_json, CacheNamespace, CampaignSpec, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
     FoldSet, GraphSpec, HostControllerSpec, ParameterProjection, PortablePredictorPackage,
-    PortableRefitPackageV3, SampleRelationSet, TrainingContractProjection, TrainingOutcome,
-    TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
+    PortableRefitPackageV3, PredictCohort, PredictCohortRole, SampleRelationSet,
+    TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
+    TrainingRequest, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -168,6 +169,60 @@ fn validate_training_request_json(json: &str) -> PyResult<()> {
 fn sample_relation_set_fingerprint_json(json: &str) -> PyResult<String> {
     let relations = serde_json::from_str::<SampleRelationSet>(json).map_err(py_serde_error)?;
     relations.fingerprint().map_err(py_core_error)
+}
+
+/// Host input for a closed PREDICT cohort.
+///
+/// The host supplies only its authoritative relation records and content
+/// identities. DAG-ML derives all cohort identity lists and fingerprints, so
+/// Python, IO, or another language cannot reproduce a subtly different hash.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PredictCohortConstructionRequest {
+    role: PredictCohortRole,
+    relations: SampleRelationSet,
+    target_names: Vec<String>,
+    data_content_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_content_fingerprint: Option<String>,
+}
+
+/// Attach a fully derived V2 PREDICT cohort to a host-supplied envelope.
+///
+/// This is the only supported Python producer path for a V2 `predict_cohort`:
+/// it upgrades the envelope, derives canonical identities/fingerprints in
+/// Rust, then validates the complete V2 authority before returning JSON.
+#[pyfunction]
+fn attach_predict_cohort_to_envelope_json(
+    envelope_json: &str,
+    cohort_request_json: &str,
+) -> PyResult<String> {
+    let mut envelope: ExternalDataPlanEnvelope =
+        dag_ml_core::canonical::deserialize_external_contract(
+        envelope_json,
+        "external data-plan envelope",
+        CoreDagMlError::CampaignValidation,
+    )
+        .map_err(py_core_error)?;
+    let request: PredictCohortConstructionRequest =
+        dag_ml_core::canonical::deserialize_external_contract(
+            cohort_request_json,
+            "predict cohort construction request",
+            CoreDagMlError::CampaignValidation,
+        )
+        .map_err(py_core_error)?;
+    let cohort = PredictCohort::from_relations(
+        request.role,
+        request.relations,
+        request.target_names,
+        request.data_content_fingerprint,
+        request.target_content_fingerprint,
+    )
+    .map_err(py_core_error)?;
+    envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+    envelope.predict_cohort = Some(cohort);
+    envelope.validate().map_err(py_core_error)?;
+    serde_json::to_string(&envelope).map_err(py_serde_error)
 }
 
 #[pyfunction]
@@ -440,6 +495,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(validate_training_request_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         sample_relation_set_fingerprint_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        attach_predict_cohort_to_envelope_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(sign_training_request_json, module)?)?;
@@ -870,6 +929,52 @@ mod tests {
             .expect("read DSL fixture");
         let graph = compile_pipeline_dsl_graph_json(&dsl).expect("compile graph JSON");
         assert!(graph.contains("\"nodes\""));
+    }
+
+    #[test]
+    fn native_predict_cohort_producer_derives_and_attaches_v2_envelope() {
+        let envelope = include_str!(
+            "../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
+        );
+        let request = r#"{
+            "role":"external_test",
+            "relations":{"records":[
+                {"observation_id":"obs:holdout:1","sample_id":"sample:holdout:1"},
+                {"observation_id":"obs:holdout:2","sample_id":"sample:holdout:2"}
+            ]},
+            "target_names":["classification:y"],
+            "data_content_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "target_content_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }"#;
+
+        let signed = attach_predict_cohort_to_envelope_json(envelope, request)
+            .expect("native producer derives a V2 cohort");
+        let parsed: ExternalDataPlanEnvelope = serde_json::from_str(&signed).unwrap();
+        parsed.validate().unwrap();
+        assert_eq!(
+            parsed.schema_version,
+            EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2
+        );
+        let cohort = parsed.predict_cohort.expect("V2 carries cohort");
+        assert_eq!(
+            cohort.physical_sample_ids
+                .iter()
+                .map(|sample_id| sample_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sample:holdout:1", "sample:holdout:2"]
+        );
+        assert_eq!(cohort.cohort_fingerprint, cohort.fingerprint().unwrap());
+
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "_dag_ml_test").unwrap();
+            _dag_ml(py, &module).unwrap();
+            let helper = module
+                .getattr("attach_predict_cohort_to_envelope_json")
+                .unwrap();
+            let via_python: String = helper.call1((envelope, request)).unwrap().extract().unwrap();
+            assert_eq!(via_python, signed);
+        });
     }
 
     #[test]
