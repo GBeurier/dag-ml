@@ -12,7 +12,7 @@ except ModuleNotFoundError:  # Python 3.10 in the current workspace.
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_methods_optimizer_local.sh"
-METHODS_RUNTIME_SOURCE_SHA = "aabdecfdd76d1a4d12cfbbade4eeee0d30a6ea47"
+METHODS_RUNTIME_SOURCE_SHA = "4983c9a1df39d430a78c615bda209d3353514aa1"
 
 
 def _probe(library_path: str | None) -> subprocess.CompletedProcess[str]:
@@ -59,7 +59,7 @@ def test_ci_and_overlay_use_the_published_dynamic_binding() -> None:
     )
     for manifest in (primary, overlay):
         dependency = manifest["dependencies"]["n4m"]
-        assert dependency["version"] == "0.1.1"
+        assert dependency["version"] == "0.1.2"
         assert dependency["default-features"] is False
         assert dependency["features"] == ["dynamic"]
         assert "git" not in dependency

@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "28a75c601767065789afd376eeffb4287299be1b236a6d33cdb4e8fc62ea8e1b",
+      "sha256": "f9fb27c43ff4e8d5a7c5b2a59eff547ed518fdc295047d8b78ff3a9c0995b100",
       "kind": "ci_gate"
     },
     {
@@ -41,7 +41,7 @@
     },
     {
       "path": "crates/dag-ml-core/Cargo.toml.methods-local",
-      "sha256": "359a7456362a343449e5663da9a4673eddbec7103ff2fbca4c86a70769d50f08",
+      "sha256": "f638a6f427bfb87555f5f1d472ac733532c03eea46fdf0ba8cb3a3cfd78c5916",
       "kind": "native_hpo_overlay_manifest"
     },
     {
@@ -231,7 +231,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "08344f9539145c40541b0dcd7bfb1013f0624aaa248944e23050ead40988abc9",
+      "sha256": "24aed0aa739a8806cffe70561fc586875e17659f6947101e5ec608436e4b0e13",
       "kind": "hpo_documentation"
     },
     {
@@ -589,5 +589,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "6fefb6921ff811ee4c8f84be742ab932612f7c9c90ab394abeadf7d0835117e7"
+  "pack_checksum": "644a931614dd4cbb8bf3512793fd77bdd4fb838e2886542098756049ed22479c"
 }
