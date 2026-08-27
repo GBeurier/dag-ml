@@ -101,7 +101,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/hpo.rs",
-      "sha256": "22ba3300b14d4e9cf497335d9935da3f0148e4a6ab14deebaac333e667cce46f",
+      "sha256": "e0971335f830b8369b4768f52c4d5212abb9dcf1417e320ed52f77551bdde750",
       "kind": "native_hpo_controller"
     },
     {
@@ -589,5 +589,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "644a931614dd4cbb8bf3512793fd77bdd4fb838e2886542098756049ed22479c"
+  "pack_checksum": "93592021a676660e35fc8439a1e87bae3a6f39e94cfdb84891fa48f072c99b7a"
 }
