@@ -74,6 +74,7 @@ mod oof;
 mod prediction_store;
 mod scheduler;
 mod scoring;
+mod stacking;
 mod task;
 
 pub use artifact::*;
@@ -85,6 +86,7 @@ pub use oof::*;
 pub use prediction_store::*;
 pub use scheduler::*;
 pub(crate) use scoring::*;
+pub(crate) use stacking::*;
 pub use task::*;
 
 pub struct BundleReplayExecution<'a> {
@@ -265,6 +267,11 @@ pub struct RunContext {
     /// separate from the per-task aggregation path: a semantic unit may span CV folds, so
     /// reducing it inside one fold would change the experiment being scored.
     pub(crate) global_oof_aggregation: BTreeMap<NodeId, GlobalOofAggregationSpec>,
+    /// When nested stacking retains child-fold evidence in this shared context,
+    /// only the listed parent folds are report-grade CV evidence.  Child OOF is
+    /// still available to the scheduler/meta learner, but can never enter
+    /// selection or cross-fold score aggregation.
+    pub(crate) validation_scoring_fold_ids: Option<BTreeSet<FoldId>>,
 }
 
 #[derive(Clone, Debug)]
@@ -286,6 +293,7 @@ impl RunContext {
             regression_target_records: Vec::new(),
             oof_average_blocks: Vec::new(),
             global_oof_aggregation: BTreeMap::new(),
+            validation_scoring_fold_ids: None,
         }
     }
 
@@ -317,8 +325,26 @@ impl RunContext {
         &mut self,
         partition_mode: FoldPartitionMode,
     ) -> Result<()> {
+        let scoring_blocks = self
+            .prediction_store
+            .blocks()
+            .iter()
+            .filter(|block| {
+                block.partition != PredictionPartition::Validation
+                    || self
+                        .validation_scoring_fold_ids
+                        .as_ref()
+                        .is_none_or(|allowed| {
+                            block
+                                .fold_id
+                                .as_ref()
+                                .is_some_and(|fold_id| allowed.contains(fold_id))
+                        })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let outcome = cross_fold_validation_reports(
-            self.prediction_store.blocks(),
+            &scoring_blocks,
             &self.regression_target_records,
             SCORE_METRICS,
             partition_mode,

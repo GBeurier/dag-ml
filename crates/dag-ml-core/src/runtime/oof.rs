@@ -520,6 +520,30 @@ pub(crate) fn validate_refit_oof_edge<'a>(
         Some(&PredictionPartition::Validation),
         None,
     );
+    // A nested FIT_CV scheduler retains two sound evidence classes in the
+    // shared run context: parent outer-fold OOF (the refit pool) and
+    // namespaced child inner-fold OOF (used only to train each outer
+    // meta-model).  REFIT must consume exactly the former.  Without this
+    // filter, the child rows would look like duplicate/foreign folds and could
+    // either poison refit coverage or tempt an implementation to average them.
+    let blocks = if is_nested_stacking_meta_node(plan, &edge.target.node_id)? {
+        let outer_fold_ids = required_fold_set_for_oof(plan, edge)?
+            .folds
+            .iter()
+            .map(|fold| fold.fold_id.clone())
+            .collect::<BTreeSet<_>>();
+        blocks
+            .into_iter()
+            .filter(|block| {
+                block
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold_id| outer_fold_ids.contains(fold_id))
+            })
+            .collect::<Vec<_>>()
+    } else {
+        blocks
+    };
     let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
     // No validation OOF at all, under the default full-coverage policy, means the CV phase was never
     // run for this producer (e.g. a direct REFIT without a prior FIT_CV). Report it as a missing-OOF

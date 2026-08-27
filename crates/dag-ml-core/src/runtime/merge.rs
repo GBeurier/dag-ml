@@ -1191,17 +1191,17 @@ pub(crate) fn fold_for_scope<'a>(
         })
 }
 
-/// Build the inner (nested) `FoldSet` for `node_plan` in `scope`, when an
+/// Build the parent-bound nested fold set for `node_plan` in `scope`, when an
 /// effective inner-CV policy applies. Gated to FIT_CV with an outer fold in
 /// scope; returns `Ok(None)` otherwise (no inner CV, or no outer fold to nest
-/// within). The inner folds are built from the outer fold's TRAINING samples
-/// only, so they are a subset of outer-train by construction (no leakage).
-pub(crate) fn inner_fold_set_for_scope(
+/// within). Keeping the parent identity intact is required by the nested
+/// stacking scheduler before it may materialize/cache any OOF block.
+pub(crate) fn nested_fold_set_for_scope(
     campaign: &CampaignSpec,
     outer_fold_set: Option<&FoldSet>,
     node_plan: &NodePlan,
     scope: &PhaseScope,
-) -> Result<Option<FoldSet>> {
+) -> Result<Option<crate::fold::NestedFoldSet>> {
     if scope.phase != Phase::FitCv {
         return Ok(None);
     }
@@ -1219,7 +1219,23 @@ pub(crate) fn inner_fold_set_for_scope(
     let outer_groups = &outer_fold_set
         .expect("fold_for_scope returned a fold, so the outer fold set is present")
         .sample_groups;
-    Ok(Some(spec.build_inner_fold_set(outer, outer_groups)?))
+    Ok(Some(spec.build_nested_fold_set(outer, outer_groups)?))
+}
+
+/// Compatibility projection for controller `NodeTask` JSON. Existing
+/// controllers receive the historical bare inner set; a nested stacking
+/// campaign must use [`nested_fold_set_for_scope`] instead so its parent cannot
+/// be lost before cache and lineage validation.
+pub(crate) fn inner_fold_set_for_scope(
+    campaign: &CampaignSpec,
+    outer_fold_set: Option<&FoldSet>,
+    node_plan: &NodePlan,
+    scope: &PhaseScope,
+) -> Result<Option<FoldSet>> {
+    Ok(
+        nested_fold_set_for_scope(campaign, outer_fold_set, node_plan, scope)?
+            .map(|nested| nested.inner_fold_set),
+    )
 }
 
 pub(crate) fn sample_ids_for_partition(

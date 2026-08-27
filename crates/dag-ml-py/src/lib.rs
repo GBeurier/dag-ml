@@ -239,7 +239,8 @@ fn sign_training_request_json(json: &str) -> PyResult<String> {
 /// and validation.
 #[pyfunction]
 fn sign_training_replay_request_json(json: &str) -> PyResult<String> {
-    let mut request = serde_json::from_str::<TrainingReplayRequest>(json).map_err(py_serde_error)?;
+    let mut request =
+        serde_json::from_str::<TrainingReplayRequest>(json).map_err(py_serde_error)?;
     request.request_fingerprint = request.compute_fingerprint().map_err(py_core_error)?;
     request.validate().map_err(py_core_error)?;
     serde_json::to_string(&request).map_err(py_serde_error)
@@ -810,10 +811,9 @@ mod tests {
             .to_string()
             .contains("duplicate field `schema_version`"));
 
-        let replay_error = sign_training_replay_request_json(
-            r#"{"schema_version":1,"schema_version":1}"#,
-        )
-        .expect_err("duplicate replay-request keys must be rejected");
+        let replay_error =
+            sign_training_replay_request_json(r#"{"schema_version":1,"schema_version":1}"#)
+                .expect_err("duplicate replay-request keys must be rejected");
         assert!(replay_error
             .to_string()
             .contains("duplicate field `schema_version`"));
