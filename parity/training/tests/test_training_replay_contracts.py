@@ -51,10 +51,10 @@ def _sha256(path: Path) -> str:
 def test_base_pack_remains_byte_current() -> None:
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "a8ea47a70f831b5b578a6f0e98c081b511995a0281f8afce8b7be04f22a574d3"
+        "72879914a95207a6d4fdcc44cc1f588881ff0c4e3d3657dc27061907b6e46a54"
     )
     assert pack["pack_checksum"] == (
-        "bbe2afd36182b5f971a604080c92d99b8443e35c86c0810d9ef2e48e597ddcb0"
+        "2e4e6935eca1a9e5766133996b3caed751f8a87e5548ca86e1e21d646731b7e4"
     )
     assert len(pack["artifacts"]) == 103
     assert all(
