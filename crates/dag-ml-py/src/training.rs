@@ -743,13 +743,13 @@ pub fn execute_training_json(
     })
 }
 
-/// Execute the narrow portable Methods PLS training lane.
+/// Execute the narrow portable Methods model training lane.
 ///
 /// Unlike [`execute_training_json`], this entry point does not accept a Python
 /// operator callback. Every executable node must be the registered native
-/// Methods PLS controller, and numeric rows are supplied through the typed
-/// `methods_inputs_json` provider. This is the public bridge for hosts that
-/// want a durable N4MM Package V2 rather than a process-local sidecar.
+/// Methods PLS or Ridge controller, and numeric rows are supplied through the
+/// typed `methods_inputs_json` provider. This is the public bridge for hosts
+/// that want a durable N4MM Package V2 rather than a process-local sidecar.
 #[pyfunction]
 #[pyo3(signature = (
     request_json,
@@ -831,18 +831,14 @@ pub fn execute_methods_training_json(
             .values()
             .flat_map(|node_plan| node_plan.data_bindings.iter().cloned())
             .collect::<Vec<DataBinding>>();
-        let methods_controller = dag_ml_core::ControllerId::new(
-            dag_ml_core::METHODS_PLS_CONTROLLER_ID,
-        )
-        .map_err(py_core_error)?;
         if projection
             .plan
             .node_plans
             .values()
-            .any(|node_plan| node_plan.controller_id != methods_controller)
+            .any(|node_plan| !is_native_methods_model_controller(&node_plan.controller_id))
         {
             return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
-                "native Methods training requires every executable node to use controller:methods.pls; host controller fallback is forbidden".to_string(),
+                "native Methods training requires every executable node to use controller:methods.pls or controller:methods.ridge; host controller fallback is forbidden".to_string(),
             )));
         }
         let raw_inputs = parse_strict_json::<BTreeMap<String, MethodsTrainingInputJson>>(
@@ -1000,16 +996,14 @@ pub fn execute_methods_portable_full_refit_json(
             .values()
             .flat_map(|node_plan| node_plan.data_bindings.iter().cloned())
             .collect::<Vec<DataBinding>>();
-        let methods_controller = dag_ml_core::ControllerId::new(dag_ml_core::METHODS_PLS_CONTROLLER_ID)
-            .map_err(py_core_error)?;
         if source_package
             .effective_plan
             .node_plans
             .values()
-            .any(|node_plan| node_plan.controller_id != methods_controller)
+            .any(|node_plan| !is_native_methods_model_controller(&node_plan.controller_id))
         {
             return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
-                "native Methods full refit requires every executable node to use controller:methods.pls; host controller fallback is forbidden".to_string(),
+                "native Methods full refit requires every executable node to use controller:methods.pls or controller:methods.ridge; host controller fallback is forbidden".to_string(),
             )));
         }
         let raw_inputs = parse_strict_json::<BTreeMap<String, MethodsTrainingInputJson>>(
@@ -1030,7 +1024,10 @@ pub fn execute_methods_portable_full_refit_json(
         })?;
         let mut controllers = RuntimeControllerRegistry::new();
         controllers
-            .register(Box::new(dag_ml_core::MethodsPlsController::new(runtime)))
+            .register(Box::new(dag_ml_core::MethodsPlsController::new(runtime.clone())))
+            .map_err(py_core_error)?;
+        controllers
+            .register(Box::new(dag_ml_core::MethodsRidgeController::new(runtime)))
             .map_err(py_core_error)?;
         let run_id = RunId::new(run_id).map_err(py_core_error)?;
         let bundle_id = BundleId::new(bundle_id).map_err(py_core_error)?;
@@ -1069,7 +1066,7 @@ pub fn execute_methods_portable_full_refit_json(
     }
 }
 
-/// Register the native PLS controller and, when attested by the campaign,
+/// Register the native PLS/Ridge controllers and, when attested by the campaign,
 /// its controller-owned Methods HPO companion.  The scheduler creates the
 /// thread-affine optimizer session later from the complete training context;
 /// this binding only establishes the exact controller identities before any
@@ -1081,10 +1078,21 @@ fn register_methods_training_controllers(
     controllers: &mut RuntimeControllerRegistry,
 ) -> dag_ml_core::Result<()> {
     let Some(hpo_controller_id) = methods_hpo_controller_id(&projection.plan.campaign.metadata)? else {
-        controllers.register(Box::new(dag_ml_core::MethodsPlsController::new(runtime)))?;
+        controllers.register(Box::new(dag_ml_core::MethodsPlsController::new(runtime.clone())))?;
+        controllers.register(Box::new(dag_ml_core::MethodsRidgeController::new(runtime)))?;
         return Ok(());
     };
     dag_ml_core::register_methods_runtime_controllers(controllers, hpo_controller_id, runtime)
+}
+
+/// Return whether an executable node is owned by one of the two native Methods
+/// model controllers that the portable training/refit lane registers locally.
+#[cfg(feature = "methods-optimizer")]
+fn is_native_methods_model_controller(controller_id: &dag_ml_core::ControllerId) -> bool {
+    matches!(
+        controller_id.as_str(),
+        dag_ml_core::METHODS_PLS_CONTROLLER_ID | dag_ml_core::METHODS_RIDGE_CONTROLLER_ID
+    )
 }
 
 /// Extract only the controller identity that must be registered locally.
@@ -1559,6 +1567,22 @@ mod tests {
     use pyo3::exceptions::PyValueError;
 
     use super::*;
+
+    #[cfg(feature = "methods-optimizer")]
+    #[test]
+    fn portable_methods_model_lane_allows_only_pls_and_ridge_controllers() {
+        for controller in [
+            dag_ml_core::METHODS_PLS_CONTROLLER_ID,
+            dag_ml_core::METHODS_RIDGE_CONTROLLER_ID,
+        ] {
+            assert!(is_native_methods_model_controller(
+                &dag_ml_core::ControllerId::new(controller).unwrap()
+            ));
+        }
+        assert!(!is_native_methods_model_controller(
+            &dag_ml_core::ControllerId::new("controller:test.host").unwrap()
+        ));
+    }
 
     #[cfg(not(feature = "methods-optimizer"))]
     #[test]
