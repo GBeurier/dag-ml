@@ -817,6 +817,13 @@ pub fn methods_optimizer_preflight() -> HpoResult<()> {
 /// by a fixture or a replacement implementation.
 pub const METHODS_PLS_CONTROLLER_ID: &str = "controller:methods.pls";
 
+/// Stable controller identity for the native, prediction-input-only Ridge
+/// meta-model used by the R2 nested-stacking route.  This is deliberately
+/// separate from [`METHODS_PLS_CONTROLLER_ID`]: Methods HPO V1 remains PLS
+/// only, while Ridge consumes scheduler-attested OOF prediction inputs rather
+/// than an arbitrary raw feature matrix.
+pub const METHODS_RIDGE_CONTROLLER_ID: &str = "controller:methods.ridge";
+
 /// Process-scoped binding to the exact Methods shared library used by native
 /// controllers. The official `n4m` binding refuses a second, different
 /// library, so a caller must configure this before constructing any Methods
@@ -1208,8 +1215,8 @@ mod pls_controller {
     use super::*;
     use crate::runtime::{
         ArtifactBackend, ArtifactRef, HandleKind, HandleRef, LineageRecord, MethodsPlsData,
-        MethodsPlsDataRequest, NodeResult, NodeTask, PredictionBlock, PredictionPartition,
-        RegressionTargetBlock, RuntimeController, RuntimeDataProvider,
+        MethodsPlsDataRequest, NodeResult, NodeTask, PredictionBlock, PredictionInputSpec,
+        PredictionPartition, RegressionTargetBlock, RuntimeController, RuntimeDataProvider,
     };
     use crate::{
         ArtifactId, ControllerId, DagMlError, LineageId, Phase, PredictionLevel, PredictionUnitId,
@@ -1686,12 +1693,651 @@ mod pls_controller {
             }
         }
     }
+
+    /// Native Ridge meta-model for scheduler-owned nested stacking.
+    ///
+    /// This controller is intentionally separate from [`MethodsPlsController`]:
+    /// its numerical feature matrix is built solely from identity-aligned OOF
+    /// predictions delivered in [`NodeTask::prediction_inputs`]. The raw
+    /// provider matrix is never read as a Ridge feature, so an upstream raw
+    /// data view cannot accidentally bypass the nested-stacking leakage
+    /// boundary.
+    pub struct MethodsRidgeController {
+        id: ControllerId,
+        _runtime: MethodsRuntime,
+        next_handle: AtomicU64,
+        exported_n4mm_by_artifact: Mutex<BTreeMap<ArtifactId, Vec<u8>>>,
+        hydrated_n4mm_by_handle: Mutex<BTreeMap<u64, Vec<u8>>>,
+    }
+
+    impl MethodsRidgeController {
+        pub fn new(runtime: MethodsRuntime) -> Self {
+            Self {
+                id: ControllerId::new(METHODS_RIDGE_CONTROLLER_ID)
+                    .expect("Methods Ridge controller id is valid"),
+                _runtime: runtime,
+                next_handle: AtomicU64::new(0),
+                exported_n4mm_by_artifact: Mutex::new(BTreeMap::new()),
+                hydrated_n4mm_by_handle: Mutex::new(BTreeMap::new()),
+            }
+        }
+
+        fn handle(&self, kind: HandleKind) -> HandleRef {
+            HandleRef {
+                handle: self.next_handle.fetch_add(1, Ordering::SeqCst) + 1,
+                kind,
+                owner_controller: self.id.clone(),
+            }
+        }
+
+        fn lambda(task: &NodeTask) -> Result<f64> {
+            let lambda = task
+                .node_plan
+                .params
+                .get("ridge_lambda")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "portable Methods Ridge node `{}` requires finite numeric `ridge_lambda`",
+                        task.node_plan.node_id
+                    ))
+                })?;
+            if !lambda.is_finite() || lambda < 0.0 {
+                return Err(DagMlError::RuntimeValidation(
+                    "portable Methods Ridge `ridge_lambda` must be finite and non-negative"
+                        .to_string(),
+                ));
+            }
+            Ok(lambda)
+        }
+
+        fn feature_matrix(
+            specs: &BTreeMap<String, &PredictionInputSpec>,
+            sample_ids: &[crate::SampleId],
+            expected_partition: PredictionPartition,
+            label: &str,
+        ) -> Result<crate::runtime::MethodsPlsMatrix> {
+            if specs.len() < 2 {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods Ridge {label} requires OOF predictions from at least two base producers"
+                )));
+            }
+            let mut cols = 0usize;
+            for (key, spec) in specs {
+                if spec.partition != expected_partition
+                    || spec.prediction_level != PredictionLevel::Sample
+                    || spec.sample_ids != sample_ids
+                    || spec.prediction_width == 0
+                    || spec.values.len() != sample_ids.len()
+                    || spec.values.iter().any(|row| {
+                        row.len() != spec.prediction_width
+                            || row.iter().any(|value| !value.is_finite())
+                    })
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "portable Methods Ridge {label} input `{key}` is not an exact finite sample-level prediction matrix for the scheduler scope"
+                    )));
+                }
+                cols = cols.checked_add(spec.prediction_width).ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "portable Methods Ridge feature width overflows usize".to_string(),
+                    )
+                })?;
+            }
+            let capacity = sample_ids.len().checked_mul(cols).ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "portable Methods Ridge feature matrix size overflows usize".to_string(),
+                )
+            })?;
+            let mut values = Vec::with_capacity(capacity);
+            for row in 0..sample_ids.len() {
+                for spec in specs.values() {
+                    values.extend_from_slice(&spec.values[row]);
+                }
+            }
+            let matrix = crate::runtime::MethodsPlsMatrix {
+                values,
+                rows: sample_ids.len(),
+                cols,
+            };
+            matrix.validate(&format!("Ridge {label} OOF"))?;
+            Ok(matrix)
+        }
+
+        fn split_prediction_inputs<'a>(
+            task: &'a NodeTask,
+            suffix: &str,
+        ) -> Result<(
+            BTreeMap<String, &'a PredictionInputSpec>,
+            BTreeMap<String, &'a PredictionInputSpec>,
+        )> {
+            let mut fit = BTreeMap::new();
+            let mut output = BTreeMap::new();
+            for (key, spec) in &task.prediction_inputs {
+                if let Some(base) = key.strip_suffix(suffix) {
+                    if base.is_empty() || output.insert(base.to_string(), spec).is_some() {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "portable Methods Ridge received duplicate or malformed output OOF input `{key}`"
+                        )));
+                    }
+                // Node identifiers are colon-qualified (`model:base`), so a
+                // generic `contains(':')` check would reject every ordinary
+                // scheduler key. Only the exact delivery suffix is semantic.
+                } else if fit.insert(key.clone(), spec).is_some() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "portable Methods Ridge received unsupported prediction input `{key}`; expected base keys and `{suffix}` counterparts"
+                    )));
+                }
+            }
+            if fit.is_empty() || fit.keys().collect::<Vec<_>>() != output.keys().collect::<Vec<_>>()
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods Ridge requires exactly paired base OOF and `{suffix}` prediction inputs"
+                )));
+            }
+            Ok((fit, output))
+        }
+
+        fn predict_only_inputs<'a>(
+            task: &'a NodeTask,
+        ) -> Result<BTreeMap<String, &'a PredictionInputSpec>> {
+            let mut inputs = BTreeMap::new();
+            for (key, spec) in &task.prediction_inputs {
+                let Some(base) = key.strip_suffix(":predict") else {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "portable Methods Ridge PREDICT accepts only `:predict` OOF inputs, received `{key}`"
+                    )));
+                };
+                if base.is_empty() || inputs.insert(base.to_string(), spec).is_some() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "portable Methods Ridge PREDICT received duplicate or malformed OOF input `{key}`"
+                    )));
+                }
+            }
+            if inputs.len() < 2 {
+                return Err(DagMlError::RuntimeValidation(
+                    "portable Methods Ridge PREDICT requires at least two `:predict` OOF inputs"
+                        .to_string(),
+                ));
+            }
+            Ok(inputs)
+        }
+
+        fn fit(
+            task: &NodeTask,
+            features: &crate::runtime::MethodsPlsMatrix,
+            targets: &crate::runtime::MethodsPlsMatrix,
+        ) -> Result<(Context, Model)> {
+            let context = Context::new().map_err(|error| {
+                MethodsPlsController::native_error("ridge_context_create", error)
+            })?;
+            let config = Config::new().map_err(|error| {
+                MethodsPlsController::native_error("ridge_config_create", error)
+            })?;
+            let x = MatrixRef::row_major(&features.values, features.rows, features.cols)
+                .map_err(|error| MethodsPlsController::native_error("ridge_fit_features", error))?;
+            let y = MatrixRef::row_major(&targets.values, targets.rows, targets.cols)
+                .map_err(|error| MethodsPlsController::native_error("ridge_fit_targets", error))?;
+            let model = Model::fit_ridge(&context, &config, x, y, Self::lambda(task)?)
+                .map_err(|error| MethodsPlsController::native_error("ridge_fit", error))?;
+            Ok((context, model))
+        }
+
+        fn predict(
+            context: &Context,
+            model: &Model,
+            features: &crate::runtime::MethodsPlsMatrix,
+        ) -> Result<Vec<Vec<f64>>> {
+            let x = MatrixRef::row_major(&features.values, features.rows, features.cols).map_err(
+                |error| MethodsPlsController::native_error("ridge_predict_features", error),
+            )?;
+            let prediction = model
+                .predict(context, x)
+                .map_err(|error| MethodsPlsController::native_error("ridge_predict", error))?;
+            Ok(prediction
+                .data
+                .chunks(prediction.cols)
+                .map(|row| row.to_vec())
+                .collect())
+        }
+
+        fn result(
+            &self,
+            task: &NodeTask,
+            sample_ids: Vec<crate::SampleId>,
+            target_names: Vec<String>,
+            values: Vec<Vec<f64>>,
+            targets: Option<&crate::runtime::MethodsPlsMatrix>,
+            artifact: Option<(ArtifactRef, HandleRef)>,
+        ) -> Result<NodeResult> {
+            let partition = if task.phase == Phase::FitCv {
+                PredictionPartition::Validation
+            } else {
+                PredictionPartition::Final
+            };
+            let regression_targets = if task.phase == Phase::FitCv {
+                let targets = targets.ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "portable Methods Ridge FIT_CV requires validation targets".to_string(),
+                    )
+                })?;
+                vec![RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids: sample_ids
+                        .iter()
+                        .cloned()
+                        .map(PredictionUnitId::Sample)
+                        .collect(),
+                    values: targets
+                        .values
+                        .chunks(targets.cols)
+                        .map(|row| row.to_vec())
+                        .collect(),
+                    target_names: target_names.clone(),
+                }]
+            } else {
+                Vec::new()
+            };
+            let (artifacts, artifact_handles) = artifact
+                .map(|(artifact, handle)| {
+                    (
+                        vec![artifact.clone()],
+                        BTreeMap::from([(artifact.id, handle)]),
+                    )
+                })
+                .unwrap_or_default();
+            let artifact_refs = artifacts.clone();
+            Ok(NodeResult {
+                schema_version: None,
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([("oof".to_string(), self.handle(HandleKind::Prediction))]),
+                predictions: vec![PredictionBlock {
+                    prediction_id: Some(format!(
+                        "methods-ridge:{}:{}:{}",
+                        task.node_plan.node_id,
+                        task.phase.as_str(),
+                        task.fold_id
+                            .as_ref()
+                            .map(|id| id.as_str())
+                            .unwrap_or("full")
+                    )),
+                    producer_node: task.node_plan.node_id.clone(),
+                    producer_port: Some("oof".to_string()),
+                    partition,
+                    fold_id: (task.phase == Phase::FitCv)
+                        .then(|| task.fold_id.clone())
+                        .flatten(),
+                    sample_ids,
+                    values,
+                    target_names,
+                }],
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
+                explanations: Vec::new(),
+                shape_deltas: Vec::new(),
+                artifacts,
+                artifact_handles,
+                fit_influence_diagnostics: Vec::new(),
+                regression_targets,
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:methods-ridge:{}:{}:{}:{}",
+                        task.node_plan.node_id,
+                        task.phase.as_str(),
+                        task.variant_id
+                            .as_ref()
+                            .map(|id| id.as_str())
+                            .unwrap_or("base"),
+                        task.fold_id
+                            .as_ref()
+                            .map(|id| id.as_str())
+                            .unwrap_or("full")
+                    ))
+                    .expect("valid native Ridge lineage id"),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs,
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
+                },
+            })
+        }
+    }
+
+    impl RuntimeController for MethodsRidgeController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn export_artifact_payload(&self, artifact_id: &ArtifactId) -> Result<Option<Vec<u8>>> {
+            Ok(self
+                .exported_n4mm_by_artifact
+                .lock()
+                .map_err(|_| {
+                    DagMlError::RuntimeValidation(
+                        "portable Methods Ridge N4MM sidecar lock poisoned".to_string(),
+                    )
+                })?
+                .remove(artifact_id))
+        }
+
+        fn hydrate_artifact_payload(
+            &self,
+            request: &crate::runtime::ArtifactMaterializationRequest,
+            payload: &[u8],
+        ) -> Result<HandleRef> {
+            if request.artifact.kind != "n4m_model"
+                || request.artifact.backend != Some(ArtifactBackend::Raw)
+                || format!("{:x}", Sha256::digest(payload))
+                    != request
+                        .artifact
+                        .content_fingerprint
+                        .as_deref()
+                        .unwrap_or_default()
+                || request.artifact.size_bytes != Some(payload.len() as u64)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods Ridge payload `{}` does not match its N4MM artifact reference",
+                    request.artifact.id
+                )));
+            }
+            let context = Context::new().map_err(|error| {
+                MethodsPlsController::native_error("ridge_hydrate_context_create", error)
+            })?;
+            Model::import_n4mm(&context, payload).map_err(|error| {
+                MethodsPlsController::native_error("ridge_hydrate_import_n4mm", error)
+            })?;
+            let handle = self.handle(HandleKind::Model);
+            self.hydrated_n4mm_by_handle
+                .lock()
+                .map_err(|_| {
+                    DagMlError::RuntimeValidation(
+                        "portable Methods Ridge hydrated N4MM lock poisoned".to_string(),
+                    )
+                })?
+                .insert(handle.handle, payload.to_vec());
+            Ok(handle)
+        }
+
+        fn release_hydrated_artifact_payload(&self, handle: &HandleRef) -> Result<()> {
+            if handle.kind != HandleKind::Model || handle.owner_controller != self.id {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods Ridge cannot release foreign hydrated handle {}",
+                    handle.handle
+                )));
+            }
+            self.hydrated_n4mm_by_handle
+                .lock()
+                .map_err(|_| {
+                    DagMlError::RuntimeValidation(
+                        "portable Methods Ridge hydrated N4MM lock poisoned".to_string(),
+                    )
+                })?
+                .remove(&handle.handle);
+            Ok(())
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            Err(DagMlError::RuntimeValidation(format!(
+                "portable Methods Ridge node `{}` requires a RuntimeDataProvider numeric view",
+                task.node_plan.node_id
+            )))
+        }
+
+        fn invoke_with_data_provider(
+            &self,
+            task: &NodeTask,
+            provider: &dyn RuntimeDataProvider,
+        ) -> Result<NodeResult> {
+            if task.node_plan.kind != crate::graph::NodeKind::Model {
+                return Err(DagMlError::RuntimeValidation(
+                    "portable Methods Ridge controller only serves model nodes".to_string(),
+                ));
+            }
+            let request = MethodsPlsController::request(task, provider)?;
+            provider.preflight_methods_pls(&request)?;
+            let data = provider.methods_pls_data(&request)?;
+            data.validate_for(&request)?;
+            match task.phase {
+                Phase::FitCv => {
+                    let (fit_specs, validation_specs) =
+                        Self::split_prediction_inputs(task, ":outer")?;
+                    let prediction = data.prediction.as_ref().ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "portable Methods Ridge FIT_CV requires a validation data view"
+                                .to_string(),
+                        )
+                    })?;
+                    let fit_features = Self::feature_matrix(
+                        &fit_specs,
+                        &data.fit.sample_ids,
+                        PredictionPartition::Validation,
+                        "inner FIT_CV",
+                    )?;
+                    let validation_features = Self::feature_matrix(
+                        &validation_specs,
+                        &prediction.sample_ids,
+                        PredictionPartition::Validation,
+                        "outer FIT_CV",
+                    )?;
+                    let targets = data.fit.y.as_ref().ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "portable Methods Ridge FIT_CV requires fitting targets".to_string(),
+                        )
+                    })?;
+                    let validation_targets = prediction.y.as_ref().ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "portable Methods Ridge FIT_CV requires validation targets".to_string(),
+                        )
+                    })?;
+                    let (context, model) = Self::fit(task, &fit_features, targets)?;
+                    let values = Self::predict(&context, &model, &validation_features)?;
+                    Self::result(
+                        self,
+                        task,
+                        prediction.sample_ids.clone(),
+                        prediction.target_names.clone(),
+                        values,
+                        Some(validation_targets),
+                        None,
+                    )
+                }
+                Phase::Refit => {
+                    let (fit_specs, refit_specs) = Self::split_prediction_inputs(task, ":refit")?;
+                    let fit_features = Self::feature_matrix(
+                        &fit_specs,
+                        &data.fit.sample_ids,
+                        PredictionPartition::Validation,
+                        "REFIT",
+                    )?;
+                    let output_ids = refit_specs
+                        .values()
+                        .next()
+                        .expect("paired inputs checked")
+                        .sample_ids
+                        .clone();
+                    let refit_features = Self::feature_matrix(
+                        &refit_specs,
+                        &output_ids,
+                        PredictionPartition::Test,
+                        "REFIT output",
+                    )?;
+                    let targets = data.fit.y.as_ref().ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "portable Methods Ridge REFIT requires targets".to_string(),
+                        )
+                    })?;
+                    let (context, model) = Self::fit(task, &fit_features, targets)?;
+                    let values = Self::predict(&context, &model, &refit_features)?;
+                    let bytes = model.export_n4mm().map_err(|error| {
+                        MethodsPlsController::native_error("ridge_export_n4mm", error)
+                    })?;
+                    let id = ArtifactId::new(format!(
+                        "artifact:methods-ridge:{}:refit",
+                        task.node_plan.node_id
+                    ))
+                    .map_err(|error| DagMlError::RuntimeValidation(error.to_string()))?;
+                    let handle = self.handle(HandleKind::Model);
+                    self.exported_n4mm_by_artifact
+                        .lock()
+                        .map_err(|_| {
+                            DagMlError::RuntimeValidation(
+                                "portable Methods Ridge N4MM sidecar lock poisoned".to_string(),
+                            )
+                        })?
+                        .insert(id.clone(), bytes.clone());
+                    let artifact = ArtifactRef {
+                        id,
+                        kind: "n4m_model".to_string(),
+                        controller_id: self.id.clone(),
+                        backend: Some(ArtifactBackend::Raw),
+                        uri: Some(format!(
+                            "methods/{}.n4mm",
+                            task.node_plan.node_id.as_str().replace(':', "_")
+                        )),
+                        content_fingerprint: Some(format!("{:x}", Sha256::digest(&bytes))),
+                        size_bytes: Some(bytes.len() as u64),
+                        plugin: None,
+                        plugin_version: None,
+                    };
+                    Self::result(
+                        self,
+                        task,
+                        output_ids,
+                        data.fit.target_names.clone(),
+                        values,
+                        None,
+                        Some((artifact, handle)),
+                    )
+                }
+                Phase::Predict => {
+                    let predict_specs = Self::predict_only_inputs(task)?;
+                    let features = Self::feature_matrix(
+                        &predict_specs,
+                        &data.fit.sample_ids,
+                        PredictionPartition::Final,
+                        "PREDICT",
+                    )?;
+                    let artifact = task.artifact_inputs.values().find(|artifact| artifact.controller_id == self.id).ok_or_else(|| DagMlError::RuntimeValidation("portable Methods Ridge PREDICT requires its retained N4MM artifact reference".to_string()))?;
+                    let handle = task.input_handles.get(&crate::runtime::refit_artifact_input_key(&artifact.artifact.id)).ok_or_else(|| DagMlError::RuntimeValidation("portable Methods Ridge PREDICT requires a hydrated N4MM runtime handle".to_string()))?;
+                    let bytes = self.hydrated_n4mm_by_handle.lock().map_err(|_| DagMlError::RuntimeValidation("portable Methods Ridge hydrated N4MM lock poisoned".to_string()))?.remove(&handle.handle).ok_or_else(|| DagMlError::RuntimeValidation("portable Methods Ridge PREDICT requires N4MM bytes hydrated from the execution bundle in this controller instance".to_string()))?;
+                    let context = Context::new().map_err(|error| {
+                        MethodsPlsController::native_error("ridge_predict_context_create", error)
+                    })?;
+                    let model = Model::import_n4mm(&context, &bytes).map_err(|error| {
+                        MethodsPlsController::native_error("ridge_predict_import_n4mm", error)
+                    })?;
+                    let values = Self::predict(&context, &model, &features)?;
+                    Self::result(
+                        self,
+                        task,
+                        data.fit.sample_ids.clone(),
+                        data.fit.target_names.clone(),
+                        values,
+                        None,
+                        None,
+                    )
+                }
+                _ => Err(DagMlError::RuntimeValidation(
+                    "portable Methods Ridge supports FIT_CV, REFIT, and PREDICT only".to_string(),
+                )),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod ridge_tests {
+        use std::collections::BTreeMap;
+
+        use super::*;
+
+        fn sample_ids() -> Vec<crate::SampleId> {
+            vec![
+                crate::SampleId::new("sample:1").unwrap(),
+                crate::SampleId::new("sample:2").unwrap(),
+            ]
+        }
+
+        fn prediction(values: Vec<Vec<f64>>) -> PredictionInputSpec {
+            PredictionInputSpec {
+                producer_node: crate::NodeId::new("model:base").unwrap(),
+                source_port: "oof".to_string(),
+                target_port: "oof".to_string(),
+                partition: PredictionPartition::Validation,
+                prediction_level: PredictionLevel::Sample,
+                fold_id: None,
+                fold_ids: Vec::new(),
+                unit_ids: Vec::new(),
+                sample_ids: sample_ids(),
+                values,
+                prediction_width: 1,
+                target_names: vec!["y".to_string()],
+            }
+        }
+
+        #[test]
+        fn ridge_features_are_stably_ordered_and_identity_aligned() {
+            let mut inputs = BTreeMap::new();
+            // BTreeMap ordering, rather than host insertion ordering, is part
+            // of the portable N4MM coefficient contract.
+            inputs.insert(
+                "model:z.oof".to_string(),
+                prediction(vec![vec![30.0], vec![40.0]]),
+            );
+            inputs.insert(
+                "model:a.oof".to_string(),
+                prediction(vec![vec![10.0], vec![20.0]]),
+            );
+
+            let refs = inputs
+                .iter()
+                .map(|(key, spec)| (key.clone(), spec))
+                .collect();
+            let matrix = MethodsRidgeController::feature_matrix(
+                &refs,
+                &sample_ids(),
+                PredictionPartition::Validation,
+                "test",
+            )
+            .unwrap();
+            assert_eq!(matrix.rows, 2);
+            assert_eq!(matrix.cols, 2);
+            assert_eq!(matrix.values, vec![10.0, 30.0, 20.0, 40.0]);
+
+            let mut misaligned = inputs["model:a.oof"].clone();
+            misaligned.sample_ids.reverse();
+            let refs = BTreeMap::from([
+                ("model:a.oof".to_string(), &misaligned),
+                ("model:z.oof".to_string(), &inputs["model:z.oof"]),
+            ]);
+            assert!(MethodsRidgeController::feature_matrix(
+                &refs,
+                &sample_ids(),
+                PredictionPartition::Validation,
+                "test",
+            )
+            .is_err());
+        }
+    }
 }
 
 #[cfg(feature = "methods-optimizer")]
-pub use pls_controller::MethodsPlsController;
+pub use pls_controller::{MethodsPlsController, MethodsRidgeController};
 
-/// Register the complete native Methods controller pair for one process.
+/// Register the complete native Methods controller set for one process.
 ///
 /// The caller supplies the already-configured runtime and the controller id
 /// attested by its native HPO campaign.  Registration is preflighted before
@@ -1706,12 +2352,15 @@ pub fn register_methods_runtime_controllers(
 ) -> crate::Result<()> {
     let pls_controller_id = crate::ControllerId::new(METHODS_PLS_CONTROLLER_ID)
         .expect("the fixed Methods PLS controller id is valid");
-    if hpo_controller_id == pls_controller_id {
+    let ridge_controller_id = crate::ControllerId::new(METHODS_RIDGE_CONTROLLER_ID)
+        .expect("the fixed Methods Ridge controller id is valid");
+    if hpo_controller_id == pls_controller_id || hpo_controller_id == ridge_controller_id {
         return Err(crate::DagMlError::RuntimeValidation(
-            "Methods HPO controller id must differ from the Methods PLS controller id".to_string(),
+            "Methods HPO controller id must differ from the Methods PLS and Ridge controller ids"
+                .to_string(),
         ));
     }
-    for controller_id in [&pls_controller_id, &hpo_controller_id] {
+    for controller_id in [&pls_controller_id, &ridge_controller_id, &hpo_controller_id] {
         if registry.get(controller_id).is_some() {
             return Err(crate::DagMlError::RuntimeValidation(format!(
                 "duplicate runtime controller `{controller_id}`"
@@ -1719,6 +2368,7 @@ pub fn register_methods_runtime_controllers(
         }
     }
     registry.register(Box::new(MethodsPlsController::new(runtime.clone())))?;
+    registry.register(Box::new(MethodsRidgeController::new(runtime.clone())))?;
     registry.register(Box::new(MethodsHpoController::new(
         hpo_controller_id,
         runtime,
@@ -2311,7 +2961,7 @@ mod tests {
 
     #[cfg(feature = "methods-optimizer-local")]
     #[test]
-    fn methods_runtime_registers_both_controllers_atomically() {
+    fn methods_runtime_registers_all_controllers_atomically() {
         let runtime = native_runtime();
         let hpo_id = crate::ControllerId::new("controller:tuner.methods").unwrap();
         let mut registry = RuntimeControllerRegistry::new();
@@ -2319,13 +2969,16 @@ mod tests {
         register_methods_runtime_controllers(&mut registry, hpo_id.clone(), runtime.clone())
             .unwrap();
         let pls_id = crate::ControllerId::new(METHODS_PLS_CONTROLLER_ID).unwrap();
+        let ridge_id = crate::ControllerId::new(METHODS_RIDGE_CONTROLLER_ID).unwrap();
         assert!(registry.get(&pls_id).is_some());
+        assert!(registry.get(&ridge_id).is_some());
         assert!(registry.get(&hpo_id).is_some());
 
         let error = register_methods_runtime_controllers(&mut registry, hpo_id.clone(), runtime)
             .unwrap_err();
         assert!(error.to_string().contains("duplicate runtime controller"));
         assert!(registry.get(&pls_id).is_some());
+        assert!(registry.get(&ridge_id).is_some());
         assert!(registry.get(&hpo_id).is_some());
     }
 
