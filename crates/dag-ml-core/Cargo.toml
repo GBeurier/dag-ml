@@ -31,7 +31,7 @@ sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
-n4m = { version = "0.1.1", default-features = false, features = ["dynamic"], optional = true }
+n4m = { version = "0.1.2", default-features = false, features = ["dynamic"], optional = true }
 
 [dev-dependencies]
 # Test-only bridge: DAG-ML owns the member contracts/replay; Core is invoked

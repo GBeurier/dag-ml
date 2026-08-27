@@ -771,9 +771,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "n4m"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a8a6713833f697dc062c65af0716a8b3b3121d620585cab062533e655f2cd49"
+checksum = "1bb1fcce4f16437c7ab55925fb05256e6f7e2f7a2e91a9d30b24805a19196dce"
 dependencies = [
  "cc",
  "libloading",
