@@ -208,6 +208,21 @@ def _require_binary64(value: Any, label: str) -> float:
     return value
 
 
+def _canonical_decimal_endpoints(point: float, radius: float) -> tuple[float, float]:
+    """Return the W0 independently rounded decimal interval endpoints."""
+
+    return (
+        float(Decimal(repr(point)) - Decimal(repr(radius))),
+        float(Decimal(repr(point)) + Decimal(repr(radius))),
+    )
+
+
+def _same_binary64(left: float, right: float) -> bool:
+    """Compare endpoint values without erasing a signed-zero distinction."""
+
+    return struct.pack(">d", left) == struct.pack(">d", right)
+
+
 def validate_coverages(coverages: Any) -> list[float]:
     """Return canonical binary64 coverages after strict ordered validation."""
 
@@ -591,9 +606,12 @@ def validate_numeric_evidence(
                         )
                     else:
                         require(
-                            Decimal(repr(lower)) + Decimal(repr(upper))
-                            == Decimal(2) * Decimal(repr(point)),
-                            f"{item_label} midpoint does not reconstruct at {row_number},{target_number}",
+                            isinstance(lower, float)
+                            and isinstance(upper, float)
+                            and math.isfinite(lower)
+                            and math.isfinite(upper)
+                            and lower <= upper,
+                            f"{item_label} finite endpoints are invalid at {row_number},{target_number}",
                         )
             summaries = regression_conformal_metrics(
                 truth,
@@ -1725,10 +1743,16 @@ def _validate_block_against_calibrator(
                     isinstance(lower, float) and isinstance(upper, float),
                     "finite calibration quantile requires binary64 endpoints",
                 )
+                point = block["point_predictions"][row_index][target_index]
+                radius = tagged["value"]
+                expected_lower, expected_upper = _canonical_decimal_endpoints(
+                    point, radius
+                )
                 require(
-                    Decimal(repr(upper)) - Decimal(repr(lower))
-                    == Decimal(2) * Decimal(repr(tagged["value"])),
-                    f"prediction interval radius drifted at row {row_index}, target {target_index}",
+                    _same_binary64(lower, expected_lower)
+                    and _same_binary64(upper, expected_upper)
+                    and (radius == 0.0 or lower != upper),
+                    f"prediction interval endpoints drifted at row {row_index}, target {target_index}",
                 )
 
 

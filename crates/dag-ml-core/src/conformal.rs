@@ -374,8 +374,11 @@ pub fn split_absolute_residual_quantiles(
 /// interval, preserving the distinction between arithmetic failure and the
 /// explicit small-sample policy. Finite endpoints are the correctly rounded
 /// binary64 conversions of `Decimal(repr(point)) +/- Decimal(repr(radius))`,
-/// as frozen by W0. The result is rejected when binary64 endpoints cannot
-/// preserve both the W0 decimal midpoint and radius closures exactly.
+/// as frozen by W0.  The two decimal operations are rounded independently;
+/// their rendered binary64 values therefore need not reconstruct an exact
+/// decimal midpoint or width after a second arithmetic operation.  A finite
+/// non-zero radius is rejected only when both canonical endpoint conversions
+/// collapse to the same binary64 value.
 pub fn apply_split_absolute_residual(
     point_predictions: &[Vec<f64>],
     quantiles: &[SplitConformalQuantile],
@@ -841,28 +844,17 @@ fn decimal_conformal_endpoints(point: f64, radius: f64) -> Result<(f64, f64), Co
     ))
 }
 
-fn exact_decimal_values_equal(left: &ExactDecimal, right: &ExactDecimal) -> bool {
-    (left.is_zero() && right.is_zero()) || left == right
-}
-
 fn decimal_interval_closes(
     point: f64,
     radius: f64,
     lower: f64,
     upper: f64,
 ) -> Result<bool, ConformalError> {
-    let point = exact_decimal_from_f64(point)?;
-    let radius = exact_decimal_from_f64(radius)?;
-    let lower = exact_decimal_from_f64(lower)?;
-    let upper = exact_decimal_from_f64(upper)?;
-    let endpoint_midpoint = add_exact_decimals(&lower, &upper, false)?;
-    let expected_midpoint = add_exact_decimals(&point, &point, false)?;
-    let endpoint_width = add_exact_decimals(&upper, &lower, true)?;
-    let expected_width = add_exact_decimals(&radius, &radius, false)?;
-    Ok(
-        exact_decimal_values_equal(&endpoint_midpoint, &expected_midpoint)
-            && exact_decimal_values_equal(&endpoint_width, &expected_width),
-    )
+    let (expected_lower, expected_upper) = decimal_conformal_endpoints(point, radius)?;
+    let matches_canonical_endpoints =
+        lower.to_bits() == expected_lower.to_bits() && upper.to_bits() == expected_upper.to_bits();
+    let non_zero_radius_collapsed = radius != 0.0 && lower.to_bits() == upper.to_bits();
+    Ok(matches_canonical_endpoints && !non_zero_radius_collapsed)
 }
 
 fn checked_power_of_ten(power: u32) -> Result<u128, ConformalError> {
@@ -1374,6 +1366,30 @@ mod tests {
         let (lower, upper) = decimal_conformal_endpoints(-100.0, 90.0).unwrap();
         assert_eq!((lower, upper), (-190.0, -10.0));
         assert!(decimal_interval_closes(-100.0, 90.0, lower, upper).unwrap());
+    }
+
+    #[test]
+    fn decimal_endpoints_accept_independently_rounded_non_collapsed_intervals() {
+        // These are canonical W0 decimal endpoints, but a *second* decimal
+        // addition of their rendered binary64 values does not reconstruct the
+        // original point.  That post-rounding equality is not an interval
+        // invariant: endpoint derivation is.
+        let point = 0.1;
+        let radius = 1.423_415_354_928_408_8;
+        let (lower, upper) = decimal_conformal_endpoints(point, radius).unwrap();
+        assert!(lower < upper);
+        assert!(decimal_interval_closes(point, radius, lower, upper).unwrap());
+        let quantiles = vec![SplitConformalQuantile {
+            coverage: 0.8,
+            rank: 1,
+            radii: vec![finite(radius)],
+        }];
+        assert!(apply_split_absolute_residual(
+            &[vec![point]],
+            &quantiles,
+            ConformalMultiTargetPolicy::Marginal,
+        )
+        .is_ok());
     }
 
     #[test]

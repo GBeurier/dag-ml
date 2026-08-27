@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import copy
+from decimal import Decimal
 import json
 import shutil
 import sys
@@ -17,6 +18,7 @@ from referencing import Registry, Resource
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
+from parity.conformal import oracle as conformal_oracle  # noqa: E402
 from parity.conformal.oracle import (  # noqa: E402
     ContractError,
     apply_json_pointer_mutation,
@@ -276,6 +278,26 @@ def test_split_absolute_residual_oracle_and_small_n_policy() -> None:
                 action()
         else:
             assert action() == case["expected"]
+
+
+def test_decimal_endpoint_oracle_accepts_independent_binary64_rounding() -> None:
+    point = 0.1
+    radius = 1.423_415_354_928_408_8
+    lower, upper = conformal_oracle._canonical_decimal_endpoints(point, radius)
+
+    # Independently rounded binary64 endpoints need not reconstruct the source
+    # midpoint in decimal arithmetic. Their canonical endpoint bits are the
+    # portable W0 closure; a non-zero radius must still not collapse.
+    assert Decimal(repr(lower)) + Decimal(repr(upper)) != Decimal(2) * Decimal(
+        repr(point)
+    )
+    assert lower < upper
+    assert conformal_oracle._same_binary64(
+        lower, conformal_oracle._canonical_decimal_endpoints(point, radius)[0]
+    )
+    assert conformal_oracle._same_binary64(
+        upper, conformal_oracle._canonical_decimal_endpoints(point, radius)[1]
+    )
 
 
 def test_physical_sample_oracle_cases_match_independent_oracle() -> None:
