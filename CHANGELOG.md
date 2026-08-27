@@ -11,6 +11,8 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Added
 
+- Release patch 0.3.15: promote callback-free native Methods Package V3 refit replay into the public DAG-ML runtime boundary for Core and Studio hosts.
+
 - Release patch 0.3.14: native global OOF scoring now reconstructs each
   semantic unit across every validation fold before invoking the selected
   reducer and metric. The coordinator therefore makes a single attested

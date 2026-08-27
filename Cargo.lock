@@ -364,28 +364,28 @@ dependencies = [
 
 [[package]]
 name = "dag-ml"
-version = "0.3.0"
+version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fa108f5c0f5b321ceebd693400e25495bfb1b8d0e03fdae80ea84117fcb99f9"
+checksum = "381cde5c75139b0b27376d1bea2d717152e2bbc15a98b641c7482c1cf234a6f6"
 dependencies = [
- "dag-ml-core 0.3.0",
+ "dag-ml-core 0.3.12",
 ]
 
 [[package]]
 name = "dag-ml"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
- "dag-ml-core 0.3.14",
+ "dag-ml-core 0.3.15",
 ]
 
 [[package]]
 name = "dag-ml-arrow"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
- "dag-ml-core 0.3.14",
+ "dag-ml-core 0.3.15",
  "serde",
  "serde_json",
  "sha2",
@@ -393,9 +393,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-capi"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
- "dag-ml-core 0.3.14",
+ "dag-ml-core 0.3.15",
  "serde",
  "serde_json",
  "tracing-subscriber",
@@ -403,11 +403,11 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-cli"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "anyhow",
  "clap",
- "dag-ml-core 0.3.14",
+ "dag-ml-core 0.3.15",
  "serde",
  "serde_json",
  "sha2",
@@ -416,11 +416,12 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.0"
+version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ddc32f0c08f81fa4229a45db60b5c824c112a554ac8a25a534feac89e92e6c7"
+checksum = "6ee8d0b60bc3683235c8b681268a01a1d45e20d981e51d4217bf86f5501df2dc"
 dependencies = [
  "indexmap",
+ "n4m",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -433,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "indexmap",
  "n4m",
@@ -471,9 +472,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-wasm"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
- "dag-ml-core 0.3.14",
+ "dag-ml-core 0.3.15",
  "js-sys",
  "serde",
  "serde_json",
@@ -749,9 +750,9 @@ checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
 
 [[package]]
 name = "log"
-version = "0.4.33"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "matchers"
@@ -780,11 +781,12 @@ dependencies = [
 
 [[package]]
 name = "nirs4all"
-version = "0.3.15"
+version = "0.3.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edbf86deb36149052cfb0520552d60a80f6371fefb8d320157634b58019dd0bf"
+checksum = "263aaf63ff899e1331255c9a0cb19f06eb92099e22d2b2919ef012674167334c"
 dependencies = [
- "dag-ml 0.3.0",
+ "dag-ml 0.3.12",
+ "dag-ml-core 0.3.12",
  "dag-ml-data",
  "libloading",
  "serde",
@@ -989,7 +991,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -1085,9 +1087,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3"
+checksum = "e6275cddf4610d1775e6d1fe9469b2e77d0f39fd98fb7450901b821e0c53649f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1111,7 +1113,7 @@ checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
