@@ -488,6 +488,30 @@ pub enum NestedCvSpec {
     GroupKFold(GroupKFoldSpec),
 }
 
+/// One inner fold set bound to the exact outer fold that owns its training
+/// universe.  The parent is a first-class identity: nested schedulers and OOF
+/// caches must not infer it by parsing an inner fold-set identifier.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NestedFoldSet {
+    pub parent_outer_fold_id: FoldId,
+    pub inner_fold_set: FoldSet,
+}
+
+impl NestedFoldSet {
+    /// Validate both the explicit parent binding and the no-leakage subset
+    /// invariant.  A structurally valid inner set cannot be reused under a
+    /// different outer fold.
+    pub fn validate_for_outer(&self, outer: &FoldAssignment) -> Result<()> {
+        if self.parent_outer_fold_id != outer.fold_id {
+            return Err(DagMlError::OofValidation(format!(
+                "nested CV parent fold `{}` does not match outer fold `{}`",
+                self.parent_outer_fold_id, outer.fold_id
+            )));
+        }
+        validate_inner_fold_set_within_outer(&self.inner_fold_set, outer)
+    }
+}
+
 impl NestedCvSpec {
     /// Validate the nested-CV policy's parameters independently of any outer fold.
     /// Mirrors the checks the splitters enforce (`n_splits >= 2`) so a malformed
@@ -521,8 +545,21 @@ impl NestedCvSpec {
         outer: &FoldAssignment,
         outer_groups: &BTreeMap<SampleId, GroupId>,
     ) -> Result<FoldSet> {
+        Ok(self
+            .build_nested_fold_set(outer, outer_groups)?
+            .inner_fold_set)
+    }
+
+    /// Build an inner fold set together with its non-optional outer-fold
+    /// ownership.  New scheduler paths should retain this wrapper throughout
+    /// execution rather than carrying a bare `FoldSet`.
+    pub fn build_nested_fold_set(
+        &self,
+        outer: &FoldAssignment,
+        outer_groups: &BTreeMap<SampleId, GroupId>,
+    ) -> Result<NestedFoldSet> {
         let inner_id = format!("{}.inner", outer.fold_id);
-        let inner = match self {
+        let mut inner = match self {
             Self::KFold(spec) => spec.split(inner_id, &outer.train_sample_ids)?,
             Self::GroupKFold(spec) => {
                 let train = outer.train_sample_ids.iter().collect::<BTreeSet<_>>();
@@ -534,8 +571,20 @@ impl NestedCvSpec {
                 spec.split(inner_id, &inner_groups)?
             }
         };
-        validate_inner_fold_set_within_outer(&inner, outer)?;
-        Ok(inner)
+        // Splitters name folds locally (`fold0`, `fold1`, …).  Nested OOF is
+        // retained in one run context across every outer fold, so local names
+        // would collide in the prediction store. Namespace every assignment by
+        // the explicit parent rather than relying on the fold-set id (which is
+        // not carried by `PredictionBlock`).
+        for fold in &mut inner.folds {
+            fold.fold_id = FoldId::new(format!("{}.inner.{}", outer.fold_id, fold.fold_id))?;
+        }
+        let nested = NestedFoldSet {
+            parent_outer_fold_id: outer.fold_id.clone(),
+            inner_fold_set: inner,
+        };
+        nested.validate_for_outer(outer)?;
+        Ok(nested)
     }
 }
 
@@ -873,6 +922,36 @@ mod tests {
                 outer_train
             );
         }
+    }
+
+    #[test]
+    fn nested_fold_set_binds_inner_evidence_to_its_outer_fold() {
+        let samples = ["s1", "s2", "s3", "s4", "s5", "s6"]
+            .into_iter()
+            .map(sid)
+            .collect::<Vec<_>>();
+        let outer = outer_kfold(&samples);
+        let spec = NestedCvSpec::KFold(KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: Some(1),
+        });
+        let first = &outer.folds[0];
+        let nested = spec
+            .build_nested_fold_set(first, &outer.sample_groups)
+            .expect("nested fold set");
+        assert_eq!(nested.parent_outer_fold_id, first.fold_id);
+        nested.validate_for_outer(first).unwrap();
+        assert!(nested.inner_fold_set.folds.iter().all(|fold| fold
+            .fold_id
+            .as_str()
+            .starts_with(&format!("{}.inner.", first.fold_id))));
+
+        let second = &outer.folds[1];
+        let error = nested
+            .validate_for_outer(second)
+            .expect_err("inner evidence must not be transplantable across outer folds");
+        assert!(error.to_string().contains("parent fold"));
     }
 
     #[test]
