@@ -288,8 +288,8 @@ jobs:
         with:
           repository: GBeurier/nirs4all-methods
           # Source used only to build the explicit runtime file below.  The
-          # Rust binding itself is the published n4m 0.1.1 crate.
-          ref: aabdecfdd76d1a4d12cfbbade4eeee0d30a6ea47
+          # Rust binding itself is the published n4m 0.1.2 crate.
+          ref: 4983c9a1df39d430a78c615bda209d3353514aa1
           path: external/nirs4all-methods
       - uses: dtolnay/rust-toolchain@stable
       - name: Build ABI-matched Methods library
