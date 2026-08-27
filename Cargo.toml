@@ -36,7 +36,7 @@ dag-ml = { path = "crates/dag-ml", version = "0.3.15" }
 dag-ml-core = { path = "crates/dag-ml-core", version = "0.3.15" }
 serde = { version = "1.0", features = ["derive"] }
 serde_ignored = "0.1"
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 yaml_serde = "0.10.4"
 indexmap = "=2.13.1"
 sha2 = "0.10"

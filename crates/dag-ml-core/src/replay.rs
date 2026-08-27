@@ -1151,7 +1151,7 @@ pub fn execute_attached_training_replay(
     }
     lineage.sort_by(|left, right| left.record_id.cmp(&right.record_id));
 
-    let mut outcome = TrainingReplayOutcome {
+    let outcome = TrainingReplayOutcome {
         schema_version: replay_outcome_schema_version(&input_data_identities),
         outcome_id: input.outcome_id,
         run_id: input.run_id,
@@ -1188,7 +1188,7 @@ pub fn execute_attached_training_replay(
         diagnostics: input.diagnostics,
         outcome_fingerprint: zero_fingerprint(),
     };
-    outcome.outcome_fingerprint = outcome.compute_fingerprint()?;
+    let outcome = stabilize_training_replay_outcome_for_tcv1(outcome)?;
     outcome.validate_against(input.source, input.request)?;
     Ok(outcome)
 }
@@ -1279,7 +1279,7 @@ pub fn execute_loaded_predictor_replay(
     }
     lineage.sort_by(|left, right| left.record_id.cmp(&right.record_id));
 
-    let mut outcome = TrainingReplayOutcome {
+    let outcome = TrainingReplayOutcome {
         schema_version: replay_outcome_schema_version(&input_data_identities),
         outcome_id: input.outcome_id,
         run_id: input.run_id,
@@ -1316,7 +1316,7 @@ pub fn execute_loaded_predictor_replay(
         diagnostics: input.diagnostics,
         outcome_fingerprint: zero_fingerprint(),
     };
-    outcome.outcome_fingerprint = outcome.compute_fingerprint()?;
+    let outcome = stabilize_training_replay_outcome_for_tcv1(outcome)?;
     outcome.validate_against_package(package, input.request)?;
     Ok(outcome)
 }
@@ -2296,6 +2296,51 @@ fn require_count(label: &str, actual: usize, expected: usize) -> Result<()> {
 
 fn zero_fingerprint() -> String {
     "0".repeat(64)
+}
+
+fn stabilize_training_replay_outcome_for_tcv1(
+    mut outcome: TrainingReplayOutcome,
+) -> Result<TrainingReplayOutcome> {
+    // TCV1 binds the lexical JSON number token. Native replay can carry an
+    // f64 through an external runtime before serde writes the outcome, so
+    // sign the fixed point a strict JSON reader will itself observe after
+    // deserialize/serialize. This mirrors TrainingOutcome stabilization and
+    // prevents a replay from being rejected at its own public JSON boundary.
+    outcome.outcome_fingerprint = zero_fingerprint();
+    for _ in 0..8 {
+        let json = serde_json::to_string(&outcome)?;
+        let before = parse_typed_json(&json).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "training replay outcome is not strict TCV1 JSON while normalizing: {error}"
+            ))
+        })?;
+        let mut normalized = serde_json::from_str::<TrainingReplayOutcome>(&json)?;
+        normalized.outcome_fingerprint = zero_fingerprint();
+        let normalized_json = serde_json::to_string(&normalized)?;
+        let after = parse_typed_json(&normalized_json).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "training replay outcome is not strict TCV1 JSON after normalization: {error}"
+            ))
+        })?;
+        if before != after {
+            outcome = normalized;
+            continue;
+        }
+
+        normalized.outcome_fingerprint =
+            after
+                .fingerprint_without("outcome_fingerprint")
+                .map_err(|error| {
+                    DagMlError::RuntimeValidation(format!(
+                    "training replay outcome TCV1 fingerprint failed after normalization: {error}"
+                ))
+                })?;
+        let signed_json = serde_json::to_string(&normalized)?;
+        return TrainingReplayOutcome::from_json(&signed_json);
+    }
+    Err(DagMlError::RuntimeValidation(
+        "training replay outcome TCV1 JSON did not reach a serde canonical fixed point".to_string(),
+    ))
 }
 
 fn tcv1_fingerprint_without<T: Serialize>(value: &T, field: &str, label: &str) -> Result<String> {
