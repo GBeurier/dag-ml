@@ -23,6 +23,7 @@ from ._dag_ml import (
     LocalImplementationRegistry as _NativeLocalImplementationRegistry,
     TrainingResult as _NativeTrainingResult,
     build_execution_plan_json,
+    attach_predict_cohort_to_envelope_json as _native_attach_predict_cohort_to_envelope_json,
     build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
     build_archive_v3_native_refit_payloads_json as _native_build_archive_v3_native_refit_payloads_json,
     build_conformal_presentation_v1_json as _native_build_conformal_presentation_v1_json,
@@ -101,6 +102,7 @@ _FACADE_EXPORTS = [
     "PortableRefitReplayOutcomeV3",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
+    "attach_predict_cohort_to_envelope",
     "configure_methods_runtime",
     "build_archive_v2_native_portable_payloads",
     "build_archive_v3_native_refit_payloads",
@@ -881,6 +883,24 @@ def sign_training_request_json(request: Any) -> str:
     return _native_sign_training_request_json(_coerce_json(request))
 
 
+def attach_predict_cohort_to_envelope(
+    envelope: Any,
+    cohort_request: Any,
+) -> JsonContract:
+    """Derive and attach a closed V2 PREDICT cohort through Rust.
+
+    Callers supply relation records and content fingerprints only.  The native
+    contract owns physical/origin identity derivation and all cohort hashes.
+    """
+
+    return JsonContract(
+        _native_attach_predict_cohort_to_envelope_json(
+            _coerce_json(envelope),
+            _coerce_json(cohort_request),
+        )
+    )
+
+
 def sign_training_request(request: Any) -> TrainingRequest:
     """Return a typed, signed W1 training request."""
 
@@ -1433,6 +1453,7 @@ __all__ = [
     "compile_pipeline_dsl_artifact_with_controllers_json",
     "compile_pipeline_dsl_graph",
     "compile_pipeline_dsl_graph_json",
+    "attach_predict_cohort_to_envelope",
     "derive_controller_manifest",
     "derive_controller_manifest_json",
     "derive_controller_manifest_list_json",

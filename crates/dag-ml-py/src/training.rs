@@ -2359,6 +2359,7 @@ mod tests {
             data_content_fingerprint: Some(identity.data_content_fingerprint.clone()),
             target_content_fingerprint: Some(identity.target_content_fingerprint.clone()),
             coordinator_relations: Some(relations),
+            predict_cohort: None,
         }
     }
 
