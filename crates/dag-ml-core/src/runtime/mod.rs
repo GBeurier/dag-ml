@@ -279,7 +279,6 @@ pub(crate) struct GlobalOofAggregationSpec {
     pub(crate) policy: AggregationPolicy,
     pub(crate) relations: SampleRelationSet,
 }
-}
 
 impl RunContext {
     pub fn new(run_id: RunId, root_seed: Option<u64>) -> Self {
