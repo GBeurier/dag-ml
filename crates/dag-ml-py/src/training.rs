@@ -8,13 +8,15 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
 use dag_ml_core::{
-    execute_attached_training_replay, execute_loaded_predictor_replay, execute_training,
-    parse_typed_json, ArtifactId, ArtifactLoadMode, AttachedTrainingReplayInput, BundleId,
-    DataBinding, EnvelopeAttestedRuntimeDataProvider, ExternalDataPlanEnvelope,
-    FittedArtifactMode, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
-    LoadedPredictor, LoadedPredictorReplayInput, PortablePredictorPackage, RunId,
-    RuntimeControllerRegistry, SampleRelationSet, TrainingExecutionInput,
-    TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest, TrainingRequest,
+    calibrate_attached_training_replay_with_derived_context, execute_attached_training_replay,
+    execute_loaded_predictor_replay, execute_training, parse_typed_json, ArtifactId,
+    ArtifactLoadMode, AttachedTrainingReplayInput, BundleId, ConformalCalibrationTruth,
+    ConformalMultiTargetPolicy, ConformalSmallSamplePolicy, DataBinding,
+    EnvelopeAttestedRuntimeDataProvider, ExternalDataPlanEnvelope, FittedArtifactMode, HandleKind,
+    HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LoadedPredictor,
+    LoadedPredictorReplayInput, PortablePredictorPackage, RunId, RuntimeControllerRegistry,
+    SampleRelationSet, TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome,
+    TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
 };
 use pyo3::prelude::*;
 use serde::de::DeserializeOwned;
@@ -155,6 +157,58 @@ impl TrainingResult {
             .to_portable_predictor_package(package_id, fitted_artifact_mode, artifact_load_mode)
             .map_err(py_core_error)?;
         serialize_json(&package)
+    }
+
+    /// Attach split-conformal state from one already-attested PREDICT replay.
+    ///
+    /// The host can supply only the replay, relation authority, and
+    /// identity-keyed truth. DAG-ML derives all persisted provenance fields
+    /// from the current outcome, so a caller cannot transplant/re-sign a
+    /// calibration context from a different predictor or cohort.
+    #[allow(clippy::too_many_arguments)]
+    fn attach_conformal_calibration_json(
+        &mut self,
+        replay_json: &str,
+        binding_id: &str,
+        calibration_relations_json: &str,
+        truth_json: &str,
+        coverages_json: &str,
+        multi_target_policy_json: &str,
+        small_sample_policy_json: &str,
+    ) -> PyResult<String> {
+        let replay = TrainingReplayOutcome::from_json(replay_json).map_err(py_core_error)?;
+        let relations = parse_strict_json::<SampleRelationSet>(
+            calibration_relations_json,
+            "conformal calibration relations",
+        )?;
+        let truth = parse_strict_json::<ConformalCalibrationTruth>(
+            truth_json,
+            "conformal calibration truth",
+        )?;
+        let coverages = parse_strict_json::<Vec<f64>>(
+            coverages_json,
+            "conformal calibration coverages",
+        )?;
+        let multi_target_policy = parse_strict_json::<ConformalMultiTargetPolicy>(
+            multi_target_policy_json,
+            "conformal multi-target policy",
+        )?;
+        let small_sample_policy = parse_strict_json::<ConformalSmallSamplePolicy>(
+            small_sample_policy_json,
+            "conformal small-sample policy",
+        )?;
+        let calibration = calibrate_attached_training_replay_with_derived_context(
+            &mut self.outcome,
+            &replay,
+            binding_id,
+            &relations,
+            truth,
+            coverages,
+            multi_target_policy,
+            small_sample_policy,
+        )
+        .map_err(py_core_error)?;
+        serialize_json(&calibration)
     }
 
     /// Execute an attached PREDICT/EXPLAIN replay against the live training result.

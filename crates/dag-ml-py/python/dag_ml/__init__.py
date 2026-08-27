@@ -582,6 +582,38 @@ class TrainingResult:
             )
         )
 
+    def attach_conformal_calibration(
+        self,
+        replay: Any,
+        *,
+        binding_id: str,
+        calibration_relations: Any,
+        truth: Any,
+        coverages: Any,
+        multi_target_policy: Any = "marginal",
+        small_sample_policy: Any = "error",
+    ) -> dict[str, Any]:
+        """Attach a native identity-bound split-conformal calibration.
+
+        ``replay`` must be the exact PREDICT evidence emitted by this attached
+        result.  The host supplies only its authoritative relation set and
+        aligned truth; Rust derives the source/replay/binding/fold/influence
+        closure before mutating the portable outcome.
+        """
+
+        replay_outcome = TrainingReplayOutcome(replay)
+        return json.loads(
+            self._native.attach_conformal_calibration_json(
+                replay_outcome.json(),
+                binding_id,
+                _coerce_json(calibration_relations),
+                _coerce_json(truth),
+                _coerce_json(coverages),
+                _coerce_json(multi_target_policy),
+                _coerce_json(small_sample_policy),
+            )
+        )
+
     def outcome_json(self) -> str:
         return self._native.outcome_json()
 

@@ -20,6 +20,7 @@ class _FakeNativeTrainingResult:
 
     def __init__(self, outcome: dict[str, Any]) -> None:
         self._outcome = outcome
+        self.conformal_call: tuple[str, str, str, str, str, str, str] | None = None
         self.is_attached = True
         self.process_local_artifact_count: int | None = 1
         self.process_local_data_handle_count: int | None = 4
@@ -67,6 +68,27 @@ class _FakeNativeTrainingResult:
         _diagnostics_json: str,
     ) -> str:
         raise RuntimeError("fake native replay is not implemented")
+
+    def attach_conformal_calibration_json(
+        self,
+        replay_json: str,
+        binding_id: str,
+        calibration_relations_json: str,
+        truth_json: str,
+        coverages_json: str,
+        multi_target_policy_json: str,
+        small_sample_policy_json: str,
+    ) -> str:
+        self.conformal_call = (
+            replay_json,
+            binding_id,
+            calibration_relations_json,
+            truth_json,
+            coverages_json,
+            multi_target_policy_json,
+            small_sample_policy_json,
+        )
+        return '{"schema_version":2,"calibration_id":"calibration:python.fake"}'
 
 
 class _SuccessfulTrainingCallback:
@@ -384,6 +406,51 @@ class TrainingResultTests(unittest.TestCase):
             fixture["request"]["request_fingerprint"],
         )
         self.assertEqual(signed.project().to_dict()["request_id"], unsigned["request_id"])
+
+    def test_public_facade_forwards_identity_bound_conformal_attachment(self) -> None:
+        outcome = json.loads(
+            (
+                REPO / "examples/fixtures/training/training_outcome_refit.v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        native = _FakeNativeTrainingResult(outcome)
+        result = dag_ml.TrainingResult(native)
+        replay = {
+            "schema_version": 1,
+            "outcome_id": "replay:calibration",
+        }
+        calibration = result.attach_conformal_calibration(
+            replay,
+            binding_id="binding:model.oof",
+            calibration_relations={"records": []},
+            truth={"sample_ids": ["sample:calibration:1"], "values": [[1.0]]},
+            coverages=[0.8, 0.95],
+            multi_target_policy="marginal",
+            small_sample_policy="error",
+        )
+
+        self.assertEqual(calibration["calibration_id"], "calibration:python.fake")
+        self.assertIsNotNone(native.conformal_call)
+        assert native.conformal_call is not None
+        (
+            replay_json,
+            binding_id,
+            relations_json,
+            truth_json,
+            coverages_json,
+            multi_target_policy_json,
+            small_sample_policy_json,
+        ) = native.conformal_call
+        self.assertEqual(json.loads(replay_json), replay)
+        self.assertEqual(binding_id, "binding:model.oof")
+        self.assertEqual(json.loads(relations_json), {"records": []})
+        self.assertEqual(
+            json.loads(truth_json),
+            {"sample_ids": ["sample:calibration:1"], "values": [[1.0]]},
+        )
+        self.assertEqual(json.loads(coverages_json), [0.8, 0.95])
+        self.assertEqual(json.loads(multi_target_policy_json), "marginal")
+        self.assertEqual(json.loads(small_sample_policy_json), "error")
 
     def test_public_facade_filters_explicit_multi_prediction_port_outputs(self) -> None:
         fixture = json.loads(

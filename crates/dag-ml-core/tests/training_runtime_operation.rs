@@ -2820,8 +2820,7 @@ fn loaded_v2_conformal_package_replays_intervals_and_rejects_resigned_tampering(
     })
     .expect("calibration replay");
     let point = &calibration_replay.outputs[0].predictions[0];
-    let context = calibration_context(&source, &calibration_replay, &relations);
-    let calibration = calibrate_attached_training_replay(
+    let calibration = calibrate_attached_training_replay_with_derived_context(
         &mut source,
         &calibration_replay,
         calibration_replay.outputs[0].binding.binding_id.as_str(),
@@ -2830,7 +2829,6 @@ fn loaded_v2_conformal_package_replays_intervals_and_rejects_resigned_tampering(
             sample_ids: point.sample_ids.clone(),
             values: vec![vec![1.0], vec![2.0], vec![3.0], vec![4.0]],
         },
-        context,
         vec![0.5],
         ConformalMultiTargetPolicy::Marginal,
         ConformalSmallSamplePolicy::Error,

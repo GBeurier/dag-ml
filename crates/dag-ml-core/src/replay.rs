@@ -15,8 +15,8 @@ use crate::campaign::stable_json_fingerprint;
 use crate::canonical::{deserialize_external_contract, parse_typed_json};
 use crate::conformal::{ConformalMultiTargetPolicy, ConformalSmallSamplePolicy};
 use crate::conformal_runtime::{
-    ConformalCalibration, ConformalCalibrationContext, ConformalCalibrationTruth,
-    ConformalIntervalBlock,
+    ConformalCalibration, ConformalCalibrationCohort, ConformalCalibrationContext,
+    ConformalCalibrationTruth, ConformalIntervalBlock,
 };
 use crate::data::ExternalDataPlanEnvelope;
 use crate::error::{DagMlError, Result};
@@ -1128,6 +1128,122 @@ pub fn execute_loaded_predictor_replay(
 /// the owning training outcome and its execution bundle.  The replay must have
 /// targeted the pre-calibration outcome; attachment deliberately produces a
 /// new outcome fingerprint for the portable predictor state.
+///
+/// This derived-context entry point is the binding-safe calibration boundary.
+/// It deliberately accepts only signed source/replay evidence, an authoritative
+/// relation set, and identity-keyed truth.  Python/host callers therefore cannot
+/// invent the source, fold, influence, output-binding, or cohort provenance
+/// fields that close the persisted calibration state.
+#[allow(clippy::too_many_arguments)]
+pub fn calibrate_attached_training_replay_with_derived_context(
+    source: &mut TrainingOutcome,
+    replay: &TrainingReplayOutcome,
+    binding_id: &str,
+    calibration_relations: &SampleRelationSet,
+    truth: ConformalCalibrationTruth,
+    coverages: Vec<f64>,
+    multi_target_policy: ConformalMultiTargetPolicy,
+    small_sample_policy: ConformalSmallSamplePolicy,
+) -> Result<ConformalCalibration> {
+    let context = derive_attached_conformal_calibration_context(
+        source,
+        replay,
+        binding_id,
+        calibration_relations,
+        &truth,
+    )?;
+    calibrate_attached_training_replay(
+        source,
+        replay,
+        binding_id,
+        calibration_relations,
+        truth,
+        context,
+        coverages,
+        multi_target_policy,
+        small_sample_policy,
+    )
+}
+
+/// Derive the complete conformal context from attested source and replay
+/// evidence.  This is public for strongly typed hosts, but callers should use
+/// [`calibrate_attached_training_replay_with_derived_context`] unless they need
+/// to inspect the context before attachment.
+pub fn derive_attached_conformal_calibration_context(
+    source: &TrainingOutcome,
+    replay: &TrainingReplayOutcome,
+    binding_id: &str,
+    calibration_relations: &SampleRelationSet,
+    truth: &ConformalCalibrationTruth,
+) -> Result<ConformalCalibrationContext> {
+    source.validate()?;
+    replay.validate()?;
+    let request = replay_request_from_outcome(replay);
+    replay.validate_against(source, &request)?;
+    if replay.phase != Phase::Predict {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal calibration requires a PREDICT replay outcome".to_string(),
+        ));
+    }
+    let output = replay
+        .outputs
+        .iter()
+        .find(|output| output.binding.binding_id == binding_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "calibration replay has no requested output binding".to_string(),
+            )
+        })?;
+    let [point] = output.predictions.as_slice() else {
+        return Err(DagMlError::RuntimeValidation(
+            "calibration replay requires exactly one sample point-prediction block".to_string(),
+        ));
+    };
+    if point.sample_ids != truth.sample_ids {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal calibration truth sample ids do not exactly match the replay point block"
+                .to_string(),
+        ));
+    }
+    calibration_relations.validate()?;
+    let relation_fingerprint = calibration_relations.fingerprint()?;
+    if replay
+        .input_data_identities
+        .iter()
+        .any(|identity| identity.relation_fingerprint != relation_fingerprint)
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal calibration relation authority does not match replay provenance".to_string(),
+        ));
+    }
+    let origin_sample_ids = calibration_origin_closure(&truth.sample_ids, calibration_relations)?;
+    let mut cohort = ConformalCalibrationCohort {
+        role: "calibration".to_string(),
+        physical_sample_ids: truth.sample_ids.clone(),
+        origin_sample_ids,
+        target_names: output.binding.target_names.clone(),
+        manifest_fingerprint: String::new(),
+    };
+    cohort.manifest_fingerprint = cohort.compute_fingerprint()?;
+    let fold_set = source.effective_plan.fold_set.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation("conformal calibration requires a source FoldSet".to_string())
+    })?;
+    let mut context = ConformalCalibrationContext {
+        predictor_binding_fingerprint: output.binding.binding_fingerprint.clone(),
+        source_training_outcome_fingerprint: source.outcome_fingerprint.clone(),
+        calibration_replay_outcome_fingerprint: replay.outcome_fingerprint.clone(),
+        data_identities_fingerprint: source.data_identities_fingerprint()?,
+        fold_set_fingerprint: fold_set_fingerprint(fold_set)?,
+        training_influence_fingerprint: source.training_influence.manifest_fingerprint.clone(),
+        relation_fingerprint,
+        calibration_cohort: cohort,
+        context_fingerprint: String::new(),
+    };
+    context.context_fingerprint = context.compute_fingerprint()?;
+    context.validate_for_truth(truth, &output.binding.target_names)?;
+    Ok(context)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn calibrate_attached_training_replay(
     source: &mut TrainingOutcome,
