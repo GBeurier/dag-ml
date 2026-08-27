@@ -24,12 +24,12 @@ use dag_ml_core::{
 };
 #[cfg(feature = "methods-optimizer")]
 use dag_ml_core::{
-    LoadedPortableRefitReplayInputV3, MethodsPlsDataset, MethodsPlsMatrix,
-    MethodsPortablePredictorReplayInput,
+    MethodsPlsDataset, MethodsPlsMatrix, MethodsPortablePredictorReplayInput,
+    MethodsPortableRefitReplayInputV3,
     PortableFullRefitExecutionInput, PortableRefitPackageV3,
     PortableRefitPackageV3BuildInput, PortableRefitRecipe, SampleId,
     build_portable_refit_package_v3, derive_portable_full_refit_target_plan,
-    execute_loaded_portable_refit_replay_v3, execute_portable_full_refit,
+    execute_loaded_methods_portable_refit_replay_v3, execute_portable_full_refit,
 };
 use pyo3::prelude::*;
 use serde::de::DeserializeOwned;
@@ -72,22 +72,10 @@ struct PyMethodsPlsTrainingProvider {
     inputs: BTreeMap<String, MethodsPlsDataset>,
 }
 
-/// PREDICT-only counterpart which deliberately does not re-attest the
-/// training relation against a new replay cohort. Replay's signed envelope is
-/// validated by the scheduler; this provider only serves its identity-keyed
-/// numeric rows.
-#[cfg(feature = "methods-optimizer")]
-struct PyMethodsPlsReplayProvider {
-    inner: InMemoryDataProvider,
-    inputs: BTreeMap<String, MethodsPlsDataset>,
-}
-
 enum TrainingDataProvider {
     Host(EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>),
     #[cfg(feature = "methods-optimizer")]
     Methods(PyMethodsPlsTrainingProvider),
-    #[cfg(feature = "methods-optimizer")]
-    MethodsReplay(PyMethodsPlsReplayProvider),
 }
 
 impl TrainingDataProvider {
@@ -96,8 +84,6 @@ impl TrainingDataProvider {
             Self::Host(provider) => provider.inner().handle_records().len(),
             #[cfg(feature = "methods-optimizer")]
             Self::Methods(provider) => provider.inner.inner().handle_records().len(),
-            #[cfg(feature = "methods-optimizer")]
-            Self::MethodsReplay(provider) => provider.inner.handle_records().len(),
         }
     }
 
@@ -106,8 +92,6 @@ impl TrainingDataProvider {
             Self::Host(provider) => provider.inner().view_records().len(),
             #[cfg(feature = "methods-optimizer")]
             Self::Methods(provider) => provider.inner.inner().view_records().len(),
-            #[cfg(feature = "methods-optimizer")]
-            Self::MethodsReplay(provider) => provider.inner.view_records().len(),
         }
     }
 }
@@ -118,8 +102,6 @@ impl RuntimeDataProvider for TrainingDataProvider {
             Self::Host(provider) => provider.materialize(request),
             #[cfg(feature = "methods-optimizer")]
             Self::Methods(provider) => provider.materialize(request),
-            #[cfg(feature = "methods-optimizer")]
-            Self::MethodsReplay(provider) => provider.materialize(request),
         }
     }
 
@@ -128,8 +110,6 @@ impl RuntimeDataProvider for TrainingDataProvider {
             Self::Host(provider) => provider.make_view(request),
             #[cfg(feature = "methods-optimizer")]
             Self::Methods(provider) => provider.make_view(request),
-            #[cfg(feature = "methods-optimizer")]
-            Self::MethodsReplay(provider) => provider.make_view(request),
         }
     }
 
@@ -141,8 +121,6 @@ impl RuntimeDataProvider for TrainingDataProvider {
             Self::Host(provider) => provider.training_data_identity(binding),
             #[cfg(feature = "methods-optimizer")]
             Self::Methods(provider) => provider.training_data_identity(binding),
-            #[cfg(feature = "methods-optimizer")]
-            Self::MethodsReplay(provider) => provider.training_data_identity(binding),
         }
     }
 
@@ -154,8 +132,6 @@ impl RuntimeDataProvider for TrainingDataProvider {
             Self::Host(provider) => provider.coordinator_relations(binding),
             #[cfg(feature = "methods-optimizer")]
             Self::Methods(provider) => provider.coordinator_relations(binding),
-            #[cfg(feature = "methods-optimizer")]
-            Self::MethodsReplay(provider) => provider.coordinator_relations(binding),
         }
     }
 
@@ -164,8 +140,6 @@ impl RuntimeDataProvider for TrainingDataProvider {
             Self::Host(provider) => provider.methods_pls_capability(),
             #[cfg(feature = "methods-optimizer")]
             Self::Methods(provider) => provider.methods_pls_capability(),
-            #[cfg(feature = "methods-optimizer")]
-            Self::MethodsReplay(provider) => provider.methods_pls_capability(),
         }
     }
 
@@ -174,8 +148,6 @@ impl RuntimeDataProvider for TrainingDataProvider {
             Self::Host(provider) => provider.preflight_methods_pls(request),
             #[cfg(feature = "methods-optimizer")]
             Self::Methods(provider) => provider.preflight_methods_pls(request),
-            #[cfg(feature = "methods-optimizer")]
-            Self::MethodsReplay(provider) => provider.preflight_methods_pls(request),
         }
     }
 
@@ -184,8 +156,6 @@ impl RuntimeDataProvider for TrainingDataProvider {
             Self::Host(provider) => provider.methods_pls_data(request),
             #[cfg(feature = "methods-optimizer")]
             Self::Methods(provider) => provider.methods_pls_data(request),
-            #[cfg(feature = "methods-optimizer")]
-            Self::MethodsReplay(provider) => provider.methods_pls_data(request),
         }
     }
 }
@@ -357,79 +327,6 @@ impl RuntimeDataProvider for PyMethodsPlsTrainingProvider {
         binding: &DataBinding,
     ) -> dag_ml_core::Result<Option<SampleRelationSet>> {
         self.inner.coordinator_relations(binding)
-    }
-
-    fn methods_pls_capability(&self) -> dag_ml_core::Result<()> {
-        Ok(())
-    }
-
-    fn preflight_methods_pls(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<()> {
-        self.data_for(request).map(|_| ())
-    }
-
-    fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<MethodsPlsData> {
-        self.data_for(request)
-    }
-}
-
-#[cfg(feature = "methods-optimizer")]
-impl PyMethodsPlsReplayProvider {
-    fn new(
-        envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
-        inputs: BTreeMap<String, MethodsPlsDataset>,
-    ) -> dag_ml_core::Result<Self> {
-        let mut inner = InMemoryDataProvider::new(
-            dag_ml_core::ControllerId::new(PY_DATA_PROVIDER_CONTROLLER_ID)?,
-        );
-        for envelope in envelopes.into_values() {
-            inner.register_envelope(envelope)?;
-        }
-        for (key, dataset) in &inputs {
-            dataset.validate(&format!("native Methods replay input `{key}`"), false)?;
-        }
-        Ok(Self { inner, inputs })
-    }
-
-    fn data_for(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<MethodsPlsData> {
-        request.validate()?;
-        if request.phase != dag_ml_core::Phase::Predict {
-            return Err(dag_ml_core::DagMlError::RuntimeValidation(
-                "native Methods replay provider supports PREDICT only".to_string(),
-            ));
-        }
-        let key = dag_ml_core::data_binding_requirement_key(
-            &request.binding.node_id,
-            &request.binding.input_name,
-        );
-        let dataset = self.inputs.get(&key).ok_or_else(|| {
-            dag_ml_core::DagMlError::RuntimeValidation(format!(
-                "native Methods replay has no input for `{key}`"
-            ))
-        })?;
-        // PREDICT's scheduler view intentionally has no fold subset. The
-        // caller's strictly keyed input is therefore the complete requested
-        // cohort; retain its explicit sample-id order rather than inventing
-        // positional IDs or borrowing a training fold.
-        let ids = request
-            .fit_view
-            .sample_ids
-            .as_deref()
-            .unwrap_or(&dataset.sample_ids);
-        Ok(MethodsPlsData {
-            fit: PyMethodsPlsTrainingProvider::dataset_for_view(dataset, ids, false, "replay")?,
-            prediction: None,
-        })
-    }
-}
-
-#[cfg(feature = "methods-optimizer")]
-impl RuntimeDataProvider for PyMethodsPlsReplayProvider {
-    fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
-        self.inner.materialize(request)
-    }
-
-    fn make_view(&self, request: &DataViewRequest) -> dag_ml_core::Result<HandleRef> {
-        self.inner.make_view(request)
     }
 
     fn methods_pls_capability(&self) -> dag_ml_core::Result<()> {
@@ -1426,29 +1323,8 @@ pub fn execute_loaded_methods_portable_refit_replay_v3_json(
             .map(|(key, input)| Ok((key, methods_dataset_from_json(input, false)?)))
             .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
             .map_err(py_core_error)?;
-        let methods_controller = dag_ml_core::ControllerId::new(dag_ml_core::METHODS_PLS_CONTROLLER_ID)
-            .map_err(py_core_error)?;
-        if package
-            .outcome
-            .effective_plan
-            .node_plans
-            .values()
-            .any(|node_plan| node_plan.controller_id != methods_controller)
-        {
-            return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
-                "native Methods V3 refit replay requires every executable node to use controller:methods.pls".to_string(),
-            )));
-        }
-        let data_provider = TrainingDataProvider::MethodsReplay(
-            PyMethodsPlsReplayProvider::new(envelopes.clone(), inputs)
-                .map_err(py_core_error)?,
-        );
         let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path)
             .map_err(|error| py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string())))?;
-        let mut controllers = RuntimeControllerRegistry::new();
-        controllers
-            .register(Box::new(dag_ml_core::MethodsPlsController::new(runtime)))
-            .map_err(py_core_error)?;
         let warnings = parse_strict_json::<Vec<String>>(
             warnings_json,
             "native Methods V3 refit replay warnings",
@@ -1461,14 +1337,15 @@ pub fn execute_loaded_methods_portable_refit_replay_v3_json(
         let run_id = RunId::new(run_id).map_err(py_core_error)?;
         let outcome = py
             .detach(move || {
-                execute_loaded_portable_refit_replay_v3(LoadedPortableRefitReplayInputV3 {
+                execute_loaded_methods_portable_refit_replay_v3(MethodsPortableRefitReplayInputV3 {
                     package: &package,
                     request: &request,
+                    data_envelopes: &envelopes,
+                    methods_inputs: &inputs,
+                    runtime,
+                    supplemental_controllers: RuntimeControllerRegistry::new(),
                     outcome_id,
                     run_id,
-                    controllers: &controllers,
-                    data_provider: &data_provider,
-                    data_envelopes: &envelopes,
                     warnings,
                     diagnostics,
                 })
