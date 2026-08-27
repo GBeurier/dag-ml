@@ -1743,6 +1743,17 @@ def _validate_block_against_calibrator(
                     isinstance(lower, float) and isinstance(upper, float),
                     "finite calibration quantile requires binary64 endpoints",
                 )
+                # Full prediction blocks carry the point matrix required to
+                # reconstruct the canonical W0 decimal endpoints. Historical
+                # report-only records deliberately do not; retain their
+                # frozen radius closure rather than indexing absent evidence.
+                if "point_predictions" not in block:
+                    require(
+                        Decimal(repr(upper)) - Decimal(repr(lower))
+                        == Decimal(2) * Decimal(repr(tagged["value"])),
+                        f"prediction interval radius drifted at row {row_index}, target {target_index}",
+                    )
+                    continue
                 point = block["point_predictions"][row_index][target_index]
                 radius = tagged["value"]
                 expected_lower, expected_upper = _canonical_decimal_endpoints(
