@@ -1277,17 +1277,18 @@ mod pls_controller {
         fn request(
             task: &NodeTask,
             provider: &dyn RuntimeDataProvider,
+            data_port: &str,
         ) -> Result<MethodsPlsDataRequest> {
             let bindings = task
                 .node_plan
                 .data_bindings
                 .iter()
-                .filter(|binding| binding.input_name == "x")
+                .filter(|binding| binding.input_name == data_port)
                 .collect::<Vec<_>>();
             let [binding] = bindings.as_slice() else {
                 return Err(DagMlError::RuntimeValidation(format!(
-                    "portable Methods PLS node `{}` requires exactly one `x` DataBinding",
-                    task.node_plan.node_id
+                    "portable Methods node `{}` requires exactly one `{data_port}` DataBinding",
+                    task.node_plan.node_id,
                 )));
             };
             let identity = provider.training_data_identity(binding)?;
@@ -1297,17 +1298,21 @@ mod pls_controller {
                     binding.node_id, binding.input_name, task.phase
                 )));
             }
-            let fit_view = task.data_views.get("x").or_else(|| task.data_views.get("data:x")).cloned().ok_or_else(|| {
+            let data_view_key = format!("data:{data_port}");
+            let fit_view = task.data_views.get(data_port).or_else(|| task.data_views.get(&data_view_key)).cloned().ok_or_else(|| {
                 DagMlError::RuntimeValidation(format!(
-                    "portable Methods PLS node `{}` requires its scheduler-created `x` data view (available: {:?})",
-                    task.node_plan.node_id, task.data_views.keys().collect::<Vec<_>>()
+                    "portable Methods node `{}` requires its scheduler-created `{data_port}` data view (available: {:?})",
+                    task.node_plan.node_id,
+                    task.data_views.keys().collect::<Vec<_>>(),
                 ))
             })?;
             let prediction_view = if task.phase == Phase::FitCv {
-                Some(task.data_views.get("x:validation").or_else(|| task.data_views.get("data:x:validation")).cloned().ok_or_else(|| {
+                let validation_view_key = format!("data:{data_port}:validation");
+                let validation_key = format!("{data_port}:validation");
+                Some(task.data_views.get(&validation_key).or_else(|| task.data_views.get(&validation_view_key)).cloned().ok_or_else(|| {
                     DagMlError::RuntimeValidation(format!(
-                        "portable Methods PLS node `{}` requires its scheduler-created validation view",
-                        task.node_plan.node_id
+                        "portable Methods node `{}` requires its scheduler-created `{data_port}` validation view",
+                        task.node_plan.node_id,
                     ))
                 })?)
             } else {
@@ -1611,7 +1616,7 @@ mod pls_controller {
                     "portable Methods PLS controller only serves model nodes".to_string(),
                 ));
             }
-            let request = Self::request(task, provider)?;
+            let request = Self::request(task, provider, "x")?;
             provider.preflight_methods_pls(&request)?;
             let data = provider.methods_pls_data(&request)?;
             data.validate_for(&request)?;
@@ -2104,7 +2109,10 @@ mod pls_controller {
                     "portable Methods Ridge controller only serves model nodes".to_string(),
                 ));
             }
-            let request = MethodsPlsController::request(task, provider)?;
+            // `merge_model` has prediction ports plus the canonical original-data
+            // port.  Ridge uses this view only to attest sample identity and
+            // targets; its feature matrix is exclusively the declared OOF inputs.
+            let request = MethodsPlsController::request(task, provider, "x_original")?;
             provider.preflight_methods_pls(&request)?;
             let data = provider.methods_pls_data(&request)?;
             data.validate_for(&request)?;
