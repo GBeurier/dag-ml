@@ -66,7 +66,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/conformal.rs",
-      "sha256": "ed6378f0ad320ed67d5b78b066797afcf496eec4169c51ed59f659f484b89be5",
+      "sha256": "f4e13cede82dc49d3a3c468c3509d1c3d96c625a7eb15a9baec53a561c74cdcc",
       "kind": "native_conformal_kernel"
     },
     {
@@ -466,7 +466,7 @@
     },
     {
       "path": "parity/conformal/oracle.py",
-      "sha256": "1ef8c122df82c889bbce8dd3f4c2ff9d9b34af0251bb34e0b0566e4d445964cc",
+      "sha256": "301805fa1f8197f7ac253336e4cd7ab3a0ae03ca503c984850fee3a542007904",
       "kind": "tcv1_oracle_dependency"
     },
     {
@@ -589,5 +589,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "734e630676e8e0b04e3cb2a4f897d25a0b0444f477b1d77d234521970338c3c9"
+  "pack_checksum": "fc349412c48c3684ca0065a1f526d3517360cd514ff93c7486854361fac05dd5"
 }

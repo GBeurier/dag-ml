@@ -295,12 +295,12 @@
     },
     {
       "path": "parity/conformal/oracle.py",
-      "sha256": "1ef8c122df82c889bbce8dd3f4c2ff9d9b34af0251bb34e0b0566e4d445964cc",
+      "sha256": "301805fa1f8197f7ac253336e4cd7ab3a0ae03ca503c984850fee3a542007904",
       "kind": "test_oracle"
     },
     {
       "path": "parity/conformal/tests/test_conformal_robustness_contracts.py",
-      "sha256": "3aeea9fd2195bb798bea4812f9d49d1cdcb7d588e43394dcb8be537754a7e6c9",
+      "sha256": "92b715e122a9a1f35589b91d8c0dedcb5d5e663e6caeea047e5878c074a247e9",
       "kind": "test"
     },
     {
@@ -448,5 +448,5 @@
       ]
     }
   ],
-  "pack_checksum": "f28993b51264de183b0b15305b54a661bad05cdfa9dc8c419f627aff535cae4a"
+  "pack_checksum": "72e49144cd0a80fded172bdc0b1dae8859383346c6ccf97a4b292a9759f49fbc"
 }
