@@ -761,6 +761,20 @@ mod tests {
         parse_typed_json(input).expect("valid strict JSON")
     }
 
+    #[test]
+    fn serde_json_preserves_the_tcv1_binary64_round_trip() {
+        // This boundary decimal used to alternate between adjacent f64 values
+        // when serde_json's fast parser was enabled. TCV1 fingerprints the
+        // binary64 token, so the exact round-trip parser is a contract
+        // requirement, not merely a formatting preference.
+        let raw = "4.6222270443732795e-16";
+        let first: f64 = serde_json::from_str(raw).unwrap();
+        let encoded = serde_json::to_string(&first).unwrap();
+        let second: f64 = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(first.to_bits(), second.to_bits());
+        assert_eq!(parse(raw), parse(&encoded));
+    }
+
     fn hex(bytes: &[u8]) -> String {
         let mut output = String::with_capacity(bytes.len() * 2);
         for byte in bytes {
