@@ -858,8 +858,8 @@ mod tests {
 
     use dag_ml_core::{
         ArtifactId, ArtifactMaterializationRequest, ArtifactRef, BundleId, ControllerId,
-        ControllerManifest, ExecutionPlan, HandleKind, HandleRef, LineageId, LineageRecord,
-        NodeId, NodeKind, NodeResult, NodeTask, OperatorVariantModel, Phase, PredictionBlock,
+        ControllerManifest, ExecutionPlan, HandleKind, HandleRef, LineageId, LineageRecord, NodeId,
+        NodeKind, NodeResult, NodeTask, OperatorVariantModel, Phase, PredictionBlock,
         PredictionLevel, PredictionPartition, PredictionUnitId, RegressionMetricKind,
         RegressionTargetBlock, RunId, RuntimeController, RuntimeControllerRegistry, SampleId,
     };
@@ -891,10 +891,11 @@ mod tests {
             match operation {
                 "hydrate" => {
                     assert_eq!(request["payload"], serde_json::json!([1, 2, 3]));
-                    let owner: ControllerId = serde_json::from_value(
-                        request["request"]["controller_id"].clone(),
-                    )
-                    .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+                    let owner: ControllerId =
+                        serde_json::from_value(request["request"]["controller_id"].clone())
+                            .map_err(|error| {
+                                pyo3::exceptions::PyValueError::new_err(error.to_string())
+                            })?;
                     pythonize(
                         py,
                         &HandleRef {
@@ -907,7 +908,9 @@ mod tests {
                     .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
                 }
                 "release" => Ok(py.None()),
-                _ => Err(pyo3::exceptions::PyValueError::new_err("unexpected operation")),
+                _ => Err(pyo3::exceptions::PyValueError::new_err(
+                    "unexpected operation",
+                )),
             }
         }
     }
@@ -945,16 +948,14 @@ mod tests {
                 params_fingerprint: "a".repeat(64),
                 training_loss_fingerprint: None,
             };
-            let handle = controller.hydrate_artifact_payload(&request, &[1, 2, 3]).unwrap();
+            let handle = controller
+                .hydrate_artifact_payload(&request, &[1, 2, 3])
+                .unwrap();
             assert_eq!(handle.handle, 41);
-            controller.release_hydrated_artifact_payload(&handle).unwrap();
-            let calls = callback
-                .bind(py)
-                .borrow()
-                .calls
-                .lock()
-                .unwrap()
-                .clone();
+            controller
+                .release_hydrated_artifact_payload(&handle)
+                .unwrap();
+            let calls = callback.bind(py).borrow().calls.lock().unwrap().clone();
             assert_eq!(calls, ["hydrate", "release"]);
         });
     }

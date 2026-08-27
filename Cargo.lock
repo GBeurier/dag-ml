@@ -364,28 +364,28 @@ dependencies = [
 
 [[package]]
 name = "dag-ml"
-version = "0.3.12"
+version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "381cde5c75139b0b27376d1bea2d717152e2bbc15a98b641c7482c1cf234a6f6"
+checksum = "4e4eff879ab0682e5f1e81a98a79f1b454cbcf07011112b72466ae1a7f34b5e0"
 dependencies = [
- "dag-ml-core 0.3.12",
+ "dag-ml-core 0.3.15",
 ]
 
 [[package]]
 name = "dag-ml"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
- "dag-ml-core 0.3.17",
+ "dag-ml-core 0.3.18",
 ]
 
 [[package]]
 name = "dag-ml-arrow"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
- "dag-ml-core 0.3.17",
+ "dag-ml-core 0.3.18",
  "serde",
  "serde_json",
  "sha2",
@@ -393,9 +393,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-capi"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
- "dag-ml-core 0.3.17",
+ "dag-ml-core 0.3.18",
  "serde",
  "serde_json",
  "tracing-subscriber",
@@ -403,11 +403,11 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-cli"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "anyhow",
  "clap",
- "dag-ml-core 0.3.17",
+ "dag-ml-core 0.3.18",
  "serde",
  "serde_json",
  "sha2",
@@ -416,9 +416,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.12"
+version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ee8d0b60bc3683235c8b681268a01a1d45e20d981e51d4217bf86f5501df2dc"
+checksum = "ee9d06e8ba1a1db65dafb2842dcac736a357a49d36f5a7ba68e9a494cc7b4c06"
 dependencies = [
  "indexmap",
  "n4m",
@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "indexmap",
  "n4m",
@@ -472,9 +472,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-wasm"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
- "dag-ml-core 0.3.17",
+ "dag-ml-core 0.3.18",
  "js-sys",
  "serde",
  "serde_json",
@@ -781,12 +781,12 @@ dependencies = [
 
 [[package]]
 name = "nirs4all"
-version = "0.3.21"
+version = "0.3.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "263aaf63ff899e1331255c9a0cb19f06eb92099e22d2b2919ef012674167334c"
+checksum = "c3d581c2afab0f18144a1e8ab6a4e05f1cccb0f836ddc2755ca5cb1171ca6129"
 dependencies = [
- "dag-ml 0.3.12",
- "dag-ml-core 0.3.12",
+ "dag-ml 0.3.15",
+ "dag-ml-core 0.3.15",
  "dag-ml-data",
  "libloading",
  "serde",
