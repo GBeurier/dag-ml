@@ -36,7 +36,7 @@
     },
     {
       "path": "crates/dag-ml-core/Cargo.toml",
-      "sha256": "4242990263a3d6d0bba269d6ada2d70e4ba259f71a8efdd08ec9bd3e18d0f905",
+      "sha256": "f4feb8080d8e589e434daf22a9cf5d79178cb9a02c237cbc1528ebb121632ea2",
       "kind": "published_native_manifest"
     },
     {
@@ -101,7 +101,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/hpo.rs",
-      "sha256": "211ae3f3e7e215144ad2f4a8916cda1d9629889df93e0aa0b8e4bb8e077cbf07",
+      "sha256": "78365e7df7f344bd13ec123ed997ce684a964445b46598e7c740142211532cb0",
       "kind": "native_hpo_controller"
     },
     {
@@ -589,5 +589,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "dd4bdaf82ab3e437dc9821ae3087582904a41fba9684b8e55706fc764835bb3e"
+  "pack_checksum": "a39c7b59718cf9c8286c4b5bedcb2a463dd6d7b5b282c5a029d180355b2e3f4c"
 }
