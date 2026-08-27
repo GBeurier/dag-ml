@@ -6692,6 +6692,7 @@ mod tests {
                     variant_id: Some(VariantId::new("variant:base").unwrap()),
                     fold_id: Some(FoldId::new("fold:0").unwrap()),
                     binding: binding.clone(),
+                    predict_cohort: None,
                 })
                 .unwrap();
 
@@ -6725,6 +6726,7 @@ mod tests {
                         branch_view: None,
                         extra: BTreeMap::new(),
                     },
+                    predict_cohort: None,
                 })
                 .unwrap();
 
