@@ -602,6 +602,10 @@ class TrainingResult:
         """
 
         replay_outcome = TrainingReplayOutcome(replay)
+        if not isinstance(multi_target_policy, str):
+            raise TypeError("multi_target_policy must be a string enum value")
+        if not isinstance(small_sample_policy, str):
+            raise TypeError("small_sample_policy must be a string enum value")
         return json.loads(
             self._native.attach_conformal_calibration_json(
                 replay_outcome.json(),
@@ -609,8 +613,8 @@ class TrainingResult:
                 _coerce_json(calibration_relations),
                 _coerce_json(truth),
                 _coerce_json(coverages),
-                _coerce_json(multi_target_policy),
-                _coerce_json(small_sample_policy),
+                json.dumps(multi_target_policy),
+                json.dumps(small_sample_policy),
             )
         )
 

@@ -415,10 +415,12 @@ class TrainingResultTests(unittest.TestCase):
         )
         native = _FakeNativeTrainingResult(outcome)
         result = dag_ml.TrainingResult(native)
-        replay = {
-            "schema_version": 1,
-            "outcome_id": "replay:calibration",
-        }
+        replay = json.loads(
+            (
+                REPO
+                / "examples/fixtures/training/replay/training_replay_outcome_predict.v1.json"
+            ).read_text(encoding="utf-8")
+        )
         calibration = result.attach_conformal_calibration(
             replay,
             binding_id="binding:model.oof",
