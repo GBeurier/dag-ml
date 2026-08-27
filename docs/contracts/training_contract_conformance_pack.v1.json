@@ -86,7 +86,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/fold.rs",
-      "sha256": "9185d25bae3b0fd7e8a50e31f5f61cc152cb1a21971a02e466430de6ff640ded",
+      "sha256": "a944edd619071ddba976b361d852e166b3a7f34d8ab42ec4fed3e86750ec1588",
       "kind": "typed_contract_dependency"
     },
     {
@@ -151,12 +151,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/mod.rs",
-      "sha256": "b8f50989d740b6e090ef49ad8afa6af2e74c1d62b8b030110e36a1522cd0b9aa",
+      "sha256": "0fd86e5aee30a27ad7be9c65c73e6cb4e45cd2bf6c1d25cab3d0b9644265ddfd",
       "kind": "native_hpo_runtime_topology"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "1d0f5be9f5c16e10283764b091e6845e14eadf199d56f34e713ab128cb59814a",
+      "sha256": "c07cf765d786487c2e5de52065169e8c9b662ed77cb888ae4f6f54b138fc9363",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -206,17 +206,17 @@
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "ec065d03c59b6dfcf6a6d6692eaaf56b7d6c058a39f8e8630788a181776c1c96",
+      "sha256": "5451078bf6079a2c2e4ad680a3e488dc109fccfc1fab9f0d81b621490a265d3d",
       "kind": "python_controller_bridge"
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "97b2c310ab39baa9f7641c4cd790f354dd694b47811e17e9d70e39ae12ea33b1",
+      "sha256": "4c70fc09d7f3ce17898dec5e1a89c8e75ff87e9f922c883e2651b59044e1068a",
       "kind": "python_binding"
     },
     {
       "path": "crates/dag-ml-py/src/training.rs",
-      "sha256": "02c95ef024b058ca5642a755dcc22c13d582577b5a52d3e5a80798c6ee44f26c",
+      "sha256": "eb87777e1d0bdbdbaf6d6e3612e18033bb4b100c9611efeada0d47bb4c8c851e",
       "kind": "python_training_binding"
     },
     {
@@ -246,7 +246,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "39b21f2f764fff2520c035d7a0fea42d3d93c190b29613fba06b7f5dcd20556f",
+      "sha256": "9edaef1727652e5f5ec2513cda9d68cf5d7036ef6b51df17ba2dddd9034d7449",
       "kind": "c_abi_snapshot"
     },
     {
@@ -496,7 +496,7 @@
     },
     {
       "path": "scripts/smoke_python_bindings.py",
-      "sha256": "c4a60622b53e1e50e127dd0c0a7b5e6ddb165191f3551c0ae11baf8561116522",
+      "sha256": "c2506457e4777375fe09ef97d763a898d2c82efbd128122824eae2bf100aa182",
       "kind": "binding_smoke"
     },
     {
@@ -589,5 +589,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "adb7dd31fe4141c46709dec31dac4de7312e8350bc14489cd671667500fcb17a"
+  "pack_checksum": "dd4bdaf82ab3e437dc9821ae3087582904a41fba9684b8e55706fc764835bb3e"
 }
