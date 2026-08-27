@@ -1419,10 +1419,8 @@ pub fn execute_loaded_predictor_replay_json(
         "loaded predictor artifact handle map",
     )?;
     validate_loaded_predictor_handles(&package, &artifact_handles)?;
-    let warnings = parse_strict_json::<Vec<String>>(
-        warnings_json,
-        "loaded predictor replay warnings",
-    )?;
+    let warnings =
+        parse_strict_json::<Vec<String>>(warnings_json, "loaded predictor replay warnings")?;
     let diagnostics = parse_strict_json::<BTreeMap<String, serde_json::Value>>(
         diagnostics_json,
         "loaded predictor replay diagnostics",
@@ -1515,7 +1513,9 @@ fn validate_loaded_predictor_handles(
     for (artifact_id, handle) in artifact_handles {
         let Some(record) = records.get(artifact_id) else {
             return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
-                format!("loaded predictor sidecar handle references unknown artifact `{artifact_id}`"),
+                format!(
+                    "loaded predictor sidecar handle references unknown artifact `{artifact_id}`"
+                ),
             )));
         };
         if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact) {
@@ -1727,8 +1727,7 @@ mod tests {
                 PredictionPartition::Validation
             };
             let explicit_model_ports = is_model && self.explicit_model_ports;
-            let mut predictions = if is_model && matches!(task.phase, Phase::FitCv | Phase::Refit)
-            {
+            let mut predictions = if is_model && matches!(task.phase, Phase::FitCv | Phase::Refit) {
                 vec![PredictionBlock {
                     prediction_id: Some(format!(
                         "prediction:{}:{}:{}",

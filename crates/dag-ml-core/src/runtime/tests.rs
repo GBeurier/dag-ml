@@ -7727,6 +7727,10 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
     let controllers = RuntimeControllerRegistry::new();
     let resources = PhaseScopeResources {
         data_provider: None,
+        fold_set_override: None,
+        node_filter: None,
+        suppress_inner_cv: false,
+        nested_stacking: None,
         replay_artifact_handles: None,
         replay_artifact_inputs: None,
         replay_bundle_id: None,
@@ -7839,6 +7843,10 @@ fn coordinator_relations_required_but_unresolved_is_refused() {
     // Malformed: relations are required but neither envelope nor provider supplies them.
     let empty_resources = PhaseScopeResources {
         data_provider: None,
+        fold_set_override: None,
+        node_filter: None,
+        suppress_inner_cv: false,
+        nested_stacking: None,
         replay_artifact_handles: None,
         replay_artifact_inputs: None,
         replay_bundle_id: None,
@@ -7867,6 +7875,10 @@ fn coordinator_relations_required_but_unresolved_is_refused() {
     .unwrap();
     let provider_resources = PhaseScopeResources {
         data_provider: Some(&provider),
+        fold_set_override: None,
+        node_filter: None,
+        suppress_inner_cv: false,
+        nested_stacking: None,
         replay_artifact_handles: None,
         replay_artifact_inputs: None,
         replay_bundle_id: None,
@@ -8165,6 +8177,10 @@ fn collect_input_handles_forwards_only_declared_source_ports() {
     };
     let resources = PhaseScopeResources {
         data_provider: None,
+        fold_set_override: None,
+        node_filter: None,
+        suppress_inner_cv: false,
+        nested_stacking: None,
         replay_artifact_handles: None,
         replay_artifact_inputs: None,
         replay_bundle_id: None,
@@ -8772,6 +8788,225 @@ fn fit_cv_node_with_inner_cv_carries_inner_fold_set_subset_of_outer_train() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof() {
+    use crate::fold::{KFoldSpec, NestedCvSpec};
+
+    let samples = (1..=6)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let mut campaign = oof_edge_campaign();
+    campaign.inner_cv = Some(NestedCvSpec::KFold(KFoldSpec {
+        n_splits: 2,
+        shuffle: false,
+        seed: Some(13),
+    }));
+    campaign.split_invocation.as_mut().unwrap().fold_set = Some(outer.clone());
+
+    let meta_id = NodeId::new("model:meta").unwrap();
+    let base_a = NodeId::new("model:base.a").unwrap();
+    let base_b = NodeId::new("model:base.b").unwrap();
+    let mut meta = node(
+        meta_id.as_str(),
+        NodeKind::Model,
+        vec![
+            port("a", PortKind::Prediction),
+            port("b", PortKind::Prediction),
+        ],
+        vec![port("pred", PortKind::Prediction)],
+    );
+    meta.metadata.insert(
+        NESTED_STACKING_EXECUTION_METADATA_KEY.to_string(),
+        json!(NESTED_STACKING_EXECUTION_V1),
+    );
+    let graph = GraphSpec {
+        id: "graph:nested.stacking.plan".to_string(),
+        interface: GraphInterface::default(),
+        nodes: vec![
+            node(
+                base_a.as_str(),
+                NodeKind::Model,
+                Vec::new(),
+                vec![port("pred", PortKind::Prediction)],
+            ),
+            node(
+                base_b.as_str(),
+                NodeKind::Model,
+                Vec::new(),
+                vec![port("pred", PortKind::Prediction)],
+            ),
+            meta,
+        ],
+        edges: vec![
+            EdgeSpec {
+                source: PortRef {
+                    node_id: base_a.clone(),
+                    port_name: "pred".to_string(),
+                },
+                target: PortRef {
+                    node_id: meta_id.clone(),
+                    port_name: "a".to_string(),
+                },
+                contract: EdgeContract {
+                    requires_oof: true,
+                    requires_fold_alignment: true,
+                    ..EdgeContract::new(PortKind::Prediction, None)
+                },
+            },
+            EdgeSpec {
+                source: PortRef {
+                    node_id: base_b.clone(),
+                    port_name: "pred".to_string(),
+                },
+                target: PortRef {
+                    node_id: meta_id.clone(),
+                    port_name: "b".to_string(),
+                },
+                contract: EdgeContract {
+                    requires_oof: true,
+                    requires_fold_alignment: true,
+                    ..EdgeContract::new(PortKind::Prediction, None)
+                },
+            },
+        ],
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+    let plan = build_execution_plan("plan:nested.stacking", graph, campaign, &manifests()).unwrap();
+    let nested = nested_stacking_campaign_plan(&plan)
+        .unwrap()
+        .expect("explicit nested marker produces a campaign plan");
+    assert_eq!(nested.meta_node_id, meta_id.clone());
+    assert_eq!(
+        nested.base_node_ids,
+        BTreeSet::from([base_a.clone(), base_b.clone()])
+    );
+    assert_eq!(nested.outer_scopes.len(), 3);
+    for scope in &nested.outer_scopes {
+        let parent = outer
+            .folds
+            .iter()
+            .find(|fold| fold.fold_id == scope.outer_fold_id)
+            .unwrap();
+        scope.inner.validate_for_outer(parent).unwrap();
+    }
+
+    // The scheduler-side input replacement is the non-leakage boundary: base
+    // inner folds become the unsuffixed fit matrix, while outer validation is
+    // retained only under `:outer` for the meta-model prediction call.
+    let selected_outer = &nested.outer_scopes[0];
+    let scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: Some(plan.variants[0].variant_id.clone()),
+        variant: Some(VariantExecutionSpec::from_plan(&plan.variants[0])),
+        fold_id: Some(selected_outer.outer_fold_id.clone()),
+        seed_root: Some(11),
+    };
+    let mut ctx = RunContext::new(RunId::new("run:nested.stacking.inputs").unwrap(), Some(11));
+    let meta_plan = plan.node_plans.get(&meta_id).unwrap();
+    let mut handles = BTreeMap::new();
+    let mut prediction_inputs = BTreeMap::new();
+    for source in [&base_a, &base_b] {
+        let edge = plan
+            .graph_plan
+            .graph
+            .edges
+            .iter()
+            .find(|edge| edge.source.node_id == *source)
+            .unwrap();
+        for inner_fold in &selected_outer.inner.inner_fold_set.folds {
+            ctx.prediction_store
+                .append(PredictionBlock {
+                    prediction_id: Some(format!("pred:{source}:{}", inner_fold.fold_id)),
+                    producer_node: source.clone(),
+                    producer_port: Some("pred".to_string()),
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(inner_fold.fold_id.clone()),
+                    sample_ids: inner_fold.validation_sample_ids.clone(),
+                    values: vec![vec![1.0]; inner_fold.validation_sample_ids.len()],
+                    target_names: vec!["y".to_string()],
+                })
+                .unwrap();
+        }
+        let parent = outer
+            .folds
+            .iter()
+            .find(|fold| fold.fold_id == selected_outer.outer_fold_id)
+            .unwrap();
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: Some(format!("pred:{source}:{}", parent.fold_id)),
+                producer_node: source.clone(),
+                producer_port: Some("pred".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(parent.fold_id.clone()),
+                sample_ids: parent.validation_sample_ids.clone(),
+                values: vec![vec![2.0]; parent.validation_sample_ids.len()],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+        let outer_blocks = ctx.prediction_store.find(
+            Some(source),
+            Some(&PredictionPartition::Validation),
+            Some(&parent.fold_id),
+        );
+        let outer_spec = prediction_input_spec(edge, &scope, &outer_blocks, false).unwrap();
+        let key = format!("{source}.pred");
+        prediction_inputs.insert(key.clone(), outer_spec);
+        handles.insert(
+            key,
+            HandleRef {
+                handle: 42,
+                kind: HandleKind::Prediction,
+                owner_controller: ControllerId::new("controller:model").unwrap(),
+            },
+        );
+    }
+    replace_nested_stacking_fit_cv_inputs(
+        &plan,
+        meta_plan,
+        &ctx,
+        &scope,
+        &NestedStackingInput {
+            meta_node_id: &meta_id,
+            inner: &selected_outer.inner,
+        },
+        &mut handles,
+        &mut prediction_inputs,
+    )
+    .unwrap();
+    let parent = outer
+        .folds
+        .iter()
+        .find(|fold| fold.fold_id == selected_outer.outer_fold_id)
+        .unwrap();
+    for source in [&base_a, &base_b] {
+        let inner = prediction_inputs.get(&format!("{source}.pred")).unwrap();
+        let outer = prediction_inputs
+            .get(&format!("{source}.pred:outer"))
+            .unwrap();
+        assert_eq!(
+            inner.sample_ids, parent.train_sample_ids,
+            "inner OOF covers exactly outer training rows"
+        );
+        assert_eq!(outer.sample_ids, parent.validation_sample_ids);
+        assert!(
+            inner
+                .sample_ids
+                .iter()
+                .all(|sample| !outer.sample_ids.contains(sample)),
+            "a meta training row cannot be an outer evaluation row"
+        );
+    }
 }
 
 #[test]
