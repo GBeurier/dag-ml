@@ -1163,6 +1163,7 @@ fn replay_envelopes_with_relation(
                     data_content_fingerprint: Some(content_hash(&format!("{key}:data"))),
                     target_content_fingerprint: Some(content_hash(&format!("{key}:target"))),
                     coordinator_relations: Some(relations()),
+                    predict_cohort: None,
                 },
             )
         })
@@ -1190,6 +1191,7 @@ fn replay_envelopes_with_relations(
                     data_content_fingerprint: Some(content_hash(&format!("{key}:data"))),
                     target_content_fingerprint: Some(content_hash(&format!("{key}:target"))),
                     coordinator_relations: Some(relations.clone()),
+                    predict_cohort: None,
                 },
             )
         })

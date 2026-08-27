@@ -160,7 +160,12 @@ impl CampaignSpec {
             return Ok(());
         };
         relations.validate_against_fold_set(fold_set, &self.leakage_policy)?;
-        relations.validate_against_fold_set(fold_set, &split.leakage_policy)
+        relations.validate_against_fold_set(fold_set, &split.leakage_policy)?;
+        if let Some(predict_cohort) = &envelope.predict_cohort {
+            predict_cohort.validate_against_cv_fold_set(fold_set)?;
+            predict_cohort.validate_against_cv_relations(relations)?;
+        }
+        Ok(())
     }
 }
 
@@ -2881,6 +2886,7 @@ mod tests {
                     relation
                 }],
             }),
+            predict_cohort: None,
         };
         assert!(plan
             .campaign
