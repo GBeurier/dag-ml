@@ -11,7 +11,10 @@ use std::collections::BTreeMap;
 #[cfg(feature = "methods-optimizer")]
 use crate::data::{data_binding_requirement_key, ExternalDataPlanEnvelope, InMemoryDataProvider};
 #[cfg(feature = "methods-optimizer")]
-use crate::hpo::{MethodsPlsController, MethodsRuntime, METHODS_PLS_CONTROLLER_ID};
+use crate::hpo::{
+    MethodsPlsController, MethodsRidgeController, MethodsRuntime, METHODS_PLS_CONTROLLER_ID,
+    METHODS_RIDGE_CONTROLLER_ID,
+};
 #[cfg(feature = "methods-optimizer")]
 use crate::replay::{
     execute_loaded_portable_refit_replay_v3, execute_loaded_predictor_replay,
@@ -87,16 +90,17 @@ pub fn execute_loaded_methods_predictor_replay(
             "callback-free Methods package replay supports PREDICT only".to_string(),
         ));
     }
-    let methods_controller = ControllerId::new(METHODS_PLS_CONTROLLER_ID)?;
+    let pls_controller = ControllerId::new(METHODS_PLS_CONTROLLER_ID)?;
+    let ridge_controller = ControllerId::new(METHODS_RIDGE_CONTROLLER_ID)?;
     if input
         .package
         .effective_plan
         .node_plans
         .values()
-        .any(|node| node.controller_id != methods_controller)
+        .any(|node| node.controller_id != pls_controller && node.controller_id != ridge_controller)
     {
         return Err(DagMlError::RuntimeValidation(
-            "callback-free Methods package replay requires every executable node to use controller:methods.pls"
+            "callback-free Methods package replay requires every executable node to use a registered native Methods controller"
                 .to_string(),
         ));
     }
@@ -105,7 +109,8 @@ pub fn execute_loaded_methods_predictor_replay(
         input.methods_inputs.clone(),
     )?;
     let mut controllers = RuntimeControllerRegistry::new();
-    controllers.register(Box::new(MethodsPlsController::new(input.runtime)))?;
+    controllers.register(Box::new(MethodsPlsController::new(input.runtime.clone())))?;
+    controllers.register(Box::new(MethodsRidgeController::new(input.runtime)))?;
     let predictor = LoadedPredictor::new(input.package.clone(), BTreeMap::new())?;
     execute_loaded_predictor_replay(LoadedPredictorReplayInput {
         predictor: &predictor,
@@ -142,7 +147,8 @@ pub fn execute_loaded_methods_portable_refit_replay_v3(
         input.methods_inputs.clone(),
     )?;
     let mut controllers = input.supplemental_controllers;
-    controllers.register(Box::new(MethodsPlsController::new(input.runtime)))?;
+    controllers.register(Box::new(MethodsPlsController::new(input.runtime.clone())))?;
+    controllers.register(Box::new(MethodsRidgeController::new(input.runtime)))?;
     for node in input.package.outcome.effective_plan.node_plans.values() {
         if controllers.get(&node.controller_id).is_none() {
             return Err(DagMlError::RuntimeValidation(format!(
