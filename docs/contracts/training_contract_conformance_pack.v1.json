@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "28a75c601767065789afd376eeffb4287299be1b236a6d33cdb4e8fc62ea8e1b",
+      "sha256": "f9fb27c43ff4e8d5a7c5b2a59eff547ed518fdc295047d8b78ff3a9c0995b100",
       "kind": "ci_gate"
     },
     {
@@ -36,12 +36,12 @@
     },
     {
       "path": "crates/dag-ml-core/Cargo.toml",
-      "sha256": "4242990263a3d6d0bba269d6ada2d70e4ba259f71a8efdd08ec9bd3e18d0f905",
+      "sha256": "f4feb8080d8e589e434daf22a9cf5d79178cb9a02c237cbc1528ebb121632ea2",
       "kind": "published_native_manifest"
     },
     {
       "path": "crates/dag-ml-core/Cargo.toml.methods-local",
-      "sha256": "359a7456362a343449e5663da9a4673eddbec7103ff2fbca4c86a70769d50f08",
+      "sha256": "f638a6f427bfb87555f5f1d472ac733532c03eea46fdf0ba8cb3a3cfd78c5916",
       "kind": "native_hpo_overlay_manifest"
     },
     {
@@ -51,7 +51,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/bundle.rs",
-      "sha256": "f295b392bf56e0468f54cf6d2e32eb03744f1d9c899f2a5eb4d34d9a74b09714",
+      "sha256": "1e3e6cd9cc6aff2c457d77ad56f0c2abda1d5c466d007e42aa2b907e321fac9c",
       "kind": "native_bundle_contract"
     },
     {
@@ -101,7 +101,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/hpo.rs",
-      "sha256": "211ae3f3e7e215144ad2f4a8916cda1d9629889df93e0aa0b8e4bb8e077cbf07",
+      "sha256": "497250d0813ae4e9111a338658228715333347ce2f1c91c79180abd5ff7cfc87",
       "kind": "native_hpo_controller"
     },
     {
@@ -156,7 +156,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "c07cf765d786487c2e5de52065169e8c9b662ed77cb888ae4f6f54b138fc9363",
+      "sha256": "179b3072a655bbda6c431b4d27f11911759cdaadb43d07fc7b747aca13493eba",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -181,12 +181,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/training_runtime.rs",
-      "sha256": "f2a0a5c14653c3004222744f642b84999004161519c12a46fb64eef04e49e4d3",
+      "sha256": "830cfe494a5d4d5519ae894ac5ba147848b0971e92af636358867cbb5eca5b30",
       "kind": "native_runtime_contract"
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "43ae581c67231608d0e4a8fa336bed0d20d6c7d4c8103aa4cba3335186a1123e",
+      "sha256": "ebc3c694e46b2205afd1231f9573617bd73d0422f187420de56518bcc818ee78",
       "kind": "native_integration_test"
     },
     {
@@ -216,7 +216,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/training.rs",
-      "sha256": "eb87777e1d0bdbdbaf6d6e3612e18033bb4b100c9611efeada0d47bb4c8c851e",
+      "sha256": "bcb3e480f9d984515b15333c28355a6e1e111b50772040f5201c129c5242f7a5",
       "kind": "python_training_binding"
     },
     {
@@ -231,7 +231,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "08344f9539145c40541b0dcd7bfb1013f0624aaa248944e23050ead40988abc9",
+      "sha256": "24aed0aa739a8806cffe70561fc586875e17659f6947101e5ec608436e4b0e13",
       "kind": "hpo_documentation"
     },
     {
@@ -589,5 +589,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "dd4bdaf82ab3e437dc9821ae3087582904a41fba9684b8e55706fc764835bb3e"
+  "pack_checksum": "bba7b3b2bae875f5baf86ce414c6b11e127b9fbbe2d7e920ce727b2e3de9f1cd"
 }

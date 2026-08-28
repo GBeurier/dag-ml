@@ -1173,12 +1173,16 @@ impl SequentialScheduler {
                     &mut result,
                     &resources,
                 )?;
-                attach_coordinator_input_lineage(
-                    &mut result,
-                    plan,
-                    &task.node_plan.node_id,
-                    &input_lineage,
-                )?;
+                if let Some(nested) = resources.nested_stacking.as_ref() {
+                    attach_nested_stacking_input_lineage(&mut result, plan, &task, ctx, nested)?;
+                } else {
+                    attach_coordinator_input_lineage(
+                        &mut result,
+                        plan,
+                        &task.node_plan.node_id,
+                        &input_lineage,
+                    )?;
+                }
                 if let Some(store) = resources.artifact_store.as_deref_mut() {
                     if scope.phase == Phase::Refit {
                         store.capture_refit_artifacts(&task, &result)?;
@@ -1725,12 +1729,22 @@ impl ParallelScheduler {
                         &mut result,
                         &resources,
                     )?;
-                    attach_coordinator_input_lineage(
-                        &mut result,
-                        plan,
-                        &prepared_task.task.node_plan.node_id,
-                        &input_lineage,
-                    )?;
+                    if let Some(nested) = resources.nested_stacking.as_ref() {
+                        attach_nested_stacking_input_lineage(
+                            &mut result,
+                            plan,
+                            &prepared_task.task,
+                            ctx,
+                            nested,
+                        )?;
+                    } else {
+                        attach_coordinator_input_lineage(
+                            &mut result,
+                            plan,
+                            &prepared_task.task.node_plan.node_id,
+                            &input_lineage,
+                        )?;
+                    }
                     if let Some(store) = resources.artifact_store.as_deref_mut() {
                         if scope.phase == Phase::Refit {
                             store.capture_refit_artifacts(&prepared_task.task, &result)?;
@@ -2559,6 +2573,93 @@ pub(crate) fn attach_coordinator_input_lineage(
         )));
     }
     result.lineage.input_lineage = declared;
+    Ok(())
+}
+
+/// The meta invocation in a nested-stacking FIT_CV scope consumes parent-bound
+/// *inner* OOF blocks, not the outer blocks emitted immediately before it. The
+/// ordinary per-scope lineage map cannot represent those records because every
+/// inner fold ran in its own prior scope. Reconstruct the exact dependency set
+/// from scheduler-owned nested evidence and attach it before recording the
+/// meta result.
+fn attach_nested_stacking_input_lineage(
+    result: &mut NodeResult,
+    plan: &ExecutionPlan,
+    task: &NodeTask,
+    ctx: &RunContext,
+    nested: &NestedStackingInput<'_>,
+) -> Result<()> {
+    if task.phase != Phase::FitCv || task.node_plan.node_id != *nested.meta_node_id {
+        return Ok(());
+    }
+    let inner_fold_ids = nested
+        .inner
+        .inner_fold_set
+        .folds
+        .iter()
+        .map(|fold| fold.fold_id.clone())
+        .collect::<BTreeSet<_>>();
+    let source_nodes = incoming_oof_edges(plan, &task.node_plan)?
+        .into_iter()
+        .map(|edge| edge.source.node_id.clone())
+        .collect::<BTreeSet<_>>();
+    let expected = source_nodes
+        .iter()
+        .flat_map(|node_id| {
+            inner_fold_ids
+                .iter()
+                .cloned()
+                .map(move |fold_id| (node_id.clone(), fold_id))
+        })
+        .collect::<BTreeSet<_>>();
+    let mut actual = BTreeMap::new();
+    for record in ctx.lineage.records().filter(|record| {
+        record.phase == Phase::FitCv
+            && record.variant_id == task.variant_id
+            && source_nodes.contains(&record.node_id)
+            && record
+                .fold_id
+                .as_ref()
+                .is_some_and(|fold_id| inner_fold_ids.contains(fold_id))
+    }) {
+        let fold_id = record
+            .fold_id
+            .clone()
+            .expect("inner-fold predicate requires a fold id");
+        if actual
+            .insert((record.node_id.clone(), fold_id), record.record_id.clone())
+            .is_some()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "nested stacking meta input lineage contains duplicate inner-fold evidence"
+                    .to_string(),
+            ));
+        }
+    }
+    if actual.keys().cloned().collect::<BTreeSet<_>>() != expected {
+        return Err(DagMlError::RuntimeValidation(
+            "nested stacking meta input lineage does not exactly cover inner OOF evidence"
+                .to_string(),
+        ));
+    }
+    let inferred = actual.into_values().collect::<Vec<_>>();
+    if result.lineage.input_lineage.is_empty() {
+        result.lineage.input_lineage = inferred;
+        return Ok(());
+    }
+    let declared = result
+        .lineage
+        .input_lineage
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if declared.into_iter().collect::<Vec<_>>() != inferred {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "nested stacking meta lineage for node `{}` does not match inner OOF evidence",
+            task.node_plan.node_id
+        )));
+    }
+    result.lineage.input_lineage = inferred;
     Ok(())
 }
 

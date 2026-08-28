@@ -89,7 +89,7 @@ JSON-deserialized outcome replay in a new process/controller without retaining
 the refit controller's in-memory handles.
 
 The publishable `dag-ml-core/Cargo.toml` offers an opt-in
-`methods-optimizer` feature backed by the published dynamic `n4m` 0.1.1
+`methods-optimizer` feature backed by the published dynamic `n4m` 0.1.2
 binding. Default builds and extracted crates do not link, load, or require a
 Methods checkout. A caller must explicitly configure an absolute `libn4m`
 file through `MethodsRuntime::configure` before constructing either Methods
@@ -97,12 +97,12 @@ controller; there is no `PATH`, current-directory, sibling-checkout, or
 legacy fallback.
 
 The local integration overlay adds only test selection. It uses the release
-source commit `aabdecfdd76d1a4d12cfbbade4eeee0d30a6ea47` to build the explicit
+source commit `4983c9a1df39d430a78c615bda209d3353514aa1` to build the explicit
 runtime file, but resolves the Rust binding from crates.io. Build that checkout
 and invoke the helper from the workspace root:
 
 ```bash
-METHODS_SHA=aabdecfdd76d1a4d12cfbbade4eeee0d30a6ea47
+METHODS_SHA=4983c9a1df39d430a78c615bda209d3353514aa1
 git -C /absolute/path/to/nirs4all-methods fetch --depth=1 origin "$METHODS_SHA"
 git -C /absolute/path/to/nirs4all-methods checkout --detach "$METHODS_SHA"
 make -C /absolute/path/to/nirs4all-methods build PRESET=dev-release
