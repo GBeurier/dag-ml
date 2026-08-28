@@ -7737,6 +7737,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         data_envelopes: None,
         prediction_cache_store: None,
         prediction_cache_contracts: None,
+        direct_sample_prediction_only: false,
         artifact_store: None,
     };
     let aggregated_block =
@@ -7853,6 +7854,7 @@ fn coordinator_relations_required_but_unresolved_is_refused() {
         data_envelopes: None,
         prediction_cache_store: None,
         prediction_cache_contracts: None,
+        direct_sample_prediction_only: false,
         artifact_store: None,
     };
     let error = coordinator_relations_for_node(&node_plan, &empty_resources)
@@ -7885,6 +7887,7 @@ fn coordinator_relations_required_but_unresolved_is_refused() {
         data_envelopes: None,
         prediction_cache_store: None,
         prediction_cache_contracts: None,
+        direct_sample_prediction_only: false,
         artifact_store: None,
     };
     let relations = coordinator_relations_for_node(&node_plan, &provider_resources).unwrap();
@@ -8187,6 +8190,7 @@ fn collect_input_handles_forwards_only_declared_source_ports() {
         data_envelopes: None,
         prediction_cache_store: None,
         prediction_cache_contracts: None,
+        direct_sample_prediction_only: false,
         artifact_store: None,
     };
     let collected = collect_input_handles(

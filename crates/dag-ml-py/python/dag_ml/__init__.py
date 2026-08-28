@@ -45,6 +45,7 @@ from ._dag_ml import (
     fold_set_fingerprint_json,
     loss_execution_attestation_json as _native_loss_execution_attestation_json,
     project_training_request_json,
+    run_cv_refit_predict_in_process as _native_run_cv_refit_predict_in_process,
     run_cv_refit_in_process_with_training_losses as _native_run_cv_refit_in_process_with_training_losses,
     sample_relation_set_fingerprint_json,
     sign_training_replay_request_json as _native_sign_training_replay_request_json,
@@ -127,6 +128,7 @@ _FACADE_EXPORTS = [
     "execute_training_json",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
+    "run_cv_refit_predict_in_process",
     "run_cv_refit_in_process_with_training_losses",
 ]
 
@@ -429,6 +431,35 @@ def run_cv_refit_in_process_with_training_losses(
             _coerce_json(training_loss_roles),
             op_callback,
             selection_metric,
+        )
+    )
+
+
+def run_cv_refit_predict_in_process(
+    dsl: Any,
+    envelope: Any,
+    controller_manifests: Any,
+    op_callback: Any,
+    selection_metric: str,
+    terminal_node_id: str,
+    terminal_port: str,
+) -> dict[str, Any]:
+    """Run CV, REFIT, and one V2 cohort-bound terminal PREDICT replay.
+
+    The envelope must carry a Rust-derived V2 ``predict_cohort``.  DAG-ML
+    captures REFIT artifacts and executes the terminal phase through the native
+    bundle replay path; the Python callback receives those artifact inputs but
+    is never asked to look up or replay a model by itself.
+    """
+
+    return json.loads(
+        _native_run_cv_refit_predict_in_process(
+            _coerce_json(dsl),
+            _coerce_json(envelope),
+            _coerce_json(controller_manifests),
+            op_callback,
+            selection_metric,
+            _coerce_json({"node_id": terminal_node_id, "port": terminal_port}),
         )
     )
 
@@ -1474,6 +1505,7 @@ __all__ = [
     "fan_out_data_aware_branches_json",
     "fold_set_fingerprint_json",
     "loss_execution_attestation",
+    "run_cv_refit_predict_in_process",
     "run_cv_refit_in_process_with_training_losses",
     "sample_relation_set_fingerprint_json",
     "project_training_request",

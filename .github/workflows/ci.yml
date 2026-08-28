@@ -174,6 +174,12 @@ jobs:
         env:
           RUSTFLAGS: --cfg dag_ml_workspace_contract_fixtures
         run: cargo test --workspace
+      - name: Terminal PREDICT V2 in-process gate
+        env:
+          PYO3_PYTHON: python
+        run: |
+          cargo test --manifest-path crates/dag-ml-py/Cargo.toml py_in_process_terminal_predict -- --nocapture
+          PYTHONPATH=crates/dag-ml-py/python python -m unittest crates/dag-ml-py/tests/test_terminal_predict_facade.py
       - name: dag-ml-core extracted package test
         run: scripts/test_core_package_extract.sh
       - name: Committed extension freshness
