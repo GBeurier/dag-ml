@@ -130,6 +130,12 @@ class TrainingResult:
         small_sample_policy: str = "error",
     ) -> dict[str, Any]: ...
 
+class MethodsTerminalPredictionResult:
+    training_result: TrainingResult
+    portable_predictor_package: PortablePredictorPackage
+    terminal_prediction: dict[str, Any]
+    terminal_receipt: dict[str, Any]
+
 class FoldSet(JsonContract):
     def fingerprint(self) -> str: ...
 
@@ -241,6 +247,42 @@ def execute_methods_training(
     warnings: Any = (),
     diagnostics: Any = None,
 ) -> TrainingResult: ...
+def execute_methods_cv_refit_terminal_predict_json(
+    request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    methods_inputs_json: str,
+    predict_envelope_json: str,
+    predict_input_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    package_id: str,
+    terminal_selector_json: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> MethodsTerminalPredictionResult: ...
+def execute_methods_cv_refit_terminal_predict(
+    request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    methods_inputs: Any,
+    predict_envelope: Any,
+    predict_input: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    package_id: str,
+    terminal_node_id: str,
+    terminal_port: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> MethodsTerminalPredictionResult: ...
 def execute_methods_portable_full_refit_json(
     source_package_json: str,
     target_request_json: str,

@@ -37,6 +37,7 @@ from ._dag_ml import (
     derive_controller_manifest_list_json,
     execute_loaded_predictor_replay_json as _native_execute_loaded_predictor_replay_json,
     execute_loaded_methods_portable_refit_replay_v3_json as _native_execute_loaded_methods_portable_refit_replay_v3_json,
+    execute_methods_cv_refit_terminal_predict_json as _native_execute_methods_cv_refit_terminal_predict_json,
     execute_methods_portable_full_refit_json as _native_execute_methods_portable_full_refit_json,
     execute_methods_training_json as _native_execute_methods_training_json,
     execute_loaded_methods_predictor_replay_json as _native_execute_loaded_methods_predictor_replay_json,
@@ -95,6 +96,7 @@ _FACADE_EXPORTS = [
     "TrainingReplayRequest",
     "TrainingReplayOutcome",
     "TrainingResult",
+    "MethodsTerminalPredictionResult",
     "TrainingContractProjection",
     "ParameterProjection",
     "CacheNamespace",
@@ -118,6 +120,8 @@ _FACADE_EXPORTS = [
     "sign_training_replay_request",
     "execute_methods_training",
     "execute_methods_training_json",
+    "execute_methods_cv_refit_terminal_predict",
+    "execute_methods_cv_refit_terminal_predict_json",
     "execute_methods_portable_full_refit",
     "execute_methods_portable_full_refit_json",
     "execute_loaded_methods_portable_refit_replay_v3_json",
@@ -1148,6 +1152,144 @@ def execute_methods_training(
     )
 
 
+class MethodsTerminalPredictionResult:
+    """Closed callback-free Methods CV/REFIT/terminal-PREDICT result.
+
+    ``training_result`` remains attached so callers can inspect or explicitly
+    release its process-local resources. ``portable_predictor_package`` is the
+    native N4MM Package V2 exported from the same REFIT artifact that served
+    the terminal prediction. The prediction and receipt are ordinary decoded
+    JSON contracts, with no Python model or node callback involved.
+    """
+
+    __slots__ = (
+        "training_result",
+        "portable_predictor_package",
+        "terminal_prediction",
+        "terminal_receipt",
+    )
+
+    def __init__(
+        self,
+        training_result: TrainingResult,
+        portable_predictor_package: PortablePredictorPackage,
+        terminal_prediction: dict[str, Any],
+        terminal_receipt: dict[str, Any],
+    ) -> None:
+        self.training_result = training_result
+        self.portable_predictor_package = portable_predictor_package
+        self.terminal_prediction = terminal_prediction
+        self.terminal_receipt = terminal_receipt
+
+
+def execute_methods_cv_refit_terminal_predict_json(
+    request_json: str,
+    data_envelopes_json: str,
+    relations_json: str,
+    training_influence_json: str,
+    methods_inputs_json: str,
+    predict_envelope_json: str,
+    predict_input_json: str,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    package_id: str,
+    terminal_selector_json: str,
+    warnings_json: str = "[]",
+    diagnostics_json: str = "{}",
+) -> MethodsTerminalPredictionResult:
+    """Run the narrow native PLS CV -> REFIT -> X-only terminal PREDICT lane.
+
+    This low-level entry accepts already serialized strict JSON. It has no
+    ``op_callback``/model callback argument. The native preflight rejects
+    transforms, generated variants, HPO, calibration, groups, metadata, OOF
+    dependencies, non-PLS controllers, non-KFold splits, labels in the
+    terminal payload, and unsupported terminal ports before `libn4m` is
+    configured or CV begins. Native CV does compute its mandatory internal,
+    ephemeral OOF score to select the one refit candidate; this API accepts
+    no OOF edge, cache, reduction, or stacking input/output contract.
+    """
+
+    raw = _native_execute_methods_cv_refit_terminal_predict_json(
+        request_json,
+        data_envelopes_json,
+        relations_json,
+        training_influence_json,
+        methods_inputs_json,
+        predict_envelope_json,
+        predict_input_json,
+        str(methods_library_path),
+        outcome_id,
+        run_id,
+        bundle_id,
+        package_id,
+        terminal_selector_json,
+        warnings_json,
+        diagnostics_json,
+    )
+    return MethodsTerminalPredictionResult(
+        TrainingResult(raw["training_result"]),
+        PortablePredictorPackage(raw["portable_predictor_package_json"]),
+        json.loads(raw["terminal_prediction_json"]),
+        json.loads(raw["terminal_receipt_json"]),
+    )
+
+
+def execute_methods_cv_refit_terminal_predict(
+    request: Any,
+    data_envelopes: Any,
+    relations: Any,
+    training_influence: Any,
+    methods_inputs: Any,
+    predict_envelope: Any,
+    predict_input: Any,
+    *,
+    methods_library_path: str | PathLike[str],
+    outcome_id: str,
+    run_id: str,
+    bundle_id: str,
+    package_id: str,
+    terminal_node_id: str,
+    terminal_port: str,
+    warnings: Any = (),
+    diagnostics: Any = None,
+) -> MethodsTerminalPredictionResult:
+    """Run strict native PLS CV, one REFIT, and one sealed X-only prediction.
+
+    The accepted model is deliberately bounded to a single raw-array
+    ``controller:methods.pls`` node with one numeric target, explicit IDs, an
+    explicit no-shuffle KFold, and `refit_one`. ``predict_input`` must contain
+    only ``sample_ids``, ``x``, and the one ``target_names`` value; its V2
+    inference cohort must independently attest the raw X fingerprint. The
+    unavoidable CV score is internal and ephemeral OOF only; caller-visible
+    OOF consumption, retention, reduction, and stacking are refused.
+    """
+
+    return execute_methods_cv_refit_terminal_predict_json(
+        _coerce_json(request),
+        _coerce_json(data_envelopes),
+        _coerce_json(relations),
+        _coerce_json(training_influence),
+        _coerce_json(methods_inputs),
+        _coerce_json(predict_envelope),
+        _coerce_json(predict_input),
+        methods_library_path,
+        outcome_id,
+        run_id,
+        bundle_id,
+        package_id,
+        _coerce_json(
+            {
+                "node_id": terminal_node_id,
+                "port": terminal_port,
+            }
+        ),
+        _coerce_json(warnings),
+        _coerce_json({} if diagnostics is None else diagnostics),
+    )
+
+
 def execute_methods_portable_full_refit_json(
     source_package_json: str,
     target_request_json: str,
@@ -1475,6 +1617,7 @@ __all__ = [
     "TrainingReplayRequest",
     "TrainingResult",
     "TrainingRequest",
+    "MethodsTerminalPredictionResult",
     "build_execution_plan",
     "build_archive_v2_native_portable_payloads",
     "build_archive_v3_native_refit_payloads",
@@ -1495,6 +1638,8 @@ __all__ = [
     "derive_controller_manifests",
     "execute_training",
     "execute_training_json",
+    "execute_methods_cv_refit_terminal_predict",
+    "execute_methods_cv_refit_terminal_predict_json",
     "execute_methods_portable_full_refit",
     "execute_methods_portable_full_refit_json",
     "execute_loaded_methods_portable_refit_replay_v3_json",
