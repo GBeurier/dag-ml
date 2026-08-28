@@ -11,6 +11,10 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Added
 
+- Release patch 0.3.19: native Methods Ridge stacking now retains its nested
+  OOF/refit evidence and replays the selected portable model without a stale
+  runtime handle.
+
 - Release patch 0.3.18: the serial runtime now executes leakage-safe nested
   stacking OOF campaigns natively, retaining inner and outer fold evidence as
   distinct scheduler-owned resources.
