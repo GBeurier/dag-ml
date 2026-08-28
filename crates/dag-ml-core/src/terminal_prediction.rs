@@ -122,36 +122,33 @@ pub fn require_terminal_predict_cohort(
         )));
     }
     envelope.validate()?;
-    envelope.predict_cohort.as_ref().ok_or_else(|| {
+    let cohort = envelope.predict_cohort.as_ref().ok_or_else(|| {
         DagMlError::RuntimeValidation(
             "terminal PREDICT requires a V2 envelope with predict_cohort".to_string(),
         )
-    })
+    })?;
+    if cohort.target_names.is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "terminal PREDICT requires V2 predict_cohort target_names to be non-empty".to_string(),
+        ));
+    }
+    Ok(cohort)
 }
 
-/// Validate the closed V2 request before any PREDICT controller is invoked.
+/// Validate the V2 terminal route before any training-phase controller is invoked.
 ///
-/// The selected output must be a graph-terminal prediction port.  This first
-/// slice intentionally supports direct sample-level predictions only; relation
-/// aggregation is refused rather than accidentally using the CV coordinator
-/// relation universe for an external cohort.
-pub fn validate_terminal_prediction_request(
+/// This is deliberately separate from bundle validation: Python and other
+/// bindings must reject an invalid terminal selector or unsupported aggregation
+/// before they enter CV/REFIT to construct that bundle.  The bundle-backed
+/// checks remain in [`validate_terminal_prediction_request`].
+pub fn validate_terminal_prediction_preflight(
     plan: &ExecutionPlan,
-    bundle: &ExecutionBundle,
     envelope: &ExternalDataPlanEnvelope,
     selector: &TerminalPredictionSelector,
 ) -> Result<()> {
     let _cohort = require_terminal_predict_cohort(envelope)?;
     selector.validate()?;
     plan.validate()?;
-    bundle.validate_against_plan(plan)?;
-
-    let _selected_variant = bundle.selected_variant_id.as_ref().ok_or_else(|| {
-        DagMlError::RuntimeValidation(format!(
-            "terminal PREDICT requires bundle `{}` to select one variant",
-            bundle.bundle_id
-        ))
-    })?;
 
     let node_plan = plan.node_plans.get(&selector.node_id).ok_or_else(|| {
         DagMlError::RuntimeValidation(format!(
@@ -213,14 +210,43 @@ pub fn validate_terminal_prediction_request(
         )));
     }
 
-    if node_plan.shape_plan.as_ref().is_some_and(|shape_plan| {
-        shape_plan.aggregation_policy.aggregation_level != PredictionLevel::Sample
-    }) {
+    if plan.campaign.aggregation_policy.aggregation_level != PredictionLevel::Sample
+        || plan.node_plans.values().any(|node| {
+            node.supported_phases.contains(&Phase::Predict)
+                && node.shape_plan.as_ref().is_some_and(|shape_plan| {
+                    shape_plan.aggregation_policy.aggregation_level != PredictionLevel::Sample
+                })
+        })
+    {
         return Err(DagMlError::RuntimeValidation(format!(
             "terminal PREDICT selector `{}.{}` uses unsupported non-sample aggregation",
             selector.node_id, selector.port
         )));
     }
+    Ok(())
+}
+
+/// Validate the closed V2 request before any PREDICT controller is invoked.
+///
+/// The selected output must be a graph-terminal prediction port.  This first
+/// slice intentionally supports direct sample-level predictions only; relation
+/// aggregation is refused rather than accidentally using the CV coordinator
+/// relation universe for an external cohort.
+pub fn validate_terminal_prediction_request(
+    plan: &ExecutionPlan,
+    bundle: &ExecutionBundle,
+    envelope: &ExternalDataPlanEnvelope,
+    selector: &TerminalPredictionSelector,
+) -> Result<()> {
+    validate_terminal_prediction_preflight(plan, envelope, selector)?;
+    bundle.validate_against_plan(plan)?;
+
+    let _selected_variant = bundle.selected_variant_id.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "terminal PREDICT requires bundle `{}` to select one variant",
+            bundle.bundle_id
+        ))
+    })?;
 
     if bundle.data_requirements.is_empty() {
         return Err(DagMlError::RuntimeValidation(format!(
@@ -316,11 +342,11 @@ pub fn execute_terminal_prediction(
 
 /// Attest scheduler-produced blocks as one exact, sample-level terminal result.
 ///
-/// This remains public so non-Python runtime embeddings can use the same
-/// receipt gate after invoking [`SequentialScheduler::execute_bundle_replay`].
-/// Callers must pass the complete PREDICT blocks emitted for the replay, not a
-/// host-filtered subset.
-pub fn attest_terminal_prediction_output(
+/// This is intentionally private to the scheduler-owned replay route.  Public
+/// callers receive its receipt only through [`execute_terminal_prediction`],
+/// so they cannot turn host-supplied prediction blocks into a bundle-backed
+/// terminal claim.
+fn attest_terminal_prediction_output(
     plan: &ExecutionPlan,
     bundle: &ExecutionBundle,
     envelope: &ExternalDataPlanEnvelope,
@@ -656,6 +682,33 @@ mod tests {
         let error = require_terminal_predict_cohort(&missing)
             .expect_err("V2 without a cohort must fail closed");
         assert!(error.to_string().contains("V2 requires predict_cohort"));
+    }
+
+    #[test]
+    fn terminal_request_refuses_targetless_v2_inference_cohort() {
+        let (_plan, _bundle, mut envelope) = terminal_fixture();
+        let relations = envelope
+            .predict_cohort
+            .as_ref()
+            .expect("fixture has a V2 cohort")
+            .relations
+            .clone();
+        envelope.predict_cohort = Some(
+            PredictCohort::from_relations(
+                PredictCohortRole::Inference,
+                relations,
+                Vec::new(),
+                "c".repeat(64),
+                None,
+            )
+            .expect("legacy Rust cohort constructor currently permits an empty target list"),
+        );
+        envelope
+            .validate()
+            .expect("this asserts the terminal-only schema closure boundary");
+        let error = require_terminal_predict_cohort(&envelope)
+            .expect_err("terminal V2 prediction must bind a non-empty output width");
+        assert!(error.to_string().contains("target_names to be non-empty"));
     }
 
     #[test]
