@@ -51,7 +51,8 @@ use dag_ml_core::{
     NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
     RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
     ScoreSet, SequentialScheduler, TerminalPredictionReplay, TerminalPredictionSelector,
-    TrainingLossRoleReference, VariantId, VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
+    TrainingLossRoleReference, VariantId, VariantValidationPredictions,
+    validate_terminal_prediction_preflight, SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -726,6 +727,16 @@ pub fn run_cv_refit_predict_in_process(
     plan.campaign
         .validate_data_envelope_relations(&envelope)
         .map_err(py_core_error)?;
+    let selector: TerminalPredictionSelector = dag_ml_core::canonical::deserialize_external_contract(
+        terminal_selector_json,
+        "terminal prediction selector",
+        CoreDagMlError::RuntimeValidation,
+    )
+    .map_err(py_core_error)?;
+    // This must happen before variant resolution, CV, REFIT, or construction
+    // of the Python callback runtime.  A terminal request that cannot ever be
+    // replayed is a preflight refusal, not a partial training attempt.
+    validate_terminal_prediction_preflight(&plan, &envelope, &selector).map_err(py_core_error)?;
     let data_provider = InMemoryDataProvider::with_envelope(
         ControllerId::new("controller:data.provider").map_err(py_core_error)?,
         envelope.clone(),
@@ -794,12 +805,6 @@ pub fn run_cv_refit_predict_in_process(
     .map_err(py_core_error)?;
     bundle.scores = scores;
 
-    let selector: TerminalPredictionSelector = dag_ml_core::canonical::deserialize_external_contract(
-        terminal_selector_json,
-        "terminal prediction selector",
-        CoreDagMlError::RuntimeValidation,
-    )
-    .map_err(py_core_error)?;
     let terminal = execute_terminal_prediction(
         TerminalPredictionReplay {
             plan: refit_plan,
@@ -2044,6 +2049,20 @@ mod tests {
         .to_string()
     }
 
+    fn terminal_predict_observation_aggregation_dsl_json() -> String {
+        let mut dsl: serde_json::Value =
+            serde_json::from_str(&terminal_predict_dsl_json()).expect("fixture DSL is valid JSON");
+        dsl["steps"][0]["shape"] = serde_json::json!({
+            "aggregation_policy": {
+                "aggregation_level": "observation",
+                "method": "none",
+                "weights": "none",
+                "selection_metric_level": "observation"
+            }
+        });
+        serde_json::to_string(&dsl).expect("altered fixture DSL serializes")
+    }
+
     fn terminal_predict_manifest_json() -> String {
         serde_json::json!([{
             "controller_id": "controller:model.terminal",
@@ -2145,6 +2164,45 @@ mod tests {
             .expect_err("V1 terminal path must fail before parsing the campaign");
             assert!(error.to_string().contains("requires external data-plan envelope V2"));
             assert!(callback.bind(py).borrow().calls.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn py_in_process_terminal_predict_preflights_selector_and_aggregation_before_callback() {
+        Python::initialize();
+        Python::attach(|py| {
+            for (dsl_json, selector_json, expected) in [
+                (
+                    terminal_predict_dsl_json(),
+                    r#"{"node_id":"model:terminal","port":"missing"}"#.to_string(),
+                    "has no output port `missing`",
+                ),
+                (
+                    terminal_predict_observation_aggregation_dsl_json(),
+                    r#"{"node_id":"model:terminal","port":"oof"}"#.to_string(),
+                    "unsupported non-sample aggregation",
+                ),
+            ] {
+                let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+                let error = run_cv_refit_predict_in_process(
+                    py,
+                    &dsl_json,
+                    &terminal_predict_envelope_json(),
+                    &terminal_predict_manifest_json(),
+                    callback.clone_ref(py).into_any(),
+                    "rmse",
+                    &selector_json,
+                )
+                .expect_err("invalid terminal requests must fail before FIT_CV");
+                assert!(
+                    error.to_string().contains(expected),
+                    "unexpected terminal preflight error: {error}"
+                );
+                assert!(
+                    callback.bind(py).borrow().calls.lock().unwrap().is_empty(),
+                    "terminal preflight must not invoke a controller callback"
+                );
+            }
         });
     }
 }
