@@ -11,6 +11,14 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Added
 
+- Release patch 0.3.20: Python hosts can execute a closed CV → REFIT → terminal
+  PREDICT replay for a V2 identity-attested external cohort. The core seals the
+  bundle receipt, reuses only REFIT artifacts, and refuses selector errors,
+  V1/targetless cohorts, OOF-dependent graphs, and observation/aggregation
+  output paths before a host callback executes. This is a dag-ml-only patch
+  under ADR-10: it introduces no paired dag-ml-data contract or C ABI delta and
+  consumes the already synchronized V2 envelope.
+
 - Release patch 0.3.19: native Methods Ridge stacking now retains its nested
   OOF/refit evidence and replays the selected portable model without a stale
   runtime handle.
