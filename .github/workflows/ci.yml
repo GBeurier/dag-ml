@@ -180,6 +180,7 @@ jobs:
         run: |
           cargo test --manifest-path crates/dag-ml-py/Cargo.toml py_in_process_terminal_predict -- --nocapture
           PYTHONPATH=crates/dag-ml-py/python python -m unittest crates/dag-ml-py/tests/test_terminal_predict_facade.py
+          PYTHONPATH=crates/dag-ml-py/python python -m unittest crates/dag-ml-py/tests/test_methods_terminal_predict_facade.py
       - name: dag-ml-core extracted package test
         run: scripts/test_core_package_extract.sh
       - name: Committed extension freshness
@@ -301,11 +302,15 @@ jobs:
       - name: Build ABI-matched Methods library
         working-directory: external/nirs4all-methods
         run: make build PRESET=dev-release
-      - name: Native TPE, pruner, checkpoint, and N4MM replay
+      - name: Native TPE, pruner, checkpoint, N4MM replay, and strict terminal facade
         env:
           N4M_LIBRARY_PATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src/libn4m.so
           LD_LIBRARY_PATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src
-        run: scripts/test_methods_optimizer_local.sh
+          PYO3_PYTHON: python
+          DAG_ML_REQUIRE_N4M_TEST: "1"
+        run: |
+          scripts/test_methods_optimizer_local.sh
+          cargo test --manifest-path crates/dag-ml-py/Cargo.toml --features methods-optimizer strict_methods_terminal_facade_reuses_refit_artifact_and_exports_replayable_v2 -- --nocapture
 
   sanitizer:
     name: AddressSanitizer (capi)
