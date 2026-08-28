@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import secrets
+from collections.abc import Iterator, Mapping
 from os import PathLike
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Iterable
 
 from ._dag_ml import (
     DagMlBundleError,
@@ -21,6 +23,7 @@ from ._dag_ml import (
     DagMlSecurityError,
     DagMlValidationError,
     LocalImplementationRegistry as _NativeLocalImplementationRegistry,
+    MethodsTerminalPredictionReceipt as _NativeMethodsTerminalPredictionReceipt,
     TrainingResult as _NativeTrainingResult,
     build_execution_plan_json,
     attach_predict_cohort_to_envelope_json as _native_attach_predict_cohort_to_envelope_json,
@@ -96,6 +99,7 @@ _FACADE_EXPORTS = [
     "TrainingReplayRequest",
     "TrainingReplayOutcome",
     "TrainingResult",
+    "MethodsTerminalPredictionReceipt",
     "MethodsTerminalPredictionResult",
     "TrainingContractProjection",
     "ParameterProjection",
@@ -1152,14 +1156,92 @@ def execute_methods_training(
     )
 
 
+def _freeze_terminal_receipt_json(value: Any) -> Any:
+    """Return a recursive immutable projection of a JSON receipt value."""
+
+    if isinstance(value, dict):
+        return MappingProxyType(
+            {key: _freeze_terminal_receipt_json(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_terminal_receipt_json(item) for item in value)
+    return value
+
+
+class MethodsTerminalPredictionReceipt(Mapping[str, Any]):
+    """Immutable, native-validated attestation for one terminal PREDICT run.
+
+    Instances are created only by the strict native facade. The mapping is a
+    read-only projection of a closed receipt whose fingerprint includes the
+    derived terminal run ID. ``to_dict()`` returns a detached mutable snapshot
+    for serialization or display; it is not itself an attestation.
+    """
+
+    __slots__ = ("_native", "_mapping")
+
+    def __new__(
+        cls, *args: object, **kwargs: object
+    ) -> MethodsTerminalPredictionReceipt:
+        raise TypeError(
+            "MethodsTerminalPredictionReceipt instances are created only by native terminal prediction"
+        )
+
+    @classmethod
+    def _from_native(
+        cls, native: _NativeMethodsTerminalPredictionReceipt
+    ) -> MethodsTerminalPredictionReceipt:
+        if not isinstance(native, _NativeMethodsTerminalPredictionReceipt):
+            raise TypeError("terminal receipt must be a native sealed receipt")
+        decoded = json.loads(native.json())
+        if not isinstance(decoded, dict):
+            raise TypeError("native sealed terminal receipt must encode a JSON object")
+        receipt = object.__new__(cls)
+        object.__setattr__(receipt, "_native", native)
+        object.__setattr__(receipt, "_mapping", _freeze_terminal_receipt_json(decoded))
+        return receipt
+
+    def __getitem__(self, key: str) -> Any:
+        return self._mapping[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._mapping)
+
+    def __len__(self) -> int:
+        return len(self._mapping)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("MethodsTerminalPredictionReceipt is immutable")
+
+    @property
+    def terminal_run_id(self) -> str:
+        return self._native.terminal_run_id
+
+    @property
+    def receipt_fingerprint(self) -> str:
+        return self._native.receipt_fingerprint
+
+    def json(self) -> str:
+        """Return the canonical native receipt JSON."""
+
+        return self._native.json()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a mutable, non-attesting snapshot of the receipt."""
+
+        decoded = json.loads(self.json())
+        if not isinstance(decoded, dict):  # Defensive native-boundary check.
+            raise TypeError("native sealed terminal receipt must encode a JSON object")
+        return decoded
+
+
 class MethodsTerminalPredictionResult:
     """Closed callback-free Methods CV/REFIT/terminal-PREDICT result.
 
     ``training_result`` remains attached so callers can inspect or explicitly
     release its process-local resources. ``portable_predictor_package`` is the
     native N4MM Package V2 exported from the same REFIT artifact that served
-    the terminal prediction. The prediction and receipt are ordinary decoded
-    JSON contracts, with no Python model or node callback involved.
+    the terminal prediction. The terminal receipt is a private-construction,
+    immutable native attestation rather than a mutable JSON dictionary.
     """
 
     __slots__ = (
@@ -1169,17 +1251,38 @@ class MethodsTerminalPredictionResult:
         "terminal_receipt",
     )
 
-    def __init__(
-        self,
-        training_result: TrainingResult,
-        portable_predictor_package: PortablePredictorPackage,
-        terminal_prediction: dict[str, Any],
-        terminal_receipt: dict[str, Any],
-    ) -> None:
-        self.training_result = training_result
-        self.portable_predictor_package = portable_predictor_package
-        self.terminal_prediction = terminal_prediction
-        self.terminal_receipt = terminal_receipt
+    def __new__(
+        cls, *args: object, **kwargs: object
+    ) -> MethodsTerminalPredictionResult:
+        raise TypeError(
+            "MethodsTerminalPredictionResult instances are created only by native terminal prediction"
+        )
+
+    @classmethod
+    def _from_native_payload(
+        cls, raw: Mapping[str, Any]
+    ) -> MethodsTerminalPredictionResult:
+        result = object.__new__(cls)
+        object.__setattr__(
+            result, "training_result", TrainingResult(raw["training_result"])
+        )
+        object.__setattr__(
+            result,
+            "portable_predictor_package",
+            PortablePredictorPackage(raw["portable_predictor_package_json"]),
+        )
+        object.__setattr__(
+            result, "terminal_prediction", json.loads(raw["terminal_prediction_json"])
+        )
+        object.__setattr__(
+            result,
+            "terminal_receipt",
+            MethodsTerminalPredictionReceipt._from_native(raw["terminal_receipt"]),
+        )
+        return result
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("MethodsTerminalPredictionResult is immutable")
 
 
 def execute_methods_cv_refit_terminal_predict_json(
@@ -1228,12 +1331,7 @@ def execute_methods_cv_refit_terminal_predict_json(
         warnings_json,
         diagnostics_json,
     )
-    return MethodsTerminalPredictionResult(
-        TrainingResult(raw["training_result"]),
-        PortablePredictorPackage(raw["portable_predictor_package_json"]),
-        json.loads(raw["terminal_prediction_json"]),
-        json.loads(raw["terminal_receipt_json"]),
-    )
+    return MethodsTerminalPredictionResult._from_native_payload(raw)
 
 
 def execute_methods_cv_refit_terminal_predict(
@@ -1617,6 +1715,7 @@ __all__ = [
     "TrainingReplayRequest",
     "TrainingResult",
     "TrainingRequest",
+    "MethodsTerminalPredictionReceipt",
     "MethodsTerminalPredictionResult",
     "build_execution_plan",
     "build_archive_v2_native_portable_payloads",

@@ -1,5 +1,5 @@
 from os import PathLike
-from typing import Any, Iterable, Self
+from typing import Any, Iterable, Mapping, Self
 
 class DagMlError(Exception):
     category: str
@@ -130,11 +130,19 @@ class TrainingResult:
         small_sample_policy: str = "error",
     ) -> dict[str, Any]: ...
 
+class MethodsTerminalPredictionReceipt(Mapping[str, Any]):
+    @property
+    def terminal_run_id(self) -> str: ...
+    @property
+    def receipt_fingerprint(self) -> str: ...
+    def json(self) -> str: ...
+    def to_dict(self) -> dict[str, Any]: ...
+
 class MethodsTerminalPredictionResult:
     training_result: TrainingResult
     portable_predictor_package: PortablePredictorPackage
     terminal_prediction: dict[str, Any]
-    terminal_receipt: dict[str, Any]
+    terminal_receipt: MethodsTerminalPredictionReceipt
 
 class FoldSet(JsonContract):
     def fingerprint(self) -> str: ...
