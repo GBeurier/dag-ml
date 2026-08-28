@@ -26,8 +26,8 @@ use crate::phase::Phase;
 use crate::plan::ExecutionPlan;
 use crate::policy::PredictionLevel;
 use crate::runtime::{
-    BundleReplayExecution, RunContext, RuntimeArtifactStore, RuntimeControllerRegistry,
-    RuntimeDataProvider, SequentialScheduler,
+    BundleReplayExecution, EnvelopeAttestedRuntimeDataProvider, RunContext, RuntimeArtifactStore,
+    RuntimeControllerRegistry, RuntimeDataProvider, SequentialScheduler,
 };
 
 /// First public receipt shape for the V2 terminal-prediction boundary.
@@ -68,29 +68,87 @@ impl TerminalPredictionSelector {
 ///
 /// The receipt contains only logical artifact references from the bundle; it
 /// deliberately never serializes invocation-local `HandleRef` values.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TerminalPredictionReceipt {
-    pub schema_version: u32,
-    pub bundle_id: BundleId,
-    pub plan_id: String,
-    pub graph_fingerprint: String,
-    pub campaign_fingerprint: String,
-    pub controller_fingerprint: String,
-    pub selected_variant_id: VariantId,
-    pub terminal_node_id: NodeId,
-    pub terminal_port: String,
-    pub cohort_fingerprint: String,
-    pub refit_artifacts: Vec<RefitArtifactRecord>,
-    pub output_fingerprint: String,
+    schema_version: u32,
+    bundle_id: BundleId,
+    plan_id: String,
+    graph_fingerprint: String,
+    campaign_fingerprint: String,
+    controller_fingerprint: String,
+    selected_variant_id: VariantId,
+    terminal_node_id: NodeId,
+    terminal_port: String,
+    cohort_fingerprint: String,
+    refit_artifacts: Vec<RefitArtifactRecord>,
+    output_fingerprint: String,
+}
+
+impl TerminalPredictionReceipt {
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    pub fn bundle_id(&self) -> &BundleId {
+        &self.bundle_id
+    }
+
+    pub fn plan_id(&self) -> &str {
+        &self.plan_id
+    }
+
+    pub fn graph_fingerprint(&self) -> &str {
+        &self.graph_fingerprint
+    }
+
+    pub fn campaign_fingerprint(&self) -> &str {
+        &self.campaign_fingerprint
+    }
+
+    pub fn controller_fingerprint(&self) -> &str {
+        &self.controller_fingerprint
+    }
+
+    pub fn selected_variant_id(&self) -> &VariantId {
+        &self.selected_variant_id
+    }
+
+    pub fn terminal_node_id(&self) -> &NodeId {
+        &self.terminal_node_id
+    }
+
+    pub fn terminal_port(&self) -> &str {
+        &self.terminal_port
+    }
+
+    pub fn cohort_fingerprint(&self) -> &str {
+        &self.cohort_fingerprint
+    }
+
+    pub fn refit_artifacts(&self) -> &[RefitArtifactRecord] {
+        &self.refit_artifacts
+    }
+
+    pub fn output_fingerprint(&self) -> &str {
+        &self.output_fingerprint
+    }
 }
 
 /// One fully attested terminal PREDICT outcome.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TerminalPredictionExecution {
-    pub prediction: PredictionBlock,
-    pub receipt: TerminalPredictionReceipt,
+    prediction: PredictionBlock,
+    receipt: TerminalPredictionReceipt,
+}
+
+impl TerminalPredictionExecution {
+    pub fn prediction(&self) -> &PredictionBlock {
+        &self.prediction
+    }
+
+    pub fn receipt(&self) -> &TerminalPredictionReceipt {
+        &self.receipt
+    }
 }
 
 /// Runtime resources for one closed terminal PREDICT replay.
@@ -210,6 +268,19 @@ pub fn validate_terminal_prediction_preflight(
         )));
     }
 
+    if plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .any(|edge| edge.contract.requires_oof)
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "terminal PREDICT first slice does not replay requires_oof edges; use the ordinary replay contract until prediction-cache closure is captured"
+                .to_string(),
+        ));
+    }
+
     if plan.campaign.aggregation_policy.aggregation_level != PredictionLevel::Sample
         || plan.node_plans.values().any(|node| {
             node.supported_phases.contains(&Phase::Predict)
@@ -277,6 +348,36 @@ pub fn validate_terminal_prediction_request(
     Ok(())
 }
 
+/// Ask the provider to attest every PREDICT-visible binding before replay
+/// materializes an artifact, data handle, or controller task.  The scheduler
+/// repeats this comparison at each request through the envelope wrapper below
+/// so a mutable host provider cannot change cohorts between preflight and
+/// materialization.
+fn validate_terminal_provider_cohorts(
+    plan: &ExecutionPlan,
+    envelope: &ExternalDataPlanEnvelope,
+    data_provider: &dyn RuntimeDataProvider,
+) -> Result<()> {
+    let expected = require_terminal_predict_cohort(envelope)?;
+    for node in plan
+        .node_plans
+        .values()
+        .filter(|node| node.supported_phases.contains(&Phase::Predict))
+    {
+        for binding in &node.data_bindings {
+            binding.validate_envelope(envelope)?;
+            let supplied = data_provider.predict_cohort(binding, Phase::Predict)?;
+            if supplied.as_ref() != Some(expected) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "PREDICT cohort supplied by runtime provider for binding `{}` does not exactly match its terminal V2 envelope",
+                    crate::data::data_binding_requirement_key(&binding.node_id, &binding.input_name)
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Execute one scheduler-owned PREDICT replay from a captured bundle.
 ///
 /// `artifact_store` is the runtime's REFIT artifact store.  It is the only
@@ -296,21 +397,36 @@ pub fn execute_terminal_prediction(
         artifact_store,
     } = replay;
     validate_terminal_prediction_request(plan, bundle, envelope, selector)?;
+    validate_terminal_provider_cohorts(plan, envelope, data_provider)?;
 
     let data_envelopes = terminal_prediction_envelopes(bundle, envelope);
+    // Ask the host provider to attest the same V2 cohort before it can
+    // materialize or view any data.  The wrapper returns the envelope-bound
+    // cohort to the scheduler only after that exact comparison succeeds.
+    let borrowed_data_provider = BorrowedRuntimeDataProvider(data_provider);
+    let envelope_attested_data_provider = EnvelopeAttestedRuntimeDataProvider::new(
+        borrowed_data_provider,
+        terminal_prediction_bindings(plan),
+        data_envelopes.clone(),
+    )?;
+    let attested_data_provider = TerminalCohortAttestedRuntimeDataProvider {
+        inner: envelope_attested_data_provider,
+        source: data_provider,
+        expected_cohort: require_terminal_predict_cohort(envelope)?.clone(),
+    };
     let replay_request = ReplayPhaseRequest {
         bundle_id: bundle.bundle_id.clone(),
         phase: Phase::Predict,
         data_envelope_keys: data_envelopes.keys().cloned().collect(),
     };
-    let results = SequentialScheduler.execute_bundle_replay(
+    let results = SequentialScheduler.execute_direct_sample_bundle_replay(
         BundleReplayExecution {
             plan,
             bundle,
             replay_request: &replay_request,
             prediction_cache_store: None,
             controllers,
-            data_provider,
+            data_provider: &attested_data_provider,
             artifact_store,
             data_envelopes: &data_envelopes,
         },
@@ -442,18 +558,181 @@ fn terminal_prediction_envelopes(
         .collect()
 }
 
+fn terminal_prediction_bindings(plan: &ExecutionPlan) -> Vec<crate::data::DataBinding> {
+    plan.node_plans
+        .values()
+        .flat_map(|node| node.data_bindings.iter().cloned())
+        .collect()
+}
+
+/// Private borrowing adapter used only to compose the public provider trait
+/// with the existing envelope-attestation wrapper.  Keeping this newtype
+/// local avoids adding a blanket trait implementation that downstream crates
+/// could conflict with.
+struct BorrowedRuntimeDataProvider<'a>(&'a dyn RuntimeDataProvider);
+
+impl RuntimeDataProvider for BorrowedRuntimeDataProvider<'_> {
+    fn materialize(
+        &self,
+        request: &crate::runtime::DataMaterializationRequest,
+    ) -> Result<crate::runtime::HandleRef> {
+        self.0.materialize(request)
+    }
+
+    fn make_view(
+        &self,
+        request: &crate::runtime::DataViewRequest,
+    ) -> Result<crate::runtime::HandleRef> {
+        self.0.make_view(request)
+    }
+
+    fn training_data_identity(
+        &self,
+        binding: &crate::data::DataBinding,
+    ) -> Result<Option<crate::training::TrainingDataIdentity>> {
+        self.0.training_data_identity(binding)
+    }
+
+    fn coordinator_relations(
+        &self,
+        binding: &crate::data::DataBinding,
+    ) -> Result<Option<crate::relation::SampleRelationSet>> {
+        self.0.coordinator_relations(binding)
+    }
+
+    fn predict_cohort(
+        &self,
+        binding: &crate::data::DataBinding,
+        phase: Phase,
+    ) -> Result<Option<PredictCohort>> {
+        self.0.predict_cohort(binding, phase)
+    }
+
+    fn methods_pls_capability(&self) -> Result<()> {
+        self.0.methods_pls_capability()
+    }
+
+    fn preflight_methods_pls(&self, request: &crate::runtime::MethodsPlsDataRequest) -> Result<()> {
+        self.0.preflight_methods_pls(request)
+    }
+
+    fn methods_pls_data(
+        &self,
+        request: &crate::runtime::MethodsPlsDataRequest,
+    ) -> Result<crate::runtime::MethodsPlsData> {
+        self.0.methods_pls_data(request)
+    }
+}
+
+/// Terminal-only cohort guard layered outside the generic envelope wrapper.
+///
+/// Generic V2 replay may obtain its cohort solely from an attested envelope:
+/// older C-ABI providers intentionally do not expose the optional
+/// `predict_cohort` callback.  This narrow route has a stronger contract: the
+/// host must independently attest the exact V2 terminal cohort before every
+/// PREDICT materialization.  Keeping that comparison here preserves the
+/// generic C-ABI surface while preventing a mutable terminal provider from
+/// substituting a cohort after the all-binding preflight.
+struct TerminalCohortAttestedRuntimeDataProvider<'a, P> {
+    inner: P,
+    source: &'a dyn RuntimeDataProvider,
+    expected_cohort: PredictCohort,
+}
+
+impl<P: RuntimeDataProvider> RuntimeDataProvider
+    for TerminalCohortAttestedRuntimeDataProvider<'_, P>
+{
+    fn materialize(
+        &self,
+        request: &crate::runtime::DataMaterializationRequest,
+    ) -> Result<crate::runtime::HandleRef> {
+        self.inner.materialize(request)
+    }
+
+    fn make_view(
+        &self,
+        request: &crate::runtime::DataViewRequest,
+    ) -> Result<crate::runtime::HandleRef> {
+        self.inner.make_view(request)
+    }
+
+    fn training_data_identity(
+        &self,
+        binding: &crate::data::DataBinding,
+    ) -> Result<Option<crate::training::TrainingDataIdentity>> {
+        self.inner.training_data_identity(binding)
+    }
+
+    fn coordinator_relations(
+        &self,
+        binding: &crate::data::DataBinding,
+    ) -> Result<Option<crate::relation::SampleRelationSet>> {
+        self.inner.coordinator_relations(binding)
+    }
+
+    fn predict_cohort(
+        &self,
+        binding: &crate::data::DataBinding,
+        phase: Phase,
+    ) -> Result<Option<PredictCohort>> {
+        let supplied = self.source.predict_cohort(binding, phase)?;
+        if supplied.as_ref() != Some(&self.expected_cohort) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "PREDICT cohort supplied by runtime provider for binding `{}` does not exactly match its terminal V2 envelope",
+                crate::data::data_binding_requirement_key(&binding.node_id, &binding.input_name)
+            )));
+        }
+        let attested = self.inner.predict_cohort(binding, phase)?;
+        if attested.as_ref() != Some(&self.expected_cohort) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "terminal envelope cohort for binding `{}` changed during replay",
+                crate::data::data_binding_requirement_key(&binding.node_id, &binding.input_name)
+            )));
+        }
+        Ok(attested)
+    }
+
+    fn methods_pls_capability(&self) -> Result<()> {
+        self.inner.methods_pls_capability()
+    }
+
+    fn preflight_methods_pls(&self, request: &crate::runtime::MethodsPlsDataRequest) -> Result<()> {
+        self.inner.preflight_methods_pls(request)
+    }
+
+    fn methods_pls_data(
+        &self,
+        request: &crate::runtime::MethodsPlsDataRequest,
+    ) -> Result<crate::runtime::MethodsPlsData> {
+        self.inner.methods_pls_data(request)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::BTreeMap;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     use crate::bundle::build_execution_bundle;
     use crate::controller::{ControllerManifest, ControllerRegistry};
-    use crate::data::PredictCohortRole;
+    use crate::data::{InMemoryDataProvider, PredictCohortRole};
     use crate::graph::GraphSpec;
-    use crate::ids::{ArtifactId, ControllerId};
+    use crate::ids::{ArtifactId, ControllerId, LineageId, RunId};
     use crate::plan::{build_execution_plan, CampaignSpec};
+    use crate::policy::{
+        AggregationControllerSpec, AggregationMethod, AggregationPolicy, DataModelShapePlan,
+        FitBoundary, Granularity,
+    };
     use crate::relation::SampleRelationSet;
-    use crate::runtime::ArtifactRef;
+    use crate::runtime::{
+        AggregationControllerResult, AggregationControllerTask, ArtifactRef,
+        DataMaterializationRequest, DataViewRequest, HandleKind, HandleRef, InMemoryArtifactStore,
+        LineageRecord, NodeResult, NodeTask, RuntimeController,
+    };
 
     use super::*;
 
@@ -463,6 +742,12 @@ mod tests {
         "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d";
 
     fn terminal_fixture() -> (ExecutionPlan, ExecutionBundle, ExternalDataPlanEnvelope) {
+        terminal_fixture_with_custom_aggregation(false)
+    }
+
+    fn terminal_fixture_with_custom_aggregation(
+        custom_aggregation: bool,
+    ) -> (ExecutionPlan, ExecutionBundle, ExternalDataPlanEnvelope) {
         let cv_envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
             "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
@@ -492,7 +777,7 @@ mod tests {
             }"#,
         )
         .expect("terminal graph parses");
-        let campaign: CampaignSpec = serde_json::from_str(&format!(
+        let mut campaign: CampaignSpec = serde_json::from_str(&format!(
             r#"{{
               "id": "campaign:terminal.predict",
               "root_seed": 7,
@@ -530,6 +815,33 @@ mod tests {
                 .expect("fixture relation fingerprint"),
         ))
         .expect("terminal campaign parses");
+        if custom_aggregation {
+            let node_id = NodeId::new("model:terminal").unwrap();
+            campaign.shape_plans.insert(
+                node_id.clone(),
+                DataModelShapePlan {
+                    node_id,
+                    input_granularity: Granularity::Observation,
+                    target_granularity: Granularity::Sample,
+                    fit_rows: FitBoundary::FoldTrain,
+                    predict_rows: FitBoundary::FoldValidation,
+                    feature_namespace: Some("nir".to_string()),
+                    feature_schema_fingerprint: None,
+                    target_space: "regression:protein".to_string(),
+                    aggregation_policy: AggregationPolicy {
+                        aggregation_level: PredictionLevel::Sample,
+                        method: AggregationMethod::CustomController,
+                        custom_controller: Some(AggregationControllerSpec {
+                            controller_id: ControllerId::new("controller:agg.custom").unwrap(),
+                            params: serde_json::json!({"terminal": true}),
+                        }),
+                        ..AggregationPolicy::default()
+                    },
+                    augmentation_policy: Default::default(),
+                    selection_policy: Default::default(),
+                },
+            );
+        }
         let manifest: ControllerManifest = serde_json::from_str(
             r#"{
               "controller_id": "controller:model",
@@ -549,6 +861,28 @@ mod tests {
         .expect("terminal controller manifest parses");
         let mut controllers = ControllerRegistry::new();
         controllers.register(manifest).expect("manifest registers");
+        if custom_aggregation {
+            let aggregation_manifest: ControllerManifest = serde_json::from_str(
+                r#"{
+                  "controller_id": "controller:agg.custom",
+                  "controller_version": "0.1.0",
+                  "operator_kind": "aggregator",
+                  "priority": 0,
+                  "supported_phases": ["PLAN"],
+                  "input_ports": [],
+                  "output_ports": [],
+                  "data_requirements": null,
+                  "capabilities": ["deterministic", "thread_safe", "process_safe", "aggregates_predictions"],
+                  "fit_scope": "inference_only",
+                  "rng_policy": "uses_core_seed",
+                  "artifact_policy": "serializable"
+                }"#,
+            )
+            .expect("aggregation controller manifest parses");
+            controllers
+                .register(aggregation_manifest)
+                .expect("aggregation controller registers");
+        }
         let plan = build_execution_plan("plan:terminal.predict", graph, campaign, &controllers)
             .expect("terminal plan builds");
 
@@ -636,6 +970,174 @@ mod tests {
             .unwrap()
     }
 
+    struct NeverInvokedController {
+        id: ControllerId,
+    }
+
+    impl RuntimeController for NeverInvokedController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, _task: &NodeTask) -> Result<NodeResult> {
+            Err(DagMlError::RuntimeValidation(
+                "terminal test controller must not be invoked".to_string(),
+            ))
+        }
+    }
+
+    struct SubstitutedCohortProvider {
+        cohort: PredictCohort,
+        materialize_calls: Cell<usize>,
+        view_calls: Cell<usize>,
+    }
+
+    impl RuntimeDataProvider for SubstitutedCohortProvider {
+        fn materialize(&self, _request: &DataMaterializationRequest) -> Result<HandleRef> {
+            self.materialize_calls.set(self.materialize_calls.get() + 1);
+            Err(DagMlError::RuntimeValidation(
+                "substituted provider was allowed to materialize data".to_string(),
+            ))
+        }
+
+        fn make_view(&self, _request: &DataViewRequest) -> Result<HandleRef> {
+            self.view_calls.set(self.view_calls.get() + 1);
+            Err(DagMlError::RuntimeValidation(
+                "substituted provider was allowed to construct a view".to_string(),
+            ))
+        }
+
+        fn predict_cohort(
+            &self,
+            _binding: &crate::data::DataBinding,
+            phase: Phase,
+        ) -> Result<Option<PredictCohort>> {
+            assert_eq!(phase, Phase::Predict);
+            Ok(Some(self.cohort.clone()))
+        }
+    }
+
+    struct ObservationTerminalController {
+        id: ControllerId,
+    }
+
+    impl RuntimeController for ObservationTerminalController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            let cohort = task
+                .data_views
+                .get("data:x")
+                .and_then(|view| view.sample_ids.as_ref())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "terminal observation test did not receive the V2 cohort view".to_string(),
+                    )
+                })?;
+            let observation_ids = cohort
+                .iter()
+                .enumerate()
+                .map(|(index, _)| crate::ids::ObservationId::new(format!("obs:terminal:{index}")))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(NodeResult {
+                schema_version: None,
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::new(),
+                predictions: Vec::new(),
+                observation_predictions: vec![ObservationPredictionBlock {
+                    prediction_id: Some("prediction:terminal:observation".to_string()),
+                    producer_node: task.node_plan.node_id.clone(),
+                    producer_port: Some("prediction".to_string()),
+                    partition: PredictionPartition::Final,
+                    fold_id: None,
+                    observation_ids,
+                    values: vec![vec![0.1]; cohort.len()],
+                    weights: Vec::new(),
+                    target_names: vec!["protein".to_string()],
+                }],
+                aggregated_predictions: Vec::new(),
+                explanations: Vec::new(),
+                shape_deltas: Vec::new(),
+                artifacts: Vec::new(),
+                artifact_handles: BTreeMap::new(),
+                fit_influence_diagnostics: Vec::new(),
+                regression_targets: Vec::new(),
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:terminal:observation:{}",
+                        task.phase.as_str()
+                    ))?,
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: self.id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: Vec::new(),
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: Default::default(),
+                    metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
+                },
+            })
+        }
+    }
+
+    struct CountingAggregationController {
+        id: ControllerId,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl RuntimeController for CountingAggregationController {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+
+        fn invoke(&self, _task: &NodeTask) -> Result<NodeResult> {
+            Err(DagMlError::RuntimeValidation(
+                "aggregation controller must not receive a node task".to_string(),
+            ))
+        }
+
+        fn invoke_aggregation(
+            &self,
+            _task: &AggregationControllerTask,
+        ) -> Result<AggregationControllerResult> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(DagMlError::RuntimeValidation(
+                "terminal direct replay must not invoke aggregation".to_string(),
+            ))
+        }
+    }
+
+    fn registered_terminal_artifact_store(bundle: &ExecutionBundle) -> InMemoryArtifactStore {
+        let artifact = bundle
+            .refit_artifacts
+            .first()
+            .expect("terminal fixture has one REFIT artifact");
+        let mut store = InMemoryArtifactStore::new();
+        store
+            .register(
+                artifact,
+                HandleRef {
+                    handle: 901,
+                    kind: HandleKind::Model,
+                    owner_controller: artifact.controller_id.clone(),
+                },
+            )
+            .expect("terminal artifact registers");
+        store
+    }
+
     #[test]
     fn terminal_receipt_binds_exact_v2_cohort_and_logical_refit_artifact() {
         let (plan, bundle, envelope) = terminal_fixture();
@@ -650,18 +1152,18 @@ mod tests {
             &[],
         )
         .expect("exact terminal prediction is accepted");
-        assert_eq!(execution.prediction, prediction);
+        assert_eq!(execution.prediction(), &prediction);
         assert_eq!(
-            execution.receipt.cohort_fingerprint,
+            execution.receipt().cohort_fingerprint(),
             envelope
                 .predict_cohort
                 .as_ref()
                 .expect("V2 cohort")
                 .cohort_fingerprint
         );
-        assert_eq!(execution.receipt.refit_artifacts.len(), 1);
-        assert_ne!(execution.receipt.output_fingerprint, "");
-        let receipt_json = serde_json::to_value(&execution.receipt).unwrap();
+        assert_eq!(execution.receipt().refit_artifacts().len(), 1);
+        assert_ne!(execution.receipt().output_fingerprint(), "");
+        let receipt_json = serde_json::to_value(execution.receipt()).unwrap();
         assert!(receipt_json.get("handle").is_none());
     }
 
@@ -686,29 +1188,110 @@ mod tests {
 
     #[test]
     fn terminal_request_refuses_targetless_v2_inference_cohort() {
-        let (_plan, _bundle, mut envelope) = terminal_fixture();
+        let (_plan, _bundle, envelope) = terminal_fixture();
         let relations = envelope
             .predict_cohort
             .as_ref()
             .expect("fixture has a V2 cohort")
             .relations
             .clone();
-        envelope.predict_cohort = Some(
-            PredictCohort::from_relations(
-                PredictCohortRole::Inference,
-                relations,
-                Vec::new(),
-                "c".repeat(64),
-                None,
-            )
-            .expect("legacy Rust cohort constructor currently permits an empty target list"),
-        );
-        envelope
-            .validate()
-            .expect("this asserts the terminal-only schema closure boundary");
-        let error = require_terminal_predict_cohort(&envelope)
-            .expect_err("terminal V2 prediction must bind a non-empty output width");
-        assert!(error.to_string().contains("target_names to be non-empty"));
+        let error = PredictCohort::from_relations(
+            PredictCohortRole::Inference,
+            relations,
+            Vec::new(),
+            "c".repeat(64),
+            None,
+        )
+        .expect_err("V2 predict cohorts must bind an output width");
+        assert!(error
+            .to_string()
+            .contains("target_names must be a non-empty list"));
+    }
+
+    #[test]
+    fn terminal_execution_refuses_provider_cohort_substitution_before_data_access() {
+        let (plan, bundle, envelope) = terminal_fixture();
+        let mut substituted = envelope
+            .predict_cohort
+            .as_ref()
+            .expect("fixture V2 cohort")
+            .clone();
+        substituted.data_content_fingerprint = "e".repeat(64);
+        substituted.cohort_fingerprint = substituted.fingerprint().unwrap();
+        let provider = SubstitutedCohortProvider {
+            cohort: substituted,
+            materialize_calls: Cell::new(0),
+            view_calls: Cell::new(0),
+        };
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(NeverInvokedController {
+                id: ControllerId::new("controller:model").unwrap(),
+            }))
+            .unwrap();
+        // Deliberately leave the artifact store empty: the provider mismatch
+        // must be refused before replay is allowed to hydrate even REFIT
+        // artifacts, let alone materialize scientific data.
+        let artifact_store = InMemoryArtifactStore::new();
+        let mut ctx = RunContext::new(RunId::new("run:terminal.substitution").unwrap(), Some(7));
+
+        let error = execute_terminal_prediction(
+            TerminalPredictionReplay {
+                plan: &plan,
+                bundle: &bundle,
+                envelope: &envelope,
+                selector: &selector(),
+                controllers: &controllers,
+                data_provider: &provider,
+                artifact_store: &artifact_store,
+            },
+            &mut ctx,
+        )
+        .expect_err("a provider cohort substitution must fail before data materialization");
+        assert!(error.to_string().contains("supplied by runtime provider"));
+        assert_eq!(provider.materialize_calls.get(), 0);
+        assert_eq!(provider.view_calls.get(), 0);
+    }
+
+    #[test]
+    fn terminal_execution_rejects_observation_output_without_custom_aggregation() {
+        let (plan, bundle, envelope) = terminal_fixture_with_custom_aggregation(true);
+        let provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.terminal").unwrap(),
+            envelope.clone(),
+        )
+        .unwrap();
+        let aggregation_calls = Arc::new(AtomicUsize::new(0));
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(ObservationTerminalController {
+                id: ControllerId::new("controller:model").unwrap(),
+            }))
+            .unwrap();
+        controllers
+            .register(Box::new(CountingAggregationController {
+                id: ControllerId::new("controller:agg.custom").unwrap(),
+                calls: aggregation_calls.clone(),
+            }))
+            .unwrap();
+        let artifact_store = registered_terminal_artifact_store(&bundle);
+        let mut ctx = RunContext::new(RunId::new("run:terminal.no-aggregation").unwrap(), Some(7));
+
+        let error = execute_terminal_prediction(
+            TerminalPredictionReplay {
+                plan: &plan,
+                bundle: &bundle,
+                envelope: &envelope,
+                selector: &selector(),
+                controllers: &controllers,
+                data_provider: &provider,
+                artifact_store: &artifact_store,
+            },
+            &mut ctx,
+        )
+        .expect_err("direct terminal replay must refuse observation output");
+        assert!(error.to_string().contains("observation-level predictions"));
+        assert_eq!(aggregation_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
