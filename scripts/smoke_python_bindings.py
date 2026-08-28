@@ -11,7 +11,7 @@ from pathlib import Path
 import dag_ml
 import dag_ml._dag_ml as native
 
-EXPECTED_NATIVE_VERSION = "0.3.19"
+EXPECTED_NATIVE_VERSION = "0.3.20"
 SHARED_FOLD_SET_FINGERPRINT = (
     "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c"
 )
@@ -96,6 +96,8 @@ def main() -> None:
         raise SystemExit(
             "contract manifest is missing native Methods Package V3 replay export"
         )
+    if "run_cv_refit_predict_in_process" not in manifest["python_exports"]:
+        raise SystemExit("contract manifest is missing terminal PREDICT export")
     if "compile_pipeline_dsl_artifact_json" not in manifest["wasm_exports"]:
         raise SystemExit("contract manifest is missing WASM DSL export")
     if "structured_error_descriptors" not in manifest["capabilities"]:
@@ -120,6 +122,10 @@ def main() -> None:
         raise SystemExit(
             "contract manifest is missing native Methods Package V3 replay capability"
         )
+    if "execute_cv_refit_terminal_predict" not in manifest["capabilities"]:
+        raise SystemExit("contract manifest is missing terminal PREDICT capability")
+    if "run_cv_refit_predict_in_process" not in manifest["python_facade_exports"]:
+        raise SystemExit("contract manifest is missing terminal PREDICT facade export")
     if (
         manifest["shared"]["fold_set_fixture_fingerprint"]
         != SHARED_FOLD_SET_FINGERPRINT
