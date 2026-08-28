@@ -713,10 +713,19 @@ pub struct MethodsTerminalPredictionResult {
 
 #[pymethods]
 impl MethodsTerminalPredictionResult {
-    /// Attached native training result retained by this terminal outcome.
+    /// Public DAG-ML training-result view retained by this terminal outcome.
+    ///
+    /// The native owning result remains stored inside this frozen terminal
+    /// result.  Each access creates the regular Python facade around that
+    /// exact native object, so callers receive the documented ``dag_ml``
+    /// surface without gaining a way to replace the terminal result's native
+    /// receipt or resources.
     #[getter]
-    fn training_result(&self, py: Python<'_>) -> Py<TrainingResult> {
-        self.training_result.clone_ref(py)
+    fn training_result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.import("dag_ml")?
+            .getattr("TrainingResult")?
+            .call1((self.training_result.clone_ref(py),))
+            .map(|value| value.unbind())
     }
 
     /// Ordinary Python Package V2 view. It is reconstructed from JSON on each
@@ -3548,6 +3557,65 @@ mod tests {
                 .outcome
                 .outcome_fingerprint
                 .clone();
+            let sys = py.import("sys").unwrap();
+            sys.getattr("path")
+                .unwrap()
+                .call_method1(
+                    "insert",
+                    (0, format!("{}/python", env!("CARGO_MANIFEST_DIR"))),
+                )
+                .unwrap();
+            let dag_ml = py
+                .import("dag_ml")
+                .expect("the checked-in public Python facade imports for the ABI gate");
+            let public_training_result = native_result
+                .bind(py)
+                .getattr("training_result")
+                .expect("terminal result exposes the public TrainingResult facade");
+            let public_training_result_type = dag_ml.getattr("TrainingResult").unwrap();
+            assert!(
+                public_training_result
+                    .getattr("__class__")
+                    .unwrap()
+                    .is(&public_training_result_type),
+                "terminal result must expose dag_ml.TrainingResult, not _dag_ml.TrainingResult"
+            );
+            assert_eq!(
+                public_training_result
+                    .getattr("outcome_fingerprint")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                source_outcome_fingerprint
+            );
+            assert!(public_training_result.getattr("outcome").is_ok());
+            assert!(public_training_result.getattr("execution_bundle").is_ok());
+            assert!(public_training_result
+                .getattr("score_set")
+                .unwrap()
+                .is_instance_of::<pyo3::types::PyDict>());
+            assert!(public_training_result
+                .getattr("is_attached")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+            object
+                .getattr("__setattr__")
+                .unwrap()
+                .call1((public_training_result, "_native", py.None()))
+                .expect("the ordinary TrainingResult view may not alter the terminal result");
+            assert_eq!(
+                native_result
+                    .bind(py)
+                    .getattr("training_result")
+                    .unwrap()
+                    .getattr("outcome_fingerprint")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                source_outcome_fingerprint,
+                "mutating a detached public TrainingResult view cannot rebind native terminal state"
+            );
             assert!(training_result.bind(py).borrow().is_attached().unwrap());
             assert!(training_result.bind(py).borrow().detach().unwrap());
             assert!(!training_result.bind(py).borrow().is_attached().unwrap());
