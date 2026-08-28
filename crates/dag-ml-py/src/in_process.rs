@@ -821,8 +821,8 @@ pub fn run_cv_refit_predict_in_process(
 
     serde_json::to_string(&serde_json::json!({
         "execution_bundle": bundle,
-        "terminal_prediction": terminal.prediction,
-        "terminal_receipt": terminal.receipt,
+        "terminal_prediction": terminal.prediction(),
+        "terminal_receipt": terminal.receipt(),
     }))
     .map_err(py_serde_error)
 }

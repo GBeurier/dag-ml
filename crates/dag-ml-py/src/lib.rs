@@ -974,6 +974,14 @@ mod tests {
         assert_eq!(cohort.cohort_fingerprint, cohort.fingerprint().unwrap());
 
         Python::initialize();
+        let targetless_request = request.replace(
+            r#""target_names":["classification:y"]"#,
+            r#""target_names":[]"#,
+        );
+        let error = attach_predict_cohort_to_envelope_json(envelope, &targetless_request)
+            .expect_err("the V2 producer must reject an unbound output width");
+        assert!(error.to_string().contains("target_names must be a non-empty list"));
+
         Python::attach(|py| {
             let module = PyModule::new(py, "_dag_ml_test").unwrap();
             _dag_ml(py, &module).unwrap();
