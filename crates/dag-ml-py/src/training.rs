@@ -31,8 +31,6 @@ use dag_ml_core::{
     TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
 };
 use pyo3::prelude::*;
-#[cfg(feature = "methods-optimizer")]
-use pyo3::types::PyDict;
 use serde::de::DeserializeOwned;
 #[cfg(feature = "methods-optimizer")]
 use serde::Deserialize;
@@ -680,10 +678,91 @@ impl MethodsTerminalPredictionReceipt {
         &self.receipt_fingerprint
     }
 
+    /// Return a mutable JSON snapshot for display or serialization only.
+    ///
+    /// This is intentionally not an attesting mapping: changing the returned
+    /// object cannot modify or rebind this native receipt.
+    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.import("json")?
+            .getattr("loads")?
+            .call1((&self.json,))
+            .map(|value| value.unbind())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "MethodsTerminalPredictionReceipt(terminal_run_id={:?}, receipt_fingerprint={:?})",
             self.terminal_run_id, self.receipt_fingerprint
+        )
+    }
+}
+
+/// Native-owned outcome of the strict Methods terminal facade.
+///
+/// This public type is deliberately a frozen PyO3 class rather than a Python
+/// convenience wrapper.  Its terminal receipt therefore remains tied to the
+/// native execution result; package and prediction getters create ordinary,
+/// non-attesting convenience views from their retained JSON snapshots.
+#[pyclass(module = "dag_ml._dag_ml", frozen)]
+pub struct MethodsTerminalPredictionResult {
+    training_result: Py<TrainingResult>,
+    portable_predictor_package_json: String,
+    terminal_prediction_json: String,
+    terminal_receipt: Py<MethodsTerminalPredictionReceipt>,
+}
+
+#[pymethods]
+impl MethodsTerminalPredictionResult {
+    /// Attached native training result retained by this terminal outcome.
+    #[getter]
+    fn training_result(&self, py: Python<'_>) -> Py<TrainingResult> {
+        self.training_result.clone_ref(py)
+    }
+
+    /// Ordinary Python Package V2 view. It is reconstructed from JSON on each
+    /// access and is not the terminal receipt's authority boundary.
+    #[getter]
+    fn portable_predictor_package(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.import("dag_ml")?
+            .getattr("PortablePredictorPackage")?
+            .call1((&self.portable_predictor_package_json,))
+            .map(|value| value.unbind())
+    }
+
+    /// Native Package V2 JSON retained by the terminal result.
+    #[getter]
+    fn portable_predictor_package_json(&self) -> &str {
+        &self.portable_predictor_package_json
+    }
+
+    /// Ordinary mutable prediction snapshot.  It is output data, not a
+    /// sealed receipt, so callers may transform it without affecting native
+    /// terminal attestation.
+    #[getter]
+    fn terminal_prediction(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.import("json")?
+            .getattr("loads")?
+            .call1((&self.terminal_prediction_json,))
+            .map(|value| value.unbind())
+    }
+
+    /// Native serialized terminal prediction for explicit snapshot handling.
+    #[getter]
+    fn terminal_prediction_json(&self) -> &str {
+        &self.terminal_prediction_json
+    }
+
+    /// Authoritative frozen native receipt for this exact terminal execution.
+    #[getter]
+    fn terminal_receipt(&self, py: Python<'_>) -> Py<MethodsTerminalPredictionReceipt> {
+        self.terminal_receipt.clone_ref(py)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let receipt = self.terminal_receipt.bind(py).borrow();
+        format!(
+            "MethodsTerminalPredictionResult(terminal_run_id={:?}, receipt_fingerprint={:?})",
+            receipt.terminal_run_id, receipt.receipt_fingerprint
         )
     }
 }
@@ -1021,7 +1100,7 @@ pub fn execute_methods_cv_refit_terminal_predict_json(
     terminal_selector_json: &str,
     warnings_json: &str,
     diagnostics_json: &str,
-) -> PyResult<Py<PyAny>> {
+) -> PyResult<Py<MethodsTerminalPredictionResult>> {
     #[cfg(not(feature = "methods-optimizer"))]
     {
         let _ = (
@@ -1101,18 +1180,19 @@ pub fn execute_methods_cv_refit_terminal_predict_json(
             &strict.selector,
             &identity.terminal_run_id,
         )?;
-        let terminal_receipt =
-            MethodsTerminalPredictionReceipt::from_terminal(&terminal, &identity.terminal_run_id)?;
-
-        let payload = PyDict::new(py);
-        payload.set_item("training_result", Py::new(py, training_result)?)?;
-        payload.set_item("portable_predictor_package_json", serialize_json(&package)?)?;
-        payload.set_item(
-            "terminal_prediction_json",
-            serialize_json(terminal.prediction())?,
+        let terminal_receipt = Py::new(
+            py,
+            MethodsTerminalPredictionReceipt::from_terminal(&terminal, &identity.terminal_run_id)?,
         )?;
-        payload.set_item("terminal_receipt", Py::new(py, terminal_receipt)?)?;
-        Ok(payload.into_any().unbind())
+        Py::new(
+            py,
+            MethodsTerminalPredictionResult {
+                training_result: Py::new(py, training_result)?,
+                portable_predictor_package_json: serialize_json(&package)?,
+                terminal_prediction_json: serialize_json(terminal.prediction())?,
+                terminal_receipt,
+            },
+        )
     }
 }
 
@@ -2947,6 +3027,49 @@ mod tests {
         });
     }
 
+    #[test]
+    fn strict_methods_terminal_public_native_types_reject_object_new_and_rebinding() {
+        Python::initialize();
+        Python::attach(|py| {
+            let object = py.import("builtins").unwrap().getattr("object").unwrap();
+            let object_new = object.getattr("__new__").unwrap();
+            assert!(
+                object_new
+                    .call1((py.get_type::<MethodsTerminalPredictionReceipt>(),))
+                    .is_err(),
+                "object.__new__ must not construct a public terminal receipt"
+            );
+            assert!(
+                object_new
+                    .call1((py.get_type::<MethodsTerminalPredictionResult>(),))
+                    .is_err(),
+                "object.__new__ must not construct a public terminal result"
+            );
+
+            let receipt = Py::new(
+                py,
+                MethodsTerminalPredictionReceipt {
+                    json: r#"{"schema_version":1}"#.to_string(),
+                    terminal_run_id: "run:strict.methods:methods-terminal-predict".to_string(),
+                    receipt_fingerprint: "f".repeat(64),
+                },
+            )
+            .unwrap();
+            assert!(
+                object
+                    .getattr("__setattr__")
+                    .unwrap()
+                    .call1((
+                        receipt.bind(py),
+                        "terminal_run_id",
+                        "run:forged:methods-terminal-predict",
+                    ))
+                    .is_err(),
+                "object.__setattr__ must not rebind a public terminal receipt"
+            );
+        });
+    }
+
     #[cfg(feature = "methods-optimizer")]
     #[test]
     fn strict_methods_terminal_preflight_rejects_v2_ids_port_and_labels_before_runtime() {
@@ -3272,7 +3395,7 @@ mod tests {
         let fixture = strict_methods_terminal_fixture();
         Python::initialize();
         Python::attach(|py| {
-            let raw = execute_methods_cv_refit_terminal_predict_json(
+            let native_result = execute_methods_cv_refit_terminal_predict_json(
                 py,
                 &fixture.request_json,
                 &fixture.training_envelopes_json,
@@ -3291,22 +3414,17 @@ mod tests {
                 "{}",
             )
             .expect("native PLS CV/REFIT/terminal-PREDICT succeeds without a Python callback");
-            let payload = raw.bind(py).cast::<pyo3::types::PyDict>().unwrap();
-            let prediction: serde_json::Value = serde_json::from_str(
-                &payload
-                    .get_item("terminal_prediction_json")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<String>()
-                    .unwrap(),
-            )
-            .unwrap();
-            let sealed_receipt = payload
-                .get_item("terminal_receipt")
-                .unwrap()
-                .unwrap()
-                .extract::<Py<MethodsTerminalPredictionReceipt>>()
-                .unwrap();
+            let (terminal_prediction_json, sealed_receipt, package_json, training_result) = {
+                let result = native_result.bind(py).borrow();
+                (
+                    result.terminal_prediction_json.clone(),
+                    result.terminal_receipt.clone_ref(py),
+                    result.portable_predictor_package_json.clone(),
+                    result.training_result.clone_ref(py),
+                )
+            };
+            let prediction: serde_json::Value =
+                serde_json::from_str(&terminal_prediction_json).unwrap();
             let receipt_json = sealed_receipt.bind(py).borrow().json.clone();
             let receipt: serde_json::Value = serde_json::from_str(&receipt_json).unwrap();
             assert_eq!(prediction["partition"], "final");
@@ -3331,6 +3449,19 @@ mod tests {
             );
             assert_eq!(receipt["refit_artifacts"].as_array().unwrap().len(), 1);
 
+            let receipt_snapshot_value = sealed_receipt.bind(py).call_method0("to_dict").unwrap();
+            let receipt_snapshot = receipt_snapshot_value
+                .cast::<pyo3::types::PyDict>()
+                .unwrap();
+            receipt_snapshot
+                .set_item("terminal_run_id", "run:forged:methods-terminal-predict")
+                .unwrap();
+            assert_eq!(
+                sealed_receipt.bind(py).borrow().terminal_run_id,
+                "run:strict.methods:methods-terminal-predict",
+                "a mutable receipt snapshot is explicitly non-attesting"
+            );
+
             let mut mutated_receipt = receipt.clone();
             mutated_receipt["terminal_run_id"] =
                 serde_json::json!("run:forged:methods-terminal-predict");
@@ -3347,12 +3478,38 @@ mod tests {
             .expect_err("a receipt with an extra field cannot enter the closed schema");
             assert!(error.to_string().contains("closed schema"));
 
-            let package_json = payload
-                .get_item("portable_predictor_package_json")
-                .unwrap()
-                .unwrap()
-                .extract::<String>()
-                .unwrap();
+            let object = py.import("builtins").unwrap().getattr("object").unwrap();
+            let set_attribute = object.getattr("__setattr__").unwrap();
+            let forged_receipt = Py::new(
+                py,
+                MethodsTerminalPredictionReceipt {
+                    json: receipt_json.clone(),
+                    terminal_run_id: "run:forged:methods-terminal-predict".to_string(),
+                    receipt_fingerprint: "0".repeat(64),
+                },
+            )
+            .unwrap();
+            assert!(
+                set_attribute
+                    .call1((
+                        native_result.bind(py),
+                        "terminal_receipt",
+                        forged_receipt.bind(py),
+                    ))
+                    .is_err(),
+                "object.__setattr__ must not rebind a frozen native terminal result"
+            );
+            assert!(
+                set_attribute
+                    .call1((
+                        sealed_receipt.bind(py),
+                        "terminal_run_id",
+                        "run:forged:methods-terminal-predict",
+                    ))
+                    .is_err(),
+                "object.__setattr__ must not mutate a frozen native receipt"
+            );
+
             let package = PortablePredictorPackage::from_json(&package_json).unwrap();
             assert_eq!(
                 package.schema_version,
@@ -3385,12 +3542,6 @@ mod tests {
                 .values()
                 .all(|payload| !payload.is_empty()));
 
-            let training_result = payload
-                .get_item("training_result")
-                .unwrap()
-                .unwrap()
-                .extract::<Py<TrainingResult>>()
-                .unwrap();
             let source_outcome_fingerprint = training_result
                 .bind(py)
                 .borrow()

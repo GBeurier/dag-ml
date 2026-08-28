@@ -575,6 +575,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_class::<training::TrainingResult>()?;
     module.add_class::<training::MethodsTerminalPredictionReceipt>()?;
+    module.add_class::<training::MethodsTerminalPredictionResult>()?;
     module.add_function(wrap_pyfunction!(training::execute_training_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         training::execute_methods_training_json,
@@ -704,6 +705,7 @@ fn contract_manifest() -> serde_json::Value {
             "run_cv_refit_predict_in_process",
             "TrainingResult",
             "MethodsTerminalPredictionReceipt",
+            "MethodsTerminalPredictionResult",
             "execute_training_json",
             "execute_methods_training_json",
             "execute_methods_cv_refit_terminal_predict_json",
@@ -1197,6 +1199,8 @@ mod tests {
                 "build_conformal_presentation_v1_json",
                 "run_cv_refit_predict_in_process",
                 "TrainingResult",
+                "MethodsTerminalPredictionReceipt",
+                "MethodsTerminalPredictionResult",
             ] {
                 assert!(
                     module.getattr(export).is_ok(),
