@@ -92,6 +92,10 @@ def main() -> None:
         raise SystemExit(
             "contract manifest is missing native Methods portable full-refit export"
         )
+    if "execute_methods_cv_refit_terminal_predict_json" not in manifest["python_exports"]:
+        raise SystemExit(
+            "contract manifest is missing strict native Methods terminal PREDICT export"
+        )
     if "execute_loaded_methods_portable_refit_replay_v3_json" not in manifest["python_exports"]:
         raise SystemExit(
             "contract manifest is missing native Methods Package V3 replay export"
@@ -118,6 +122,10 @@ def main() -> None:
         raise SystemExit(
             "contract manifest is missing native Methods portable full-refit capability"
         )
+    if "execute_methods_cv_refit_terminal_predict" not in manifest["capabilities"]:
+        raise SystemExit(
+            "contract manifest is missing strict native Methods terminal PREDICT capability"
+        )
     if "execute_loaded_methods_portable_refit_replay_v3" not in manifest["capabilities"]:
         raise SystemExit(
             "contract manifest is missing native Methods Package V3 replay capability"
@@ -126,6 +134,10 @@ def main() -> None:
         raise SystemExit("contract manifest is missing terminal PREDICT capability")
     if "run_cv_refit_predict_in_process" not in manifest["python_facade_exports"]:
         raise SystemExit("contract manifest is missing terminal PREDICT facade export")
+    if "execute_methods_cv_refit_terminal_predict" not in manifest["python_facade_exports"]:
+        raise SystemExit(
+            "contract manifest is missing strict Methods terminal PREDICT facade export"
+        )
     if (
         manifest["shared"]["fold_set_fixture_fingerprint"]
         != SHARED_FOLD_SET_FINGERPRINT

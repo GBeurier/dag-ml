@@ -9,33 +9,34 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard};
 
+#[cfg(feature = "methods-optimizer")]
+use dag_ml_core::{
+    build_portable_refit_package_v3, derive_portable_full_refit_target_plan,
+    execute_loaded_methods_portable_refit_replay_v3, execute_portable_full_refit,
+    ArtifactMaterializationRequest, ExecutionBundle, MethodsPlsDataset, MethodsPlsMatrix,
+    MethodsPortablePredictorReplayInput, MethodsPortableRefitReplayInputV3,
+    PortableFullRefitExecutionInput, PortableRefitPackageV3, PortableRefitPackageV3BuildInput,
+    PortableRefitRecipe, RuntimeArtifactStore, SampleId,
+};
 use dag_ml_core::{
     calibrate_attached_training_replay_with_derived_context, execute_attached_training_replay,
     execute_loaded_predictor_replay, execute_training, parse_typed_json, ArtifactId,
-    ArtifactLoadMode, AttachedTrainingReplayInput, BundleId,
-    ConformalCalibrationTruth, ConformalMultiTargetPolicy, ConformalSmallSamplePolicy,
-    DataBinding, DataMaterializationRequest, DataViewRequest,
-    EnvelopeAttestedRuntimeDataProvider, ExternalDataPlanEnvelope, FittedArtifactMode,
-    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LoadedPredictor,
-    LoadedPredictorReplayInput, MethodsPlsData, MethodsPlsDataRequest,
-    PortablePredictorPackage, RunId, RuntimeControllerRegistry, RuntimeDataProvider,
-    SampleRelationSet, TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome,
-    TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
-};
-#[cfg(feature = "methods-optimizer")]
-use dag_ml_core::{
-    MethodsPlsDataset, MethodsPlsMatrix, MethodsPortablePredictorReplayInput,
-    MethodsPortableRefitReplayInputV3,
-    PortableFullRefitExecutionInput, PortableRefitPackageV3,
-    PortableRefitPackageV3BuildInput, PortableRefitRecipe, SampleId,
-    build_portable_refit_package_v3, derive_portable_full_refit_target_plan,
-    execute_loaded_methods_portable_refit_replay_v3, execute_portable_full_refit,
+    ArtifactLoadMode, AttachedTrainingReplayInput, BundleId, ConformalCalibrationTruth,
+    ConformalMultiTargetPolicy, ConformalSmallSamplePolicy, DataBinding,
+    DataMaterializationRequest, DataViewRequest, EnvelopeAttestedRuntimeDataProvider,
+    ExternalDataPlanEnvelope, FittedArtifactMode, HandleKind, HandleRef, InMemoryArtifactStore,
+    InMemoryDataProvider, LoadedPredictor, LoadedPredictorReplayInput, MethodsPlsData,
+    MethodsPlsDataRequest, PortablePredictorPackage, RunId, RuntimeControllerRegistry,
+    RuntimeDataProvider, SampleRelationSet, TrainingExecutionInput, TrainingInfluenceManifest,
+    TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
 };
 use pyo3::prelude::*;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
 #[cfg(feature = "methods-optimizer")]
 use serde::Deserialize;
+use serde::Serialize;
+#[cfg(feature = "methods-optimizer")]
+use sha2::{Digest, Sha256};
 
 use crate::in_process::{
     build_runtime_controllers, build_runtime_controllers_with_artifact_callback,
@@ -58,6 +59,21 @@ struct MethodsTrainingInputJson {
     x: Vec<Vec<f64>>,
     #[serde(default)]
     y: Option<Vec<Vec<f64>>>,
+    target_names: Vec<String>,
+}
+
+/// Strict X-only payload for the closed Methods terminal-prediction facade.
+///
+/// Deliberately unlike [`MethodsTrainingInputJson`], this has no optional
+/// target field. `deny_unknown_fields` therefore makes an accidental `y`
+/// payload a boundary refusal instead of silently retaining labels in an
+/// inference operation.
+#[cfg(feature = "methods-optimizer")]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MethodsPredictInputJson {
+    sample_ids: Vec<String>,
+    x: Vec<Vec<f64>>,
     target_names: Vec<String>,
 }
 
@@ -151,7 +167,10 @@ impl RuntimeDataProvider for TrainingDataProvider {
         }
     }
 
-    fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<MethodsPlsData> {
+    fn methods_pls_data(
+        &self,
+        request: &MethodsPlsDataRequest,
+    ) -> dag_ml_core::Result<MethodsPlsData> {
         match self {
             Self::Host(provider) => provider.methods_pls_data(request),
             #[cfg(feature = "methods-optimizer")]
@@ -190,9 +209,9 @@ impl PyMethodsPlsTrainingProvider {
             )));
         }
 
-        let mut raw = InMemoryDataProvider::new(
-            dag_ml_core::ControllerId::new(PY_DATA_PROVIDER_CONTROLLER_ID)?,
-        );
+        let mut raw = InMemoryDataProvider::new(dag_ml_core::ControllerId::new(
+            PY_DATA_PROVIDER_CONTROLLER_ID,
+        )?);
         for envelope in envelopes.values().cloned() {
             raw.register_envelope(envelope)?;
         }
@@ -281,10 +300,14 @@ impl PyMethodsPlsTrainingProvider {
         })?;
         let fit_ids = request.fit_view.sample_ids.as_deref().ok_or_else(|| {
             dag_ml_core::DagMlError::RuntimeValidation(
-                "native Methods training fit view lacks scheduler-selected sample identities".to_string(),
+                "native Methods training fit view lacks scheduler-selected sample identities"
+                    .to_string(),
             )
         })?;
-        let requires_targets = matches!(request.phase, dag_ml_core::Phase::FitCv | dag_ml_core::Phase::Refit);
+        let requires_targets = matches!(
+            request.phase,
+            dag_ml_core::Phase::FitCv | dag_ml_core::Phase::Refit
+        );
         let prediction = match &request.prediction_view {
             Some(view) => Some(Self::dataset_for_view(
                 dataset,
@@ -337,7 +360,10 @@ impl RuntimeDataProvider for PyMethodsPlsTrainingProvider {
         self.data_for(request).map(|_| ())
     }
 
-    fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> dag_ml_core::Result<MethodsPlsData> {
+    fn methods_pls_data(
+        &self,
+        request: &MethodsPlsDataRequest,
+    ) -> dag_ml_core::Result<MethodsPlsData> {
         self.data_for(request)
     }
 }
@@ -576,10 +602,8 @@ impl TrainingResult {
             truth_json,
             "conformal calibration truth",
         )?;
-        let coverages = parse_strict_json::<Vec<f64>>(
-            coverages_json,
-            "conformal calibration coverages",
-        )?;
+        let coverages =
+            parse_strict_json::<Vec<f64>>(coverages_json, "conformal calibration coverages")?;
         let multi_target_policy = parse_strict_json::<ConformalMultiTargetPolicy>(
             multi_target_policy_json,
             "conformal multi-target policy",
@@ -617,6 +641,138 @@ impl TrainingResult {
                 "training result resource lock is poisoned".to_string(),
             ))
         })
+    }
+}
+
+/// Opaque, native-owned attestation for the strict Methods terminal PREDICT
+/// facade.
+///
+/// The class intentionally has no Python constructor and no writable fields.
+/// It is created only after native terminal execution has produced a closed,
+/// fingerprint-validated receipt.  Bindings may expose a read-only projection
+/// of its JSON, but must not turn it into an authority-bearing mutable dict.
+#[pyclass(module = "dag_ml._dag_ml", frozen)]
+pub struct MethodsTerminalPredictionReceipt {
+    json: String,
+    terminal_run_id: String,
+    receipt_fingerprint: String,
+}
+
+#[pymethods]
+impl MethodsTerminalPredictionReceipt {
+    /// Canonical closed receipt JSON. Consumers needing a mutable value must
+    /// explicitly create a non-attesting snapshot from this string.
+    fn json(&self) -> &str {
+        &self.json
+    }
+
+    /// Derived RunContext identity used exclusively for terminal PREDICT.
+    #[getter]
+    fn terminal_run_id(&self) -> &str {
+        &self.terminal_run_id
+    }
+
+    /// SHA-256 of the closed receipt content, excluding this field itself.
+    #[getter]
+    fn receipt_fingerprint(&self) -> &str {
+        &self.receipt_fingerprint
+    }
+
+    /// Return a mutable JSON snapshot for display or serialization only.
+    ///
+    /// This is intentionally not an attesting mapping: changing the returned
+    /// object cannot modify or rebind this native receipt.
+    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.import("json")?
+            .getattr("loads")?
+            .call1((&self.json,))
+            .map(|value| value.unbind())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MethodsTerminalPredictionReceipt(terminal_run_id={:?}, receipt_fingerprint={:?})",
+            self.terminal_run_id, self.receipt_fingerprint
+        )
+    }
+}
+
+/// Native-owned outcome of the strict Methods terminal facade.
+///
+/// This public type is deliberately a frozen PyO3 class rather than a Python
+/// convenience wrapper.  Its terminal receipt therefore remains tied to the
+/// native execution result; package and prediction getters create ordinary,
+/// non-attesting convenience views from their retained JSON snapshots.
+#[pyclass(module = "dag_ml._dag_ml", frozen)]
+pub struct MethodsTerminalPredictionResult {
+    training_result: Py<TrainingResult>,
+    portable_predictor_package_json: String,
+    terminal_prediction_json: String,
+    terminal_receipt: Py<MethodsTerminalPredictionReceipt>,
+}
+
+#[pymethods]
+impl MethodsTerminalPredictionResult {
+    /// Public DAG-ML training-result view retained by this terminal outcome.
+    ///
+    /// The native owning result remains stored inside this frozen terminal
+    /// result.  Each access creates the regular Python facade around that
+    /// exact native object, so callers receive the documented ``dag_ml``
+    /// surface without gaining a way to replace the terminal result's native
+    /// receipt or resources.
+    #[getter]
+    fn training_result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.import("dag_ml")?
+            .getattr("TrainingResult")?
+            .call1((self.training_result.clone_ref(py),))
+            .map(|value| value.unbind())
+    }
+
+    /// Ordinary Python Package V2 view. It is reconstructed from JSON on each
+    /// access and is not the terminal receipt's authority boundary.
+    #[getter]
+    fn portable_predictor_package(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.import("dag_ml")?
+            .getattr("PortablePredictorPackage")?
+            .call1((&self.portable_predictor_package_json,))
+            .map(|value| value.unbind())
+    }
+
+    /// Native Package V2 JSON retained by the terminal result.
+    #[getter]
+    fn portable_predictor_package_json(&self) -> &str {
+        &self.portable_predictor_package_json
+    }
+
+    /// Ordinary mutable prediction snapshot.  It is output data, not a
+    /// sealed receipt, so callers may transform it without affecting native
+    /// terminal attestation.
+    #[getter]
+    fn terminal_prediction(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.import("json")?
+            .getattr("loads")?
+            .call1((&self.terminal_prediction_json,))
+            .map(|value| value.unbind())
+    }
+
+    /// Native serialized terminal prediction for explicit snapshot handling.
+    #[getter]
+    fn terminal_prediction_json(&self) -> &str {
+        &self.terminal_prediction_json
+    }
+
+    /// Authoritative frozen native receipt for this exact terminal execution.
+    #[getter]
+    fn terminal_receipt(&self, py: Python<'_>) -> Py<MethodsTerminalPredictionReceipt> {
+        self.terminal_receipt.clone_ref(py)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let receipt = self.terminal_receipt.bind(py).borrow();
+        format!(
+            "MethodsTerminalPredictionResult(terminal_run_id={:?}, receipt_fingerprint={:?})",
+            receipt.terminal_run_id, receipt.receipt_fingerprint
+        )
     }
 }
 
@@ -820,7 +976,8 @@ pub fn execute_methods_training_json(
             "native Methods training influence manifest",
         )?;
         training_influence.validate().map_err(py_core_error)?;
-        let warnings = parse_strict_json::<Vec<String>>(warnings_json, "native Methods training warnings")?;
+        let warnings =
+            parse_strict_json::<Vec<String>>(warnings_json, "native Methods training warnings")?;
         let diagnostics = parse_strict_json::<BTreeMap<String, serde_json::Value>>(
             diagnostics_json,
             "native Methods training diagnostics",
@@ -854,8 +1011,12 @@ pub fn execute_methods_training_json(
             PyMethodsPlsTrainingProvider::new(bindings, envelopes, inputs)
                 .map_err(py_core_error)?,
         );
-        let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path)
-            .map_err(|error| py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string())))?;
+        let runtime =
+            dag_ml_core::MethodsRuntime::configure(methods_library_path).map_err(|error| {
+                py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+                    error.to_string(),
+                ))
+            })?;
         let mut controllers = RuntimeControllerRegistry::new();
         register_methods_training_controllers(&projection, runtime, &mut controllers)
             .map_err(py_core_error)?;
@@ -890,6 +1051,1140 @@ pub fn execute_methods_training_json(
             outcome,
             resources: Mutex::new(Some(resources)),
         })
+    }
+}
+
+/// Execute the bounded callback-free Methods CV -> REFIT -> terminal PREDICT
+/// facade.
+///
+/// This is intentionally *not* a convenience wrapper around
+/// `run_cv_refit_predict_in_process`: that generic API requires a host Python
+/// node callback.  Here the native Methods PLS controller owns every model
+/// invocation, and the final X-only cohort is consumed through the
+/// target-free, envelope-attested Methods provider.
+///
+/// Native CV necessarily computes an *ephemeral internal* OOF score to choose
+/// the one candidate before REFIT.  This facade never accepts, retains, or
+/// exposes an OOF lane: OOF-consuming graph edges, caches, reductions, and
+/// stacking contracts are rejected before libn4m is configured.
+///
+/// The return value is an object rather than JSON because it deliberately
+/// retains the owning [`TrainingResult`] alongside portable JSON values:
+/// `{training_result, portable_predictor_package_json,
+/// terminal_prediction_json, terminal_receipt}`.  The receipt is an opaque
+/// native object, not a mutable decoded JSON mapping.
+#[pyfunction]
+#[pyo3(signature = (
+    request_json,
+    data_envelopes_json,
+    relations_json,
+    training_influence_json,
+    methods_inputs_json,
+    predict_envelope_json,
+    predict_input_json,
+    methods_library_path,
+    outcome_id,
+    run_id,
+    bundle_id,
+    package_id,
+    terminal_selector_json,
+    warnings_json = "[]",
+    diagnostics_json = "{}"
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn execute_methods_cv_refit_terminal_predict_json(
+    py: Python<'_>,
+    request_json: &str,
+    data_envelopes_json: &str,
+    relations_json: &str,
+    training_influence_json: &str,
+    methods_inputs_json: &str,
+    predict_envelope_json: &str,
+    predict_input_json: &str,
+    methods_library_path: &str,
+    outcome_id: &str,
+    run_id: &str,
+    bundle_id: &str,
+    package_id: &str,
+    terminal_selector_json: &str,
+    warnings_json: &str,
+    diagnostics_json: &str,
+) -> PyResult<Py<MethodsTerminalPredictionResult>> {
+    #[cfg(not(feature = "methods-optimizer"))]
+    {
+        let _ = (
+            py,
+            request_json,
+            data_envelopes_json,
+            relations_json,
+            training_influence_json,
+            methods_inputs_json,
+            predict_envelope_json,
+            predict_input_json,
+            methods_library_path,
+            outcome_id,
+            run_id,
+            bundle_id,
+            package_id,
+            terminal_selector_json,
+            warnings_json,
+            diagnostics_json,
+        );
+        Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+            "strict Methods terminal prediction support is absent from this dag-ml binding; install a wheel rebuilt with the `methods-optimizer` feature".to_string(),
+        )))
+    }
+    #[cfg(feature = "methods-optimizer")]
+    {
+        // Validate every caller-controlled execution identity before parsing
+        // data or configuring libn4m.  The terminal RunId is deliberately
+        // derived and validated here as well: constructing it later would let
+        // an overlong but otherwise valid CV run id reach native execution.
+        let identity = prevalidate_strict_methods_terminal_identity(
+            outcome_id, run_id, bundle_id, package_id,
+        )?;
+        // All narrow-contract checks happen before the existing training entry
+        // can configure libn4m or execute FIT_CV.  In particular, a bad V2
+        // cohort or terminal port is never allowed to turn into partial CV.
+        let strict = parse_strict_methods_terminal_facade_inputs(
+            request_json,
+            data_envelopes_json,
+            relations_json,
+            training_influence_json,
+            methods_inputs_json,
+            predict_envelope_json,
+            predict_input_json,
+            terminal_selector_json,
+            warnings_json,
+            diagnostics_json,
+        )?;
+
+        let training_result = execute_methods_training_json(
+            py,
+            request_json,
+            data_envelopes_json,
+            relations_json,
+            training_influence_json,
+            methods_inputs_json,
+            methods_library_path,
+            &identity.outcome_id,
+            identity.run_id.as_str(),
+            identity.bundle_id.as_str(),
+            warnings_json,
+            diagnostics_json,
+        )?;
+        let package = training_result
+            .outcome
+            .to_portable_predictor_package(
+                &identity.package_id,
+                FittedArtifactMode::PortableRequired,
+                ArtifactLoadMode::NativePortable,
+            )
+            .map_err(py_core_error)?;
+        let terminal = execute_attached_methods_terminal_prediction(
+            &training_result,
+            &package,
+            &strict.predict_envelope,
+            strict.predict_dataset,
+            &strict.selector,
+            &identity.terminal_run_id,
+        )?;
+        let terminal_receipt = Py::new(
+            py,
+            MethodsTerminalPredictionReceipt::from_terminal(&terminal, &identity.terminal_run_id)?,
+        )?;
+        Py::new(
+            py,
+            MethodsTerminalPredictionResult {
+                training_result: Py::new(py, training_result)?,
+                portable_predictor_package_json: serialize_json(&package)?,
+                terminal_prediction_json: serialize_json(terminal.prediction())?,
+                terminal_receipt,
+            },
+        )
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+#[derive(Debug)]
+struct StrictMethodsTerminalFacadeInputs {
+    predict_envelope: ExternalDataPlanEnvelope,
+    predict_dataset: MethodsPlsDataset,
+    selector: dag_ml_core::TerminalPredictionSelector,
+}
+
+/// Caller-supplied identity material validated before any Methods runtime or
+/// native data path is constructed.
+#[cfg(feature = "methods-optimizer")]
+#[derive(Debug)]
+struct StrictMethodsTerminalIdentity {
+    outcome_id: String,
+    run_id: RunId,
+    bundle_id: BundleId,
+    package_id: String,
+    terminal_run_id: RunId,
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn prevalidate_strict_methods_terminal_identity(
+    outcome_id: &str,
+    run_id: &str,
+    bundle_id: &str,
+    package_id: &str,
+) -> PyResult<StrictMethodsTerminalIdentity> {
+    let run_id = RunId::new(run_id).map_err(py_core_error)?;
+    let bundle_id = BundleId::new(bundle_id).map_err(py_core_error)?;
+    validate_strict_methods_terminal_identifier("outcome_id", outcome_id).map_err(py_core_error)?;
+    validate_strict_methods_terminal_identifier("package_id", package_id).map_err(py_core_error)?;
+    let terminal_run_id =
+        RunId::new(format!("{run_id}:methods-terminal-predict")).map_err(py_core_error)?;
+    Ok(StrictMethodsTerminalIdentity {
+        outcome_id: outcome_id.to_string(),
+        run_id,
+        bundle_id,
+        package_id: package_id.to_string(),
+        terminal_run_id,
+    })
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn validate_strict_methods_terminal_identifier(
+    label: &str,
+    value: &str,
+) -> dag_ml_core::Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+    {
+        return Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+            "strict Methods terminal {label} must be a valid DAG-ML identifier"
+        )));
+    }
+    Ok(())
+}
+
+/// Closed wire contract for a strict Methods terminal receipt.
+///
+/// `dag-ml-core` deliberately keeps its terminal receipt as a one-way
+/// serialization type.  The Python boundary adds the terminal RunContext
+/// identity and a self-fingerprint, while retaining the core attestation
+/// fields verbatim.  The explicit shape plus `deny_unknown_fields` means a
+/// decoded receipt cannot silently acquire an un-attested field.
+#[cfg(feature = "methods-optimizer")]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StrictMethodsTerminalPredictionReceipt {
+    schema_version: u32,
+    terminal_run_id: RunId,
+    bundle_id: BundleId,
+    plan_id: String,
+    graph_fingerprint: String,
+    campaign_fingerprint: String,
+    controller_fingerprint: String,
+    selected_variant_id: dag_ml_core::VariantId,
+    terminal_node_id: dag_ml_core::NodeId,
+    terminal_port: String,
+    cohort_fingerprint: String,
+    refit_artifacts: Vec<dag_ml_core::RefitArtifactRecord>,
+    output_fingerprint: String,
+    receipt_fingerprint: String,
+}
+
+#[cfg(feature = "methods-optimizer")]
+#[derive(Serialize)]
+struct StrictMethodsTerminalReceiptFingerprintPayload<'a> {
+    schema_version: u32,
+    terminal_run_id: &'a RunId,
+    bundle_id: &'a BundleId,
+    plan_id: &'a str,
+    graph_fingerprint: &'a str,
+    campaign_fingerprint: &'a str,
+    controller_fingerprint: &'a str,
+    selected_variant_id: &'a dag_ml_core::VariantId,
+    terminal_node_id: &'a dag_ml_core::NodeId,
+    terminal_port: &'a str,
+    cohort_fingerprint: &'a str,
+    refit_artifacts: &'a [dag_ml_core::RefitArtifactRecord],
+    output_fingerprint: &'a str,
+}
+
+#[cfg(feature = "methods-optimizer")]
+impl StrictMethodsTerminalPredictionReceipt {
+    fn from_terminal_execution(
+        terminal: &dag_ml_core::TerminalPredictionExecution,
+        terminal_run_id: &RunId,
+    ) -> dag_ml_core::Result<Self> {
+        let core_receipt = terminal.receipt();
+        let mut receipt = Self {
+            schema_version: core_receipt.schema_version(),
+            terminal_run_id: terminal_run_id.clone(),
+            bundle_id: core_receipt.bundle_id().clone(),
+            plan_id: core_receipt.plan_id().to_string(),
+            graph_fingerprint: core_receipt.graph_fingerprint().to_string(),
+            campaign_fingerprint: core_receipt.campaign_fingerprint().to_string(),
+            controller_fingerprint: core_receipt.controller_fingerprint().to_string(),
+            selected_variant_id: core_receipt.selected_variant_id().clone(),
+            terminal_node_id: core_receipt.terminal_node_id().clone(),
+            terminal_port: core_receipt.terminal_port().to_string(),
+            cohort_fingerprint: core_receipt.cohort_fingerprint().to_string(),
+            refit_artifacts: core_receipt.refit_artifacts().to_vec(),
+            output_fingerprint: core_receipt.output_fingerprint().to_string(),
+            receipt_fingerprint: String::new(),
+        };
+        receipt.receipt_fingerprint = receipt.compute_fingerprint()?;
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    fn fingerprint_payload(&self) -> StrictMethodsTerminalReceiptFingerprintPayload<'_> {
+        StrictMethodsTerminalReceiptFingerprintPayload {
+            schema_version: self.schema_version,
+            terminal_run_id: &self.terminal_run_id,
+            bundle_id: &self.bundle_id,
+            plan_id: &self.plan_id,
+            graph_fingerprint: &self.graph_fingerprint,
+            campaign_fingerprint: &self.campaign_fingerprint,
+            controller_fingerprint: &self.controller_fingerprint,
+            selected_variant_id: &self.selected_variant_id,
+            terminal_node_id: &self.terminal_node_id,
+            terminal_port: &self.terminal_port,
+            cohort_fingerprint: &self.cohort_fingerprint,
+            refit_artifacts: &self.refit_artifacts,
+            output_fingerprint: &self.output_fingerprint,
+        }
+    }
+
+    fn compute_fingerprint(&self) -> dag_ml_core::Result<String> {
+        let canonical = serde_json::to_vec(&self.fingerprint_payload()).map_err(|error| {
+            dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "strict Methods terminal receipt cannot be canonically serialized: {error}"
+            ))
+        })?;
+        Ok(format!("{:x}", Sha256::digest(canonical)))
+    }
+
+    fn validate(&self) -> dag_ml_core::Result<()> {
+        if self.schema_version != dag_ml_core::TERMINAL_PREDICTION_RECEIPT_SCHEMA_VERSION {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "strict Methods terminal receipt schema V{} is unsupported",
+                self.schema_version
+            )));
+        }
+        validate_strict_methods_terminal_identifier("receipt plan_id", &self.plan_id)?;
+        if !self
+            .terminal_run_id
+            .as_str()
+            .ends_with(":methods-terminal-predict")
+        {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(
+                "strict Methods terminal receipt is not bound to a terminal RunId".to_string(),
+            ));
+        }
+        if self.terminal_port != "oof" {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(
+                "strict Methods terminal receipt selects a port other than oof".to_string(),
+            ));
+        }
+        for (label, value) in [
+            ("graph", self.graph_fingerprint.as_str()),
+            ("campaign", self.campaign_fingerprint.as_str()),
+            ("controller", self.controller_fingerprint.as_str()),
+            ("cohort", self.cohort_fingerprint.as_str()),
+            ("output", self.output_fingerprint.as_str()),
+            ("receipt", self.receipt_fingerprint.as_str()),
+        ] {
+            validate_strict_methods_terminal_fingerprint(label, value)?;
+        }
+        if self.refit_artifacts.len() != 1 {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(
+                "strict Methods terminal receipt must attest exactly one REFIT artifact"
+                    .to_string(),
+            ));
+        }
+        let refit = &self.refit_artifacts[0];
+        refit.validate()?;
+        if refit.node_id != self.terminal_node_id {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(
+                "strict Methods terminal receipt REFIT artifact does not belong to its terminal node"
+                    .to_string(),
+            ));
+        }
+        let expected = self.compute_fingerprint()?;
+        if self.receipt_fingerprint != expected {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(
+                "strict Methods terminal receipt fingerprint does not match its closed canonical content"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn validate_strict_methods_terminal_fingerprint(
+    label: &str,
+    value: &str,
+) -> dag_ml_core::Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+            "strict Methods terminal receipt {label} fingerprint must be 64 lowercase hexadecimal characters"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn parse_strict_methods_terminal_receipt_json(
+    json: &str,
+) -> dag_ml_core::Result<StrictMethodsTerminalPredictionReceipt> {
+    let original = serde_json::from_str::<serde_json::Value>(json).map_err(|error| {
+        dag_ml_core::DagMlError::RuntimeValidation(format!(
+            "strict Methods terminal receipt is not valid JSON: {error}"
+        ))
+    })?;
+    let receipt =
+        serde_json::from_value::<StrictMethodsTerminalPredictionReceipt>(original.clone())
+            .map_err(|error| {
+                dag_ml_core::DagMlError::RuntimeValidation(format!(
+                    "strict Methods terminal receipt violates its closed schema: {error}"
+                ))
+            })?;
+    receipt.validate()?;
+    let canonical = serde_json::to_value(&receipt).map_err(|error| {
+        dag_ml_core::DagMlError::RuntimeValidation(format!(
+            "strict Methods terminal receipt cannot be reserialized: {error}"
+        ))
+    })?;
+    if canonical != original {
+        return Err(dag_ml_core::DagMlError::RuntimeValidation(
+            "strict Methods terminal receipt contains non-canonical or unknown content".to_string(),
+        ));
+    }
+    Ok(receipt)
+}
+
+#[cfg(feature = "methods-optimizer")]
+impl MethodsTerminalPredictionReceipt {
+    fn from_terminal(
+        terminal: &dag_ml_core::TerminalPredictionExecution,
+        terminal_run_id: &RunId,
+    ) -> PyResult<Self> {
+        let receipt = StrictMethodsTerminalPredictionReceipt::from_terminal_execution(
+            terminal,
+            terminal_run_id,
+        )
+        .map_err(py_core_error)?;
+        let json = serialize_json(&receipt)?;
+        let receipt = parse_strict_methods_terminal_receipt_json(&json).map_err(py_core_error)?;
+        Ok(Self {
+            terminal_run_id: receipt.terminal_run_id.to_string(),
+            receipt_fingerprint: receipt.receipt_fingerprint,
+            json,
+        })
+    }
+}
+
+/// Parse and refuse every unsupported strict-facade feature before native
+/// model work.  This is deliberately structural rather than a best-effort
+/// "PLS-like" recognition: accepting a transform, variant generator, HPO
+/// descriptor, group relation, opaque metadata, or OOF dependency would
+/// weaken the bounded callback-free integration contract.
+#[cfg(feature = "methods-optimizer")]
+#[allow(clippy::too_many_arguments)]
+fn parse_strict_methods_terminal_facade_inputs(
+    request_json: &str,
+    data_envelopes_json: &str,
+    relations_json: &str,
+    training_influence_json: &str,
+    methods_inputs_json: &str,
+    predict_envelope_json: &str,
+    predict_input_json: &str,
+    terminal_selector_json: &str,
+    warnings_json: &str,
+    diagnostics_json: &str,
+) -> PyResult<StrictMethodsTerminalFacadeInputs> {
+    let request = TrainingRequest::from_json(request_json).map_err(py_core_error)?;
+    let projection = request.project().map_err(py_core_error)?;
+    let training_envelopes = parse_strict_json::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+        data_envelopes_json,
+        "strict Methods training data envelope map",
+    )?;
+    for envelope in training_envelopes.values() {
+        envelope.validate().map_err(py_core_error)?;
+    }
+    let relations = parse_strict_json::<SampleRelationSet>(
+        relations_json,
+        "strict Methods training sample relations",
+    )?;
+    relations.validate().map_err(py_core_error)?;
+    let training_influence = parse_strict_json::<TrainingInfluenceManifest>(
+        training_influence_json,
+        "strict Methods training influence manifest",
+    )?;
+    training_influence.validate().map_err(py_core_error)?;
+    let raw_training_inputs = parse_strict_json::<BTreeMap<String, MethodsTrainingInputJson>>(
+        methods_inputs_json,
+        "strict Methods training input map",
+    )?;
+    let training_inputs = raw_training_inputs
+        .into_iter()
+        .map(|(key, input)| Ok((key, methods_dataset_from_json(input, true)?)))
+        .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
+        .map_err(py_core_error)?;
+    let predict_envelope = parse_strict_json::<ExternalDataPlanEnvelope>(
+        predict_envelope_json,
+        "strict Methods terminal PREDICT envelope",
+    )?;
+    predict_envelope.validate().map_err(py_core_error)?;
+    let predict_input = parse_strict_json::<MethodsPredictInputJson>(
+        predict_input_json,
+        "strict Methods terminal PREDICT input",
+    )?;
+    let predict_dataset =
+        methods_predict_dataset_from_json(predict_input).map_err(py_core_error)?;
+    let selector = parse_strict_json::<dag_ml_core::TerminalPredictionSelector>(
+        terminal_selector_json,
+        "strict Methods terminal prediction selector",
+    )?;
+    let warnings =
+        parse_strict_json::<Vec<String>>(warnings_json, "strict Methods terminal warnings")?;
+    let diagnostics = parse_strict_json::<BTreeMap<String, serde_json::Value>>(
+        diagnostics_json,
+        "strict Methods terminal diagnostics",
+    )?;
+
+    validate_strict_methods_terminal_facade_contract(
+        &request,
+        &projection,
+        &training_envelopes,
+        &relations,
+        &training_influence,
+        &training_inputs,
+        &predict_envelope,
+        &predict_dataset,
+        &selector,
+        &warnings,
+        &diagnostics,
+    )
+    .map_err(py_core_error)?;
+    Ok(StrictMethodsTerminalFacadeInputs {
+        predict_envelope,
+        predict_dataset,
+        selector,
+    })
+}
+
+#[cfg(feature = "methods-optimizer")]
+#[allow(clippy::too_many_arguments)]
+fn validate_strict_methods_terminal_facade_contract(
+    request: &TrainingRequest,
+    projection: &dag_ml_core::TrainingContractProjection,
+    training_envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+    relations: &SampleRelationSet,
+    training_influence: &TrainingInfluenceManifest,
+    training_inputs: &BTreeMap<String, MethodsPlsDataset>,
+    predict_envelope: &ExternalDataPlanEnvelope,
+    predict_dataset: &MethodsPlsDataset,
+    selector: &dag_ml_core::TerminalPredictionSelector,
+    warnings: &[String],
+    diagnostics: &BTreeMap<String, serde_json::Value>,
+) -> dag_ml_core::Result<()> {
+    use dag_ml_core::{
+        AggregationMethod, AggregationWeights, ArtifactPolicy, AugmentationScope,
+        ControllerCapability, ControllerFitScope, CvArtifactRetention, DataRequestPartition,
+        EntityUnitLevel, EvaluationScope, FeatureSelectionScope, FittedArtifactMode,
+        GenerationStrategy, Granularity, Phase, PredictionCacheRetention, PredictionKind,
+        PredictionLevel, RefitStrategy, RngPolicy, SplitUnit, TrainingSchedulerKind,
+    };
+
+    let refuse = |detail: &str| {
+        dag_ml_core::DagMlError::RuntimeValidation(format!(
+            "strict Methods CV/REFIT/terminal-PREDICT facade refuses {detail}"
+        ))
+    };
+
+    if !warnings.is_empty() || !diagnostics.is_empty() {
+        return Err(refuse("warnings or diagnostics metadata"));
+    }
+
+    if !request.parameter_patches.is_empty()
+        || !request.patch_policies.is_empty()
+        || !request.influence_requirements.is_empty()
+        || !request.training_losses.is_empty()
+    {
+        return Err(refuse(
+            "parameter patches, training-loss roles, or controller influence extensions",
+        ));
+    }
+    if !request.graph.metadata.is_empty() || !request.campaign.metadata.is_empty() {
+        return Err(refuse("graph or campaign metadata"));
+    }
+    if request.graph.nodes.len() != 1 || !request.graph.edges.is_empty() {
+        return Err(refuse("transforms, joins, generators, or graph edges"));
+    }
+    let graph_node = &request.graph.nodes[0];
+    if graph_node.kind != dag_ml_core::NodeKind::Model
+        || !graph_node.metadata.is_empty()
+        || graph_node.seed_label.is_some()
+        || !operator_is_strict_pls(graph_node.operator.as_ref())
+    {
+        return Err(refuse(
+            "a non-PLS model node, node metadata, or a seeded model variant",
+        ));
+    }
+    if graph_node.ports.inputs.len() != 1
+        || graph_node.ports.inputs[0].name != "x"
+        || graph_node.ports.inputs[0].kind != dag_ml_core::PortKind::Data
+        || graph_node.ports.outputs.len() != 1
+        || graph_node.ports.outputs[0].name != "oof"
+        || graph_node.ports.outputs[0].kind != dag_ml_core::PortKind::Prediction
+    {
+        return Err(refuse("a model port layout other than x -> oof prediction"));
+    }
+    if graph_node.params.len() != 1
+        || graph_node
+            .params
+            .get("n_components")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| *value > 0)
+            .is_none()
+    {
+        return Err(refuse(
+            "PLS parameters other than one positive integer n_components",
+        ));
+    }
+
+    if projection.plan.node_plans.len() != 1
+        || projection.plan.controller_manifests.len() != 1
+        || projection.plan.variants.len() != 1
+        || projection.plan.graph_plan.topological_order != vec![graph_node.id.clone()]
+    {
+        return Err(refuse(
+            "multiple executable nodes, controller alternatives, or generated variants",
+        ));
+    }
+    let node_plan = projection
+        .plan
+        .node_plans
+        .get(&graph_node.id)
+        .ok_or_else(|| refuse("a graph node absent from its effective plan"))?;
+    if node_plan.controller_id.as_str() != dag_ml_core::METHODS_PLS_CONTROLLER_ID
+        || node_plan.kind != dag_ml_core::NodeKind::Model
+        || node_plan.fit_scope != ControllerFitScope::FoldTrain
+        || node_plan.rng_policy != RngPolicy::UsesCoreSeed
+        || node_plan.artifact_policy != ArtifactPolicy::Serializable
+        || node_plan.inner_cv.is_some()
+        || !node_plan.input_nodes.is_empty()
+        || !node_plan.output_nodes.is_empty()
+        || !node_plan.training_losses.is_empty()
+        || node_plan.params != graph_node.params
+    {
+        return Err(refuse(
+            "a non-native-PLS execution plan, nested CV, or graph dependency",
+        ));
+    }
+    let expected_phases = BTreeSet::from([Phase::FitCv, Phase::Refit, Phase::Predict]);
+    let expected_capabilities = BTreeSet::from([
+        ControllerCapability::Deterministic,
+        ControllerCapability::ThreadSafe,
+        ControllerCapability::ProcessSafe,
+        ControllerCapability::UsesCoreRng,
+        ControllerCapability::EmitsPredictions,
+        ControllerCapability::EmitsArtifacts,
+        ControllerCapability::Stateful,
+    ]);
+    if node_plan.supported_phases != expected_phases
+        || node_plan.controller_capabilities != expected_capabilities
+    {
+        return Err(refuse(
+            "a callback/GIL, OOF-consumption, HPO, generator, aggregation, or other non-PLS controller capability",
+        ));
+    }
+    if node_plan.data_bindings.len() != 1 || node_plan.shape_plan.is_none() {
+        return Err(refuse(
+            "multiple data bindings or a missing native PLS shape plan",
+        ));
+    }
+    let binding = &node_plan.data_bindings[0];
+    if binding.node_id != graph_node.id
+        || binding.input_name != "x"
+        || !binding.metadata.is_empty()
+        || binding.view_policy.fit_partition != DataRequestPartition::FoldTrain
+        || binding.view_policy.predict_partition != DataRequestPartition::FoldValidation
+        || binding.view_policy.include_augmented_train
+        || binding.view_policy.include_augmented_validation
+        || binding.view_policy.include_excluded
+        || !binding.view_policy.require_sample_ids
+        || !binding.view_policy.unsafe_flags.is_empty()
+    {
+        return Err(refuse(
+            "binding metadata, augmentation, or a non-explicit-ID data-view policy",
+        ));
+    }
+    let shape = node_plan.shape_plan.as_ref().expect("checked above");
+    if shape.input_granularity != Granularity::Sample
+        || shape.target_granularity != Granularity::Sample
+        || shape.fit_rows != dag_ml_core::FitBoundary::FoldTrain
+        || shape.predict_rows != dag_ml_core::FitBoundary::FoldValidation
+        || shape.augmentation_policy.sample_scope != AugmentationScope::None
+        || shape.augmentation_policy.feature_scope != AugmentationScope::None
+        || !shape.augmentation_policy.unsafe_flags.is_empty()
+        || shape.selection_policy.scope != FeatureSelectionScope::None
+        || shape.selection_policy.allow_schema_mismatch_on_join
+    {
+        return Err(refuse(
+            "shape transforms, augmentation, or feature selection",
+        ));
+    }
+
+    let campaign = &projection.plan.campaign;
+    if campaign.generation.strategy != GenerationStrategy::None
+        || !campaign.generation.dimensions.is_empty()
+        || !campaign.generation.constraints.is_empty()
+        || !matches!(campaign.generation.max_variants, None | Some(1))
+        || !campaign.branch_view_plans.is_empty()
+        || campaign.inner_cv.is_some()
+        || !campaign.metadata.is_empty()
+        || campaign.data_bindings.len() != 1
+        || campaign.shape_plans.len() != 1
+        || campaign.leakage_policy.split_unit != SplitUnit::Sample
+        || !campaign.leakage_policy.forbid_origin_cross_fold
+        || campaign
+            .leakage_policy
+            .allow_observation_split_with_shared_target
+        || campaign.leakage_policy.require_group_ids
+        || !campaign.leakage_policy.unsafe_flags.is_empty()
+        || campaign.aggregation_policy.aggregation_level != PredictionLevel::Sample
+        || campaign.aggregation_policy.selection_metric_level != PredictionLevel::Sample
+        || campaign.aggregation_policy.method != AggregationMethod::Mean
+        || campaign.aggregation_policy.weights != AggregationWeights::None
+        || campaign.aggregation_policy.custom_controller.is_some()
+    {
+        return Err(refuse(
+            "generators, HPO, branch views, groups, metadata, or non-sample aggregation",
+        ));
+    }
+    let split = campaign
+        .split_invocation
+        .as_ref()
+        .ok_or_else(|| refuse("a missing explicit KFold invocation"))?;
+    let fold_set = split
+        .fold_set
+        .as_ref()
+        .ok_or_else(|| refuse("a missing explicit KFold fold set"))?;
+    if split.controller_id.is_some()
+        || split.leakage_policy.split_unit != SplitUnit::Sample
+        || !split.leakage_policy.forbid_origin_cross_fold
+        || split
+            .leakage_policy
+            .allow_observation_split_with_shared_target
+        || split.leakage_policy.require_group_ids
+        || !split.leakage_policy.unsafe_flags.is_empty()
+        || split.params.get("kind").and_then(serde_json::Value::as_str) != Some("kfold")
+        || split
+            .params
+            .get("shuffle")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        || split
+            .params
+            .get("n_splits")
+            .and_then(serde_json::Value::as_u64)
+            != Some(fold_set.folds.len() as u64)
+        || split.params.len() != 3
+        || !fold_set.sample_groups.is_empty()
+        || fold_set.partition_mode != dag_ml_core::FoldPartitionMode::Partition
+        || fold_set.folds.iter().any(|fold| !fold.metadata.is_empty())
+    {
+        return Err(refuse(
+            "a non-KFold/no-shuffle split, groups, or fold metadata",
+        ));
+    }
+
+    if !request.options.refit
+        || request.options.refit_strategy != Some(RefitStrategy::RefitOne)
+        || request.options.outputs.len() != 1
+        // CV still computes its own ephemeral OOF scores.  This excludes any
+        // caller-supplied, retained, reduced, or stack-consumed OOF lane while
+        // requiring the native runtime's one supported selection scope.
+        || request.options.selection.required_metric_level != Some(PredictionLevel::Sample)
+        || request.options.selection.evaluation_scope != Some(EvaluationScope::Oof)
+        || !request.options.selection.require_finite
+        || request.options.selection.stacking_fit_contract.is_some()
+        || request.options.selection.refit_slot_plan.is_some()
+        || request.options.selection.reduction_id.is_some()
+        || request.options.scheduler.kind != TrainingSchedulerKind::Sequential
+        || request.options.scheduler.backend.is_some()
+        || request.options.scheduler.workers != 1
+        || !request.options.resources.gpu_devices.is_empty()
+        || request.options.artifacts.cv_artifacts != CvArtifactRetention::Discard
+        || request.options.artifacts.prediction_caches != PredictionCacheRetention::Discard
+        || request.options.artifacts.fitted_artifacts != FittedArtifactMode::PortableRequired
+    {
+        return Err(refuse(
+            "non-refit-one options, non-internal-OOF selection, scheduler extensions, GPU resources, or retained OOF caches",
+        ));
+    }
+    let output = projection
+        .outputs
+        .first()
+        .ok_or_else(|| refuse("a missing output"))?;
+    if selector.node_id != graph_node.id
+        || selector.port != "oof"
+        || output.node_id != graph_node.id
+        || output.port_name != "oof"
+        || output.prediction_level != PredictionLevel::Sample
+        || output.unit_level != Some(EntityUnitLevel::PhysicalSample)
+        || output.prediction_kind != PredictionKind::RegressionPoint
+        || output.target_names.len() != 1
+        || output.target_units.len() != 1
+        || output.class_labels != vec![Vec::<String>::new()]
+        || output.target_space != "raw"
+    {
+        return Err(refuse(
+            "a terminal port other than model.oof or a non-sample numeric single-target output",
+        ));
+    }
+    if request.options.selection_output_id != output.output_id {
+        return Err(refuse(
+            "a selection output different from the terminal PLS output",
+        ));
+    }
+
+    let binding_key =
+        dag_ml_core::data_binding_requirement_key(&binding.node_id, &binding.input_name);
+    if training_envelopes.len() != 1 || training_inputs.len() != 1 {
+        return Err(refuse("more than one raw training array binding"));
+    }
+    let training_envelope = training_envelopes
+        .get(&binding_key)
+        .ok_or_else(|| refuse("a training envelope that does not exactly cover model.x"))?;
+    let training_dataset = training_inputs
+        .get(&binding_key)
+        .ok_or_else(|| refuse("a training raw-array map that does not exactly cover model.x"))?;
+    if training_envelope.schema_version
+        != dag_ml_core::EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V1
+        || training_envelope.predict_cohort.is_some()
+        || training_envelope.coordinator_relations.as_ref() != Some(relations)
+        || training_dataset.sample_ids != fold_set.sample_ids
+        || training_dataset.target_names != output.target_names
+        || training_dataset
+            .y
+            .as_ref()
+            .is_none_or(|target| target.cols != 1)
+    {
+        return Err(refuse("a non-V1 target-bound raw training cohort, non-explicit training IDs, or multiple targets"));
+    }
+    if training_dataset.x.cols != predict_dataset.x.cols {
+        return Err(refuse(
+            "train/PREDICT X feature-width compatibility before native execution",
+        ));
+    }
+    dag_ml_core::validate_data_binding_envelope(binding, training_envelope)?;
+    training_influence.validate_for_projection(projection, request, relations)?;
+    let strict_raw_relation = |record: &dag_ml_core::SampleRelation| {
+        record.unit_level == EntityUnitLevel::Observation
+            && record.unit_id.is_none()
+            && record.source_id.is_none()
+            && record.rep_id.is_none()
+            && record.target_id.is_none()
+            && record.group_id.is_none()
+            && record.origin_sample_id.is_none()
+            && record.derived_unit_id.is_none()
+            && record.component_observation_ids.is_empty()
+            && record.sample_influence_weight.is_none()
+            && record.quality_flag.is_none()
+            && !record.is_augmented
+            && !record.excluded
+            && record.metadata.is_empty()
+            && record.tags.is_empty()
+    };
+    let relation_sample_ids = relations
+        .records
+        .iter()
+        .map(|record| record.sample_id.clone())
+        .collect::<BTreeSet<_>>();
+    if relations.records.len() != fold_set.sample_ids.len()
+        || relation_sample_ids != fold_set.sample_ids.iter().cloned().collect()
+        || relations.records.iter().any(|record| !strict_raw_relation(record))
+        || training_influence
+        .entries
+        .iter()
+        .any(|entry| !entry.group_ids.is_empty() || !entry.origin_sample_ids.is_empty())
+    {
+        return Err(refuse(
+            "non-raw relations, groups, metadata, augmentation, exclusions, or weighted training influence",
+        ));
+    }
+
+    let cohort = dag_ml_core::require_terminal_predict_cohort(predict_envelope)?;
+    if cohort.role != dag_ml_core::PredictCohortRole::Inference
+        || cohort.target_content_fingerprint.is_some()
+        || predict_envelope.target_content_fingerprint.is_some()
+        || predict_envelope.coordinator_relations.as_ref() != Some(relations)
+        || cohort.target_names != output.target_names
+        || predict_dataset.target_names != output.target_names
+        || predict_dataset.sample_ids != cohort.physical_sample_ids
+        || predict_dataset.y.is_some()
+    {
+        return Err(refuse("a target-bearing or non-inference PREDICT cohort, non-matching IDs, or multiple targets"));
+    }
+    if cohort.origin_sample_ids != cohort.physical_sample_ids
+        || cohort.relations.records.len() != cohort.physical_sample_ids.len()
+        || cohort
+            .relations
+            .records
+            .iter()
+            .any(|record| !strict_raw_relation(record))
+    {
+        return Err(refuse(
+            "PREDICT cohort relation metadata, groups, origins, or augmented rows",
+        ));
+    }
+    let actual_predict_fingerprint =
+        dag_ml_core::methods_pls_predict_feature_content_fingerprint(&predict_dataset.x)?;
+    if predict_envelope.data_content_fingerprint.as_deref()
+        != Some(actual_predict_fingerprint.as_str())
+        || cohort.data_content_fingerprint != actual_predict_fingerprint
+    {
+        return Err(refuse(
+            "a PREDICT raw-array content fingerprint that is not exact",
+        ));
+    }
+
+    dag_ml_core::validate_terminal_prediction_preflight(
+        &projection.plan,
+        predict_envelope,
+        selector,
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn operator_is_strict_pls(operator: Option<&serde_json::Value>) -> bool {
+    let Some(operator) = operator else {
+        return false;
+    };
+    let label = operator.as_str().map(str::to_string).or_else(|| {
+        operator
+            .as_object()
+            .and_then(|value| value.get("type").or_else(|| value.get("class")))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    });
+    matches!(label.as_deref(), Some("PLS") | Some("PLSRegression"))
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn methods_predict_dataset_from_json(
+    input: MethodsPredictInputJson,
+) -> dag_ml_core::Result<MethodsPlsDataset> {
+    methods_dataset_from_json(
+        MethodsTrainingInputJson {
+            sample_ids: input.sample_ids,
+            x: input.x,
+            y: None,
+            target_names: input.target_names,
+        },
+        false,
+    )
+}
+
+/// Reuse the live native controller registry retained by [`TrainingResult`].
+/// No model, node, or artifact callback crosses Python here: the Package V2's
+/// captured N4MM bytes are hydrated into an invocation-local native handle
+/// before `execute_terminal_prediction` invokes the native controller.
+#[cfg(feature = "methods-optimizer")]
+fn execute_attached_methods_terminal_prediction(
+    training_result: &TrainingResult,
+    package: &PortablePredictorPackage,
+    predict_envelope: &ExternalDataPlanEnvelope,
+    predict_dataset: MethodsPlsDataset,
+    selector: &dag_ml_core::TerminalPredictionSelector,
+    terminal_run_id: &RunId,
+) -> PyResult<dag_ml_core::TerminalPredictionExecution> {
+    let bindings = package
+        .effective_plan
+        .node_plans
+        .values()
+        .flat_map(|node_plan| node_plan.data_bindings.iter().cloned())
+        .collect::<Vec<_>>();
+    let [binding] = bindings.as_slice() else {
+        return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+            "strict Methods terminal PREDICT requires exactly one effective data binding"
+                .to_string(),
+        )));
+    };
+    let binding_key =
+        dag_ml_core::data_binding_requirement_key(&binding.node_id, &binding.input_name);
+    let data_content_fingerprint =
+        dag_ml_core::methods_pls_predict_feature_content_fingerprint(&predict_dataset.x)
+            .map_err(py_core_error)?;
+    let provider = dag_ml_core::MethodsPlsPredictDataProvider::new(
+        provider_controller_id().map_err(py_core_error)?,
+        bindings,
+        BTreeMap::from([(binding_key.clone(), predict_envelope.clone())]),
+        BTreeMap::from([(
+            binding_key,
+            dag_ml_core::MethodsPlsPredictInput {
+                data_content_profile: dag_ml_core::METHODS_PLS_PREDICT_CONTENT_PROFILE.to_string(),
+                data_content_fingerprint,
+                dataset: predict_dataset,
+            },
+        )]),
+    )
+    .map_err(py_core_error)?;
+    let mut context = dag_ml_core::RunContext::new(
+        terminal_run_id.clone(),
+        package.effective_plan.campaign.root_seed,
+    );
+
+    let guard = training_result.lock_resources()?;
+    let Some(resources) = guard.as_ref() else {
+        return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+            "strict Methods terminal PREDICT requires an attached TrainingResult".to_string(),
+        )));
+    };
+    match &resources.data_provider {
+        TrainingDataProvider::Methods(_) => {}
+        TrainingDataProvider::Host(_) => {
+            return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+                "strict Methods terminal PREDICT requires a native Methods TrainingResult"
+                    .to_string(),
+            )));
+        }
+    }
+    let artifact_store = MethodsBundlePayloadArtifactStore::new(
+        &package.execution_bundle,
+        &resources.controllers,
+    );
+    let execution = dag_ml_core::execute_terminal_prediction(
+        dag_ml_core::TerminalPredictionReplay {
+            plan: &package.effective_plan,
+            bundle: &package.execution_bundle,
+            envelope: predict_envelope,
+            selector,
+            controllers: &resources.controllers,
+            data_provider: &provider,
+            artifact_store: &artifact_store,
+        },
+        &mut context,
+    );
+    finish_methods_bundle_payload_terminal(execution, &artifact_store).map_err(py_core_error)
+}
+
+/// Native-only adapter for the terminal replay.  `TrainingResources` still
+/// owns ordinary in-memory REFIT handles for generic attached replay, but a
+/// portable Methods PREDICT must never consume those handles.  It instead
+/// hydrates the exact N4MM bytes captured in the Package V2 bundle into a
+/// fresh, one-shot handle owned by the registered native controller.
+#[cfg(feature = "methods-optimizer")]
+struct MethodsBundlePayloadArtifactStore<'a> {
+    bundle: &'a ExecutionBundle,
+    controllers: &'a RuntimeControllerRegistry,
+    hydrated_handles: Mutex<Vec<(dag_ml_core::ControllerId, HandleRef)>>,
+}
+
+#[cfg(feature = "methods-optimizer")]
+impl<'a> MethodsBundlePayloadArtifactStore<'a> {
+    fn new(
+        bundle: &'a ExecutionBundle,
+        controllers: &'a RuntimeControllerRegistry,
+    ) -> Self {
+        Self {
+            bundle,
+            controllers,
+            hydrated_handles: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn release_hydrated_handles(&self) -> dag_ml_core::Result<()> {
+        let handles = {
+            let mut handles = self.hydrated_handles.lock().map_err(|_| {
+                dag_ml_core::DagMlError::RuntimeValidation(
+                    "strict Methods terminal hydrated-handle registry lock poisoned".to_string(),
+                )
+            })?;
+            std::mem::take(&mut *handles)
+        };
+        let mut failures = Vec::new();
+        for (controller_id, handle) in handles.into_iter().rev() {
+            let release = self
+                .controllers
+                .get(&controller_id)
+                .ok_or_else(|| {
+                    dag_ml_core::DagMlError::RuntimeValidation(format!(
+                        "strict Methods terminal hydrated artifact owner `{controller_id}` is no longer registered"
+                    ))
+                })
+                .and_then(|controller| controller.release_hydrated_artifact_payload(&handle));
+            if let Err(error) = release {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "strict Methods terminal failed to release hydrated artifact handles: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+impl RuntimeArtifactStore for MethodsBundlePayloadArtifactStore<'_> {
+    fn materialize(
+        &self,
+        request: &ArtifactMaterializationRequest,
+    ) -> dag_ml_core::Result<HandleRef> {
+        let Some(payload) = self.bundle.raw_artifact_payloads.get(&request.artifact.id) else {
+            return Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "strict Methods terminal Package V2 bundle `{}` has no raw N4MM payload for refit artifact `{}`",
+                self.bundle.bundle_id, request.artifact.id
+            )));
+        };
+        let controller = self.controllers.get(&request.controller_id).ok_or_else(|| {
+            dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "strict Methods terminal bundle `{}` has no registered controller `{}` to hydrate raw artifact `{}`",
+                self.bundle.bundle_id, request.controller_id, request.artifact.id
+            ))
+        })?;
+        let handle = controller.hydrate_artifact_payload(request, payload)?;
+        self.hydrated_handles
+            .lock()
+            .map_err(|_| {
+                dag_ml_core::DagMlError::RuntimeValidation(
+                    "strict Methods terminal hydrated-handle registry lock poisoned".to_string(),
+                )
+            })?
+            .push((request.controller_id.clone(), handle.clone()));
+        Ok(handle)
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn finish_methods_bundle_payload_terminal<T>(
+    execution: dag_ml_core::Result<T>,
+    artifact_store: &MethodsBundlePayloadArtifactStore<'_>,
+) -> dag_ml_core::Result<T> {
+    let cleanup = artifact_store.release_hydrated_handles();
+    match (execution, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(error), Err(cleanup_error)) => {
+            Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "{error}; strict Methods terminal hydration cleanup also failed: {cleanup_error}"
+            )))
+        }
     }
 }
 
@@ -960,7 +2255,8 @@ pub fn execute_methods_portable_full_refit_json(
             PortablePredictorPackage::from_json(source_package_json).map_err(py_core_error)?;
         let recipe = PortableRefitRecipe::derive_from_package(&source_package, recipe_id)
             .map_err(py_core_error)?;
-        let target_request = TrainingRequest::from_json(target_request_json).map_err(py_core_error)?;
+        let target_request =
+            TrainingRequest::from_json(target_request_json).map_err(py_core_error)?;
         let projection = target_request.project().map_err(py_core_error)?;
         let envelopes = parse_strict_json::<BTreeMap<String, ExternalDataPlanEnvelope>>(
             data_envelopes_json,
@@ -985,12 +2281,9 @@ pub fn execute_methods_portable_full_refit_json(
         // the fresh request contributes only its independently attested data
         // bindings/fold universe.  Core derives the exact combined plan before
         // any provider object is constructed.
-        let target_plan = derive_portable_full_refit_target_plan(
-            &recipe,
-            &source_package,
-            &target_request,
-        )
-        .map_err(py_core_error)?;
+        let target_plan =
+            derive_portable_full_refit_target_plan(&recipe, &source_package, &target_request)
+                .map_err(py_core_error)?;
         let bindings = target_plan
             .node_plans
             .values()
@@ -1019,12 +2312,17 @@ pub fn execute_methods_portable_full_refit_json(
             PyMethodsPlsTrainingProvider::new(bindings, envelopes, inputs)
                 .map_err(py_core_error)?,
         );
-        let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path).map_err(|error| {
-            py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string()))
-        })?;
+        let runtime =
+            dag_ml_core::MethodsRuntime::configure(methods_library_path).map_err(|error| {
+                py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+                    error.to_string(),
+                ))
+            })?;
         let mut controllers = RuntimeControllerRegistry::new();
         controllers
-            .register(Box::new(dag_ml_core::MethodsPlsController::new(runtime.clone())))
+            .register(Box::new(dag_ml_core::MethodsPlsController::new(
+                runtime.clone(),
+            )))
             .map_err(py_core_error)?;
         controllers
             .register(Box::new(dag_ml_core::MethodsRidgeController::new(runtime)))
@@ -1077,8 +2375,11 @@ fn register_methods_training_controllers(
     runtime: dag_ml_core::MethodsRuntime,
     controllers: &mut RuntimeControllerRegistry,
 ) -> dag_ml_core::Result<()> {
-    let Some(hpo_controller_id) = methods_hpo_controller_id(&projection.plan.campaign.metadata)? else {
-        controllers.register(Box::new(dag_ml_core::MethodsPlsController::new(runtime.clone())))?;
+    let Some(hpo_controller_id) = methods_hpo_controller_id(&projection.plan.campaign.metadata)?
+    else {
+        controllers.register(Box::new(dag_ml_core::MethodsPlsController::new(
+            runtime.clone(),
+        )))?;
         controllers.register(Box::new(dag_ml_core::MethodsRidgeController::new(runtime)))?;
         return Ok(());
     };
@@ -1132,17 +2433,22 @@ fn methods_dataset_from_json(
     input: MethodsTrainingInputJson,
     require_targets: bool,
 ) -> dag_ml_core::Result<MethodsPlsDataset> {
-    let rows_to_matrix = |rows: Vec<Vec<f64>>, label: &str| -> dag_ml_core::Result<MethodsPlsMatrix> {
-        let row_count = rows.len();
-        let columns = rows.first().map(Vec::len).unwrap_or(0);
-        if row_count == 0 || columns == 0 || rows.iter().any(|row| row.len() != columns) {
-            return Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
-                "native Methods training input `{label}` is not a non-empty rectangular matrix"
-            )));
-        }
-        let values = rows.into_iter().flatten().collect::<Vec<_>>();
-        Ok(MethodsPlsMatrix { values, rows: row_count, cols: columns })
-    };
+    let rows_to_matrix =
+        |rows: Vec<Vec<f64>>, label: &str| -> dag_ml_core::Result<MethodsPlsMatrix> {
+            let row_count = rows.len();
+            let columns = rows.first().map(Vec::len).unwrap_or(0);
+            if row_count == 0 || columns == 0 || rows.iter().any(|row| row.len() != columns) {
+                return Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+                    "native Methods training input `{label}` is not a non-empty rectangular matrix"
+                )));
+            }
+            let values = rows.into_iter().flatten().collect::<Vec<_>>();
+            Ok(MethodsPlsMatrix {
+                values,
+                rows: row_count,
+                cols: columns,
+            })
+        };
     let sample_ids = input
         .sample_ids
         .into_iter()
@@ -1151,10 +2457,7 @@ fn methods_dataset_from_json(
     let dataset = MethodsPlsDataset {
         sample_ids,
         x: rows_to_matrix(input.x, "x")?,
-        y: input
-            .y
-            .map(|rows| rows_to_matrix(rows, "y"))
-            .transpose()?,
+        y: input.y.map(|rows| rows_to_matrix(rows, "y")).transpose()?,
         target_names: input.target_names,
     };
     dataset.validate("native Methods input", require_targets)?;
@@ -1229,9 +2532,14 @@ pub fn execute_loaded_methods_predictor_replay_json(
             .map(|(key, input)| Ok((key, methods_dataset_from_json(input, false)?)))
             .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
             .map_err(py_core_error)?;
-        let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path)
-            .map_err(|error| py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string())))?;
-        let warnings = parse_strict_json::<Vec<String>>(warnings_json, "native Methods replay warnings")?;
+        let runtime =
+            dag_ml_core::MethodsRuntime::configure(methods_library_path).map_err(|error| {
+                py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+                    error.to_string(),
+                ))
+            })?;
+        let warnings =
+            parse_strict_json::<Vec<String>>(warnings_json, "native Methods replay warnings")?;
         let diagnostics = parse_strict_json::<BTreeMap<String, serde_json::Value>>(
             diagnostics_json,
             "native Methods replay diagnostics",
@@ -1242,15 +2550,15 @@ pub fn execute_loaded_methods_predictor_replay_json(
             .detach(move || {
                 dag_ml_core::execute_loaded_methods_predictor_replay(
                     MethodsPortablePredictorReplayInput {
-                    package: &package,
-                    request: &request,
-                    data_envelopes: &envelopes,
-                    methods_inputs: &inputs,
-                    runtime,
-                    outcome_id,
-                    run_id,
-                    warnings,
-                    diagnostics,
+                        package: &package,
+                        request: &request,
+                        data_envelopes: &envelopes,
+                        methods_inputs: &inputs,
+                        runtime,
+                        outcome_id,
+                        run_id,
+                        warnings,
+                        diagnostics,
                     },
                 )
             })
@@ -1331,8 +2639,12 @@ pub fn execute_loaded_methods_portable_refit_replay_v3_json(
             .map(|(key, input)| Ok((key, methods_dataset_from_json(input, false)?)))
             .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
             .map_err(py_core_error)?;
-        let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path)
-            .map_err(|error| py_core_error(dag_ml_core::DagMlError::RuntimeValidation(error.to_string())))?;
+        let runtime =
+            dag_ml_core::MethodsRuntime::configure(methods_library_path).map_err(|error| {
+                py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+                    error.to_string(),
+                ))
+            })?;
         let warnings = parse_strict_json::<Vec<String>>(
             warnings_json,
             "native Methods V3 refit replay warnings",
@@ -1554,6 +2866,14 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    #[cfg(feature = "methods-optimizer")]
+    use dag_ml_core::{
+        methods_pls_predict_feature_content_fingerprint, MethodsPlsDataset, MethodsPlsMatrix,
+        NodeId, PortablePredictorPackage, PredictCohort, PredictCohortRole,
+        TerminalPredictionSelector, TrainingReplayRequest,
+        EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2, PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION,
+        TRAINING_REPLAY_REQUEST_SCHEMA_VERSION,
+    };
     use dag_ml_core::{
         ArtifactId, ArtifactRef, ControllerCapability, ControllerFitScope, CvArtifactRetention,
         DataBinding, EntityUnitLevel, EvaluationScope, ExternalDataPlanEnvelope,
@@ -1684,6 +3004,661 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("absent from its attested input"));
+    }
+
+    #[cfg(not(feature = "methods-optimizer"))]
+    #[test]
+    fn strict_methods_terminal_facade_fails_closed_without_native_support() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = execute_methods_cv_refit_terminal_predict_json(
+                py,
+                "{}",
+                "{}",
+                "{}",
+                "{}",
+                "{}",
+                "{}",
+                "{}",
+                "/missing/libn4m.so",
+                "outcome:strict.methods",
+                "run:strict.methods",
+                "bundle:strict.methods",
+                "package:strict.methods",
+                "{}",
+                "[]",
+                "{}",
+            )
+            .expect_err("a non-Methods build must not fall back to a Python callback path");
+            assert!(error
+                .to_string()
+                .contains("strict Methods terminal prediction support is absent"));
+        });
+    }
+
+    #[test]
+    fn strict_methods_terminal_public_native_types_reject_object_new_and_rebinding() {
+        Python::initialize();
+        Python::attach(|py| {
+            let object = py.import("builtins").unwrap().getattr("object").unwrap();
+            let object_new = object.getattr("__new__").unwrap();
+            assert!(
+                object_new
+                    .call1((py.get_type::<MethodsTerminalPredictionReceipt>(),))
+                    .is_err(),
+                "object.__new__ must not construct a public terminal receipt"
+            );
+            assert!(
+                object_new
+                    .call1((py.get_type::<MethodsTerminalPredictionResult>(),))
+                    .is_err(),
+                "object.__new__ must not construct a public terminal result"
+            );
+
+            let receipt = Py::new(
+                py,
+                MethodsTerminalPredictionReceipt {
+                    json: r#"{"schema_version":1}"#.to_string(),
+                    terminal_run_id: "run:strict.methods:methods-terminal-predict".to_string(),
+                    receipt_fingerprint: "f".repeat(64),
+                },
+            )
+            .unwrap();
+            assert!(
+                object
+                    .getattr("__setattr__")
+                    .unwrap()
+                    .call1((
+                        receipt.bind(py),
+                        "terminal_run_id",
+                        "run:forged:methods-terminal-predict",
+                    ))
+                    .is_err(),
+                "object.__setattr__ must not rebind a public terminal receipt"
+            );
+        });
+    }
+
+    #[cfg(feature = "methods-optimizer")]
+    #[test]
+    fn strict_methods_terminal_preflight_rejects_v2_ids_port_and_labels_before_runtime() {
+        let fixture = strict_methods_terminal_fixture();
+        Python::initialize();
+        Python::attach(|_| {
+            parse_strict_methods_terminal_facade_inputs(
+                &fixture.request_json,
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+                &fixture.selector_json,
+                "[]",
+                "{}",
+            )
+            .expect("the bounded one-node PLS fixture preflights without libn4m");
+
+            let mut bad_ids: serde_json::Value =
+                serde_json::from_str(&fixture.predict_input_json).unwrap();
+            bad_ids["sample_ids"][0] = serde_json::json!("sample:substituted");
+            let error = parse_strict_methods_terminal_facade_inputs(
+                &fixture.request_json,
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &fixture.predict_envelope_json,
+                &serde_json::to_string(&bad_ids).unwrap(),
+                &fixture.selector_json,
+                "[]",
+                "{}",
+            )
+            .expect_err("PREDICT rows must carry the exact V2 cohort IDs");
+            assert!(error.to_string().contains("non-matching IDs"));
+
+            let error = parse_strict_methods_terminal_facade_inputs(
+                &fixture.request_json,
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+                r#"{"node_id":"model:base","port":"probability"}"#,
+                "[]",
+                "{}",
+            )
+            .expect_err("only the native PLS oof terminal port is accepted");
+            assert!(error.to_string().contains("terminal port"));
+
+            let mut v1: serde_json::Value =
+                serde_json::from_str(&fixture.predict_envelope_json).unwrap();
+            v1["schema_version"] = serde_json::json!(1);
+            v1.as_object_mut().unwrap().remove("predict_cohort");
+            let error = parse_strict_methods_terminal_facade_inputs(
+                &fixture.request_json,
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &serde_json::to_string(&v1).unwrap(),
+                &fixture.predict_input_json,
+                &fixture.selector_json,
+                "[]",
+                "{}",
+            )
+            .expect_err("terminal PREDICT requires the separately attested V2 cohort");
+            assert!(error
+                .to_string()
+                .contains("requires external data-plan envelope V2"));
+
+            let mut labels: serde_json::Value =
+                serde_json::from_str(&fixture.predict_input_json).unwrap();
+            labels["y"] = serde_json::json!([[1.0], [2.0]]);
+            let error = parse_strict_methods_terminal_facade_inputs(
+                &fixture.request_json,
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &fixture.predict_envelope_json,
+                &serde_json::to_string(&labels).unwrap(),
+                &fixture.selector_json,
+                "[]",
+                "{}",
+            )
+            .expect_err("the X-only boundary must reject a y payload");
+            assert!(error.to_string().contains("unknown field `y`"));
+
+            let error = parse_strict_methods_terminal_facade_inputs(
+                &fixture.request_json,
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+                &fixture.selector_json,
+                r#"["caller metadata is outside the strict facade"]"#,
+                "{}",
+            )
+            .expect_err("caller diagnostics must not widen the closed facade");
+            assert!(error.to_string().contains("warnings or diagnostics metadata"));
+
+            let mut external_oof: TrainingRequest =
+                serde_json::from_str(&fixture.request_json).unwrap();
+            external_oof.options.selection.stacking_fit_contract =
+                Some(dag_ml_core::StackingFitContract {
+                    meta_training_features: dag_ml_core::MetaTrainingFeatures::Oof,
+                    inference_features: dag_ml_core::InferenceFeatures::RefitBasePredictions,
+                    selection_protocol: dag_ml_core::SelectionProtocol::Nested,
+                    meta_row_domain: dag_ml_core::MetaRowDomain::Sample,
+                    final_reduction_id: None,
+                    unsafe_allow_reuse_oof: false,
+                });
+            external_oof.request_fingerprint = "0".repeat(64);
+            external_oof.request_fingerprint = external_oof.compute_fingerprint().unwrap();
+            let error = parse_strict_methods_terminal_facade_inputs(
+                &serde_json::to_string(&external_oof).unwrap(),
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+                &fixture.selector_json,
+                "[]",
+                "{}",
+            )
+            .expect_err("external OOF stacking requirements must not enter native CV");
+            assert!(error.to_string().contains("non-internal-OOF selection"));
+
+            let mut callback_capability: TrainingRequest =
+                serde_json::from_str(&fixture.request_json).unwrap();
+            callback_capability.controller_manifests[0]
+                .capabilities
+                .insert(ControllerCapability::NeedsPythonGil);
+            callback_capability.request_fingerprint = "0".repeat(64);
+            callback_capability.request_fingerprint =
+                callback_capability.compute_fingerprint().unwrap();
+            let error = parse_strict_methods_terminal_facade_inputs(
+                &serde_json::to_string(&callback_capability).unwrap(),
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+                &fixture.selector_json,
+                "[]",
+                "{}",
+            )
+            .expect_err("a callback/GIL controller capability must not enter native CV");
+            assert!(error.to_string().contains("callback/GIL"));
+
+            let mut cohort_metadata = fixture.predict_envelope.clone();
+            let cohort = cohort_metadata.predict_cohort.as_mut().unwrap();
+            cohort.relations.records[0]
+                .metadata
+                .insert("site".to_string(), serde_json::json!("lab-a"));
+            cohort.relation_fingerprint = cohort.relations.fingerprint().unwrap();
+            cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+            cohort_metadata.validate().unwrap();
+            let error = parse_strict_methods_terminal_facade_inputs(
+                &fixture.request_json,
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &serde_json::to_string(&cohort_metadata).unwrap(),
+                &fixture.predict_input_json,
+                &fixture.selector_json,
+                "[]",
+                "{}",
+            )
+            .expect_err("a valid V2 cohort must still reject metadata before native execution");
+            assert!(error.to_string().contains("PREDICT cohort relation metadata"));
+        });
+    }
+
+    #[cfg(feature = "methods-optimizer")]
+    #[test]
+    fn strict_methods_terminal_identity_and_width_refuse_before_native_runtime() {
+        let fixture = strict_methods_terminal_fixture();
+        let missing_library = "/strict-methods-sentinel/no-libn4m.so";
+        Python::initialize();
+        Python::attach(|py| {
+            let invoke = |outcome_id: &str,
+                          run_id: &str,
+                          bundle_id: &str,
+                          package_id: &str,
+                          predict_envelope_json: &str,
+                          predict_input_json: &str| {
+                execute_methods_cv_refit_terminal_predict_json(
+                    py,
+                    &fixture.request_json,
+                    &fixture.training_envelopes_json,
+                    &fixture.relations_json,
+                    &fixture.influence_json,
+                    &fixture.methods_inputs_json,
+                    predict_envelope_json,
+                    predict_input_json,
+                    missing_library,
+                    outcome_id,
+                    run_id,
+                    bundle_id,
+                    package_id,
+                    &fixture.selector_json,
+                    "[]",
+                    "{}",
+                )
+                .expect_err("hostile preflight input must stop before libn4m configuration")
+                .to_string()
+            };
+            let assert_no_native = |error: &str| {
+                assert!(
+                    !error.contains("libn4m") && !error.contains("strict-methods-sentinel"),
+                    "preflight must fail before native runtime configuration, got: {error}"
+                );
+            };
+
+            let error = invoke(
+                "outcome:strict.methods",
+                "run/invalid",
+                "bundle:strict.methods",
+                "package:strict.methods",
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+            );
+            assert!(error.contains("identifier"));
+            assert_no_native(&error);
+
+            let error = invoke(
+                "outcome:strict.methods",
+                "run:strict.methods",
+                "bundle/invalid",
+                "package:strict.methods",
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+            );
+            assert!(error.contains("identifier"));
+            assert_no_native(&error);
+
+            let error = invoke(
+                "outcome/invalid",
+                "run:strict.methods",
+                "bundle:strict.methods",
+                "package:strict.methods",
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+            );
+            assert!(error.contains("outcome_id"));
+            assert_no_native(&error);
+
+            let error = invoke(
+                "outcome:strict.methods",
+                "run:strict.methods",
+                "bundle:strict.methods",
+                "package/invalid",
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+            );
+            assert!(error.contains("package_id"));
+            assert_no_native(&error);
+
+            let derived_too_long_run_id = "r".repeat(128);
+            let error = invoke(
+                "outcome:strict.methods",
+                &derived_too_long_run_id,
+                "bundle:strict.methods",
+                "package:strict.methods",
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+            );
+            assert!(error.contains("longer than 128 bytes"));
+            assert_no_native(&error);
+
+            let mut wide_predict_input = fixture.predict_input.clone();
+            wide_predict_input["x"] = serde_json::json!([[5.0, 0.0, 9.0], [6.0, 1.0, 8.0]]);
+            let wide_matrix = MethodsPlsMatrix {
+                values: vec![5.0, 0.0, 9.0, 6.0, 1.0, 8.0],
+                rows: 2,
+                cols: 3,
+            };
+            let wide_fingerprint =
+                methods_pls_predict_feature_content_fingerprint(&wide_matrix).unwrap();
+            let mut wide_predict_envelope = fixture.predict_envelope.clone();
+            wide_predict_envelope.data_content_fingerprint = Some(wide_fingerprint.clone());
+            let cohort = wide_predict_envelope.predict_cohort.as_mut().unwrap();
+            cohort.data_content_fingerprint = wide_fingerprint;
+            cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+            wide_predict_envelope.validate().unwrap();
+            let error = invoke(
+                "outcome:strict.methods",
+                "run:strict.methods",
+                "bundle:strict.methods",
+                "package:strict.methods",
+                &serde_json::to_string(&wide_predict_envelope).unwrap(),
+                &serde_json::to_string(&wide_predict_input).unwrap(),
+            );
+            assert!(error.contains("feature-width compatibility"));
+            assert_no_native(&error);
+        });
+    }
+
+    #[cfg(feature = "methods-optimizer")]
+    #[test]
+    fn strict_methods_terminal_facade_reuses_refit_artifact_and_exports_replayable_v2() {
+        let library_path = match std::env::var_os("N4M_LIBRARY_PATH") {
+            Some(library_path) => library_path,
+            None if std::env::var_os("DAG_ML_REQUIRE_N4M_TEST").is_some() => {
+                panic!(
+                    "DAG_ML_REQUIRE_N4M_TEST=1 requires an explicit N4M_LIBRARY_PATH for the strict Methods terminal facade gate"
+                );
+            }
+            // Ordinary local feature builds retain the contract test but do
+            // not pretend to qualify native execution without a libn4m file.
+            None => return,
+        };
+        let fixture = strict_methods_terminal_fixture();
+        Python::initialize();
+        Python::attach(|py| {
+            let native_result = execute_methods_cv_refit_terminal_predict_json(
+                py,
+                &fixture.request_json,
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+                &library_path.to_string_lossy(),
+                "outcome:strict.methods",
+                "run:strict.methods",
+                "bundle:strict.methods",
+                "package:strict.methods",
+                &fixture.selector_json,
+                "[]",
+                "{}",
+            )
+            .expect("native PLS CV/REFIT/terminal-PREDICT succeeds without a Python callback");
+            let (terminal_prediction_json, sealed_receipt, package_json, training_result) = {
+                let result = native_result.bind(py).borrow();
+                (
+                    result.terminal_prediction_json.clone(),
+                    result.terminal_receipt.clone_ref(py),
+                    result.portable_predictor_package_json.clone(),
+                    result.training_result.clone_ref(py),
+                )
+            };
+            let prediction: serde_json::Value =
+                serde_json::from_str(&terminal_prediction_json).unwrap();
+            let receipt_json = sealed_receipt.bind(py).borrow().json.clone();
+            let receipt: serde_json::Value = serde_json::from_str(&receipt_json).unwrap();
+            assert_eq!(prediction["partition"], "final");
+            assert_eq!(
+                prediction["sample_ids"],
+                serde_json::json!(["sample:predict:1", "sample:predict:2"])
+            );
+            assert_eq!(prediction["target_names"], serde_json::json!(["protein"]));
+            assert_eq!(receipt["terminal_node_id"], "model:base");
+            assert_eq!(receipt["terminal_port"], "oof");
+            assert_eq!(
+                receipt["terminal_run_id"],
+                "run:strict.methods:methods-terminal-predict"
+            );
+            assert_eq!(
+                sealed_receipt.bind(py).borrow().terminal_run_id,
+                "run:strict.methods:methods-terminal-predict"
+            );
+            assert_eq!(
+                sealed_receipt.bind(py).borrow().receipt_fingerprint,
+                receipt["receipt_fingerprint"].as_str().unwrap()
+            );
+            assert_eq!(receipt["refit_artifacts"].as_array().unwrap().len(), 1);
+
+            let receipt_snapshot_value = sealed_receipt.bind(py).call_method0("to_dict").unwrap();
+            let receipt_snapshot = receipt_snapshot_value
+                .cast::<pyo3::types::PyDict>()
+                .unwrap();
+            receipt_snapshot
+                .set_item("terminal_run_id", "run:forged:methods-terminal-predict")
+                .unwrap();
+            assert_eq!(
+                sealed_receipt.bind(py).borrow().terminal_run_id,
+                "run:strict.methods:methods-terminal-predict",
+                "a mutable receipt snapshot is explicitly non-attesting"
+            );
+
+            let mut mutated_receipt = receipt.clone();
+            mutated_receipt["terminal_run_id"] =
+                serde_json::json!("run:forged:methods-terminal-predict");
+            let error = parse_strict_methods_terminal_receipt_json(
+                &serde_json::to_string(&mutated_receipt).unwrap(),
+            )
+            .expect_err("a changed terminal RunId must invalidate the sealed receipt");
+            assert!(error.to_string().contains("fingerprint"));
+            let mut extended_receipt = receipt.clone();
+            extended_receipt["unattested"] = serde_json::json!(true);
+            let error = parse_strict_methods_terminal_receipt_json(
+                &serde_json::to_string(&extended_receipt).unwrap(),
+            )
+            .expect_err("a receipt with an extra field cannot enter the closed schema");
+            assert!(error.to_string().contains("closed schema"));
+
+            let object = py.import("builtins").unwrap().getattr("object").unwrap();
+            let set_attribute = object.getattr("__setattr__").unwrap();
+            let forged_receipt = Py::new(
+                py,
+                MethodsTerminalPredictionReceipt {
+                    json: receipt_json.clone(),
+                    terminal_run_id: "run:forged:methods-terminal-predict".to_string(),
+                    receipt_fingerprint: "0".repeat(64),
+                },
+            )
+            .unwrap();
+            assert!(
+                set_attribute
+                    .call1((
+                        native_result.bind(py),
+                        "terminal_receipt",
+                        forged_receipt.bind(py),
+                    ))
+                    .is_err(),
+                "object.__setattr__ must not rebind a frozen native terminal result"
+            );
+            assert!(
+                set_attribute
+                    .call1((
+                        sealed_receipt.bind(py),
+                        "terminal_run_id",
+                        "run:forged:methods-terminal-predict",
+                    ))
+                    .is_err(),
+                "object.__setattr__ must not mutate a frozen native receipt"
+            );
+
+            let package = PortablePredictorPackage::from_json(&package_json).unwrap();
+            assert_eq!(
+                package.schema_version,
+                PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
+            );
+            assert!(package.conformal_calibration.is_none());
+            assert!(package.conformal_calibration_replay.is_none());
+            assert!(package.artifact_bindings.iter().all(|binding| {
+                binding.load_mode == dag_ml_core::ArtifactLoadMode::NativePortable
+            }));
+            let refit_artifact_ids = package
+                .execution_bundle
+                .refit_artifacts
+                .iter()
+                .map(|record| record.artifact.id.clone())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                package
+                    .execution_bundle
+                    .raw_artifact_payloads
+                    .keys()
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+                refit_artifact_ids,
+                "the terminal facade may hydrate only the Package V2 refit artifact"
+            );
+            assert!(package
+                .execution_bundle
+                .raw_artifact_payloads
+                .values()
+                .all(|payload| !payload.is_empty()));
+
+            let source_outcome_fingerprint = training_result
+                .bind(py)
+                .borrow()
+                .outcome
+                .outcome_fingerprint
+                .clone();
+            let sys = py.import("sys").unwrap();
+            sys.getattr("path")
+                .unwrap()
+                .call_method1(
+                    "insert",
+                    (0, format!("{}/python", env!("CARGO_MANIFEST_DIR"))),
+                )
+                .unwrap();
+            let dag_ml = py
+                .import("dag_ml")
+                .expect("the checked-in public Python facade imports for the ABI gate");
+            let public_training_result = native_result
+                .bind(py)
+                .getattr("training_result")
+                .expect("terminal result exposes the public TrainingResult facade");
+            let public_training_result_type = dag_ml.getattr("TrainingResult").unwrap();
+            assert!(
+                public_training_result
+                    .getattr("__class__")
+                    .unwrap()
+                    .is(&public_training_result_type),
+                "terminal result must expose dag_ml.TrainingResult, not _dag_ml.TrainingResult"
+            );
+            assert_eq!(
+                public_training_result
+                    .getattr("outcome_fingerprint")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                source_outcome_fingerprint
+            );
+            assert!(public_training_result.getattr("outcome").is_ok());
+            assert!(public_training_result.getattr("execution_bundle").is_ok());
+            assert!(public_training_result
+                .getattr("score_set")
+                .unwrap()
+                .is_instance_of::<pyo3::types::PyDict>());
+            assert!(public_training_result
+                .getattr("is_attached")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+            object
+                .getattr("__setattr__")
+                .unwrap()
+                .call1((public_training_result, "_native", py.None()))
+                .expect("the ordinary TrainingResult view may not alter the terminal result");
+            assert_eq!(
+                native_result
+                    .bind(py)
+                    .getattr("training_result")
+                    .unwrap()
+                    .getattr("outcome_fingerprint")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                source_outcome_fingerprint,
+                "mutating a detached public TrainingResult view cannot rebind native terminal state"
+            );
+            assert!(training_result.bind(py).borrow().is_attached().unwrap());
+            assert!(training_result.bind(py).borrow().detach().unwrap());
+            assert!(!training_result.bind(py).borrow().is_attached().unwrap());
+
+            let mut replay_request = TrainingReplayRequest {
+                schema_version: TRAINING_REPLAY_REQUEST_SCHEMA_VERSION,
+                request_id: "replay:strict.methods".to_string(),
+                source_outcome_fingerprint,
+                phase: Phase::Predict,
+                data_envelope_keys: vec!["model:base.x".to_string()],
+                output_binding_ids: package
+                    .output_bindings
+                    .iter()
+                    .map(|binding| binding.binding_id.clone())
+                    .collect(),
+                request_fingerprint: "0".repeat(64),
+            };
+            replay_request.request_fingerprint = replay_request.compute_fingerprint().unwrap();
+            let replay = execute_loaded_methods_predictor_replay_json(
+                py,
+                &package_json,
+                &serde_json::to_string(&replay_request).unwrap(),
+                &serde_json::to_string(&BTreeMap::from([(
+                    "model:base.x".to_string(),
+                    fixture.predict_envelope,
+                )]))
+                .unwrap(),
+                &serde_json::to_string(&serde_json::json!({
+                    "model:base.x": fixture.predict_input,
+                }))
+                .unwrap(),
+                &library_path.to_string_lossy(),
+                "outcome:strict.methods.replay",
+                "run:strict.methods.replay",
+                "[]",
+                "{}",
+            )
+            .expect("the exported native Package V2 replays after TrainingResult cleanup");
+            let replay =
+                serde_json::from_str::<dag_ml_core::TrainingReplayOutcome>(&replay).unwrap();
+            assert_eq!(replay.phase, Phase::Predict);
+            assert!(!replay.outputs.is_empty());
+        });
     }
 
     #[cfg(feature = "methods-optimizer")]
@@ -2200,6 +4175,224 @@ mod tests {
 
     fn executable_contracts() -> (String, String, String, String) {
         executable_contracts_with(|_| {})
+    }
+
+    #[cfg(feature = "methods-optimizer")]
+    struct StrictMethodsTerminalFixture {
+        request_json: String,
+        training_envelopes_json: String,
+        relations_json: String,
+        influence_json: String,
+        methods_inputs_json: String,
+        predict_envelope_json: String,
+        predict_input_json: String,
+        selector_json: String,
+        predict_envelope: ExternalDataPlanEnvelope,
+        predict_input: serde_json::Value,
+    }
+
+    /// Build the smallest contract accepted by the strict facade.  The helper
+    /// deliberately starts from the public W1 fixture so request, identity and
+    /// influence signing stays exercised; it then removes every optional lane
+    /// the facade refuses (transform, group, generator, metadata and OOF
+    /// cache) rather than relying on an ad-hoc test-only schema.
+    #[cfg(feature = "methods-optimizer")]
+    fn strict_methods_terminal_fixture() -> StrictMethodsTerminalFixture {
+        let mut request: TrainingRequest = serde_json::from_str(REQUEST_FIXTURE).unwrap();
+        request
+            .graph
+            .nodes
+            .retain(|node| node.id.as_str() == "model:base");
+        request.graph.edges.clear();
+        request.graph.metadata.clear();
+        let graph_node = request.graph.nodes.first_mut().unwrap();
+        graph_node.operator = Some(serde_json::json!({"type": "PLSRegression"}));
+        graph_node.params = BTreeMap::from([("n_components".to_string(), serde_json::json!(1))]);
+        graph_node.metadata.clear();
+        graph_node.seed_label = None;
+
+        request.campaign.generation = GenerationSpec::default();
+        request
+            .campaign
+            .shape_plans
+            .retain(|node_id, _| node_id.as_str() == "model:base");
+        let shape = request.campaign.shape_plans.values_mut().next().unwrap();
+        shape.augmentation_policy.sample_scope = dag_ml_core::AugmentationScope::None;
+        shape.augmentation_policy.feature_scope = dag_ml_core::AugmentationScope::None;
+        shape.augmentation_policy.unsafe_flags.clear();
+        shape.selection_policy.scope = dag_ml_core::FeatureSelectionScope::None;
+        shape.selection_policy.allow_schema_mismatch_on_join = false;
+        request
+            .campaign
+            .data_bindings
+            .retain(|node_id, _| node_id.as_str() == "model:base");
+        let binding = request
+            .campaign
+            .data_bindings
+            .values_mut()
+            .next()
+            .unwrap()
+            .first_mut()
+            .unwrap();
+        binding.metadata.clear();
+        binding.view_policy.include_augmented_train = false;
+        binding.view_policy.include_augmented_validation = false;
+        binding.view_policy.include_excluded = false;
+        binding.view_policy.unsafe_flags.clear();
+        request.campaign.branch_view_plans.clear();
+        request.campaign.inner_cv = None;
+        request.campaign.metadata.clear();
+        request.campaign.leakage_policy.split_unit = dag_ml_core::SplitUnit::Sample;
+        request.campaign.leakage_policy.require_group_ids = false;
+        request.campaign.leakage_policy.unsafe_flags.clear();
+        let split = request.campaign.split_invocation.as_mut().unwrap();
+        split.controller_id = None;
+        split.leakage_policy.split_unit = dag_ml_core::SplitUnit::Sample;
+        split.leakage_policy.require_group_ids = false;
+        split.leakage_policy.unsafe_flags.clear();
+        split.params = BTreeMap::from([
+            ("kind".to_string(), serde_json::json!("kfold")),
+            ("n_splits".to_string(), serde_json::json!(2)),
+            ("shuffle".to_string(), serde_json::json!(false)),
+        ]);
+        split.fold_set.as_mut().unwrap().sample_groups.clear();
+
+        request
+            .controller_manifests
+            .retain(|manifest| manifest.operator_kind == NodeKind::Model);
+        let manifest = request.controller_manifests.first_mut().unwrap();
+        manifest.controller_id =
+            dag_ml_core::ControllerId::new(dag_ml_core::METHODS_PLS_CONTROLLER_ID).unwrap();
+        manifest.controller_version = "libn4m:strict-test".to_string();
+        manifest.capabilities = BTreeSet::from([
+            ControllerCapability::Deterministic,
+            ControllerCapability::ThreadSafe,
+            ControllerCapability::ProcessSafe,
+            ControllerCapability::UsesCoreRng,
+            ControllerCapability::EmitsPredictions,
+            ControllerCapability::EmitsArtifacts,
+            ControllerCapability::Stateful,
+        ]);
+
+        request.options.scheduler.kind = dag_ml_core::TrainingSchedulerKind::Sequential;
+        request.options.scheduler.backend = None;
+        request.options.scheduler.workers = 1;
+        request.options.selection.required_metric_level = Some(PredictionLevel::Sample);
+        request.options.selection.evaluation_scope = Some(EvaluationScope::Oof);
+        request.options.selection.require_finite = true;
+        request.options.resources.cpu_threads = 1;
+        request.options.resources.gpu_devices.clear();
+        request.options.resources.memory_bytes = None;
+        request.options.resources.wall_time_ms = None;
+        request.options.artifacts.cv_artifacts = CvArtifactRetention::Discard;
+        request.options.artifacts.prediction_caches =
+            dag_ml_core::PredictionCacheRetention::Discard;
+        request.options.artifacts.fitted_artifacts = FittedArtifactMode::PortableRequired;
+
+        let relations = SampleRelationSet {
+            records: (1..=4)
+                .map(|index| {
+                    SampleRelation::new(
+                        ObservationId::new(format!("observation:{index}")).unwrap(),
+                        sample(&format!("sample:{index}")),
+                    )
+                })
+                .collect(),
+        };
+        let relation_fingerprint = relations.fingerprint().unwrap();
+        let binding = request
+            .campaign
+            .data_bindings
+            .values_mut()
+            .next()
+            .unwrap()
+            .first_mut()
+            .unwrap();
+        binding.relation_fingerprint = Some(relation_fingerprint);
+        let envelope = envelope(binding, &request.data_identities[0], relations.clone());
+        request.data_identities =
+            vec![TrainingDataIdentity::from_binding_envelope(binding, &envelope).unwrap()];
+        request.request_fingerprint = "0".repeat(64);
+        request.request_fingerprint = request.compute_fingerprint().unwrap();
+        let projection = request.project().unwrap();
+        let influence = influence_manifest(&request, &projection, &relations);
+
+        let methods_inputs = serde_json::json!({
+            "model:base.x": {
+                "sample_ids": ["sample:1", "sample:2", "sample:3", "sample:4"],
+                "x": [[1.0, 0.0], [2.0, 1.0], [3.0, 0.0], [4.0, 1.0]],
+                "y": [[1.0], [2.0], [3.0], [4.0]],
+                "target_names": ["protein"]
+            }
+        });
+        let predict_dataset = MethodsPlsDataset {
+            sample_ids: vec![
+                SampleId::new("sample:predict:1").unwrap(),
+                SampleId::new("sample:predict:2").unwrap(),
+            ],
+            x: MethodsPlsMatrix {
+                values: vec![5.0, 0.0, 6.0, 1.0],
+                rows: 2,
+                cols: 2,
+            },
+            y: None,
+            target_names: vec!["protein".to_string()],
+        };
+        let predict_fingerprint =
+            methods_pls_predict_feature_content_fingerprint(&predict_dataset.x).unwrap();
+        let predict_relations = SampleRelationSet {
+            records: vec![
+                SampleRelation::new(
+                    ObservationId::new("observation:predict:1").unwrap(),
+                    SampleId::new("sample:predict:1").unwrap(),
+                ),
+                SampleRelation::new(
+                    ObservationId::new("observation:predict:2").unwrap(),
+                    SampleId::new("sample:predict:2").unwrap(),
+                ),
+            ],
+        };
+        let mut predict_envelope = envelope.clone();
+        predict_envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+        predict_envelope.data_content_fingerprint = Some(predict_fingerprint.clone());
+        predict_envelope.target_content_fingerprint = None;
+        predict_envelope.predict_cohort = Some(
+            PredictCohort::from_relations(
+                PredictCohortRole::Inference,
+                predict_relations,
+                vec!["protein".to_string()],
+                predict_fingerprint,
+                None,
+            )
+            .unwrap(),
+        );
+        predict_envelope.validate().unwrap();
+        let predict_input = serde_json::json!({
+            "sample_ids": ["sample:predict:1", "sample:predict:2"],
+            "x": [[5.0, 0.0], [6.0, 1.0]],
+            "target_names": ["protein"]
+        });
+
+        StrictMethodsTerminalFixture {
+            request_json: serde_json::to_string(&request).unwrap(),
+            training_envelopes_json: serde_json::to_string(&BTreeMap::from([(
+                "model:base.x".to_string(),
+                envelope,
+            )]))
+            .unwrap(),
+            relations_json: serde_json::to_string(&relations).unwrap(),
+            influence_json: serde_json::to_string(&influence).unwrap(),
+            methods_inputs_json: serde_json::to_string(&methods_inputs).unwrap(),
+            predict_envelope_json: serde_json::to_string(&predict_envelope).unwrap(),
+            predict_input_json: serde_json::to_string(&predict_input).unwrap(),
+            selector_json: serde_json::to_string(
+                &TerminalPredictionSelector::new(NodeId::new("model:base").unwrap(), "oof")
+                    .unwrap(),
+            )
+            .unwrap(),
+            predict_envelope,
+            predict_input,
+        }
     }
 
     fn executable_contracts_with(

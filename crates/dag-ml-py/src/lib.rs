@@ -16,8 +16,8 @@ mod training;
 
 use dag_ml_core::{
     build_archive_v2_native_portable_payloads, build_archive_v3_native_refit_payloads,
-    build_conformal_presentation_v1,
-    build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
+    build_conformal_presentation_v1, build_execution_plan, compile_pipeline_dsl,
+    compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
     parse_pipeline_dsl_json, CacheNamespace, CampaignSpec, ControllerManifest, ControllerRegistry,
@@ -76,9 +76,8 @@ fn version() -> &'static str {
 fn configure_methods_runtime(library_path: &str) -> PyResult<String> {
     #[cfg(feature = "methods-optimizer")]
     {
-        let runtime = dag_ml_core::MethodsRuntime::configure(library_path).map_err(|error| {
-            py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
-        })?;
+        let runtime = dag_ml_core::MethodsRuntime::configure(library_path)
+            .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
         Ok(runtime.library_path().display().to_string())
     }
     #[cfg(not(feature = "methods-optimizer"))]
@@ -199,10 +198,10 @@ fn attach_predict_cohort_to_envelope_json(
 ) -> PyResult<String> {
     let mut envelope: ExternalDataPlanEnvelope =
         dag_ml_core::canonical::deserialize_external_contract(
-        envelope_json,
-        "external data-plan envelope",
-        CoreDagMlError::CampaignValidation,
-    )
+            envelope_json,
+            "external data-plan envelope",
+            CoreDagMlError::CampaignValidation,
+        )
         .map_err(py_core_error)?;
     let request: PredictCohortConstructionRequest =
         dag_ml_core::canonical::deserialize_external_contract(
@@ -274,8 +273,8 @@ fn build_archive_v3_native_refit_payloads_json(
     package_json: &str,
 ) -> PyResult<String> {
     let package = PortableRefitPackageV3::from_json(package_json).map_err(py_core_error)?;
-    let payloads = build_archive_v3_native_refit_payloads(archive_id, &package)
-        .map_err(py_core_error)?;
+    let payloads =
+        build_archive_v3_native_refit_payloads(archive_id, &package).map_err(py_core_error)?;
     serde_json::to_string(&serde_json::json!({
         "manifest": payloads.manifest,
         "members": payloads.members,
@@ -295,8 +294,8 @@ fn build_conformal_presentation_v1_json(
     let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
     let request = TrainingReplayRequest::from_json(request_json).map_err(py_core_error)?;
     let replay = TrainingReplayOutcome::from_json(replay_json).map_err(py_core_error)?;
-    let presentation = build_conformal_presentation_v1(&package, &request, &replay)
-        .map_err(py_core_error)?;
+    let presentation =
+        build_conformal_presentation_v1(&package, &request, &replay).map_err(py_core_error)?;
     serde_json::to_string(&presentation).map_err(py_serde_error)
 }
 
@@ -575,8 +574,17 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_class::<training::TrainingResult>()?;
+    module.add_class::<training::MethodsTerminalPredictionReceipt>()?;
+    module.add_class::<training::MethodsTerminalPredictionResult>()?;
     module.add_function(wrap_pyfunction!(training::execute_training_json, module)?)?;
-    module.add_function(wrap_pyfunction!(training::execute_methods_training_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        training::execute_methods_training_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        training::execute_methods_cv_refit_terminal_predict_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(
         training::execute_methods_portable_full_refit_json,
         module
@@ -593,7 +601,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         training::execute_loaded_predictor_replay_json,
         module
     )?)?;
-    module.add_function(wrap_pyfunction!(build_conformal_presentation_v1_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        build_conformal_presentation_v1_json,
+        module
+    )?)?;
     Ok(())
 }
 
@@ -643,6 +654,7 @@ fn contract_manifest() -> serde_json::Value {
             "structured_error_descriptors",
             "configure_methods_runtime",
             "execute_methods_training",
+            "execute_methods_cv_refit_terminal_predict",
             "execute_methods_portable_full_refit",
             "build_conformal_presentation",
             "terminal_prediction_relation_authority",
@@ -692,8 +704,11 @@ fn contract_manifest() -> serde_json::Value {
             "run_cv_refit_in_process_with_training_losses",
             "run_cv_refit_predict_in_process",
             "TrainingResult",
+            "MethodsTerminalPredictionReceipt",
+            "MethodsTerminalPredictionResult",
             "execute_training_json",
             "execute_methods_training_json",
+            "execute_methods_cv_refit_terminal_predict_json",
             "execute_methods_portable_full_refit_json",
             "execute_loaded_methods_predictor_replay_json",
             "execute_loaded_methods_portable_refit_replay_v3_json",
@@ -965,7 +980,8 @@ mod tests {
         );
         let cohort = parsed.predict_cohort.expect("V2 carries cohort");
         assert_eq!(
-            cohort.physical_sample_ids
+            cohort
+                .physical_sample_ids
                 .iter()
                 .map(|sample_id| sample_id.as_str())
                 .collect::<Vec<_>>(),
@@ -980,7 +996,9 @@ mod tests {
         );
         let error = attach_predict_cohort_to_envelope_json(envelope, &targetless_request)
             .expect_err("the V2 producer must reject an unbound output width");
-        assert!(error.to_string().contains("target_names must be a non-empty list"));
+        assert!(error
+            .to_string()
+            .contains("target_names must be a non-empty list"));
 
         Python::attach(|py| {
             let module = PyModule::new(py, "_dag_ml_test").unwrap();
@@ -988,7 +1006,11 @@ mod tests {
             let helper = module
                 .getattr("attach_predict_cohort_to_envelope_json")
                 .unwrap();
-            let via_python: String = helper.call1((envelope, request)).unwrap().extract().unwrap();
+            let via_python: String = helper
+                .call1((envelope, request))
+                .unwrap()
+                .extract()
+                .unwrap();
             assert_eq!(via_python, signed);
         });
     }
@@ -1170,12 +1192,15 @@ mod tests {
                 "validate_training_outcome_json",
                 "execute_training_json",
                 "execute_methods_training_json",
+                "execute_methods_cv_refit_terminal_predict_json",
                 "execute_methods_portable_full_refit_json",
                 "execute_loaded_methods_predictor_replay_json",
                 "execute_loaded_methods_portable_refit_replay_v3_json",
                 "build_conformal_presentation_v1_json",
                 "run_cv_refit_predict_in_process",
                 "TrainingResult",
+                "MethodsTerminalPredictionReceipt",
+                "MethodsTerminalPredictionResult",
             ] {
                 assert!(
                     module.getattr(export).is_ok(),
@@ -1214,7 +1239,15 @@ mod tests {
         assert!(manifest["python_exports"]
             .as_array()
             .unwrap()
-            .contains(&serde_json::json!("execute_methods_portable_full_refit_json")));
+            .contains(&serde_json::json!(
+                "execute_methods_cv_refit_terminal_predict_json"
+            )));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "execute_methods_portable_full_refit_json"
+            )));
         assert!(manifest["python_exports"]
             .as_array()
             .unwrap()
@@ -1226,9 +1259,7 @@ mod tests {
         assert!(manifest["capabilities"]
             .as_array()
             .unwrap()
-            .contains(&serde_json::json!(
-                "terminal_prediction_relation_authority"
-            )));
+            .contains(&serde_json::json!("terminal_prediction_relation_authority")));
         assert!(manifest["contracts"]
             .as_array()
             .unwrap()
@@ -1244,6 +1275,12 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("execute_methods_training")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "execute_methods_cv_refit_terminal_predict"
+            )));
         assert!(manifest["capabilities"]
             .as_array()
             .unwrap()
