@@ -40,17 +40,18 @@ use pyo3::types::PyAnyMethods;
 use pythonize::{depythonize, pythonize};
 
 use dag_ml_core::{
-    build_execution_plan, compile_operator_variant_models,
+    build_execution_bundle, build_execution_plan, compile_operator_variant_models,
     compile_pipeline_dsl_with_generation_and_controller_registry, enumerate_variants,
-    fan_out_data_aware_branches, parse_pipeline_dsl_json, plan_oof_partition_mode,
+    execute_terminal_prediction, fan_out_data_aware_branches, parse_pipeline_dsl_json,
+    plan_oof_partition_mode,
     prune_plan_to_active, select_best_operator_variant_from_models, select_best_variant_by_cv,
     AggregationControllerResult, AggregationControllerTask, ArtifactMaterializationRequest,
-    ControllerId, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan,
+    BundleId, ControllerId, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan,
     ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
     NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
     RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    ScoreSet, SequentialScheduler, TrainingLossRoleReference, VariantId,
-    VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
+    ScoreSet, SequentialScheduler, TerminalPredictionReplay, TerminalPredictionSelector,
+    TrainingLossRoleReference, VariantId, VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -662,6 +663,165 @@ pub fn run_cv_refit_in_process_with_training_losses(
     )
 }
 
+/// Run CV + REFIT, capture the selected execution bundle, then execute one
+/// closed terminal PREDICT replay against a V2 `predict_cohort`.
+///
+/// Unlike [`run_cv_refit_in_process`], this route does not surface mutable
+/// phase frames for a host to replay.  The selected variant and REFIT artifacts
+/// are captured into an [`ExecutionBundle`] in Rust, then
+/// [`execute_terminal_prediction`] reuses the same in-memory artifact store for
+/// exactly one `PREDICT` phase.  A valid V1 envelope remains accepted by the
+/// frozen CV/REFIT API, but is deliberately refused here.
+///
+/// Returns `{ "execution_bundle", "terminal_prediction", "terminal_receipt" }`.
+#[pyfunction]
+pub fn run_cv_refit_predict_in_process(
+    py: Python<'_>,
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    op_callback: Py<PyAny>,
+    selection_metric: &str,
+    terminal_selector_json: &str,
+) -> PyResult<String> {
+    let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
+
+    // The V2 boundary is checked before a plan is compiled or any callback is
+    // invoked.  This prevents a valid frozen V1 envelope from accidentally
+    // entering a terminal PREDICT operation through the legacy CV/REFIT path.
+    let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
+        envelope_json,
+        "external data-plan envelope",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
+    dag_ml_core::require_terminal_predict_cohort(&envelope).map_err(py_core_error)?;
+
+    let dsl_spec = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
+    let dsl_spec = fan_out_data_aware_branches(&dsl_spec, &envelope).map_err(py_core_error)?;
+    let manifests =
+        serde_json::from_str::<Vec<dag_ml_core::ControllerManifest>>(controller_manifests_json)
+            .map_err(py_serde_error)?;
+    let mut controller_registry = ControllerRegistry::new();
+    for manifest in &manifests {
+        controller_registry
+            .register(manifest.clone())
+            .map_err(py_core_error)?;
+    }
+    let compiled = compile_pipeline_dsl_with_generation_and_controller_registry(
+        &dsl_spec,
+        &controller_registry,
+    )
+    .map_err(py_core_error)?;
+    let operator_variant_models =
+        compile_operator_variant_models(&dsl_spec).map_err(py_core_error)?;
+    let plan = build_execution_plan(
+        format!("plan:{}", dsl_spec.id),
+        compiled.graph,
+        compiled.campaign_template,
+        &controller_registry,
+    )
+    .map_err(py_core_error)?;
+
+    plan.campaign
+        .validate_data_envelope_relations(&envelope)
+        .map_err(py_core_error)?;
+    let data_provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+        envelope.clone(),
+    )
+    .map_err(py_core_error)?;
+    let runtime_controllers =
+        build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
+    let run_id = RunId::new(format!("run:{}:in-process-terminal", dsl_spec.id))
+        .map_err(py_core_error)?;
+    let root_seed: u64 = 0;
+
+    let resolved = resolve_refit_variant(
+        &plan,
+        &operator_variant_models,
+        &run_id,
+        root_seed,
+        metric,
+        &runtime_controllers,
+        &data_provider,
+    )
+    .map_err(py_core_error)?;
+    let selected_variant_id = resolved.variant_id;
+    let loser_validation_reports = resolved.loser_validation_reports;
+    let winner_variant_label = resolved.winner_variant_label;
+    let refit_plan = resolved.pruned_plan.as_ref().unwrap_or(&plan);
+
+    let mut artifact_store = InMemoryArtifactStore::new();
+    let mut ctx = RunContext::new(run_id, Some(root_seed));
+    ctx.variant_id = Some(selected_variant_id.clone());
+    let _fit_cv_results = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            refit_plan,
+            &runtime_controllers,
+            &data_provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .map_err(py_core_error)?;
+    let _refit_results = SequentialScheduler
+        .execute_campaign_phase_with_data_provider_and_artifact_store(
+            refit_plan,
+            &runtime_controllers,
+            &data_provider,
+            &mut artifact_store,
+            &mut ctx,
+            Phase::Refit,
+        )
+        .map_err(py_core_error)?;
+
+    // The bundle captures exactly the winner's REFIT artifacts.  Scores are
+    // computed before PREDICT so this terminal external cohort can never alter
+    // CV selection evidence.
+    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))
+        .map_err(py_core_error)?;
+    let mut scores = ctx.build_score_set(refit_plan.id.clone(), None);
+    stamp_winner_variant_label(&mut scores, winner_variant_label);
+    merge_loser_validation_reports(&mut scores, &refit_plan.id, loser_validation_reports);
+    let mut bundle = build_execution_bundle(
+        BundleId::new(format!("bundle:{}:in-process-terminal", dsl_spec.id))
+            .map_err(py_core_error)?,
+        refit_plan,
+        Some(selected_variant_id),
+        Default::default(),
+        artifact_store.refit_artifacts(),
+    )
+    .map_err(py_core_error)?;
+    bundle.scores = scores;
+
+    let selector: TerminalPredictionSelector = dag_ml_core::canonical::deserialize_external_contract(
+        terminal_selector_json,
+        "terminal prediction selector",
+        CoreDagMlError::RuntimeValidation,
+    )
+    .map_err(py_core_error)?;
+    let terminal = execute_terminal_prediction(
+        TerminalPredictionReplay {
+            plan: refit_plan,
+            bundle: &bundle,
+            envelope: &envelope,
+            selector: &selector,
+            controllers: &runtime_controllers,
+            data_provider: &data_provider,
+            artifact_store: &artifact_store,
+        },
+        &mut ctx,
+    )
+    .map_err(py_core_error)?;
+
+    serde_json::to_string(&serde_json::json!({
+        "execution_bundle": bundle,
+        "terminal_prediction": terminal.prediction,
+        "terminal_receipt": terminal.receipt,
+    }))
+    .map_err(py_serde_error)
+}
+
 fn run_cv_refit_in_process_impl(
     py: Python<'_>,
     dsl_json: &str,
@@ -858,10 +1018,11 @@ mod tests {
 
     use dag_ml_core::{
         ArtifactId, ArtifactMaterializationRequest, ArtifactRef, BundleId, ControllerId,
-        ControllerManifest, ExecutionPlan, HandleKind, HandleRef, LineageId, LineageRecord, NodeId,
-        NodeKind, NodeResult, NodeTask, OperatorVariantModel, Phase, PredictionBlock,
-        PredictionLevel, PredictionPartition, PredictionUnitId, RegressionMetricKind,
-        RegressionTargetBlock, RunId, RuntimeController, RuntimeControllerRegistry, SampleId,
+        ControllerManifest, ExecutionPlan, ExternalDataPlanEnvelope, HandleKind, HandleRef,
+        LineageId, LineageRecord, NodeId, NodeKind, NodeResult, NodeTask, OperatorVariantModel,
+        Phase, PredictCohort, PredictCohortRole, PredictionBlock, PredictionLevel,
+        PredictionPartition, PredictionUnitId, RegressionMetricKind, RegressionTargetBlock,
+        RunId, RuntimeController, RuntimeControllerRegistry, SampleId, SampleRelationSet,
     };
 
     use super::*;
@@ -1618,5 +1779,372 @@ mod tests {
             error.contains("does not support 2 operator generators"),
             "multiple operator generators must be rejected: {error}"
         );
+    }
+
+    #[derive(Default)]
+    #[pyclass]
+    struct TerminalPredictCallback {
+        calls: std::sync::Mutex<Vec<String>>,
+        saw_predict_refit_artifact: std::sync::Mutex<bool>,
+    }
+
+    #[pymethods]
+    impl TerminalPredictCallback {
+        fn __call__(&self, py: Python<'_>, payload: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+            let task: NodeTask = depythonize(payload)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+            self.calls.lock().unwrap().push(task.phase.as_str().to_string());
+            let sample_ids = match task.phase {
+                Phase::FitCv => task
+                    .data_views
+                    .get("data:x:validation")
+                    .and_then(|view| view.sample_ids.clone())
+                    .ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "FIT_CV callback did not receive validation sample identities",
+                        )
+                    })?,
+                Phase::Predict => {
+                    let view = task.data_views.get("data:x").ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "PREDICT callback did not receive data:x cohort view",
+                        )
+                    })?;
+                    if view.partition != dag_ml_core::DataRequestPartition::Predict
+                        || view.fold_id.is_some()
+                    {
+                        return Err(pyo3::exceptions::PyValueError::new_err(
+                            "PREDICT callback received a non-terminal cohort view",
+                        ));
+                    }
+                    let artifact_id = "artifact:model:terminal:refit";
+                    let replay_key = format!("artifact:{artifact_id}");
+                    let artifact = task.artifact_inputs.get(&replay_key).ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "PREDICT callback did not receive REFIT artifact metadata",
+                        )
+                    })?;
+                    let handle = task.input_handles.get(&replay_key).ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "PREDICT callback did not receive REFIT artifact handle",
+                        )
+                    })?;
+                    if artifact.artifact.id.as_str() != artifact_id
+                        || !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact)
+                    {
+                        return Err(pyo3::exceptions::PyValueError::new_err(
+                            "PREDICT callback received an invalid REFIT artifact input",
+                        ));
+                    }
+                    *self.saw_predict_refit_artifact.lock().unwrap() = true;
+                    view.sample_ids.clone().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "PREDICT callback cohort view has no sample identities",
+                        )
+                    })?
+                }
+                _ => task
+                    .data_views
+                    .get("data:x")
+                    .and_then(|view| view.sample_ids.clone())
+                    .ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "callback did not receive primary data identities",
+                        )
+                    })?,
+            };
+            let predictions = match task.phase {
+                Phase::FitCv => vec![PredictionBlock {
+                    prediction_id: Some(format!("prediction:{}:fit-cv", task.node_plan.node_id)),
+                    producer_node: task.node_plan.node_id.clone(),
+                    producer_port: Some("oof".to_string()),
+                    partition: PredictionPartition::Validation,
+                    fold_id: task.fold_id.clone(),
+                    sample_ids: sample_ids.clone(),
+                    values: vec![vec![0.0]; sample_ids.len()],
+                    target_names: vec!["y".to_string()],
+                }],
+                Phase::Predict => vec![PredictionBlock {
+                    prediction_id: Some(format!("prediction:{}:predict", task.node_plan.node_id)),
+                    producer_node: task.node_plan.node_id.clone(),
+                    producer_port: Some("oof".to_string()),
+                    partition: PredictionPartition::Final,
+                    fold_id: None,
+                    sample_ids: sample_ids.clone(),
+                    values: vec![vec![0.0]; sample_ids.len()],
+                    target_names: vec!["y".to_string()],
+                }],
+                _ => Vec::new(),
+            };
+            let regression_targets = if task.phase == Phase::FitCv {
+                vec![RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids: sample_ids
+                        .iter()
+                        .cloned()
+                        .map(PredictionUnitId::Sample)
+                        .collect(),
+                    values: vec![vec![0.0]; sample_ids.len()],
+                    target_names: vec!["y".to_string()],
+                }]
+            } else {
+                Vec::new()
+            };
+            let artifacts = if task.phase == Phase::Refit {
+                vec![ArtifactRef {
+                    id: ArtifactId::new("artifact:model:terminal:refit").unwrap(),
+                    kind: "mock_model".to_string(),
+                    controller_id: task.node_plan.controller_id.clone(),
+                    backend: None,
+                    uri: None,
+                    content_fingerprint: None,
+                    size_bytes: Some(1),
+                    plugin: None,
+                    plugin_version: None,
+                }]
+            } else {
+                Vec::new()
+            };
+            let artifact_handles = artifacts
+                .iter()
+                .map(|artifact| {
+                    (
+                        artifact.id.clone(),
+                        HandleRef {
+                            handle: stable_handle(artifact.id.as_str()),
+                            kind: HandleKind::Model,
+                            owner_controller: task.node_plan.controller_id.clone(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let result = NodeResult {
+                schema_version: None,
+                node_id: task.node_plan.node_id.clone(),
+                outputs: BTreeMap::from([(
+                    "oof".to_string(),
+                    HandleRef {
+                        handle: stable_handle(task.node_plan.node_id.as_str()),
+                        kind: HandleKind::Prediction,
+                        owner_controller: task.node_plan.controller_id.clone(),
+                    },
+                )]),
+                predictions,
+                observation_predictions: Vec::new(),
+                aggregated_predictions: Vec::new(),
+                explanations: Vec::new(),
+                shape_deltas: Vec::new(),
+                fit_influence_diagnostics: Vec::new(),
+                artifacts: artifacts.clone(),
+                artifact_handles,
+                regression_targets,
+                lineage: LineageRecord {
+                    record_id: LineageId::new(format!(
+                        "lineage:{}:{:?}:{}:{}",
+                        task.node_plan.node_id,
+                        task.phase,
+                        task.variant_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "base".to_string()),
+                        task.fold_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "nofold".to_string())
+                    ))
+                    .unwrap(),
+                    run_id: task.run_id.clone(),
+                    node_id: task.node_plan.node_id.clone(),
+                    phase: task.phase,
+                    controller_id: task.node_plan.controller_id.clone(),
+                    controller_version: task.node_plan.controller_version.clone(),
+                    variant_id: task.variant_id.clone(),
+                    fold_id: task.fold_id.clone(),
+                    branch_path: task.branch_path.clone(),
+                    input_lineage: Vec::new(),
+                    artifact_refs: artifacts,
+                    params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                    data_model_shape_fingerprint: None,
+                    aggregation_policy_fingerprint: None,
+                    seed: task.seed,
+                    unsafe_flags: BTreeSet::new(),
+                    metrics: BTreeMap::new(),
+                    loss_attestations: Vec::new(),
+                    early_stopping_records: Vec::new(),
+                },
+            };
+            pythonize(py, &result)
+                .map(|value| value.unbind())
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+        }
+    }
+
+    fn terminal_predict_dsl_json() -> String {
+        serde_json::json!({
+            "id": "dsl:terminal.predict.fixture",
+            "input": {"name": "x", "representation": "tabular_numeric"},
+            "campaign_id": "campaign:terminal.predict.fixture",
+            "root_seed": 7,
+            "leakage_policy": {
+                "split_unit": "sample",
+                "forbid_origin_cross_fold": true,
+                "allow_observation_split_with_shared_target": false,
+                "require_group_ids": false,
+                "unsafe_flags": []
+            },
+            "aggregation_policy": {
+                "aggregation_level": "sample",
+                "method": "mean",
+                "weights": "none",
+                "emit_parallel_metrics": true,
+                "selection_metric_level": "sample",
+                "store_raw_predictions": true,
+                "store_aggregated_predictions": true
+            },
+            "split_invocation": {
+                "id": "split:terminal.predict.fixture",
+                "controller_id": null,
+                "leakage_policy": {
+                    "split_unit": "sample",
+                    "forbid_origin_cross_fold": true,
+                    "allow_observation_split_with_shared_target": false,
+                    "require_group_ids": false,
+                    "unsafe_flags": []
+                },
+                "params": {},
+                "fold_set": {
+                    "id": "folds:terminal.predict.fixture",
+                    "sample_ids": ["sample:1", "sample:2"],
+                    "folds": [
+                        {"fold_id": "fold:0", "train_sample_ids": ["sample:2"], "validation_sample_ids": ["sample:1"], "metadata": {}},
+                        {"fold_id": "fold:1", "train_sample_ids": ["sample:1"], "validation_sample_ids": ["sample:2"], "metadata": {}}
+                    ],
+                    "sample_groups": {}
+                }
+            },
+            "data_bindings": [{
+                "node_id": "model:terminal",
+                "input_name": "x",
+                "request_id": "nir-to-tabular",
+                "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+                "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+                "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+                "output_representation": "tabular_numeric",
+                "feature_set_id": "x",
+                "source_ids": ["nir"],
+                "require_relations": true
+            }],
+            "steps": [{
+                "kind": "model",
+                "id": "model:terminal",
+                "operator": {"type": "TerminalMock"},
+                "params": {}
+            }]
+        })
+        .to_string()
+    }
+
+    fn terminal_predict_manifest_json() -> String {
+        serde_json::json!([{
+            "controller_id": "controller:model.terminal",
+            "controller_version": "0.1.0",
+            "operator_kind": "model",
+            "priority": 0,
+            "supported_phases": ["FIT_CV", "REFIT", "PREDICT"],
+            "input_ports": [],
+            "output_ports": [],
+            "data_requirements": null,
+            "capabilities": [
+                "deterministic", "thread_safe", "process_safe", "emits_predictions",
+                "emits_artifacts", "stateful"
+            ],
+            "fit_scope": "fold_train",
+            "rng_policy": "uses_core_seed",
+            "artifact_policy": "serializable"
+        }])
+        .to_string()
+    }
+
+    fn terminal_predict_envelope_json() -> String {
+        let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
+        ))
+        .unwrap();
+        let heldout_relations: SampleRelationSet = serde_json::from_value(serde_json::json!({
+            "records": [
+                {"observation_id": "obs.H001", "sample_id": "sample:holdout:1", "target_id": "target:holdout:1", "group_id": "group:holdout", "origin_sample_id": null, "source_id": "nir", "is_augmented": false},
+                {"observation_id": "obs.H002", "sample_id": "sample:holdout:2", "target_id": "target:holdout:2", "group_id": "group:holdout", "origin_sample_id": null, "source_id": "nir", "is_augmented": false}
+            ]
+        }))
+        .unwrap();
+        envelope.schema_version = dag_ml_core::EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+        envelope.predict_cohort = Some(
+            PredictCohort::from_relations(
+                PredictCohortRole::ExternalTest,
+                heldout_relations,
+                vec!["y".to_string()],
+                "c".repeat(64),
+                Some("d".repeat(64)),
+            )
+            .unwrap(),
+        );
+        envelope.validate().unwrap();
+        serde_json::to_string(&envelope).unwrap()
+    }
+
+    #[test]
+    fn py_in_process_terminal_predict_replays_refit_artifact_for_exact_v2_cohort() {
+        Python::initialize();
+        Python::attach(|py| {
+            let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            let payload = run_cv_refit_predict_in_process(
+                py,
+                &terminal_predict_dsl_json(),
+                &terminal_predict_envelope_json(),
+                &terminal_predict_manifest_json(),
+                callback.clone_ref(py).into_any(),
+                "rmse",
+                r#"{"node_id":"model:terminal","port":"oof"}"#,
+            )
+            .expect("V2 terminal in-process execution succeeds");
+            let outcome: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(
+                outcome["terminal_prediction"]["sample_ids"],
+                serde_json::json!(["sample:holdout:1", "sample:holdout:2"])
+            );
+            assert_eq!(outcome["terminal_prediction"]["partition"], "final");
+            assert_eq!(outcome["terminal_receipt"]["terminal_node_id"], "model:terminal");
+            assert_eq!(outcome["terminal_receipt"]["terminal_port"], "oof");
+            assert_eq!(
+                outcome["execution_bundle"]["refit_artifacts"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let callback = callback.bind(py).borrow();
+            assert!(*callback.saw_predict_refit_artifact.lock().unwrap());
+            assert_eq!(callback.calls.lock().unwrap().as_slice(), ["FIT_CV", "FIT_CV", "REFIT", "PREDICT"]);
+        });
+    }
+
+    #[test]
+    fn py_in_process_terminal_predict_refuses_v1_before_callback() {
+        Python::initialize();
+        Python::attach(|py| {
+            let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            let error = run_cv_refit_predict_in_process(
+                py,
+                "{}",
+                include_str!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"),
+                "[]",
+                callback.clone_ref(py).into_any(),
+                "rmse",
+                "{}",
+            )
+            .expect_err("V1 terminal path must fail before parsing the campaign");
+            assert!(error.to_string().contains("requires external data-plan envelope V2"));
+            assert!(callback.bind(py).borrow().calls.lock().unwrap().is_empty());
+        });
     }
 }

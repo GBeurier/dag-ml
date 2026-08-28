@@ -38,6 +38,7 @@ pub mod replay;
 pub mod rng;
 pub mod runtime;
 pub mod selection;
+pub mod terminal_prediction;
 pub mod training;
 pub mod training_runtime;
 
@@ -75,5 +76,6 @@ pub use replay::*;
 pub use rng::*;
 pub use runtime::*;
 pub use selection::*;
+pub use terminal_prediction::*;
 pub use training::*;
 pub use training_runtime::*;
