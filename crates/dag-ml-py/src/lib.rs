@@ -565,6 +565,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         in_process::run_cv_refit_in_process_with_training_losses,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(
+        in_process::run_cv_refit_predict_in_process,
+        module
+    )?)?;
     module.add_class::<local_implementation::PyLocalImplementationRegistry>()?;
     module.add_function(wrap_pyfunction!(
         local_implementation::loss_execution_attestation_json,
@@ -607,6 +611,7 @@ fn contract_manifest() -> serde_json::Value {
             {"id": "pipeline_dsl", "version": 1},
             {"id": "execution_plan", "version": 1},
             {"id": "execution_bundle", "version": 1},
+            {"id": "coordinator_data_plan_envelope", "version": 2},
             {"id": "fold_set", "version": 1},
             {"id": "training_request", "version": 1},
             {"id": "training_contract_projection", "version": 1},
@@ -639,7 +644,9 @@ fn contract_manifest() -> serde_json::Value {
             "configure_methods_runtime",
             "execute_methods_training",
             "execute_methods_portable_full_refit",
-            "build_conformal_presentation"
+            "build_conformal_presentation",
+            "terminal_prediction_relation_authority",
+            "execute_cv_refit_terminal_predict"
         ],
         "shared": {
             "fold_set_fixture_fingerprint": SHARED_FOLD_SET_FINGERPRINT
@@ -683,6 +690,7 @@ fn contract_manifest() -> serde_json::Value {
             "canonical_operator_variant_value_json",
             "run_cv_refit_in_process",
             "run_cv_refit_in_process_with_training_losses",
+            "run_cv_refit_predict_in_process",
             "TrainingResult",
             "execute_training_json",
             "execute_methods_training_json",
@@ -966,6 +974,14 @@ mod tests {
         assert_eq!(cohort.cohort_fingerprint, cohort.fingerprint().unwrap());
 
         Python::initialize();
+        let targetless_request = request.replace(
+            r#""target_names":["classification:y"]"#,
+            r#""target_names":[]"#,
+        );
+        let error = attach_predict_cohort_to_envelope_json(envelope, &targetless_request)
+            .expect_err("the V2 producer must reject an unbound output width");
+        assert!(error.to_string().contains("target_names must be a non-empty list"));
+
         Python::attach(|py| {
             let module = PyModule::new(py, "_dag_ml_test").unwrap();
             _dag_ml(py, &module).unwrap();
@@ -1158,6 +1174,7 @@ mod tests {
                 "execute_loaded_methods_predictor_replay_json",
                 "execute_loaded_methods_portable_refit_replay_v3_json",
                 "build_conformal_presentation_v1_json",
+                "run_cv_refit_predict_in_process",
                 "TrainingResult",
             ] {
                 assert!(
@@ -1206,6 +1223,23 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("build_conformal_presentation")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "terminal_prediction_relation_authority"
+            )));
+        assert!(manifest["contracts"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!({
+                "id": "coordinator_data_plan_envelope",
+                "version": 2
+            })));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("run_cv_refit_predict_in_process")));
         assert!(manifest["capabilities"]
             .as_array()
             .unwrap()

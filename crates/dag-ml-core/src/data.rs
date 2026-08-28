@@ -1607,7 +1607,7 @@ impl PredictCohort {
             "predict cohort origin_sample_ids",
             &self.origin_sample_ids,
         )?;
-        validate_string_list_entries("predict cohort target_names", &self.target_names)?;
+        validate_non_empty_list("predict cohort target_names", &self.target_names)?;
         validate_unique_strings("predict cohort target_names", &self.target_names)?;
         validate_fingerprint("predict cohort relation", &self.relation_fingerprint)?;
         validate_fingerprint(

@@ -151,6 +151,26 @@ pub(crate) fn normalize_result_prediction_ports(
     Ok(())
 }
 
+/// Reject non-direct prediction outputs before the scheduler can aggregate
+/// them.  A terminal external cohort must never fall back to coordinator
+/// relations or a custom aggregation controller simply because a controller
+/// returned observation-level output.
+fn validate_direct_sample_prediction_result(task: &NodeTask, result: &NodeResult) -> Result<()> {
+    if !result.observation_predictions.is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "direct terminal PREDICT node `{}` emitted observation-level predictions; relation aggregation is not permitted",
+            task.node_plan.node_id
+        )));
+    }
+    if !result.aggregated_predictions.is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "direct terminal PREDICT node `{}` emitted aggregated predictions; relation aggregation is not permitted",
+            task.node_plan.node_id
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub(crate) struct PhaseScopeResources<'a> {
     pub(crate) data_provider: Option<&'a dyn RuntimeDataProvider>,
@@ -177,6 +197,11 @@ pub(crate) struct PhaseScopeResources<'a> {
     pub(crate) prediction_cache_store: Option<&'a dyn RuntimePredictionCacheStore>,
     pub(crate) prediction_cache_contracts:
         Option<&'a BTreeMap<String, ReplayPredictionCacheContract>>,
+    /// Terminal replay is deliberately narrower than generic PREDICT: its
+    /// selected result must be emitted as a direct sample-level block.  This
+    /// prevents the scheduler from reading coordinator relations or invoking
+    /// a custom aggregation controller for an external V2 cohort.
+    pub(crate) direct_sample_prediction_only: bool,
     pub(crate) artifact_store: Option<&'a mut InMemoryArtifactStore>,
 }
 
@@ -884,6 +909,31 @@ impl SequentialScheduler {
         replay: BundleReplayExecution<'_>,
         ctx: &mut RunContext,
     ) -> Result<Vec<NodeResult>> {
+        self.execute_bundle_replay_with_prediction_mode(replay, ctx, false)
+    }
+
+    /// Execute a PREDICT replay whose controller output is required to be a
+    /// direct sample-level block.  This is an internal terminal boundary, not
+    /// a change to the generic replay contract.
+    pub(crate) fn execute_direct_sample_bundle_replay(
+        &self,
+        replay: BundleReplayExecution<'_>,
+        ctx: &mut RunContext,
+    ) -> Result<Vec<NodeResult>> {
+        if replay.replay_request.phase != Phase::Predict {
+            return Err(DagMlError::RuntimeValidation(
+                "direct sample bundle replay is valid only for PREDICT".to_string(),
+            ));
+        }
+        self.execute_bundle_replay_with_prediction_mode(replay, ctx, true)
+    }
+
+    fn execute_bundle_replay_with_prediction_mode(
+        &self,
+        replay: BundleReplayExecution<'_>,
+        ctx: &mut RunContext,
+        direct_sample_prediction_only: bool,
+    ) -> Result<Vec<NodeResult>> {
         replay.bundle.validate_against_plan(replay.plan)?;
         replay
             .replay_request
@@ -956,6 +1006,7 @@ impl SequentialScheduler {
                 data_envelopes: Some(replay.data_envelopes),
                 prediction_cache_store: replay.prediction_cache_store,
                 prediction_cache_contracts: prediction_cache_contracts.as_ref(),
+                direct_sample_prediction_only,
                 ..Default::default()
             },
         )
@@ -1166,13 +1217,17 @@ impl SequentialScheduler {
                 record_fit_influence_diagnostic(&task, &mut result);
                 normalize_result_prediction_ports(plan, &task, &mut result)?;
                 result.validate_for_task(&task)?;
-                apply_result_prediction_aggregation(
-                    plan,
-                    controllers,
-                    &task,
-                    &mut result,
-                    &resources,
-                )?;
+                if resources.direct_sample_prediction_only {
+                    validate_direct_sample_prediction_result(&task, &result)?;
+                } else {
+                    apply_result_prediction_aggregation(
+                        plan,
+                        controllers,
+                        &task,
+                        &mut result,
+                        &resources,
+                    )?;
+                }
                 if let Some(nested) = resources.nested_stacking.as_ref() {
                     attach_nested_stacking_input_lineage(&mut result, plan, &task, ctx, nested)?;
                 } else {
