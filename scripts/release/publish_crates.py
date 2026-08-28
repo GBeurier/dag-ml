@@ -228,6 +228,19 @@ def main() -> None:
         fail("CARGO_REGISTRY_TOKEN is required for cargo publish authentication")
 
     for index, crate in enumerate(crates):
+        # `cargo publish --dry-run` resolves dependencies through crates.io.
+        # A dependent workspace crate therefore cannot be dry-run until the
+        # root crate from this *same* release has actually been indexed.  The
+        # release-plan validator has already checked the whole dependency DAG;
+        # exercise every independent root here and leave the dependent crates
+        # to the real, topologically ordered tagged release.
+        if args.dry_run and crate.internal_deps:
+            print(
+                "::notice::skipping dry-run for "
+                f"{crate.name}: awaits same-release internal dependency "
+                + ", ".join(crate.internal_deps)
+            )
+            continue
         if not args.dry_run and crate_version_exists(crate.name, version):
             print(f"::notice::{crate.name} {version} already exists on crates.io; skipping")
             continue
