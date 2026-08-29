@@ -1,7 +1,7 @@
 # Supported Surface
 
 This page is the 0.3.x RC support contract for `dag-ml` (current package
-version: 0.3.21). It separates
+version: 0.3.22). It separates
 production-facing surfaces from conformance fixtures and backlog work. It does
 not change existing C ABI, JSON schema, or WASM signatures. The explicitly
 scoped V2 terminal PREDICT Rust/Python surface is documented below.
@@ -40,7 +40,7 @@ scoped V2 terminal PREDICT Rust/Python surface is documented below.
 
 ## dag-ml-data Dependency
 
-`dag-ml` 0.3.21 consumes the sibling `dag-ml-data` contracts through
+`dag-ml` 0.3.22 consumes the sibling `dag-ml-data` contracts through
 JSON-identical schemas and fixtures. The supported cross-repo contract for this
 release is:
 
