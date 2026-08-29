@@ -406,10 +406,11 @@ pub fn build_archive_v2_native_portable_payloads(
 /// Construct the only archive-only cache payload permitted for an outcome
 /// whose durable contract deliberately has no retained OOF payloads.
 ///
-/// The checks are intentionally redundant with ordinary outcome validation:
-/// archive assembly is a new persistence boundary and must not accept a
-/// re-signed outcome whose bundle arrays were stripped while its graph still
-/// contains an OOF dependency.
+/// These checks deliberately strengthen ordinary outcome validation. The
+/// normal cross-link checks validate declared bundle requirements and caches,
+/// but do not prove reverse coverage of every `requires_oof` graph edge;
+/// archive assembly must reject a re-signed outcome whose bundle arrays were
+/// stripped while its graph still contains an OOF dependency.
 fn synthesize_empty_archive_cache_payloads(
     bundle: &ExecutionBundle,
     graph: &GraphSpec,
