@@ -552,6 +552,20 @@ mod tests {
         outcome.outcome_fingerprint = outcome.compute_fingerprint().unwrap();
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
+    #[test]
+    fn package_local_archive_fixture_tracks_canonical_v2_replay_fixture() {
+        // The package gate compiles without workspace fixtures.  This workspace
+        // witness prevents the required package-local copy from silently
+        // diverging from the canonical V2 replay fixture.
+        assert_eq!(
+            include_str!("../tests/fixtures/package/archive/training_outcome_port_explicit.json"),
+            include_str!(
+                "../../../examples/fixtures/training/replay/training_outcome_port_explicit.v2.json"
+            )
+        );
+    }
+
     #[test]
     fn empty_cache_synthesis_requires_a_bundle_and_graph_proof_of_no_oof_dependency() {
         let bundle = empty_bundle();
@@ -640,7 +654,7 @@ mod tests {
     #[test]
     fn empty_cache_synthesis_refuses_a_resigned_oof_fixture_with_cleared_bundle_arrays() {
         let mut stripped = TrainingOutcome::from_json(include_str!(
-            "../../../examples/fixtures/training/replay/training_outcome_port_explicit.v2.json"
+            "../tests/fixtures/package/archive/training_outcome_port_explicit.json"
         ))
         .expect("real V2 stacking outcome fixture validates before hostile mutation");
         assert!(stripped
@@ -679,7 +693,7 @@ mod tests {
     #[test]
     fn retained_nonempty_cache_member_keeps_historical_serialization() {
         let mut outcome = TrainingOutcome::from_json(include_str!(
-            "../../../examples/fixtures/training/replay/training_outcome_port_explicit.v2.json"
+            "../tests/fixtures/package/archive/training_outcome_port_explicit.json"
         ))
         .expect("real V2 stacking outcome fixture validates");
         let retained = outcome
