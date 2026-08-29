@@ -2448,13 +2448,80 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         .unwrap();
     let package =
         PortablePredictorPackage::from_json(&serde_json::to_string(&package).unwrap()).unwrap();
-    let archive =
-        build_archive_v2_native_portable_payloads("archive:methods-hpo.n4mm", &source, &package)
-            .expect("real native Methods outcome must close the Archive V2 P0 member set");
+
+    // Existing retained-cache outcomes stay byte-for-byte on their historical
+    // path.  This native HPO campaign has no graph OOF edge, so its retained
+    // payload set is empty but still present because the request asked to
+    // retain caches.
+    let retained_caches = source
+        .portable_prediction_caches
+        .as_ref()
+        .expect("the retained-cache source preserves its payload-set member");
+    let retained_archive = build_archive_v2_native_portable_payloads(
+        "archive:methods-hpo.retained",
+        &source,
+        &package,
+    )
+    .expect("existing retained-cache archive behavior remains available");
+    assert_eq!(
+        retained_archive
+            .members
+            .get(ARCHIVE_V2_CACHE_MEMBER)
+            .unwrap(),
+        serde_json::to_vec(retained_caches).unwrap().as_slice(),
+        "an existing Some(cache payload set) must keep its historical bytes"
+    );
+
+    // Model the strict terminal facade's legal absence of retained OOF cache
+    // payloads without modifying the source Package or Outcome in place.  The
+    // synthetic archive member is allowed only because the bundle has no OOF
+    // requirements/cache records and the effective graph has no requires_oof
+    // edge.  Re-signing models a real portable JSON boundary.
+    assert!(source.execution_bundle.prediction_requirements.is_empty());
+    assert!(source.execution_bundle.prediction_caches.is_empty());
+    assert!(source
+        .effective_plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .all(|edge| !edge.contract.requires_oof));
+    let mut archive_source = source.clone();
+    archive_source.portable_prediction_caches = None;
+    resign_outcome(&mut archive_source);
+    archive_source.validate().unwrap();
+    let archive_package = archive_source
+        .to_portable_predictor_package(
+            "predictor:methods-hpo.strict-terminal",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .unwrap();
+    let archive_package =
+        PortablePredictorPackage::from_json(&serde_json::to_string(&archive_package).unwrap())
+            .unwrap();
+    let archive = build_archive_v2_native_portable_payloads(
+        "archive:methods-hpo.n4mm",
+        &archive_source,
+        &archive_package,
+    )
+    .expect("a strict no-OOF-cache native Methods outcome closes the Archive V2 P0 member set");
     assert_eq!(
         archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap(),
-        serde_json::to_vec(&package).unwrap().as_slice()
+        serde_json::to_vec(&archive_package).unwrap().as_slice()
     );
+    let archive_caches: BundlePredictionCachePayloadSet =
+        serde_json::from_slice(archive.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap()).unwrap();
+    assert_eq!(
+        archive_caches.bundle_id,
+        archive_source.execution_bundle.bundle_id
+    );
+    assert_eq!(archive_caches.schema_version, 2);
+    assert!(archive_caches.caches.is_empty());
+    archive_caches
+        .validate_against_bundle(&archive_source.execution_bundle)
+        .unwrap();
+    assert!(archive.members.keys().all(|path| !path.contains("receipt")));
     assert!(archive
         .members
         .keys()
@@ -2466,7 +2533,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     assert_eq!(
         archive.manifest["replay"]["training_artifacts"]["training_outcome"]
             ["semantic_fingerprint"],
-        source.outcome_fingerprint
+        archive_source.outcome_fingerprint
     );
     assert_eq!(
         archive.manifest["member_inventory"]
@@ -2475,7 +2542,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
             .iter()
             .find(|member| member["path"] == ARCHIVE_V2_OUTCOME_MEMBER)
             .unwrap()["semantic_fingerprint"],
-        source.outcome_fingerprint
+        archive_source.outcome_fingerprint
     );
     // Core owns only bounded ZIP/inventory storage. Its returned Package V2
     // bytes cross back into DAG-ML for semantic parsing and fresh replay.
@@ -2502,6 +2569,22 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         loaded_archive.portable_predictor_package().unwrap(),
         archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap()
     );
+    assert_eq!(
+        loaded_archive.member(ARCHIVE_V2_CACHE_MEMBER).unwrap(),
+        archive.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap(),
+        "Core must preserve the synthetic empty cache member byte-for-byte"
+    );
+    let loaded_cache: BundlePredictionCachePayloadSet =
+        serde_json::from_slice(loaded_archive.member(ARCHIVE_V2_CACHE_MEMBER).unwrap()).unwrap();
+    assert_eq!(loaded_cache, archive_caches);
+    loaded_cache
+        .validate_against_bundle(&archive_source.execution_bundle)
+        .unwrap();
+    let loaded_outcome = TrainingOutcome::from_json(
+        std::str::from_utf8(loaded_archive.member(ARCHIVE_V2_OUTCOME_MEMBER).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert!(loaded_outcome.portable_prediction_caches.is_none());
     assert!(matches!(
         load_archive(&core_archive_path).unwrap(),
         LoadedArchive::V2(_)
@@ -2526,14 +2609,15 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
             archive_methods.clone(),
         )))
         .unwrap();
+    let archive_request = replay_request(&archive_source, Phase::Predict);
     let archive_replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
         predictor: &archived_loaded,
-        request: &request,
+        request: &archive_request,
         outcome_id: "replay:core-archive.methods-hpo.n4mm".to_string(),
         run_id: RunId::new("run:core-archive.methods-hpo.replay").unwrap(),
         controllers: &archive_controllers,
         data_provider: &provider(&fixture),
-        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        data_envelopes: &replay_envelopes_with_relation(&archive_source, &"a".repeat(64)),
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
     })
