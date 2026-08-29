@@ -1,7 +1,7 @@
 # Supported Surface
 
 This page is the 0.3.x RC support contract for `dag-ml` (current package
-version: 0.3.20). It separates
+version: 0.3.21). It separates
 production-facing surfaces from conformance fixtures and backlog work. It does
 not change existing C ABI, JSON schema, or WASM signatures. The explicitly
 scoped V2 terminal PREDICT Rust/Python surface is documented below.
@@ -28,6 +28,7 @@ scoped V2 terminal PREDICT Rust/Python surface is documented below.
 | Native Methods HPO session (R1) | Experimental | Only the native Methods controller may create a `RuntimeHpoExecutionContext`-bound HPO session. Plugin/process controllers, including Optuna adapters, are not release-promised for HPO. |
 | Callback-free Methods Package V2 PREDICT replay | Experimental | `dag_ml_core::execute_loaded_methods_predictor_replay` accepts only signed replay contracts, explicitly attested numeric input views and an exact `MethodsRuntime`; it registers and releases the native controller per invocation. This is the Rust bridge for Core/Studio, not a generic host-callback route. |
 | Closed V2 terminal PREDICT replay | Experimental | `dag_ml::execute_terminal_prediction` and Python `run_cv_refit_predict_in_process` execute CV → REFIT → one direct sample-level PREDICT against an identity-attested V2 cohort, returning a sealed receipt. They reject V1/targetless cohorts, OOF-dependent graphs, and observation/aggregation output paths before controller callbacks run. |
+| Strict callback-free Methods terminal PREDICT | Experimental | Python `execute_methods_cv_refit_terminal_predict` accepts only raw numeric arrays, explicit IDs, one numeric target, no-shuffle KFold PLS, and a separate X-only cohort. It performs native CV/REFIT/PREDICT without a host callback, rejects transforms, generators, HPO, calibration, groups, metadata and externally consumed/retained OOF, and returns frozen native result/receipt objects. Internal CV OOF remains required and ephemeral for scoring only. |
 | Python and WASM JSON-contract bindings | Supported | Wheel/package metadata and smoke tests are CI-gated; object-native Python DSL frontend is not included. |
 | Pipeline DSL JSON compiler | Supported | Canonical JSON plus nirs4all-compatible serialized JSON descriptors are covered. |
 | Direct Python/YAML object DSL frontend | Backlog | Host object resolution remains binding-owned. |
@@ -39,7 +40,7 @@ scoped V2 terminal PREDICT Rust/Python surface is documented below.
 
 ## dag-ml-data Dependency
 
-`dag-ml` 0.3.20 consumes the sibling `dag-ml-data` contracts through
+`dag-ml` 0.3.21 consumes the sibling `dag-ml-data` contracts through
 JSON-identical schemas and fixtures. The supported cross-repo contract for this
 release is:
 

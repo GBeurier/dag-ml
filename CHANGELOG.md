@@ -11,6 +11,15 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Added
 
+- Release patch 0.3.21: Python hosts can execute the strict callback-free
+  Methods CV → REFIT → terminal PREDICT facade for raw numeric arrays with
+  explicit IDs, one numeric target, no-shuffle KFold PLS and a separate X-only
+  cohort. It preflights identities and feature widths before native execution,
+  permits only ephemeral internal CV OOF scoring, refuses external OOF use and
+  unsupported transforms/generators/HPO/calibration/groups/metadata, and
+  returns frozen native V2 result and receipt objects bound to the terminal
+  run. This patch introduces no C ABI or JSON-schema delta.
+
 - Release patch 0.3.20: Python hosts can execute a closed CV → REFIT → terminal
   PREDICT replay for a V2 identity-attested external cohort. The core seals the
   bundle receipt, reuses only REFIT artifacts, and refuses selector errors,
