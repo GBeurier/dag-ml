@@ -18,6 +18,11 @@ use dag_ml_core::{
     PortableFullRefitExecutionInput, PortableRefitPackageV3, PortableRefitPackageV3BuildInput,
     PortableRefitRecipe, RuntimeArtifactStore, SampleId,
 };
+#[cfg(all(feature = "methods-optimizer", test))]
+use dag_ml_core::{
+    build_archive_v2_native_portable_payloads, ARCHIVE_V2_CACHE_MEMBER, ARCHIVE_V2_OUTCOME_MEMBER,
+    ARCHIVE_V2_PACKAGE_MEMBER,
+};
 use dag_ml_core::{
     calibrate_attached_training_replay_with_derived_context, execute_attached_training_replay,
     execute_loaded_predictor_replay, execute_training, parse_typed_json, ArtifactId,
@@ -3551,12 +3556,108 @@ mod tests {
                 .values()
                 .all(|payload| !payload.is_empty()));
 
-            let source_outcome_fingerprint = training_result
-                .bind(py)
-                .borrow()
-                .outcome
-                .outcome_fingerprint
-                .clone();
+            // The strict terminal facade intentionally leaves CV OOF cache
+            // payloads ephemeral.  Archive V2 may nevertheless carry its
+            // mandatory cache member as the existing, validated empty V2
+            // payload-set shape.  It must not mutate or re-sign the terminal
+            // outcome/package and it must never persist the sealed receipt.
+            let source_outcome = training_result.bind(py).borrow().outcome.clone();
+            let source_outcome_json = serialize_json(&source_outcome).unwrap();
+            let source_outcome_fingerprint = source_outcome.outcome_fingerprint.clone();
+            let source_package_fingerprint = package.package_fingerprint.clone();
+            assert!(source_outcome.portable_prediction_caches.is_none());
+            assert!(source_outcome.execution_bundle.prediction_requirements.is_empty());
+            assert!(source_outcome.execution_bundle.prediction_caches.is_empty());
+            assert!(source_outcome
+                .effective_plan
+                .graph_plan
+                .graph
+                .edges
+                .iter()
+                .all(|edge| !edge.contract.requires_oof));
+
+            let archive = build_archive_v2_native_portable_payloads(
+                "archive:strict.methods.terminal",
+                &source_outcome,
+                &package,
+            )
+            .expect("strict terminal outcome has an archive-safe absence of retained OOF caches");
+            let archive_again = build_archive_v2_native_portable_payloads(
+                "archive:strict.methods.terminal",
+                &source_outcome,
+                &package,
+            )
+            .expect("strict terminal archive assembly is deterministic");
+            assert_eq!(archive, archive_again);
+            assert_eq!(
+                archive
+                    .members
+                    .get(ARCHIVE_V2_OUTCOME_MEMBER)
+                    .map(Vec::as_slice),
+                Some(source_outcome_json.as_bytes())
+            );
+            assert_eq!(
+                archive
+                    .members
+                    .get(ARCHIVE_V2_PACKAGE_MEMBER)
+                    .map(Vec::as_slice),
+                Some(package_json.as_bytes())
+            );
+            let archived_outcome = TrainingOutcome::from_json(
+                std::str::from_utf8(
+                    archive
+                        .members
+                        .get(ARCHIVE_V2_OUTCOME_MEMBER)
+                        .expect("Archive V2 retains the exact TrainingOutcome member"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(archived_outcome.portable_prediction_caches.is_none());
+            assert_eq!(
+                archived_outcome.outcome_fingerprint,
+                source_outcome_fingerprint
+            );
+            let archive_cache_member = archive
+                .members
+                .get(ARCHIVE_V2_CACHE_MEMBER)
+                .expect("Archive V2 always carries its cache payload member");
+            let archive_caches: dag_ml_core::BundlePredictionCachePayloadSet =
+                serde_json::from_slice(archive_cache_member).unwrap();
+            assert_eq!(archive_caches.bundle_id, source_outcome.execution_bundle.bundle_id);
+            assert_eq!(archive_caches.schema_version, 2);
+            assert!(archive_caches.caches.is_empty());
+            archive_caches
+                .validate_against_bundle(&source_outcome.execution_bundle)
+                .unwrap();
+            let cache_raw_sha256 = format!("{:x}", Sha256::digest(archive_cache_member));
+            let cache_reference = &archive.manifest["replay"]["training_artifacts"]
+                ["prediction_cache_payload_set"];
+            assert_eq!(cache_reference["raw_sha256"], cache_raw_sha256);
+            assert_eq!(cache_reference["semantic_fingerprint"], cache_raw_sha256);
+            let cache_inventory = archive.manifest["member_inventory"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|member| member["path"] == ARCHIVE_V2_CACHE_MEMBER)
+                .expect("cache member has a closed inventory entry");
+            assert_eq!(cache_inventory["raw_sha256"], cache_raw_sha256);
+            assert_eq!(cache_inventory["semantic_fingerprint"], cache_raw_sha256);
+            assert!(archive.members.keys().all(|path| !path.contains("receipt")));
+            assert!(!serde_json::to_string(&archive.manifest)
+                .unwrap()
+                .contains("terminal_receipt"));
+            assert_eq!(source_outcome.outcome_fingerprint, source_outcome_fingerprint);
+            assert_eq!(package.package_fingerprint, source_package_fingerprint);
+            let archive_package_json = std::str::from_utf8(
+                archive
+                    .members
+                    .get(ARCHIVE_V2_PACKAGE_MEMBER)
+                    .expect("Archive V2 retains the exact Package V2 member"),
+            )
+            .unwrap()
+            .to_owned();
+
             let sys = py.import("sys").unwrap();
             sys.getattr("path")
                 .unwrap()
@@ -3636,7 +3737,7 @@ mod tests {
             replay_request.request_fingerprint = replay_request.compute_fingerprint().unwrap();
             let replay = execute_loaded_methods_predictor_replay_json(
                 py,
-                &package_json,
+                &archive_package_json,
                 &serde_json::to_string(&replay_request).unwrap(),
                 &serde_json::to_string(&BTreeMap::from([(
                     "model:base.x".to_string(),
@@ -3653,7 +3754,7 @@ mod tests {
                 "[]",
                 "{}",
             )
-            .expect("the exported native Package V2 replays after TrainingResult cleanup");
+            .expect("the Archive V2 Package member replays after TrainingResult cleanup");
             let replay =
                 serde_json::from_str::<dag_ml_core::TrainingReplayOutcome>(&replay).unwrap();
             assert_eq!(replay.phase, Phase::Predict);
