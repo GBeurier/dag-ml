@@ -244,7 +244,7 @@ python parity/training/generate_training_replay_fixtures.py
 ```
 
 `training_replay_contract_conformance_pack.v1.json` is separate from and contains the
-intact 81-artifact `training_contract_conformance_pack.v1.json` authority. It pins that
+intact 103-artifact `training_contract_conformance_pack.v1.json` authority. It pins that
 base pack's ID, file SHA-256, internal checksum and exact artifact list, then adds the
 exact transitive D4 closure. Paths are repository-confined regular files: absolute,
 traversal and symlink paths are rejected. The pack also freezes the complete positive

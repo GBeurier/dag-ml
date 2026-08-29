@@ -51,6 +51,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   by `nirs4all-core`.
 
 ### Fixed
+- Release patch 0.3.22: strict terminal Archive V2 persistence now emits a
+  verified empty prediction-cache payload set when internal CV OOF evidence was
+  intentionally discarded and the bundle and graph prove no external OOF
+  requirement. It never invents nonempty OOF evidence or persists a terminal
+  receipt; this is a dag-ml-only fix with no C ABI or JSON-schema delta.
+
 - Release patch 0.3.17: conformal replay now verifies canonical independently
   rounded decimal endpoints while retaining the frozen report-only radius
   closure for historical evidence that does not carry point predictions.
