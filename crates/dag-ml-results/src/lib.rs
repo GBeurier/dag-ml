@@ -72,8 +72,8 @@ pub struct NativePredictionRow {
     /// Stable physical sample identities, when the producer supplied them.
     ///
     /// `None` means a legacy V2 projection without the additive
-    /// `sample_ids` column; an empty vector means the column was present but
-    /// this particular score-only row has no per-sample identities.
+    /// `sample_ids` column; an empty vector means the current producer could
+    /// not prove stable identities for that row.
     pub sample_ids: Option<Vec<String>>,
     /// Flattened true targets.
     pub y_true: Vec<f64>,
