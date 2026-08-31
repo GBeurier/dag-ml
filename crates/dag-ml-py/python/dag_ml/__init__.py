@@ -46,6 +46,7 @@ from ._dag_ml import (
     loss_execution_attestation_json as _native_loss_execution_attestation_json,
     project_training_request_json,
     read_native_results_v2_json as _native_read_native_results_v2_json,
+    write_native_results_v2_json as _native_write_native_results_v2_json,
     run_cv_refit_in_process_with_training_losses as _native_run_cv_refit_in_process_with_training_losses,
     sample_relation_set_fingerprint_json,
     sign_training_replay_request_json as _native_sign_training_replay_request_json,
@@ -130,6 +131,7 @@ _FACADE_EXPORTS = [
     "replay_loaded_predictor_package_json",
     "run_cv_refit_in_process_with_training_losses",
     "read_native_results_v2",
+    "write_native_results_v2",
 ]
 
 
@@ -189,6 +191,37 @@ def read_native_results_v2(run_dir: str | PathLike[str]) -> dict[str, Any]:
     """
 
     return json.loads(_native_read_native_results_v2_json(str(run_dir)))
+
+
+def write_native_results_v2(
+    run_dir: str | PathLike[str],
+    manifest: dict[str, Any],
+    score_set: dict[str, Any],
+    predictions: list[dict[str, Any]],
+) -> None:
+    """Write one validated native-results V2 directory through Rust.
+
+    The destination directory must already exist and must not already contain
+    any V2 core file. This operation owns only ``manifest.json``,
+    ``score_set.json``, and ``predictions.parquet``; host artifacts remain a
+    separately authorized boundary.
+    """
+
+    def dump(value: Any) -> str:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+
+    _native_write_native_results_v2_json(
+        str(run_dir),
+        dump(manifest),
+        dump(score_set),
+        dump(predictions),
+    )
 
 
 class JsonContract:
@@ -1466,6 +1499,7 @@ __all__ = [
     "canonical_operator_variant_label",
     "contract_manifest_json",
     "read_native_results_v2",
+    "write_native_results_v2",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_json",
     "compile_pipeline_dsl_artifact_with_controllers",

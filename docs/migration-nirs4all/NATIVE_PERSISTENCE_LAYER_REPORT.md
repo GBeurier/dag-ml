@@ -30,7 +30,7 @@
 ## Implementation update — 31 August 2026
 
 The recommended thin workspace crate is now partly implemented as
-`dag-ml-results`, a native results V2 reader:
+`dag-ml-results`, a native results V2 reader/writer:
 
 - it validates the fixed `manifest.json` / `score_set.json` /
   `predictions.parquet` directory layout, the ScoreSet canonical SHA-256 and
@@ -40,13 +40,17 @@ The recommended thin workspace crate is now partly implemented as
   score/target-name JSON;
 - it never follows manifest-supplied filenames and never resolves or
   deserializes optional artifact references;
-- `dag-ml-py` exposes it as `read_native_results_v2_json`; its Python façade
-  returns decoded JSON only.
+- it writes the fixed core files through temporary sibling files and refuses
+  overwrites, malformed rows, score-hash mismatches and unaligned identities;
+  it does not write, resolve or deserialize host artifacts;
+- `dag-ml-py` exposes `read_native_results_v2_json` and
+  `write_native_results_v2_json`; the Python façade maps structured JSON only.
 
 This remains a consumer foundation, not a claim that R2 persistence is
-complete. The native writer is still hosted by nirs4all; score-record ownership
-at the dag-ml runtime boundary, publishing the binding and Studio-side
-consumption are still required before a native-default claim.
+complete. nirs4all currently supplies its in-memory projection and optional
+host artifacts, while DAG-ML owns the fixed core-file validation and I/O.
+Score-record ownership at the dag-ml runtime boundary, publishing the binding
+and Studio-side consumption are still required before a native-default claim.
 
 ---
 

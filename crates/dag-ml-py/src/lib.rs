@@ -107,6 +107,26 @@ fn read_native_results_v2_json(run_dir: &str) -> PyResult<String> {
     serde_json::to_string(&view).map_err(py_serde_error)
 }
 
+/// Write the generic V2 native-results payload through the Rust-owned store.
+///
+/// The caller supplies a final manifest, authoritative ScoreSet, and projected
+/// rows. Optional host artifacts stay outside this surface: their producer
+/// writes them before calling this function and their consumer authorizes them
+/// separately.
+#[pyfunction]
+fn write_native_results_v2_json(
+    run_dir: &str,
+    manifest_json: &str,
+    score_set_json: &str,
+    predictions_json: &str,
+) -> PyResult<()> {
+    let manifest = serde_json::from_str(manifest_json).map_err(py_serde_error)?;
+    let score_set = serde_json::from_str(score_set_json).map_err(py_serde_error)?;
+    let predictions = serde_json::from_str(predictions_json).map_err(py_serde_error)?;
+    dag_ml_results::write_native_results(run_dir, manifest, score_set, predictions)
+        .map_err(py_native_results_error)
+}
+
 #[pyfunction]
 fn validate_graph_json(json: &str) -> PyResult<()> {
     GraphSpec::from_json(json)
@@ -490,6 +510,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(configure_methods_runtime, module)?)?;
     module.add_function(wrap_pyfunction!(contract_manifest_json, module)?)?;
     module.add_function(wrap_pyfunction!(read_native_results_v2_json, module)?)?;
+    module.add_function(wrap_pyfunction!(write_native_results_v2_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_graph_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_campaign_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_controller_manifest_json, module)?)?;
@@ -653,7 +674,8 @@ fn contract_manifest() -> serde_json::Value {
             "execute_methods_training",
             "execute_methods_portable_full_refit",
             "build_conformal_presentation",
-            "read_native_results_v2"
+            "read_native_results_v2",
+            "write_native_results_v2"
         ],
         "shared": {
             "fold_set_fixture_fingerprint": SHARED_FOLD_SET_FINGERPRINT
@@ -663,6 +685,7 @@ fn contract_manifest() -> serde_json::Value {
             "configure_methods_runtime",
             "contract_manifest_json",
             "read_native_results_v2_json",
+            "write_native_results_v2_json",
             "validate_graph_json",
             "validate_campaign_json",
             "validate_controller_manifest_json",
@@ -1183,6 +1206,7 @@ mod tests {
                 "execute_loaded_methods_portable_refit_replay_v3_json",
                 "build_conformal_presentation_v1_json",
                 "read_native_results_v2_json",
+                "write_native_results_v2_json",
                 "TrainingResult",
             ] {
                 assert!(
@@ -1207,6 +1231,10 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("read_native_results_v2_json")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("write_native_results_v2_json")));
         assert!(manifest["python_exports"]
             .as_array()
             .unwrap()
@@ -1239,6 +1267,10 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("read_native_results_v2")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("write_native_results_v2")));
         assert!(manifest["capabilities"]
             .as_array()
             .unwrap()
