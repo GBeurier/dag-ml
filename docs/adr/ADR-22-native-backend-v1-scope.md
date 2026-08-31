@@ -16,9 +16,11 @@ also makes the phrases "native backend" and "Rust-only" ambiguous.
 
 V1 must preserve the public Python façade while making portability decisions
 before data loading, training, writing or another expensive action.  Studio
-must be distributable without a FastAPI/Uvicorn or CPython backend.  The
-existing ADR-17 retention and rollback guarantees are still accepted and
-cannot be bypassed by this decision.
+must be distributable without a FastAPI/Uvicorn or CPython **orchestration
+backend**. It may bundle CPython solely as the host for an explicit capability
+plugin; the Rust sidecar remains the only HTTP, job, workspace and lifecycle
+backend. The existing ADR-17 retention and rollback guarantees are still
+accepted and cannot be bypassed by this decision.
 
 ## Decision
 
@@ -37,8 +39,11 @@ cannot be bypassed by this decision.
    optimizer in `dag-ml`.
 3. The public Python API remains a compatibility façade. Python, sklearn, DL,
    SHAP or other non-portable controllers are allowed only as explicitly
-   declared plugins. They are never an implicit orchestration backend and
-   cannot be selected as a transparent fallback.
+   declared plugins. Studio may bundle CPython to host such a plugin, but that
+   interpreter is not an HTTP server, scheduler, store owner or fallback
+   backend: the Rust sidecar owns those boundaries and invokes the plugin only
+   after capability preflight. Plugins are never selected as a transparent
+   fallback.
 4. Every public API, model, operator and format has one preflight disposition
    in `nirs4all-ecosystem/docs/contracts/release/native-capability-ledger.v1.json`.
    Each entry is indexed by capability kind, stable identifier and
@@ -55,9 +60,10 @@ cannot be bypassed by this decision.
    be tested during that window, but it cannot replace the rollback-capable
    product. Only after the retention window and `DROP-*` gates may the sole
    distributed product be fail-closed. Studio then launches a Rust sidecar and
-   may invoke an explicitly installed external plugin only through the
-   capability contract. React/Electron and the Python façade are not themselves
-   evidence of a Python backend.
+   may invoke an explicit capability plugin through its contract, whether the
+   plugin host is a bundled CPython runtime or an externally installed
+   environment. React/Electron, a bundled interpreter and the Python façade
+   are not themselves evidence of a Python backend.
 6. `dag-ml`'s generic prediction/score store is not the product
    workspace/session/archive. The product aggregate (`nirs4all-core`, with the
    precise writer named by `SAVE-001`) owns that product boundary and must
@@ -90,6 +96,9 @@ cannot be bypassed by this decision.
 - `nirs4all-core` may expose upstream runtimes and bindings, but parsers,
   numerical kernels, dataset catalog logic and DAG scheduling stay in their
   owning projects.
+- A bundled Python runtime is permitted only behind the Studio capability
+  bridge. It cannot bind Studio's product port, serve FastAPI/Uvicorn routes,
+  own workspace state, or trigger an implicit legacy retry.
 - `DROP-*` cannot start merely because native-default builds exist. It still
   requires the ADR-17 retention window, `LOCK-DROP`, and the release gates.
 
