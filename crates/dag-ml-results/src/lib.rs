@@ -20,6 +20,7 @@ use arrow_array::{
     RecordBatch, StringArray,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -50,7 +51,7 @@ pub enum NativeResultsError {
 pub type Result<T> = std::result::Result<T, NativeResultsError>;
 
 /// One queryable prediction row from the Parquet projection.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativePredictionRow {
     /// Dataset identifier supplied by the caller.
     pub dataset: String,
@@ -103,7 +104,7 @@ pub struct NativePredictionRow {
 }
 
 /// Validated native results, ready for a language binding or a host query API.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeResultsView {
     /// The additive manifest, preserved without re-authoring it.
     pub manifest: Value,

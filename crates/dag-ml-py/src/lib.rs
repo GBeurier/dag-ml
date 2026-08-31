@@ -96,6 +96,17 @@ fn contract_manifest_json() -> PyResult<String> {
     serde_json::to_string(&contract_manifest()).map_err(py_serde_error)
 }
 
+/// Read a native results V2 directory through the Rust-owned generic store.
+///
+/// The returned JSON preserves the manifest and authoritative ScoreSet, and
+/// materializes the queryable prediction projection. Artifact references remain
+/// metadata only; this function never resolves or deserializes them.
+#[pyfunction]
+fn read_native_results_v2_json(run_dir: &str) -> PyResult<String> {
+    let view = dag_ml_results::read_native_results(run_dir).map_err(py_native_results_error)?;
+    serde_json::to_string(&view).map_err(py_serde_error)
+}
+
 #[pyfunction]
 fn validate_graph_json(json: &str) -> PyResult<()> {
     GraphSpec::from_json(json)
@@ -478,6 +489,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(version, module)?)?;
     module.add_function(wrap_pyfunction!(configure_methods_runtime, module)?)?;
     module.add_function(wrap_pyfunction!(contract_manifest_json, module)?)?;
+    module.add_function(wrap_pyfunction!(read_native_results_v2_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_graph_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_campaign_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_controller_manifest_json, module)?)?;
@@ -616,7 +628,8 @@ fn contract_manifest() -> serde_json::Value {
             {"id": "training_outcome", "version": 1},
             {"id": "training_replay_request", "version": 1},
             {"id": "training_replay_outcome", "version": 1},
-            {"id": "conformal_presentation", "version": 1}
+            {"id": "conformal_presentation", "version": 1},
+            {"id": "native_results", "version": 2}
         ],
         "capabilities": [
             "validate_json_contracts",
@@ -639,7 +652,8 @@ fn contract_manifest() -> serde_json::Value {
             "configure_methods_runtime",
             "execute_methods_training",
             "execute_methods_portable_full_refit",
-            "build_conformal_presentation"
+            "build_conformal_presentation",
+            "read_native_results_v2"
         ],
         "shared": {
             "fold_set_fixture_fingerprint": SHARED_FOLD_SET_FINGERPRINT
@@ -648,6 +662,7 @@ fn contract_manifest() -> serde_json::Value {
             "version",
             "configure_methods_runtime",
             "contract_manifest_json",
+            "read_native_results_v2_json",
             "validate_graph_json",
             "validate_campaign_json",
             "validate_controller_manifest_json",
@@ -760,6 +775,15 @@ fn derive_controller_manifests(
 
 fn py_serde_error(error: serde_json::Error) -> PyErr {
     py_core_error(CoreDagMlError::Serialization(error))
+}
+
+fn py_native_results_error(error: dag_ml_results::NativeResultsError) -> PyErr {
+    match error {
+        dag_ml_results::NativeResultsError::Validation(message) => DagMlValidationError::new_err(message),
+        dag_ml_results::NativeResultsError::Io(error) => {
+            DagMlDataError::new_err(error.to_string())
+        }
+    }
 }
 
 fn py_core_error(error: CoreDagMlError) -> PyErr {
@@ -1158,6 +1182,7 @@ mod tests {
                 "execute_loaded_methods_predictor_replay_json",
                 "execute_loaded_methods_portable_refit_replay_v3_json",
                 "build_conformal_presentation_v1_json",
+                "read_native_results_v2_json",
                 "TrainingResult",
             ] {
                 assert!(
@@ -1178,6 +1203,10 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("contract_manifest_json")));
+        assert!(manifest["python_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("read_native_results_v2_json")));
         assert!(manifest["python_exports"]
             .as_array()
             .unwrap()
@@ -1206,6 +1235,10 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("build_conformal_presentation")));
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("read_native_results_v2")));
         assert!(manifest["capabilities"]
             .as_array()
             .unwrap()

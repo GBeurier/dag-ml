@@ -33,6 +33,7 @@ methods-optimizer = ["dag-ml-core/methods-optimizer"]
 
 [dependencies]
 dag-ml-core = { path = "../dag-ml-core", version = "0.3.18" }
+dag-ml-results = { path = "../dag-ml-results", version = "0.3.18" }
 pyo3 = { version = "0.29", features = ["abi3-py311"] }
 pythonize = "0.29"
 serde = { version = "1.0", features = ["derive"] }
