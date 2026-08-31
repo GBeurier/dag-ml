@@ -545,6 +545,23 @@ mod tests {
     }
 
     #[test]
+    fn score_set_canonicalization_matches_the_python_producer() {
+        let score_set = json!({
+            "z": {"label": "élévation", "items": [true, null, 1.0, 0.42]},
+            "a": {"nested": {"value": -3.5}},
+        });
+
+        assert_eq!(
+            super::canonical_json(&score_set),
+            r#"{"a":{"nested":{"value":-3.5}},"z":{"items":[true,null,1.0,0.42],"label":"élévation"}}"#,
+        );
+        assert_eq!(
+            score_set_hash(&score_set),
+            "f105f5e3c11924a7fff99bc2e613f7a6951819848369a0e70e4704566abc7603",
+        );
+    }
+
+    #[test]
     fn refuses_a_score_set_hash_mismatch() {
         let fixture = Fixture::new();
         fs::write(fixture.path().join("score_set.json"), r#"{"changed":true}"#)
