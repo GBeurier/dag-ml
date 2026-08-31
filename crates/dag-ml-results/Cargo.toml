@@ -1,0 +1,21 @@
+[package]
+name = "dag-ml-results"
+description = "Validated native results reader for dag-ml prediction and score records."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+arrow-array = "53"
+parquet = { version = "53", features = ["arrow"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+arrow-schema = "53"
