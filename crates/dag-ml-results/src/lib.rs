@@ -69,6 +69,12 @@ pub struct NativePredictionRow {
     pub refit_context: String,
     /// Original sample indices for array-backed rows.
     pub sample_indices: Vec<i64>,
+    /// Stable physical sample identities, when the producer supplied them.
+    ///
+    /// `None` means a legacy V2 projection without the additive
+    /// `sample_ids` column; an empty vector means the column was present but
+    /// this particular score-only row has no per-sample identities.
+    pub sample_ids: Option<Vec<String>>,
     /// Flattened true targets.
     pub y_true: Vec<f64>,
     /// Flattened predictions.
@@ -254,6 +260,23 @@ fn read_prediction_row(batch: &RecordBatch, row: usize) -> Result<NativePredicti
         &required_string_column(batch, "scores", row)?,
         "prediction row scores",
     )?;
+    let sample_indices = required_list_i64(batch, "sample_indices", row)?;
+    let sample_ids = optional_list_string(batch, "sample_ids", row)?;
+    if let Some(sample_ids) = &sample_ids {
+        if !sample_ids.is_empty()
+            && (sample_ids.len() != sample_indices.len()
+                || sample_ids.iter().any(String::is_empty)
+                || sample_ids
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != sample_ids.len())
+        {
+            return Err(validation(
+                "prediction row sample_ids must be non-empty, unique, and align with sample_indices",
+            ));
+        }
+    }
 
     Ok(NativePredictionRow {
         dataset: required_string_column(batch, "dataset", row)?,
@@ -263,7 +286,8 @@ fn read_prediction_row(batch: &RecordBatch, row: usize) -> Result<NativePredicti
         partition: required_string_column(batch, "partition", row)?,
         fold_id: required_string_column(batch, "fold_id", row)?,
         refit_context: required_string_column(batch, "refit_context", row)?,
-        sample_indices: required_list_i64(batch, "sample_indices", row)?,
+        sample_indices,
+        sample_ids,
         y_true,
         y_pred,
         y_proba,
@@ -388,6 +412,44 @@ fn required_list_i64(batch: &RecordBatch, name: &str, row: usize) -> Result<Vec<
         )));
     }
     Ok((0..values.len()).map(|index| values.value(index)).collect())
+}
+
+fn optional_list_string(
+    batch: &RecordBatch,
+    name: &str,
+    row: usize,
+) -> Result<Option<Vec<String>>> {
+    if batch.column_by_name(name).is_none() {
+        return Ok(None);
+    }
+    required_list_string(batch, name, row).map(Some)
+}
+
+fn required_list_string(batch: &RecordBatch, name: &str, row: usize) -> Result<Vec<String>> {
+    let values = required_list_value(batch, name, row)?;
+    if let Some(values) = values.as_any().downcast_ref::<StringArray>() {
+        if values.null_count() != 0 {
+            return Err(validation(format!(
+                "prediction column {name} list values must not contain nulls",
+            )));
+        }
+        return Ok((0..values.len())
+            .map(|index| values.value(index).to_owned())
+            .collect());
+    }
+    if let Some(values) = values.as_any().downcast_ref::<LargeStringArray>() {
+        if values.null_count() != 0 {
+            return Err(validation(format!(
+                "prediction column {name} list values must not contain nulls",
+            )));
+        }
+        return Ok((0..values.len())
+            .map(|index| values.value(index).to_owned())
+            .collect());
+    }
+    Err(validation(format!(
+        "prediction column {name} must be list<UTF-8 string>"
+    )))
 }
 
 fn required_list_value(
@@ -542,6 +604,7 @@ mod tests {
         assert_eq!(view.predictions.len(), 1);
         assert_eq!(view.predictions[0].y_pred, vec![0.1, 0.9]);
         assert_eq!(view.predictions[0].target_names, vec!["y"]);
+        assert_eq!(view.predictions[0].sample_ids, None);
         assert_eq!(view.predictions[0].val_score, Some(0.42));
     }
 
@@ -617,6 +680,7 @@ mod tests {
 
         assert!(view.score_set.is_object());
         assert!(!view.predictions.is_empty());
+        assert_eq!(view.predictions[0].sample_ids, Some(Vec::new()));
     }
 
     fn assert_validation(result: super::Result<super::NativeResultsView>, expected: &str) {
