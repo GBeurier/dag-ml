@@ -28,22 +28,28 @@ or R4 stability.
 2. **Strict product path.** In R3 and R4, the default native path is
    fail-closed: unsupported or plugin-only capabilities are refused before
    scientific-data access, result writing, or meaningful computation.  It
-   never transparently reruns the Python legacy runner.  Studio ships and
-   launches only the Rust sidecar; it contains no CPython/FastAPI fallback.
+   never transparently reruns the Python legacy runner. Studio ships and
+   launches only the Rust sidecar as HTTP, WebSocket, scheduler, store and job
+   backend. A bundled CPython runtime may remain solely as a bounded host for
+   explicitly preflighted libraries/plugins; it exposes no product port and is
+   neither an orchestration backend nor a fallback.
 3. **Rollback profile.** The Python compatibility distribution carries the
    explicitly selected `engine="legacy"` rollback profile through R4.  It is
    not a default, not a transparent fallback, and is labelled as rollback-only
    in APIs, installers, capability evidence, and release notes.  Thus a user
    can roll back execution without reinstalling or migrating archives while
-   the strict product and Studio paths remain Python-free.
+   the strict product and Studio control paths remain free of Python
+   orchestration. A bounded CPython library/plugin host is not such a backend.
 4. **Bundle readability.** Archives created by either profile remain readable
    for PREDICT during R2–R4.  Conversion is explicit, verified, and never
    required merely to select the rollback profile.
-5. **Removal.** Physical removal of the legacy compatibility profile is a
-   post-V1 release.  It may start only after R4 has shipped, `LOCK-DROP` and
-   every `DROP-*` gate are green, and an explicit removal release records the
-   version in the changelog.  R3/R4 must not claim that the rollback profile
-   has been removed.
+5. **Removal.** During V1, `LOCK-DROP` and every `DROP-*` gate mean that
+   legacy orchestration is unreachable from Studio, Web and the strict Python
+   profile; they must be green for R3 and do not claim byte-level removal.
+   Physical removal of the separately selected legacy compatibility profile is
+   a post-V1 release. It may start only after R4 has shipped and an explicit
+   removal decision records its own gate and version in the changelog. R3/R4
+   must not claim that the rollback profile has been removed.
 
 ## Consequences
 
@@ -54,7 +60,8 @@ or R4 stability.
   from the rollback-capable Python compatibility distribution.
 - The capability ledger retains `rollback_profile.backend=legacy` and
   `retention_releases=2`; its evidence must name this ADR.
-- `ARCH-002` is resolved, but `LOCK-DROP` remains pending until after R4.
+- `ARCH-002` is resolved. `LOCK-DROP` is the R3 strict-reachability gate;
+  physical legacy removal remains separately governed after R4.
 
 ## Blocks
 
