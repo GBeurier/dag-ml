@@ -825,10 +825,10 @@ fn py_serde_error(error: serde_json::Error) -> PyErr {
 
 fn py_native_results_error(error: dag_ml_results::NativeResultsError) -> PyErr {
     match error {
-        dag_ml_results::NativeResultsError::Validation(message) => DagMlValidationError::new_err(message),
-        dag_ml_results::NativeResultsError::Io(error) => {
-            DagMlDataError::new_err(error.to_string())
+        dag_ml_results::NativeResultsError::Validation(message) => {
+            DagMlValidationError::new_err(message)
         }
+        dag_ml_results::NativeResultsError::Io(error) => DagMlDataError::new_err(error.to_string()),
     }
 }
 

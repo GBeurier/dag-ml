@@ -9,6 +9,11 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard};
 
+#[cfg(all(feature = "methods-optimizer", test))]
+use dag_ml_core::{
+    build_archive_v2_native_portable_payloads, ARCHIVE_V2_CACHE_MEMBER, ARCHIVE_V2_OUTCOME_MEMBER,
+    ARCHIVE_V2_PACKAGE_MEMBER,
+};
 #[cfg(feature = "methods-optimizer")]
 use dag_ml_core::{
     build_portable_refit_package_v3, derive_portable_full_refit_target_plan,
@@ -17,11 +22,6 @@ use dag_ml_core::{
     MethodsPortablePredictorReplayInput, MethodsPortableRefitReplayInputV3,
     PortableFullRefitExecutionInput, PortableRefitPackageV3, PortableRefitPackageV3BuildInput,
     PortableRefitRecipe, RuntimeArtifactStore, SampleId,
-};
-#[cfg(all(feature = "methods-optimizer", test))]
-use dag_ml_core::{
-    build_archive_v2_native_portable_payloads, ARCHIVE_V2_CACHE_MEMBER, ARCHIVE_V2_OUTCOME_MEMBER,
-    ARCHIVE_V2_PACKAGE_MEMBER,
 };
 use dag_ml_core::{
     calibrate_attached_training_replay_with_derived_context, execute_attached_training_replay,
@@ -1917,11 +1917,14 @@ fn validate_strict_methods_terminal_facade_contract(
         .collect::<BTreeSet<_>>();
     if relations.records.len() != fold_set.sample_ids.len()
         || relation_sample_ids != fold_set.sample_ids.iter().cloned().collect()
-        || relations.records.iter().any(|record| !strict_raw_relation(record))
+        || relations
+            .records
+            .iter()
+            .any(|record| !strict_raw_relation(record))
         || training_influence
-        .entries
-        .iter()
-        .any(|entry| !entry.group_ids.is_empty() || !entry.origin_sample_ids.is_empty())
+            .entries
+            .iter()
+            .any(|entry| !entry.group_ids.is_empty() || !entry.origin_sample_ids.is_empty())
     {
         return Err(refuse(
             "non-raw relations, groups, metadata, augmentation, exclusions, or weighted training influence",
@@ -2065,10 +2068,8 @@ fn execute_attached_methods_terminal_prediction(
             )));
         }
     }
-    let artifact_store = MethodsBundlePayloadArtifactStore::new(
-        &package.execution_bundle,
-        &resources.controllers,
-    );
+    let artifact_store =
+        MethodsBundlePayloadArtifactStore::new(&package.execution_bundle, &resources.controllers);
     let execution = dag_ml_core::execute_terminal_prediction(
         dag_ml_core::TerminalPredictionReplay {
             plan: &package.effective_plan,
@@ -2098,10 +2099,7 @@ struct MethodsBundlePayloadArtifactStore<'a> {
 
 #[cfg(feature = "methods-optimizer")]
 impl<'a> MethodsBundlePayloadArtifactStore<'a> {
-    fn new(
-        bundle: &'a ExecutionBundle,
-        controllers: &'a RuntimeControllerRegistry,
-    ) -> Self {
+    fn new(bundle: &'a ExecutionBundle, controllers: &'a RuntimeControllerRegistry) -> Self {
         Self {
             bundle,
             controllers,
@@ -3189,7 +3187,9 @@ mod tests {
                 "{}",
             )
             .expect_err("caller diagnostics must not widen the closed facade");
-            assert!(error.to_string().contains("warnings or diagnostics metadata"));
+            assert!(error
+                .to_string()
+                .contains("warnings or diagnostics metadata"));
 
             let mut external_oof: TrainingRequest =
                 serde_json::from_str(&fixture.request_json).unwrap();
@@ -3263,7 +3263,9 @@ mod tests {
                 "{}",
             )
             .expect_err("a valid V2 cohort must still reject metadata before native execution");
-            assert!(error.to_string().contains("PREDICT cohort relation metadata"));
+            assert!(error
+                .to_string()
+                .contains("PREDICT cohort relation metadata"));
         });
     }
 
@@ -3566,7 +3568,10 @@ mod tests {
             let source_outcome_fingerprint = source_outcome.outcome_fingerprint.clone();
             let source_package_fingerprint = package.package_fingerprint.clone();
             assert!(source_outcome.portable_prediction_caches.is_none());
-            assert!(source_outcome.execution_bundle.prediction_requirements.is_empty());
+            assert!(source_outcome
+                .execution_bundle
+                .prediction_requirements
+                .is_empty());
             assert!(source_outcome.execution_bundle.prediction_caches.is_empty());
             assert!(source_outcome
                 .effective_plan
@@ -3624,15 +3629,18 @@ mod tests {
                 .expect("Archive V2 always carries its cache payload member");
             let archive_caches: dag_ml_core::BundlePredictionCachePayloadSet =
                 serde_json::from_slice(archive_cache_member).unwrap();
-            assert_eq!(archive_caches.bundle_id, source_outcome.execution_bundle.bundle_id);
+            assert_eq!(
+                archive_caches.bundle_id,
+                source_outcome.execution_bundle.bundle_id
+            );
             assert_eq!(archive_caches.schema_version, 2);
             assert!(archive_caches.caches.is_empty());
             archive_caches
                 .validate_against_bundle(&source_outcome.execution_bundle)
                 .unwrap();
             let cache_raw_sha256 = format!("{:x}", Sha256::digest(archive_cache_member));
-            let cache_reference = &archive.manifest["replay"]["training_artifacts"]
-                ["prediction_cache_payload_set"];
+            let cache_reference =
+                &archive.manifest["replay"]["training_artifacts"]["prediction_cache_payload_set"];
             assert_eq!(cache_reference["raw_sha256"], cache_raw_sha256);
             assert_eq!(cache_reference["semantic_fingerprint"], cache_raw_sha256);
             let cache_inventory = archive.manifest["member_inventory"]
@@ -3647,7 +3655,10 @@ mod tests {
             assert!(!serde_json::to_string(&archive.manifest)
                 .unwrap()
                 .contains("terminal_receipt"));
-            assert_eq!(source_outcome.outcome_fingerprint, source_outcome_fingerprint);
+            assert_eq!(
+                source_outcome.outcome_fingerprint,
+                source_outcome_fingerprint
+            );
             assert_eq!(package.package_fingerprint, source_package_fingerprint);
             let archive_package_json = std::str::from_utf8(
                 archive

@@ -43,16 +43,15 @@ use dag_ml_core::{
     build_execution_bundle, build_execution_plan, compile_operator_variant_models,
     compile_pipeline_dsl_with_generation_and_controller_registry, enumerate_variants,
     execute_terminal_prediction, fan_out_data_aware_branches, parse_pipeline_dsl_json,
-    plan_oof_partition_mode,
-    prune_plan_to_active, select_best_operator_variant_from_models, select_best_variant_by_cv,
-    AggregationControllerResult, AggregationControllerTask, ArtifactMaterializationRequest,
-    BundleId, ControllerId, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan,
-    ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
-    NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
-    RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    ScoreSet, SequentialScheduler, TerminalPredictionReplay, TerminalPredictionSelector,
-    TrainingLossRoleReference, VariantId, VariantValidationPredictions,
-    validate_terminal_prediction_preflight, SCORE_SET_SCHEMA_VERSION,
+    plan_oof_partition_mode, prune_plan_to_active, select_best_operator_variant_from_models,
+    select_best_variant_by_cv, validate_terminal_prediction_preflight, AggregationControllerResult,
+    AggregationControllerTask, ArtifactMaterializationRequest, BundleId, ControllerId,
+    ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan, ExternalDataPlanEnvelope,
+    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
+    OperatorVariantModel, Phase, RegressionMetricKind, RegressionMetricReport, RunContext, RunId,
+    RuntimeController, RuntimeControllerRegistry, ScoreSet, SequentialScheduler,
+    TerminalPredictionReplay, TerminalPredictionSelector, TrainingLossRoleReference, VariantId,
+    VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -727,12 +726,13 @@ pub fn run_cv_refit_predict_in_process(
     plan.campaign
         .validate_data_envelope_relations(&envelope)
         .map_err(py_core_error)?;
-    let selector: TerminalPredictionSelector = dag_ml_core::canonical::deserialize_external_contract(
-        terminal_selector_json,
-        "terminal prediction selector",
-        CoreDagMlError::RuntimeValidation,
-    )
-    .map_err(py_core_error)?;
+    let selector: TerminalPredictionSelector =
+        dag_ml_core::canonical::deserialize_external_contract(
+            terminal_selector_json,
+            "terminal prediction selector",
+            CoreDagMlError::RuntimeValidation,
+        )
+        .map_err(py_core_error)?;
     // This must happen before variant resolution, CV, REFIT, or construction
     // of the Python callback runtime.  A terminal request that cannot ever be
     // replayed is a preflight refusal, not a partial training attempt.
@@ -744,8 +744,8 @@ pub fn run_cv_refit_predict_in_process(
     .map_err(py_core_error)?;
     let runtime_controllers =
         build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
-    let run_id = RunId::new(format!("run:{}:in-process-terminal", dsl_spec.id))
-        .map_err(py_core_error)?;
+    let run_id =
+        RunId::new(format!("run:{}:in-process-terminal", dsl_spec.id)).map_err(py_core_error)?;
     let root_seed: u64 = 0;
 
     let resolved = resolve_refit_variant(
@@ -1026,8 +1026,8 @@ mod tests {
         ControllerManifest, ExecutionPlan, ExternalDataPlanEnvelope, HandleKind, HandleRef,
         LineageId, LineageRecord, NodeId, NodeKind, NodeResult, NodeTask, OperatorVariantModel,
         Phase, PredictCohort, PredictCohortRole, PredictionBlock, PredictionLevel,
-        PredictionPartition, PredictionUnitId, RegressionMetricKind, RegressionTargetBlock,
-        RunId, RuntimeController, RuntimeControllerRegistry, SampleId, SampleRelationSet,
+        PredictionPartition, PredictionUnitId, RegressionMetricKind, RegressionTargetBlock, RunId,
+        RuntimeController, RuntimeControllerRegistry, SampleId, SampleRelationSet,
     };
 
     use super::*;
@@ -1798,7 +1798,10 @@ mod tests {
         fn __call__(&self, py: Python<'_>, payload: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             let task: NodeTask = depythonize(payload)
                 .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
-            self.calls.lock().unwrap().push(task.phase.as_str().to_string());
+            self.calls
+                .lock()
+                .unwrap()
+                .push(task.phase.as_str().to_string());
             let sample_ids = match task.phase {
                 Phase::FitCv => task
                     .data_views
@@ -2132,7 +2135,10 @@ mod tests {
                 serde_json::json!(["sample:holdout:1", "sample:holdout:2"])
             );
             assert_eq!(outcome["terminal_prediction"]["partition"], "final");
-            assert_eq!(outcome["terminal_receipt"]["terminal_node_id"], "model:terminal");
+            assert_eq!(
+                outcome["terminal_receipt"]["terminal_node_id"],
+                "model:terminal"
+            );
             assert_eq!(outcome["terminal_receipt"]["terminal_port"], "oof");
             assert_eq!(
                 outcome["execution_bundle"]["refit_artifacts"]
@@ -2143,7 +2149,10 @@ mod tests {
             );
             let callback = callback.bind(py).borrow();
             assert!(*callback.saw_predict_refit_artifact.lock().unwrap());
-            assert_eq!(callback.calls.lock().unwrap().as_slice(), ["FIT_CV", "FIT_CV", "REFIT", "PREDICT"]);
+            assert_eq!(
+                callback.calls.lock().unwrap().as_slice(),
+                ["FIT_CV", "FIT_CV", "REFIT", "PREDICT"]
+            );
         });
     }
 
@@ -2162,7 +2171,9 @@ mod tests {
                 "{}",
             )
             .expect_err("V1 terminal path must fail before parsing the campaign");
-            assert!(error.to_string().contains("requires external data-plan envelope V2"));
+            assert!(error
+                .to_string()
+                .contains("requires external data-plan envelope V2"));
             assert!(callback.bind(py).borrow().calls.lock().unwrap().is_empty());
         });
     }
