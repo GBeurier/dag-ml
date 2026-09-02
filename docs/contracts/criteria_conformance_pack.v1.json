@@ -10,11 +10,6 @@
       "kind": "matlab_local_registry"
     },
     {
-      "path": "bindings/matlab/+dagml/executeExecutionPlanPhase.m",
-      "sha256": "360c7fbb2d7a72680404ecbdb745d609fb13ba1b51006cad335823c8b707cb0f",
-      "kind": "matlab_phase_scheduler"
-    },
-    {
       "path": "bindings/matlab/fixtures/matlab_local_implementations.v1.json",
       "sha256": "630f9ab1860dd60945c62cd2d081208d07bcfe8d0446ce55a0ec9ab00f39f7f5",
       "kind": "fixture"
@@ -23,11 +18,6 @@
       "path": "bindings/matlab/native/task_training_loss_binding.c",
       "sha256": "a224a071947086afbc56d376087552bb6d18f4a39c56495b62792ec7735d8bdb",
       "kind": "matlab_native_bridge"
-    },
-    {
-      "path": "bindings/matlab/native/execution_plan_phase.c",
-      "sha256": "2b17bb8147eee99268d5b9b62a16ce72e9a5125a1a991329b5ca935d75c9ff75",
-      "kind": "matlab_phase_native_bridge"
     },
     {
       "path": "bindings/matlab/tests/local_implementation_registry.m",
@@ -71,27 +61,27 @@
     },
     {
       "path": "crates/dag-ml-cli/src/main.rs",
-      "sha256": "60f88a26a457a28b9ea230da321518b2b93b8f60c80dcba775e1f6a69fbd51a9",
+      "sha256": "85f46791467f6a26519fed9d77f5c1deeb683a7f9261ca22d59169dea80c3179",
       "kind": "cli_validator"
     },
     {
       "path": "crates/dag-ml-cli/tests/cli_contracts.rs",
-      "sha256": "43f1f2d584826c37fdba9d7c2b9b6974a29ebe6347054b0d936bfb7b9561efae",
+      "sha256": "4c4aec225baea51fa47338570221d7de80234d20f1fe983de342788912b337c7",
       "kind": "cli_test"
     },
     {
       "path": "crates/dag-ml-core/src/criteria.rs",
-      "sha256": "7b8b8d4f212ae53eb464ecd2e4eb350b50dbc56626f4994f14b80b842b1371a3",
+      "sha256": "dd3ad390ed12e3081c4e00b7f9b4a13083eaa0e4dde0c86b4adae2d845eff7d4",
       "kind": "rust_contract"
     },
     {
       "path": "crates/dag-ml-core/src/implementation_registry.rs",
-      "sha256": "d2f825b3257ffca01852f25f2ed4e78f6692552baaebd56c187d024b90536845",
+      "sha256": "18deea64abd45483d33fff346bb3797e3b9fac85d7059b8d20b1b108724174a2",
       "kind": "rust_local_registry"
     },
     {
       "path": "crates/dag-ml-core/src/metric_provider.rs",
-      "sha256": "703cc2ed989045c002c37419598f95b9a940c03f3b8f3c246ba1423c793b0947",
+      "sha256": "cb274726ae984de4eacff06bb29f7ffa8aa276a470839e21f585dd1529717c27",
       "kind": "rust_provider_contract"
     },
     {
@@ -101,27 +91,27 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/artifact.rs",
-      "sha256": "d2a36d3f16b48d6dbecc705ff690924bd3c250e11487206a2331ee2549c0871f",
+      "sha256": "1f0350143a31e949e62da71e48b70825ada4b17b2303f4dbc1a4c66138338d34",
       "kind": "rust_lineage_contract"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "b321135f6879b4ead7989b2a4f68f718f3247077b6172ac45bf52f4cb9fc7e03",
+      "sha256": "ef25fbadfe80518a4cfea80a3ae07897cef05ee9e82517d726340b48cff50eda",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "af97a148293261b67695775e87920b79b96cfa85d180ec380fc395e818962cad",
+      "sha256": "75893d4d5ff196990cda91daf8a6eb5722cea902f61162f910c4f25c04e92459",
       "kind": "python_types"
     },
     {
       "path": "crates/dag-ml-py/src/local_implementation.rs",
-      "sha256": "5d6ddd85bcfbc070052bd80f7d4eaeb285470357e8fd5358b7290ff6aa75365f",
+      "sha256": "9796d026e526344c2988dd5a961210a58f99bf85d3591dcb8472170606f47b46",
       "kind": "python_local_registry"
     },
     {
       "path": "crates/dag-ml-py/tests/test_local_implementation_registry.py",
-      "sha256": "999360fa6c6c4eb40b5e70f26bca807f24c6def4f7a48db4315f43815f04618c",
+      "sha256": "71d0816f98953b559743d77c3094cffdce783a30c43b919e0cd499bea6b6c204",
       "kind": "python_binding_test"
     },
     {
@@ -141,7 +131,7 @@
     },
     {
       "path": "docs/CRITERIA_CONTRACTS.md",
-      "sha256": "d85cfa3916902a49670bb57d7ad0317f5bd8ed376603e00e55d397e7ed19502b",
+      "sha256": "af2de90e2c72a7ea1daa8b975c76dcc22ba4b043bc3d4e042f4323a4d0ad9aa6",
       "kind": "contract_documentation"
     },
     {
@@ -265,5 +255,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "46a5732c3fdfc0281aaa077e2d757310f0cc8b3cfd2185b2e5cf8a6f8de68899"
+  "pack_checksum": "3a09efb8b418039f5e2848322945823297ad38e4de764b69bce628be597f9904"
 }
