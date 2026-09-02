@@ -163,6 +163,29 @@ impl MethodsHpoResumeState {
         incumbent: crate::runtime::RuntimeHpoIncumbent,
         terminal_trials: Vec<crate::runtime::RuntimeHpoTerminalSnapshot>,
     ) -> Result<Self> {
+        Self::from_runtime_checkpoint_with_previous(
+            checkpoint,
+            selection,
+            candidates,
+            incumbent,
+            terminal_trials,
+            None,
+        )
+    }
+
+    /// Materialize a resumed campaign after joining the fresh scheduler
+    /// evidence to the already validated portable evidence. The native
+    /// checkpoint and terminal ledger are cumulative, while scheduler
+    /// proposals/reports/candidates cover only the current invocation, so the
+    /// join must precede the state's exact-coverage validation.
+    pub(crate) fn from_runtime_checkpoint_with_previous(
+        checkpoint: crate::runtime::RuntimeHpoCheckpointResult,
+        selection: MethodsHpoResumeSelection,
+        candidates: Vec<crate::runtime::RuntimeHpoCandidateEvaluation>,
+        incumbent: crate::runtime::RuntimeHpoIncumbent,
+        terminal_trials: Vec<crate::runtime::RuntimeHpoTerminalSnapshot>,
+        previous: Option<Self>,
+    ) -> Result<Self> {
         let candidate_scores = candidates
             .iter()
             .map(|candidate| (candidate.proposal.trial_id, candidate.score))
@@ -230,7 +253,7 @@ impl MethodsHpoResumeState {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let state = Self {
+        let mut state = Self {
             schema_version: METHODS_HPO_RESUME_STATE_SCHEMA_VERSION,
             checkpoint: checkpoint.artifact,
             provenance: MethodsHpoResumeProvenance {
@@ -274,6 +297,42 @@ impl MethodsHpoResumeState {
             completed_reports,
             candidates,
         };
+        if let Some(previous) = previous {
+            previous.validate()?;
+            if previous.provenance != state.provenance
+                || previous.operation_id != state.operation_id
+                || previous.controller_id != state.controller_id
+                || previous.target_node_id != state.target_node_id
+                || previous.checkpoint.binding != state.checkpoint.binding
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "native Methods HPO resumed campaign state has incompatible provenance"
+                        .to_string(),
+                ));
+            }
+            if previous.trial_history_len > state.trial_history_len
+                || !state
+                    .terminal_trials
+                    .starts_with(previous.terminal_trials.as_slice())
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "native Methods HPO resumed campaign does not preserve its prior terminal history"
+                        .to_string(),
+                ));
+            }
+            state
+                .completed_proposals
+                .extend(previous.completed_proposals);
+            state.completed_reports.extend(previous.completed_reports);
+            state.candidates.extend(previous.candidates);
+            state
+                .completed_proposals
+                .sort_by_key(|proposal| proposal.trial_id);
+            state
+                .completed_reports
+                .sort_by_key(|report| report.trial_id);
+            state.candidates.sort_by_key(|candidate| candidate.trial_id);
+        }
         state.validate()?;
         Ok(state)
     }
