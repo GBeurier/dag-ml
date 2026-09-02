@@ -11,15 +11,20 @@
 //! the fixed paths.  That keeps a corrupt manifest from redirecting a results
 //! read outside its run directory.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io;
+use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use arrow_array::{
-    Array, BooleanArray, Float64Array, Int64Array, LargeListArray, LargeStringArray, ListArray,
-    RecordBatch, StringArray,
+    builder::{Float64Builder, Int64Builder, ListBuilder, StringBuilder},
+    Array, ArrayRef, BooleanArray, Float64Array, Int64Array, LargeListArray, LargeStringArray,
+    ListArray, RecordBatch, StringArray,
 };
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use arrow_schema::{DataType, Field, Schema};
+use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ArrowWriter};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -50,7 +55,7 @@ pub enum NativeResultsError {
 pub type Result<T> = std::result::Result<T, NativeResultsError>;
 
 /// One queryable prediction row from the Parquet projection.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NativePredictionRow {
     /// Dataset identifier supplied by the caller.
     pub dataset: String,
@@ -109,7 +114,7 @@ pub struct NativePredictionRow {
 }
 
 /// Validated native results, ready for a language binding or a host query API.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeResultsView {
     /// The additive manifest, preserved without re-authoring it.
     pub manifest: Value,
@@ -151,6 +156,253 @@ pub fn read_native_results(run_dir: impl AsRef<Path>) -> Result<NativeResultsVie
         score_set,
         predictions,
     })
+}
+
+/// Write the generic, portable portion of a native results V2 directory.
+///
+/// The caller owns the run directory and any optional host-artifact subtree.
+/// This function writes only the three fixed V2 files and refuses to overwrite
+/// any of them. It validates exactly the payload that the reader will consume,
+/// writes temporary sibling files first, then publishes the finished files by
+/// rename. It never serializes model artifacts or interprets artifact URIs.
+pub fn write_native_results(
+    run_dir: impl AsRef<Path>,
+    manifest: Value,
+    score_set: Value,
+    predictions: Vec<NativePredictionRow>,
+) -> Result<()> {
+    let run_dir = run_dir.as_ref();
+    if !run_dir.is_dir() {
+        return Err(validation(
+            "native results run_dir must be an existing directory",
+        ));
+    }
+    validate_manifest(&manifest)?;
+    if !score_set.is_object() {
+        return Err(validation("score_set must be a JSON object"));
+    }
+    let expected_hash = required_string(
+        required_object(&manifest, "manifest")?,
+        "score_set_hash",
+        "manifest",
+    )?;
+    if score_set_hash(&score_set) != expected_hash {
+        return Err(validation(
+            "manifest score_set_hash does not match score_set",
+        ));
+    }
+    for row in &predictions {
+        validate_prediction_row(row)?;
+    }
+
+    let destinations = [
+        run_dir.join(MANIFEST_FILENAME),
+        run_dir.join(SCORE_SET_FILENAME),
+        run_dir.join(PREDICTIONS_FILENAME),
+    ];
+    if let Some(path) = destinations.iter().find(|path| path.exists()) {
+        return Err(validation(format!(
+            "native results writer refuses to overwrite {}",
+            path.display()
+        )));
+    }
+
+    let nonce = format!("{}.{}", std::process::id(), random_suffix());
+    let temporary = [
+        run_dir.join(format!(".{MANIFEST_FILENAME}.{nonce}.tmp")),
+        run_dir.join(format!(".{SCORE_SET_FILENAME}.{nonce}.tmp")),
+        run_dir.join(format!(".{PREDICTIONS_FILENAME}.{nonce}.tmp")),
+    ];
+
+    let result = (|| {
+        write_new_bytes(&temporary[0], canonical_json(&manifest).as_bytes())?;
+        write_new_bytes(&temporary[1], canonical_json(&score_set).as_bytes())?;
+        write_prediction_rows(&temporary[2], &predictions)?;
+        for (source, destination) in temporary.iter().zip(destinations.iter()) {
+            std::fs::rename(source, destination)?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        for path in &temporary {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    result
+}
+
+fn random_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+fn write_new_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn write_prediction_rows(path: &Path, rows: &[NativePredictionRow]) -> Result<()> {
+    let include_sample_ids = rows.is_empty() || rows.iter().all(|row| row.sample_ids.is_some());
+    if !include_sample_ids && rows.iter().any(|row| row.sample_ids.is_some()) {
+        return Err(validation(
+            "prediction rows must either all include sample_ids or all omit the legacy column",
+        ));
+    }
+
+    let mut fields = vec![
+        Field::new("dataset", DataType::Utf8, false),
+        Field::new("config_name", DataType::Utf8, false),
+        Field::new("variant_id", DataType::Utf8, false),
+        Field::new("model_name", DataType::Utf8, false),
+        Field::new("partition", DataType::Utf8, false),
+        Field::new("fold_id", DataType::Utf8, false),
+        Field::new("refit_context", DataType::Utf8, false),
+        list_field("sample_indices", DataType::Int64),
+        list_field("y_true", DataType::Float64),
+        list_field("y_pred", DataType::Float64),
+        list_field("y_proba", DataType::Float64),
+        list_field("y_true_shape", DataType::Int64),
+        list_field("y_pred_shape", DataType::Int64),
+        list_field("y_proba_shape", DataType::Int64),
+        list_field("weights", DataType::Float64),
+        Field::new("arrays_present", DataType::Boolean, false),
+        Field::new("val_score", DataType::Float64, true),
+        Field::new("test_score", DataType::Float64, true),
+        Field::new("train_score", DataType::Float64, true),
+        Field::new("scores", DataType::Utf8, false),
+        Field::new("metric", DataType::Utf8, false),
+        Field::new("task_type", DataType::Utf8, false),
+        Field::new("target_width", DataType::Int64, false),
+        Field::new("target_names", DataType::Utf8, false),
+    ];
+    let mut columns: Vec<ArrayRef> = vec![
+        string_column(rows, |row| &row.dataset),
+        string_column(rows, |row| &row.config_name),
+        string_column(rows, |row| &row.variant_id),
+        string_column(rows, |row| &row.model_name),
+        string_column(rows, |row| &row.partition),
+        string_column(rows, |row| &row.fold_id),
+        string_column(rows, |row| &row.refit_context),
+        list_i64_column(rows, |row| &row.sample_indices),
+        list_f64_column(rows, |row| &row.y_true),
+        list_f64_column(rows, |row| &row.y_pred),
+        list_f64_column(rows, |row| &row.y_proba),
+        list_i64_column(rows, |row| &row.y_true_shape),
+        list_i64_column(rows, |row| &row.y_pred_shape),
+        list_i64_column(rows, |row| &row.y_proba_shape),
+        list_f64_column(rows, |row| &row.weights),
+        Arc::new(BooleanArray::from(
+            rows.iter()
+                .map(|row| row.arrays_present)
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(Float64Array::from(
+            rows.iter().map(|row| row.val_score).collect::<Vec<_>>(),
+        )),
+        Arc::new(Float64Array::from(
+            rows.iter().map(|row| row.test_score).collect::<Vec<_>>(),
+        )),
+        Arc::new(Float64Array::from(
+            rows.iter().map(|row| row.train_score).collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from_iter_values(
+            rows.iter()
+                .map(|row| canonical_json(&Value::Object(row.scores.clone()))),
+        )),
+        string_column(rows, |row| &row.metric),
+        string_column(rows, |row| &row.task_type),
+        Arc::new(Int64Array::from_iter_values(
+            rows.iter().map(|row| row.target_width),
+        )),
+        Arc::new(StringArray::from_iter_values(rows.iter().map(|row| {
+            serde_json::to_string(&row.target_names).expect("target names must serialize")
+        }))),
+    ];
+    if include_sample_ids {
+        fields.insert(8, list_field("sample_ids", DataType::Utf8));
+        columns.insert(
+            8,
+            list_string_column(rows, |row| row.sample_ids.as_deref().unwrap_or_default()),
+        );
+    }
+
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), columns)
+        .map_err(|error| validation(format!("native prediction projection is invalid: {error}")))?;
+    let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut writer = ArrowWriter::try_new(file, schema, None).map_err(|error| {
+        validation(format!(
+            "predictions.parquet cannot be opened for writing: {error}"
+        ))
+    })?;
+    writer
+        .write(&batch)
+        .map_err(|error| validation(format!("predictions.parquet cannot be written: {error}")))?;
+    writer
+        .close()
+        .map_err(|error| validation(format!("predictions.parquet cannot be finalized: {error}")))?;
+    Ok(())
+}
+
+fn list_field(name: &str, value_type: DataType) -> Field {
+    Field::new(
+        name,
+        DataType::List(Arc::new(Field::new("item", value_type, true))),
+        false,
+    )
+}
+
+fn string_column<F>(rows: &[NativePredictionRow], values: F) -> ArrayRef
+where
+    F: Fn(&NativePredictionRow) -> &str,
+{
+    Arc::new(StringArray::from_iter_values(rows.iter().map(values)))
+}
+
+fn list_f64_column<F>(rows: &[NativePredictionRow], values: F) -> ArrayRef
+where
+    F: Fn(&NativePredictionRow) -> &[f64],
+{
+    let mut builder = ListBuilder::new(Float64Builder::new());
+    for row in rows {
+        for value in values(row) {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    Arc::new(builder.finish())
+}
+
+fn list_i64_column<F>(rows: &[NativePredictionRow], values: F) -> ArrayRef
+where
+    F: Fn(&NativePredictionRow) -> &[i64],
+{
+    let mut builder = ListBuilder::new(Int64Builder::new());
+    for row in rows {
+        for value in values(row) {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    Arc::new(builder.finish())
+}
+
+fn list_string_column<F>(rows: &[NativePredictionRow], values: F) -> ArrayRef
+where
+    F: Fn(&NativePredictionRow) -> &[String],
+{
+    let mut builder = ListBuilder::new(StringBuilder::new());
+    for row in rows {
+        for value in values(row) {
+            builder.values().append_value(value);
+        }
+        builder.append(true);
+    }
+    Arc::new(builder.finish())
 }
 
 fn read_json(path: impl AsRef<Path>, label: &str) -> Result<Value> {
@@ -334,6 +586,46 @@ fn validate_shape(field: &str, values: &[f64], shape: &[i64]) -> Result<()> {
         return Err(validation(format!(
             "prediction row {field} length does not match {field}_shape",
         )));
+    }
+    Ok(())
+}
+
+fn validate_prediction_row(row: &NativePredictionRow) -> Result<()> {
+    if row.arrays_present == row.y_pred.is_empty() {
+        return Err(validation(
+            "prediction row arrays_present must agree with whether y_pred is present",
+        ));
+    }
+    validate_shape("y_true", &row.y_true, &row.y_true_shape)?;
+    validate_shape("y_pred", &row.y_pred, &row.y_pred_shape)?;
+    validate_shape("y_proba", &row.y_proba, &row.y_proba_shape)?;
+    if row.target_width < 1 {
+        return Err(validation("prediction row target_width must be positive"));
+    }
+    if i64::try_from(row.target_names.len()).ok() != Some(row.target_width) {
+        return Err(validation(
+            "prediction row target_names length must equal target_width",
+        ));
+    }
+    if row.y_true_shape.len() >= 2 && row.y_true_shape[1] != row.target_width {
+        return Err(validation(
+            "prediction row y_true target dimension must equal target_width",
+        ));
+    }
+    if let Some(sample_ids) = &row.sample_ids {
+        if !sample_ids.is_empty()
+            && (sample_ids.len() != row.sample_indices.len()
+                || sample_ids.iter().any(String::is_empty)
+                || sample_ids
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != sample_ids.len())
+        {
+            return Err(validation(
+                "prediction row sample_ids must be non-empty, unique, and align with sample_indices",
+            ));
+        }
     }
     Ok(())
 }
@@ -592,7 +884,10 @@ mod tests {
     use parquet::arrow::ArrowWriter;
     use serde_json::{json, Value};
 
-    use super::{read_native_results, score_set_hash, NativeResultsError, PREDICTIONS_FILENAME};
+    use super::{
+        read_native_results, score_set_hash, write_native_results, NativeResultsError,
+        PREDICTIONS_FILENAME,
+    };
 
     #[test]
     fn reads_a_valid_v2_native_results_directory() {
@@ -671,6 +966,50 @@ mod tests {
     }
 
     #[test]
+    fn writes_a_reader_validated_v2_native_results_directory() {
+        let fixture = Fixture::new();
+        let source = read_native_results(fixture.path()).expect("fixture must read");
+        let output = fixture.path().join("writer-output");
+        fs::create_dir(&output).expect("output directory should be created");
+
+        write_native_results(
+            &output,
+            source.manifest.clone(),
+            source.score_set.clone(),
+            source.predictions.clone(),
+        )
+        .expect("writer should accept its reader's validated view");
+
+        let round_trip = read_native_results(&output).expect("writer output must read");
+        assert_eq!(round_trip, source);
+        assert_validation(
+            write_native_results(
+                &output,
+                source.manifest,
+                source.score_set,
+                source.predictions,
+            ),
+            "refuses to overwrite",
+        );
+    }
+
+    #[test]
+    fn writer_rejects_misaligned_sample_ids_before_writing() {
+        let fixture = Fixture::new();
+        let source = read_native_results(fixture.path()).expect("fixture must read");
+        let output = fixture.path().join("invalid-writer-output");
+        fs::create_dir(&output).expect("output directory should be created");
+        let mut rows = source.predictions;
+        rows[0].sample_ids = Some(vec!["only-one".to_owned()]);
+
+        assert_validation(
+            write_native_results(&output, source.manifest, source.score_set, rows),
+            "sample_ids",
+        );
+        assert!(fs::read_dir(output).unwrap().next().is_none());
+    }
+
+    #[test]
     #[ignore = "requires DAG_ML_RESULTS_PYTHON_FIXTURE written by the Python producer"]
     fn reads_a_python_produced_results_directory() {
         let path = std::env::var("DAG_ML_RESULTS_PYTHON_FIXTURE")
@@ -682,7 +1021,7 @@ mod tests {
         assert_eq!(view.predictions[0].sample_ids, Some(Vec::new()));
     }
 
-    fn assert_validation(result: super::Result<super::NativeResultsView>, expected: &str) {
+    fn assert_validation<T: std::fmt::Debug>(result: super::Result<T>, expected: &str) {
         let error = result.expect_err("fixture must be rejected");
         let NativeResultsError::Validation(message) = error else {
             panic!("expected a validation error");
