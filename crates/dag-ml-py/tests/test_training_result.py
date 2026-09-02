@@ -97,6 +97,7 @@ class ArchiveV3PythonSurfaceTests(unittest.TestCase):
         self.assertIn("build_archive_v3_native_refit_payloads", dag_ml.__all__)
         self.assertIn("execute_methods_portable_full_refit", dag_ml.__all__)
         self.assertIn("execute_methods_portable_full_refit_json", dag_ml.__all__)
+        self.assertIn("read_native_results_v2", dag_ml.__all__)
         with self.assertRaises(dag_ml.DagMlError):
             dag_ml.PortableRefitPackageV3('{"schema_version":3}')
 
