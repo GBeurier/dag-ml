@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-results"
-version = "0.3.18"
+version = "0.3.22"
 dependencies = [
  "arrow-array",
  "arrow-schema",
