@@ -229,6 +229,12 @@ fn validate_hpo_progressive_fold_topology(plan: &ExecutionPlan) -> Result<()> {
             "runtime HPO progressive pruning requires an explicit validated fold set".to_string(),
         )
     })?;
+    if fold_set.partition_mode != FoldPartitionMode::Partition {
+        return Err(DagMlError::RuntimeValidation(
+            "runtime HPO progressive pruning requires FoldPartitionMode::Partition; resampled folds cannot attest one stable validation resource step per sample"
+                .to_string(),
+        ));
+    }
     i32::try_from(fold_set.folds.len()).map_err(|_| {
         DagMlError::RuntimeValidation(
             "runtime HPO fold count exceeds the native intermediate step range".to_string(),
@@ -2114,8 +2120,10 @@ mod hpo_scheduler_tests {
         ControllerRegistry, RngPolicy,
     };
     use crate::data::InMemoryDataProvider;
-    use crate::fold::{FoldAssignment, FoldPartitionMode};
-    use crate::graph::{GraphInterface, GraphSpec, NodeSpec, PortSchema, PortSpec};
+    use crate::fold::{FoldAssignment, FoldPartitionMode, KFoldSpec, NestedCvSpec};
+    use crate::graph::{
+        EdgeContract, EdgeSpec, GraphInterface, GraphSpec, NodeSpec, PortRef, PortSchema, PortSpec,
+    };
     use crate::hpo::{
         HpoDirection, HpoMetric, HpoOptimizerConfig, HpoParameter, HpoPruner, HpoSampler,
         HpoSearchSpace, HpoStudyBinding, MethodsHpoStudyConfig, N4moptCheckpointArtifact,
@@ -2478,6 +2486,19 @@ mod hpo_scheduler_tests {
         }
     }
 
+    fn prediction_port(name: &str) -> PortSpec {
+        PortSpec {
+            name: name.to_string(),
+            kind: PortKind::Prediction,
+            representation: None,
+            cardinality: crate::graph::PortCardinality::One,
+            unit_level: None,
+            alignment_key: None,
+            target_level: None,
+            description: String::new(),
+        }
+    }
+
     fn manifest(id: &str, kind: NodeKind) -> ControllerManifest {
         ControllerManifest {
             controller_id: ControllerId::new(id).unwrap(),
@@ -2829,6 +2850,39 @@ mod hpo_scheduler_tests {
             .iter()
             .any(|event| event == "tell_failed"));
 
+        // A resampled fold set has no stable resource meaning across steps:
+        // refuse it before the session factory, model or intermediate path.
+        let mut resampled_plan = plan.clone();
+        resampled_plan.fold_set.as_mut().unwrap().partition_mode = FoldPartitionMode::Resampled;
+        let mut resampled_hpo = hpo.clone();
+        resampled_hpo.provenance.fold_set_fingerprint =
+            Some(stable_json_fingerprint(resampled_plan.fold_set.as_ref().unwrap()).unwrap());
+        let trace_len_before = trace.lock().unwrap().len();
+        let error = SequentialScheduler
+            .execute_hpo_campaign(
+                &resampled_plan,
+                &controllers,
+                &provider,
+                &ctx,
+                &resampled_hpo,
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("requires FoldPartitionMode::Partition"));
+        assert_eq!(trace.lock().unwrap().len(), trace_len_before);
+
+        // An empty fold topology is rejected by plan validation even earlier,
+        // with the same zero-session/zero-model/zero-intermediate guarantee.
+        let mut empty_plan = plan.clone();
+        empty_plan.fold_set.as_mut().unwrap().folds.clear();
+        let trace_len_before = trace.lock().unwrap().len();
+        let error = SequentialScheduler
+            .execute_hpo_campaign(&empty_plan, &controllers, &provider, &ctx, &hpo)
+            .unwrap_err();
+        assert!(error.to_string().contains("fold set contains no folds"));
+        assert_eq!(trace.lock().unwrap().len(), trace_len_before);
+
         // Refuse a no-CV topology before the tuner session is constructed:
         // a final aggregate is not a substitute for real fold progression.
         let mut no_fold_plan = plan.clone();
@@ -2842,6 +2896,132 @@ mod hpo_scheduler_tests {
         assert!(error
             .to_string()
             .contains("requires an explicit validated fold set"));
+        assert_eq!(trace.lock().unwrap().len(), trace_len_before);
+
+        // Nested stacking has inner and outer fold identities. Until the HPO
+        // contract can bind one exact report-grade outer resource sequence,
+        // it too must be refused before any native handle is constructed.
+        let samples = (1..=6)
+            .map(|index| SampleId::new(format!("nested:{index}")).unwrap())
+            .collect::<Vec<_>>();
+        let outer_folds = KFoldSpec {
+            n_splits: 3,
+            shuffle: false,
+            seed: Some(7),
+        }
+        .split("folds:hpo.nested", &samples)
+        .unwrap();
+        let base_a = NodeId::new("model:nested.base.a").unwrap();
+        let base_b = NodeId::new("model:nested.base.b").unwrap();
+        let meta = NodeId::new("model:nested.meta").unwrap();
+        let mut meta_node = NodeSpec {
+            id: meta.clone(),
+            kind: NodeKind::Model,
+            operator: None,
+            params: BTreeMap::new(),
+            ports: PortSchema {
+                inputs: vec![prediction_port("a"), prediction_port("b")],
+                outputs: vec![prediction_port("prediction")],
+            },
+            metadata: BTreeMap::new(),
+            seed_label: None,
+        };
+        meta_node.metadata.insert(
+            NESTED_STACKING_EXECUTION_METADATA_KEY.to_string(),
+            serde_json::json!(NESTED_STACKING_EXECUTION_V1),
+        );
+        let nested_graph = GraphSpec {
+            id: "graph:hpo.nested".to_string(),
+            interface: GraphInterface::default(),
+            nodes: vec![
+                node(
+                    base_a.as_str(),
+                    NodeKind::Model,
+                    vec![prediction_port("prediction")],
+                ),
+                node(
+                    base_b.as_str(),
+                    NodeKind::Model,
+                    vec![prediction_port("prediction")],
+                ),
+                meta_node,
+            ],
+            edges: vec![
+                EdgeSpec {
+                    source: PortRef {
+                        node_id: base_a,
+                        port_name: "prediction".to_string(),
+                    },
+                    target: PortRef {
+                        node_id: meta.clone(),
+                        port_name: "a".to_string(),
+                    },
+                    contract: EdgeContract {
+                        requires_oof: true,
+                        requires_fold_alignment: true,
+                        ..EdgeContract::new(PortKind::Prediction, None)
+                    },
+                },
+                EdgeSpec {
+                    source: PortRef {
+                        node_id: base_b,
+                        port_name: "prediction".to_string(),
+                    },
+                    target: PortRef {
+                        node_id: meta.clone(),
+                        port_name: "b".to_string(),
+                    },
+                    contract: EdgeContract {
+                        requires_oof: true,
+                        requires_fold_alignment: true,
+                        ..EdgeContract::new(PortKind::Prediction, None)
+                    },
+                },
+            ],
+            search_space_fingerprint: None,
+            metadata: BTreeMap::new(),
+        };
+        let mut nested_campaign = plan.campaign.clone();
+        nested_campaign.id = "campaign:hpo.nested".to_string();
+        nested_campaign.inner_cv = Some(NestedCvSpec::KFold(KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: Some(11),
+        }));
+        nested_campaign.split_invocation.as_mut().unwrap().fold_set = Some(outer_folds);
+        let mut nested_registry = ControllerRegistry::new();
+        let mut nested_model_manifest = manifest("controller:model", NodeKind::Model);
+        nested_model_manifest
+            .capabilities
+            .insert(ControllerCapability::ConsumesOofPredictions);
+        nested_registry.register(nested_model_manifest).unwrap();
+        let nested_plan = build_execution_plan(
+            "plan:hpo.nested",
+            nested_graph,
+            nested_campaign,
+            &nested_registry,
+        )
+        .unwrap();
+        let mut nested_hpo = hpo.clone();
+        nested_hpo.target_node_id = meta.clone();
+        nested_hpo.base_variant = nested_plan.variants[0].clone();
+        nested_hpo.selection.producer_node = meta;
+        nested_hpo.provenance.graph_fingerprint = nested_plan.graph_fingerprint.clone();
+        nested_hpo.provenance.campaign_fingerprint = nested_plan.campaign_fingerprint.clone();
+        nested_hpo.provenance.controller_fingerprint = nested_plan.controller_fingerprint.clone();
+        nested_hpo.provenance.fold_set_fingerprint = nested_plan
+            .fold_set
+            .as_ref()
+            .map(stable_json_fingerprint)
+            .transpose()
+            .unwrap();
+        let trace_len_before = trace.lock().unwrap().len();
+        let error = SequentialScheduler
+            .execute_hpo_campaign(&nested_plan, &controllers, &provider, &ctx, &nested_hpo)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("does not support nested-stacking FIT_CV"));
         assert_eq!(trace.lock().unwrap().len(), trace_len_before);
 
         // The native study may restore failed/pruned history that has no
