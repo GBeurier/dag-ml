@@ -902,6 +902,29 @@ fn give_methods_hpo_four_train_rows(fixture: &mut Fixture) {
     }
 }
 
+#[cfg(feature = "methods-optimizer-local")]
+fn give_methods_hpo_seeded_three_fold_rows(fixture: &mut Fixture) {
+    give_methods_hpo_four_train_rows(fixture);
+    let fold_set = fixture
+        .request
+        .campaign
+        .split_invocation
+        .as_mut()
+        .unwrap()
+        .fold_set
+        .as_mut()
+        .unwrap();
+    let fold_set_id = fold_set.id.clone();
+    let sample_ids = fold_set.sample_ids.clone();
+    *fold_set = KFoldSpec {
+        n_splits: 3,
+        shuffle: true,
+        seed: Some(9),
+    }
+    .split(fold_set_id, &sample_ids)
+    .unwrap();
+}
+
 /// Configure a fully attested, deterministic OOF scoring provider for native
 /// HPO. The provider returns fit/validation target blocks; Methods PLS still
 /// predicts them, DAG-ML still calculates the OOF RMSE report, and libn4m
@@ -2025,6 +2048,134 @@ fn native_methods_hpo_training_resume_keeps_selected_rerun_reports_identical() {
     assert_eq!(
         resumed_resume_state.incumbent,
         uninterrupted_resume_state.incumbent
+    );
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_methods_hpo_resume_merges_new_completed_evidence_before_validation() {
+    let mut initial_fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut initial_fixture);
+    give_methods_hpo_seeded_three_fold_rows(&mut initial_fixture);
+    let descriptor = methods_hpo_descriptor_mut(&mut initial_fixture);
+    descriptor["study"]["optimizer"]["sampler"] = serde_json::json!("tpe");
+    descriptor["study"]["optimizer"]["pruner"] = serde_json::json!("median");
+    descriptor["study"]["optimizer"]["seed"] = serde_json::json!(51);
+    descriptor["study"]["optimizer"]["n_startup_trials"] = serde_json::json!(2);
+    descriptor["trials"] = serde_json::json!(2);
+    rebuild(&mut initial_fixture);
+
+    let mut initial_provider = provider(&initial_fixture);
+    configure_deterministic_hpo_oof_provider(&mut initial_provider);
+    initial_provider
+        .methods_hpo_oof_target_offsets
+        .insert(3, 0.125);
+    let initial = run(
+        &initial_fixture,
+        Arc::new(CallState::default()),
+        &initial_provider,
+        &mut InMemoryArtifactStore::new(),
+    )
+    .expect("initial two-trial TPE/Median campaign");
+    let initial_resume = initial
+        .methods_hpo_resume_state
+        .as_ref()
+        .expect("initial campaign persists resume evidence")
+        .clone();
+    assert_eq!(initial_resume.trial_history_len, 2);
+    assert_eq!(initial_resume.completed_proposals.len(), 2);
+    assert_ne!(
+        initial_resume.completed_reports[0].score.to_bits(),
+        initial_resume.completed_reports[1].score.to_bits(),
+        "the resume witness must not depend on SELECT's anti-tie rejection"
+    );
+    let package = initial
+        .to_portable_predictor_package(
+            "predictor:tpe-median.completed-resume",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .expect("initial campaign produces a portable resume package");
+    let package_json = serde_json::to_string(&package).unwrap();
+
+    let mut resumed_fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut resumed_fixture);
+    give_methods_hpo_seeded_three_fold_rows(&mut resumed_fixture);
+    let descriptor = methods_hpo_descriptor_mut(&mut resumed_fixture);
+    descriptor["study"]["optimizer"]["sampler"] = serde_json::json!("tpe");
+    descriptor["study"]["optimizer"]["pruner"] = serde_json::json!("median");
+    descriptor["study"]["optimizer"]["seed"] = serde_json::json!(51);
+    descriptor["study"]["optimizer"]["n_startup_trials"] = serde_json::json!(2);
+    descriptor["trials"] = serde_json::json!(4);
+    descriptor["resume_package_json"] = serde_json::json!(package_json);
+    rebuild(&mut resumed_fixture);
+
+    let mut resumed_provider = provider(&resumed_fixture);
+    configure_deterministic_hpo_oof_provider(&mut resumed_provider);
+    resumed_provider
+        .methods_hpo_oof_target_offsets
+        .insert(3, 0.125);
+    let resumed = run(
+        &resumed_fixture,
+        Arc::new(CallState::default()),
+        &resumed_provider,
+        &mut InMemoryArtifactStore::new(),
+    )
+    .expect("resumed campaign merges old and fresh completed evidence");
+    let resumed_resume = resumed
+        .methods_hpo_resume_state
+        .as_ref()
+        .expect("resumed campaign persists merged evidence");
+    resumed_resume.validate().unwrap();
+    assert_eq!(resumed_resume.trial_history_len, 4);
+    assert_eq!(
+        &resumed_resume.terminal_trials[..initial_resume.terminal_trials.len()],
+        initial_resume.terminal_trials.as_slice(),
+        "resume must preserve the old terminal native ledger verbatim"
+    );
+
+    let new_completed = resumed_resume
+        .terminal_trials
+        .iter()
+        .filter(|entry| entry.trial.id >= 2 && entry.trial.status == HpoTrialStatus::Completed)
+        .map(|entry| entry.trial.id)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !new_completed.is_empty(),
+        "the witness must exercise fresh COMPLETED evidence after resume"
+    );
+    let completed_ids = resumed_resume
+        .completed_proposals
+        .iter()
+        .map(|proposal| proposal.trial_id)
+        .collect::<BTreeSet<_>>();
+    assert!(new_completed.is_subset(&completed_ids));
+    assert_eq!(
+        resumed_resume
+            .completed_proposals
+            .iter()
+            .filter(|proposal| proposal.trial_id < 2)
+            .cloned()
+            .collect::<Vec<_>>(),
+        initial_resume.completed_proposals
+    );
+    assert_eq!(
+        resumed_resume
+            .completed_reports
+            .iter()
+            .filter(|report| report.trial_id < 2)
+            .cloned()
+            .collect::<Vec<_>>(),
+        initial_resume.completed_reports
+    );
+    assert_eq!(
+        resumed_resume
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.trial_id < 2)
+            .cloned()
+            .collect::<Vec<_>>(),
+        initial_resume.candidates
     );
 }
 

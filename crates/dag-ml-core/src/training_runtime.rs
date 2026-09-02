@@ -340,106 +340,19 @@ impl HpoExecutionContext<'_> {
             producer_port: context.selection.producer_port.clone(),
             metric: context.selection.metric.name().to_string(),
         };
-        // A restored optimizer may spend this invocation only on failed or
-        // pruned trials. Its fresh checkpoint then legitimately has no *new*
-        // completed proposal, while the prior durable state already holds the
-        // exact proposal/report/candidate evidence that SELECT must retain.
-        // Do not manufacture a proposal from a report or native checkpoint:
-        // accept this shape solely when all fresh coordinator evidence is
-        // empty and replace only the native checkpoint bytes in the already
-        // validated prior state.
-        let no_new_completed_proposals = campaign.checkpoint.completed_proposals.is_empty();
-        let resume_state = match (previous_resume_state, no_new_completed_proposals) {
-            (Some(mut previous), true) => {
-                if !campaign.checkpoint.completed_reports.is_empty()
-                    || !campaign.candidates.is_empty()
-                {
-                    return Err(DagMlError::RuntimeValidation(
-                        "native Methods HPO campaign has reports or candidates without completed proposal evidence"
-                            .to_string(),
-                    ));
-                }
-                if previous.provenance.graph_fingerprint != context.provenance.graph_fingerprint
-                    || previous.provenance.campaign_fingerprint
-                        != context.provenance.campaign_fingerprint
-                    || previous.provenance.controller_fingerprint
-                        != context.provenance.controller_fingerprint
-                    || previous.provenance.data_identities_fingerprint
-                        != context.provenance.data_identities_fingerprint
-                    || context.provenance.fold_set_fingerprint.as_deref()
-                        != Some(previous.provenance.fold_set_fingerprint.as_str())
-                    || previous.provenance.training_influence_fingerprint
-                        != context.provenance.training_influence_fingerprint
-                    || previous.provenance.relation_fingerprint
-                        != context.provenance.relation_fingerprint
-                    || previous.provenance.selection.selection_id != self.selection.id
-                    || previous.provenance.selection.target_node_id != context.target_node_id
-                    || previous.provenance.selection.producer_port
-                        != context.selection.producer_port
-                    || previous.provenance.selection.metric != context.selection.metric.name()
-                    || previous.operation_id != context.operation_id
-                    || previous.controller_id != context.controller_id
-                    || previous.target_node_id != context.target_node_id
-                {
-                    return Err(DagMlError::RuntimeValidation(
-                        "native Methods HPO resumed campaign state has incompatible provenance"
-                            .to_string(),
-                    ));
-                }
-                previous.checkpoint = campaign.checkpoint.artifact.clone();
-                previous.trial_history_len = campaign.checkpoint.trial_history_len;
-                previous.terminal_trials = campaign
-                    .terminal_trials
-                    .iter()
-                    .map(|snapshot| crate::bundle::MethodsHpoTerminalEvidence {
-                        trial: snapshot.trial.clone(),
-                        variant_id: snapshot.variant_id.clone(),
-                    })
-                    .collect();
-                previous.incumbent = crate::bundle::MethodsHpoNativeIncumbent {
-                    trial_id: campaign.incumbent.trial_id,
-                    score: campaign.incumbent.score,
-                    metric: campaign.incumbent.metric.clone(),
-                    direction: campaign.incumbent.direction,
-                    variant_id: campaign.incumbent.variant_id.clone(),
-                };
-                previous
-            }
-            (None, true) => {
-                return Err(DagMlError::RuntimeValidation(
-                    "native Methods HPO campaign completed no proposal evidence; cannot create an initial resumable state"
-                        .to_string(),
-                ));
-            }
-            (previous, false) => {
-                let mut current = MethodsHpoResumeState::from_runtime_checkpoint(
-                    campaign.checkpoint.clone(),
-                    resume_selection,
-                    campaign.candidates.clone(),
-                    campaign.incumbent.clone(),
-                    campaign.terminal_trials.clone(),
-                )?;
-                if let Some(previous) = previous {
-                    if previous.provenance != current.provenance
-                        || previous.operation_id != current.operation_id
-                        || previous.controller_id != current.controller_id
-                        || previous.target_node_id != current.target_node_id
-                    {
-                        return Err(DagMlError::RuntimeValidation(
-                            "native Methods HPO resumed campaign state has incompatible provenance"
-                                .to_string(),
-                        ));
-                    }
-                    current
-                        .completed_proposals
-                        .extend(previous.completed_proposals);
-                    current.completed_reports.extend(previous.completed_reports);
-                    current.candidates.extend(previous.candidates);
-                }
-                current
-            }
-        };
-        resume_state.validate()?;
+        // Native checkpoint/history evidence is cumulative, whereas the
+        // scheduler intentionally returns proposal/report/candidate evidence
+        // only for this invocation. Join both halves before enforcing exact
+        // completed-trial coverage; the constructor retains the strict final
+        // validation and rejects incompatible or non-prefix prior state.
+        let resume_state = MethodsHpoResumeState::from_runtime_checkpoint_with_previous(
+            campaign.checkpoint.clone(),
+            resume_selection,
+            campaign.candidates.clone(),
+            campaign.incumbent.clone(),
+            campaign.terminal_trials.clone(),
+            previous_resume_state,
+        )?;
         let mut variants = resume_state
             .completed_proposals
             .iter()
