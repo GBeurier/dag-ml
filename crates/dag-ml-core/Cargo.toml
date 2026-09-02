@@ -9,7 +9,6 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-exclude = ["Cargo.toml.methods-local"]
 
 [features]
 default = []
@@ -35,5 +34,7 @@ n4m = { version = "0.1.2", default-features = false, features = ["dynamic"], opt
 
 [dev-dependencies]
 # Test-only bridge: DAG-ML owns the member contracts/replay; Core is invoked
-# solely through its public opaque Archive V2 storage API.
-nirs4all_archive_core = { package = "nirs4all", version = "0.3.15" }
+# solely through its public opaque Archive V2 storage API. This exact registry
+# baseline is not the Core version qualified by the release train; that
+# cross-source qualification belongs to a separate integration harness.
+nirs4all_archive_core = { package = "nirs4all", version = "=0.3.22" }

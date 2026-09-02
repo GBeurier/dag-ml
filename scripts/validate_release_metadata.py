@@ -360,6 +360,114 @@ def validate_governance(repo: Path, repo_name: str) -> None:
     )
 
 
+def validate_methods_hpo_docs(repo: Path) -> None:
+    core = load_toml(repo / "crates" / "dag-ml-core" / "Cargo.toml")
+    features = core.get("features", {})
+    require(
+        features.get("methods-optimizer") == ["dep:n4m"],
+        "dag-ml-core must expose the published methods-optimizer feature",
+    )
+    binding = core.get("dependencies", {}).get("n4m")
+    require(isinstance(binding, dict), "dag-ml-core must declare its n4m dependency")
+    binding_version = binding.get("version")
+    require(
+        isinstance(binding_version, str) and binding_version,
+        "dag-ml-core must pin a published n4m version",
+    )
+    archive_core = core.get("dev-dependencies", {}).get("nirs4all_archive_core")
+    require(
+        archive_core == {"package": "nirs4all", "version": "=0.3.22"},
+        "Archive V2 dev bridge must pin the documented registry baseline =0.3.22",
+    )
+    active_core_refs = []
+    for manifest in sorted(repo.rglob("Cargo.toml")):
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            if 'package = "nirs4all"' in line:
+                active_core_refs.append(
+                    (manifest.relative_to(repo).as_posix(), line.strip())
+                )
+    require(
+        active_core_refs
+        == [
+            (
+                "crates/dag-ml-core/Cargo.toml",
+                'nirs4all_archive_core = { package = "nirs4all", version = "=0.3.22" }',
+            )
+        ],
+        "only the exact Archive V2 registry baseline may reference nirs4all in active manifests",
+    )
+
+    python_lock = load_toml(repo / "crates" / "dag-ml-py" / "Cargo.lock")
+    locked_n4m = [
+        package
+        for package in python_lock.get("package", [])
+        if package.get("name") == "n4m"
+    ]
+    require(
+        len(locked_n4m) == 1
+        and locked_n4m[0].get("version") == binding_version
+        and locked_n4m[0].get("source")
+        == "registry+https://github.com/rust-lang/crates.io-index",
+        "standalone Python binding must lock the contracted crates.io n4m version",
+    )
+
+    docs = (repo / "docs" / "HPO_METHODS_ADAPTER.md").read_text(encoding="utf-8")
+    normalized_docs = " ".join(docs.split())
+    require(
+        "opt-in public `methods-optimizer` Cargo feature" in normalized_docs,
+        "HPO docs must describe the published methods-optimizer feature",
+    )
+    require(
+        f"published dynamic `n4m` {binding_version} binding" in normalized_docs,
+        "HPO docs must match the published n4m dependency version",
+    )
+    require(
+        "Default builds leave that feature disabled and refuse HPO" in normalized_docs,
+        "HPO docs must retain the default fail-closed contract",
+    )
+    require(
+        "no public `methods-optimizer` Cargo feature" not in normalized_docs,
+        "HPO docs still claim that the published feature does not exist",
+    )
+    require(
+        "methods-optimizer-local" not in features,
+        "dag-ml-core must not publish its compiler-only native test selector",
+    )
+    require(
+        not (repo / "crates" / "dag-ml-core" / "Cargo.toml.methods-local").exists(),
+        "dag-ml-core must not restore the sibling manifest overlay",
+    )
+    require(
+        "There is no sibling manifest or sibling source dependency" in normalized_docs,
+        "HPO docs must state the overlay-free integration contract",
+    )
+    require(
+        "standalone `dag-ml-py` maturin workspace both lock that binding"
+        in normalized_docs,
+        "HPO docs must describe the standalone Python lock contract",
+    )
+    require(
+        '`nirs4all_archive_core = "=0.3.22"` development dependency is a registry baseline'
+        in normalized_docs
+        and "must not be presented as cross-source Core qualification"
+        in normalized_docs,
+        "HPO docs must distinguish the Archive V2 registry baseline from train Core",
+    )
+    ci = (repo / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    require(
+        "python -m maturin build --release --locked --features extension-module"
+        in ci,
+        "CI must build the standalone Python wheel from its tracked lockfile",
+    )
+    release = (repo / ".github" / "workflows" / "release-python.yml").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "args: --release --locked --out dist" in release,
+        "Python wheel release job must enforce the tracked lockfile",
+    )
+
+
 def validate_docs_site(repo: Path, repo_name: str) -> None:
     required_files = [
         "docs/conf.py",
@@ -409,6 +517,7 @@ def main() -> None:
     validate_ci(repo)
     validate_governance(repo, repo_name)
     validate_docs_site(repo, repo_name)
+    validate_methods_hpo_docs(repo)
     print(f"validated release metadata for {repo_name} {version}")
 
 

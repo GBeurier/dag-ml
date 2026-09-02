@@ -376,7 +376,7 @@ jobs:
           python -m maturin build --release --features extension-module --out ../../../../target/wheels
           cd ../../../..
           cd crates/dag-ml-py
-          python -m maturin build --release --features extension-module --out ../../target/wheels
+          python -m maturin build --release --locked --features extension-module --out ../../target/wheels
       - name: Smoke Python wheel metadata
         run: python scripts/smoke_python_wheel_metadata.py target/wheels/dag_ml-*.whl
       - name: Smoke installed Python wheel
