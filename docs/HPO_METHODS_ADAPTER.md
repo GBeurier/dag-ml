@@ -13,9 +13,13 @@ and its trial state machine:
 - `best` and `trials`;
 - in-memory `N4MOPT` save/load through the official binding (not bundle persistence).
 
-The publishable `dag-ml-core` crate exposes the opt-in public
-`methods-optimizer` Cargo feature, backed by the published dynamic `n4m` 0.1.2
-binding. Default builds leave that feature disabled and refuse HPO before an
+The `dag-ml-core` crate exposes the opt-in public `methods-optimizer` Cargo
+feature. This candidate targets dynamic `n4m` 0.1.3 from Methods commit
+`a71ee2927524d03482183de3d6e22661efc05d12` (ABI 2.4). That crate version is
+not yet published, so this DAG-ML candidate is publication-blocked; local
+qualification uses an explicit Cargo patch to that exact checkout and no
+release lock is regenerated from the patch. Default builds leave the feature
+disabled and refuse HPO before an
 objective can be called, with the typed
 `HpoError::MethodsOptimizerFeatureDisabled`. The integration helper enables
 that published feature and supplies a compiler-only native-test selector; the
@@ -23,10 +27,10 @@ selector is not a Cargo dependency or a production route. There is no sibling
 manifest or sibling source dependency, and the registered official adapter
 remains mandatory.
 
-The root workspace and the standalone `dag-ml-py` maturin workspace both lock
-that binding to `n4m` 0.1.2. A wheel build must use the tracked Python-workspace
-`Cargo.lock`; resolving a newer semver-compatible binding is release drift even
-when the manifest requirement itself would accept it.
+The tracked root and standalone `dag-ml-py` locks remain on the last published
+binding until `n4m` 0.1.3 exists in the registry. Promotion requires regenerating
+both locks from the registry and qualifying those exact locked bytes; a local
+path patch is evidence only, never a release source.
 
 The `nirs4all_archive_core = "=0.3.22"` development dependency is a registry
 baseline used only by the Archive V2 integration tests. It is not the Core
@@ -101,9 +105,10 @@ creates a fresh invocation-local handle, and then predicts. This lets a
 JSON-deserialized outcome replay in a new process/controller without retaining
 the refit controller's in-memory handles.
 
-The publishable `dag-ml-core/Cargo.toml` offers an opt-in
-`methods-optimizer` feature backed by the published dynamic `n4m` 0.1.2
-binding. Default builds and extracted crates do not link, load, or require a
+The `dag-ml-core/Cargo.toml` manifest offers an opt-in `methods-optimizer`
+feature targeting dynamic `n4m` 0.1.3. Until that binding is published, local
+qualification patches only the exact Methods candidate named above. Default
+builds and extracted crates do not link, load, or require a
 Methods checkout. A caller must explicitly configure an absolute `libn4m`
 file through `MethodsRuntime::configure` before constructing either Methods
 controller; there is no `PATH`, current-directory, sibling-checkout, or
@@ -166,3 +171,20 @@ New writers always emit `abi_major` and `abi_min_minor`. A historical PLS
 reference with neither field reads as 2.0. An unversioned Ridge reference is
 refused because interpreting absence as 2.0 would allow an ABI 2.2 reader to
 attempt an ABI 2.3 payload. Historical N4MOPT envelopes default to 2.2.
+
+## Native predictor descriptor
+
+New PLS and Ridge publications attach
+`dagml.native_predictor_descriptor.v1` to their artifact reference. The
+descriptor records the artifact SHA-256, controller owner, N4MM format and
+writer ABI, storage algorithm, native capability mask, inspected dimensions,
+and a self-excluding TCV1 fingerprint. Its only metadata authority is
+`n4m_serialization_inspect_model_v1` over the exact exported bytes.
+
+PLS accepts storage algorithm 0 with `PREDICT`; Ridge accepts imported-linear
+algorithm 11 with `PREDICT | AFFINE`. Other Methods algorithms remain known to
+the native format but are not product-supported by these controllers. Replay
+inspects the detached bytes again and refuses a controller/algorithm,
+capability, dimension, SHA, or descriptor mismatch before model import.
+Historical Archive V2 members without the additive descriptor stay readable,
+but they pass the same native algorithm/capability inspection at hydration.
