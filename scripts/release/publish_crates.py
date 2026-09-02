@@ -303,13 +303,15 @@ def validate_tag(tag: str, version: str) -> None:
 
 
 def cargo_publish(crate: Crate, dry_run: bool, no_verify: bool) -> str:
-    cmd = ["cargo", "publish", "-p", crate.name]
     if dry_run:
-        cmd.extend(["--dry-run", "--allow-dirty", "--offline"])
+        cmd = ["cargo", "package", "-p", crate.name, "--allow-dirty", "--offline"]
+    else:
+        cmd = ["cargo", "publish", "-p", crate.name]
     if no_verify:
         cmd.append("--no-verify")
 
-    print(f"::group::publish {crate.name} (dry_run={int(dry_run)})", flush=True)
+    operation = "package" if dry_run else "publish"
+    print(f"::group::{operation} {crate.name} (dry_run={int(dry_run)})", flush=True)
     proc = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -322,7 +324,7 @@ def cargo_publish(crate: Crate, dry_run: bool, no_verify: bool) -> str:
     print("::endgroup::", flush=True)
 
     if proc.returncode == 0:
-        return "published"
+        return "checked" if dry_run else "published"
     if not dry_run and ALREADY_UPLOADED.search(proc.stdout or ""):
         print(f"::notice::{crate.name} version already exists on crates.io; continuing")
         return "already"
