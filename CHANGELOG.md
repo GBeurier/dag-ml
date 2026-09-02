@@ -11,6 +11,17 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Added
 
+- Release patch 0.3.23: the native results crate and Python facade can read and
+  write validated result files while preserving physical sample identities.
+  Native Methods HPO now reports each scheduler-owned validation fold as step
+  `0..N-1`, stops a candidate immediately when the native pruner decides, and
+  checkpoints/resumes only through the official opaque `N4MOPT` state. The
+  progressive route refuses absent, empty, resampled, non-partitioning or
+  nested fold topologies before creating a tuner session. The Archive V2
+  integration test keeps its explicit registry-only
+  `nirs4all_archive_core = "=0.3.22"`
+  baseline; it is not a claim of qualification against the release-train Core.
+
 - Release patch 0.3.21: Python hosts can execute the strict callback-free
   Methods CV → REFIT → terminal PREDICT facade for raw numeric arrays with
   explicit IDs, one numeric target, no-shuffle KFold PLS and a separate X-only
