@@ -921,7 +921,15 @@ pub const METHODS_PLS_CONTROLLER_ID: &str = "controller:methods.pls";
 pub const METHODS_RIDGE_CONTROLLER_ID: &str = "controller:methods.ridge";
 
 #[cfg(feature = "methods-optimizer")]
-fn inspect_methods_predictor_descriptor(
+/// Inspect complete N4MM bytes and derive their product-safe descriptor V1.
+///
+/// This is the public attestation route for new publications and historical
+/// Archive V2 members that predate an embedded descriptor. The result comes
+/// only from Methods' native `n4m_serialization_inspect_model_v1` contract;
+/// callers cannot supply JSON metadata or capability claims. Controller,
+/// storage algorithm, required capabilities and controller-specific
+/// dimensions are checked before a descriptor is returned.
+pub fn inspect_methods_native_predictor_descriptor_v1(
     owner_controller: &crate::ControllerId,
     payload: &[u8],
 ) -> crate::Result<crate::runtime::NativePredictorDescriptorV1> {
@@ -1752,7 +1760,7 @@ mod pls_controller {
                     request.artifact.id
                 )));
             }
-            let inspected = inspect_methods_predictor_descriptor(&self.id, payload)?;
+            let inspected = inspect_methods_native_predictor_descriptor_v1(&self.id, payload)?;
             if request
                 .artifact
                 .native_predictor_descriptor
@@ -1836,7 +1844,7 @@ mod pls_controller {
                             .export_n4mm()
                             .map_err(|error| Self::native_error("export_n4mm", error))?;
                         let native_predictor_descriptor =
-                            inspect_methods_predictor_descriptor(&self.id, &bytes)?;
+                            inspect_methods_native_predictor_descriptor_v1(&self.id, &bytes)?;
                         let handle = self.handle(HandleKind::Model);
                         let fingerprint = format!("{:x}", Sha256::digest(&bytes));
                         let id = ArtifactId::new(format!(
@@ -2284,7 +2292,7 @@ mod pls_controller {
                     request.artifact.id
                 )));
             }
-            let inspected = inspect_methods_predictor_descriptor(&self.id, payload)?;
+            let inspected = inspect_methods_native_predictor_descriptor_v1(&self.id, payload)?;
             if request
                 .artifact
                 .native_predictor_descriptor
@@ -2451,7 +2459,7 @@ mod pls_controller {
                         MethodsPlsController::native_error("ridge_export_n4mm", error)
                     })?;
                     let native_predictor_descriptor =
-                        inspect_methods_predictor_descriptor(&self.id, &bytes)?;
+                        inspect_methods_native_predictor_descriptor_v1(&self.id, &bytes)?;
                     let id = ArtifactId::new(format!(
                         "artifact:methods-ridge:{}:refit",
                         task.node_plan.node_id
@@ -3343,7 +3351,8 @@ mod tests {
                 abi_major: Some(METHODS_ABI_MAJOR),
                 abi_min_minor: Some(METHODS_PLS_N4MM_MIN_ABI_MINOR),
                 native_predictor_descriptor: Some(
-                    inspect_methods_predictor_descriptor(&controller_id, &payload).unwrap(),
+                    inspect_methods_native_predictor_descriptor_v1(&controller_id, &payload)
+                        .unwrap(),
                 ),
             },
             params_fingerprint: "params:methods-pls.release".to_string(),
@@ -3388,7 +3397,8 @@ mod tests {
             .export_n4mm()
             .unwrap();
         let pls_id = crate::ControllerId::new(METHODS_PLS_CONTROLLER_ID).unwrap();
-        let pls_descriptor = inspect_methods_predictor_descriptor(&pls_id, &pls_payload).unwrap();
+        let pls_descriptor =
+            inspect_methods_native_predictor_descriptor_v1(&pls_id, &pls_payload).unwrap();
         assert_eq!(pls_descriptor.storage_algorithm, 0);
         assert_eq!(
             pls_descriptor.dimensions,
@@ -3413,7 +3423,7 @@ mod tests {
                 .unwrap();
         let ridge_id = crate::ControllerId::new(METHODS_RIDGE_CONTROLLER_ID).unwrap();
         let ridge_descriptor =
-            inspect_methods_predictor_descriptor(&ridge_id, &affine_payload).unwrap();
+            inspect_methods_native_predictor_descriptor_v1(&ridge_id, &affine_payload).unwrap();
         assert_eq!(ridge_descriptor.storage_algorithm, 11);
         assert_eq!(ridge_descriptor.dimensions.n_components, 0);
         assert_eq!(
@@ -3424,13 +3434,13 @@ mod tests {
         );
 
         assert!(
-            inspect_methods_predictor_descriptor(&ridge_id, &pls_payload)
+            inspect_methods_native_predictor_descriptor_v1(&ridge_id, &pls_payload)
                 .unwrap_err()
                 .to_string()
                 .contains("not product-supported")
         );
         assert!(
-            inspect_methods_predictor_descriptor(&pls_id, &affine_payload)
+            inspect_methods_native_predictor_descriptor_v1(&pls_id, &affine_payload)
                 .unwrap_err()
                 .to_string()
                 .contains("not product-supported")
@@ -3438,7 +3448,7 @@ mod tests {
         let mut tampered = pls_payload.clone();
         let last = tampered.len() - 1;
         tampered[last] ^= 1;
-        assert!(inspect_methods_predictor_descriptor(&pls_id, &tampered).is_err());
+        assert!(inspect_methods_native_predictor_descriptor_v1(&pls_id, &tampered).is_err());
 
         let request_for =
             |controller_id: crate::ControllerId,
