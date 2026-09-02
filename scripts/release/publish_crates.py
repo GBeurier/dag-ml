@@ -64,7 +64,10 @@ def repository_head(repo: Path) -> str:
     )
     require(proc.returncode == 0, f"cannot resolve release HEAD: {proc.stderr.strip()}")
     head = proc.stdout.strip()
-    require(bool(SHA1.fullmatch(head)), f"release HEAD is not a full lowercase SHA-1: {head}")
+    require(
+        bool(SHA1.fullmatch(head)),
+        f"release HEAD is not a full lowercase SHA-1: {head}",
+    )
     return head
 
 
@@ -83,7 +86,9 @@ def _strict_json_object(payload: bytes, label: str) -> dict[str, Any]:
         return result
 
     try:
-        parsed = json.loads(payload.decode("utf-8"), object_pairs_hook=object_no_duplicates)
+        parsed = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=object_no_duplicates
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         fail(f"cannot decode {label}: {error}")
     require(isinstance(parsed, dict), f"{label} must be a JSON object")
@@ -165,8 +170,8 @@ def verify_crate_archive(
     if not isinstance(git, dict):
         fail(f"{name} {version} VCS record has no git object")
     require(
-        git.get("dirty", False) is False,
-        f"{name} {version} registry crate was packaged from a dirty tree",
+        git.get("dirty") is False,
+        f"{name} {version} registry crate is not explicitly attested clean",
     )
     sha1 = git.get("sha1")
     if not isinstance(sha1, str) or SHA1.fullmatch(sha1) is None:
@@ -265,8 +270,13 @@ def workspace_crates(repo: Path) -> tuple[str, list[Crate]]:
         internal = sorted(dependency_names(manifest).intersection(package_names))
         for dep_name in internal:
             dep = workspace_deps.get(dep_name)
-            require(isinstance(dep, dict), f"workspace dependency {dep_name} must be a table")
-            require(dep.get("path"), f"workspace dependency {dep_name} must declare path")
+            require(
+                isinstance(dep, dict),
+                f"workspace dependency {dep_name} must be a table",
+            )
+            require(
+                dep.get("path"), f"workspace dependency {dep_name} must declare path"
+            )
             require(
                 dep.get("version") == workspace_version,
                 f"workspace dependency {dep_name} must pin version {workspace_version}",
@@ -343,7 +353,8 @@ def crate_version_exists(name: str, version: str, expected_head: str) -> bool:
     if not isinstance(registry_version, dict):
         fail(f"crates.io metadata for {name} {version} has no version object")
     require(
-        registry_version.get("crate") == name and registry_version.get("num") == version,
+        registry_version.get("crate") == name
+        and registry_version.get("num") == version,
         f"crates.io returned mismatched identity for {name} {version}",
     )
     checksum = registry_version.get("checksum")
@@ -374,8 +385,12 @@ def main() -> None:
         help="verify independent publish roots; same-release dependents require an indexed root",
     )
     parser.add_argument("--tag", help="release tag to validate, for example v0.2.0")
-    parser.add_argument("--no-verify", action="store_true", help="pass --no-verify to cargo publish")
-    parser.add_argument("--plan-only", action="store_true", help="print the publish order and exit")
+    parser.add_argument(
+        "--no-verify", action="store_true", help="pass --no-verify to cargo publish"
+    )
+    parser.add_argument(
+        "--plan-only", action="store_true", help="print the publish order and exit"
+    )
     parser.add_argument(
         "--sleep-seconds",
         type=int,
@@ -415,7 +430,9 @@ def main() -> None:
             )
             continue
         if not args.dry_run and crate_version_exists(crate.name, version, head):
-            print(f"::notice::{crate.name} {version} already exists on crates.io; skipping")
+            print(
+                f"::notice::{crate.name} {version} already exists on crates.io; skipping"
+            )
             continue
         result = cargo_publish(crate, dry_run=args.dry_run, no_verify=args.no_verify)
         if not args.dry_run and result == "already":

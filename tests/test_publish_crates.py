@@ -37,7 +37,7 @@ def _crate_bytes(
     version: str = "0.3.23",
     head: str = "1" * 40,
     vcs_path: str | None = None,
-    dirty: bool = False,
+    dirty: bool | None = False,
     duplicate_vcs: bool = False,
     vcs_symlink: bool = False,
 ) -> bytes:
@@ -50,8 +50,8 @@ def _crate_bytes(
 
         if vcs_path is not None:
             vcs: dict[str, Any] = {"git": {"sha1": head}}
-            if dirty:
-                vcs["git"]["dirty"] = True
+            if dirty is not None:
+                vcs["git"]["dirty"] = dirty
             vcs_bytes = json.dumps(vcs, sort_keys=True).encode("utf-8")
             vcs_info = tarfile.TarInfo(vcs_path)
             if vcs_symlink:
@@ -61,7 +61,9 @@ def _crate_bytes(
                 vcs_info.size = len(vcs_bytes)
             archive.addfile(vcs_info, None if vcs_symlink else io.BytesIO(vcs_bytes))
             if duplicate_vcs:
-                duplicate = tarfile.TarInfo(f"{name}-{version}/nested/.cargo_vcs_info.json")
+                duplicate = tarfile.TarInfo(
+                    f"{name}-{version}/nested/.cargo_vcs_info.json"
+                )
                 duplicate.size = len(vcs_bytes)
                 archive.addfile(duplicate, io.BytesIO(vcs_bytes))
     return buffer.getvalue()
@@ -85,9 +87,7 @@ def _plan() -> list[Any]:
     ]
 
 
-def test_dry_run_checks_only_publishable_roots(
-    monkeypatch, capsys
-) -> None:
+def test_dry_run_checks_only_publishable_roots(monkeypatch, capsys) -> None:
     """A dry-run cannot resolve crates which this release has not indexed yet."""
     calls: list[tuple[str, bool, bool]] = []
 
@@ -95,7 +95,9 @@ def test_dry_run_checks_only_publishable_roots(
         calls.append((crate.name, dry_run, no_verify))
         return "published"
 
-    monkeypatch.setattr(publish_crates, "workspace_crates", lambda _: ("0.3.19", _plan()))
+    monkeypatch.setattr(
+        publish_crates, "workspace_crates", lambda _: ("0.3.19", _plan())
+    )
     monkeypatch.setattr(publish_crates, "cargo_publish", record_publish)
     monkeypatch.setattr(
         publish_crates,
@@ -121,7 +123,9 @@ def test_real_publish_keeps_topological_order(monkeypatch) -> None:
         return "published"
 
     monkeypatch.setenv("CARGO_REGISTRY_TOKEN", "test-token")
-    monkeypatch.setattr(publish_crates, "workspace_crates", lambda _: ("0.3.19", _plan()))
+    monkeypatch.setattr(
+        publish_crates, "workspace_crates", lambda _: ("0.3.19", _plan())
+    )
     monkeypatch.setattr(publish_crates, "cargo_publish", record_publish)
     monkeypatch.setattr(publish_crates, "crate_version_exists", lambda *_: False)
     monkeypatch.setattr(sys, "argv", ["publish_crates.py", "--sleep-seconds", "0"])
@@ -152,9 +156,43 @@ def test_existing_version_download_is_checksum_and_vcs_qualified(monkeypatch) ->
     responses = iter(
         [_Response(json.dumps(metadata).encode("utf-8")), _Response(payload)]
     )
-    monkeypatch.setattr(publish_crates.urllib.request, "urlopen", lambda *_a, **_k: next(responses))
+    monkeypatch.setattr(
+        publish_crates.urllib.request, "urlopen", lambda *_a, **_k: next(responses)
+    )
 
     assert publish_crates.crate_version_exists("dag-ml-core", "0.3.23", head)
+
+
+def test_real_publish_skips_only_after_existing_artifact_is_qualified(
+    monkeypatch, capsys
+) -> None:
+    checks: list[tuple[str, str, str]] = []
+    monkeypatch.setenv("CARGO_REGISTRY_TOKEN", "test-token")
+    monkeypatch.setattr(
+        publish_crates,
+        "workspace_crates",
+        lambda _: ("0.3.23", [_plan()[0]]),
+    )
+    monkeypatch.setattr(publish_crates, "repository_head", lambda _: "1" * 40)
+
+    def qualified(name: str, version: str, head: str) -> bool:
+        checks.append((name, version, head))
+        return True
+
+    monkeypatch.setattr(publish_crates, "crate_version_exists", qualified)
+    monkeypatch.setattr(
+        publish_crates,
+        "cargo_publish",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("cargo publish ran before an attested skip")
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["publish_crates.py", "--sleep-seconds", "0"])
+
+    publish_crates.main()
+
+    assert checks == [("dag-ml-core", "0.3.23", "1" * 40)]
+    assert "already exists on crates.io; skipping" in capsys.readouterr().out
 
 
 def test_registry_checksum_mismatch_is_fatal() -> None:
@@ -191,13 +229,18 @@ def test_registry_checksum_mismatch_is_fatal() -> None:
                 "vcs_path": "dag-ml-core-0.3.23/.cargo_vcs_info.json",
                 "dirty": True,
             },
-            "dirty tree",
+            "not explicitly attested clean",
+        ),
+        (
+            {
+                "vcs_path": "dag-ml-core-0.3.23/.cargo_vcs_info.json",
+                "dirty": None,
+            },
+            "not explicitly attested clean",
         ),
     ],
 )
-def test_vcs_record_attacks_are_rejected(
-    kwargs: dict[str, Any], message: str
-) -> None:
+def test_vcs_record_attacks_are_rejected(kwargs: dict[str, Any], message: str) -> None:
     payload = _crate_bytes(**kwargs)
     with pytest.raises(SystemExit, match=message):
         _verify(payload)
