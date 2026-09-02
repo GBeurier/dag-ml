@@ -13,12 +13,25 @@ and its trial state machine:
 - `best` and `trials`;
 - in-memory `N4MOPT` save/load through the official binding (not bundle persistence).
 
-The default build refuses HPO before an objective can be called, with the typed
-`HpoError::MethodsOptimizerFeatureDisabled`.  Until `n4m` is published there
-is deliberately no public `methods-optimizer` Cargo feature: Cargo rejects it
-rather than presenting an inert production surface.  The isolated local
-overlay is the only opt-in integration route and it still requires the
-registered official adapter.
+The publishable `dag-ml-core` crate exposes the opt-in public
+`methods-optimizer` Cargo feature, backed by the published dynamic `n4m` 0.1.2
+binding. Default builds leave that feature disabled and refuse HPO before an
+objective can be called, with the typed
+`HpoError::MethodsOptimizerFeatureDisabled`. The integration helper enables
+that published feature and supplies a compiler-only native-test selector; the
+selector is not a Cargo dependency or a production route. There is no sibling
+manifest or sibling source dependency, and the registered official adapter
+remains mandatory.
+
+The root workspace and the standalone `dag-ml-py` maturin workspace both lock
+that binding to `n4m` 0.1.2. A wheel build must use the tracked Python-workspace
+`Cargo.lock`; resolving a newer semver-compatible binding is release drift even
+when the manifest requirement itself would accept it.
+
+The `nirs4all_archive_core = "=0.3.22"` development dependency is a registry
+baseline used only by the Archive V2 integration tests. It is not the Core
+selected by the release train and must not be presented as cross-source Core
+qualification; that qualification is owned by a separate integration harness.
 
 ## Training-local runtime route
 
@@ -96,10 +109,11 @@ file through `MethodsRuntime::configure` before constructing either Methods
 controller; there is no `PATH`, current-directory, sibling-checkout, or
 legacy fallback.
 
-The local integration overlay adds only test selection. It uses the release
-source commit `4983c9a1df39d430a78c615bda209d3353514aa1` to build the explicit
-runtime file, but resolves the Rust binding from crates.io. Build that checkout
-and invoke the helper from the workspace root:
+The local integration helper activates the published feature and that
+compiler-only test selector. It uses the release source commit
+`4983c9a1df39d430a78c615bda209d3353514aa1` to build the explicit runtime file,
+but resolves the Rust binding from crates.io. Build that checkout and invoke
+the helper from the workspace root:
 
 ```bash
 METHODS_SHA=4983c9a1df39d430a78c615bda209d3353514aa1
@@ -113,10 +127,10 @@ dag-ml/scripts/test_methods_optimizer_local.sh
 ```
 
 The helper refuses a missing, relative, or non-file `N4M_LIBRARY_PATH`; `--probe`
-checks exactly that boundary without loading native code. It temporarily overlays
-the test-only manifest, runs feature-local clippy with `-D warnings`, and restores
-the primary manifest and lockfile byte-for-byte. CI builds the same immutable
-Methods source commit and passes only the resulting absolute library path.
+checks exactly that boundary without loading native code. It runs feature-local
+clippy with `-D warnings` and tests directly from the sole workspace manifest.
+CI builds the same immutable Methods source commit and passes only the resulting
+absolute library path.
 
 ## Checkpoint contract
 
