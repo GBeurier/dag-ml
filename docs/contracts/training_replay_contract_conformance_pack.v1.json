@@ -3,8 +3,8 @@
   "pack_id": "dag-ml.training-replay-contracts.v1",
   "mode": "current",
   "base_pack_id": "dag-ml.training-contracts.v1",
-  "base_pack_sha256": "61fe53d28deaf60478f46d8a908162d7c1bbd22eb31e22d3d8bd13d7a7ded605",
-  "base_pack_checksum": "030b741dc3035553cbf75969c4513e1196c71eaeae22ed9cdd5361b34c93b7d4",
+  "base_pack_sha256": "a9797ece2e63f2162d9c63daa7bf49cc3d299272a4182c8d6379d33ff8ea3584",
+  "base_pack_checksum": "755e975272de2b18c2ce65a62e5dc56e914066b9d49d6a57db7b45b096fa8045",
   "base_pack_mode": "current",
   "hash_algorithm": "sha256-file-bytes",
   "canonical_profile": "DAG-ML TCV1",
@@ -171,7 +171,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "24aeb00904d9291b487db832340e9177f7dccc85e2ad945ac4b3e460bf9880b7",
+      "sha256": "1b52e767e87a0969bd2ade52a591ad7eb3382403200c9f49bb78ed50aae8dcd4",
       "kind": "base_native_hpo_scheduler"
     },
     {
@@ -481,7 +481,7 @@
     },
     {
       "path": "docs/contracts/training_contract_conformance_pack.v1.json",
-      "sha256": "61fe53d28deaf60478f46d8a908162d7c1bbd22eb31e22d3d8bd13d7a7ded605",
+      "sha256": "a9797ece2e63f2162d9c63daa7bf49cc3d299272a4182c8d6379d33ff8ea3584",
       "kind": "base_conformance_pack"
     },
     {
@@ -706,7 +706,7 @@
     },
     {
       "path": "parity/training/generate_training_replay_fixtures.py",
-      "sha256": "a77aa89ed9c1f7710a932285ba8bb8d8be307b66763b84e9754bcabc0aa6aa2a",
+      "sha256": "063e2679bf4ff88b0c51eb415c78e227086a7f4ac47e2b0f5562ea284e319637",
       "kind": "generator"
     },
     {
@@ -721,7 +721,7 @@
     },
     {
       "path": "parity/training/tests/test_training_replay_contracts.py",
-      "sha256": "f594760331939a7e0d03ceba770d199ff4f1fc7274b04c3dddf9af5eb9dbf861",
+      "sha256": "792c740051a8055b9a9735ff7b8ca7ed50365cb66f7423982f1ed956fdbdb1a0",
       "kind": "test"
     },
     {
@@ -761,7 +761,7 @@
     },
     {
       "path": "scripts/validate_training_replay_contracts.py",
-      "sha256": "e3826de52e3fc163c48744467c48d3476f5900b9494a27c28e3c28b13e3c3f80",
+      "sha256": "2f3bb5124d31391116b1c96fe7a8d5c149eed0c2e91782474653f3fe575208e3",
       "kind": "production_validator"
     },
     {
@@ -846,5 +846,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "f9682e5dbcb1676078e7c4b729db03fc3e70aa09d4947ae3d7603006d2e0e2b8"
+  "pack_checksum": "ef97097ae96e7a17d5ffc7bc211dfc86c3438eae68258ad4704d8cd1bd31552b"
 }
