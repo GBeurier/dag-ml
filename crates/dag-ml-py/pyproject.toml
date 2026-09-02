@@ -27,3 +27,10 @@ classifiers = [
 features = ["extension-module", "methods-optimizer"]
 module-name = "dag_ml._dag_ml"
 python-source = "python"
+
+[tool.maturin.sbom]
+# cargo-cyclonedx serializes absolute file:// URLs for workspace path
+# dependencies.  Disable that non-portable generated SBOM for wheels built
+# from the workspace; release provenance remains bound by Cargo.lock and the
+# registry artifact checks instead of leaking the build host path.
+rust = false
