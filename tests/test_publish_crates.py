@@ -125,14 +125,13 @@ def test_cargo_dry_run_is_forced_offline(monkeypatch) -> None:
 
     result = publish_crates.cargo_publish(_plan()[0], dry_run=True, no_verify=False)
 
-    assert result == "published"
+    assert result == "checked"
     assert commands == [
         [
             "cargo",
-            "publish",
+            "package",
             "-p",
             "dag-ml-core",
-            "--dry-run",
             "--allow-dirty",
             "--offline",
         ]
