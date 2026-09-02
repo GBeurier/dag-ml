@@ -35,6 +35,16 @@ pub enum ArtifactBackend {
 pub const NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1: &str = "dagml.native_predictor_descriptor.v1";
 pub const NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1: u32 = 1;
 pub const NATIVE_PREDICTOR_FORMAT_N4MM: &str = "N4MM";
+pub const NATIVE_PREDICTOR_METHODS_PLS_OWNER: &str = "controller:methods.pls";
+pub const NATIVE_PREDICTOR_METHODS_RIDGE_OWNER: &str = "controller:methods.ridge";
+pub const NATIVE_PREDICTOR_ALGORITHM_PLS: i32 = 0;
+pub const NATIVE_PREDICTOR_ALGORITHM_IMPORTED_LINEAR: i32 = 11;
+pub const NATIVE_PREDICTOR_CAPABILITY_PREDICT: u64 = 1 << 0;
+pub const NATIVE_PREDICTOR_CAPABILITY_TRANSFORM: u64 = 1 << 1;
+pub const NATIVE_PREDICTOR_CAPABILITY_AFFINE: u64 = 1 << 2;
+pub const NATIVE_PREDICTOR_CAPABILITIES_V1: u64 = NATIVE_PREDICTOR_CAPABILITY_PREDICT
+    | NATIVE_PREDICTOR_CAPABILITY_TRANSFORM
+    | NATIVE_PREDICTOR_CAPABILITY_AFFINE;
 
 /// Writer ABI recorded inside a native predictor payload.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -122,6 +132,36 @@ impl NativePredictorDescriptorV1 {
             return Err(DagMlError::RuntimeValidation(
                 "native predictor descriptor has invalid model dimensions".to_string(),
             ));
+        }
+        if self.capabilities & !NATIVE_PREDICTOR_CAPABILITIES_V1 != 0 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native predictor descriptor uses unsupported capability bits {:#x}",
+                self.capabilities & !NATIVE_PREDICTOR_CAPABILITIES_V1
+            )));
+        }
+        let required_predict = self.capabilities & NATIVE_PREDICTOR_CAPABILITY_PREDICT != 0;
+        let product_supported = match self.owner_controller.as_str() {
+            NATIVE_PREDICTOR_METHODS_PLS_OWNER => {
+                self.storage_algorithm == NATIVE_PREDICTOR_ALGORITHM_PLS
+                    && required_predict
+                    && self.dimensions.n_components > 0
+            }
+            NATIVE_PREDICTOR_METHODS_RIDGE_OWNER => {
+                self.storage_algorithm == NATIVE_PREDICTOR_ALGORITHM_IMPORTED_LINEAR
+                    && required_predict
+                    && self.capabilities & NATIVE_PREDICTOR_CAPABILITY_AFFINE != 0
+                    && self.dimensions.n_components == 0
+            }
+            _ => false,
+        };
+        if !product_supported {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native predictor storage algorithm {} with capabilities {:#x} and {} component(s) is not product-supported by `{}`",
+                self.storage_algorithm,
+                self.capabilities,
+                self.dimensions.n_components,
+                self.owner_controller
+            )));
         }
         if self.descriptor_fingerprint != self.compute_fingerprint()? {
             return Err(DagMlError::RuntimeValidation(
@@ -875,6 +915,109 @@ impl RuntimeArtifactStore for FileArtifactPayloadStore {
                 handle: handle.clone(),
             });
         Ok(handle)
+    }
+}
+
+#[cfg(test)]
+mod native_predictor_descriptor_tests {
+    use super::*;
+
+    fn signed_descriptor(
+        owner: &str,
+        algorithm: i32,
+        capabilities: u64,
+        n_components: i32,
+    ) -> NativePredictorDescriptorV1 {
+        let mut descriptor = NativePredictorDescriptorV1 {
+            descriptor_type: NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1.to_string(),
+            schema_version: NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1,
+            artifact_sha256: "a".repeat(64),
+            owner_controller: ControllerId::new(owner).unwrap(),
+            format: NATIVE_PREDICTOR_FORMAT_N4MM.to_string(),
+            format_version: 1,
+            writer_abi: NativePredictorWriterAbiV1 {
+                major: 2,
+                minor: 4,
+                patch: 0,
+            },
+            storage_algorithm: algorithm,
+            capabilities,
+            dimensions: NativePredictorDimensionsV1 {
+                training_samples: 8,
+                n_features: 3,
+                n_targets: 1,
+                n_components,
+            },
+            descriptor_fingerprint: String::new(),
+        };
+        descriptor.descriptor_fingerprint = descriptor.compute_fingerprint().unwrap();
+        descriptor
+    }
+
+    #[test]
+    fn pure_descriptor_validation_rejects_controller_algorithm_capability_and_dimension_spoofs() {
+        signed_descriptor(
+            NATIVE_PREDICTOR_METHODS_PLS_OWNER,
+            NATIVE_PREDICTOR_ALGORITHM_PLS,
+            NATIVE_PREDICTOR_CAPABILITY_PREDICT | NATIVE_PREDICTOR_CAPABILITY_TRANSFORM,
+            1,
+        )
+        .validate()
+        .unwrap();
+        signed_descriptor(
+            NATIVE_PREDICTOR_METHODS_RIDGE_OWNER,
+            NATIVE_PREDICTOR_ALGORITHM_IMPORTED_LINEAR,
+            NATIVE_PREDICTOR_CAPABILITY_PREDICT | NATIVE_PREDICTOR_CAPABILITY_AFFINE,
+            0,
+        )
+        .validate()
+        .unwrap();
+
+        let invalid = [
+            signed_descriptor(
+                NATIVE_PREDICTOR_METHODS_RIDGE_OWNER,
+                NATIVE_PREDICTOR_ALGORITHM_PLS,
+                NATIVE_PREDICTOR_CAPABILITY_PREDICT | NATIVE_PREDICTOR_CAPABILITY_TRANSFORM,
+                1,
+            ),
+            signed_descriptor(
+                NATIVE_PREDICTOR_METHODS_PLS_OWNER,
+                NATIVE_PREDICTOR_ALGORITHM_IMPORTED_LINEAR,
+                NATIVE_PREDICTOR_CAPABILITY_PREDICT | NATIVE_PREDICTOR_CAPABILITY_AFFINE,
+                0,
+            ),
+            signed_descriptor(
+                NATIVE_PREDICTOR_METHODS_PLS_OWNER,
+                NATIVE_PREDICTOR_ALGORITHM_PLS,
+                NATIVE_PREDICTOR_CAPABILITY_TRANSFORM,
+                1,
+            ),
+            signed_descriptor(
+                NATIVE_PREDICTOR_METHODS_RIDGE_OWNER,
+                NATIVE_PREDICTOR_ALGORITHM_IMPORTED_LINEAR,
+                NATIVE_PREDICTOR_CAPABILITY_PREDICT,
+                0,
+            ),
+            signed_descriptor(
+                NATIVE_PREDICTOR_METHODS_PLS_OWNER,
+                NATIVE_PREDICTOR_ALGORITHM_PLS,
+                NATIVE_PREDICTOR_CAPABILITY_PREDICT,
+                0,
+            ),
+            signed_descriptor(
+                NATIVE_PREDICTOR_METHODS_RIDGE_OWNER,
+                NATIVE_PREDICTOR_ALGORITHM_IMPORTED_LINEAR,
+                NATIVE_PREDICTOR_CAPABILITY_PREDICT | NATIVE_PREDICTOR_CAPABILITY_AFFINE,
+                1,
+            ),
+        ];
+        for descriptor in invalid {
+            assert!(descriptor
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("not product-supported"));
+        }
     }
 }
 
