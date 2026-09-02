@@ -7,8 +7,7 @@ use dag_ml_core::{
     ImplementationDescriptor, ImplementationSemanticKind, LocalImplementationRegistry,
     LossCapability, LossExecutionAttestation, LossReference, LossSpec, MetricCapability,
     MetricEvaluationResult, MetricEvaluationTask, MetricEvaluationValue, MetricReference,
-    MetricSpec, NodeTask, Phase, PortabilityClass, ReplayabilityClass,
-    TrainingLossRoleReference,
+    MetricSpec, NodeTask, Phase, PortabilityClass, ReplayabilityClass, TrainingLossRoleReference,
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -240,11 +239,12 @@ impl PyLocalImplementationRegistry {
                     "Python metric callback raised an exception: {error}"
                 )))
             })?;
-        let values: Vec<MetricEvaluationValue> = depythonize(&callback_result).map_err(|error| {
-            py_core_error(CoreDagMlError::RuntimeValidation(format!(
-                "Python metric callback result conversion failed: {error}"
-            )))
-        })?;
+        let values: Vec<MetricEvaluationValue> =
+            depythonize(&callback_result).map_err(|error| {
+                py_core_error(CoreDagMlError::RuntimeValidation(format!(
+                    "Python metric callback result conversion failed: {error}"
+                )))
+            })?;
         let result = MetricEvaluationResult::for_task(&task, values).map_err(py_core_error)?;
         let aggregate = result.aggregate_for_task(&task).map_err(py_core_error)?;
         serde_json::to_string(&serde_json::json!({
