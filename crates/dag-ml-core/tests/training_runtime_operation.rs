@@ -5224,6 +5224,91 @@ fn d8_loaded_predictor_replays_predict_without_source_training_outcome() {
     assert!(state.count(Phase::Explain, "model:base") > 0);
 }
 
+#[test]
+fn loaded_stacking_predict_recomputes_fresh_cohort_without_training_cache() {
+    let fixture = fixture(true, true);
+    let mut artifact_store = InMemoryArtifactStore::new();
+    let source = run(
+        &fixture,
+        Arc::new(CallState::default()),
+        &provider(&fixture),
+        &mut artifact_store,
+    )
+    .expect("stacking source training");
+    assert!(!source.execution_bundle.prediction_caches.is_empty());
+    let cached_sample_ids = source
+        .portable_prediction_caches
+        .as_ref()
+        .expect("stacking training retains its OOF cache payload")
+        .caches
+        .iter()
+        .flat_map(|payload| payload.blocks.iter())
+        .flat_map(|block| block.sample_ids.iter().cloned())
+        .collect::<BTreeSet<_>>();
+
+    // The JSON round trip and fresh controller registry model a loaded
+    // Package V2 in another process. Its bundle retains signed OOF cache
+    // records, but PREDICT must execute the graph on the new cohort and must
+    // never turn those training predictions into inference features.
+    let package = source
+        .to_portable_predictor_package(
+            "predictor:package.loaded.stacking",
+            FittedArtifactMode::AllowHostSidecar,
+            ArtifactLoadMode::HostSidecar,
+        )
+        .unwrap();
+    let parsed = PortablePredictorPackage::from_json(&serde_json::to_string(&package).unwrap())
+        .expect("serialized stacking package");
+    let loaded = parsed
+        .load_with(|record| {
+            artifact_store
+                .get(&record.artifact.id)
+                .map(|stored| stored.handle.clone())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "missing sidecar handle for `{}`",
+                        record.artifact.id
+                    ))
+                })
+        })
+        .unwrap();
+
+    let fresh_sample_ids = vec![
+        sample("sample:fresh:1"),
+        sample("sample:fresh:2"),
+        sample("sample:fresh:3"),
+    ];
+    assert!(fresh_sample_ids
+        .iter()
+        .all(|sample_id| !cached_sample_ids.contains(sample_id)));
+    let fresh_state = Arc::new(CallState::default());
+    *fresh_state.predict_sample_ids.lock().unwrap() = Some(fresh_sample_ids.clone());
+    let fresh_controllers = controllers(&fixture, fresh_state.clone(), true);
+    let fresh_relations = calibration_relations(&fresh_sample_ids);
+    let replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &loaded,
+        request: &replay_request(&source, Phase::Predict),
+        outcome_id: "replay:loaded.stacking.fresh".to_string(),
+        run_id: RunId::new("run:loaded.stacking.fresh").unwrap(),
+        controllers: &fresh_controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &replay_envelopes_with_relations(&source, &fresh_relations),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("loaded stacking predictor must replay the fresh cohort");
+
+    assert!(!replay.prediction_cache_store);
+    assert_eq!(replay.outputs.len(), 1);
+    assert_eq!(replay.outputs[0].predictions.len(), 1);
+    assert_eq!(
+        replay.outputs[0].predictions[0].sample_ids,
+        fresh_sample_ids
+    );
+    assert_eq!(fresh_state.count(Phase::Predict, "transform:snv"), 1);
+    assert_eq!(fresh_state.count(Phase::Predict, "model:base"), 1);
+}
+
 #[cfg(dag_ml_workspace_contract_fixtures)]
 fn positional_struct(
     value: &serde_json::Value,
