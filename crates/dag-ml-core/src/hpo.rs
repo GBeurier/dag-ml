@@ -911,14 +911,14 @@ pub fn methods_optimizer_preflight() -> HpoResult<()> {
 /// to the first Methods HPO route.  Other model classes stay host/plugin-owned
 /// and are rejected during HPO preflight rather than being silently evaluated
 /// by a fixture or a replacement implementation.
-pub const METHODS_PLS_CONTROLLER_ID: &str = "controller:methods.pls";
+pub const METHODS_PLS_CONTROLLER_ID: &str = crate::runtime::NATIVE_PREDICTOR_METHODS_PLS_OWNER;
 
 /// Stable controller identity for the native, prediction-input-only Ridge
 /// meta-model used by the R2 nested-stacking route.  This is deliberately
 /// separate from [`METHODS_PLS_CONTROLLER_ID`]: Methods HPO V1 remains PLS
 /// only, while Ridge consumes scheduler-attested OOF prediction inputs rather
 /// than an arbitrary raw feature matrix.
-pub const METHODS_RIDGE_CONTROLLER_ID: &str = "controller:methods.ridge";
+pub const METHODS_RIDGE_CONTROLLER_ID: &str = crate::runtime::NATIVE_PREDICTOR_METHODS_RIDGE_OWNER;
 
 #[cfg(feature = "methods-optimizer")]
 /// Inspect complete N4MM bytes and derive their product-safe descriptor V1.
@@ -944,39 +944,6 @@ pub fn inspect_methods_native_predictor_descriptor_v1(
             "native Methods predictor inspection failed: {error}"
         ))
     })?;
-    let predict = n4m::SERIALIZED_MODEL_CAPABILITY_PREDICT;
-    let affine = n4m::SERIALIZED_MODEL_CAPABILITY_AFFINE;
-    let known_capabilities = predict
-        | n4m::SERIALIZED_MODEL_CAPABILITY_TRANSFORM
-        | n4m::SERIALIZED_MODEL_CAPABILITY_AFFINE;
-    if info.capabilities & !known_capabilities != 0 {
-        return Err(crate::DagMlError::RuntimeValidation(format!(
-            "native Methods predictor uses capability bits unsupported by descriptor V1: {:#x}",
-            info.capabilities & !known_capabilities
-        )));
-    }
-    match owner_controller.as_str() {
-        METHODS_PLS_CONTROLLER_ID
-            if info.algorithm == 0
-                && info.capabilities & predict == predict
-                && info.n_components > 0 => {}
-        METHODS_RIDGE_CONTROLLER_ID
-            if info.algorithm == 11
-                && info.capabilities & (predict | affine) == (predict | affine)
-                && info.n_components == 0 => {}
-        METHODS_PLS_CONTROLLER_ID | METHODS_RIDGE_CONTROLLER_ID => {
-            return Err(crate::DagMlError::RuntimeValidation(format!(
-                "native Methods storage algorithm {} with capabilities {:#x} and {} component(s) is not product-supported by `{owner_controller}`",
-                info.algorithm, info.capabilities, info.n_components
-            )));
-        }
-        _ => {
-            return Err(crate::DagMlError::RuntimeValidation(format!(
-                "native Methods predictor owner `{owner_controller}` is not a product-supported controller"
-            )));
-        }
-    }
-
     let mut descriptor = NativePredictorDescriptorV1 {
         descriptor_type: NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1.to_string(),
         schema_version: NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1,
