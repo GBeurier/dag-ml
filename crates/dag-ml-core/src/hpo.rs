@@ -25,6 +25,7 @@ pub const N4MOPT_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 pub const N4MOPT_ARTIFACT_KIND: &str = "n4m_optimizer_checkpoint";
 pub const N4MOPT_FORMAT: &str = "N4MOPT";
 pub const METHODS_ABI_MAJOR: u32 = 2;
+pub const METHODS_RUNTIME_ABI_MINOR: u32 = 4;
 pub const METHODS_PLS_N4MM_MIN_ABI_MINOR: u32 = 0;
 pub const METHODS_N4MOPT_MIN_ABI_MINOR: u32 = 2;
 pub const METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR: u32 = 3;
@@ -919,6 +920,82 @@ pub const METHODS_PLS_CONTROLLER_ID: &str = "controller:methods.pls";
 /// than an arbitrary raw feature matrix.
 pub const METHODS_RIDGE_CONTROLLER_ID: &str = "controller:methods.ridge";
 
+#[cfg(feature = "methods-optimizer")]
+fn inspect_methods_predictor_descriptor(
+    owner_controller: &crate::ControllerId,
+    payload: &[u8],
+) -> crate::Result<crate::runtime::NativePredictorDescriptorV1> {
+    use crate::runtime::{
+        NativePredictorDescriptorV1, NativePredictorDimensionsV1, NativePredictorWriterAbiV1,
+        NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1, NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1,
+        NATIVE_PREDICTOR_FORMAT_N4MM,
+    };
+
+    let info = n4m::inspect_n4mm(payload).map_err(|error| {
+        crate::DagMlError::RuntimeValidation(format!(
+            "native Methods predictor inspection failed: {error}"
+        ))
+    })?;
+    let predict = n4m::SERIALIZED_MODEL_CAPABILITY_PREDICT;
+    let affine = n4m::SERIALIZED_MODEL_CAPABILITY_AFFINE;
+    let known_capabilities = predict
+        | n4m::SERIALIZED_MODEL_CAPABILITY_TRANSFORM
+        | n4m::SERIALIZED_MODEL_CAPABILITY_AFFINE;
+    if info.capabilities & !known_capabilities != 0 {
+        return Err(crate::DagMlError::RuntimeValidation(format!(
+            "native Methods predictor uses capability bits unsupported by descriptor V1: {:#x}",
+            info.capabilities & !known_capabilities
+        )));
+    }
+    match owner_controller.as_str() {
+        METHODS_PLS_CONTROLLER_ID
+            if info.algorithm == 0
+                && info.capabilities & predict == predict
+                && info.n_components > 0 => {}
+        METHODS_RIDGE_CONTROLLER_ID
+            if info.algorithm == 11
+                && info.capabilities & (predict | affine) == (predict | affine)
+                && info.n_components == 0 => {}
+        METHODS_PLS_CONTROLLER_ID | METHODS_RIDGE_CONTROLLER_ID => {
+            return Err(crate::DagMlError::RuntimeValidation(format!(
+                "native Methods storage algorithm {} with capabilities {:#x} and {} component(s) is not product-supported by `{owner_controller}`",
+                info.algorithm, info.capabilities, info.n_components
+            )));
+        }
+        _ => {
+            return Err(crate::DagMlError::RuntimeValidation(format!(
+                "native Methods predictor owner `{owner_controller}` is not a product-supported controller"
+            )));
+        }
+    }
+
+    let mut descriptor = NativePredictorDescriptorV1 {
+        descriptor_type: NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1.to_string(),
+        schema_version: NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1,
+        artifact_sha256: format!("{:x}", Sha256::digest(payload)),
+        owner_controller: owner_controller.clone(),
+        format: NATIVE_PREDICTOR_FORMAT_N4MM.to_string(),
+        format_version: info.format_version,
+        writer_abi: NativePredictorWriterAbiV1 {
+            major: info.writer_abi.0,
+            minor: info.writer_abi.1,
+            patch: info.writer_abi.2,
+        },
+        storage_algorithm: info.algorithm,
+        capabilities: info.capabilities,
+        dimensions: NativePredictorDimensionsV1 {
+            training_samples: info.training_samples,
+            n_features: info.n_features,
+            n_targets: info.n_targets,
+            n_components: info.n_components,
+        },
+        descriptor_fingerprint: String::new(),
+    };
+    descriptor.descriptor_fingerprint = descriptor.compute_fingerprint()?;
+    descriptor.validate()?;
+    Ok(descriptor)
+}
+
 /// Process-scoped binding to the exact Methods shared library used by native
 /// controllers. The official `n4m` binding refuses a second, different
 /// library, so a caller must configure this before constructing any Methods
@@ -968,20 +1045,20 @@ impl MethodsRuntime {
             reason: format!("cannot load libn4m `{}`: {error}", canonical.display()),
         })?;
         // The binding performs the authoritative dynamic-library negotiation.
-        // Its published interface is ABI 2.3, which is the capability DAG-ML
+        // Its published interface is ABI 2.4, which is the capability DAG-ML
         // may safely claim after this preflight succeeds.
         n4m::Context::new().map_err(|error| HpoError::RuntimeConfiguration {
             reason: format!(
                 "libn4m `{}` does not satisfy Methods ABI {}.{}: {error}",
                 canonical.display(),
                 METHODS_ABI_MAJOR,
-                METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR
+                METHODS_RUNTIME_ABI_MINOR
             ),
         })?;
         Ok(Self {
             library_path: canonical,
             abi_major: METHODS_ABI_MAJOR,
-            abi_minor: METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR,
+            abi_minor: METHODS_RUNTIME_ABI_MINOR,
         })
     }
 
@@ -1675,6 +1752,18 @@ mod pls_controller {
                     request.artifact.id
                 )));
             }
+            let inspected = inspect_methods_predictor_descriptor(&self.id, payload)?;
+            if request
+                .artifact
+                .native_predictor_descriptor
+                .as_ref()
+                .is_some_and(|expected| expected != &inspected)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS payload `{}` does not match its inspected predictor descriptor",
+                    request.artifact.id
+                )));
+            }
             // Import once at hydration time to reject corrupt bytes before any
             // task executes. Prediction imports again into its task-local
             // native context, which avoids retaining native model handles.
@@ -1746,6 +1835,8 @@ mod pls_controller {
                         let bytes = model
                             .export_n4mm()
                             .map_err(|error| Self::native_error("export_n4mm", error))?;
+                        let native_predictor_descriptor =
+                            inspect_methods_predictor_descriptor(&self.id, &bytes)?;
                         let handle = self.handle(HandleKind::Model);
                         let fingerprint = format!("{:x}", Sha256::digest(&bytes));
                         let id = ArtifactId::new(format!(
@@ -1781,6 +1872,7 @@ mod pls_controller {
                                 plugin_version: None,
                                 abi_major: Some(METHODS_ABI_MAJOR),
                                 abi_min_minor: Some(METHODS_PLS_N4MM_MIN_ABI_MINOR),
+                                native_predictor_descriptor: Some(native_predictor_descriptor),
                             },
                             handle,
                         ))
@@ -2192,6 +2284,18 @@ mod pls_controller {
                     request.artifact.id
                 )));
             }
+            let inspected = inspect_methods_predictor_descriptor(&self.id, payload)?;
+            if request
+                .artifact
+                .native_predictor_descriptor
+                .as_ref()
+                .is_some_and(|expected| expected != &inspected)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "portable Methods Ridge payload `{}` does not match its inspected predictor descriptor",
+                    request.artifact.id
+                )));
+            }
             let context = Context::new().map_err(|error| {
                 MethodsPlsController::native_error("ridge_hydrate_context_create", error)
             })?;
@@ -2346,6 +2450,8 @@ mod pls_controller {
                     let bytes = model.export_n4mm().map_err(|error| {
                         MethodsPlsController::native_error("ridge_export_n4mm", error)
                     })?;
+                    let native_predictor_descriptor =
+                        inspect_methods_predictor_descriptor(&self.id, &bytes)?;
                     let id = ArtifactId::new(format!(
                         "artifact:methods-ridge:{}:refit",
                         task.node_plan.node_id
@@ -2375,6 +2481,7 @@ mod pls_controller {
                         plugin_version: None,
                         abi_major: Some(METHODS_ABI_MAJOR),
                         abi_min_minor: Some(METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR),
+                        native_predictor_descriptor: Some(native_predictor_descriptor),
                     };
                     Self::result(
                         self,
@@ -3105,6 +3212,7 @@ mod tests {
             plugin_version: None,
             abi_major: abi_min_minor.map(|_| METHODS_ABI_MAJOR),
             abi_min_minor,
+            native_predictor_descriptor: None,
         }
     }
 
@@ -3225,7 +3333,7 @@ mod tests {
             artifact: ArtifactRef {
                 id: crate::ArtifactId::new("artifact:methods-pls.release").unwrap(),
                 kind: "n4m_model".to_string(),
-                controller_id,
+                controller_id: controller_id.clone(),
                 backend: Some(ArtifactBackend::Raw),
                 uri: Some("methods/release.n4mm".to_string()),
                 content_fingerprint: Some(format!("{:x}", Sha256::digest(&payload))),
@@ -3234,6 +3342,9 @@ mod tests {
                 plugin_version: None,
                 abi_major: Some(METHODS_ABI_MAJOR),
                 abi_min_minor: Some(METHODS_PLS_N4MM_MIN_ABI_MINOR),
+                native_predictor_descriptor: Some(
+                    inspect_methods_predictor_descriptor(&controller_id, &payload).unwrap(),
+                ),
             },
             params_fingerprint: "params:methods-pls.release".to_string(),
             training_loss_fingerprint: None,
@@ -3259,6 +3370,156 @@ mod tests {
             .release_hydrated_artifact_payload(&second)
             .unwrap();
         assert_eq!(controller.hydrated_payload_count().unwrap(), 0);
+    }
+
+    #[cfg(feature = "methods-optimizer-local")]
+    #[test]
+    fn native_predictor_descriptor_binds_pls_and_affine_bytes_fail_closed() {
+        let runtime = native_runtime();
+        let context = n4m::Context::new().unwrap();
+        let mut config = n4m::Config::new().unwrap();
+        config.set_n_components(1).unwrap();
+        let x_values = [1.0, 1.0, 2.0, 4.0, 3.0, 9.0, 4.0, 16.0];
+        let y_values = [1.0, 2.0, 3.0, 4.0];
+        let x = n4m::MatrixRef::row_major(&x_values, 4, 2).unwrap();
+        let y = n4m::MatrixRef::row_major(&y_values, 4, 1).unwrap();
+        let pls_payload = n4m::Model::fit(&context, &config, x, y)
+            .unwrap()
+            .export_n4mm()
+            .unwrap();
+        let pls_id = crate::ControllerId::new(METHODS_PLS_CONTROLLER_ID).unwrap();
+        let pls_descriptor = inspect_methods_predictor_descriptor(&pls_id, &pls_payload).unwrap();
+        assert_eq!(pls_descriptor.storage_algorithm, 0);
+        assert_eq!(
+            pls_descriptor.dimensions,
+            crate::runtime::NativePredictorDimensionsV1 {
+                training_samples: 4,
+                n_features: 2,
+                n_targets: 1,
+                n_components: 1,
+            }
+        );
+        assert_ne!(
+            pls_descriptor.capabilities & n4m::SERIALIZED_MODEL_CAPABILITY_PREDICT,
+            0
+        );
+
+        let coefficients = [2.0, 0.5, -1.0, 3.0];
+        let intercept = [1.5, -2.0];
+        let affine_payload =
+            n4m::Model::import_linear_predictor(&context, 17, 2, 2, &coefficients, &intercept)
+                .unwrap()
+                .export_n4mm()
+                .unwrap();
+        let ridge_id = crate::ControllerId::new(METHODS_RIDGE_CONTROLLER_ID).unwrap();
+        let ridge_descriptor =
+            inspect_methods_predictor_descriptor(&ridge_id, &affine_payload).unwrap();
+        assert_eq!(ridge_descriptor.storage_algorithm, 11);
+        assert_eq!(ridge_descriptor.dimensions.n_components, 0);
+        assert_eq!(
+            ridge_descriptor.capabilities
+                & (n4m::SERIALIZED_MODEL_CAPABILITY_PREDICT
+                    | n4m::SERIALIZED_MODEL_CAPABILITY_AFFINE),
+            n4m::SERIALIZED_MODEL_CAPABILITY_PREDICT | n4m::SERIALIZED_MODEL_CAPABILITY_AFFINE
+        );
+
+        assert!(
+            inspect_methods_predictor_descriptor(&ridge_id, &pls_payload)
+                .unwrap_err()
+                .to_string()
+                .contains("not product-supported")
+        );
+        assert!(
+            inspect_methods_predictor_descriptor(&pls_id, &affine_payload)
+                .unwrap_err()
+                .to_string()
+                .contains("not product-supported")
+        );
+        let mut tampered = pls_payload.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        assert!(inspect_methods_predictor_descriptor(&pls_id, &tampered).is_err());
+
+        let request_for =
+            |controller_id: crate::ControllerId,
+             payload: &[u8],
+             descriptor: crate::runtime::NativePredictorDescriptorV1,
+             abi_min_minor: u32| ArtifactMaterializationRequest {
+                run_id: crate::RunId::new("run:descriptor-test").unwrap(),
+                bundle_id: crate::BundleId::new("bundle:descriptor-test").unwrap(),
+                node_id: crate::NodeId::new("model:descriptor-test").unwrap(),
+                phase: Phase::Predict,
+                variant_id: None,
+                controller_id: controller_id.clone(),
+                artifact: ArtifactRef {
+                    id: crate::ArtifactId::new("artifact:descriptor-test").unwrap(),
+                    kind: "n4m_model".to_string(),
+                    controller_id,
+                    backend: Some(ArtifactBackend::Raw),
+                    uri: Some("methods/descriptor-test.n4mm".to_string()),
+                    content_fingerprint: Some(format!("{:x}", Sha256::digest(payload))),
+                    size_bytes: Some(payload.len() as u64),
+                    plugin: None,
+                    plugin_version: None,
+                    abi_major: Some(METHODS_ABI_MAJOR),
+                    abi_min_minor: Some(abi_min_minor),
+                    native_predictor_descriptor: Some(descriptor),
+                },
+                params_fingerprint: "a".repeat(64),
+                training_loss_fingerprint: None,
+            };
+
+        let pls_controller = MethodsPlsController::new(runtime.clone());
+        let good_pls = request_for(
+            pls_id.clone(),
+            &pls_payload,
+            pls_descriptor.clone(),
+            METHODS_PLS_N4MM_MIN_ABI_MINOR,
+        );
+        let handle = pls_controller
+            .hydrate_artifact_payload(&good_pls, &pls_payload)
+            .unwrap();
+        pls_controller
+            .release_hydrated_artifact_payload(&handle)
+            .unwrap();
+
+        let mut wrong_dimensions = pls_descriptor.clone();
+        wrong_dimensions.dimensions.n_features += 1;
+        wrong_dimensions.descriptor_fingerprint = wrong_dimensions.compute_fingerprint().unwrap();
+        let wrong_dimensions_request = request_for(
+            pls_id,
+            &pls_payload,
+            wrong_dimensions,
+            METHODS_PLS_N4MM_MIN_ABI_MINOR,
+        );
+        assert!(pls_controller
+            .hydrate_artifact_payload(&wrong_dimensions_request, &pls_payload)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match its inspected predictor descriptor"));
+
+        let ridge_controller = MethodsRidgeController::new(runtime);
+        let good_ridge = request_for(
+            ridge_id,
+            &affine_payload,
+            ridge_descriptor,
+            METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR,
+        );
+        let ridge_handle = ridge_controller
+            .hydrate_artifact_payload(&good_ridge, &affine_payload)
+            .unwrap();
+        ridge_controller
+            .release_hydrated_artifact_payload(&ridge_handle)
+            .unwrap();
+
+        let mut future = pls_descriptor;
+        future.schema_version = 2;
+        future.descriptor_fingerprint = future.compute_fingerprint().unwrap();
+        assert!(future
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported native predictor descriptor"));
     }
 
     fn ledger_trial(score: f64) -> HpoTrial {

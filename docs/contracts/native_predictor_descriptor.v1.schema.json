@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/native_predictor_descriptor.v1.schema.json",
+  "title": "DAG-ML native predictor descriptor v1",
+  "description": "TCV1-self-fingerprinted metadata derived from authoritative inspection of one complete N4MM predictor payload.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "descriptor_type",
+    "schema_version",
+    "artifact_sha256",
+    "owner_controller",
+    "format",
+    "format_version",
+    "writer_abi",
+    "storage_algorithm",
+    "capabilities",
+    "dimensions",
+    "descriptor_fingerprint"
+  ],
+  "properties": {
+    "descriptor_type": { "const": "dagml.native_predictor_descriptor.v1" },
+    "schema_version": { "const": 1 },
+    "artifact_sha256": { "$ref": "#/$defs/sha256" },
+    "owner_controller": {
+      "enum": ["controller:methods.pls", "controller:methods.ridge"]
+    },
+    "format": { "const": "N4MM" },
+    "format_version": { "const": 1 },
+    "writer_abi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["major", "minor", "patch"],
+      "properties": {
+        "major": { "const": 2 },
+        "minor": { "type": "integer", "minimum": 0 },
+        "patch": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "storage_algorithm": { "type": "integer" },
+    "capabilities": { "type": "integer", "minimum": 0, "maximum": 7 },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["training_samples", "n_features", "n_targets", "n_components"],
+      "properties": {
+        "training_samples": { "type": "integer", "minimum": 1 },
+        "n_features": { "type": "integer", "minimum": 1 },
+        "n_targets": { "type": "integer", "minimum": 1 },
+        "n_components": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "descriptor_fingerprint": { "$ref": "#/$defs/sha256" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "owner_controller": { "const": "controller:methods.pls" } } },
+      "then": {
+        "properties": {
+          "storage_algorithm": { "const": 0 },
+          "capabilities": { "enum": [1, 3, 5, 7] },
+          "dimensions": {
+            "properties": { "n_components": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "owner_controller": { "const": "controller:methods.ridge" } } },
+      "then": {
+        "properties": {
+          "storage_algorithm": { "const": 11 },
+          "capabilities": { "enum": [5, 7] },
+          "dimensions": {
+            "properties": { "n_components": { "const": 0 } }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

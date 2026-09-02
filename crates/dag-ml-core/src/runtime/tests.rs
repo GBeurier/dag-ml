@@ -641,6 +641,7 @@ impl RuntimeController for ReplayMockController {
                 plugin_version: None,
                 abi_major: None,
                 abi_min_minor: None,
+                native_predictor_descriptor: None,
             }]
         } else {
             Vec::new()
@@ -2553,6 +2554,7 @@ fn replay_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBundle {
                 plugin_version: None,
                 abi_major: None,
                 abi_min_minor: None,
+                native_predictor_descriptor: None,
             },
             params_fingerprint: model_plan.params_fingerprint.clone(),
             training_loss_fingerprint: model_plan.training_loss_fingerprint(Phase::Refit).unwrap(),
@@ -4687,6 +4689,7 @@ fn portable_artifact_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBun
                 plugin_version: Some("1.0.0".to_string()),
                 abi_major: None,
                 abi_min_minor: None,
+                native_predictor_descriptor: None,
             },
             params_fingerprint: model_plan.params_fingerprint.clone(),
             training_loss_fingerprint: model_plan.training_loss_fingerprint(Phase::Refit).unwrap(),
@@ -4734,6 +4737,7 @@ fn artifact_ref_validate_portable_rejects_unsafe_uris_and_legacy() {
         plugin_version: Some("1.0.0".to_string()),
         abi_major: None,
         abi_min_minor: None,
+        native_predictor_descriptor: None,
     };
     base.validate_portable().unwrap();
 
@@ -7280,6 +7284,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         plugin_version: None,
         abi_major: None,
         abi_min_minor: None,
+        native_predictor_descriptor: None,
     };
     let handle = HandleRef {
         handle: 77,
@@ -7361,6 +7366,7 @@ fn artifact_ref_validates_portable_metadata() {
         plugin_version: Some("1.0.0".to_string()),
         abi_major: None,
         abi_min_minor: None,
+        native_predictor_descriptor: None,
     };
 
     artifact.validate().unwrap();
@@ -7407,6 +7413,7 @@ fn artifact_ref_rejects_invalid_portable_metadata() {
         plugin_version: Some("1.0.0".to_string()),
         abi_major: None,
         abi_min_minor: None,
+        native_predictor_descriptor: None,
     };
     artifact.validate().unwrap();
 

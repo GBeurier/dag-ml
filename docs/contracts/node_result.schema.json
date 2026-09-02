@@ -448,6 +448,12 @@
         },
         "abi_min_minor": {
           "type": ["integer", "null"], "minimum": 0
+        },
+        "native_predictor_descriptor": {
+          "anyOf": [
+            { "$ref": "https://github.com/GBeurier/dag-ml/schemas/native_predictor_descriptor.v1.schema.json" },
+            { "type": "null" }
+          ]
         }
       }
     },

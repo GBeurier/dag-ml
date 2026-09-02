@@ -32,6 +32,106 @@ pub enum ArtifactBackend {
     Raw,
 }
 
+pub const NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1: &str = "dagml.native_predictor_descriptor.v1";
+pub const NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1: u32 = 1;
+pub const NATIVE_PREDICTOR_FORMAT_N4MM: &str = "N4MM";
+
+/// Writer ABI recorded inside a native predictor payload.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativePredictorWriterAbiV1 {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+/// Dimensions authoritatively inspected from the native predictor payload.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativePredictorDimensionsV1 {
+    pub training_samples: i64,
+    pub n_features: i32,
+    pub n_targets: i32,
+    pub n_components: i32,
+}
+
+/// Content-bound descriptor for a predictor owned by a native controller.
+///
+/// This contract deliberately records Methods' numeric algorithm and
+/// capability mask without translating them into host claims. For N4MM, the
+/// values are produced only from `n4m_serialization_inspect_model_v1` and the
+/// descriptor fingerprint is TCV1 over every field except itself.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativePredictorDescriptorV1 {
+    pub descriptor_type: String,
+    pub schema_version: u32,
+    pub artifact_sha256: String,
+    pub owner_controller: ControllerId,
+    pub format: String,
+    pub format_version: u32,
+    pub writer_abi: NativePredictorWriterAbiV1,
+    pub storage_algorithm: i32,
+    pub capabilities: u64,
+    pub dimensions: NativePredictorDimensionsV1,
+    pub descriptor_fingerprint: String,
+}
+
+impl NativePredictorDescriptorV1 {
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        let json = serde_json::to_string(self)?;
+        crate::canonical::parse_typed_json(&json)
+            .and_then(|value| value.fingerprint_without("descriptor_fingerprint"))
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "native predictor descriptor is outside TCV1: {error}"
+                ))
+            })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.descriptor_type != NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1
+            || self.schema_version != NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "unsupported native predictor descriptor `{}` schema_version {}; expected `{}` schema_version {}",
+                self.descriptor_type,
+                self.schema_version,
+                NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1,
+                NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1
+            )));
+        }
+        validate_runtime_fingerprint("native predictor artifact", &self.artifact_sha256)?;
+        validate_runtime_fingerprint("native predictor descriptor", &self.descriptor_fingerprint)?;
+        if self.format != NATIVE_PREDICTOR_FORMAT_N4MM || self.format_version == 0 {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native predictor descriptor has unsupported format `{}:{}`",
+                self.format, self.format_version
+            )));
+        }
+        if self.writer_abi.major == 0 {
+            return Err(DagMlError::RuntimeValidation(
+                "native predictor descriptor writer ABI major must be non-zero".to_string(),
+            ));
+        }
+        if self.dimensions.training_samples <= 0
+            || self.dimensions.n_features <= 0
+            || self.dimensions.n_targets <= 0
+            || self.dimensions.n_components < 0
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native predictor descriptor has invalid model dimensions".to_string(),
+            ));
+        }
+        if self.descriptor_fingerprint != self.compute_fingerprint()? {
+            return Err(DagMlError::RuntimeValidation(
+                "native predictor descriptor fingerprint does not match TCV1 content".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ArtifactRef {
     pub id: ArtifactId,
@@ -57,6 +157,10 @@ pub struct ArtifactRef {
     /// from the payload capability, never copied from the writer's runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abi_min_minor: Option<u32>,
+    /// Content-derived native predictor metadata. Historical and host-owned
+    /// artifacts omit it; new native Methods writers always emit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_predictor_descriptor: Option<NativePredictorDescriptorV1>,
 }
 
 impl ArtifactRef {
@@ -84,6 +188,20 @@ impl ArtifactRef {
         }
         if let Some(content_fingerprint) = &self.content_fingerprint {
             validate_runtime_fingerprint("artifact content", content_fingerprint)?;
+        }
+        if let Some(descriptor) = &self.native_predictor_descriptor {
+            descriptor.validate()?;
+            if descriptor.owner_controller != self.controller_id
+                || self.backend != Some(ArtifactBackend::Raw)
+                || self.kind != "n4m_model"
+                || self.content_fingerprint.as_deref() != Some(descriptor.artifact_sha256.as_str())
+                || self.abi_major != Some(descriptor.writer_abi.major)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "artifact `{}` does not match its native predictor descriptor",
+                    self.id
+                )));
+            }
         }
         if self.uri.is_some() && self.backend.is_none() {
             return Err(DagMlError::RuntimeValidation(format!(
