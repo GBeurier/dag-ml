@@ -49,6 +49,7 @@ from ._dag_ml import (
     loss_execution_attestation_json as _native_loss_execution_attestation_json,
     project_training_request_json,
     run_cv_refit_predict_in_process as _native_run_cv_refit_predict_in_process,
+    read_native_results_v2_json as _native_read_native_results_v2_json,
     run_cv_refit_in_process_with_training_losses as _native_run_cv_refit_in_process_with_training_losses,
     sample_relation_set_fingerprint_json,
     sign_training_replay_request_json as _native_sign_training_replay_request_json,
@@ -137,6 +138,7 @@ _FACADE_EXPORTS = [
     "replay_loaded_predictor_package_json",
     "run_cv_refit_predict_in_process",
     "run_cv_refit_in_process_with_training_losses",
+    "read_native_results_v2",
 ]
 
 
@@ -184,6 +186,18 @@ def configure_methods_runtime(library_path: str | PathLike[str]) -> str:
     """
 
     return _native_configure_methods_runtime(str(library_path))
+
+
+def read_native_results_v2(run_dir: str | PathLike[str]) -> dict[str, Any]:
+    """Read a V2 native results directory through the Rust results store.
+
+    The returned mapping contains ``manifest``, ``score_set``, and
+    ``predictions``. It deliberately excludes artifact deserialization: callers
+    needing a fitted model must use an explicit, separately authorized export
+    path.
+    """
+
+    return json.loads(_native_read_native_results_v2_json(str(run_dir)))
 
 
 class JsonContract:
@@ -1599,6 +1613,7 @@ __all__ = [
     "build_execution_plan_json",
     "canonical_operator_variant_label",
     "contract_manifest_json",
+    "read_native_results_v2",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_json",
     "compile_pipeline_dsl_artifact_with_controllers",
