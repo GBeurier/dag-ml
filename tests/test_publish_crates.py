@@ -114,6 +114,31 @@ def test_dry_run_checks_only_publishable_roots(monkeypatch, capsys) -> None:
     assert "skipping dry-run for dag-ml-cli" in output
 
 
+def test_cargo_dry_run_is_forced_offline(monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_: Any) -> Any:
+        commands.append(command)
+        return publish_crates.subprocess.CompletedProcess(command, 0, stdout="")
+
+    monkeypatch.setattr(publish_crates.subprocess, "run", run)
+
+    result = publish_crates.cargo_publish(_plan()[0], dry_run=True, no_verify=False)
+
+    assert result == "published"
+    assert commands == [
+        [
+            "cargo",
+            "publish",
+            "-p",
+            "dag-ml-core",
+            "--dry-run",
+            "--allow-dirty",
+            "--offline",
+        ]
+    ]
+
+
 def test_real_publish_keeps_topological_order(monkeypatch) -> None:
     """The tagged publication path must still upload every crate in order."""
     calls: list[tuple[str, bool, bool]] = []

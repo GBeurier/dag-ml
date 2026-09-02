@@ -305,7 +305,7 @@ def validate_tag(tag: str, version: str) -> None:
 def cargo_publish(crate: Crate, dry_run: bool, no_verify: bool) -> str:
     cmd = ["cargo", "publish", "-p", crate.name]
     if dry_run:
-        cmd.extend(["--dry-run", "--allow-dirty"])
+        cmd.extend(["--dry-run", "--allow-dirty", "--offline"])
     if no_verify:
         cmd.append("--no-verify")
 
