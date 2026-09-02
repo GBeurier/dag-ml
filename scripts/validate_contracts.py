@@ -18912,7 +18912,7 @@ def validate_w10_training_pack(pack: Any, negatives: dict[str, Any]) -> None:
         "crates/dag-ml-core/src/runtime/scoring.rs",
         "crates/dag-ml-core/src/runtime/scheduler.rs",
         "crates/dag-ml-core/Cargo.toml",
-        "crates/dag-ml-core/Cargo.toml.methods-local",
+        "crates/dag-ml-py/Cargo.lock",
         "examples/fixtures/training/negative_cases.v1.json",
         "parity/training/generate_fixtures.py",
         "parity/training/oracle.py",

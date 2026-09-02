@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "3251c12024d8e8ed155c64d07e97e03937403ef4fc1f56d370a27446c28de4a2",
+      "sha256": "41f0e15c2da2afae4b601dea698774dfa41b2526de0d2288790f633142ff0b62",
       "kind": "ci_gate"
     },
     {
@@ -36,13 +36,8 @@
     },
     {
       "path": "crates/dag-ml-core/Cargo.toml",
-      "sha256": "f4feb8080d8e589e434daf22a9cf5d79178cb9a02c237cbc1528ebb121632ea2",
+      "sha256": "8cf9e1c8dbf518a0ef9e593a83e877b3176d3f07a0626e72625502717fe7cab7",
       "kind": "published_native_manifest"
-    },
-    {
-      "path": "crates/dag-ml-core/Cargo.toml.methods-local",
-      "sha256": "f638a6f427bfb87555f5f1d472ac733532c03eea46fdf0ba8cb3a3cfd78c5916",
-      "kind": "native_hpo_overlay_manifest"
     },
     {
       "path": "crates/dag-ml-core/src/aggregation.rs",
@@ -190,18 +185,23 @@
       "kind": "native_integration_test"
     },
     {
+      "path": "crates/dag-ml-py/Cargo.lock",
+      "sha256": "89d6ae7a60f828b96c3fc9e3636b8d4d12c24982d06a2bca68a9873501216bb7",
+      "kind": "python_binding_lockfile"
+    },
+    {
       "path": "crates/dag-ml-py/README.md",
       "sha256": "3669971da59b96c33e6374534a73cf12aea2e3a65ddcf3b3891a86615f6b12b9",
       "kind": "python_binding_documentation"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "45413e0e4d4c0a63d18adf0c33d582c392d97bbd4817c44adc7d9e517690ad1f",
+      "sha256": "ef25fbadfe80518a4cfea80a3ae07897cef05ee9e82517d726340b48cff50eda",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "061d6030ffe0cd7cc9813e8aba2c2d596fe22c7bdf73e81a6d86304c220ad387",
+      "sha256": "75893d4d5ff196990cda91daf8a6eb5722cea902f61162f910c4f25c04e92459",
       "kind": "python_typing"
     },
     {
@@ -211,7 +211,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "3d1ece271ebd1afb47a602e44070f75985f8bbf4a9ede8983a597f8fe8e082ab",
+      "sha256": "e068eb08ad0c4fec66f29288628cf0ea4357cb979f3282db203b268756d12545",
       "kind": "python_binding"
     },
     {
@@ -221,7 +221,7 @@
     },
     {
       "path": "crates/dag-ml-py/tests/test_training_result.py",
-      "sha256": "da58b897dfc3d165d4c53af4c591017a3cbf82bcb5424d80c63ae3115f060842",
+      "sha256": "144308b5046607348f4019dc8b939bc7f31bfea4e5142f3d2004977fdf8e7d76",
       "kind": "python_binding_test"
     },
     {
@@ -231,7 +231,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "24aed0aa739a8806cffe70561fc586875e17659f6947101e5ec608436e4b0e13",
+      "sha256": "25e9eaa7c3d10f49cbd24933a7b3bcb0b7526d4f70c3f11b0009ae637ec9779c",
       "kind": "hpo_documentation"
     },
     {
@@ -476,7 +476,7 @@
     },
     {
       "path": "parity/training/generate_fixtures.py",
-      "sha256": "6242f430a96d18b1efdc49363b764b3aaf3819aa4cdd2c0cba7d738bc8f4650b",
+      "sha256": "13b11bb244e6b0e5c761101538ad8b2030dda026ae115a55e2ee68a880f90a34",
       "kind": "generator"
     },
     {
@@ -491,18 +491,18 @@
     },
     {
       "path": "scripts/check_so_freshness.py",
-      "sha256": "41ce8f2933c1b72670523788725ca08b4325f34f087dc278118fbb162986b3c7",
+      "sha256": "a7c11069f0dc79ff92da118747835357ec9a9a07b1c4f4da65448c04c76be301",
       "kind": "python_extension_freshness_gate"
     },
     {
       "path": "scripts/smoke_python_bindings.py",
-      "sha256": "cfaeb19bf7c46732bb42f1e09c352bf7a6461e9605025b881b2f3d64496a22d7",
+      "sha256": "6b61701e060716c741d6bfffdbf7d5a94c02a78dd6649df51e0affd15b5858d3",
       "kind": "binding_smoke"
     },
     {
       "path": "scripts/test_methods_optimizer_local.sh",
-      "sha256": "c579bd528b1a662c39521337f211efb7fa3e1236b7ef7ad1f15355a93401b93d",
-      "kind": "native_hpo_overlay_helper"
+      "sha256": "bab50baade1b6a5829ed5eba44c9731c65a8bda504fa2ac4e3982d9a99989d7a",
+      "kind": "native_hpo_integration_helper"
     },
     {
       "path": "scripts/validate_abi_snapshot.py",
@@ -511,7 +511,7 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "282611544033eca1e7777da489322c7a0e0bd94f7741d3022ee0fb7dcdc62ba1",
+      "sha256": "f01526a28580880b5f094a9493a856d9f3d2bc0557749d9680b27119c10de732",
       "kind": "production_validator"
     },
     {
@@ -589,5 +589,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "f2df95b484e6b48fec54eb783bfea5b1aaaebe8af208052db66a37a56105e1a6"
+  "pack_checksum": "030b741dc3035553cbf75969c4513e1196c71eaeae22ed9cdd5361b34c93b7d4"
 }

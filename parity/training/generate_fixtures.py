@@ -73,6 +73,7 @@ BASE_PACK_ARTIFACTS = {
     "crates/dag-ml-core/src/training_runtime.rs": "native_runtime_contract",
     "crates/dag-ml-core/tests/training_runtime_operation.rs": "native_integration_test",
     "crates/dag-ml-py/README.md": "python_binding_documentation",
+    "crates/dag-ml-py/Cargo.lock": "python_binding_lockfile",
     "crates/dag-ml-py/python/dag_ml/__init__.py": "python_facade",
     "crates/dag-ml-py/python/dag_ml/__init__.pyi": "python_typing",
     "crates/dag-ml-py/src/in_process.rs": "python_controller_bridge",
@@ -131,8 +132,7 @@ BASE_PACK_ARTIFACTS = {
     "scripts/smoke_python_bindings.py": "binding_smoke",
     "scripts/validate_abi_snapshot.py": "c_abi_gate",
     "scripts/validate_contracts.py": "production_validator",
-    "crates/dag-ml-core/Cargo.toml.methods-local": "native_hpo_overlay_manifest",
-    "scripts/test_methods_optimizer_local.sh": "native_hpo_overlay_helper",
+    "scripts/test_methods_optimizer_local.sh": "native_hpo_integration_helper",
     "tests/test_predict_cohort_envelope_v2_contract.py": "contract_test",
 }
 
