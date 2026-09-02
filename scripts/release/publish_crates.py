@@ -4,22 +4,32 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
+import json
 import os
 import re
 import subprocess
+import tarfile
 import time
 import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Any, NoReturn
 
 
 ALREADY_UPLOADED = re.compile(
     r"already (exists|uploaded)|is already being published|crate version .* is already",
     re.IGNORECASE,
 )
+SHA1 = re.compile(r"[0-9a-f]{40}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+MAX_REGISTRY_METADATA_BYTES = 1 << 20
+MAX_CRATE_BYTES = 64 << 20
+MAX_CRATE_MEMBERS = 10_000
+MAX_VCS_INFO_BYTES = 64 << 10
 
 
 @dataclass(frozen=True)
@@ -29,7 +39,7 @@ class Crate:
     internal_deps: tuple[str, ...]
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     raise SystemExit(message)
 
 
@@ -41,6 +51,130 @@ def require(condition: bool, message: str) -> None:
 def load_toml(path: Path) -> dict[str, Any]:
     with path.open("rb") as handle:
         return tomllib.load(handle)
+
+
+def repository_head(repo: Path) -> str:
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    require(proc.returncode == 0, f"cannot resolve release HEAD: {proc.stderr.strip()}")
+    head = proc.stdout.strip()
+    require(bool(SHA1.fullmatch(head)), f"release HEAD is not a full lowercase SHA-1: {head}")
+    return head
+
+
+def _read_bounded(response: Any, limit: int, label: str) -> bytes:
+    payload = response.read(limit + 1)
+    require(len(payload) <= limit, f"{label} exceeds the {limit}-byte limit")
+    return payload
+
+
+def _strict_json_object(payload: bytes, label: str) -> dict[str, Any]:
+    def object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            require(key not in result, f"{label} contains duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        parsed = json.loads(payload.decode("utf-8"), object_pairs_hook=object_no_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"cannot decode {label}: {error}")
+    require(isinstance(parsed, dict), f"{label} must be a JSON object")
+    return parsed
+
+
+def verify_crate_archive(
+    name: str,
+    version: str,
+    expected_head: str,
+    registry_checksum: str,
+    crate_bytes: bytes,
+) -> None:
+    """Fail closed unless a registry crate is exact and clean at ``expected_head``."""
+
+    require(
+        bool(SHA256.fullmatch(registry_checksum)),
+        f"crates.io returned an invalid checksum for {name} {version}",
+    )
+    actual_checksum = hashlib.sha256(crate_bytes).hexdigest()
+    require(
+        actual_checksum == registry_checksum,
+        f"downloaded {name} {version} checksum {actual_checksum} does not match "
+        f"crates.io {registry_checksum}",
+    )
+    require(
+        bool(SHA1.fullmatch(expected_head)),
+        f"expected release commit is not a full lowercase SHA-1: {expected_head}",
+    )
+
+    try:
+        with tarfile.open(fileobj=io.BytesIO(crate_bytes), mode="r:gz") as archive:
+            members = archive.getmembers()
+            require(
+                len(members) <= MAX_CRATE_MEMBERS,
+                f"{name} {version} crate has too many archive members",
+            )
+            vcs_members = [
+                member
+                for member in members
+                if PurePosixPath(member.name).name == ".cargo_vcs_info.json"
+            ]
+            require(
+                len(vcs_members) == 1,
+                f"{name} {version} crate must contain exactly one .cargo_vcs_info.json",
+            )
+            vcs_member = vcs_members[0]
+            expected_path = f"{name}-{version}/.cargo_vcs_info.json"
+            vcs_path = PurePosixPath(vcs_member.name)
+            require(
+                "\\" not in vcs_member.name
+                and not vcs_path.is_absolute()
+                and all(part not in {"", ".", ".."} for part in vcs_path.parts)
+                and vcs_member.name == expected_path,
+                f"{name} {version} crate has an unsafe or misplaced VCS record: "
+                f"{vcs_member.name}",
+            )
+            require(
+                vcs_member.isfile(),
+                f"{name} {version} VCS record must be a regular archive member",
+            )
+            require(
+                0 < vcs_member.size <= MAX_VCS_INFO_BYTES,
+                f"{name} {version} VCS record has an invalid size",
+            )
+            extracted = archive.extractfile(vcs_member)
+            if extracted is None:
+                fail(f"cannot read {name} {version} VCS record")
+            vcs_bytes = extracted.read(MAX_VCS_INFO_BYTES + 1)
+            require(
+                len(vcs_bytes) == vcs_member.size <= MAX_VCS_INFO_BYTES,
+                f"{name} {version} VCS record size changed while reading",
+            )
+    except (tarfile.TarError, OSError) as error:
+        fail(f"cannot inspect downloaded {name} {version} crate: {error}")
+
+    vcs = _strict_json_object(vcs_bytes, f"{name} {version} .cargo_vcs_info.json")
+    git = vcs.get("git")
+    if not isinstance(git, dict):
+        fail(f"{name} {version} VCS record has no git object")
+    require(
+        git.get("dirty", False) is False,
+        f"{name} {version} registry crate was packaged from a dirty tree",
+    )
+    sha1 = git.get("sha1")
+    if not isinstance(sha1, str) or SHA1.fullmatch(sha1) is None:
+        fail(f"{name} {version} VCS record has no full lowercase git sha1")
+    require(
+        sha1 == expected_head,
+        f"{name} {version} registry crate commit {sha1} does not match HEAD {expected_head}",
+    )
 
 
 def dependency_names(table: dict[str, Any]) -> set[str]:
@@ -69,7 +203,8 @@ def package_version(
             f"{manifest_path}: package.version table must inherit from workspace",
         )
         return workspace_version
-    require(isinstance(value, str), f"{manifest_path}: package.version is missing")
+    if not isinstance(value, str):
+        fail(f"{manifest_path}: package.version is missing")
     return value
 
 
@@ -144,7 +279,7 @@ def workspace_crates(repo: Path) -> tuple[str, list[Crate]]:
             )
         )
 
-    require(crates, "publish plan has no publishable workspace crates")
+    require(bool(crates), "publish plan has no publishable workspace crates")
     return workspace_version, topo_sort(crates)
 
 
@@ -184,18 +319,51 @@ def cargo_publish(crate: Crate, dry_run: bool, no_verify: bool) -> str:
     raise SystemExit(proc.returncode)
 
 
-def crate_version_exists(name: str, version: str) -> bool:
+def crate_version_exists(name: str, version: str, expected_head: str) -> bool:
     request = urllib.request.Request(
         f"https://crates.io/api/v1/crates/{name}/{version}",
         headers={"User-Agent": "dag-ml-release-script"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=30):
-            return True
+        with urllib.request.urlopen(request, timeout=30) as response:
+            metadata_bytes = _read_bounded(
+                response,
+                MAX_REGISTRY_METADATA_BYTES,
+                f"crates.io metadata for {name} {version}",
+            )
     except urllib.error.HTTPError as error:
         if error.code == 404:
             return False
         raise
+
+    metadata = _strict_json_object(
+        metadata_bytes, f"crates.io metadata for {name} {version}"
+    )
+    registry_version = metadata.get("version")
+    if not isinstance(registry_version, dict):
+        fail(f"crates.io metadata for {name} {version} has no version object")
+    require(
+        registry_version.get("crate") == name and registry_version.get("num") == version,
+        f"crates.io returned mismatched identity for {name} {version}",
+    )
+    checksum = registry_version.get("checksum")
+    if not isinstance(checksum, str):
+        fail(f"crates.io metadata for {name} {version} has no checksum")
+    expected_download_path = f"/api/v1/crates/{name}/{version}/download"
+    require(
+        registry_version.get("dl_path") == expected_download_path,
+        f"crates.io returned an unexpected download path for {name} {version}",
+    )
+    download = urllib.request.Request(
+        "https://crates.io" + expected_download_path,
+        headers={"User-Agent": "dag-ml-release-script"},
+    )
+    with urllib.request.urlopen(download, timeout=30) as response:
+        crate_bytes = _read_bounded(
+            response, MAX_CRATE_BYTES, f"downloaded {name} {version} crate"
+        )
+    verify_crate_archive(name, version, expected_head, checksum, crate_bytes)
+    return True
 
 
 def main() -> None:
@@ -218,6 +386,7 @@ def main() -> None:
 
     repo = Path(__file__).resolve().parents[2]
     version, crates = workspace_crates(repo)
+    head = repository_head(repo)
     if args.tag:
         validate_tag(args.tag, version)
 
@@ -245,10 +414,16 @@ def main() -> None:
                 + ", ".join(crate.internal_deps)
             )
             continue
-        if not args.dry_run and crate_version_exists(crate.name, version):
+        if not args.dry_run and crate_version_exists(crate.name, version, head):
             print(f"::notice::{crate.name} {version} already exists on crates.io; skipping")
             continue
         result = cargo_publish(crate, dry_run=args.dry_run, no_verify=args.no_verify)
+        if not args.dry_run and result == "already":
+            require(
+                crate_version_exists(crate.name, version, head),
+                f"cargo reported {crate.name} {version} already uploaded but crates.io "
+                "does not expose a verifiable artifact",
+            )
         if (
             not args.dry_run
             and result == "published"
