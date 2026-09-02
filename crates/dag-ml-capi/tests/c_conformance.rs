@@ -2663,6 +2663,8 @@ fn write_dag_ml_data_provider_bundle(workspace: &Path, path: &Path) {
             size_bytes: Some(128),
             plugin: None,
             plugin_version: None,
+            abi_major: None,
+            abi_min_minor: None,
         },
         params_fingerprint: model_plan.params_fingerprint.clone(),
         training_loss_fingerprint: None,
