@@ -21,6 +21,10 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   integration test keeps its explicit registry-only
   `nirs4all_archive_core = "=0.3.22"`
   baseline; it is not a claim of qualification against the release-train Core.
+  Native N4MM and N4MOPT references now carry capability-derived Methods ABI
+  minima (PLS 2.0+, optimizer checkpoints 2.2+, imported-linear/Ridge 2.3+),
+  retain a narrow historical PLS dual-read, and fail closed before native
+  materialization when the payload minimum and runtime capability disagree.
 
 - Release patch 0.3.21: Python hosts can execute the strict callback-free
   Methods CV → REFIT → terminal PREDICT facade for raw numeric arrays with

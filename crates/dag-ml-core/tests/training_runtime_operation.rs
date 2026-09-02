@@ -2549,10 +2549,24 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     // Core owns only bounded ZIP/inventory storage. Its returned Package V2
     // bytes cross back into DAG-ML for semantic parsing and fresh replay.
     let core_archive_path = archive_path("crossrepo-methods-package");
+    // The registry-only Core 0.3.22 dev baseline has a frozen closed manifest
+    // schema from before `abi_min_minor`. Exercise its historical PLS read
+    // shape for this transport-only round trip; the exact new writer manifest
+    // (asserted above) is qualified against the release-train Core separately.
+    let mut registry_baseline_manifest = archive.manifest.clone();
+    for reference in registry_baseline_manifest["payloads"]["methods"]["n4mm"]
+        .as_array_mut()
+        .expect("Archive V2 N4MM references")
+    {
+        reference
+            .as_object_mut()
+            .expect("Archive V2 N4MM reference object")
+            .remove("abi_min_minor");
+    }
     let core_reference = write_archive_v2(
         &core_archive_path,
         ArchiveV2WriteRequest {
-            manifest: archive.manifest.clone(),
+            manifest: registry_baseline_manifest,
             payloads: archive
                 .members
                 .iter()

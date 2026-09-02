@@ -630,6 +630,12 @@
         },
         "plugin_version": {
           "type": ["string", "null"]
+        },
+        "abi_major": {
+          "type": ["integer", "null"], "minimum": 1
+        },
+        "abi_min_minor": {
+          "type": ["integer", "null"], "minimum": 0
         }
       }
     }

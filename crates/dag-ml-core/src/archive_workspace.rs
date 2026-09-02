@@ -143,12 +143,14 @@ pub fn build_archive_v3_native_refit_payloads(
         if members.insert(path.to_owned(), bytes).is_some() {
             return refuse("Archive V3 N4MM paths must be unique");
         }
+        let (abi_major, abi_min_minor) = crate::hpo::methods_n4mm_abi_requirement(artifact)?;
         n4mm.push(json!({
             "artifact_id": artifact.id,
             "kind": "N4MM",
             "owner": "nirs4all-methods",
             "format_version": 1,
-            "abi_major": 2,
+            "abi_major": abi_major,
+            "abi_min_minor": abi_min_minor,
             "member_path": path,
             "raw_sha256": raw,
             "semantic_fingerprint": raw,
@@ -332,12 +334,14 @@ pub fn build_archive_v2_native_portable_payloads(
         if members.insert(path.to_owned(), bytes).is_some() {
             return refuse("Archive V2 P0 N4MM paths must be unique");
         }
+        let (abi_major, abi_min_minor) = crate::hpo::methods_n4mm_abi_requirement(artifact)?;
         n4mm.push(json!({
             "artifact_id": artifact.id,
             "kind": "N4MM",
             "owner": "nirs4all-methods",
             "format_version": 1,
-            "abi_major": 2,
+            "abi_major": abi_major,
+            "abi_min_minor": abi_min_minor,
             "member_path": path,
             "raw_sha256": raw,
             "semantic_fingerprint": raw,
@@ -723,6 +727,8 @@ mod tests {
             record.artifact.size_bytes = Some(payload.len() as u64);
             record.artifact.plugin = None;
             record.artifact.plugin_version = None;
+            record.artifact.abi_major = Some(crate::hpo::METHODS_ABI_MAJOR);
+            record.artifact.abi_min_minor = Some(crate::hpo::METHODS_PLS_N4MM_MIN_ABI_MINOR);
             outcome
                 .execution_bundle
                 .raw_artifact_payloads
@@ -758,6 +764,16 @@ mod tests {
             &package,
         )
         .expect("Archive V2 preserves an existing retained nonempty cache set");
+        for reference in archive.manifest["payloads"]["methods"]["n4mm"]
+            .as_array()
+            .expect("writer emits N4MM references")
+        {
+            assert_eq!(reference["abi_major"], crate::hpo::METHODS_ABI_MAJOR);
+            assert_eq!(
+                reference["abi_min_minor"],
+                crate::hpo::METHODS_PLS_N4MM_MIN_ABI_MINOR
+            );
+        }
         assert_eq!(
             archive.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap(),
             serde_json::to_vec(

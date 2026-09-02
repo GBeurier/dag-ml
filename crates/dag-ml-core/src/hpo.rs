@@ -26,11 +26,78 @@ pub const N4MOPT_ARTIFACT_KIND: &str = "n4m_optimizer_checkpoint";
 pub const N4MOPT_FORMAT: &str = "N4MOPT";
 pub const METHODS_ABI_MAJOR: u32 = 2;
 pub const METHODS_PLS_N4MM_MIN_ABI_MINOR: u32 = 0;
-pub const METHODS_N4MOPT_MIN_ABI_MINOR: u32 = 1;
+pub const METHODS_N4MOPT_MIN_ABI_MINOR: u32 = 2;
 pub const METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR: u32 = 3;
+
+const fn methods_abi_major_default() -> u32 {
+    METHODS_ABI_MAJOR
+}
+
+const fn methods_n4mopt_min_abi_minor_default() -> u32 {
+    METHODS_N4MOPT_MIN_ABI_MINOR
+}
 /// This mirrors the bound enforced by the official Rust binding and native
 /// decoder. Check it before any checkpoint is passed to a native loader.
 pub const MAX_N4MOPT_CHECKPOINT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Resolve the minimum Methods ABI encoded by an N4MM reference.
+///
+/// Historical PLS references predate the explicit ABI fields and are known to
+/// require only ABI 2.0. Imported-linear/Ridge first appeared in ABI 2.3, so
+/// an unversioned Ridge reference is ambiguous and is refused fail-closed.
+pub fn methods_n4mm_abi_requirement(
+    artifact: &crate::runtime::ArtifactRef,
+) -> crate::Result<(u32, u32)> {
+    if artifact.kind != "n4m_model"
+        || artifact.backend != Some(crate::runtime::ArtifactBackend::Raw)
+    {
+        return Err(crate::DagMlError::RuntimeValidation(format!(
+            "native Methods artifact `{}` must be a raw n4m_model",
+            artifact.id
+        )));
+    }
+    let expected_minor = match artifact.controller_id.as_str() {
+        METHODS_PLS_CONTROLLER_ID => Some(METHODS_PLS_N4MM_MIN_ABI_MINOR),
+        METHODS_RIDGE_CONTROLLER_ID => Some(METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR),
+        _ => None,
+    };
+    match (artifact.abi_major, artifact.abi_min_minor, expected_minor) {
+        (Some(METHODS_ABI_MAJOR), Some(minor), Some(expected)) if minor == expected => {
+            Ok((METHODS_ABI_MAJOR, minor))
+        }
+        (Some(METHODS_ABI_MAJOR), Some(minor), None) => Ok((METHODS_ABI_MAJOR, minor)),
+        (None, None, Some(METHODS_PLS_N4MM_MIN_ABI_MINOR)) => {
+            Ok((METHODS_ABI_MAJOR, METHODS_PLS_N4MM_MIN_ABI_MINOR))
+        }
+        (None, None, _) => Err(crate::DagMlError::RuntimeValidation(format!(
+            "native Methods artifact `{}` requires an explicit ABI minimum for controller `{}`",
+            artifact.id, artifact.controller_id
+        ))),
+        (major, minor, expected) => Err(crate::DagMlError::RuntimeValidation(format!(
+            "native Methods artifact `{}` declares ABI {:?}.{:?}; controller `{}` requires exactly {}.{}",
+            artifact.id,
+            major,
+            minor,
+            artifact.controller_id,
+            METHODS_ABI_MAJOR,
+            expected.unwrap_or_default()
+        ))),
+    }
+}
+
+pub fn validate_methods_abi_compatibility(
+    runtime_major: u32,
+    runtime_minor: u32,
+    required_major: u32,
+    required_min_minor: u32,
+) -> crate::Result<()> {
+    if runtime_major != required_major || runtime_minor < required_min_minor {
+        return Err(crate::DagMlError::RuntimeValidation(format!(
+            "Methods runtime ABI {runtime_major}.{runtime_minor} cannot consume payload requiring {required_major}.{required_min_minor}+"
+        )));
+    }
+    Ok(())
+}
 
 /// Resume package bytes are transport input for a scheduler campaign, not a
 /// semantic predictor/campaign coordinate.  Exclude only that opaque field
@@ -707,6 +774,10 @@ pub struct N4moptCheckpointArtifact {
     pub schema_version: u32,
     pub artifact_kind: String,
     pub format: String,
+    #[serde(default = "methods_abi_major_default")]
+    pub abi_major: u32,
+    #[serde(default = "methods_n4mopt_min_abi_minor_default")]
+    pub abi_min_minor: u32,
     pub binding: HpoStudyBinding,
     pub methods_abi: String,
     pub opaque_payload: Vec<u8>,
@@ -724,6 +795,8 @@ impl N4moptCheckpointArtifact {
             schema_version: N4MOPT_CHECKPOINT_SCHEMA_VERSION,
             artifact_kind: N4MOPT_ARTIFACT_KIND.to_string(),
             format: N4MOPT_FORMAT.to_string(),
+            abi_major: METHODS_ABI_MAJOR,
+            abi_min_minor: METHODS_N4MOPT_MIN_ABI_MINOR,
             binding,
             methods_abi,
             payload_sha256: payload_sha256(&opaque_payload),
@@ -736,6 +809,8 @@ impl N4moptCheckpointArtifact {
         if self.schema_version != N4MOPT_CHECKPOINT_SCHEMA_VERSION
             || self.artifact_kind != N4MOPT_ARTIFACT_KIND
             || self.format != N4MOPT_FORMAT
+            || self.abi_major != METHODS_ABI_MAJOR
+            || self.abi_min_minor != METHODS_N4MOPT_MIN_ABI_MINOR
         {
             return Err(HpoError::InvalidCheckpoint {
                 reason: "checkpoint schema, kind, or format is invalid".to_string(),
@@ -770,6 +845,10 @@ pub struct N4moptCheckpointReference {
     pub artifact: crate::runtime::ArtifactRef,
     pub binding: HpoStudyBinding,
     pub methods_abi: String,
+    #[serde(default = "methods_abi_major_default")]
+    pub abi_major: u32,
+    #[serde(default = "methods_n4mopt_min_abi_minor_default")]
+    pub abi_min_minor: u32,
 }
 
 impl N4moptCheckpointReference {
@@ -778,6 +857,18 @@ impl N4moptCheckpointReference {
         if self.methods_abi.trim().is_empty() {
             return Err(HpoError::InvalidCheckpoint {
                 reason: "checkpoint reference has no Methods ABI identity".to_string(),
+            });
+        }
+        if self.abi_major != METHODS_ABI_MAJOR
+            || self.abi_min_minor != METHODS_N4MOPT_MIN_ABI_MINOR
+            || self.artifact.abi_major != Some(self.abi_major)
+            || self.artifact.abi_min_minor != Some(self.abi_min_minor)
+        {
+            return Err(HpoError::InvalidCheckpoint {
+                reason: format!(
+                    "checkpoint reference must declare Methods ABI {}.{}+ on both envelope and artifact",
+                    METHODS_ABI_MAJOR, METHODS_N4MOPT_MIN_ABI_MINOR
+                ),
             });
         }
         self.artifact
@@ -837,6 +928,8 @@ pub const METHODS_RIDGE_CONTROLLER_ID: &str = "controller:methods.ridge";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MethodsRuntime {
     library_path: std::path::PathBuf,
+    abi_major: u32,
+    abi_minor: u32,
 }
 
 #[cfg(feature = "methods-optimizer")]
@@ -874,13 +967,36 @@ impl MethodsRuntime {
         n4m::configure_library(&canonical).map_err(|error| HpoError::RuntimeConfiguration {
             reason: format!("cannot load libn4m `{}`: {error}", canonical.display()),
         })?;
+        // The binding performs the authoritative dynamic-library negotiation.
+        // Its published interface is ABI 2.3, which is the capability DAG-ML
+        // may safely claim after this preflight succeeds.
+        n4m::Context::new().map_err(|error| HpoError::RuntimeConfiguration {
+            reason: format!(
+                "libn4m `{}` does not satisfy Methods ABI {}.{}: {error}",
+                canonical.display(),
+                METHODS_ABI_MAJOR,
+                METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR
+            ),
+        })?;
         Ok(Self {
             library_path: canonical,
+            abi_major: METHODS_ABI_MAJOR,
+            abi_minor: METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR,
         })
     }
 
     pub fn library_path(&self) -> &std::path::Path {
         &self.library_path
+    }
+
+    fn ensure_n4mm_compatible(&self, artifact: &crate::runtime::ArtifactRef) -> crate::Result<()> {
+        let (required_major, required_min_minor) = methods_n4mm_abi_requirement(artifact)?;
+        validate_methods_abi_compatibility(
+            self.abi_major,
+            self.abi_minor,
+            required_major,
+            required_min_minor,
+        )
     }
 }
 
@@ -1234,7 +1350,7 @@ mod pls_controller {
     /// scheduler transfers them into the execution bundle.
     pub struct MethodsPlsController {
         id: ControllerId,
-        _runtime: MethodsRuntime,
+        runtime: MethodsRuntime,
         next_handle: AtomicU64,
         /// Refit export is a one-shot transfer into the bundle.  It is never
         /// consulted by replay and is removed immediately by the scheduler.
@@ -1250,7 +1366,7 @@ mod pls_controller {
             Self {
                 id: ControllerId::new(METHODS_PLS_CONTROLLER_ID)
                     .expect("Methods PLS controller id is valid"),
-                _runtime: runtime,
+                runtime,
                 next_handle: AtomicU64::new(0),
                 exported_n4mm_by_artifact: Mutex::new(BTreeMap::new()),
                 hydrated_n4mm_by_handle: Mutex::new(BTreeMap::new()),
@@ -1537,6 +1653,7 @@ mod pls_controller {
             request: &crate::runtime::ArtifactMaterializationRequest,
             payload: &[u8],
         ) -> Result<HandleRef> {
+            self.runtime.ensure_n4mm_compatible(&request.artifact)?;
             if request.artifact.kind != "n4m_model"
                 || request.artifact.backend != Some(ArtifactBackend::Raw)
             {
@@ -1721,7 +1838,7 @@ mod pls_controller {
     /// boundary.
     pub struct MethodsRidgeController {
         id: ControllerId,
-        _runtime: MethodsRuntime,
+        runtime: MethodsRuntime,
         next_handle: AtomicU64,
         exported_n4mm_by_artifact: Mutex<BTreeMap<ArtifactId, Vec<u8>>>,
         hydrated_n4mm_by_handle: Mutex<BTreeMap<u64, Vec<u8>>>,
@@ -1741,7 +1858,7 @@ mod pls_controller {
             Self {
                 id: ControllerId::new(METHODS_RIDGE_CONTROLLER_ID)
                     .expect("Methods Ridge controller id is valid"),
-                _runtime: runtime,
+                runtime,
                 next_handle: AtomicU64::new(0),
                 exported_n4mm_by_artifact: Mutex::new(BTreeMap::new()),
                 hydrated_n4mm_by_handle: Mutex::new(BTreeMap::new()),
@@ -2059,6 +2176,7 @@ mod pls_controller {
             request: &crate::runtime::ArtifactMaterializationRequest,
             payload: &[u8],
         ) -> Result<HandleRef> {
+            self.runtime.ensure_n4mm_compatible(&request.artifact)?;
             if request.artifact.kind != "n4m_model"
                 || request.artifact.backend != Some(ArtifactBackend::Raw)
                 || format!("{:x}", Sha256::digest(payload))
@@ -2973,6 +3091,53 @@ mod tests {
     use crate::phase::Phase;
     #[cfg(feature = "methods-optimizer-local")]
     use crate::plan::{build_execution_plan, CampaignSpec, ExecutionPlan};
+
+    fn n4mm_ref(controller: &str, abi_min_minor: Option<u32>) -> crate::runtime::ArtifactRef {
+        crate::runtime::ArtifactRef {
+            id: crate::ArtifactId::new(format!("artifact:{controller}:abi-test")).unwrap(),
+            kind: "n4m_model".to_string(),
+            controller_id: crate::ControllerId::new(controller).unwrap(),
+            backend: Some(crate::runtime::ArtifactBackend::Raw),
+            uri: None,
+            content_fingerprint: None,
+            size_bytes: None,
+            plugin: None,
+            plugin_version: None,
+            abi_major: abi_min_minor.map(|_| METHODS_ABI_MAJOR),
+            abi_min_minor,
+        }
+    }
+
+    #[test]
+    fn methods_n4mm_abi_contract_is_capability_derived_and_fail_closed() {
+        let historical_pls = n4mm_ref(METHODS_PLS_CONTROLLER_ID, None);
+        assert_eq!(
+            methods_n4mm_abi_requirement(&historical_pls).unwrap(),
+            (METHODS_ABI_MAJOR, METHODS_PLS_N4MM_MIN_ABI_MINOR)
+        );
+        validate_methods_abi_compatibility(2, 2, 2, 0).unwrap();
+        validate_methods_abi_compatibility(2, 3, 2, 0).unwrap();
+
+        let ridge = n4mm_ref(
+            METHODS_RIDGE_CONTROLLER_ID,
+            Some(METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR),
+        );
+        let requirement = methods_n4mm_abi_requirement(&ridge).unwrap();
+        assert!(validate_methods_abi_compatibility(2, 2, requirement.0, requirement.1).is_err());
+        validate_methods_abi_compatibility(2, 3, requirement.0, requirement.1).unwrap();
+
+        assert!(
+            methods_n4mm_abi_requirement(&n4mm_ref(METHODS_RIDGE_CONTROLLER_ID, None))
+                .unwrap_err()
+                .to_string()
+                .contains("requires an explicit ABI minimum")
+        );
+        assert!(methods_n4mm_abi_requirement(&n4mm_ref(
+            METHODS_PLS_CONTROLLER_ID,
+            Some(METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR),
+        ))
+        .is_err());
+    }
     #[cfg(feature = "methods-optimizer-local")]
     use crate::runtime::{
         ArtifactBackend, ArtifactMaterializationRequest, ArtifactRef, RuntimeController,
@@ -3173,6 +3338,8 @@ mod tests {
             schema_version: 1,
             artifact_kind: N4MOPT_ARTIFACT_KIND.into(),
             format: N4MOPT_FORMAT.into(),
+            abi_major: METHODS_ABI_MAJOR,
+            abi_min_minor: METHODS_N4MOPT_MIN_ABI_MINOR,
             binding,
             methods_abi: "n4m-abi-2.2".into(),
             opaque_payload: vec![0; MAX_N4MOPT_CHECKPOINT_BYTES + 1],
@@ -3182,6 +3349,33 @@ mod tests {
             checkpoint.validate(),
             Err(HpoError::InvalidCheckpoint { .. })
         ));
+    }
+
+    #[test]
+    fn historical_n4mopt_defaults_to_first_implemented_abi_and_new_writer_emits_it() {
+        let payload = vec![1_u8, 2, 3];
+        let historical = serde_json::json!({
+            "schema_version": N4MOPT_CHECKPOINT_SCHEMA_VERSION,
+            "artifact_kind": N4MOPT_ARTIFACT_KIND,
+            "format": N4MOPT_FORMAT,
+            "binding": {
+                "controller_id": "controller:hpo",
+                "study_id": "study:one",
+                "search_space_fingerprint": "a",
+                "optimizer_fingerprint": "b"
+            },
+            "methods_abi": "n4m-abi-2.2",
+            "opaque_payload": payload,
+            "payload_sha256": payload_sha256(&[1, 2, 3])
+        });
+        let checkpoint: N4moptCheckpointArtifact = serde_json::from_value(historical).unwrap();
+        assert_eq!(checkpoint.abi_major, METHODS_ABI_MAJOR);
+        assert_eq!(checkpoint.abi_min_minor, METHODS_N4MOPT_MIN_ABI_MINOR);
+        checkpoint.validate().unwrap();
+
+        let emitted = serde_json::to_value(checkpoint).unwrap();
+        assert_eq!(emitted["abi_major"], METHODS_ABI_MAJOR);
+        assert_eq!(emitted["abi_min_minor"], METHODS_N4MOPT_MIN_ABI_MINOR);
     }
 
     #[cfg(feature = "methods-optimizer-local")]

@@ -20,6 +20,7 @@ from scripts.validate_archive_v2_contract import (
     contract_schema_registry,
     load_json,
     materialize_fixture,
+    n4mm_reference_abi_requirement,
     rebind_package_integrity,
     schema_validate,
     validate_archive_v2_contract,
@@ -59,6 +60,25 @@ class ArchiveV2ContractTests(unittest.TestCase):
 
     def test_complete_contract_gate(self) -> None:
         validate_archive_v2_contract(ROOT)
+
+    def test_historical_reference_minor_is_narrowly_controller_derived(self) -> None:
+        reference = {"abi_major": 2}
+        historical_pls = {
+            "controller_id": "controller:methods.pls",
+            "abi_major": None,
+            "abi_min_minor": None,
+        }
+        self.assertEqual(
+            n4mm_reference_abi_requirement(reference, historical_pls), (2, 0)
+        )
+        explicit_ridge = {
+            "controller_id": "controller:methods.ridge",
+            "abi_major": 2,
+            "abi_min_minor": 3,
+        }
+        self.assertEqual(
+            n4mm_reference_abi_requirement(reference, explicit_ridge), (2, 2)
+        )
 
     def test_archive_v1_contract_bytes_remain_frozen(self) -> None:
         archive_v1 = ROOT / "docs/contracts/archive-v1"
