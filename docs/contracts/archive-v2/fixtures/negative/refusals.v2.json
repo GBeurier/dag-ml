@@ -130,6 +130,37 @@
       "expected_error": "schema_refusal"
     },
     {
+      "id": "n4mm_abi_minor_mismatch_is_refused",
+      "base": "archive_v2",
+      "package_mutations": [
+        {
+          "op": "add",
+          "path": ["execution_bundle", "refit_artifacts", 0, "artifact", "abi_major"],
+          "value": 2
+        },
+        {
+          "op": "add",
+          "path": ["execution_bundle", "refit_artifacts", 0, "artifact", "abi_min_minor"],
+          "value": 3
+        }
+      ],
+      "rebind_package_integrity": true,
+      "expected_error": "native_model_refusal"
+    },
+    {
+      "id": "package_ridge_missing_abi_minor_is_refused",
+      "base": "archive_v2",
+      "package_mutations": [
+        {
+          "op": "replace",
+          "path": ["execution_bundle", "refit_artifacts", 0, "artifact", "controller_id"],
+          "value": "controller:methods.ridge"
+        }
+      ],
+      "rebind_package_integrity": true,
+      "expected_error": "native_model_refusal"
+    },
+    {
       "id": "package_python_plugin_fallback_is_refused",
       "base": "archive_v2",
       "package_mutations": [

@@ -3541,6 +3541,8 @@ mod tests {
                 schema_version: crate::hpo::N4MOPT_CHECKPOINT_SCHEMA_VERSION,
                 artifact_kind: crate::hpo::N4MOPT_ARTIFACT_KIND.to_string(),
                 format: crate::hpo::N4MOPT_FORMAT.to_string(),
+                abi_major: crate::hpo::METHODS_ABI_MAJOR,
+                abi_min_minor: crate::hpo::METHODS_N4MOPT_MIN_ABI_MINOR,
                 binding: crate::hpo::HpoStudyBinding {
                     controller_id: "controller:hpo".to_string(),
                     study_id: "study:hpo".to_string(),

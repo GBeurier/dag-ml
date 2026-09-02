@@ -372,6 +372,7 @@
             "owner": { "const": "nirs4all-methods" },
             "format_version": { "const": 1 },
             "abi_major": { "const": 2 },
+            "abi_min_minor": { "type": "integer", "minimum": 0 },
             "member_path": {
               "type": "string",
               "minLength": 1,
@@ -396,6 +397,7 @@
             "owner": { "const": "nirs4all-methods" },
             "format_version": { "const": 1 },
             "abi_major": { "const": 2 },
+            "abi_min_minor": { "type": "integer", "minimum": 0 },
             "semantic_fingerprint": { "$ref": "#/$defs/sha256" },
             "semantic_profile": { "const": "methods_rfc8785_jcs" }
           }

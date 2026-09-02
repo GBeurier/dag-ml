@@ -170,6 +170,8 @@
         "schema_version": { "type": "integer", "const": 1 },
         "artifact_kind": { "const": "n4m_optimizer_checkpoint" },
         "format": { "const": "N4MOPT" },
+        "abi_major": { "const": 2 },
+        "abi_min_minor": { "const": 2 },
         "binding": { "$ref": "#/$defs/hpo_binding" },
         "methods_abi": { "$ref": "#/$defs/non_empty_string" },
         "opaque_payload": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
@@ -353,6 +355,12 @@
         },
         "plugin_version": {
           "$ref": "#/$defs/non_empty_string"
+        },
+        "abi_major": {
+          "type": "integer", "minimum": 1
+        },
+        "abi_min_minor": {
+          "type": "integer", "minimum": 0
         }
       }
     },

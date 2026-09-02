@@ -136,6 +136,7 @@ absolute library path.
 
 `N4moptCheckpointArtifact` is a live-session envelope for an opaque byte payload.
 It records a schema version, `n4m_optimizer_checkpoint` kind, `N4MOPT` format,
+and the payload-derived minimum ABI 2.2,
 the DAG-ML study/search-space binding, the Methods ABI identity, and a SHA-256
 digest. DAG-ML never decodes or mutates the payload. Restore validates the
 digest, study binding, search-space fingerprint, and Methods ABI before asking
@@ -144,3 +145,24 @@ DAG-ML. `N4moptCheckpointReference` remains a proposed archive-member
 reference for future externalized checkpoint artifacts. Current bundles retain
 the validated opaque checkpoint envelope and raw N4MM model members; resume is
 performed by the official binding from that envelope.
+
+## Payload ABI minima
+
+ABI minima describe the oldest reader capable of consuming the payload; they
+are not the ABI of the process that wrote it. The provenance is fixed by the
+Methods history:
+
+- PLS N4MM is ABI 2.0+: Methods commit `bcad4a682c71b23ffbf11a5d05df4dc2dae510cf`
+  declares ABI 2.0, serialization format 1, and the model export/import API.
+- N4MOPT is ABI 2.2+: ABI 2.1 commit `b820341483a792d7702137ea441cfa8134fbe7e9`
+  only reserves save/load and returns `N4M_ERR_NOT_IMPLEMENTED`; commit
+  `4d0cc0a9ac0348bca8a81db150b38417a9e410f3` first implements checkpoint
+  save/load and declares ABI 2.2.
+- imported-linear N4MM (the Ridge replay payload) is ABI 2.3+: Methods commit
+  `2dc536115c5ec438bedb2863b9720ec45641626d` adds the verified imported-linear
+  predictor and its N4MM round trip while declaring ABI 2.3.
+
+New writers always emit `abi_major` and `abi_min_minor`. A historical PLS
+reference with neither field reads as 2.0. An unversioned Ridge reference is
+refused because interpreting absence as 2.0 would allow an ABI 2.2 reader to
+attempt an ABI 2.3 payload. Historical N4MOPT envelopes default to 2.2.

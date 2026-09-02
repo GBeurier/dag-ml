@@ -45,6 +45,10 @@ SCHEMA_NAME = "archive_workspace_manifest.v2.schema.json"
 POSITIVE_NAME = "native_portable_replay.json"
 REFUSALS_NAME = "refusals.v2.json"
 PACKAGE_MEMBER = "dagml/portable_predictor_package.json"
+METHODS_ABI_MAJOR = 2
+METHODS_HISTORICAL_UNKNOWN_MIN_MINOR = 2
+METHODS_PLS_CONTROLLER_ID = "controller:methods.pls"
+METHODS_RIDGE_CONTROLLER_ID = "controller:methods.ridge"
 PACKAGE_V1_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
     "portable_predictor_package.v1.schema.json"
@@ -69,6 +73,8 @@ REQUIRED_REFUSAL_CASE_IDS = frozenset(
         "n4mm_payload_tamper_is_refused",
         "n4mm_package_byte_divergence_is_refused",
         "n4mm_abi_mismatch_is_refused",
+        "n4mm_abi_minor_mismatch_is_refused",
+        "package_ridge_missing_abi_minor_is_refused",
         "package_python_plugin_fallback_is_refused",
         "package_raw_payload_semantic_mismatch_is_refused",
         "future_archive_v3_is_refused",
@@ -296,6 +302,56 @@ def _refs(value: Any) -> list[dict[str, Any]]:
     return found
 
 
+def n4mm_abi_requirement(artifact: dict[str, Any]) -> tuple[int, int]:
+    """Resolve payload capability, with narrow dual-read for old references."""
+
+    controller = artifact.get("controller_id")
+    major = artifact.get("abi_major")
+    minor = artifact.get("abi_min_minor")
+    require(
+        (major is None) == (minor is None),
+        "native_model_refusal",
+        f"artifact `{artifact.get('id')}` must declare both ABI fields or neither",
+    )
+    if controller == METHODS_PLS_CONTROLLER_ID:
+        expected = 0
+    elif controller == METHODS_RIDGE_CONTROLLER_ID:
+        expected = 3
+    elif major is None:
+        # The frozen pre-field Archive V2 fixture predates the two built-in
+        # controller ids. Its conservative historical profile is ABI 2.2,
+        # never the ABI 2.3 imported-linear capability.
+        return METHODS_ABI_MAJOR, METHODS_HISTORICAL_UNKNOWN_MIN_MINOR
+    else:
+        expected = minor
+    require(
+        major == METHODS_ABI_MAJOR and minor == expected,
+        "native_model_refusal",
+        f"artifact `{artifact.get('id')}` has an invalid capability-derived ABI minimum",
+    )
+    return METHODS_ABI_MAJOR, expected
+
+
+def n4mm_reference_abi_requirement(
+    reference: dict[str, Any], artifact: dict[str, Any]
+) -> tuple[int, int]:
+    """Resolve an archive reference without widening the historical read."""
+
+    minor = reference.get("abi_min_minor")
+    if minor is not None:
+        return reference["abi_major"], minor
+    controller = artifact.get("controller_id")
+    if (
+        controller == METHODS_PLS_CONTROLLER_ID
+        and artifact.get("abi_major") is None
+        and artifact.get("abi_min_minor") is None
+    ):
+        return METHODS_ABI_MAJOR, 0
+    # The frozen pre-field fixture used generic mock controller ids. Preserve
+    # that exact 2.2 profile, but do not let absence stand in for Ridge 2.3.
+    return METHODS_ABI_MAJOR, METHODS_HISTORICAL_UNKNOWN_MIN_MINOR
+
+
 def validate_semantics(document: Any) -> None:
     """Enforce closed inventory and cross-reference invariants."""
 
@@ -358,6 +414,20 @@ def validate_semantics(document: Any) -> None:
         "package, graph, bundle, outcome, cache and scores must be distinct",
     )
     methods = document["payloads"]["methods"]
+    for reference in methods["n4mm"] + methods["n4mopt"]:
+        require(
+            reference.get("abi_major") == METHODS_ABI_MAJOR,
+            "native_model_refusal",
+            "Methods reference must declare ABI major 2",
+        )
+        if "abi_min_minor" in reference:
+            require(
+                isinstance(reference["abi_min_minor"], int)
+                and not isinstance(reference["abi_min_minor"], bool)
+                and reference["abi_min_minor"] >= 0,
+                "native_model_refusal",
+                "Methods reference has an invalid ABI minimum minor",
+            )
     method_paths = [
         reference["member_path"]
         for reference in methods["n4mm"] + methods["n4mopt"]
@@ -665,6 +735,7 @@ def validate_package_portability(package: Any) -> None:
             "host_artifact_refusal",
             f"raw Methods artifact `{artifact_id}` cannot carry plugin identity",
         )
+        n4mm_abi_requirement(artifact)
         records_by_id[artifact_id] = record
     require(
         set(records_by_id) == binding_ids == set(raw_payloads),
@@ -839,6 +910,15 @@ def validate_archive_v2_payloads(
     )
     for artifact_id, raw_payload in raw_artifact_payloads.items():
         reference = n4mm_by_id[artifact_id]
+        artifact_abi = n4mm_abi_requirement(refit_by_id[artifact_id])
+        reference_abi = n4mm_reference_abi_requirement(
+            reference, refit_by_id[artifact_id]
+        )
+        require(
+            reference_abi == artifact_abi,
+            "native_model_refusal",
+            f"N4MM member `{artifact_id}` ABI minimum differs from package artifact",
+        )
         require(
             reference["member_path"] == refit_by_id[artifact_id]["uri"],
             "native_model_refusal",

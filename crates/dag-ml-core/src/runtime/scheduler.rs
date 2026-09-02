@@ -2310,6 +2310,8 @@ mod hpo_scheduler_tests {
                     schema_version: N4MOPT_CHECKPOINT_SCHEMA_VERSION,
                     artifact_kind: N4MOPT_ARTIFACT_KIND.to_string(),
                     format: N4MOPT_FORMAT.to_string(),
+                    abi_major: crate::hpo::METHODS_ABI_MAJOR,
+                    abi_min_minor: crate::hpo::METHODS_N4MOPT_MIN_ABI_MINOR,
                     binding: HpoStudyBinding {
                         controller_id: context.study.controller_id.clone(),
                         study_id: context.study.study_id.clone(),

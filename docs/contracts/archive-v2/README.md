@@ -57,7 +57,8 @@ all future native-portable archive profiles must be Methods-only; widening the
 P0 policy requires a later policy ADR/profile.
 
 At least one N4MM member is required. Each N4MM reference is format version 1,
-Methods ABI major 2, carries its package `artifact_id`, and points to exact raw
+Methods ABI major 2 and an additive `abi_min_minor`, carries its package
+`artifact_id`, and points to exact raw
 bytes at a safe `methods/*.n4mm` path. The archive N4MM IDs exactly cover the
 package's raw refit artifacts and each ZIP member byte-equals the corresponding
 `ExecutionBundle.raw_artifact_payloads` entry. The native binary semantic
@@ -65,6 +66,9 @@ profile is `n4mm_raw_sha256`: its semantic fingerprint is exactly the raw
 N4MM SHA-256, rather than a fabricated JSON-canonicalization digest. Raw
 SHA-256, size and semantic identity match the closed inventory; this matching
 semantic identifier never substitutes for the raw model payload.
+Writers derive the minimum from the payload capability: historical PLS N4MM is
+2.0+, while imported-linear/Ridge N4MM is 2.3+. An absent minor remains readable
+only for the historical PLS profile; it never defaults a Ridge payload to 2.3.
 
 ## Contract artifacts and gate
 
