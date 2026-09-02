@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -98,8 +100,61 @@ class ArchiveV3PythonSurfaceTests(unittest.TestCase):
         self.assertIn("execute_methods_portable_full_refit", dag_ml.__all__)
         self.assertIn("execute_methods_portable_full_refit_json", dag_ml.__all__)
         self.assertIn("read_native_results_v2", dag_ml.__all__)
+        self.assertIn("write_native_results_v2", dag_ml.__all__)
         with self.assertRaises(dag_ml.DagMlError):
             dag_ml.PortableRefitPackageV3('{"schema_version":3}')
+
+    def test_native_results_writer_round_trips_its_public_view(self) -> None:
+        score_set = {"reports": [], "label": "résultat"}
+        canonical_score_set = json.dumps(
+            score_set, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        manifest = {
+            "schema_version": 2,
+            "engine": "dag-ml",
+            "score_set_hash": hashlib.sha256(canonical_score_set.encode("utf-8")).hexdigest(),
+            "files": {
+                "score_set": "score_set.json",
+                "predictions": "predictions.parquet",
+            },
+            "artifacts": [],
+        }
+        prediction = {
+            "dataset": "fixture",
+            "config_name": "base",
+            "variant_id": "base",
+            "model_name": "MethodsN4MM",
+            "partition": "test",
+            "fold_id": "final",
+            "refit_context": "",
+            "sample_indices": [4, 9],
+            "sample_ids": ["sample:four", "sample:nine"],
+            "y_true": [1.0, 2.0],
+            "y_pred": [1.1, 1.9],
+            "y_proba": [],
+            "y_true_shape": [2],
+            "y_pred_shape": [2],
+            "y_proba_shape": [],
+            "weights": [],
+            "arrays_present": True,
+            "val_score": None,
+            "test_score": 0.1,
+            "train_score": None,
+            "scores": {"rmse": 0.1},
+            "metric": "rmse",
+            "task_type": "regression",
+            "target_width": 1,
+            "target_names": ["y"],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            dag_ml.write_native_results_v2(directory, manifest, score_set, [prediction])
+            view = dag_ml.read_native_results_v2(directory)
+            self.assertEqual(view["manifest"], manifest)
+            self.assertEqual(view["score_set"], score_set)
+            self.assertEqual(view["predictions"], [prediction])
+            with self.assertRaises(dag_ml.DagMlValidationError):
+                dag_ml.write_native_results_v2(directory, manifest, score_set, [prediction])
 
 
 class _SuccessfulTrainingCallback:
