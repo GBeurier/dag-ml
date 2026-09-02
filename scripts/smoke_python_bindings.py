@@ -102,6 +102,12 @@ def main() -> None:
         )
     if "run_cv_refit_predict_in_process" not in manifest["python_exports"]:
         raise SystemExit("contract manifest is missing terminal PREDICT export")
+    for export in ("read_native_results_v2_json", "write_native_results_v2_json"):
+        if export not in manifest["python_exports"]:
+            raise SystemExit(f"contract manifest is missing native-results export {export}")
+    for export in ("read_native_results_v2", "write_native_results_v2"):
+        if export not in manifest["python_facade_exports"] or export not in dag_ml.__all__:
+            raise SystemExit(f"Python facade is missing native-results export {export}")
     if "compile_pipeline_dsl_artifact_json" not in manifest["wasm_exports"]:
         raise SystemExit("contract manifest is missing WASM DSL export")
     if "structured_error_descriptors" not in manifest["capabilities"]:

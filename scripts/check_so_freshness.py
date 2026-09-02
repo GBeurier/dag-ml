@@ -34,10 +34,12 @@ SO_RELATIVE = "crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so"
 # only for test harnesses and cannot change the release extension bits.
 RUST_DIRS = (
     "crates/dag-ml-core/src",
+    "crates/dag-ml-results/src",
     "crates/dag-ml-py/src",
 )
 RUST_FILES = (
     "crates/dag-ml-core/Cargo.toml",
+    "crates/dag-ml-results/Cargo.toml",
     "crates/dag-ml-py/Cargo.toml",
     "Cargo.toml",
     "Cargo.lock",
