@@ -4160,6 +4160,8 @@ impl RuntimeController for CliMockController {
                 size_bytes: Some(128),
                 plugin: None,
                 plugin_version: None,
+                abi_major: None,
+                abi_min_minor: None,
             }]
         } else {
             Vec::new()
@@ -5641,6 +5643,8 @@ mod tests {
                     size_bytes: Some(128),
                     plugin: None,
                     plugin_version: None,
+                    abi_major: None,
+                    abi_min_minor: None,
                 }]
             } else {
                 Vec::new()

@@ -475,6 +475,8 @@ impl RuntimeController for TrainingController {
                 size_bytes: Some(8),
                 plugin: None,
                 plugin_version: None,
+                abi_major: None,
+                abi_min_minor: None,
             }]
         } else {
             Vec::new()
@@ -4790,6 +4792,8 @@ fn identifiers_controllers_diagnostics_and_store_are_prevalidated() {
             size_bytes: Some(1),
             plugin: None,
             plugin_version: None,
+            abi_major: None,
+            abi_min_minor: None,
         },
         params_fingerprint: "a".repeat(64),
         training_loss_fingerprint: None,

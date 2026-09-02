@@ -48,6 +48,15 @@ pub struct ArtifactRef {
     pub plugin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin_version: Option<String>,
+    /// Native ABI family required to consume this payload.  Both ABI fields
+    /// are absent on historical non-native references; new native Methods
+    /// writers always emit the pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abi_major: Option<u32>,
+    /// Minimum compatible minor within [`Self::abi_major`].  This is derived
+    /// from the payload capability, never copied from the writer's runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abi_min_minor: Option<u32>,
 }
 
 impl ArtifactRef {
@@ -64,6 +73,12 @@ impl ArtifactRef {
         if self.plugin_version.is_some() && self.plugin.is_none() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "artifact `{}` has plugin_version without plugin",
+                self.id
+            )));
+        }
+        if self.abi_major.is_some() != self.abi_min_minor.is_some() || self.abi_major == Some(0) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` must declare a non-zero abi_major together with abi_min_minor",
                 self.id
             )));
         }

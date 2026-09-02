@@ -24,6 +24,10 @@ pub const HPO_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const N4MOPT_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 pub const N4MOPT_ARTIFACT_KIND: &str = "n4m_optimizer_checkpoint";
 pub const N4MOPT_FORMAT: &str = "N4MOPT";
+pub const METHODS_ABI_MAJOR: u32 = 2;
+pub const METHODS_PLS_N4MM_MIN_ABI_MINOR: u32 = 0;
+pub const METHODS_N4MOPT_MIN_ABI_MINOR: u32 = 1;
+pub const METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR: u32 = 3;
 /// This mirrors the bound enforced by the official Rust binding and native
 /// decoder. Check it before any checkpoint is passed to a native loader.
 pub const MAX_N4MOPT_CHECKPOINT_BYTES: usize = 64 * 1024 * 1024;
@@ -1658,6 +1662,8 @@ mod pls_controller {
                                 size_bytes: Some(bytes.len() as u64),
                                 plugin: None,
                                 plugin_version: None,
+                                abi_major: Some(METHODS_ABI_MAJOR),
+                                abi_min_minor: Some(METHODS_PLS_N4MM_MIN_ABI_MINOR),
                             },
                             handle,
                         ))
@@ -2249,6 +2255,8 @@ mod pls_controller {
                         size_bytes: Some(bytes.len() as u64),
                         plugin: None,
                         plugin_version: None,
+                        abi_major: Some(METHODS_ABI_MAJOR),
+                        abi_min_minor: Some(METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR),
                     };
                     Self::result(
                         self,
@@ -3059,6 +3067,8 @@ mod tests {
                 size_bytes: Some(payload.len() as u64),
                 plugin: None,
                 plugin_version: None,
+                abi_major: Some(METHODS_ABI_MAJOR),
+                abi_min_minor: Some(METHODS_PLS_N4MM_MIN_ABI_MINOR),
             },
             params_fingerprint: "params:methods-pls.release".to_string(),
             training_loss_fingerprint: None,

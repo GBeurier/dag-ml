@@ -934,6 +934,8 @@ mod tests {
                 size_bytes: Some(1),
                 plugin: None,
                 plugin_version: None,
+                abi_major: None,
+                abi_min_minor: None,
             },
             params_fingerprint: node_plan.params_fingerprint.clone(),
             training_loss_fingerprint: None,

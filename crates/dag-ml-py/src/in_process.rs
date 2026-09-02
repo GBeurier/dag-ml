@@ -1110,6 +1110,8 @@ mod tests {
                     size_bytes: Some(3),
                     plugin: None,
                     plugin_version: None,
+                    abi_major: None,
+                    abi_min_minor: None,
                 },
                 params_fingerprint: "a".repeat(64),
                 training_loss_fingerprint: None,
@@ -1270,6 +1272,8 @@ mod tests {
                     size_bytes: Some(128),
                     plugin: None,
                     plugin_version: None,
+                    abi_major: None,
+                    abi_min_minor: None,
                 }]
             } else {
                 Vec::new()
@@ -1909,6 +1913,8 @@ mod tests {
                     size_bytes: Some(1),
                     plugin: None,
                     plugin_version: None,
+                    abi_major: None,
+                    abi_min_minor: None,
                 }]
             } else {
                 Vec::new()

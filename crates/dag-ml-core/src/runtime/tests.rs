@@ -639,6 +639,8 @@ impl RuntimeController for ReplayMockController {
                 size_bytes: Some(128),
                 plugin: None,
                 plugin_version: None,
+                abi_major: None,
+                abi_min_minor: None,
             }]
         } else {
             Vec::new()
@@ -2549,6 +2551,8 @@ fn replay_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBundle {
                 size_bytes: Some(128),
                 plugin: None,
                 plugin_version: None,
+                abi_major: None,
+                abi_min_minor: None,
             },
             params_fingerprint: model_plan.params_fingerprint.clone(),
             training_loss_fingerprint: model_plan.training_loss_fingerprint(Phase::Refit).unwrap(),
@@ -4681,6 +4685,8 @@ fn portable_artifact_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBun
                 size_bytes: Some(128),
                 plugin: Some("dagml.mock".to_string()),
                 plugin_version: Some("1.0.0".to_string()),
+                abi_major: None,
+                abi_min_minor: None,
             },
             params_fingerprint: model_plan.params_fingerprint.clone(),
             training_loss_fingerprint: model_plan.training_loss_fingerprint(Phase::Refit).unwrap(),
@@ -4726,8 +4732,27 @@ fn artifact_ref_validate_portable_rejects_unsafe_uris_and_legacy() {
         size_bytes: Some(4096),
         plugin: Some("dagml.sklearn".to_string()),
         plugin_version: Some("1.0.0".to_string()),
+        abi_major: None,
+        abi_min_minor: None,
     };
     base.validate_portable().unwrap();
+
+    let mut incomplete_abi = base.clone();
+    incomplete_abi.abi_major = Some(2);
+    assert!(incomplete_abi
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("together with abi_min_minor"));
+
+    let mut zero_abi_major = base.clone();
+    zero_abi_major.abi_major = Some(0);
+    zero_abi_major.abi_min_minor = Some(0);
+    assert!(zero_abi_major
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("non-zero abi_major"));
 
     // Legacy artifact: still passes `validate` but is refused as non-portable.
     let legacy = ArtifactRef {
@@ -7253,6 +7278,8 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         size_bytes: Some(128),
         plugin: None,
         plugin_version: None,
+        abi_major: None,
+        abi_min_minor: None,
     };
     let handle = HandleRef {
         handle: 77,
@@ -7332,6 +7359,8 @@ fn artifact_ref_validates_portable_metadata() {
         size_bytes: Some(4096),
         plugin: Some("dagml.sklearn".to_string()),
         plugin_version: Some("1.0.0".to_string()),
+        abi_major: None,
+        abi_min_minor: None,
     };
 
     artifact.validate().unwrap();
@@ -7376,6 +7405,8 @@ fn artifact_ref_rejects_invalid_portable_metadata() {
         size_bytes: Some(4096),
         plugin: Some("dagml.sklearn".to_string()),
         plugin_version: Some("1.0.0".to_string()),
+        abi_major: None,
+        abi_min_minor: None,
     };
     artifact.validate().unwrap();
 

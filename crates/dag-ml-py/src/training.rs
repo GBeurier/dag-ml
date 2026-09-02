@@ -3901,6 +3901,8 @@ mod tests {
                     size_bytes: Some(8),
                     plugin: None,
                     plugin_version: None,
+                    abi_major: None,
+                    abi_min_minor: None,
                 }]
             } else {
                 Vec::new()

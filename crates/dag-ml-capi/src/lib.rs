@@ -6619,6 +6619,8 @@ mod tests {
                 size_bytes: Some(1024),
                 plugin: None,
                 plugin_version: None,
+                abi_major: None,
+                abi_min_minor: None,
             },
             params_fingerprint: "params:artifact-fixture".to_string(),
             training_loss_fingerprint: None,
