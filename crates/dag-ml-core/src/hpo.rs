@@ -3542,16 +3542,37 @@ mod tests {
         let mut pipeline_config = n4m::Config::new().unwrap();
         pipeline_config.set_n_components(1).unwrap();
         pipeline_config.set_snv_savgol_pipeline(3, 2).unwrap();
-        let pipeline_payload = n4m::Model::fit(&context, &pipeline_config, x, y)
+        let pipeline_x_values = [
+            1.0, 1.5, 2.0, 2.5, 2.0, 3.0, 4.0, 5.0, 3.0, 5.0, 8.0, 13.0, 4.0, 7.0, 11.0, 16.0,
+        ];
+        let pipeline_x = n4m::MatrixRef::row_major(&pipeline_x_values, 4, 4).unwrap();
+        let pipeline_payload = n4m::Model::fit(&context, &pipeline_config, pipeline_x, y)
             .unwrap()
             .export_n4mm()
             .unwrap();
+        let native_pipeline = n4m::inspect_n4mm(&pipeline_payload)
+            .unwrap()
+            .pipeline
+            .unwrap();
+        assert_eq!(
+            native_pipeline.semantic_profile,
+            n4m::PipelineSemanticProfile::Nirs4allSnvSavgolV1
+        );
+        assert_eq!(native_pipeline.snv_ddof, 0);
+        assert_eq!(
+            native_pipeline.savgol_mode,
+            n4m::SerializedSavitzkyGolayMode::Interp
+        );
         let pipeline_descriptor =
             inspect_methods_native_predictor_descriptor_v1(&pls_id, &pipeline_payload).unwrap();
         assert_eq!(pipeline_descriptor.format_version, 2);
         let inspected_pipeline = pipeline_descriptor.pipeline.as_ref().unwrap();
         assert_eq!(inspected_pipeline.savgol_window, 3);
         assert_eq!(inspected_pipeline.savgol_poly_degree, 2);
+        assert_eq!(
+            inspected_pipeline.native_fingerprint,
+            format!("{:016x}", native_pipeline.fingerprint)
+        );
         let params = BTreeMap::from([
             ("n_components".to_string(), serde_json::json!(1)),
             (
