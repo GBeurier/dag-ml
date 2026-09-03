@@ -144,11 +144,25 @@ pub fn build_archive_v3_native_refit_payloads(
             return refuse("Archive V3 N4MM paths must be unique");
         }
         let (abi_major, abi_min_minor) = crate::hpo::methods_n4mm_abi_requirement(artifact)?;
+        let format_version = artifact
+            .native_predictor_descriptor
+            .as_ref()
+            .map(|descriptor| descriptor.format_version)
+            .unwrap_or(1);
+        if format_version == 2
+            && artifact
+                .native_predictor_descriptor
+                .as_ref()
+                .and_then(|descriptor| descriptor.pipeline.as_ref())
+                .is_none()
+        {
+            return refuse("Archive V3 N4MM format 2 requires an embedded pipeline descriptor");
+        }
         n4mm.push(json!({
             "artifact_id": artifact.id,
             "kind": "N4MM",
             "owner": "nirs4all-methods",
-            "format_version": 1,
+            "format_version": format_version,
             "abi_major": abi_major,
             "abi_min_minor": abi_min_minor,
             "member_path": path,
@@ -335,11 +349,25 @@ pub fn build_archive_v2_native_portable_payloads(
             return refuse("Archive V2 P0 N4MM paths must be unique");
         }
         let (abi_major, abi_min_minor) = crate::hpo::methods_n4mm_abi_requirement(artifact)?;
+        let format_version = artifact
+            .native_predictor_descriptor
+            .as_ref()
+            .map(|descriptor| descriptor.format_version)
+            .unwrap_or(1);
+        if format_version == 2
+            && artifact
+                .native_predictor_descriptor
+                .as_ref()
+                .and_then(|descriptor| descriptor.pipeline.as_ref())
+                .is_none()
+        {
+            return refuse("Archive V2 N4MM format 2 requires an embedded pipeline descriptor");
+        }
         n4mm.push(json!({
             "artifact_id": artifact.id,
             "kind": "N4MM",
             "owner": "nirs4all-methods",
-            "format_version": 1,
+            "format_version": format_version,
             "abi_major": abi_major,
             "abi_min_minor": abi_min_minor,
             "member_path": path,

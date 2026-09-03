@@ -42,9 +42,13 @@ pub const NATIVE_PREDICTOR_ALGORITHM_IMPORTED_LINEAR: i32 = 11;
 pub const NATIVE_PREDICTOR_CAPABILITY_PREDICT: u64 = 1 << 0;
 pub const NATIVE_PREDICTOR_CAPABILITY_TRANSFORM: u64 = 1 << 1;
 pub const NATIVE_PREDICTOR_CAPABILITY_AFFINE: u64 = 1 << 2;
+pub const NATIVE_PREDICTOR_CAPABILITY_PIPELINE: u64 = 1 << 3;
 pub const NATIVE_PREDICTOR_CAPABILITIES_V1: u64 = NATIVE_PREDICTOR_CAPABILITY_PREDICT
     | NATIVE_PREDICTOR_CAPABILITY_TRANSFORM
-    | NATIVE_PREDICTOR_CAPABILITY_AFFINE;
+    | NATIVE_PREDICTOR_CAPABILITY_AFFINE
+    | NATIVE_PREDICTOR_CAPABILITY_PIPELINE;
+pub const NATIVE_PREDICTOR_PIPELINE_TYPE_SNV_SAVGOL_V1: &str = "n4m.snv_savgol_smooth.v1";
+pub const NATIVE_PREDICTOR_PIPELINE_FINGERPRINT_FNV1A64_V1: &str = "fnv1a64.v1";
 
 /// Writer ABI recorded inside a native predictor payload.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -65,12 +69,73 @@ pub struct NativePredictorDimensionsV1 {
     pub n_components: i32,
 }
 
+/// Opaque, Methods-attested description of the preprocessing embedded in N4MM.
+///
+/// DAG-ML does not decode operator numbers or reproduce their kernels. The
+/// public `n4m` inspector has already reduced the only supported format-2
+/// pipeline to this typed contract. Window and polynomial degree are retained
+/// solely so replay can cross-check the signed controller parameters against
+/// the imported native payload.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativePredictorPipelineV1 {
+    pub pipeline_type: String,
+    pub schema_version: u32,
+    pub operator_count: u32,
+    pub raw_n_features: i32,
+    pub model_n_features: i32,
+    pub fingerprint_algorithm: String,
+    pub native_fingerprint: String,
+    pub savgol_window: i32,
+    pub savgol_poly_degree: i32,
+}
+
+impl NativePredictorPipelineV1 {
+    pub fn validate(&self) -> Result<()> {
+        if self.pipeline_type != NATIVE_PREDICTOR_PIPELINE_TYPE_SNV_SAVGOL_V1
+            || self.schema_version != 1
+            || self.operator_count != 2
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native predictor pipeline has an unsupported type or schema".to_string(),
+            ));
+        }
+        if self.raw_n_features <= 0 || self.model_n_features <= 0 {
+            return Err(DagMlError::RuntimeValidation(
+                "native predictor pipeline has invalid feature dimensions".to_string(),
+            ));
+        }
+        if self.fingerprint_algorithm != NATIVE_PREDICTOR_PIPELINE_FINGERPRINT_FNV1A64_V1
+            || self.native_fingerprint.len() != 16
+            || !self
+                .native_fingerprint
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native predictor pipeline has an invalid native fingerprint".to_string(),
+            ));
+        }
+        if !(3..=501).contains(&self.savgol_window)
+            || self.savgol_window % 2 == 0
+            || self.savgol_poly_degree < 0
+            || self.savgol_poly_degree >= self.savgol_window
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native predictor pipeline has invalid Savitzky-Golay parameters".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Content-bound descriptor for a predictor owned by a native controller.
 ///
 /// This contract deliberately records Methods' numeric algorithm and
 /// capability mask without translating them into host claims. For N4MM, the
-/// values are produced only from `n4m_serialization_inspect_model_v1` and the
-/// descriptor fingerprint is TCV1 over every field except itself.
+/// values are produced only from `n4m`'s model/pipeline serialization
+/// inspectors and the descriptor fingerprint is TCV1 over every field except
+/// itself.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativePredictorDescriptorV1 {
@@ -84,6 +149,8 @@ pub struct NativePredictorDescriptorV1 {
     pub storage_algorithm: i32,
     pub capabilities: u64,
     pub dimensions: NativePredictorDimensionsV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<NativePredictorPipelineV1>,
     pub descriptor_fingerprint: String,
 }
 
@@ -140,17 +207,31 @@ impl NativePredictorDescriptorV1 {
             )));
         }
         let required_predict = self.capabilities & NATIVE_PREDICTOR_CAPABILITY_PREDICT != 0;
+        let has_pipeline_capability = self.capabilities & NATIVE_PREDICTOR_CAPABILITY_PIPELINE != 0;
         let product_supported = match self.owner_controller.as_str() {
             NATIVE_PREDICTOR_METHODS_PLS_OWNER => {
                 self.storage_algorithm == NATIVE_PREDICTOR_ALGORITHM_PLS
                     && required_predict
                     && self.dimensions.n_components > 0
+                    && match &self.pipeline {
+                        None => self.format_version == 1 && !has_pipeline_capability,
+                        Some(pipeline) => {
+                            self.format_version == 2
+                                && has_pipeline_capability
+                                && pipeline.validate().is_ok()
+                                && pipeline.raw_n_features == self.dimensions.n_features
+                                && pipeline.model_n_features == self.dimensions.n_features
+                        }
+                    }
             }
             NATIVE_PREDICTOR_METHODS_RIDGE_OWNER => {
                 self.storage_algorithm == NATIVE_PREDICTOR_ALGORITHM_IMPORTED_LINEAR
                     && required_predict
                     && self.capabilities & NATIVE_PREDICTOR_CAPABILITY_AFFINE != 0
                     && self.dimensions.n_components == 0
+                    && self.format_version == 1
+                    && !has_pipeline_capability
+                    && self.pipeline.is_none()
             }
             _ => false,
         };
@@ -948,6 +1029,7 @@ mod native_predictor_descriptor_tests {
                 n_targets: 1,
                 n_components,
             },
+            pipeline: None,
             descriptor_fingerprint: String::new(),
         };
         descriptor.descriptor_fingerprint = descriptor.compute_fingerprint().unwrap();
@@ -1018,6 +1100,52 @@ mod native_predictor_descriptor_tests {
                 .to_string()
                 .contains("not product-supported"));
         }
+    }
+
+    #[test]
+    fn pipeline_descriptor_is_additive_and_keeps_historical_json_shape() {
+        let historical = signed_descriptor(
+            NATIVE_PREDICTOR_METHODS_PLS_OWNER,
+            NATIVE_PREDICTOR_ALGORITHM_PLS,
+            NATIVE_PREDICTOR_CAPABILITY_PREDICT | NATIVE_PREDICTOR_CAPABILITY_TRANSFORM,
+            1,
+        );
+        assert!(serde_json::to_value(&historical)
+            .unwrap()
+            .get("pipeline")
+            .is_none());
+        assert_eq!(
+            historical.descriptor_fingerprint,
+            historical.compute_fingerprint().unwrap()
+        );
+
+        let mut pipeline = historical;
+        pipeline.format_version = 2;
+        pipeline.capabilities |= NATIVE_PREDICTOR_CAPABILITY_PIPELINE;
+        pipeline.pipeline = Some(NativePredictorPipelineV1 {
+            pipeline_type: NATIVE_PREDICTOR_PIPELINE_TYPE_SNV_SAVGOL_V1.to_string(),
+            schema_version: 1,
+            operator_count: 2,
+            raw_n_features: 3,
+            model_n_features: 3,
+            fingerprint_algorithm: NATIVE_PREDICTOR_PIPELINE_FINGERPRINT_FNV1A64_V1.to_string(),
+            native_fingerprint: "0123456789abcdef".to_string(),
+            savgol_window: 3,
+            savgol_poly_degree: 2,
+        });
+        pipeline.descriptor_fingerprint = pipeline.compute_fingerprint().unwrap();
+        pipeline.validate().unwrap();
+
+        let mut missing_capability = pipeline.clone();
+        missing_capability.capabilities &= !NATIVE_PREDICTOR_CAPABILITY_PIPELINE;
+        missing_capability.descriptor_fingerprint =
+            missing_capability.compute_fingerprint().unwrap();
+        assert!(missing_capability.validate().is_err());
+
+        let mut wrong_format = pipeline;
+        wrong_format.format_version = 1;
+        wrong_format.descriptor_fingerprint = wrong_format.compute_fingerprint().unwrap();
+        assert!(wrong_format.validate().is_err());
     }
 }
 

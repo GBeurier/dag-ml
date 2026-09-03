@@ -1652,18 +1652,8 @@ fn validate_strict_methods_terminal_facade_contract(
     {
         return Err(refuse("a model port layout other than x -> oof prediction"));
     }
-    if graph_node.params.len() != 1
-        || graph_node
-            .params
-            .get("n_components")
-            .and_then(serde_json::Value::as_i64)
-            .filter(|value| *value > 0)
-            .is_none()
-    {
-        return Err(refuse(
-            "PLS parameters other than one positive integer n_components",
-        ));
-    }
+    dag_ml_core::validate_methods_pls_node_params(&graph_node.params)
+        .map_err(|_| refuse("parameters outside native PLS or exact SNV -> SG smooth -> PLS"))?;
 
     if projection.plan.node_plans.len() != 1
         || projection.plan.controller_manifests.len() != 1
@@ -3102,6 +3092,54 @@ mod tests {
             )
             .expect("the bounded one-node PLS fixture preflights without libn4m");
 
+            let mut pipeline_request: TrainingRequest =
+                serde_json::from_str(&fixture.request_json).unwrap();
+            pipeline_request.graph.nodes[0].params.insert(
+                "pipeline".to_string(),
+                serde_json::json!({
+                    "schema_version": 1,
+                    "pipeline_type": "n4m.snv_savgol_smooth.v1",
+                    "savgol_window": 3,
+                    "savgol_poly_degree": 2,
+                }),
+            );
+            pipeline_request.request_fingerprint = "0".repeat(64);
+            pipeline_request.request_fingerprint = pipeline_request.compute_fingerprint().unwrap();
+            parse_strict_methods_terminal_facade_inputs(
+                &serde_json::to_string(&pipeline_request).unwrap(),
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+                &fixture.selector_json,
+                "[]",
+                "{}",
+            )
+            .expect("the exact native SNV -> SG smooth -> PLS block preflights");
+
+            pipeline_request.graph.nodes[0]
+                .params
+                .get_mut("pipeline")
+                .unwrap()["savgol_window"] = serde_json::json!(4);
+            pipeline_request.request_fingerprint = "0".repeat(64);
+            pipeline_request.request_fingerprint = pipeline_request.compute_fingerprint().unwrap();
+            let error = parse_strict_methods_terminal_facade_inputs(
+                &serde_json::to_string(&pipeline_request).unwrap(),
+                &fixture.training_envelopes_json,
+                &fixture.relations_json,
+                &fixture.influence_json,
+                &fixture.methods_inputs_json,
+                &fixture.predict_envelope_json,
+                &fixture.predict_input_json,
+                &fixture.selector_json,
+                "[]",
+                "{}",
+            )
+            .expect_err("the strict facade refuses an unsupported native pipeline block");
+            assert!(error.to_string().contains("parameters outside native PLS"));
+
             let mut bad_ids: serde_json::Value =
                 serde_json::from_str(&fixture.predict_input_json).unwrap();
             bad_ids["sample_ids"][0] = serde_json::json!("sample:substituted");
@@ -3903,6 +3941,7 @@ mod tests {
                     plugin_version: None,
                     abi_major: None,
                     abi_min_minor: None,
+                    native_predictor_descriptor: None,
                 }]
             } else {
                 Vec::new()

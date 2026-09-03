@@ -370,7 +370,7 @@
             "artifact_id": { "$ref": "#/$defs/id" },
             "kind": { "const": "N4MM" },
             "owner": { "const": "nirs4all-methods" },
-            "format_version": { "const": 1 },
+            "format_version": { "enum": [1, 2] },
             "abi_major": { "const": 2 },
             "abi_min_minor": { "type": "integer", "minimum": 0 },
             "member_path": {

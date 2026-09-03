@@ -25,8 +25,9 @@ pub const N4MOPT_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 pub const N4MOPT_ARTIFACT_KIND: &str = "n4m_optimizer_checkpoint";
 pub const N4MOPT_FORMAT: &str = "N4MOPT";
 pub const METHODS_ABI_MAJOR: u32 = 2;
-pub const METHODS_RUNTIME_ABI_MINOR: u32 = 4;
+pub const METHODS_RUNTIME_ABI_MINOR: u32 = 5;
 pub const METHODS_PLS_N4MM_MIN_ABI_MINOR: u32 = 0;
+pub const METHODS_PIPELINE_N4MM_MIN_ABI_MINOR: u32 = 5;
 pub const METHODS_N4MOPT_MIN_ABI_MINOR: u32 = 2;
 pub const METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR: u32 = 3;
 
@@ -58,7 +59,17 @@ pub fn methods_n4mm_abi_requirement(
         )));
     }
     let expected_minor = match artifact.controller_id.as_str() {
-        METHODS_PLS_CONTROLLER_ID => Some(METHODS_PLS_N4MM_MIN_ABI_MINOR),
+        METHODS_PLS_CONTROLLER_ID => Some(
+            if artifact
+                .native_predictor_descriptor
+                .as_ref()
+                .is_some_and(|descriptor| descriptor.pipeline.is_some())
+            {
+                METHODS_PIPELINE_N4MM_MIN_ABI_MINOR
+            } else {
+                METHODS_PLS_N4MM_MIN_ABI_MINOR
+            },
+        ),
         METHODS_RIDGE_CONTROLLER_ID => Some(METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR),
         _ => None,
     };
@@ -921,6 +932,121 @@ pub const METHODS_PLS_CONTROLLER_ID: &str = crate::runtime::NATIVE_PREDICTOR_MET
 pub const METHODS_RIDGE_CONTROLLER_ID: &str = crate::runtime::NATIVE_PREDICTOR_METHODS_RIDGE_OWNER;
 
 #[cfg(feature = "methods-optimizer")]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MethodsPlsPipelineParamsV1 {
+    schema_version: u32,
+    pipeline_type: String,
+    savgol_window: i32,
+    savgol_poly_degree: i32,
+}
+
+#[cfg(feature = "methods-optimizer")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MethodsPlsParams {
+    n_components: i32,
+    pipeline: Option<MethodsPlsPipelineParamsV1>,
+}
+
+/// Validate the closed parameter contract of the dual-format native PLS lane.
+///
+/// The optional block selects the sole pipeline constructor exposed by `n4m`;
+/// DAG-ML neither maps native operator numbers nor implements preprocessing.
+#[cfg(feature = "methods-optimizer")]
+pub fn validate_methods_pls_node_params(
+    params: &BTreeMap<String, serde_json::Value>,
+) -> crate::Result<()> {
+    methods_pls_params(params).map(|_| ())
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn methods_pls_params(
+    params: &BTreeMap<String, serde_json::Value>,
+) -> crate::Result<MethodsPlsParams> {
+    let allowed = if params.contains_key("pipeline") {
+        2
+    } else {
+        1
+    };
+    if params.len() != allowed || !params.contains_key("n_components") {
+        return Err(crate::DagMlError::RuntimeValidation(
+            "portable Methods PLS accepts only `n_components` and the optional exact `pipeline` block"
+                .to_string(),
+        ));
+    }
+    let n_components = params["n_components"]
+        .as_i64()
+        .and_then(|value| i32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            crate::DagMlError::RuntimeValidation(
+                "portable Methods PLS `n_components` must be a positive i32".to_string(),
+            )
+        })?;
+    let pipeline = params
+        .get("pipeline")
+        .map(|value| {
+            serde_json::from_value::<MethodsPlsPipelineParamsV1>(value.clone()).map_err(|error| {
+                crate::DagMlError::RuntimeValidation(format!(
+                    "portable Methods PLS pipeline block is invalid: {error}"
+                ))
+            })
+        })
+        .transpose()?;
+    if let Some(pipeline) = &pipeline {
+        if pipeline.schema_version != 1
+            || pipeline.pipeline_type
+                != crate::runtime::NATIVE_PREDICTOR_PIPELINE_TYPE_SNV_SAVGOL_V1
+        {
+            return Err(crate::DagMlError::RuntimeValidation(
+                "portable Methods PLS supports only the SNV -> Savitzky-Golay smooth pipeline v1"
+                    .to_string(),
+            ));
+        }
+        if !(3..=501).contains(&pipeline.savgol_window)
+            || pipeline.savgol_window % 2 == 0
+            || pipeline.savgol_poly_degree < 0
+            || pipeline.savgol_poly_degree >= pipeline.savgol_window
+        {
+            return Err(crate::DagMlError::RuntimeValidation(
+                "portable Methods PLS pipeline has invalid Savitzky-Golay parameters".to_string(),
+            ));
+        }
+    }
+    Ok(MethodsPlsParams {
+        n_components,
+        pipeline,
+    })
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn validate_methods_pls_descriptor_against_params(
+    params: &BTreeMap<String, serde_json::Value>,
+    descriptor: Option<&crate::runtime::NativePredictorDescriptorV1>,
+) -> crate::Result<()> {
+    let params = methods_pls_params(params)?;
+    let descriptor_pipeline = descriptor.and_then(|value| value.pipeline.as_ref());
+    let matches_pipeline = match (&params.pipeline, descriptor_pipeline) {
+        (None, None) => true,
+        (Some(expected), Some(actual)) => {
+            actual.pipeline_type == expected.pipeline_type
+                && actual.savgol_window == expected.savgol_window
+                && actual.savgol_poly_degree == expected.savgol_poly_degree
+        }
+        _ => false,
+    };
+    if !matches_pipeline
+        || descriptor.is_some_and(|value| value.dimensions.n_components != params.n_components)
+    {
+        return Err(crate::DagMlError::RuntimeValidation(
+            "portable Methods PLS parameters do not match the native predictor descriptor"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "methods-optimizer")]
 /// Inspect complete N4MM bytes and derive their product-safe descriptor V1.
 ///
 /// This is the public attestation route for new publications and historical
@@ -934,9 +1060,11 @@ pub fn inspect_methods_native_predictor_descriptor_v1(
     payload: &[u8],
 ) -> crate::Result<crate::runtime::NativePredictorDescriptorV1> {
     use crate::runtime::{
-        NativePredictorDescriptorV1, NativePredictorDimensionsV1, NativePredictorWriterAbiV1,
-        NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1, NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1,
-        NATIVE_PREDICTOR_FORMAT_N4MM,
+        NativePredictorDescriptorV1, NativePredictorDimensionsV1, NativePredictorPipelineV1,
+        NativePredictorWriterAbiV1, NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1,
+        NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1, NATIVE_PREDICTOR_FORMAT_N4MM,
+        NATIVE_PREDICTOR_PIPELINE_FINGERPRINT_FNV1A64_V1,
+        NATIVE_PREDICTOR_PIPELINE_TYPE_SNV_SAVGOL_V1,
     };
 
     let info = n4m::inspect_n4mm(payload).map_err(|error| {
@@ -944,6 +1072,17 @@ pub fn inspect_methods_native_predictor_descriptor_v1(
             "native Methods predictor inspection failed: {error}"
         ))
     })?;
+    let pipeline = info.pipeline.map(|pipeline| NativePredictorPipelineV1 {
+        pipeline_type: NATIVE_PREDICTOR_PIPELINE_TYPE_SNV_SAVGOL_V1.to_string(),
+        schema_version: pipeline.schema_version,
+        operator_count: pipeline.operator_count,
+        raw_n_features: pipeline.raw_n_features,
+        model_n_features: pipeline.model_n_features,
+        fingerprint_algorithm: NATIVE_PREDICTOR_PIPELINE_FINGERPRINT_FNV1A64_V1.to_string(),
+        native_fingerprint: format!("{:016x}", pipeline.fingerprint),
+        savgol_window: pipeline.savgol_window,
+        savgol_poly_degree: pipeline.savgol_poly_degree,
+    });
     let mut descriptor = NativePredictorDescriptorV1 {
         descriptor_type: NATIVE_PREDICTOR_DESCRIPTOR_TYPE_V1.to_string(),
         schema_version: NATIVE_PREDICTOR_DESCRIPTOR_SCHEMA_VERSION_V1,
@@ -964,6 +1103,7 @@ pub fn inspect_methods_native_predictor_descriptor_v1(
             n_targets: info.n_targets,
             n_components: info.n_components,
         },
+        pipeline,
         descriptor_fingerprint: String::new(),
     };
     descriptor.descriptor_fingerprint = descriptor.compute_fingerprint()?;
@@ -1020,7 +1160,7 @@ impl MethodsRuntime {
             reason: format!("cannot load libn4m `{}`: {error}", canonical.display()),
         })?;
         // The binding performs the authoritative dynamic-library negotiation.
-        // Its published interface is ABI 2.4, which is the capability DAG-ML
+        // Its published interface is ABI 2.5, which is the capability DAG-ML
         // may safely claim after this preflight succeeds.
         n4m::Context::new().map_err(|error| HpoError::RuntimeConfiguration {
             reason: format!(
@@ -1504,25 +1644,25 @@ mod pls_controller {
             Ok(request)
         }
 
-        fn components(task: &NodeTask) -> Result<i32> {
-            let value = task.node_plan.params.get("n_components").ok_or_else(|| {
+        fn params(task: &NodeTask) -> Result<MethodsPlsParams> {
+            methods_pls_params(&task.node_plan.params).map_err(|error| {
                 DagMlError::RuntimeValidation(format!(
-                    "portable Methods PLS node `{}` requires integer `n_components`",
+                    "portable Methods PLS node `{}` has invalid parameters: {error}",
                     task.node_plan.node_id
                 ))
-            })?;
-            let value = value.as_i64().ok_or_else(|| {
-                DagMlError::RuntimeValidation(
-                    "portable Methods PLS `n_components` must be an integer".to_string(),
-                )
-            })?;
-            i32::try_from(value)
-                .ok()
-                .filter(|value| *value > 0)
-                .ok_or_else(|| {
-                    DagMlError::RuntimeValidation(
-                        "portable Methods PLS `n_components` must be a positive i32".to_string(),
-                    )
+            })
+        }
+
+        fn validate_descriptor_for_task(
+            task: &NodeTask,
+            descriptor: Option<&crate::runtime::NativePredictorDescriptorV1>,
+        ) -> Result<()> {
+            validate_methods_pls_descriptor_against_params(&task.node_plan.params, descriptor)
+                .map_err(|error| {
+                    DagMlError::RuntimeValidation(format!(
+                        "portable Methods PLS node `{}` descriptor mismatch: {error}",
+                        task.node_plan.node_id
+                    ))
                 })
         }
 
@@ -1537,9 +1677,15 @@ mod pls_controller {
                 Context::new().map_err(|error| Self::native_error("context_create", error))?;
             let mut config =
                 Config::new().map_err(|error| Self::native_error("config_create", error))?;
+            let params = Self::params(task)?;
             config
-                .set_n_components(Self::components(task)?)
+                .set_n_components(params.n_components)
                 .map_err(|error| Self::native_error("config_set_n_components", error))?;
+            if let Some(pipeline) = params.pipeline {
+                config
+                    .set_snv_savgol_pipeline(pipeline.savgol_window, pipeline.savgol_poly_degree)
+                    .map_err(|error| Self::native_error("config_set_snv_savgol_pipeline", error))?;
+            }
             let x = MatrixRef::row_major(&data.fit.x.values, data.fit.x.rows, data.fit.x.cols)
                 .map_err(|error| Self::native_error("fit_x_matrix", error))?;
             let targets = data.fit.y.as_ref().ok_or_else(|| {
@@ -1728,11 +1874,9 @@ mod pls_controller {
                 )));
             }
             let inspected = inspect_methods_native_predictor_descriptor_v1(&self.id, payload)?;
-            if request
-                .artifact
-                .native_predictor_descriptor
-                .as_ref()
-                .is_some_and(|expected| expected != &inspected)
+            let expected = request.artifact.native_predictor_descriptor.as_ref();
+            if expected.is_some_and(|expected| expected != &inspected)
+                || (expected.is_none() && inspected.pipeline.is_some())
             {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "portable Methods PLS payload `{}` does not match its inspected predictor descriptor",
@@ -1812,6 +1956,10 @@ mod pls_controller {
                             .map_err(|error| Self::native_error("export_n4mm", error))?;
                         let native_predictor_descriptor =
                             inspect_methods_native_predictor_descriptor_v1(&self.id, &bytes)?;
+                        Self::validate_descriptor_for_task(
+                            task,
+                            Some(&native_predictor_descriptor),
+                        )?;
                         let handle = self.handle(HandleKind::Model);
                         let fingerprint = format!("{:x}", Sha256::digest(&bytes));
                         let id = ArtifactId::new(format!(
@@ -1846,7 +1994,13 @@ mod pls_controller {
                                 plugin: None,
                                 plugin_version: None,
                                 abi_major: Some(METHODS_ABI_MAJOR),
-                                abi_min_minor: Some(METHODS_PLS_N4MM_MIN_ABI_MINOR),
+                                abi_min_minor: Some(
+                                    if native_predictor_descriptor.pipeline.is_some() {
+                                        METHODS_PIPELINE_N4MM_MIN_ABI_MINOR
+                                    } else {
+                                        METHODS_PLS_N4MM_MIN_ABI_MINOR
+                                    },
+                                ),
                                 native_predictor_descriptor: Some(native_predictor_descriptor),
                             },
                             handle,
@@ -1868,6 +2022,10 @@ mod pls_controller {
                 }
                 Phase::Predict => {
                     let artifact = task.artifact_inputs.values().find(|artifact| artifact.controller_id == self.id).ok_or_else(|| DagMlError::RuntimeValidation("portable Methods PLS PREDICT requires its retained N4MM artifact reference".to_string()))?;
+                    Self::validate_descriptor_for_task(
+                        task,
+                        artifact.artifact.native_predictor_descriptor.as_ref(),
+                    )?;
                     let handle = task
                         .input_handles
                         .get(&crate::runtime::refit_artifact_input_key(&artifact.artifact.id))
@@ -3380,6 +3538,43 @@ mod tests {
             pls_descriptor.capabilities & n4m::SERIALIZED_MODEL_CAPABILITY_PREDICT,
             0
         );
+
+        let mut pipeline_config = n4m::Config::new().unwrap();
+        pipeline_config.set_n_components(1).unwrap();
+        pipeline_config.set_snv_savgol_pipeline(3, 2).unwrap();
+        let pipeline_payload = n4m::Model::fit(&context, &pipeline_config, x, y)
+            .unwrap()
+            .export_n4mm()
+            .unwrap();
+        let pipeline_descriptor =
+            inspect_methods_native_predictor_descriptor_v1(&pls_id, &pipeline_payload).unwrap();
+        assert_eq!(pipeline_descriptor.format_version, 2);
+        let inspected_pipeline = pipeline_descriptor.pipeline.as_ref().unwrap();
+        assert_eq!(inspected_pipeline.savgol_window, 3);
+        assert_eq!(inspected_pipeline.savgol_poly_degree, 2);
+        let params = BTreeMap::from([
+            ("n_components".to_string(), serde_json::json!(1)),
+            (
+                "pipeline".to_string(),
+                serde_json::json!({
+                    "schema_version": 1,
+                    "pipeline_type": "n4m.snv_savgol_smooth.v1",
+                    "savgol_window": 3,
+                    "savgol_poly_degree": 2
+                }),
+            ),
+        ]);
+        validate_methods_pls_descriptor_against_params(&params, Some(&pipeline_descriptor))
+            .unwrap();
+        let mut spoofed = params;
+        spoofed.get_mut("pipeline").unwrap()["savgol_window"] = serde_json::json!(5);
+        assert!(validate_methods_pls_descriptor_against_params(
+            &spoofed,
+            Some(&pipeline_descriptor)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("do not match"));
 
         let coefficients = [2.0, 0.5, -1.0, 3.0];
         let intercept = [1.5, -2.0];

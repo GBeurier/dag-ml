@@ -27,8 +27,8 @@ CV/OOF/selection reports, prediction cache payloads, scores, conformal state,
 host sidecars, process-local handles or optimizer checkpoints.
 
 Every N4MM reference byte-equals its matching V3 detached raw artifact payload.
-New writers also emit a capability-derived `abi_min_minor`: PLS N4MM is 2.0+
-and imported-linear/Ridge N4MM is 2.3+. Historical absence is accepted only for
+New writers also emit a capability-derived `abi_min_minor`: PLS N4MM is 2.0+,
+imported-linear/Ridge N4MM is 2.3+, and native pipeline N4MM v2 is 2.5+. Historical absence is accepted only for
 PLS; it is not a permissive default for Ridge.
 The semantic profile is `n4mm_raw_sha256`: the semantic fingerprint equals the
 raw SHA-256. No JSON-canonical fingerprint is fabricated for native bytes.
