@@ -23,8 +23,9 @@ or R4 stability.
 
 1. **Release count.** R2 (`1.0.0-rc.1`) is the native-default flip.  R3
    (`1.0.0-rc.2`) and R4 (`1.0.0`) are the two complete post-flip retention
-   releases.  Release candidates, rebuilds, CI artifacts, and nightly builds
-   never count as releases.
+   releases. R3 counts once only when `1.0.0-rc.2` is published as the complete
+   product milestone. Unpublished candidate builds, rebuilds, CI artifacts,
+   and nightly builds never count as releases.
 2. **Strict product path.** In R3 and R4, the default native path is
    fail-closed: unsupported or plugin-only capabilities are refused before
    scientific-data access, result writing, or meaningful computation.  It
