@@ -820,6 +820,49 @@ fn add_portable_methods_hpo(fixture: &mut Fixture) {
     fixture.preferred = VariantId::new("hpo:trial:0").unwrap();
 }
 
+#[cfg(feature = "methods-optimizer-local")]
+fn use_portable_methods_pipeline(fixture: &mut Fixture) {
+    fixture.request.campaign.generation.dimensions.clear();
+    fixture.request.campaign.generation.strategy = GenerationStrategy::None;
+    fixture
+        .request
+        .campaign
+        .shape_plans
+        .remove(&node("transform:snv"));
+    fixture
+        .request
+        .graph
+        .nodes
+        .retain(|node| node.id.as_str() == "model:base");
+    fixture.request.graph.edges.clear();
+    let model_node = fixture.request.graph.nodes.first_mut().unwrap();
+    model_node.operator = Some(serde_json::json!("pls"));
+    model_node.seed_label = None;
+    model_node.params = BTreeMap::from([
+        ("n_components".to_string(), serde_json::json!(1)),
+        (
+            "pipeline".to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "pipeline_type": "n4m.snv_savgol_smooth.v1",
+                "savgol_window": 3,
+                "savgol_poly_degree": 2
+            }),
+        ),
+    ]);
+    fixture
+        .request
+        .controller_manifests
+        .retain(|manifest| manifest.operator_kind == NodeKind::Model);
+    let model = fixture.request.controller_manifests.first_mut().unwrap();
+    model.controller_id = ControllerId::new(METHODS_PLS_CONTROLLER_ID).unwrap();
+    model.controller_version = "libn4m-2.5".to_string();
+    model
+        .capabilities
+        .insert(ControllerCapability::SupportsPortableFullRefit);
+    rebuild(fixture);
+}
+
 /// HPO is a scheduler campaign operation, so tests alter its explicit
 /// descriptor rather than reintroducing a control-only graph node.
 fn methods_hpo_descriptor_mut(fixture: &mut Fixture) -> &mut serde_json::Value {
@@ -2877,6 +2920,101 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         // a separate registry below.
         failed_replay_transform_calls + 4
     );
+    assert_eq!(methods_controller.hydrated_payload_count().unwrap(), 0);
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_methods_pipeline_v2_round_trips_archive_member_into_fresh_predict() {
+    let mut fixture = fixture(true, false);
+    give_methods_hpo_four_train_rows(&mut fixture);
+    use_portable_methods_pipeline(&mut fixture);
+    let mut native_provider = provider(&fixture);
+    native_provider.methods_pls_feature_count = 4;
+    let mut source_store = InMemoryArtifactStore::new();
+    let source = run(
+        &fixture,
+        Arc::new(CallState::default()),
+        &native_provider,
+        &mut source_store,
+    )
+    .expect("native Methods pipeline FIT_CV and REFIT");
+
+    assert_eq!(source.effective_plan.node_plans.len(), 1);
+    assert!(source.effective_plan.graph_plan.graph.edges.is_empty());
+    let artifact = &source.execution_bundle.refit_artifacts[0].artifact;
+    let descriptor = artifact
+        .native_predictor_descriptor
+        .as_ref()
+        .expect("new pipeline publication carries its inspected descriptor");
+    assert_eq!(descriptor.format_version, 2);
+    assert_eq!(
+        artifact.abi_min_minor,
+        Some(METHODS_PIPELINE_N4MM_MIN_ABI_MINOR)
+    );
+    let pipeline = descriptor.pipeline.as_ref().unwrap();
+    assert_eq!(pipeline.savgol_window, 3);
+    assert_eq!(pipeline.savgol_poly_degree, 2);
+    assert_eq!(pipeline.raw_n_features, 4);
+    assert_eq!(pipeline.model_n_features, 4);
+
+    let package = source
+        .to_portable_predictor_package(
+            "predictor:methods.pipeline-v2",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .expect("pipeline N4MM is a portable predictor");
+    let archive =
+        build_archive_v2_native_portable_payloads("archive:methods.pipeline-v2", &source, &package)
+            .expect("pipeline Package V2 closes Archive V2");
+    assert_eq!(
+        archive.manifest["payloads"]["methods"]["n4mm"][0]["format_version"],
+        serde_json::json!(2)
+    );
+
+    // Reading the Package member back is the semantic archive boundary: no
+    // process-local model handle or preprocessed matrix crosses it.
+    let archived_package = PortablePredictorPackage::from_json(
+        std::str::from_utf8(archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap()).unwrap(),
+    )
+    .expect("archived pipeline package validates after reload");
+    let loaded = archived_package
+        .load_with(|record| {
+            panic!(
+                "native pipeline artifact `{}` unexpectedly requested a host handle",
+                record.artifact.id
+            )
+        })
+        .unwrap();
+    let request = replay_request(&source, Phase::Predict);
+    let methods_controller = Arc::new(MethodsPlsController::new(methods_runtime()));
+    let mut fresh_controllers = controllers(&fixture, Arc::new(CallState::default()), false);
+    fresh_controllers
+        .register(Box::new(SharedMethodsPlsController(
+            methods_controller.clone(),
+        )))
+        .unwrap();
+    let replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &loaded,
+        request: &request,
+        outcome_id: "replay:methods.pipeline-v2".to_string(),
+        run_id: RunId::new("run:methods.pipeline-v2.replay").unwrap(),
+        controllers: &fresh_controllers,
+        data_provider: &native_provider,
+        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("fresh controller imports N4MM v2 and predicts raw X");
+    let mut expected_predictions = source.outputs[0].predictions.clone();
+    for (expected, actual) in expected_predictions
+        .iter_mut()
+        .zip(&replay.outputs[0].predictions)
+    {
+        expected.prediction_id.clone_from(&actual.prediction_id);
+    }
+    assert_eq!(replay.outputs[0].predictions, expected_predictions);
     assert_eq!(methods_controller.hydrated_payload_count().unwrap(), 0);
 }
 

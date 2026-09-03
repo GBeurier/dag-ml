@@ -166,6 +166,9 @@ Methods history:
 - imported-linear N4MM (the Ridge replay payload) is ABI 2.3+: Methods commit
   `2dc536115c5ec438bedb2863b9720ec45641626d` adds the verified imported-linear
   predictor and its N4MM round trip while declaring ABI 2.3.
+- SNV -> Savitzky-Golay smooth -> PLS N4MM format 2 is ABI 2.5+: Methods commit
+  `2452de5ae347f8a83d81197956b1d027d11594f9` exposes the safe Rust pipeline
+  constructor and typed serialized-pipeline inspection.
 
 New writers always emit `abi_major` and `abi_min_minor`. A historical PLS
 reference with neither field reads as 2.0. An unversioned Ridge reference is
@@ -178,8 +181,9 @@ New PLS and Ridge publications attach
 `dagml.native_predictor_descriptor.v1` to their artifact reference. The
 descriptor records the artifact SHA-256, controller owner, N4MM format and
 writer ABI, storage algorithm, native capability mask, inspected dimensions,
-and a self-excluding TCV1 fingerprint. Its only metadata authority is
-`n4m_serialization_inspect_model_v1` over the exact exported bytes.
+an optional Methods-attested embedded-pipeline description, and a
+self-excluding TCV1 fingerprint. Its only metadata authority is the `n4m`
+model and pipeline inspectors over the exact exported bytes.
 
 PLS accepts storage algorithm 0 with `PREDICT`; Ridge accepts imported-linear
 algorithm 11 with `PREDICT | AFFINE`. Other Methods algorithms remain known to
@@ -188,3 +192,5 @@ inspects the detached bytes again and refuses a controller/algorithm,
 capability, dimension, SHA, or descriptor mismatch before model import.
 Historical Archive V2 members without the additive descriptor stay readable,
 but they pass the same native algorithm/capability inspection at hydration.
+Pipeline N4MM format 2 always requires the descriptor and ABI minimum 2.5;
+signed controller parameters are cross-checked against its typed SG values.

@@ -56,7 +56,8 @@ is a pre-write refusal, not a degraded replay mode. This does not declare that
 all future native-portable archive profiles must be Methods-only; widening the
 P0 policy requires a later policy ADR/profile.
 
-At least one N4MM member is required. Each N4MM reference is format version 1,
+At least one N4MM member is required. Each N4MM reference is format version 1
+for historical/raw PLS or version 2 for the native SNV -> SG smooth -> PLS pipeline,
 Methods ABI major 2 and an additive `abi_min_minor`, carries its package
 `artifact_id`, and points to exact raw
 bytes at a safe `methods/*.n4mm` path. The archive N4MM IDs exactly cover the
@@ -67,7 +68,7 @@ N4MM SHA-256, rather than a fabricated JSON-canonicalization digest. Raw
 SHA-256, size and semantic identity match the closed inventory; this matching
 semantic identifier never substitutes for the raw model payload.
 Writers derive the minimum from the payload capability: historical PLS N4MM is
-2.0+, while imported-linear/Ridge N4MM is 2.3+. An absent minor remains readable
+2.0+, imported-linear/Ridge N4MM is 2.3+, and pipeline N4MM v2 is 2.5+. An absent minor remains readable
 only for the historical PLS profile; it never defaults a Ridge payload to 2.3.
 
 ## Contract artifacts and gate
