@@ -21,6 +21,7 @@ use crate::ids::SampleId;
 use crate::oof::PredictionBlock;
 use crate::phase::Phase;
 use crate::replay::{TrainingReplayOutcome, TrainingReplayRequest};
+use crate::runtime::NativePredictorDescriptorV1;
 use crate::training::PortablePredictorPackage;
 
 /// V1 did not bind calibration to the training/replay provenance closure.  It
@@ -32,6 +33,10 @@ pub const CONFORMAL_RUNTIME_SCHEMA_VERSION: u32 = 2;
 /// no mutable model handle: Core and Studio may transport or render it, but
 /// must never recalculate its bounds.
 pub const CONFORMAL_PRESENTATION_SCHEMA_VERSION: u32 = 1;
+
+/// Multi-target, Archive-bound presentation contract. V1 remains the stable
+/// scalar UI projection; V2 is an additive native transport surface.
+pub const CONFORMAL_PRESENTATION_SCHEMA_VERSION_V2: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,6 +62,62 @@ pub struct ConformalPresentationV1 {
     pub sample_ids: Vec<SampleId>,
     pub point_predictions: Vec<f64>,
     pub intervals: Vec<ConformalPresentationInterval>,
+    pub calibration_fingerprint: String,
+    pub presentation_fingerprint: String,
+}
+
+/// Dimensions copied from the validated point block and native predictor.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConformalPresentationDimensionsV2 {
+    pub sample_count: u64,
+    pub target_count: u32,
+}
+
+/// Persisted split-conformal guarantee. These fields are copied from the
+/// calibrated package and are never derived by a presentation consumer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConformalPresentationGuaranteeV2 {
+    pub calibration_sample_count: u64,
+    pub multi_target_policy: ConformalMultiTargetPolicy,
+    pub small_sample_policy: ConformalSmallSamplePolicy,
+    pub quantiles: Vec<SplitConformalQuantile>,
+}
+
+/// Content-bound native identity for the exact model which produced the point
+/// predictions. The model digest and descriptor are independently retained so
+/// a host cannot substitute another N4MM with compatible dimensions.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConformalPresentationPredictorV2 {
+    pub model_artifact_fingerprint: String,
+    pub predictor_binding_fingerprint: String,
+    pub predictor_descriptor_fingerprint: String,
+}
+
+/// Closed multi-target presentation of one already-calculated PREDICT replay.
+///
+/// The complete point and interval blocks are retained so validation can reuse
+/// DAG-ML's authoritative sample-order, target-order and interval-closure
+/// checks. `archive_sha256` is supplied by the aggregate which validated the
+/// enclosing archive bytes; [`Self::validate_against_package`] binds every
+/// remaining field to the parsed Package V2.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConformalPresentationV2 {
+    pub schema_version: u32,
+    pub archive_sha256: String,
+    pub package_fingerprint: String,
+    pub replay_outcome_fingerprint: String,
+    pub binding_id: String,
+    pub predictor: ConformalPresentationPredictorV2,
+    pub dimensions: ConformalPresentationDimensionsV2,
+    pub target_names: Vec<String>,
+    pub sample_ids: Vec<SampleId>,
+    pub point_prediction: PredictionBlock,
+    pub interval_block: ConformalIntervalBlock,
+    pub guarantee: ConformalPresentationGuaranteeV2,
     pub calibration_fingerprint: String,
     pub presentation_fingerprint: String,
 }
@@ -278,6 +339,360 @@ impl ConformalPresentationV1 {
         }
         Ok(())
     }
+}
+
+impl ConformalPresentationV2 {
+    /// Parse and validate the self-contained transport shape. Consumers which
+    /// possess the source package must use [`Self::from_json_for_package`] to
+    /// additionally verify every provenance cross-link.
+    pub fn from_json(json: &str) -> Result<Self> {
+        let raw_fingerprint = parse_typed_json(json)
+            .and_then(|value| value.fingerprint_without("presentation_fingerprint"))
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "conformal presentation V2 is outside strict TCV1 JSON: {error}"
+                ))
+            })?;
+        let presentation: Self = serde_json::from_str(json)?;
+        if presentation.presentation_fingerprint != raw_fingerprint {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation V2 fingerprint does not match original TCV1 JSON"
+                    .to_string(),
+            ));
+        }
+        presentation.validate()?;
+        Ok(presentation)
+    }
+
+    /// Parse a presentation and bind it to the exact validated Package V2 and
+    /// native descriptors inspected from its model bytes.
+    pub fn from_json_for_package(
+        json: &str,
+        package: &PortablePredictorPackage,
+        native_predictors: &[NativePredictorDescriptorV1],
+    ) -> Result<Self> {
+        let presentation = Self::from_json(json)?;
+        presentation.validate_against_package(package, native_predictors)?;
+        Ok(presentation)
+    }
+
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        let json = serde_json::to_string(self)?;
+        parse_typed_json(&json)
+            .and_then(|value| value.fingerprint_without("presentation_fingerprint"))
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "conformal presentation V2 is outside strict TCV1 JSON: {error}"
+                ))
+            })
+    }
+
+    /// Validate the self-contained ordered identities, dimensions, guarantee,
+    /// interval closure and TCV1 fingerprint.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != CONFORMAL_PRESENTATION_SCHEMA_VERSION_V2 {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation V2 has an unsupported schema version".to_string(),
+            ));
+        }
+        for fingerprint in [
+            &self.archive_sha256,
+            &self.package_fingerprint,
+            &self.replay_outcome_fingerprint,
+            &self.predictor.model_artifact_fingerprint,
+            &self.predictor.predictor_binding_fingerprint,
+            &self.predictor.predictor_descriptor_fingerprint,
+            &self.calibration_fingerprint,
+            &self.presentation_fingerprint,
+        ] {
+            validate_sha256(fingerprint)?;
+        }
+        let target_count = u32::try_from(self.target_names.len()).map_err(|_| {
+            DagMlError::RuntimeValidation(
+                "conformal presentation V2 target count exceeds u32".to_string(),
+            )
+        })?;
+        let sample_count = u64::try_from(self.sample_ids.len()).map_err(|_| {
+            DagMlError::RuntimeValidation(
+                "conformal presentation V2 sample count exceeds u64".to_string(),
+            )
+        })?;
+        if self.target_names.is_empty()
+            || self.dimensions.target_count != target_count
+            || self.dimensions.sample_count != sample_count
+            || self.sample_ids != self.point_prediction.sample_ids
+            || self.target_names != self.point_prediction.target_names
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation V2 dimensions or ordered identities do not match"
+                    .to_string(),
+            ));
+        }
+        self.point_prediction.validate_content()?;
+        self.interval_block.validate()?;
+        if self.guarantee.calibration_sample_count == 0
+            || self.interval_block.binding_id != self.binding_id
+            || self.interval_block.sample_ids != self.sample_ids
+            || self.interval_block.calibration_fingerprint != self.calibration_fingerprint
+            || self.interval_block.point_prediction_fingerprint
+                != point_prediction_fingerprint_for_runtime(&self.point_prediction)?
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation V2 interval identities do not match".to_string(),
+            ));
+        }
+        let expected_intervals = apply_split_absolute_residual(
+            &self.point_prediction.values,
+            &self.guarantee.quantiles,
+            self.guarantee.multi_target_policy,
+        )
+        .map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "conformal presentation V2 has an invalid guarantee: {error}"
+            ))
+        })?;
+        if expected_intervals != self.interval_block.intervals {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation V2 intervals do not close over its persisted guarantee"
+                    .to_string(),
+            ));
+        }
+        if self.presentation_fingerprint != self.compute_fingerprint()? {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation V2 fingerprint does not match TCV1 content".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate all presentation fields against the authoritative package and
+    /// descriptors. Interval closure delegates to the existing conformal
+    /// runtime; this method performs no calibration or interval calculation.
+    pub fn validate_against_package(
+        &self,
+        package: &PortablePredictorPackage,
+        native_predictors: &[NativePredictorDescriptorV1],
+    ) -> Result<()> {
+        package.validate()?;
+        self.validate()?;
+        if self.package_fingerprint != package.package_fingerprint {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation V2 does not match its package fingerprint".to_string(),
+            ));
+        }
+        let calibration = package.conformal_calibration.as_ref().ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "conformal presentation V2 requires package calibration state".to_string(),
+            )
+        })?;
+        let binding = package
+            .output_bindings
+            .iter()
+            .find(|binding| binding.binding_id == calibration.binding_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "conformal presentation V2 calibration binding is absent".to_string(),
+                )
+            })?;
+        let (model_fingerprint, descriptor) =
+            presentation_native_predictor(package, binding, native_predictors)?;
+        if self.binding_id != calibration.binding_id
+            || self.predictor.predictor_binding_fingerprint != binding.binding_fingerprint
+            || self.predictor.predictor_binding_fingerprint
+                != calibration.context.predictor_binding_fingerprint
+            || self.predictor.model_artifact_fingerprint != model_fingerprint
+            || self.predictor.predictor_descriptor_fingerprint != descriptor.descriptor_fingerprint
+            || self.calibration_fingerprint != calibration.calibration_fingerprint
+            || self.target_names != binding.target_names
+            || self.target_names != calibration.target_names
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation V2 model, binding, targets or calibration do not cross-link"
+                    .to_string(),
+            ));
+        }
+        let target_count = i32::try_from(self.target_names.len()).map_err(|_| {
+            DagMlError::RuntimeValidation(
+                "conformal presentation V2 target count exceeds i32".to_string(),
+            )
+        })?;
+        if descriptor.dimensions.n_targets != target_count {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation V2 target count does not match native predictor"
+                    .to_string(),
+            ));
+        }
+        if self.guarantee.calibration_sample_count
+            != u64::try_from(calibration.sample_ids.len()).map_err(|_| {
+                DagMlError::RuntimeValidation(
+                    "conformal presentation V2 calibration sample count exceeds u64".to_string(),
+                )
+            })?
+            || self.guarantee.multi_target_policy != calibration.multi_target_policy
+            || self.guarantee.small_sample_policy != calibration.small_sample_policy
+            || self.guarantee.quantiles != calibration.quantiles
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "conformal presentation V2 guarantee does not match calibration state".to_string(),
+            ));
+        }
+        self.interval_block
+            .validate_against(calibration, &self.point_prediction)?;
+        Ok(())
+    }
+}
+
+fn presentation_native_predictor<'a>(
+    package: &'a PortablePredictorPackage,
+    binding: &crate::training::OutputBinding,
+    native_predictors: &'a [NativePredictorDescriptorV1],
+) -> Result<(&'a str, &'a NativePredictorDescriptorV1)> {
+    let records = package
+        .execution_bundle
+        .refit_artifacts
+        .iter()
+        .filter(|record| record.node_id == binding.node_id && record.artifact.kind == "n4m_model")
+        .collect::<Vec<_>>();
+    let [record] = records.as_slice() else {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation V2 requires exactly one native model artifact for its binding"
+                .to_string(),
+        ));
+    };
+    let model_fingerprint = record
+        .artifact
+        .content_fingerprint
+        .as_deref()
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "conformal presentation V2 native model has no content fingerprint".to_string(),
+            )
+        })?;
+    let descriptors = native_predictors
+        .iter()
+        .filter(|descriptor| {
+            descriptor.artifact_sha256 == model_fingerprint
+                && descriptor.owner_controller == record.controller_id
+        })
+        .collect::<Vec<_>>();
+    let [descriptor] = descriptors.as_slice() else {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation V2 requires exactly one byte-attested predictor descriptor"
+                .to_string(),
+        ));
+    };
+    descriptor.validate()?;
+    if record
+        .artifact
+        .native_predictor_descriptor
+        .as_ref()
+        .is_some_and(|embedded| embedded != *descriptor)
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation V2 byte-attested descriptor differs from package metadata"
+                .to_string(),
+        ));
+    }
+    Ok((model_fingerprint, descriptor))
+}
+
+/// Project an already-validated Package V2 PREDICT replay without performing
+/// any conformal calculation. The aggregate supplies the SHA-256 of the exact
+/// archive bytes and descriptors inspected from their native model members.
+pub fn build_conformal_presentation_v2(
+    archive_sha256: &str,
+    package: &PortablePredictorPackage,
+    request: &TrainingReplayRequest,
+    replay: &TrainingReplayOutcome,
+    native_predictors: &[NativePredictorDescriptorV1],
+) -> Result<ConformalPresentationV2> {
+    validate_sha256(archive_sha256)?;
+    package.validate()?;
+    request.validate()?;
+    replay.validate_against_package(package, request)?;
+    if replay.phase != Phase::Predict {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation V2 requires a PREDICT replay".to_string(),
+        ));
+    }
+    let calibration = package.conformal_calibration.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation(
+            "conformal presentation V2 requires package calibration state".to_string(),
+        )
+    })?;
+    let output = replay
+        .outputs
+        .iter()
+        .find(|output| output.binding.binding_id == calibration.binding_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "conformal presentation V2 replay is missing the calibrated binding".to_string(),
+            )
+        })?;
+    let [point_prediction] = output.predictions.as_slice() else {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation V2 requires exactly one point prediction block".to_string(),
+        ));
+    };
+    let interval_blocks = replay
+        .conformal_intervals
+        .iter()
+        .filter(|block| block.binding_id == calibration.binding_id)
+        .collect::<Vec<_>>();
+    let [interval_block] = interval_blocks.as_slice() else {
+        return Err(DagMlError::RuntimeValidation(
+            "conformal presentation V2 requires exactly one interval block".to_string(),
+        ));
+    };
+    interval_block.validate_against(calibration, point_prediction)?;
+    let (model_artifact_fingerprint, descriptor) =
+        presentation_native_predictor(package, &output.binding, native_predictors)?;
+    let mut presentation = ConformalPresentationV2 {
+        schema_version: CONFORMAL_PRESENTATION_SCHEMA_VERSION_V2,
+        archive_sha256: archive_sha256.to_string(),
+        package_fingerprint: package.package_fingerprint.clone(),
+        replay_outcome_fingerprint: replay.outcome_fingerprint.clone(),
+        binding_id: calibration.binding_id.clone(),
+        predictor: ConformalPresentationPredictorV2 {
+            model_artifact_fingerprint: model_artifact_fingerprint.to_string(),
+            predictor_binding_fingerprint: output.binding.binding_fingerprint.clone(),
+            predictor_descriptor_fingerprint: descriptor.descriptor_fingerprint.clone(),
+        },
+        dimensions: ConformalPresentationDimensionsV2 {
+            sample_count: u64::try_from(point_prediction.sample_ids.len()).map_err(|_| {
+                DagMlError::RuntimeValidation(
+                    "conformal presentation V2 sample count exceeds u64".to_string(),
+                )
+            })?,
+            target_count: u32::try_from(output.binding.target_names.len()).map_err(|_| {
+                DagMlError::RuntimeValidation(
+                    "conformal presentation V2 target count exceeds u32".to_string(),
+                )
+            })?,
+        },
+        target_names: output.binding.target_names.clone(),
+        sample_ids: point_prediction.sample_ids.clone(),
+        point_prediction: point_prediction.clone(),
+        interval_block: (*interval_block).clone(),
+        guarantee: ConformalPresentationGuaranteeV2 {
+            calibration_sample_count: u64::try_from(calibration.sample_ids.len()).map_err(
+                |_| {
+                    DagMlError::RuntimeValidation(
+                        "conformal presentation V2 calibration sample count exceeds u64"
+                            .to_string(),
+                    )
+                },
+            )?,
+            multi_target_policy: calibration.multi_target_policy,
+            small_sample_policy: calibration.small_sample_policy,
+            quantiles: calibration.quantiles.clone(),
+        },
+        calibration_fingerprint: calibration.calibration_fingerprint.clone(),
+        presentation_fingerprint: "0".repeat(64),
+    };
+    presentation.presentation_fingerprint = presentation.compute_fingerprint()?;
+    presentation.validate_against_package(package, native_predictors)?;
+    Ok(presentation)
 }
 
 /// Project a verified Package V2 and PREDICT replay into the exact scalar
@@ -834,6 +1249,7 @@ fn validate_sha256(value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conformal::{ConformalRadius, RegressionIntervalCell};
     use crate::ids::NodeId;
     use crate::oof::PredictionPartition;
 
@@ -1061,5 +1477,99 @@ mod tests {
         assert!(
             ConformalPresentationV1::from_json(&serde_json::to_string(&tampered).unwrap()).is_err()
         );
+    }
+
+    #[test]
+    fn presentation_v2_round_trips_multitarget_guarantee_and_refuses_tampering() {
+        let point_prediction = PredictionBlock {
+            prediction_id: Some("prediction:production".to_string()),
+            producer_node: NodeId::new("model:regressor").unwrap(),
+            producer_port: Some("prediction".to_string()),
+            partition: PredictionPartition::Final,
+            fold_id: None,
+            sample_ids: vec![
+                SampleId::new("sample:two").unwrap(),
+                SampleId::new("sample:one").unwrap(),
+            ],
+            values: vec![vec![10.0, 100.0], vec![20.0, 200.0]],
+            target_names: vec!["protein".to_string(), "moisture".to_string()],
+        };
+        let quantiles = vec![SplitConformalQuantile {
+            coverage: 0.8,
+            rank: 4,
+            radii: vec![ConformalRadius::Finite(1.0), ConformalRadius::Finite(2.0)],
+        }];
+        let intervals = apply_split_absolute_residual(
+            &point_prediction.values,
+            &quantiles,
+            ConformalMultiTargetPolicy::Marginal,
+        )
+        .unwrap();
+        let interval_block = ConformalIntervalBlock {
+            schema_version: CONFORMAL_RUNTIME_SCHEMA_VERSION,
+            binding_id: "output:main".to_string(),
+            sample_ids: point_prediction.sample_ids.clone(),
+            intervals,
+            calibration_fingerprint: "7".repeat(64),
+            point_prediction_fingerprint: point_prediction_fingerprint_for_runtime(
+                &point_prediction,
+            )
+            .unwrap(),
+        };
+        let mut presentation = ConformalPresentationV2 {
+            schema_version: CONFORMAL_PRESENTATION_SCHEMA_VERSION_V2,
+            archive_sha256: "1".repeat(64),
+            package_fingerprint: "2".repeat(64),
+            replay_outcome_fingerprint: "3".repeat(64),
+            binding_id: "output:main".to_string(),
+            predictor: ConformalPresentationPredictorV2 {
+                model_artifact_fingerprint: "4".repeat(64),
+                predictor_binding_fingerprint: "5".repeat(64),
+                predictor_descriptor_fingerprint: "6".repeat(64),
+            },
+            dimensions: ConformalPresentationDimensionsV2 {
+                sample_count: 2,
+                target_count: 2,
+            },
+            target_names: point_prediction.target_names.clone(),
+            sample_ids: point_prediction.sample_ids.clone(),
+            point_prediction,
+            interval_block,
+            guarantee: ConformalPresentationGuaranteeV2 {
+                calibration_sample_count: 4,
+                multi_target_policy: ConformalMultiTargetPolicy::Marginal,
+                small_sample_policy: ConformalSmallSamplePolicy::Error,
+                quantiles,
+            },
+            calibration_fingerprint: "7".repeat(64),
+            presentation_fingerprint: "0".repeat(64),
+        };
+        presentation.presentation_fingerprint = presentation.compute_fingerprint().unwrap();
+        let json = serde_json::to_string(&presentation).unwrap();
+        assert_eq!(
+            ConformalPresentationV2::from_json(&json).unwrap(),
+            presentation
+        );
+
+        let mut reordered = presentation.clone();
+        reordered.sample_ids.swap(0, 1);
+        reordered.presentation_fingerprint = reordered.compute_fingerprint().unwrap();
+        assert!(reordered
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("ordered identities"));
+
+        let mut altered_interval = presentation;
+        altered_interval.interval_block.intervals[0].cells[0][0] = RegressionIntervalCell::Finite {
+            lower: 9.5,
+            upper: 11.0,
+        };
+        altered_interval.presentation_fingerprint = altered_interval.compute_fingerprint().unwrap();
+        assert!(altered_interval
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("persisted guarantee"));
     }
 }
