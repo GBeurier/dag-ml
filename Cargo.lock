@@ -466,6 +466,7 @@ version = "0.3.23"
 dependencies = [
  "anyhow",
  "clap",
+ "dag-ml-arrow",
  "dag-ml-core 0.3.23",
  "serde",
  "serde_json",

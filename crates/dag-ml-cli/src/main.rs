@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use dag_ml_arrow::{ArrowPredictionCacheStore, ARROW_PREDICTION_CACHE_MANIFEST_FILE};
 use dag_ml_core::{
     build_execution_bundle, build_execution_bundle_with_prediction_contracts, build_execution_plan,
     build_openlineage_run_event_from_package_files, build_research_provenance_package,
@@ -78,6 +79,12 @@ impl CliScheduler {
 enum CliPredictionBlockKind {
     Sample,
     Aggregated,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliPredictionCacheStoreFormat {
+    Json,
+    Arrow,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -723,6 +730,8 @@ enum Command {
         payload: PathBuf,
         #[arg(long)]
         output_dir: PathBuf,
+        #[arg(long, value_enum, default_value = "json")]
+        format: CliPredictionCacheStoreFormat,
     },
     ValidatePredictionCacheStore {
         #[arg(long)]
@@ -1920,7 +1929,7 @@ fn main() -> Result<()> {
             }
             let file_prediction_cache_store = prediction_cache_store
                 .as_ref()
-                .map(|store_dir| validate_file_prediction_cache_store(&bundle, store_dir))
+                .map(|store_dir| validate_prediction_cache_store(&bundle, store_dir))
                 .transpose()?;
             if prediction_cache_payloads.is_some() && file_prediction_cache_store.is_some() {
                 bail!(
@@ -1962,7 +1971,7 @@ fn main() -> Result<()> {
                     .map_or(0, |payloads| payloads.caches.len()),
                 file_prediction_cache_store
                     .as_ref()
-                    .map_or(0, |store| store.manifest().caches.len()),
+                    .map_or(0, CliPredictionCacheStore::entry_count),
                 bundle.data_requirements.len(),
                 envelope_map.len(),
                 file_artifact_manifest_store
@@ -1988,29 +1997,46 @@ fn main() -> Result<()> {
             bundle,
             payload,
             output_dir,
+            format,
         } => {
             let bundle =
                 read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
             let payload: BundlePredictionCachePayloadSet =
                 read_json(&payload, "prediction cache payload set")?;
-            let manifest =
-                FilePredictionCacheStore::write_payload_set(&output_dir, &bundle, &payload)
-                    .with_context(|| "failed to export prediction cache store")?;
+            let (bundle_id, cache_count, format_label) = match format {
+                CliPredictionCacheStoreFormat::Json => {
+                    let manifest =
+                        FilePredictionCacheStore::write_payload_set(&output_dir, &bundle, &payload)
+                            .with_context(|| "failed to export JSON prediction cache store")?;
+                    (manifest.bundle_id, manifest.caches.len(), "json")
+                }
+                CliPredictionCacheStoreFormat::Arrow => {
+                    let manifest = ArrowPredictionCacheStore::write_payload_set(
+                        &output_dir,
+                        &bundle,
+                        &payload,
+                    )
+                    .with_context(|| "failed to export Arrow prediction cache store")?;
+                    (manifest.bundle_id, manifest.caches.len(), "arrow-ipc")
+                }
+            };
             println!(
-                "wrote prediction cache store: bundle={}, cache(s)={}, dir={}",
-                manifest.bundle_id,
-                manifest.caches.len(),
+                "wrote prediction cache store: bundle={}, cache(s)={}, format={}, dir={}",
+                bundle_id,
+                cache_count,
+                format_label,
                 output_dir.display()
             );
         }
         Command::ValidatePredictionCacheStore { bundle, store_dir } => {
             let bundle =
                 read_external_contract(&bundle, "execution bundle", ExecutionBundle::from_json)?;
-            let store = validate_file_prediction_cache_store(&bundle, &store_dir)?;
+            let store = validate_prediction_cache_store(&bundle, &store_dir)?;
             println!(
-                "valid prediction cache store: bundle={}, cache(s)={}, dir={}",
-                store.manifest().bundle_id,
-                store.manifest().caches.len(),
+                "valid prediction cache store: bundle={}, cache(s)={}, format={}, dir={}",
+                store.bundle_id(),
+                store.entry_count(),
+                store.format_label(),
                 store_dir.display()
             );
         }
@@ -4162,6 +4188,7 @@ impl RuntimeController for CliMockController {
                 plugin_version: None,
                 abi_major: None,
                 abi_min_minor: None,
+                native_predictor_descriptor: None,
             }]
         } else {
             Vec::new()
@@ -4912,6 +4939,7 @@ fn optional_mock_artifact_store(
 enum CliPredictionCacheStore {
     Columnar(ColumnarPredictionCacheStore),
     File(FilePredictionCacheStore),
+    Arrow(ArrowPredictionCacheStore),
 }
 
 impl CliPredictionCacheStore {
@@ -4919,6 +4947,31 @@ impl CliPredictionCacheStore {
         match self {
             Self::Columnar(store) => store.materialization_records().len(),
             Self::File(store) => store.materialization_records().len(),
+            Self::Arrow(store) => store.materialization_records().len(),
+        }
+    }
+
+    fn bundle_id(&self) -> &BundleId {
+        match self {
+            Self::Columnar(_) => unreachable!("in-memory payload stores have no file manifest"),
+            Self::File(store) => &store.manifest().bundle_id,
+            Self::Arrow(store) => &store.manifest().bundle_id,
+        }
+    }
+
+    fn entry_count(&self) -> usize {
+        match self {
+            Self::Columnar(store) => store.entry_count(),
+            Self::File(store) => store.manifest().caches.len(),
+            Self::Arrow(store) => store.manifest().caches.len(),
+        }
+    }
+
+    fn format_label(&self) -> &'static str {
+        match self {
+            Self::Columnar(_) => "memory-columnar",
+            Self::File(_) => "json",
+            Self::Arrow(_) => "arrow-ipc",
         }
     }
 }
@@ -4928,6 +4981,7 @@ impl RuntimePredictionCacheStore for CliPredictionCacheStore {
         match self {
             Self::Columnar(store) => store.load_blocks(requirement_key),
             Self::File(store) => store.load_blocks(requirement_key),
+            Self::Arrow(store) => store.load_blocks(requirement_key),
         }
     }
 
@@ -4938,6 +4992,7 @@ impl RuntimePredictionCacheStore for CliPredictionCacheStore {
         match self {
             Self::Columnar(store) => store.load_aggregated_blocks(requirement_key),
             Self::File(store) => store.load_aggregated_blocks(requirement_key),
+            Self::Arrow(store) => store.load_aggregated_blocks(requirement_key),
         }
     }
 
@@ -4948,6 +5003,7 @@ impl RuntimePredictionCacheStore for CliPredictionCacheStore {
         match self {
             Self::Columnar(store) => store.materialize(request),
             Self::File(store) => store.materialize(request),
+            Self::Arrow(store) => store.materialize(request),
         }
     }
 }
@@ -4967,9 +5023,33 @@ fn optional_prediction_cache_store(
             .with_context(|| "prediction cache payload set does not match bundle");
     }
     file_store_dir
-        .map(|store_dir| validate_file_prediction_cache_store(bundle, store_dir))
+        .map(|store_dir| validate_prediction_cache_store(bundle, store_dir))
         .transpose()
-        .map(|store| store.map(CliPredictionCacheStore::File))
+}
+
+fn validate_prediction_cache_store(
+    bundle: &ExecutionBundle,
+    store_dir: &Path,
+) -> Result<CliPredictionCacheStore> {
+    let arrow_manifest = store_dir.join(ARROW_PREDICTION_CACHE_MANIFEST_FILE);
+    let json_manifest = store_dir.join(dag_ml_core::FILE_PREDICTION_CACHE_MANIFEST_FILE);
+    if arrow_manifest.is_file() && json_manifest.is_file() {
+        bail!(
+            "prediction cache store is ambiguous at {}: both JSON and Arrow manifests exist",
+            store_dir.display()
+        );
+    }
+    if arrow_manifest.is_file() {
+        return ArrowPredictionCacheStore::open(store_dir.to_path_buf(), bundle)
+            .map(CliPredictionCacheStore::Arrow)
+            .with_context(|| {
+                format!(
+                    "Arrow prediction cache store is invalid at {}",
+                    store_dir.display()
+                )
+            });
+    }
+    validate_file_prediction_cache_store(bundle, store_dir).map(CliPredictionCacheStore::File)
 }
 
 fn validate_file_prediction_cache_store(
@@ -5645,6 +5725,7 @@ mod tests {
                     plugin_version: None,
                     abi_major: None,
                     abi_min_minor: None,
+                    native_predictor_descriptor: None,
                 }]
             } else {
                 Vec::new()

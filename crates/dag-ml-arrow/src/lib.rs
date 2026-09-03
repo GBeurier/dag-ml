@@ -27,8 +27,11 @@
 //! validate` so a corrupt stream cannot silently produce a payload
 //! the runtime would reject downstream.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs;
 use std::io::Cursor;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow_array::{Array, RecordBatch, StringArray};
@@ -37,9 +40,18 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 
 use dag_ml_core::aggregation::AggregatedPredictionBlock;
-use dag_ml_core::bundle::BundlePredictionCachePayload;
+use dag_ml_core::bundle::{
+    BundlePredictionCachePayload, BundlePredictionCachePayloadSet, ExecutionBundle,
+};
 use dag_ml_core::error::{DagMlError, Result};
+use dag_ml_core::ids::BundleId;
 use dag_ml_core::oof::PredictionBlock;
+use dag_ml_core::runtime::{
+    ColumnarPredictionCacheStore, HandleRef, PredictionCacheMaterializationRecord,
+    PredictionCacheMaterializationRequest, RuntimePredictionCacheStore,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Codec version stamped into the Arrow schema metadata. Bump if the
 /// row layout or metadata key set changes in a way readers must
@@ -62,6 +74,328 @@ pub const METADATA_KEY_PREDICTION_LEVEL: &str = "dag_ml.prediction_cache.predict
 pub const METADATA_KEY_CONTENT_FINGERPRINT: &str = "dag_ml.prediction_cache.content_fingerprint";
 pub const METADATA_KEY_BLOCK_COUNT: &str = "dag_ml.prediction_cache.block_count";
 pub const METADATA_KEY_ROW_COUNT: &str = "dag_ml.prediction_cache.row_count";
+
+/// Manifest name used by the durable Arrow IPC prediction-cache store.
+///
+/// It is deliberately distinct from the core JSON store manifest so callers
+/// can reject an ambiguous directory before reading any cache payload.
+pub const ARROW_PREDICTION_CACHE_MANIFEST_FILE: &str = "prediction_cache_arrow_manifest.json";
+pub const ARROW_PREDICTION_CACHE_STORE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArrowPredictionCacheEntry {
+    pub requirement_key: String,
+    pub cache_id: String,
+    pub file_name: String,
+    pub content_fingerprint: String,
+    pub ipc_fingerprint: String,
+}
+
+impl ArrowPredictionCacheEntry {
+    fn validate(&self) -> Result<()> {
+        for (label, value) in [
+            ("requirement_key", self.requirement_key.as_str()),
+            ("cache_id", self.cache_id.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Arrow prediction cache manifest {label} is empty"
+                )));
+            }
+        }
+        if self.file_name == "."
+            || self.file_name == ".."
+            || self.file_name.contains('/')
+            || self.file_name.contains('\\')
+            || !self.file_name.ends_with(".arrow")
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "Arrow prediction cache file name `{}` must be a plain .arrow file name",
+                self.file_name
+            )));
+        }
+        validate_sha256("Arrow prediction cache content", &self.content_fingerprint)?;
+        validate_sha256("Arrow prediction cache IPC", &self.ipc_fingerprint)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArrowPredictionCacheManifest {
+    pub schema_version: u32,
+    pub bundle_id: BundleId,
+    pub caches: Vec<ArrowPredictionCacheEntry>,
+}
+
+impl ArrowPredictionCacheManifest {
+    pub fn validate_against_bundle(&self, bundle: &ExecutionBundle) -> Result<()> {
+        if self.schema_version != ARROW_PREDICTION_CACHE_STORE_SCHEMA_VERSION {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "Arrow prediction cache manifest uses unsupported schema_version {}",
+                self.schema_version
+            )));
+        }
+        bundle.validate()?;
+        if self.bundle_id != bundle.bundle_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "Arrow prediction cache manifest bundle `{}` does not match `{}`",
+                self.bundle_id, bundle.bundle_id
+            )));
+        }
+        if self.caches.len() != bundle.prediction_caches.len() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "Arrow prediction cache manifest has {} entries for {} bundle cache records",
+                self.caches.len(),
+                bundle.prediction_caches.len()
+            )));
+        }
+
+        let mut requirement_keys = BTreeSet::new();
+        let mut cache_ids = BTreeSet::new();
+        let mut file_names = BTreeSet::new();
+        for entry in &self.caches {
+            entry.validate()?;
+            if !requirement_keys.insert(entry.requirement_key.as_str())
+                || !cache_ids.insert(entry.cache_id.as_str())
+                || !file_names.insert(entry.file_name.as_str())
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "Arrow prediction cache manifest contains duplicate identities".to_string(),
+                ));
+            }
+            let record = bundle
+                .prediction_caches
+                .iter()
+                .find(|record| record.requirement_key == entry.requirement_key)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "Arrow prediction cache manifest contains unknown requirement `{}`",
+                        entry.requirement_key
+                    ))
+                })?;
+            if record.cache_id != entry.cache_id
+                || record.content_fingerprint != entry.content_fingerprint
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Arrow prediction cache manifest entry `{}` does not match its bundle record",
+                    entry.requirement_key
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Durable Arrow IPC implementation of the runtime prediction-cache store.
+///
+/// `open` validates the manifest, every IPC byte fingerprint, Arrow metadata,
+/// and the complete payload set against the freshly deserialized execution
+/// bundle. It retains decoded, core-owned columnar values only: no file or
+/// host handle survives construction.
+#[derive(Clone, Debug)]
+pub struct ArrowPredictionCacheStore {
+    root: PathBuf,
+    manifest: ArrowPredictionCacheManifest,
+    inner: ColumnarPredictionCacheStore,
+    materialization_records: RefCell<Vec<PredictionCacheMaterializationRecord>>,
+}
+
+impl ArrowPredictionCacheStore {
+    pub fn write_payload_set(
+        root: impl AsRef<Path>,
+        bundle: &ExecutionBundle,
+        payloads: &BundlePredictionCachePayloadSet,
+    ) -> Result<ArrowPredictionCacheManifest> {
+        payloads.validate_against_bundle(bundle)?;
+        let root = root.as_ref();
+        fs::create_dir_all(root).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "failed to create Arrow prediction cache store `{}`: {error}",
+                root.display()
+            ))
+        })?;
+
+        let mut caches = Vec::with_capacity(payloads.caches.len());
+        for payload in &payloads.caches {
+            let bytes = predictions_to_arrow_ipc(payload)?;
+            let ipc_fingerprint = sha256_hex(&bytes);
+            let file_name = format!("prediction-cache-{}.arrow", &ipc_fingerprint[..16]);
+            fs::write(root.join(&file_name), &bytes).map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "failed to write Arrow prediction cache `{}`: {error}",
+                    root.join(&file_name).display()
+                ))
+            })?;
+            caches.push(ArrowPredictionCacheEntry {
+                requirement_key: payload.requirement_key.clone(),
+                cache_id: payload.cache_id.clone(),
+                file_name,
+                content_fingerprint: payload.content_fingerprint.clone(),
+                ipc_fingerprint,
+            });
+        }
+        caches.sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
+        let manifest = ArrowPredictionCacheManifest {
+            schema_version: ARROW_PREDICTION_CACHE_STORE_SCHEMA_VERSION,
+            bundle_id: bundle.bundle_id.clone(),
+            caches,
+        };
+        manifest.validate_against_bundle(bundle)?;
+        write_json(
+            &root.join(ARROW_PREDICTION_CACHE_MANIFEST_FILE),
+            &manifest,
+            "Arrow prediction cache manifest",
+        )?;
+        Ok(manifest)
+    }
+
+    pub fn open(root: impl Into<PathBuf>, bundle: &ExecutionBundle) -> Result<Self> {
+        let root = root.into();
+        let manifest: ArrowPredictionCacheManifest = read_json(
+            &root.join(ARROW_PREDICTION_CACHE_MANIFEST_FILE),
+            "Arrow prediction cache manifest",
+        )?;
+        manifest.validate_against_bundle(bundle)?;
+
+        let mut payloads_by_requirement = BTreeMap::new();
+        for entry in &manifest.caches {
+            let path = root.join(&entry.file_name);
+            let bytes = fs::read(&path).map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "failed to read Arrow prediction cache `{}`: {error}",
+                    path.display()
+                ))
+            })?;
+            let actual_ipc_fingerprint = sha256_hex(&bytes);
+            if actual_ipc_fingerprint != entry.ipc_fingerprint {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Arrow prediction cache `{}` IPC fingerprint does not match its manifest",
+                    entry.requirement_key
+                )));
+            }
+            let payload = predictions_from_arrow_ipc(&bytes)?;
+            if payload.requirement_key != entry.requirement_key
+                || payload.cache_id != entry.cache_id
+                || payload.content_fingerprint != entry.content_fingerprint
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Arrow prediction cache `{}` metadata does not match its manifest",
+                    entry.requirement_key
+                )));
+            }
+            if payloads_by_requirement
+                .insert(entry.requirement_key.clone(), payload)
+                .is_some()
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "Arrow prediction cache store repeats requirement `{}`",
+                    entry.requirement_key
+                )));
+            }
+        }
+        let payloads = BundlePredictionCachePayloadSet {
+            bundle_id: bundle.bundle_id.clone(),
+            schema_version: bundle.schema_version,
+            caches: payloads_by_requirement.into_values().collect(),
+        };
+        let inner = ColumnarPredictionCacheStore::from_payloads(bundle, payloads)?;
+        Ok(Self {
+            root,
+            manifest,
+            inner,
+            materialization_records: RefCell::new(Vec::new()),
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn manifest(&self) -> &ArrowPredictionCacheManifest {
+        &self.manifest
+    }
+
+    pub fn materialization_records(&self) -> Vec<PredictionCacheMaterializationRecord> {
+        self.materialization_records.borrow().clone()
+    }
+}
+
+impl RuntimePredictionCacheStore for ArrowPredictionCacheStore {
+    fn load_blocks(&self, requirement_key: &str) -> Result<Vec<PredictionBlock>> {
+        self.inner.load_blocks(requirement_key)
+    }
+
+    fn load_aggregated_blocks(
+        &self,
+        requirement_key: &str,
+    ) -> Result<Vec<AggregatedPredictionBlock>> {
+        self.inner.load_aggregated_blocks(requirement_key)
+    }
+
+    fn materialize(&self, request: &PredictionCacheMaterializationRequest) -> Result<HandleRef> {
+        let handle = self.inner.materialize(request)?;
+        let record = self
+            .inner
+            .materialization_records()
+            .into_iter()
+            .last()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "Arrow prediction cache materialization did not record its handle".to_string(),
+                )
+            })?;
+        self.materialization_records.borrow_mut().push(record);
+        Ok(handle)
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write;
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
+}
+
+fn validate_sha256(label: &str, value: &str) -> Result<()> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "{label} fingerprint must be a 64-character hex digest"
+        )));
+    }
+    Ok(())
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path, label: &str) -> Result<T> {
+    let bytes = fs::read(path).map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to read {label} at `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to parse {label} at `{}`: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn write_json<T: Serialize>(path: &Path, value: &T, label: &str) -> Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(value).map_err(|error| {
+        DagMlError::RuntimeValidation(format!("failed to serialize {label}: {error}"))
+    })?;
+    bytes.push(b'\n');
+    fs::write(path, bytes).map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "failed to write {label} at `{}`: {error}",
+            path.display()
+        ))
+    })
+}
 
 fn cache_schema(payload: &BundlePredictionCachePayload) -> Result<Schema> {
     let mut metadata = HashMap::new();
