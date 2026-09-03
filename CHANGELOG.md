@@ -11,6 +11,14 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Added
 
+- Candidate `dafb8b6` adds an archive-bound, identity-validated
+  multi-target conformal presentation projection. It presents already
+  calibrated point/interval blocks without recalculating calibration,
+  quantiles, or joins in the host.
+- Native Methods replay now accepts N4MM format 1 raw PLS and format 2
+  `SNV(ddof=0) -> Savitzky-Golay(mode=interp) -> PLS` artifacts. Format 2
+  requires the ABI 2.5 typed pipeline descriptor and is refused rather than
+  delegated to a Python fallback when its signed semantics do not match.
 - Release patch 0.3.23: the native results crate and Python facade can read and
   write validated result files while preserving physical sample identities.
   Native Methods HPO now reports each scheduler-owned validation fold as step
@@ -66,6 +74,11 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
   by `nirs4all-core`.
 
 ### Fixed
+
+- Native HPO resume merges the checkpoint's completed-trial prefix into the
+  resumed evidence before validation and continuation. This preserves the
+  official opaque `N4MOPT` state while preventing a valid completed prefix from
+  being rejected or terminalized twice.
 - Release patch 0.3.22: strict terminal Archive V2 persistence now emits a
   verified empty prediction-cache payload set when internal CV OOF evidence was
   intentionally discarded and the bundle and graph prove no external OOF

@@ -14,8 +14,8 @@ and its trial state machine:
 - in-memory `N4MOPT` save/load through the official binding (not bundle persistence).
 
 The `dag-ml-core` crate exposes the opt-in public `methods-optimizer` Cargo
-feature. This candidate targets dynamic `n4m` 0.1.3 from Methods commit
-`a71ee2927524d03482183de3d6e22661efc05d12` (ABI 2.4). That crate version is
+feature. This candidate targets dynamic `n4m` 0.1.4 from Methods commit
+`48ad1e5a50844f68c2b99e93b02ad6a3b491c07b` (ABI 2.5). That crate version is
 not yet published, so this DAG-ML candidate is publication-blocked; local
 qualification uses an explicit Cargo patch to that exact checkout and no
 release lock is regenerated from the patch. Default builds leave the feature
@@ -28,7 +28,7 @@ manifest or sibling source dependency, and the registered official adapter
 remains mandatory.
 
 The tracked root and standalone `dag-ml-py` locks remain on the last published
-binding until `n4m` 0.1.3 exists in the registry. Promotion requires regenerating
+binding until `n4m` 0.1.4 exists in the registry. Promotion requires regenerating
 both locks from the registry and qualifying those exact locked bytes; a local
 path patch is evidence only, never a release source.
 
@@ -106,7 +106,7 @@ JSON-deserialized outcome replay in a new process/controller without retaining
 the refit controller's in-memory handles.
 
 The `dag-ml-core/Cargo.toml` manifest offers an opt-in `methods-optimizer`
-feature targeting dynamic `n4m` 0.1.3. Until that binding is published, local
+feature targeting dynamic `n4m` 0.1.4. Until that binding is published, local
 qualification patches only the exact Methods candidate named above. Default
 builds and extracted crates do not link, load, or require a
 Methods checkout. A caller must explicitly configure an absolute `libn4m`
@@ -115,13 +115,13 @@ controller; there is no `PATH`, current-directory, sibling-checkout, or
 legacy fallback.
 
 The local integration helper activates the published feature and that
-compiler-only test selector. It uses the release source commit
-`4983c9a1df39d430a78c615bda209d3353514aa1` to build the explicit runtime file,
+compiler-only test selector. It uses the candidate source commit
+`48ad1e5a50844f68c2b99e93b02ad6a3b491c07b` to build the explicit runtime file,
 but resolves the Rust binding from crates.io. Build that checkout and invoke
 the helper from the workspace root:
 
 ```bash
-METHODS_SHA=4983c9a1df39d430a78c615bda209d3353514aa1
+METHODS_SHA=48ad1e5a50844f68c2b99e93b02ad6a3b491c07b
 git -C /absolute/path/to/nirs4all-methods fetch --depth=1 origin "$METHODS_SHA"
 git -C /absolute/path/to/nirs4all-methods checkout --detach "$METHODS_SHA"
 make -C /absolute/path/to/nirs4all-methods build PRESET=dev-release
