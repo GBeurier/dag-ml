@@ -24,8 +24,11 @@ leakage guarantees.
 | Finetuning | phase/fold control and leakage flags | stateful controller/adapter fit implementation | any learned transform/model is fitted on fold train only during CV |
 | Generation | search-space expansion, variant fingerprints, typed node-param override lowering | adapter/model params as serializable JSON | each variant has deterministic seeds, fingerprints, effective params and lineage |
 | Tuning | tuner node phase control and nested split policy | tuner/controller execution | tuner observations respect nested CV boundaries |
+| Tuning checkpoint/resume | campaign binding and validation/merge of the prior completed-trial prefix | Methods owns the opaque `N4MOPT` bytes and native continuation | resumed evidence is validated before new trials and no trial is terminalized twice |
 | Controller multitask | explicit task-group templates, batch admission, fallback and per-member validation | fused host/GPU execution for known task groups or closed static subgraphs | batching cannot hide topology, mix fold partitions, or replace per-node lineage/results |
 | Prediction replay | bundle validation and phase restrictions | schema fingerprint and data plan replay | predict never reuses CV validation labels/features in training mode |
+| Portable Methods replay | signed predictor descriptor, payload validation and graph-closure checks | Methods owns N4MM format 1/2 numeric execution | format 2 preserves exact `SNV(ddof=0) -> SG(mode=interp) -> PLS` semantics and never falls back to Python |
+| Conformal presentation | validated identity-bound multi-target presentation projection | controller/data side supplies already calibrated point/interval blocks | no recalibration and no positional join is performed during presentation |
 | Explainability | replay hooks and opaque outputs | controller-specific explanations | explanation payloads do not alter fit/predict lineage |
 
 ## Non-Negotiable Rules

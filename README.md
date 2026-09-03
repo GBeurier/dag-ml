@@ -83,9 +83,9 @@ node scripts/smoke_wasm_tarball_metadata.mjs "$data_web_out_dir"
 node scripts/smoke_wasm_integration.mjs "$web_out_dir" "$data_web_out_dir" ../dag-ml-data
 ```
 
-## 0.2.x RC Release Scope
+## 0.3.x RC Release Scope
 
-The supported 0.2.x RC scope is a Rust-first control core that can:
+The supported 0.3.x RC scope is a Rust-first control core that can:
 
 1. parse a canonical `GraphSpec`;
 2. validate edge contracts and acyclicity;
@@ -94,7 +94,14 @@ The supported 0.2.x RC scope is a Rust-first control core that can:
 5. reject train predictions as meta-model training features by default;
 6. select branch/merge variants from persisted OOF metrics;
 7. build a refit/replay bundle that locks plan, controller, data and artifact
-   fingerprints.
+   fingerprints;
+8. resume a native Methods HPO campaign from its opaque `N4MOPT` checkpoint,
+   merging the validated completed-trial prefix before continuing;
+9. replay Archive V2 N4MM format 1 raw PLS or format 2
+   `SNV(ddof=0) -> Savitzky-Golay(mode=interp) -> PLS` artifacts without a
+   Python fallback; and
+10. project validated archive-bound, multi-target conformal evidence for
+    presentation without host-side recalibration or positional joins.
 
 That scope is intentionally smaller than arbitrary host-pipeline execution.
 Adapter support is bounded in [`docs/SUPPORTED.md`](docs/SUPPORTED.md) and

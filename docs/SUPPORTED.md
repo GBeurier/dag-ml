@@ -26,6 +26,9 @@ scoped V2 terminal PREDICT Rust/Python surface is documented below.
 | C ABI JSON contract helpers | Supported | Header snapshot, C conformance and non-mock replay paths are gated. |
 | Runtime process adapter protocol | Supported | JSONL frames, describe handshake, timeouts, retries and worker pools are covered by CLI tests. It is not an HPO protocol: process controllers cannot attest native optimizer state, trial history, checkpoints or terminalization and therefore refuse tuner-session creation. |
 | Native Methods HPO session (R1) | Experimental | Only the native Methods controller may create a `RuntimeHpoExecutionContext`-bound HPO session. Plugin/process controllers, including Optuna adapters, are not release-promised for HPO. |
+| Native Methods HPO resume | Experimental | DAG-ML validates and merges the completed-trial prefix before continuation; Methods alone restores and advances the opaque `N4MOPT` bytes. Resumed evidence cannot duplicate a terminal transition. |
+| Archive V2 Methods replay | Experimental | N4MM format 1 raw PLS and format 2 `SNV(ddof=0) -> Savitzky-Golay(mode=interp) -> PLS` are accepted through the native Methods controller. Format 2 requires its ABI 2.5 typed descriptor; mismatches fail closed without a Python fallback. |
+| Archive-bound conformal presentation V2 | Experimental | The identity-bound projection supports multiple named targets and self-validates point/interval evidence. It presents already calibrated blocks; DAG-ML does not recalculate calibration or join rows positionally. |
 | Callback-free Methods Package V2 PREDICT replay | Experimental | `dag_ml_core::execute_loaded_methods_predictor_replay` accepts only signed replay contracts, explicitly attested numeric input views and an exact `MethodsRuntime`; it registers and releases the native controller per invocation. This is the Rust bridge for Core/Studio, not a generic host-callback route. |
 | Closed V2 terminal PREDICT replay | Experimental | `dag_ml::execute_terminal_prediction` and Python `run_cv_refit_predict_in_process` execute CV → REFIT → one direct sample-level PREDICT against an identity-attested V2 cohort, returning a sealed receipt. They reject V1/targetless cohorts, OOF-dependent graphs, and observation/aggregation output paths before controller callbacks run. |
 | Strict callback-free Methods terminal PREDICT | Experimental | Python `execute_methods_cv_refit_terminal_predict` accepts only raw numeric arrays, explicit IDs, one numeric target, no-shuffle KFold PLS, and a separate X-only cohort. It performs native CV/REFIT/PREDICT without a host callback, rejects transforms, generators, HPO, calibration, groups, metadata and externally consumed/retained OOF, and returns frozen native result/receipt objects. Internal CV OOF remains required and ephemeral for scoring only. |
@@ -63,7 +66,7 @@ remain provider-specific at runtime:
 
 ## Public-Signature Policy
 
-For the 0.2.x RC release window:
+For the 0.3.x RC release window:
 
 - no C ABI symbol, struct layout, JSON schema id/version, Rust public function,
   Python facade function or WASM export changes without an explicit contract
@@ -73,7 +76,7 @@ For the 0.2.x RC release window:
 - documentation, CI jobs, tests and private benchmark helpers are allowed when
   they do not alter exported signatures.
 
-## Post-0.2.x Backlog
+## Post-0.3.x Backlog
 
 1. Keep the `dag-ml-capi` AddressSanitizer lane green and extend it beyond
    library unit tests when C ABI lifecycle coverage expands.
