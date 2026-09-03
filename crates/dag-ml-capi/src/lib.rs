@@ -6621,6 +6621,7 @@ mod tests {
                 plugin_version: None,
                 abi_major: None,
                 abi_min_minor: None,
+                native_predictor_descriptor: None,
             },
             params_fingerprint: "params:artifact-fixture".to_string(),
             training_loss_fingerprint: None,

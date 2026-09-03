@@ -2665,6 +2665,7 @@ fn write_dag_ml_data_provider_bundle(workspace: &Path, path: &Path) {
             plugin_version: None,
             abi_major: None,
             abi_min_minor: None,
+            native_predictor_descriptor: None,
         },
         params_fingerprint: model_plan.params_fingerprint.clone(),
         training_loss_fingerprint: None,
