@@ -14,12 +14,9 @@ and its trial state machine:
 - in-memory `N4MOPT` save/load through the official binding (not bundle persistence).
 
 The `dag-ml-core` crate exposes the opt-in public `methods-optimizer` Cargo
-feature. This candidate targets dynamic `n4m` 0.1.4 from Methods commit
-`48ad1e5a50844f68c2b99e93b02ad6a3b491c07b` (ABI 2.5). That crate version is
-not yet published, so this DAG-ML candidate is publication-blocked; local
-qualification uses an explicit Cargo patch to that exact checkout and no
-release lock is regenerated from the patch. Default builds leave the feature
-disabled and refuse HPO before an
+feature through the published dynamic `n4m` 0.1.4 binding from Methods commit
+`48ad1e5a50844f68c2b99e93b02ad6a3b491c07b` (ABI 2.5). Default builds leave
+that feature disabled and refuse HPO before an
 objective can be called, with the typed
 `HpoError::MethodsOptimizerFeatureDisabled`. The integration helper enables
 that published feature and supplies a compiler-only native-test selector; the
@@ -27,10 +24,9 @@ selector is not a Cargo dependency or a production route. There is no sibling
 manifest or sibling source dependency, and the registered official adapter
 remains mandatory.
 
-The tracked root and standalone `dag-ml-py` locks remain on the last published
-binding until `n4m` 0.1.4 exists in the registry. Promotion requires regenerating
-both locks from the registry and qualifying those exact locked bytes; a local
-path patch is evidence only, never a release source.
+The tracked root workspace and standalone `dag-ml-py` maturin workspace both
+lock that binding from the registry with its published checksum. A local path
+patch is evidence only, never a release source.
 
 The `nirs4all_archive_core = "=0.3.22"` development dependency is a registry
 baseline used only by the Archive V2 integration tests. It is not the Core
@@ -106,11 +102,11 @@ JSON-deserialized outcome replay in a new process/controller without retaining
 the refit controller's in-memory handles.
 
 The `dag-ml-core/Cargo.toml` manifest offers an opt-in `methods-optimizer`
-feature targeting dynamic `n4m` 0.1.4. Until that binding is published, local
-qualification patches only the exact Methods candidate named above. Default
-builds and extracted crates do not link, load, or require a
-Methods checkout. A caller must explicitly configure an absolute `libn4m`
-file through `MethodsRuntime::configure` before constructing either Methods
+feature targeting the published dynamic `n4m` 0.1.4 binding. Local
+qualification builds the exact Methods runtime named above without patching
+the release dependency. Default builds and extracted crates do not link, load,
+or require a Methods checkout. A caller must explicitly configure an absolute
+`libn4m` file through `MethodsRuntime::configure` before constructing either Methods
 controller; there is no `PATH`, current-directory, sibling-checkout, or
 legacy fallback.
 
