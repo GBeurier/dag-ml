@@ -68,9 +68,9 @@ python3 scripts/check_so_freshness.py  # fail if the tracked _dag_ml.abi3.so pre
 
 ## First Files To Read
 
-1. `docs/TOC.md`
+1. `docs/DEVELOPMENT.md`
 2. `docs/RATIONALE.md`
 3. `docs/ARCHITECTURE.md`
 4. `docs/ABI.md`
-5. `docs/design/source/dag_ml_synthese.md`
-6. `docs/design/source/dag_ml_specification_v1.md`
+5. `docs/COORDINATOR_SPEC.md`
+6. `docs/design/README.md` (historical context, not current contracts)

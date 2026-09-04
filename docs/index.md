@@ -111,6 +111,7 @@ contracts/archive-v3/README
 :caption: Development
 :hidden:
 
+DEVELOPMENT
 SUPPORTED
 AGGREGATION_INTEROP
 PERFORMANCE

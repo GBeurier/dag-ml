@@ -24,6 +24,7 @@ root_doc = "index"
 # that would only add orphan pages to the public site.
 exclude_patterns = [
     "_build",
+    "_private/**",
     "Thumbs.db",
     ".DS_Store",
     "design/source/*",

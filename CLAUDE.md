@@ -69,7 +69,7 @@ cargo test -p dag-ml-cli
 cargo test -p dag-ml-core <substring_of_test_name>
 cargo test -p dag-ml-core runtime::tests::<name> -- --exact --nocapture
 
-# Validation CLI (see docs/STATUS.md and docs/TEST_PLAN.md for the full
+# Validation CLI (see examples/README.md and docs/DEVELOPMENT.md for the
 # smoke list — `validate-bundle`, `run-mock-campaign`, `run-process-replay`,
 # `compile-pipeline-dsl`, `export-research-provenance`, etc.).
 cargo run -p dag-ml-cli -- <subcommand> --help
@@ -82,7 +82,7 @@ cargo run -p dag-ml-cli -- <subcommand> --help
 
 ## Architecture Big Picture
 
-`docs/TOC.md` is the canonical navigation map; `docs/COORDINATOR_SPEC.md` is
+`docs/DEVELOPMENT.md` is the canonical navigation map; `docs/COORDINATOR_SPEC.md` is
 the short normative product contract and the alignment source for any
 ambiguity in the older design docs under `docs/design/source/`. Read those two
 first before changing contracts.
