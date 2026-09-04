@@ -1,5 +1,13 @@
 # nirs4all-core → dag-ml migration — war room
 
+> **Historical study (2026-06-23).** The preparation status, open decisions and
+> gap lists below describe the original migration investigation. They are
+> preserved as evidence, not as the status of the published V1 train. Use
+> [SUPPORTED](../SUPPORTED.md), [the ADR index](../adr/README.md) and
+> [DEVELOPMENT](../DEVELOPMENT.md) for current contracts and navigation.
+> References to local-only status/backlog files describe their historical
+> locations; private copies belong under `docs/_private/` when present.
+
 > **Status:** groundwork / prep phase (no code migration started). **Production nirs4all is
 > untouched and stays untouched.** This folder is the consolidated study + plan so it never
 > gets lost again. Assembled 2026-06-23 from a full multi-agent recon of every migration doc

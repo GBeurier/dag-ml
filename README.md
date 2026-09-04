@@ -31,15 +31,12 @@ crates/
   dag-ml-wasm/      # wasm-bindgen JSON-contract bindings for browser hosts
   dag-ml-cli/       # small validation CLI for specs and fixtures
 docs/
-  TOC.md            # validation-oriented table of contents
+  DEVELOPMENT.md    # contributor navigation and document lifecycle
   ARCHITECTURE.md   # module boundaries and runtime flow
   ABI.md            # C ABI ownership model and vtable roadmap
   RATIONALE.md      # why Rust/C ABI, why the data split, non-goals
-  ROADMAP.md        # phase plan and delivery gates
-  STATUS.md         # current state and next tasks
   SUPPORTED.md      # release support matrix and public-signature policy
-  TEST_PLAN.md      # invariant and conformance test strategy
-  design/source/    # moved source design markdowns from nirs4all
+  design/source/_archive/ # historical design provenance
 examples/
   minimal_graph.json
 ```

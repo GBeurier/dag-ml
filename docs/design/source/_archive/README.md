@@ -1,8 +1,8 @@
 # `design/source/_archive/` — superseded design-source drafts
 
 These are the **genetic design drafts** of dag-ml. They are **superseded as normative
-contracts** (the live source of truth is [`../../COORDINATOR_SPEC.md`](../../COORDINATOR_SPEC.md)
-+ [`../../TOC.md`](../../TOC.md) + the ADRs), but they are kept because they carry
+contracts** (the live source of truth is [`../../../COORDINATOR_SPEC.md`](../../../COORDINATOR_SPEC.md)
++ [`../../../DEVELOPMENT.md`](../../../DEVELOPMENT.md) + the ADRs), but they are kept because they carry
 **irreplaceable migration provenance** — they were the bridge between the nirs4all engine
 and the dag-ml design and contain the most detailed code-level migration orders that exist.
 
@@ -19,4 +19,4 @@ sequencing*, not for the current API.
 | `dag_ml_polyglot_core_design.md` | Rationale for operators-host-side + frozen vtables / RNG tiers (Rust-vs-C++ left *open* at the time) | `ABI.md` + shipped C-ABI headers |
 
 The migration war-room that cross-links these for the nirs4all-core effort is at
-[`../../migration-nirs4all/`](../../migration-nirs4all/).
+[`../../../migration-nirs4all/`](../../../migration-nirs4all/).

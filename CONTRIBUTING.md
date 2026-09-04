@@ -2,7 +2,7 @@
 
 `dag-ml` is the Rust execution coordinator for leakage-safe, reproducible ML pipelines. It owns graph compilation, phases, folds, OOF joins, the controller ABI, lineage, caching, and the deterministic control RNG. It does **not** own source storage or feature buffers — those contracts live in the sibling [`dag-ml-data`](https://github.com/GBeurier/dag-ml-data) repository.
 
-Read [`docs/TOC.md`](docs/TOC.md) for the navigation map and [`docs/COORDINATOR_SPEC.md`](docs/COORDINATOR_SPEC.md) for the normative product contract before changing any contract.
+Read [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the navigation map and [`docs/COORDINATOR_SPEC.md`](docs/COORDINATOR_SPEC.md) for the normative product contract before changing any contract.
 
 ## Development environment
 
@@ -46,9 +46,9 @@ crates/
   dag-ml-capi/   C ABI surface + header (include/dag_ml.h)
   dag-ml-cli/    validation + smoke-execution CLI
 docs/
-  TOC.md             navigation map
+  DEVELOPMENT.md     contributor navigation and document lifecycle
   COORDINATOR_SPEC.md normative product contract (source of truth on ambiguity)
-  ARCHITECTURE.md / ABI.md / STATUS.md / TEST_PLAN.md / ROADMAP.md
+  ARCHITECTURE.md / ABI.md / SUPPORTED.md
   adr/               Architecture Decision Records (see adr/README.md)
   contracts/         JSON Schemas (shared with dag-ml-data — JSON-identical)
 examples/
@@ -72,7 +72,7 @@ These are **cross-repo contracts**. A contract change is a coordinated, dual-PR 
 1. Update the JSON Schema in `docs/contracts/`, the Rust type, the C ABI version macro in `crates/dag-ml-capi/include/dag_ml.h` (only if the wire shape changes), and the conformance pack.
 2. Mirror the change in the sibling `dag-ml-data` repo so the shared artifacts stay **JSON-identical**.
 3. Run `DAG_ML_DATA_REPO=../dag-ml-data python3 scripts/validate_contracts.py` — it fails on drift.
-4. Update `docs/STATUS.md` (Implemented / Not implemented / Next) and the relevant ADR.
+4. Update `docs/SUPPORTED.md`, `CHANGELOG.md` and the relevant ADR when their contracts change.
 5. Schema/wire-shape evolution follows [ADR-02](docs/adr/ADR-02-schema-evolution-sla.md): land additively first, promote with a version bump and a dual-read window.
 6. Open the paired PR in `dag-ml-data`; both must merge together.
 

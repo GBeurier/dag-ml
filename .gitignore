@@ -21,6 +21,7 @@ coverage.xml
 GB_backlog.txt
 
 # --- untracked build/process docs (kept locally, 2026-06-16) ---
+docs/_private/
 docs/FINAL_RELEASE_AUDIT.md
 docs/HETEROGENEOUS_MULTISOURCE_REPETITIONS_ROADMAP.md
 docs/HOST_ADAPTER_BACKLOG.md
