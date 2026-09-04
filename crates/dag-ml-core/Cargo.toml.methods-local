@@ -8,18 +8,18 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-readme = "README.md"
-exclude = ["Cargo.toml.methods-local"]
 
 [features]
 default = []
+# This overlay is intentionally not Cargo's primary package manifest. It is
+# activated only by the Methods integration job. The unpublished binding is
+# resolved from the reviewed immutable producer commit below; do not publish
+# this Git dependency.
 methods-optimizer = ["dep:n4m"]
-# Native integration tests are deliberately excluded from the publishable
-# manifest and run only through scripts/test_methods_optimizer_local.sh.
 methods-optimizer-local = ["methods-optimizer"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("methods-optimizer", "methods-optimizer-local"))', 'cfg(dag_ml_workspace_contract_fixtures)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("methods-optimizer-local"))', 'cfg(dag_ml_workspace_contract_fixtures)'] }
 
 [dependencies]
 serde.workspace = true
@@ -31,7 +31,9 @@ sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
-n4m = { version = "0.1.1", default-features = false, features = ["dynamic"], optional = true }
+n4m = { version = "0.1.0", git = "https://github.com/GBeurier/nirs4all-methods.git", rev = "0ef355e6f74573ed07a6920bdeed1a052a6e8312", optional = true }
 
 [dev-dependencies]
-nirs4all_archive_core = { package = "nirs4all", version = "0.3.15" }
+# Kept in lockstep with Cargo.toml so the temporary Methods overlay exercises
+# the same Core byte-only Archive V2 boundary as the base test manifest.
+nirs4all_archive_core = { package = "nirs4all", path = "../../../nirs4all-core/bindings/rust/nirs4all" }
