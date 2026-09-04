@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Developer documentation map
 
 This is the versioned navigation map for contributors and coding agents. It
