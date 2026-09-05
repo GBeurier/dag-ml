@@ -892,3 +892,26 @@ An implementation is aligned only if all answers are "yes":
    declare shape deltas that the core validates before downstream use?
 
 If any answer is "no", the implementation has drifted from the product goal.
+
+## Nonportable Host Optimizer Search
+
+`SequentialScheduler::execute_host_hpo_search` is an additive, nonportable
+profile for a concrete model topology and an explicit evaluation FoldSet.
+The host proposal source receives `ask(trial_index)` and `tell(trial_index,
+native_score)` only. Core owns the bounded trial loop, isolated candidate
+contexts, parameter-patched variant identities, FIT_CV, score collection and
+selection. Operator or optimizer errors propagate without retries or fabricated
+penalty scores. A finite search space can terminate early by returning no proposal.
+
+The result retains each candidate's native ScoreSet and parameters, the selected
+trial, and fingerprints of the request, graph, controller registry, campaign
+and FoldSet. A single holdout uses its actual fold report; multiple folds use
+their native OOF average. No REFIT or external PREDICT occurs during search.
+Callers running nested optimization must provide only the outer-training scope
+and subsequently fit the selected model in that outer scope.
+
+This profile is **not** Methods HPO, a portable predictor package, a durable
+optimizer checkpoint or a resumable training archive. The existing Methods
+session/checkpoint ABI and published package validation remain unchanged.
+Progressive pruning, persistent host studies and multi-phase host search are
+not claimed by this initial profile.

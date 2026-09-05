@@ -18908,6 +18908,7 @@ def validate_w10_training_pack(pack: Any, negatives: dict[str, Any]) -> None:
         "crates/dag-ml-core/src/conformal_runtime.rs",
         "crates/dag-ml-core/src/hpo.rs",
         "crates/dag-ml-core/src/runtime/dataview.rs",
+        "crates/dag-ml-core/src/runtime/host_hpo.rs",
         "crates/dag-ml-core/src/runtime/mod.rs",
         "crates/dag-ml-core/src/runtime/scoring.rs",
         "crates/dag-ml-core/src/runtime/scheduler.rs",

@@ -9656,6 +9656,98 @@ fn variant_scoring_controllers() -> RuntimeControllerRegistry {
     controllers
 }
 
+#[test]
+fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
+    struct Proposals {
+        asked: u32,
+        told: Vec<(u32, f64)>,
+    }
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, trial_index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            assert_eq!(
+                trial_index as usize,
+                self.told.len(),
+                "each proposal must be terminal before asking again"
+            );
+            self.asked += 1;
+            Ok(Some(BTreeMap::from([(
+                "n_components".into(),
+                json!([3.0, 1.0, 2.0][trial_index as usize]),
+            )])))
+        }
+        fn tell(&mut self, trial_index: u32, score: f64) -> Result<()> {
+            self.told.push((trial_index, score));
+            Ok(())
+        }
+    }
+    struct CvOnly(VariantScoringController);
+    impl RuntimeController for CvOnly {
+        fn controller_id(&self) -> &ControllerId {
+            self.0.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            assert_eq!(
+                task.phase,
+                Phase::FitCv,
+                "search must never refit or predict"
+            );
+            self.0.invoke(task)
+        }
+    }
+    let mut campaign = variant_scoring_campaign(vec![("base", 0.0)]);
+    campaign.generation = GenerationSpec::default();
+    let plan =
+        build_execution_plan("plan:host_hpo:test", simple_graph(), campaign, &manifests()).unwrap();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(CvOnly(VariantScoringController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 2,
+            emit_targets: true,
+        })))
+        .unwrap();
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let mut request = HostHpoSearchRequest {
+        target_node: NodeId::new("model:pls").unwrap(),
+        trial_budget: 3,
+        metric: RegressionMetricKind::Rmse,
+        direction: crate::selection::MetricObjective::Minimize,
+        optimizer_descriptor: BTreeMap::from([("owner".into(), json!("test-host"))]),
+    };
+    let mut proposals = Proposals {
+        asked: 0,
+        told: Vec::new(),
+    };
+    let result = SequentialScheduler
+        .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
+        .unwrap();
+    assert_eq!(proposals.asked, 3);
+    assert_eq!(proposals.told, vec![(0, 3.0), (1, 1.0), (2, 2.0)]);
+    assert_eq!(result.selected_trial_index, 1);
+    assert_eq!(result.selected_params["n_components"], json!(1.0));
+    assert!(!result.portable);
+    assert!(result
+        .trials
+        .iter()
+        .all(|trial| !trial.scores.reports.is_empty()));
+    assert_eq!(
+        result.fold_set_fingerprint,
+        stable_json_fingerprint(plan.fold_set.as_ref().unwrap()).unwrap()
+    );
+    request.trial_budget = 0;
+    assert!(SequentialScheduler
+        .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
+        .is_err());
+    assert_eq!(proposals.asked, 3, "invalid request cannot ask or evaluate");
+}
+
 fn multi_port_model_graph() -> GraphSpec {
     let mut graph = simple_graph();
     graph.id = "g:multi.port.model".to_string();
