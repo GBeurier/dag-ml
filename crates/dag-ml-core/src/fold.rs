@@ -300,6 +300,21 @@ pub struct StratifiedKFoldSpec {
     pub seed: Option<u64>,
 }
 
+/// Nested stratified K-fold with the identity-keyed class labels required to
+/// construct folds inside each outer-training universe.
+///
+/// Keeping the labels on the fingerprinted policy lets the coordinator build
+/// every inner fold without inspecting feature buffers or asking a model
+/// controller to reinterpret target rows.  Labels for outer-validation samples
+/// may be present, but [`NestedCvSpec::build_nested_fold_set`] selects only the
+/// owning outer fold's training ids before splitting.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StratifiedNestedCvSpec {
+    #[serde(flatten)]
+    pub splitter: StratifiedKFoldSpec,
+    pub strata: BTreeMap<SampleId, String>,
+}
+
 impl StratifiedKFoldSpec {
     pub fn split(
         &self,
@@ -490,6 +505,9 @@ pub enum NestedCvSpec {
     /// Group-aware inner K-fold, built in-core from outer-train sample groups.
     #[serde(rename = "group_kfold")]
     GroupKFold(GroupKFoldSpec),
+    /// Target-stratified inner K-fold, with labels bound to stable sample ids.
+    #[serde(rename = "stratified_kfold")]
+    StratifiedKFold(StratifiedNestedCvSpec),
 }
 
 /// One inner fold set bound to the exact outer fold that owns its training
@@ -536,6 +554,19 @@ impl NestedCvSpec {
                     ));
                 }
             }
+            Self::StratifiedKFold(spec) => {
+                if spec.splitter.n_splits < 2 {
+                    return Err(DagMlError::OofValidation(
+                        "inner StratifiedKFold requires at least two splits".to_string(),
+                    ));
+                }
+                if spec.strata.is_empty() || spec.strata.values().any(|label| label.is_empty()) {
+                    return Err(DagMlError::OofValidation(
+                        "inner StratifiedKFold requires non-empty identity-keyed strata"
+                            .to_string(),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -573,6 +604,17 @@ impl NestedCvSpec {
                     .map(|(sample_id, group_id)| (sample_id.clone(), group_id.clone()))
                     .collect::<BTreeMap<_, _>>();
                 spec.split(inner_id, &inner_groups)?
+            }
+            Self::StratifiedKFold(spec) => {
+                let train = outer.train_sample_ids.iter().collect::<BTreeSet<_>>();
+                let inner_strata = spec
+                    .strata
+                    .iter()
+                    .filter(|(sample_id, _)| train.contains(sample_id))
+                    .map(|(sample_id, label)| (sample_id.clone(), label.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                spec.splitter
+                    .split(inner_id, &outer.train_sample_ids, &inner_strata)?
             }
         };
         // Splitters name folds locally (`fold0`, `fold1`, …).  Nested OOF is
@@ -1046,6 +1088,96 @@ mod tests {
         assert_eq!(gv["kind"], "group_kfold");
         assert_eq!(gv["n_splits"], 2);
         assert_eq!(serde_json::from_value::<NestedCvSpec>(gv).unwrap(), group);
+
+        let stratified = NestedCvSpec::StratifiedKFold(StratifiedNestedCvSpec {
+            splitter: StratifiedKFoldSpec {
+                n_splits: 2,
+                shuffle: true,
+                seed: Some(11),
+            },
+            strata: BTreeMap::from([(sid("s0"), "A".to_string()), (sid("s1"), "B".to_string())]),
+        });
+        let sv = serde_json::to_value(&stratified).unwrap();
+        assert_eq!(sv["kind"], "stratified_kfold");
+        assert_eq!(sv["n_splits"], 2);
+        assert_eq!(sv["strata"]["s0"], "A");
+        assert_eq!(
+            serde_json::from_value::<NestedCvSpec>(sv).unwrap(),
+            stratified
+        );
+    }
+
+    #[test]
+    fn nested_stratified_cv_uses_only_outer_training_labels_and_balances_inner_folds() {
+        let samples = (0..12)
+            .map(|index| sid(&format!("s{index}")))
+            .collect::<Vec<_>>();
+        let outer = KFoldSpec {
+            n_splits: 3,
+            shuffle: false,
+            seed: Some(0),
+        }
+        .split("outer", &samples)
+        .unwrap();
+        let outer_fold = &outer.folds[0];
+        let strata = BTreeMap::from_iter(samples.iter().enumerate().map(|(index, sample)| {
+            (
+                sample.clone(),
+                if index % 2 == 0 { "A" } else { "B" }.to_string(),
+            )
+        }));
+        let spec = NestedCvSpec::StratifiedKFold(StratifiedNestedCvSpec {
+            splitter: StratifiedKFoldSpec {
+                n_splits: 2,
+                shuffle: false,
+                seed: Some(0),
+            },
+            strata: strata.clone(),
+        });
+        let nested = spec
+            .build_nested_fold_set(outer_fold, &BTreeMap::new())
+            .unwrap();
+        nested.validate_for_outer(outer_fold).unwrap();
+        let mut externally_poisoned_strata = strata;
+        for sample in &outer_fold.validation_sample_ids {
+            externally_poisoned_strata
+                .insert(sample.clone(), "poisoned-external-label".to_string());
+        }
+        let externally_poisoned = NestedCvSpec::StratifiedKFold(StratifiedNestedCvSpec {
+            splitter: StratifiedKFoldSpec {
+                n_splits: 2,
+                shuffle: false,
+                seed: Some(0),
+            },
+            strata: externally_poisoned_strata,
+        })
+        .build_nested_fold_set(outer_fold, &BTreeMap::new())
+        .unwrap();
+        assert_eq!(nested, externally_poisoned);
+        for fold in &nested.inner_fold_set.folds {
+            let training_labels = fold
+                .train_sample_ids
+                .iter()
+                .map(|sample| {
+                    match sample
+                        .as_str()
+                        .trim_start_matches('s')
+                        .parse::<usize>()
+                        .unwrap()
+                        % 2
+                    {
+                        0 => "A",
+                        _ => "B",
+                    }
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(training_labels, BTreeSet::from(["A", "B"]));
+            assert!(fold
+                .train_sample_ids
+                .iter()
+                .chain(&fold.validation_sample_ids)
+                .all(|sample| outer_fold.train_sample_ids.contains(sample)));
+        }
     }
 
     #[test]
