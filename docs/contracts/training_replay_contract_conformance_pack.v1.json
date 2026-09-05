@@ -771,7 +771,7 @@
     },
     {
       "path": "scripts/validate_training_replay_contracts.py",
-      "sha256": "f970f6521657bae88095ef97305816de2684f184f6096d4bf0d9670fb184750a",
+      "sha256": "ea830954e0638906b3d280881c243154371d0836045e31986e10fb2f57f46e35",
       "kind": "production_validator"
     },
     {
@@ -856,5 +856,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "20786b8a289ee76120edb27cebabcc7c3704d605b323ecf4a9c591fa20f99928"
+  "pack_checksum": "4f2c44ed6b8069f3d5553d56e3e12895aa3ccb20430284e6e84e728043377526"
 }
