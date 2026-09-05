@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "36a4fcdca779af0e9d6ddf895869b347112b51f2f7c6f84b1494a86bf21d4c02",
+      "sha256": "a87bedfd930154d5694bf83d82417a7a48d86411bd3d9721753154254dffbb7b",
       "kind": "ci_gate"
     },
     {
@@ -81,7 +81,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/fold.rs",
-      "sha256": "a944edd619071ddba976b361d852e166b3a7f34d8ab42ec4fed3e86750ec1588",
+      "sha256": "e5c14bf7fceeab63c9221b9d55007bf24c1824e521551262f8034bf9ccb159dd",
       "kind": "typed_contract_dependency"
     },
     {
@@ -141,7 +141,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/dataview.rs",
-      "sha256": "edcc1484874967301f9c9b5ded6649449b254a567c3a7c6181285575e4a25917",
+      "sha256": "ebf9b2b6baa1ec5e4de0f8eb2d0caef1f13d450e4c37c2febeeb0ddca6a753f4",
       "kind": "native_hpo_runtime_session"
     },
     {
@@ -151,7 +151,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "ea2732c465803ea3c83d2b4421eda82445aa1eca16383dbf36dac61eb656e8e6",
+      "sha256": "6122f8d63a9df7470df14ee2a04ce600b4466051ea24581be35ffc2bcc7344fd",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -191,12 +191,12 @@
     },
     {
       "path": "crates/dag-ml-py/README.md",
-      "sha256": "3669971da59b96c33e6374534a73cf12aea2e3a65ddcf3b3891a86615f6b12b9",
+      "sha256": "b2924dee37abd1bd356ad6ec34590121f9733de9755676b0d8089fb65d65873c",
       "kind": "python_binding_documentation"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "ef25fbadfe80518a4cfea80a3ae07897cef05ee9e82517d726340b48cff50eda",
+      "sha256": "0cf62f4f60ada99abbd05e88bb1c2f447542bab81418dc9b97174afafba45315",
       "kind": "python_facade"
     },
     {
@@ -206,12 +206,12 @@
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "c36e5db74c09dd3156d254f1efd6ebbaccbe4d725063668f1bf6160ad9fceba2",
+      "sha256": "d82519bbc6cbb24c03aaddc64514ee786eb2af67e6ce667dac774338149e582a",
       "kind": "python_controller_bridge"
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "556c29ef6eeed128fbd80383bdba16e5c0465885b2af5b1163561ba32ddedbfc",
+      "sha256": "101508e9b240c01476f54c7218ba250f3d603e6b3775ce2b14a6bae3afb7caec",
       "kind": "python_binding"
     },
     {
@@ -594,5 +594,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "d78cc53ecd90bf4228d162e5c9ec4a6e48974512165fc0f278f8aa97dfbb4310"
+  "pack_checksum": "89989393e78f53e121af34e00b8927c3e725590b4c3423e0d2090760e82935b3"
 }

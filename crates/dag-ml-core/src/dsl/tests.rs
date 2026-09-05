@@ -2176,7 +2176,7 @@ fn operator_variant_label_matches_pinned_host_contract() {
 
     // The canonical bytes that BOTH dag-ml and the nirs4all host hash (build it explicitly here to
     // pin the exact contract shape the host must reproduce).
-    let canonical = serde_json::json!([
+    let mut canonical = serde_json::json!([
         {"kind": "transform", "class": "SNV", "params": {}},
         {
             "kind": "model",
@@ -2184,6 +2184,7 @@ fn operator_variant_label_matches_pinned_host_contract() {
             "params": {"n_components": 5}
         }
     ]);
+    canonical.sort_all_objects();
     let expected = crate::campaign::stable_json_fingerprint(&canonical).unwrap();
 
     let label = operator_variant_label(&steps).unwrap();
@@ -2217,6 +2218,16 @@ fn operator_variant_label_fixture_steps_json_matches_pinned() {
     assert_eq!(
         label, expected,
         "fixture steps_json must hash to the pinned variant_label via the host-helper codepath"
+    );
+}
+
+#[test]
+fn operator_variant_label_sorts_nested_operator_and_parameter_objects() {
+    let left = r#"[{"kind":"model","id":"m","operator":{"z":{"z":1,"a":2},"class":"Regressor"},"params":{"nested":{"z":1,"a":[{"z":2,"a":3}]}}}]"#;
+    let right = r#"[{"kind":"model","id":"m","operator":{"class":"Regressor","z":{"a":2,"z":1}},"params":{"nested":{"a":[{"a":3,"z":2}],"z":1}}}]"#;
+    assert_eq!(
+        operator_variant_label_from_steps_json(left).unwrap(),
+        operator_variant_label_from_steps_json(right).unwrap()
     );
 }
 

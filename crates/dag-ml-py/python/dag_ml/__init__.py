@@ -44,6 +44,7 @@ from ._dag_ml import (
     execute_methods_training_json as _native_execute_methods_training_json,
     execute_loaded_methods_predictor_replay_json as _native_execute_loaded_methods_predictor_replay_json,
     execute_training_json as _native_execute_training_json,
+    execute_phase_in_process as _native_execute_phase_in_process,
     fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
     loss_execution_attestation_json as _native_loss_execution_attestation_json,
@@ -135,6 +136,7 @@ _FACADE_EXPORTS = [
     "execute_loaded_methods_predictor_replay_json",
     "execute_training",
     "execute_training_json",
+    "execute_phase_in_process",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
     "run_cv_refit_predict_in_process",
@@ -460,6 +462,31 @@ def loss_execution_attestation(training_loss_role: Any, phase: str) -> dict[str,
 
     return json.loads(
         _native_loss_execution_attestation_json(_coerce_json(training_loss_role), phase)
+    )
+
+
+def execute_phase_in_process(
+    dsl_json: Any,
+    envelope_json: Any,
+    controller_manifests_json: Any,
+    op_callback: Any,
+    phase: str,
+    training_sample_ids: list[str] | None = None,
+) -> str:
+    """Run one explicit phase without selection or synthetic CV.
+
+    REFIT requires the original row ordering of the complete training sample
+    universe. Rust verifies the unique identities against the attested envelope
+    and records their order in the effective plan. PREDICT forbids this argument
+    and uses only its separately attested V2 cohort.
+    """
+    return _native_execute_phase_in_process(
+        _coerce_json(dsl_json),
+        _coerce_json(envelope_json),
+        _coerce_json(controller_manifests_json),
+        op_callback,
+        phase,
+        training_sample_ids,
     )
 
 
@@ -1659,6 +1686,7 @@ __all__ = [
     "derive_controller_manifest_json",
     "derive_controller_manifest_list_json",
     "derive_controller_manifests",
+    "execute_phase_in_process",
     "execute_training",
     "execute_training_json",
     "execute_methods_cv_refit_terminal_predict",

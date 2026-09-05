@@ -176,13 +176,14 @@ jobs:
         env:
           RUSTFLAGS: --cfg dag_ml_workspace_contract_fixtures
         run: cargo test --workspace
-      - name: HPO provenance with downstream JSON feature unification
-        run: cargo test --manifest-path crates/dag-ml-core/Cargo.toml --features serde_json/preserve_order campaign_provenance_is_recursive_order_and_resume_budget_independent
+      - name: All core contracts with downstream JSON feature unification
+        run: cargo test --locked --manifest-path crates/dag-ml-core/Cargo.toml --features serde_json/preserve_order
       - name: Terminal PREDICT V2 in-process gate
         env:
           PYO3_PYTHON: python
         run: |
-          cargo test --manifest-path crates/dag-ml-py/Cargo.toml py_in_process_terminal_predict -- --nocapture
+          cargo test --locked --manifest-path crates/dag-ml-py/Cargo.toml
+          cargo test --locked --manifest-path crates/dag-ml-py/Cargo.toml --features serde_json/preserve_order
           PYTHONPATH=crates/dag-ml-py/python python -m unittest crates/dag-ml-py/tests/test_terminal_predict_facade.py
           PYTHONPATH=crates/dag-ml-py/python python -m unittest crates/dag-ml-py/tests/test_methods_terminal_predict_facade.py
       - name: dag-ml-core extracted package test

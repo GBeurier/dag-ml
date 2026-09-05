@@ -594,6 +594,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
+        in_process::execute_phase_in_process,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
         in_process::run_cv_refit_in_process_with_training_losses,
         module
     )?)?;
@@ -739,6 +743,7 @@ fn contract_manifest() -> serde_json::Value {
             "canonical_operator_variant_label",
             "canonical_operator_variant_value_json",
             "run_cv_refit_in_process",
+            "execute_phase_in_process",
             "run_cv_refit_in_process_with_training_losses",
             "run_cv_refit_predict_in_process",
             "TrainingResult",

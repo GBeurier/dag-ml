@@ -56,6 +56,183 @@ use dag_ml_core::{
 
 use crate::{py_core_error, py_serde_error};
 
+/// Provider for explicit phase execution. Training and external prediction
+/// universes stay distinct; no synthetic fold set is introduced.
+struct ExplicitPhaseDataProvider {
+    inner: InMemoryDataProvider,
+    envelope: ExternalDataPlanEnvelope,
+    training_sample_ids: Option<Vec<dag_ml_core::SampleId>>,
+}
+
+impl dag_ml_core::RuntimeDataProvider for ExplicitPhaseDataProvider {
+    fn materialize(
+        &self,
+        request: &dag_ml_core::DataMaterializationRequest,
+    ) -> dag_ml_core::Result<HandleRef> {
+        self.inner.materialize(request)
+    }
+
+    fn make_view(&self, request: &dag_ml_core::DataViewRequest) -> dag_ml_core::Result<HandleRef> {
+        self.inner.make_view(request)
+    }
+
+    fn coordinator_relations(
+        &self,
+        binding: &dag_ml_core::DataBinding,
+    ) -> dag_ml_core::Result<Option<dag_ml_core::SampleRelationSet>> {
+        self.inner.coordinator_relations(binding)
+    }
+
+    fn predict_cohort(
+        &self,
+        binding: &dag_ml_core::DataBinding,
+        phase: Phase,
+    ) -> dag_ml_core::Result<Option<dag_ml_core::PredictCohort>> {
+        self.inner.predict_cohort(binding, phase)
+    }
+
+    fn refit_sample_ids(
+        &self,
+        binding: &dag_ml_core::DataBinding,
+    ) -> dag_ml_core::Result<Option<Vec<dag_ml_core::SampleId>>> {
+        binding.validate_envelope(&self.envelope)?;
+        Ok(self.training_sample_ids.clone())
+    }
+}
+
+/// Execute exactly one concrete REFIT or PREDICT phase through the Rust
+/// scheduler. This does not select variants, invent folds, fit before PREDICT,
+/// or claim a portable predictor package for host-managed artifacts.
+#[pyfunction]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, op_callback, phase, training_sample_ids=None))]
+pub fn execute_phase_in_process(
+    py: Python<'_>,
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    op_callback: Py<PyAny>,
+    phase: &str,
+    training_sample_ids: Option<Vec<String>>,
+) -> PyResult<String> {
+    let phase = match phase {
+        "REFIT" => Phase::Refit,
+        "PREDICT" => Phase::Predict,
+        _ => {
+            return Err(py_core_error(CoreDagMlError::CampaignValidation(
+                "Explicit execution phase must be REFIT or PREDICT".into(),
+            )))
+        }
+    };
+    if !op_callback.bind(py).is_callable() {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "op_callback must be callable".into(),
+        )));
+    }
+    let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
+        envelope_json,
+        "explicit phase data envelope",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
+    envelope.validate().map_err(py_core_error)?;
+    if phase == Phase::Predict {
+        dag_ml_core::require_terminal_predict_cohort(&envelope).map_err(py_core_error)?;
+    }
+    let training_sample_ids = match (phase, training_sample_ids) {
+        (Phase::Refit, Some(ids)) => {
+            let ids = ids.into_iter().map(dag_ml_core::SampleId::new)
+                .collect::<dag_ml_core::Result<Vec<_>>>().map_err(py_core_error)?;
+            let relations = envelope.coordinator_relations.as_ref().ok_or_else(|| py_core_error(
+                CoreDagMlError::RuntimeValidation("REFIT requires attested training relations".into())
+            ))?;
+            let expected = relations.records.iter().map(|record| record.sample_id.clone()).collect::<std::collections::BTreeSet<_>>();
+            let supplied = ids.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+            if ids.is_empty() || supplied.len() != ids.len() || supplied != expected {
+                return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+                    "training_sample_ids must be an exact unique ordering of the attested training universe".into()
+                )));
+            }
+            Some(ids)
+        }
+        (Phase::Refit, None) => return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "REFIT requires explicit training_sample_ids; relation canonical ordering is not row ordering".into()
+        ))),
+        (Phase::Predict, Some(_)) => return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "PREDICT must not supply training_sample_ids".into()
+        ))),
+        _ => None,
+    };
+    let dsl = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
+    let dsl = fan_out_data_aware_branches(&dsl, &envelope).map_err(py_core_error)?;
+    if !compile_operator_variant_models(&dsl)
+        .map_err(py_core_error)?
+        .is_empty()
+    {
+        return Err(py_core_error(CoreDagMlError::CampaignValidation(
+            "Explicit phase execution requires resolved operator choices".into(),
+        )));
+    }
+    let manifests: Vec<dag_ml_core::ControllerManifest> =
+        serde_json::from_str(controller_manifests_json).map_err(py_serde_error)?;
+    let mut registry = ControllerRegistry::new();
+    for manifest in manifests {
+        registry.register(manifest).map_err(py_core_error)?;
+    }
+    let mut compiled =
+        compile_pipeline_dsl_with_generation_and_controller_registry(&dsl, &registry)
+            .map_err(py_core_error)?;
+    if let Some(ids) = training_sample_ids.as_ref() {
+        compiled.campaign_template.metadata.insert(
+            "explicit_training_sample_ids".into(),
+            serde_json::to_value(ids).map_err(py_serde_error)?,
+        );
+    }
+    let plan = build_execution_plan(
+        format!("plan:{}:{}", dsl.id, phase.as_str()),
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )
+    .map_err(py_core_error)?;
+    if plan.variants.len() != 1 {
+        return Err(py_core_error(CoreDagMlError::CampaignValidation(
+            "Explicit phase execution requires exactly one concrete variant".into(),
+        )));
+    }
+    if phase == Phase::Refit && plan.fold_set.is_some() {
+        return Err(py_core_error(CoreDagMlError::CampaignValidation(
+            "REFIT-only execution requires a campaign without a split invocation; use the CV/refit API for a fold campaign".into(),
+        )));
+    }
+    plan.campaign
+        .validate_data_envelope_relations(&envelope)
+        .map_err(py_core_error)?;
+    let provider = ExplicitPhaseDataProvider {
+        inner: InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+            envelope.clone(),
+        )
+        .map_err(py_core_error)?,
+        envelope,
+        training_sample_ids,
+    };
+    let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
+    let run_id = RunId::new(format!("run:{}:{}:in-process", dsl.id, phase.as_str()))
+        .map_err(py_core_error)?;
+    let mut context = RunContext::new(run_id, plan.campaign.root_seed);
+    let results = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut context,
+            phase,
+        )
+        .map_err(py_core_error)?;
+    let scores = context.build_score_set(plan.id.clone(), None);
+    serde_json::to_string(&serde_json::json!({"node_results": results, "scores": scores, "phase": phase, "effective_plan": plan})).map_err(py_serde_error)
+}
+
 /// Serialize a `dag-ml-core` value directly to a Python object with `pythonize`
 /// (serde data model -> `PyObject`), skipping any JSON *string* step. The dict
 /// the callback receives is structurally identical to `json.loads` of the value's
@@ -1797,6 +1974,7 @@ mod tests {
     struct TerminalPredictCallback {
         calls: std::sync::Mutex<Vec<String>>,
         saw_predict_refit_artifact: std::sync::Mutex<bool>,
+        explicit_phase: bool,
     }
 
     #[pymethods]
@@ -1831,26 +2009,28 @@ mod tests {
                             "PREDICT callback received a non-terminal cohort view",
                         ));
                     }
-                    let artifact_id = "artifact:model:terminal:refit";
-                    let replay_key = format!("artifact:{artifact_id}");
-                    let artifact = task.artifact_inputs.get(&replay_key).ok_or_else(|| {
-                        pyo3::exceptions::PyValueError::new_err(
-                            "PREDICT callback did not receive REFIT artifact metadata",
-                        )
-                    })?;
-                    let handle = task.input_handles.get(&replay_key).ok_or_else(|| {
-                        pyo3::exceptions::PyValueError::new_err(
-                            "PREDICT callback did not receive REFIT artifact handle",
-                        )
-                    })?;
-                    if artifact.artifact.id.as_str() != artifact_id
-                        || !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact)
-                    {
-                        return Err(pyo3::exceptions::PyValueError::new_err(
-                            "PREDICT callback received an invalid REFIT artifact input",
-                        ));
+                    if !self.explicit_phase {
+                        let artifact_id = "artifact:model:terminal:refit";
+                        let replay_key = format!("artifact:{artifact_id}");
+                        let artifact = task.artifact_inputs.get(&replay_key).ok_or_else(|| {
+                            pyo3::exceptions::PyValueError::new_err(
+                                "PREDICT callback did not receive REFIT artifact metadata",
+                            )
+                        })?;
+                        let handle = task.input_handles.get(&replay_key).ok_or_else(|| {
+                            pyo3::exceptions::PyValueError::new_err(
+                                "PREDICT callback did not receive REFIT artifact handle",
+                            )
+                        })?;
+                        if artifact.artifact.id.as_str() != artifact_id
+                            || !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact)
+                        {
+                            return Err(pyo3::exceptions::PyValueError::new_err(
+                                "PREDICT callback received an invalid REFIT artifact input",
+                            ));
+                        }
+                        *self.saw_predict_refit_artifact.lock().unwrap() = true;
                     }
-                    *self.saw_predict_refit_artifact.lock().unwrap() = true;
                     view.sample_ids.clone().ok_or_else(|| {
                         pyo3::exceptions::PyValueError::new_err(
                             "PREDICT callback cohort view has no sample identities",
@@ -1878,19 +2058,28 @@ mod tests {
                     values: vec![vec![0.0]; sample_ids.len()],
                     target_names: vec!["y".to_string()],
                 }],
-                Phase::Predict => vec![PredictionBlock {
-                    prediction_id: Some(format!("prediction:{}:predict", task.node_plan.node_id)),
-                    producer_node: task.node_plan.node_id.clone(),
-                    producer_port: Some("oof".to_string()),
-                    partition: PredictionPartition::Final,
-                    fold_id: None,
-                    sample_ids: sample_ids.clone(),
-                    values: vec![vec![0.0]; sample_ids.len()],
-                    target_names: vec!["y".to_string()],
-                }],
+                Phase::Predict | Phase::Refit
+                    if self.explicit_phase || task.phase == Phase::Predict =>
+                {
+                    vec![PredictionBlock {
+                        prediction_id: Some(format!(
+                            "prediction:{}:predict",
+                            task.node_plan.node_id
+                        )),
+                        producer_node: task.node_plan.node_id.clone(),
+                        producer_port: Some("oof".to_string()),
+                        partition: PredictionPartition::Final,
+                        fold_id: None,
+                        sample_ids: sample_ids.clone(),
+                        values: vec![vec![0.0]; sample_ids.len()],
+                        target_names: vec!["y".to_string()],
+                    }]
+                }
                 _ => Vec::new(),
             };
-            let regression_targets = if task.phase == Phase::FitCv {
+            let regression_targets = if task.phase == Phase::FitCv
+                || (self.explicit_phase && task.phase == Phase::Refit)
+            {
                 vec![RegressionTargetBlock {
                     level: PredictionLevel::Sample,
                     unit_ids: sample_ids
@@ -1898,7 +2087,10 @@ mod tests {
                         .cloned()
                         .map(PredictionUnitId::Sample)
                         .collect(),
-                    values: vec![vec![0.0]; sample_ids.len()],
+                    values: vec![
+                        vec![if self.explicit_phase { 1.0 } else { 0.0 }];
+                        sample_ids.len()
+                    ],
                     target_names: vec!["y".to_string()],
                 }]
             } else {
@@ -2121,6 +2313,180 @@ mod tests {
         );
         envelope.validate().unwrap();
         serde_json::to_string(&envelope).unwrap()
+    }
+
+    #[test]
+    fn explicit_phase_refit_and_predict_use_distinct_attested_universes_without_cv() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut dsl: serde_json::Value =
+                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+            dsl.as_object_mut().unwrap().remove("split_invocation");
+            for (phase, expected_ids) in [
+                ("REFIT", serde_json::json!(["sample:2", "sample:1"])),
+                (
+                    "PREDICT",
+                    serde_json::json!(["sample:holdout:1", "sample:holdout:2"]),
+                ),
+            ] {
+                let callback = Py::new(
+                    py,
+                    TerminalPredictCallback {
+                        explicit_phase: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let payload = execute_phase_in_process(
+                    py,
+                    &dsl.to_string(),
+                    &terminal_predict_envelope_json(),
+                    &terminal_predict_manifest_json(),
+                    callback.clone_ref(py).into_any(),
+                    phase,
+                    (phase == "REFIT").then(|| vec!["sample:2".into(), "sample:1".into()]),
+                )
+                .unwrap();
+                let result: serde_json::Value = serde_json::from_str(&payload).unwrap();
+                assert_eq!(result["phase"], phase);
+                assert_eq!(result["node_results"].as_array().unwrap().len(), 1);
+                assert_eq!(
+                    result["node_results"][0]["predictions"][0]["sample_ids"],
+                    expected_ids
+                );
+                assert!(result["node_results"][0]["predictions"][0]["fold_id"].is_null());
+                assert_eq!(
+                    callback.bind(py).borrow().calls.lock().unwrap().as_slice(),
+                    [phase]
+                );
+                if phase == "REFIT" {
+                    assert_eq!(
+                        result["effective_plan"]["campaign"]["metadata"]
+                            ["explicit_training_sample_ids"],
+                        expected_ids
+                    );
+                    let reports = result["scores"]["reports"]
+                        .as_array()
+                        .expect("native REFIT score reports");
+                    assert!(!reports.is_empty());
+                    assert!(reports.iter().all(|report| report["partition"] == "final"));
+                    assert!(reports
+                        .iter()
+                        .all(|report| report["metrics"]["rmse"] == 1.0));
+                } else {
+                    assert!(
+                        result["scores"].is_null(),
+                        "unlabelled prediction must not invent a score"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn explicit_phase_rejects_invalid_phase_and_unattested_predict_before_callback() {
+        Python::initialize();
+        Python::attach(|py| {
+            let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            for phase in ["FIT_CV", "PREDICT"] {
+                let error = execute_phase_in_process(py, "{}", include_str!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "[]", callback.clone_ref(py).into_any(), phase, None).unwrap_err().to_string();
+                assert!(
+                    error.contains(if phase == "FIT_CV" {
+                        "REFIT or PREDICT"
+                    } else {
+                        "V2"
+                    }),
+                    "{error}"
+                );
+            }
+            assert!(callback.bind(py).borrow().calls.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn explicit_phase_rejects_unresolved_operator_choices_before_callback() {
+        Python::initialize();
+        Python::attach(|py| {
+            let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            let error = execute_phase_in_process(
+                py,
+                include_str!("../../../examples/pipeline_dsl_nirs4all_generator_parity.json"),
+                &terminal_predict_envelope_json(),
+                &terminal_predict_manifest_json(),
+                callback.clone_ref(py).into_any(),
+                "REFIT",
+                Some(vec!["sample:1".into(), "sample:2".into()]),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("resolved operator choices"), "{error}");
+            assert!(callback.bind(py).borrow().calls.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn explicit_phase_rejects_missing_duplicate_subset_or_external_training_ids() {
+        Python::initialize();
+        Python::attach(|py| {
+            let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            for ids in [
+                None,
+                Some(vec![]),
+                Some(vec!["sample:1".into()]),
+                Some(vec!["sample:1".into(), "sample:1".into()]),
+                Some(vec!["sample:1".into(), "sample:holdout:1".into()]),
+            ] {
+                let error = execute_phase_in_process(
+                    py,
+                    "{}",
+                    &terminal_predict_envelope_json(),
+                    "[]",
+                    callback.clone_ref(py).into_any(),
+                    "REFIT",
+                    ids,
+                )
+                .unwrap_err()
+                .to_string();
+                assert!(error.contains("training_sample_ids"), "{error}");
+            }
+            let error = execute_phase_in_process(
+                py,
+                "{}",
+                &terminal_predict_envelope_json(),
+                "[]",
+                callback.clone_ref(py).into_any(),
+                "PREDICT",
+                Some(vec!["sample:1".into()]),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("must not supply training_sample_ids"),
+                "{error}"
+            );
+            assert!(callback.bind(py).borrow().calls.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn explicit_phase_refuses_fold_campaign_instead_of_ignoring_training_order() {
+        Python::initialize();
+        Python::attach(|py| {
+            let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            let error = execute_phase_in_process(
+                py,
+                &terminal_predict_dsl_json(),
+                &terminal_predict_envelope_json(),
+                &terminal_predict_manifest_json(),
+                callback.clone_ref(py).into_any(),
+                "REFIT",
+                Some(vec!["sample:2".into(), "sample:1".into()]),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("without a split invocation"), "{error}");
+            assert!(callback.bind(py).borrow().calls.lock().unwrap().is_empty());
+        });
     }
 
     #[test]

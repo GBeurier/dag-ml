@@ -32,6 +32,16 @@ ordering, the corrected native test-controller parameters, and release CI
 qualification. HPO default-build identities remain unchanged; the fix makes
 the aggregate's `preserve_order` feature obey the same published identity.
 
+The explicit-phase V1 parity patch additionally attests the additive Python
+REFIT/PREDICT scheduler entry, its opt-in training-view provider, and the
+equivalent feature-independent operator-label and FoldSet canonicalization. REFIT row
+ordering is supplied explicitly, checked against the complete attested training
+identity set, and recorded in the effective campaign metadata. Existing
+providers retain their behavior; no fold is synthesized and no training occurs
+in PREDICT. The published operator-label fixture remains unchanged. The same
+inventory-only regeneration also includes the Data qualification CI pin and
+the full core/binding feature-unification CI gates.
+
 Revalidation includes independent artifact SHA-256 comparison; conformal,
 criteria, training and replay positive/negative oracles; archive fixtures;
 Rust tests in default and `preserve_order` configurations; and the complete
