@@ -9,6 +9,8 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-09-05
+
 ### Fixed
 
 - Keep Methods HPO campaign provenance stable across downstream JSON map
@@ -368,6 +370,7 @@ Initial active core scaffold. Executable Rust crates with:
   references.
 - Direct Python/YAML DSL frontends (JSON-only parser today).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.24...HEAD
+[0.3.24]: https://github.com/GBeurier/dag-ml/compare/v0.3.23...v0.3.24
 [0.2.0]: https://github.com/GBeurier/dag-ml/releases/tag/v0.2.0
 [0.1.0-alpha.0]: https://github.com/GBeurier/dag-ml/releases/tag/v0.1.0-alpha.0

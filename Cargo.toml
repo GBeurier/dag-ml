@@ -21,7 +21,7 @@ members = [
 exclude = ["crates/dag-ml-py"]
 
 [workspace.package]
-version = "0.3.23"
+version = "0.3.24"
 edition = "2021"
 rust-version = "1.85"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
@@ -33,9 +33,9 @@ readme = "README.md"
 [workspace.dependencies]
 anyhow = "1.0"
 clap = { version = "=4.5.53", features = ["derive"] }
-dag-ml = { path = "crates/dag-ml", version = "0.3.23" }
-dag-ml-arrow = { path = "crates/dag-ml-arrow", version = "0.3.23" }
-dag-ml-core = { path = "crates/dag-ml-core", version = "0.3.23" }
+dag-ml = { path = "crates/dag-ml", version = "0.3.24" }
+dag-ml-arrow = { path = "crates/dag-ml-arrow", version = "0.3.24" }
+dag-ml-core = { path = "crates/dag-ml-core", version = "0.3.24" }
 serde = { version = "1.0", features = ["derive"] }
 serde_ignored = "0.1"
 serde_json = { version = "1.0", features = ["float_roundtrip"] }

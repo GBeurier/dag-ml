@@ -465,19 +465,19 @@ dependencies = [
 
 [[package]]
 name = "dag-ml"
-version = "0.3.23"
+version = "0.3.24"
 dependencies = [
- "dag-ml-core 0.3.23",
+ "dag-ml-core 0.3.24",
 ]
 
 [[package]]
 name = "dag-ml-arrow"
-version = "0.3.23"
+version = "0.3.24"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
- "dag-ml-core 0.3.23",
+ "dag-ml-core 0.3.24",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -485,9 +485,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-capi"
-version = "0.3.23"
+version = "0.3.24"
 dependencies = [
- "dag-ml-core 0.3.23",
+ "dag-ml-core 0.3.24",
  "serde",
  "serde_json",
  "tracing-subscriber",
@@ -495,12 +495,12 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-cli"
-version = "0.3.23"
+version = "0.3.24"
 dependencies = [
  "anyhow",
  "clap",
  "dag-ml-arrow",
- "dag-ml-core 0.3.23",
+ "dag-ml-core 0.3.24",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.23"
+version = "0.3.24"
 dependencies = [
  "indexmap",
  "n4m",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-results"
-version = "0.3.23"
+version = "0.3.24"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -578,9 +578,9 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-wasm"
-version = "0.3.23"
+version = "0.3.24"
 dependencies = [
- "dag-ml-core 0.3.23",
+ "dag-ml-core 0.3.24",
  "js-sys",
  "serde",
  "serde_json",
