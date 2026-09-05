@@ -38,7 +38,8 @@ jobs:
           set -euo pipefail
           peer_repo="GBeurier/dag-ml-data"
           branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          ref="main"
+          # Immutable, qualified V1 Data peer (default when no paired branch exists).
+          ref="b07781417166d280b3cfd9d8cc0112921ef60d2a"
           paired="false"
 
           if git ls-remote --exit-code --heads "https://github.com/${peer_repo}.git" "$branch" >/dev/null 2>&1; then
