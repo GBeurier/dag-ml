@@ -906,7 +906,15 @@ penalty scores. A finite search space can terminate early by returning no propos
 The result retains each candidate's native ScoreSet and parameters, the selected
 trial, and fingerprints of the request, graph, controller registry, campaign
 and FoldSet. A single holdout uses its actual fold report; multiple folds use
-their native OOF average. No REFIT or external PREDICT occurs during search.
+their native OOF average by default. An optional fingerprinted
+`fold_score_reduction` (`mean`, `best`, `robust_best`) instead selects from the
+actual report of every declared fold. The mean is an unweighted mean of fold
+metrics, not a pooled OOF metric; best follows the declared metric direction.
+All folds require finite observed scores, including robust_best: errors never
+become ignored folds or penalty values. Reduced selection evidence is retained
+as `objective_fold_scores` per trial; original ScoreSet reports are unchanged.
+The absent option preserves the previous wire contract and request fingerprint.
+No REFIT or external PREDICT occurs during search.
 Callers running nested optimization must provide only the outer-training scope
 and subsequently fit the selected model in that outer scope.
 

@@ -146,7 +146,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/host_hpo.rs",
-      "sha256": "69b03feda3e717f0ce177b3f85c49dfa8dd082dc1baef07bb8a7a44a81520550",
+      "sha256": "ab215b0a2aba1ab969b03c467a6bb05a6ae579f8a9f38386ce70253dd43b3343",
       "kind": "native_host_hpo_scheduler"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "2ee71912ffd524a66924b6064ae3b1f63ebf94f7713704960c787e27b0243629"
+  "pack_checksum": "8633decac49d3b0b32d39b9c45843b48cbd8346bec6d766a0363f22f0da41401"
 }

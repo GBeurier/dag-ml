@@ -6,6 +6,14 @@
 
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostHpoFoldReduction {
+    Mean,
+    Best,
+    RobustBest,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostHpoSearchRequest {
@@ -14,6 +22,10 @@ pub struct HostHpoSearchRequest {
     pub metric: RegressionMetricKind,
     pub direction: crate::selection::MetricObjective,
     pub optimizer_descriptor: BTreeMap<String, serde_json::Value>,
+    /// None preserves the original global OOF objective. Fold reductions are
+    /// explicit selection evidence, never synthetic OOF ScoreSet reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fold_score_reduction: Option<HostHpoFoldReduction>,
 }
 
 pub trait HostHpoProposalSource {
@@ -28,6 +40,8 @@ pub struct HostHpoTrialEvidence {
     pub score: f64,
     pub variant_id: VariantId,
     pub scores: ScoreSet,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub objective_fold_scores: BTreeMap<String, f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -129,28 +143,68 @@ impl SequentialScheduler {
                     report.producer_node == request.target_node
                         && report.partition == PredictionPartition::Validation
                         && report.fold_id.as_ref().is_some_and(|fold| {
-                            fold.as_str() == "avg"
-                                || (folds.folds.len() == 1 && fold == &folds.folds[0].fold_id)
+                            if request.fold_score_reduction.is_some() {
+                                folds.folds.iter().any(|item| &item.fold_id == fold)
+                            } else {
+                                fold.as_str() == "avg"
+                                    || (folds.folds.len() == 1 && fold == &folds.folds[0].fold_id)
+                            }
                         })
                 })
                 .collect::<Vec<_>>();
-            let [report] = reports.as_slice() else {
-                return Err(DagMlError::RuntimeValidation(
-                    "host HPO requires exactly one native target OOF report".into(),
-                ));
+            let mut objective_fold_scores = BTreeMap::new();
+            let (score, candidate) = if let Some(reduction) = request.fold_score_reduction {
+                for report in &reports {
+                    let fold = report.fold_id.as_ref().expect("filtered explicit fold");
+                    let score = host_hpo_metric(report, request.metric)?;
+                    if objective_fold_scores
+                        .insert(fold.as_str().to_owned(), score)
+                        .is_some()
+                    {
+                        return Err(DagMlError::RuntimeValidation(
+                            "host HPO has ambiguous fold score producers".into(),
+                        ));
+                    }
+                }
+                if objective_fold_scores.len() != folds.folds.len() {
+                    return Err(DagMlError::RuntimeValidation(
+                        "host HPO requires every declared fold's native score".into(),
+                    ));
+                }
+                let score = reduce_host_hpo_fold_scores(
+                    &objective_fold_scores,
+                    reduction,
+                    request.direction,
+                )?;
+                let candidate = crate::selection::CandidateScore {
+                    candidate_id: variant.variant_id.as_str().to_owned(),
+                    metrics: BTreeMap::from([(request.metric.name().to_owned(), score)]),
+                    metadata: BTreeMap::from([
+                        (
+                            "host_hpo_fold_score_reduction".into(),
+                            serde_json::to_value(reduction)?,
+                        ),
+                        (
+                            "objective_fold_scores".into(),
+                            serde_json::to_value(&objective_fold_scores)?,
+                        ),
+                    ]),
+                };
+                (score, candidate)
+            } else {
+                let [report] = reports.as_slice() else {
+                    return Err(DagMlError::RuntimeValidation(
+                        "host HPO requires exactly one native target OOF report".into(),
+                    ));
+                };
+                (
+                    host_hpo_metric(report, request.metric)?,
+                    (*report)
+                        .clone()
+                        .into_candidate_score(variant.variant_id.as_str())?,
+                )
             };
-            let score = *report
-                .metrics
-                .get(request.metric.name())
-                .filter(|score| score.is_finite())
-                .ok_or_else(|| {
-                    DagMlError::RuntimeValidation("host HPO has no finite requested metric".into())
-                })?;
-            candidates.push(
-                (*report)
-                    .clone()
-                    .into_candidate_score(variant.variant_id.as_str())?,
-            );
+            candidates.push(candidate);
             let scores = context
                 .build_score_set(plan.id.clone(), None)
                 .ok_or_else(|| {
@@ -163,6 +217,7 @@ impl SequentialScheduler {
                 score,
                 variant_id: variant.variant_id,
                 scores,
+                objective_fold_scores,
             });
         }
         let policy = SelectionPolicy {
@@ -195,5 +250,87 @@ impl SequentialScheduler {
             selected_params: winner.params.clone(),
             trials,
         })
+    }
+}
+
+fn host_hpo_metric(
+    report: &crate::metrics::RegressionMetricReport,
+    metric: RegressionMetricKind,
+) -> Result<f64> {
+    report
+        .metrics
+        .get(metric.name())
+        .copied()
+        .filter(|score| score.is_finite())
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation("host HPO has no finite requested metric".into())
+        })
+}
+
+fn reduce_host_hpo_fold_scores(
+    scores: &BTreeMap<String, f64>,
+    reduction: HostHpoFoldReduction,
+    direction: crate::selection::MetricObjective,
+) -> Result<f64> {
+    if scores.is_empty() || scores.values().any(|score| !score.is_finite()) {
+        return Err(DagMlError::RuntimeValidation(
+            "host HPO fold reduction requires finite observed scores".into(),
+        ));
+    }
+    let values = scores.values().copied();
+    let score = match reduction {
+        HostHpoFoldReduction::Mean => values.map(|value| value / scores.len() as f64).sum(),
+        HostHpoFoldReduction::Best | HostHpoFoldReduction::RobustBest => match direction {
+            crate::selection::MetricObjective::Minimize => values.fold(f64::INFINITY, f64::min),
+            crate::selection::MetricObjective::Maximize => values.fold(f64::NEG_INFINITY, f64::max),
+        },
+    };
+    if !score.is_finite() {
+        return Err(DagMlError::RuntimeValidation(
+            "host HPO fold reduction overflowed".into(),
+        ));
+    }
+    Ok(score)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fold_reduction_is_not_global_oof_and_honors_metric_direction() {
+        use crate::selection::MetricObjective::{Maximize, Minimize};
+        let scores = BTreeMap::from([("fold0".into(), 1.0), ("fold1".into(), 3.0)]);
+        assert_eq!(
+            reduce_host_hpo_fold_scores(&scores, HostHpoFoldReduction::Mean, Minimize).unwrap(),
+            2.0
+        );
+        assert_ne!(
+            2.0,
+            5_f64.sqrt(),
+            "mean per-fold RMSE must not become pooled OOF RMSE"
+        );
+        for reduction in [HostHpoFoldReduction::Best, HostHpoFoldReduction::RobustBest] {
+            assert_eq!(
+                reduce_host_hpo_fold_scores(&scores, reduction, Minimize).unwrap(),
+                1.0
+            );
+            assert_eq!(
+                reduce_host_hpo_fold_scores(&scores, reduction, Maximize).unwrap(),
+                3.0
+            );
+        }
+        assert!(reduce_host_hpo_fold_scores(
+            &BTreeMap::new(),
+            HostHpoFoldReduction::Mean,
+            Minimize
+        )
+        .is_err());
+        let invalid = BTreeMap::from([("fold0".into(), f64::INFINITY)]);
+        assert!(
+            reduce_host_hpo_fold_scores(&invalid, HostHpoFoldReduction::RobustBest, Minimize)
+                .is_err(),
+            "failed trials cannot become synthetic penalties or disappear from a fold reduction"
+        );
     }
 }
