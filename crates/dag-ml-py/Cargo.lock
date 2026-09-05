@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.24"
+version = "0.3.25"
 dependencies = [
  "indexmap",
  "n4m",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-py"
-version = "0.3.24"
+version = "0.3.25"
 dependencies = [
  "dag-ml-core",
  "dag-ml-results",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-results"
-version = "0.3.24"
+version = "0.3.25"
 dependencies = [
  "arrow-array",
  "arrow-schema",
