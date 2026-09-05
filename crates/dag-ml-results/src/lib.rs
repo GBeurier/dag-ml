@@ -14,7 +14,7 @@
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow_array::{
@@ -39,6 +39,7 @@ pub const SCORE_SET_FILENAME: &str = "score_set.json";
 pub const PREDICTIONS_FILENAME: &str = "predictions.parquet";
 
 const NATIVE_ENGINE: &str = "dag-ml";
+const WRITER_RESERVATION_FILENAME: &str = ".dag-ml-results-writer";
 
 /// Errors emitted while opening or validating native results.
 #[derive(Debug, Error)]
@@ -163,8 +164,13 @@ pub fn read_native_results(run_dir: impl AsRef<Path>) -> Result<NativeResultsVie
 /// The caller owns the run directory and any optional host-artifact subtree.
 /// This function writes only the three fixed V2 files and refuses to overwrite
 /// any of them. It validates exactly the payload that the reader will consume,
-/// writes temporary sibling files first, then publishes the finished files by
-/// rename. It never serializes model artifacts or interprets artifact URIs.
+/// reserves one writer, writes temporary sibling files first, then publishes
+/// them with exclusive hard links (the manifest last). The manifest is the
+/// commit marker: readers cannot accept a partially published directory.
+/// Ordinary errors roll back this writer's files. After an abrupt process
+/// termination, an unfinished directory and reservation are left intact;
+/// retry in a new run directory rather than stealing a possibly live writer's
+/// reservation. It never serializes model artifacts or interprets artifact URIs.
 pub fn write_native_results(
     run_dir: impl AsRef<Path>,
     manifest: Value,
@@ -195,6 +201,23 @@ pub fn write_native_results(
         validate_prediction_row(row)?;
     }
 
+    let reservation = run_dir.join(WRITER_RESERVATION_FILENAME);
+    let mut reservation_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&reservation)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                validation("native results writer refuses to overwrite an active or interrupted writer reservation")
+            } else {
+                error.into()
+            }
+        })?;
+    let _reservation = WriterReservation(reservation);
+    writeln!(reservation_file, "{}", std::process::id())?;
+    reservation_file.sync_all()?;
+    drop(reservation_file);
+
     let destinations = [
         run_dir.join(MANIFEST_FILENAME),
         run_dir.join(SCORE_SET_FILENAME),
@@ -218,17 +241,37 @@ pub fn write_native_results(
         write_new_bytes(&temporary[0], canonical_json(&manifest).as_bytes())?;
         write_new_bytes(&temporary[1], canonical_json(&score_set).as_bytes())?;
         write_prediction_rows(&temporary[2], &predictions)?;
-        for (source, destination) in temporary.iter().zip(destinations.iter()) {
-            std::fs::rename(source, destination)?;
-        }
+        publish_result_files(&temporary, &destinations)?;
         Ok(())
     })();
-    if result.is_err() {
-        for path in &temporary {
-            let _ = std::fs::remove_file(path);
-        }
+    for path in &temporary {
+        let _ = std::fs::remove_file(path);
     }
     result
+}
+
+struct WriterReservation(PathBuf);
+
+impl Drop for WriterReservation {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn publish_result_files(temporary: &[PathBuf; 3], destinations: &[PathBuf; 3]) -> Result<()> {
+    let mut published = Vec::new();
+    // Same-directory hard links fail atomically if a destination exists,
+    // including a dangling symlink. Never use rename's replace semantics.
+    for index in [1, 2, 0] {
+        if let Err(error) = std::fs::hard_link(&temporary[index], &destinations[index]) {
+            for path in published.iter().rev() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error.into());
+        }
+        published.push(&destinations[index]);
+    }
+    Ok(())
 }
 
 fn random_suffix() -> u128 {
@@ -334,6 +377,7 @@ fn write_prediction_rows(path: &Path, rows: &[NativePredictionRow]) -> Result<()
     let batch = RecordBatch::try_new(Arc::clone(&schema), columns)
         .map_err(|error| validation(format!("native prediction projection is invalid: {error}")))?;
     let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let durable_file = file.try_clone()?;
     let mut writer = ArrowWriter::try_new(file, schema, None).map_err(|error| {
         validation(format!(
             "predictions.parquet cannot be opened for writing: {error}"
@@ -345,6 +389,7 @@ fn write_prediction_rows(path: &Path, rows: &[NativePredictionRow]) -> Result<()
     writer
         .close()
         .map_err(|error| validation(format!("predictions.parquet cannot be finalized: {error}")))?;
+    durable_file.sync_all()?;
     Ok(())
 }
 
@@ -1007,6 +1052,91 @@ mod tests {
             "sample_ids",
         );
         assert!(fs::read_dir(output).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn concurrent_writers_publish_exactly_one_complete_result() {
+        let fixture = Fixture::new();
+        let source = read_native_results(fixture.path()).unwrap();
+        let output = fixture.path().join("concurrent-writers");
+        fs::create_dir(&output).unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        let successes = std::thread::scope(|scope| {
+            let workers = (0..8)
+                .map(|writer| {
+                    let source = &source;
+                    let output = &output;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let score_set = json!({"writer": writer});
+                        let mut manifest = source.manifest.clone();
+                        manifest["score_set_hash"] = json!(score_set_hash(&score_set));
+                        barrier.wait();
+                        write_native_results(
+                            output,
+                            manifest,
+                            score_set,
+                            source.predictions.clone(),
+                        )
+                        .is_ok()
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|worker| usize::from(worker.join().unwrap()))
+                .sum::<usize>()
+        });
+        assert_eq!(successes, 1);
+        read_native_results(&output).expect("winner must publish a complete readable result");
+        assert_eq!(fs::read_dir(output).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn publication_error_rolls_back_only_this_writers_files() {
+        let fixture = Fixture::new();
+        let output = fixture.path().join("rollback-writer");
+        fs::create_dir(&output).unwrap();
+        let temporary =
+            ["manifest.tmp", "scores.tmp", "predictions.tmp"].map(|name| output.join(name));
+        let destinations = [
+            super::MANIFEST_FILENAME,
+            "score_set.json",
+            PREDICTIONS_FILENAME,
+        ]
+        .map(|name| output.join(name));
+        for path in &temporary {
+            fs::write(path, b"new").unwrap();
+        }
+        fs::write(&destinations[0], b"existing manifest").unwrap();
+        super::publish_result_files(&temporary, &destinations).unwrap_err();
+        assert_eq!(fs::read(&destinations[0]).unwrap(), b"existing manifest");
+        assert!(!destinations[1].exists());
+        assert!(!destinations[2].exists());
+    }
+
+    #[test]
+    fn interrupted_writer_reservation_is_never_stolen() {
+        let fixture = Fixture::new();
+        let source = read_native_results(fixture.path()).unwrap();
+        let output = fixture.path().join("interrupted-writer");
+        fs::create_dir(&output).unwrap();
+        let reservation = output.join(super::WRITER_RESERVATION_FILENAME);
+        fs::write(&reservation, b"reserved by another process").unwrap();
+        assert_validation(
+            write_native_results(
+                &output,
+                source.manifest,
+                source.score_set,
+                source.predictions,
+            ),
+            "writer reservation",
+        );
+        assert_eq!(
+            fs::read(reservation).unwrap(),
+            b"reserved by another process"
+        );
+        assert_eq!(fs::read_dir(output).unwrap().count(), 1);
     }
 
     #[test]

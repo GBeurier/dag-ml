@@ -755,6 +755,17 @@ fn add_portable_methods_hpo(fixture: &mut Fixture) {
         .find(|node| node.id.as_str() == "model:base")
         .unwrap()
         .operator = Some(serde_json::json!("pls"));
+    // This fixture switches a mock forest controller to the production PLS
+    // controller. Do not retain the forest's n_estimators parameter: the
+    // native PLS descriptor rightly rejects parameters from another model.
+    fixture
+        .request
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:base")
+        .unwrap()
+        .params = BTreeMap::from([("n_components".to_string(), serde_json::json!(1))]);
     fixture.request.campaign.metadata.insert(
         "methods_hpo_operation".to_string(),
         serde_json::json!({

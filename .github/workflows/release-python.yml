@@ -23,6 +23,8 @@ env:
   PACKAGE_NAME: dag-ml
 
 jobs:
+  qualify:
+    uses: ./.github/workflows/ci.yml
   build-wheels:
     name: Build ${{ matrix.target }} wheel
     runs-on: ${{ matrix.os }}
@@ -100,6 +102,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     needs:
+      - qualify
       - build-wheels
       - build-sdist
     runs-on: ubuntu-22.04
@@ -162,6 +165,7 @@ jobs:
   github-release:
     name: Attach Python artifacts to GitHub Release
     needs:
+      - qualify
       - build-wheels
       - build-sdist
     runs-on: ubuntu-22.04

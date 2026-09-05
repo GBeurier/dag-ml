@@ -45,7 +45,7 @@ examples/
 
 ```bash
 cargo fmt --all --check
-cargo +1.83.0 check --workspace --all-targets
+cargo +1.85.0 check --workspace --all-targets --locked
 cargo test --workspace
 cargo test -p dag-ml-wasm
 # dag-ml-py is excluded from the workspace (abi3-py311); test it standalone:

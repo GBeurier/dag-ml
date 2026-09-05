@@ -2,14 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main, 'rc/**']
+    branches: [main, 'rc/**', 'release/**', 'fix/v1-stability-*']
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 env:
   CARGO_AUDIT_VERSION: "0.22.1"
   MATURIN_VERSION: "1.13.3"
-  RUST_MSRV: "1.83.0"
+  RUST_MSRV: "1.85.0"
   WASM_PACK_VERSION: "0.15.0"
 
 jobs:
@@ -116,7 +117,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Check MSRV
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked
 
   rust:
     name: Rust
@@ -174,6 +175,8 @@ jobs:
         env:
           RUSTFLAGS: --cfg dag_ml_workspace_contract_fixtures
         run: cargo test --workspace
+      - name: HPO provenance with downstream JSON feature unification
+        run: cargo test --manifest-path crates/dag-ml-core/Cargo.toml --features serde_json/preserve_order campaign_provenance_is_recursive_order_and_resume_budget_independent
       - name: Terminal PREDICT V2 in-process gate
         env:
           PYO3_PYTHON: python
@@ -295,8 +298,8 @@ jobs:
         with:
           repository: GBeurier/nirs4all-methods
           # Source used only to build the explicit runtime file below.  The
-          # Rust binding itself is the published n4m 0.1.2 crate.
-          ref: 4983c9a1df39d430a78c615bda209d3353514aa1
+          # Rust binding itself is the published n4m 0.1.4 crate.
+          ref: f192515ea475dcefcae4bc2e807d0f0d79161dd9
           path: external/nirs4all-methods
       - uses: dtolnay/rust-toolchain@stable
       - name: Build ABI-matched Methods library
