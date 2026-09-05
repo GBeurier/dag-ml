@@ -146,12 +146,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/mod.rs",
-      "sha256": "0fd86e5aee30a27ad7be9c65c73e6cb4e45cd2bf6c1d25cab3d0b9644265ddfd",
+      "sha256": "07531af4667d6aa1cb87291a50f96266e4c7ab141cd16af3e1c953dcff9f8d09",
       "kind": "native_hpo_runtime_topology"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "6122f8d63a9df7470df14ee2a04ce600b4466051ea24581be35ffc2bcc7344fd",
+      "sha256": "90171c73de23b047dc3a81bf6eb5c8b840ad62920dc789b579da54799affaed9",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -594,5 +594,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "89989393e78f53e121af34e00b8927c3e725590b4c3423e0d2090760e82935b3"
+  "pack_checksum": "0b7cf7dd07fc7e4965ddde12d6d92668afabf6bd36c106419b97f23134d310ea"
 }

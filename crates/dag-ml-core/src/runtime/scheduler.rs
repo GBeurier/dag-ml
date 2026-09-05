@@ -751,6 +751,14 @@ impl SequentialScheduler {
             }
         }
         let mut results = Vec::new();
+        if phase == Phase::Refit {
+            results.extend(self.execute_stacking_refit_oof(
+                plan,
+                controllers,
+                data_provider,
+                ctx,
+            )?);
+        }
         let fold_ids = if phase == Phase::FitCv {
             plan.fold_set
                 .as_ref()
@@ -822,6 +830,14 @@ impl SequentialScheduler {
             }
         }
         let mut results = Vec::new();
+        if phase == Phase::Refit {
+            results.extend(self.execute_stacking_refit_oof(
+                plan,
+                controllers,
+                data_provider,
+                ctx,
+            )?);
+        }
         let fold_ids = if phase == Phase::FitCv {
             plan.fold_set
                 .as_ref()
@@ -860,6 +876,74 @@ impl SequentialScheduler {
                     PhaseScopeResources {
                         data_provider: Some(data_provider),
                         artifact_store: Some(&mut *artifact_store),
+                        ..Default::default()
+                    },
+                )?);
+            }
+        }
+        Ok(results)
+    }
+
+    /// Prepare explicit full-training OOF for the meta REFIT, never for CV selection.
+    ///
+    /// Logical model calls remain FIT_CV because each call fits a strict subset
+    /// and predicts its held-out complement. The owning public phase is REFIT,
+    /// and its fingerprinted policy/namespaced fold IDs distinguish preparation
+    /// from outer evaluation. No raw train predictions are reused or imputed.
+    fn execute_stacking_refit_oof(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+    ) -> Result<Vec<NodeResult>> {
+        let Some(nested) = nested_stacking_campaign_plan(plan)? else {
+            return Ok(Vec::new());
+        };
+        let Some(folds) = &nested.refit_fold_set else {
+            return Ok(Vec::new());
+        };
+        let outer_fold_ids = nested
+            .outer_scopes
+            .iter()
+            .map(|scope| scope.outer_fold_id.clone())
+            .collect::<BTreeSet<_>>();
+        if let Some(existing) = &ctx.validation_scoring_fold_ids {
+            if existing != &outer_fold_ids {
+                return Err(DagMlError::RuntimeValidation(
+                    "stacking REFIT OOF cannot reuse a different outer evaluation scope"
+                        .to_string(),
+                ));
+            }
+        } else {
+            ctx.validation_scoring_fold_ids = Some(outer_fold_ids);
+        }
+        let mut results = Vec::new();
+        for variant in &plan.variants {
+            if ctx
+                .variant_id
+                .as_ref()
+                .is_some_and(|id| id != &variant.variant_id)
+            {
+                continue;
+            }
+            for fold in &folds.folds {
+                results.extend(self.execute_phase_scope(
+                    plan,
+                    controllers,
+                    ctx,
+                    PhaseScope {
+                        phase: Phase::FitCv,
+                        variant_id: Some(variant.variant_id.clone()),
+                        variant: Some(VariantExecutionSpec::from_plan(variant)),
+                        fold_id: Some(fold.fold_id.clone()),
+                        seed_root: variant.seed.or(ctx.root_seed),
+                    },
+                    PhaseScopeResources {
+                        data_provider: Some(data_provider),
+                        fold_set_override: Some(folds),
+                        node_filter: Some(&nested.base_node_ids),
+                        suppress_inner_cv: true,
                         ..Default::default()
                     },
                 )?);

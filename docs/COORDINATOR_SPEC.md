@@ -730,6 +730,32 @@ non-validation blocks, missing fold ids, unknown folds, fold/sample mismatches
 and duplicate validation samples are refused before any skip decision is
 accepted.
 
+### Independent OOF Preparation For Stacking REFIT
+
+Nested stacking may additionally declare the graph-node metadata
+`stacking_refit_oof="partitioned_inner_v1"`. This explicit, fingerprinted mode
+keeps the requested outer evaluation FoldSet, including resampled overlapping
+or incomplete coverage, unchanged. Each outer meta-model still fits only on
+inner OOF restricted to its own outer training samples.
+
+When REFIT is requested, the Rust scheduler prepares a distinct partitioned
+OOF over the complete selected training universe, using the declared `inner_cv`
+policy. Its folds are named `stacking.refit.inner.*` and cannot collide with
+outer/inner evaluation folds. Each base producer contributes exactly one
+held-out prediction per training sample. The final meta-model consumes only
+this preparation; ordinary base REFIT artifacts still fit on all training
+samples. Test samples never enter preparation or fitting. No missing OOF value
+is imputed, and train predictions are never substituted for held-out ones.
+
+The public phase owning these additional calls is REFIT; individual preparation
+tasks retain FIT_CV semantics and their distinct fold identities in lineage.
+Neither their predictions nor their target records contribute to outer CV
+aggregation/selection. The outer resampled score averages repeated validation
+occurrences by identity and covers only the externally validated population.
+Absent this opt-in, existing KFold plans, fingerprints and execution are
+unchanged; ordinary partial-OOF REFIT remains subject to the coverage policy
+above. Predict replay never prepares OOF or fits models.
+
 ## Traceability
 
 Every accepted task emits or updates a `LineageRecord` containing:

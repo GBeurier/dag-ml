@@ -8,6 +8,8 @@ use super::*;
 
 pub(crate) const NESTED_STACKING_EXECUTION_METADATA_KEY: &str = "stacking_oof_execution";
 pub(crate) const NESTED_STACKING_EXECUTION_V1: &str = "nested_oof_v1";
+pub(crate) const STACKING_REFIT_OOF_METADATA_KEY: &str = "stacking_refit_oof";
+pub(crate) const STACKING_REFIT_PARTITIONED_INNER_V1: &str = "partitioned_inner_v1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NestedStackingOuterScope {
@@ -22,6 +24,9 @@ pub(crate) struct NestedStackingCampaignPlan {
     /// inner or outer scope. The meta node itself is deliberately excluded.
     pub(crate) base_node_ids: BTreeSet<NodeId>,
     pub(crate) outer_scopes: Vec<NestedStackingOuterScope>,
+    /// Explicit, independently partitioned OOF preparation for meta REFIT.
+    /// These folds never contribute to report-grade outer CV scores.
+    pub(crate) refit_fold_set: Option<FoldSet>,
 }
 
 /// Per-outer-fold evidence made available only while the scheduler invokes the
@@ -140,11 +145,6 @@ pub(crate) fn nested_stacking_campaign_plan(
             "nested stacking requires an attested outer fold set".to_string(),
         )
     })?;
-    if fold_set.partition_mode != FoldPartitionMode::Partition {
-        return Err(DagMlError::RuntimeValidation(
-            "nested stacking V1 requires a partitioned outer fold set".to_string(),
-        ));
-    }
     let inner_spec =
         crate::fold::resolve_inner_cv(meta_plan.inner_cv.as_ref(), plan.campaign.inner_cv.as_ref())
             .ok_or_else(|| {
@@ -167,10 +167,58 @@ pub(crate) fn nested_stacking_campaign_plan(
             "nested stacking requires at least one outer fold".to_string(),
         ));
     }
+    let meta_node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == meta_node_id)
+        .expect("validated meta node");
+    let refit_fold_set = match meta_node.metadata.get(STACKING_REFIT_OOF_METADATA_KEY) {
+        None => None,
+        Some(value) if value.as_str() == Some(STACKING_REFIT_PARTITIONED_INNER_V1) => {
+            let full_train = crate::fold::FoldAssignment {
+                fold_id: FoldId::new("stacking.refit")?,
+                train_sample_ids: fold_set.sample_ids.clone(),
+                validation_sample_ids: Vec::new(),
+                metadata: BTreeMap::new(),
+            };
+            let refit = inner_spec.build_inner_fold_set(&full_train, &fold_set.sample_groups)?;
+            let occupied = outer_scopes
+                .iter()
+                .flat_map(|outer| {
+                    std::iter::once(&outer.outer_fold_id).chain(
+                        outer
+                            .inner
+                            .inner_fold_set
+                            .folds
+                            .iter()
+                            .map(|fold| &fold.fold_id),
+                    )
+                })
+                .collect::<BTreeSet<_>>();
+            if refit
+                .folds
+                .iter()
+                .any(|fold| occupied.contains(&fold.fold_id))
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "stacking REFIT OOF fold identity collides with an evaluation fold".to_string(),
+                ));
+            }
+            Some(refit)
+        }
+        Some(value) => {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "unsupported `{STACKING_REFIT_OOF_METADATA_KEY}` metadata: {value}"
+            )))
+        }
+    };
     Ok(Some(NestedStackingCampaignPlan {
         meta_node_id,
         base_node_ids,
         outer_scopes,
+        refit_fold_set,
     }))
 }
 

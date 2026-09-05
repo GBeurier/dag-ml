@@ -345,7 +345,23 @@ impl RunContext {
             .collect::<Vec<_>>();
         let outcome = cross_fold_validation_reports(
             &scoring_blocks,
-            &self.regression_target_records,
+            &self
+                .regression_target_records
+                .iter()
+                .filter(|record| {
+                    record.partition != PredictionPartition::Validation
+                        || self
+                            .validation_scoring_fold_ids
+                            .as_ref()
+                            .is_none_or(|allowed| {
+                                record
+                                    .fold_id
+                                    .as_ref()
+                                    .is_some_and(|fold| allowed.contains(fold))
+                            })
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
             SCORE_METRICS,
             partition_mode,
         )?;
