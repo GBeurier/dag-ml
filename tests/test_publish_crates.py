@@ -6,6 +6,7 @@ import hashlib
 import io
 import importlib.util
 import json
+import re
 import sys
 import tarfile
 from pathlib import Path
@@ -21,6 +22,27 @@ assert SPEC is not None and SPEC.loader is not None
 publish_crates = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = publish_crates
 SPEC.loader.exec_module(publish_crates)
+
+
+@pytest.mark.parametrize(
+    ("workflow", "publishing_jobs"),
+    [
+        ("release-crates.yml", ["publish-crates"]),
+        ("release-python.yml", ["publish-pypi", "github-release"]),
+        ("release-npm.yml", ["build-and-publish"]),
+    ],
+)
+def test_every_publication_waits_for_same_sha_qualification(
+    workflow: str, publishing_jobs: list[str]
+) -> None:
+    text = (ROOT / ".github/workflows" / workflow).read_text()
+    jobs = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)",
+                           text.split("jobs:\n", 1)[1], re.MULTILINE | re.DOTALL))
+    assert "uses: ./.github/workflows/ci.yml" in jobs["qualify"]
+    for job in publishing_jobs:
+        assert re.search(r"^    needs:\s*(?:qualify\s*$|\n(?:      - [\w-]+\n)*      - qualify\s*$)",
+                         jobs[job], re.MULTILINE), job
+    assert "  workflow_call:" in (ROOT / ".github/workflows/ci.yml").read_text()
 
 
 class _Response(io.BytesIO):

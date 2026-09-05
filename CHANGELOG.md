@@ -9,6 +9,18 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep Methods HPO campaign provenance stable across downstream JSON map
+  feature unification, retaining published default-build identities and all
+  strict resume checks.
+- Serialize concurrent native Results V2 writers, refuse replacement atomically,
+  publish the manifest last, and roll back this writer's files on I/O errors.
+- Make all registry publications depend on the complete same-SHA CI gate;
+  refresh source-attestation packs without regenerating scientific fixtures.
+- Align the advertised workspace MSRV to Rust 1.85, already required by the
+  locked cross-repository test dependencies, and qualify the locked graph.
+
 ### Added
 
 - Candidate `dafb8b6` adds an archive-bound, identity-validated

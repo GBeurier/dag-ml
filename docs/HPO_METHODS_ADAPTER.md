@@ -112,12 +112,12 @@ legacy fallback.
 
 The local integration helper activates the published feature and that
 compiler-only test selector. It uses the candidate source commit
-`48ad1e5a50844f68c2b99e93b02ad6a3b491c07b` to build the explicit runtime file,
+`f192515ea475dcefcae4bc2e807d0f0d79161dd9` to build the explicit runtime file,
 but resolves the Rust binding from crates.io. Build that checkout and invoke
 the helper from the workspace root:
 
 ```bash
-METHODS_SHA=48ad1e5a50844f68c2b99e93b02ad6a3b491c07b
+METHODS_SHA=f192515ea475dcefcae4bc2e807d0f0d79161dd9
 git -C /absolute/path/to/nirs4all-methods fetch --depth=1 origin "$METHODS_SHA"
 git -C /absolute/path/to/nirs4all-methods checkout --detach "$METHODS_SHA"
 make -C /absolute/path/to/nirs4all-methods build PRESET=dev-release
@@ -134,6 +134,14 @@ CI builds the same immutable Methods source commit and passes only the resulting
 absolute library path.
 
 ## Checkpoint contract
+
+Campaign provenance excludes only the requested total trial budget and opaque
+resume-package transport. Study/search space, graph, controller, fold, data and
+influence identities remain validated. Nested JSON object order is canonical
+even when a downstream Rust crate enables `serde_json/preserve_order`; this
+keeps published default-build fingerprints readable across the aggregate and
+standalone Python bindings. Increasing a trial budget does not authorize any
+change to those scientific identities.
 
 `N4moptCheckpointArtifact` is a live-session envelope for an opaque byte payload.
 It records a schema version, `n4m_optimizer_checkpoint` kind, `N4MOPT` format,

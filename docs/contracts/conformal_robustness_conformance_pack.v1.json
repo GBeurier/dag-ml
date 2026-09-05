@@ -70,7 +70,7 @@
     },
     {
       "path": "docs/contracts/execution_bundle.schema.json",
-      "sha256": "04875d93bf2f0673b5a8bc92c66d96489bc3ae875594bc0867b06381cdf5924c",
+      "sha256": "4c4c1d1382d718a6d4c9095e25975c2c603501f6b4b2adaf2961a6cb0908bb41",
       "kind": "schema_dependency"
     },
     {
@@ -109,8 +109,13 @@
       "kind": "schema_dependency"
     },
     {
+      "path": "docs/contracts/native_predictor_descriptor.v1.schema.json",
+      "sha256": "b29746645106a88d7e014ff7ad8df242a967f0b60c85df259094063dab329c1d",
+      "kind": "schema_dependency"
+    },
+    {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "90da616463bc5343ae793d48653d5763a9f1707aae266837cf387467ba81dc41",
+      "sha256": "e9d4f69d200a77ee51d87947916daa5e429aee9bb1295aeeea6a80e1f3d358af",
       "kind": "schema_dependency"
     },
     {
@@ -448,5 +453,5 @@
       ]
     }
   ],
-  "pack_checksum": "42d182909e35e065f86dfa02ba368c762875f57d67b182e7d1fba7e94ca3746a"
+  "pack_checksum": "1e6430919e135e3e550afb13d82cf4915a73a2f6d55eb2100cf4d5621802be2c"
 }

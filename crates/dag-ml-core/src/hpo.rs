@@ -126,6 +126,15 @@ pub(crate) fn campaign_provenance_fingerprint(campaign: &CampaignSpec) -> crate:
         // on resume and is not part of the immutable campaign provenance.
         operation.remove("trials");
     }
+    // A consuming crate can enable serde_json/preserve_order through Cargo
+    // feature unification. In that mode remove() swaps object entries, unlike
+    // the default sorted map. Normalize nested JSON objects *after* removing
+    // transport/budget fields, then deserialize to retain CampaignSpec's
+    // historical struct-field order. This preserves published default-build
+    // fingerprints while making readers with preserve_order agree with them.
+    let mut value = serde_json::to_value(&canonical)?;
+    value.sort_all_objects();
+    let canonical: CampaignSpec = serde_json::from_value(value)?;
     stable_json_fingerprint(&canonical)
 }
 
@@ -3392,6 +3401,45 @@ mod tests {
             Some(METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR),
         ))
         .is_err());
+    }
+
+    #[test]
+    fn campaign_provenance_is_recursive_order_and_resume_budget_independent() {
+        let first: CampaignSpec = serde_json::from_str(
+            r#"{
+            "id":"hpo:ordering", "root_seed":42,
+            "metadata":{"methods_hpo_operation":{
+                "trials":2,"study":{"z":1,"a":{"last":2,"first":1}},
+                "operation_id":"hpo:run"},"extra":{"z":2,"a":1}}
+        }"#,
+        )
+        .unwrap();
+        let resumed: CampaignSpec = serde_json::from_str(
+            r#"{
+            "id":"hpo:ordering", "root_seed":42,
+            "metadata":{"extra":{"a":1,"z":2},"methods_hpo_operation":{
+                "operation_id":"hpo:run","resume_package_json":"opaque transport",
+                "study":{"a":{"first":1,"last":2},"z":1},"trials":4}}
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            campaign_provenance_fingerprint(&first).unwrap(),
+            campaign_provenance_fingerprint(&resumed).unwrap()
+        );
+        let mut changed = resumed.clone();
+        changed.metadata.get_mut("methods_hpo_operation").unwrap()["study"]["z"] =
+            serde_json::json!(2);
+        assert_ne!(
+            campaign_provenance_fingerprint(&first).unwrap(),
+            campaign_provenance_fingerprint(&changed).unwrap()
+        );
+        changed = resumed;
+        changed.root_seed = Some(43);
+        assert_ne!(
+            campaign_provenance_fingerprint(&first).unwrap(),
+            campaign_provenance_fingerprint(&changed).unwrap()
+        );
     }
     #[cfg(feature = "methods-optimizer-local")]
     use crate::runtime::{

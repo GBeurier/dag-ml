@@ -22,7 +22,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  qualify:
+    uses: ./.github/workflows/ci.yml
   publish-crates:
+    needs: qualify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

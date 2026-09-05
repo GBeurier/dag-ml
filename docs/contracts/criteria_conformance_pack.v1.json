@@ -61,7 +61,7 @@
     },
     {
       "path": "crates/dag-ml-cli/src/main.rs",
-      "sha256": "5fdba09485a730ee6c4cbb1ec6078f27bdfc05199f2a775d3ccee09535c45a6d",
+      "sha256": "479721b9bc43a3bfd57c598b68daa689b8f3b727dff5a6d2daf7c27f9efa8519",
       "kind": "cli_validator"
     },
     {
@@ -91,7 +91,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/artifact.rs",
-      "sha256": "1f131a22f9ece38db90b0e4406924d5f80488112898587ef3eff2d594451c289",
+      "sha256": "e0863b93dd4815e5c34042a55d7ae44a7229cd8a967bcd388c2cdf14da72e5d4",
       "kind": "rust_lineage_contract"
     },
     {
@@ -176,7 +176,7 @@
     },
     {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "90da616463bc5343ae793d48653d5763a9f1707aae266837cf387467ba81dc41",
+      "sha256": "e9d4f69d200a77ee51d87947916daa5e429aee9bb1295aeeea6a80e1f3d358af",
       "kind": "schema"
     },
     {
@@ -255,5 +255,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "b5bd66b3be959f597fa9fdaba68cb3fa1f8ab68a9312aeb363c285bf12a3b209"
+  "pack_checksum": "e9a78348893c43fb1b57b0bb8308af279cca95f4d7121e6ea046013f4ea553f6"
 }
