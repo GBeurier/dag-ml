@@ -8832,20 +8832,8 @@ fn fit_cv_node_with_inner_cv_carries_inner_fold_set_subset_of_outer_train() {
     );
 }
 
-#[test]
-fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof() {
+fn nested_stacking_test_plan(outer: FoldSet, partitioned_refit_oof: bool) -> ExecutionPlan {
     use crate::fold::{KFoldSpec, NestedCvSpec};
-
-    let samples = (1..=6)
-        .map(|index| SampleId::new(format!("s{index}")).unwrap())
-        .collect::<Vec<_>>();
-    let outer = KFoldSpec {
-        n_splits: 3,
-        shuffle: false,
-        seed: Some(7),
-    }
-    .split("outer", &samples)
-    .unwrap();
     let mut campaign = oof_edge_campaign();
     campaign.inner_cv = Some(NestedCvSpec::KFold(KFoldSpec {
         n_splits: 2,
@@ -8870,6 +8858,12 @@ fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof(
         NESTED_STACKING_EXECUTION_METADATA_KEY.to_string(),
         json!(NESTED_STACKING_EXECUTION_V1),
     );
+    if partitioned_refit_oof {
+        meta.metadata.insert(
+            STACKING_REFIT_OOF_METADATA_KEY.to_string(),
+            json!(STACKING_REFIT_PARTITIONED_INNER_V1),
+        );
+    }
     let graph = GraphSpec {
         id: "graph:nested.stacking.plan".to_string(),
         interface: GraphInterface::default(),
@@ -8923,7 +8917,26 @@ fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof(
         search_space_fingerprint: None,
         metadata: BTreeMap::new(),
     };
-    let plan = build_execution_plan("plan:nested.stacking", graph, campaign, &manifests()).unwrap();
+    build_execution_plan("plan:nested.stacking", graph, campaign, &manifests()).unwrap()
+}
+
+#[test]
+fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof() {
+    use crate::fold::KFoldSpec;
+    let samples = (1..=6)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let plan = nested_stacking_test_plan(outer.clone(), false);
+    let meta_id = NodeId::new("model:meta").unwrap();
+    let base_a = NodeId::new("model:base.a").unwrap();
+    let base_b = NodeId::new("model:base.b").unwrap();
     let nested = nested_stacking_campaign_plan(&plan)
         .unwrap()
         .expect("explicit nested marker produces a campaign plan");
@@ -8933,6 +8946,10 @@ fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof(
         BTreeSet::from([base_a.clone(), base_b.clone()])
     );
     assert_eq!(nested.outer_scopes.len(), 3);
+    assert!(
+        nested.refit_fold_set.is_none(),
+        "existing KFold execution remains unchanged"
+    );
     for scope in &nested.outer_scopes {
         let parent = outer
             .folds
@@ -9049,6 +9066,155 @@ fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof(
             "a meta training row cannot be an outer evaluation row"
         );
     }
+}
+
+#[test]
+fn nested_stacking_resampled_refit_has_separate_exact_partitioned_oof() {
+    use crate::fold::KFoldSpec;
+    let samples = (1..=6)
+        .map(|i| SampleId::new(format!("s{i}")).unwrap())
+        .collect::<Vec<_>>();
+    let mut outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    outer.folds.pop(); // Two samples have never been validated externally.
+    let mut repeated = outer.folds[0].clone();
+    repeated.fold_id = FoldId::new("repeat0").unwrap();
+    outer.folds.push(repeated); // Two others have multiple external occurrences.
+    outer.partition_mode = FoldPartitionMode::Resampled;
+    outer.validate().unwrap();
+    let ordinary = nested_stacking_test_plan(outer.clone(), false);
+    let plan = nested_stacking_test_plan(outer.clone(), true);
+    assert_ne!(
+        ordinary.graph_fingerprint, plan.graph_fingerprint,
+        "explicit refit policy is fingerprinted"
+    );
+    let nested = nested_stacking_campaign_plan(&plan).unwrap().unwrap();
+    for scope in &nested.outer_scopes {
+        let parent = outer
+            .folds
+            .iter()
+            .find(|fold| fold.fold_id == scope.outer_fold_id)
+            .unwrap();
+        scope.inner.validate_for_outer(parent).unwrap();
+    }
+    let refit = nested.refit_fold_set.unwrap();
+    assert_eq!(refit.partition_mode, FoldPartitionMode::Partition);
+    assert_eq!(refit.sample_ids, samples);
+    let mut seen = BTreeSet::new();
+    for fold in &refit.folds {
+        assert!(fold.fold_id.as_str().starts_with("stacking.refit.inner."));
+        for id in &fold.validation_sample_ids {
+            assert!(
+                seen.insert(id.clone()),
+                "exactly one REFIT OOF contribution per sample"
+            );
+            assert!(!fold.train_sample_ids.contains(id));
+        }
+    }
+    assert_eq!(seen, samples.into_iter().collect());
+    assert_eq!(
+        refit,
+        nested_stacking_campaign_plan(&plan)
+            .unwrap()
+            .unwrap()
+            .refit_fold_set
+            .unwrap()
+    );
+
+    let source = NodeId::new("model:base.a").unwrap();
+    let edge = plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .find(|edge| edge.source.node_id == source)
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:resampled.refit").unwrap(), Some(11));
+    for (folds, value) in [(&outer.folds, 100.0), (&refit.folds, 1.0)] {
+        for fold in folds {
+            ctx.prediction_store
+                .append(PredictionBlock {
+                    prediction_id: Some(format!("pred:{}", fold.fold_id)),
+                    producer_node: source.clone(),
+                    producer_port: Some("pred".to_string()),
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(fold.fold_id.clone()),
+                    sample_ids: fold.validation_sample_ids.clone(),
+                    values: vec![vec![value]; fold.validation_sample_ids.len()],
+                    target_names: vec!["y".to_string()],
+                })
+                .unwrap();
+        }
+    }
+    let selected = validate_refit_oof_edge(&plan, edge, &ctx).unwrap().unwrap();
+    assert_eq!(selected.len(), refit.folds.len());
+    assert!(selected
+        .iter()
+        .all(|block| block.values.iter().all(|row| row == &[1.0])));
+    let scope = PhaseScope {
+        phase: Phase::Refit,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: Some(11),
+    };
+    let joined = prediction_input_spec(edge, &scope, &selected, false).unwrap();
+    assert_eq!(joined.sample_ids, refit.sample_ids);
+    assert_eq!(joined.values, vec![vec![1.0]; refit.sample_ids.len()]);
+
+    let empty = RunContext::new(RunId::new("run:missing.refit.oof").unwrap(), Some(11));
+    assert!(
+        validate_refit_oof_edge(&plan, edge, &empty).is_err(),
+        "no imputed or train predictions accepted"
+    );
+    // Scope BOTH predictions and target records. Preparation covers samples
+    // absent from the resampled evaluation union and must not widen its truth
+    // universe (nor contaminate the outer scores with its different values).
+    ctx.validation_scoring_fold_ids = Some(
+        outer
+            .folds
+            .iter()
+            .map(|fold| fold.fold_id.clone())
+            .collect(),
+    );
+    for block in ctx.prediction_store.blocks() {
+        ctx.regression_target_records
+            .push(crate::metrics::RegressionTargetRecord {
+                producer_node: source.clone(),
+                producer_port: Some("pred".to_string()),
+                variant_id: None,
+                partition: PredictionPartition::Validation,
+                fold_id: block.fold_id.clone(),
+                block: crate::metrics::RegressionTargetBlock {
+                    level: crate::policy::PredictionLevel::Sample,
+                    unit_ids: block
+                        .sample_ids
+                        .iter()
+                        .cloned()
+                        .map(crate::aggregation::PredictionUnitId::Sample)
+                        .collect(),
+                    values: block.values.clone(),
+                    target_names: vec!["y".to_string()],
+                },
+            });
+    }
+    ctx.collect_cross_fold_validation_scores(FoldPartitionMode::Resampled)
+        .unwrap();
+    assert_eq!(ctx.oof_average_blocks.len(), 1);
+    assert_eq!(ctx.oof_average_blocks[0].predictions.unit_ids.len(), 4);
+    assert_eq!(
+        ctx.oof_average_blocks[0].predictions.values,
+        vec![vec![100.0]; 4]
+    );
+    assert_eq!(
+        ctx.oof_average_blocks[0].y_true.values,
+        vec![vec![100.0]; 4]
+    );
 }
 
 #[test]

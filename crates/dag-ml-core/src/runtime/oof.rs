@@ -520,14 +520,24 @@ pub(crate) fn validate_refit_oof_edge<'a>(
         Some(&PredictionPartition::Validation),
         None,
     );
-    // A nested FIT_CV scheduler retains two sound evidence classes in the
-    // shared run context: parent outer-fold OOF (the refit pool) and
-    // namespaced child inner-fold OOF (used only to train each outer
-    // meta-model).  REFIT must consume exactly the former.  Without this
-    // filter, the child rows would look like duplicate/foreign folds and could
-    // either poison refit coverage or tempt an implementation to average them.
-    let blocks = if is_nested_stacking_meta_node(plan, &edge.target.node_id)? {
-        let outer_fold_ids = required_fold_set_for_oof(plan, edge)?
+    // Nested execution retains outer evaluation OOF, per-outer inner OOF,
+    // and optionally separately declared REFIT OOF. Select exactly the
+    // declared REFIT pool (outer OOF by default), never combine evidence
+    // classes or average duplicate/foreign folds to manufacture coverage.
+    let nested = if is_nested_stacking_meta_node(plan, &edge.target.node_id)? {
+        nested_stacking_campaign_plan(plan)?
+    } else {
+        None
+    };
+    let refit_fold_set = nested
+        .as_ref()
+        .and_then(|nested| nested.refit_fold_set.as_ref());
+    let fold_set = match refit_fold_set {
+        Some(folds) => folds,
+        None => required_fold_set_for_oof(plan, edge)?,
+    };
+    let blocks = if nested.is_some() {
+        let refit_fold_ids = fold_set
             .folds
             .iter()
             .map(|fold| fold.fold_id.clone())
@@ -538,7 +548,7 @@ pub(crate) fn validate_refit_oof_edge<'a>(
                 block
                     .fold_id
                     .as_ref()
-                    .is_some_and(|fold_id| outer_fold_ids.contains(fold_id))
+                    .is_some_and(|fold_id| refit_fold_ids.contains(fold_id))
             })
             .collect::<Vec<_>>()
     } else {
@@ -557,7 +567,6 @@ pub(crate) fn validate_refit_oof_edge<'a>(
     }
     // MANDATORY exact OOF coverage — see `validate_fit_cv_oof_edge`. The branch-merge concat partition
     // exception is handled by the separation-merge handler, which never reaches this stacking path.
-    let fold_set = required_fold_set_for_oof(plan, edge)?;
     let decision = crate::oof::validate_stacking_oof_refit_contract(
         &edge.source.node_id,
         &blocks,
