@@ -598,6 +598,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
+        in_process::run_host_hpo_search_in_process,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
         in_process::run_cv_refit_in_process_with_training_losses,
         module
     )?)?;

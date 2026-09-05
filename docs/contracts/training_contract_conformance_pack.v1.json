@@ -145,8 +145,13 @@
       "kind": "native_hpo_runtime_session"
     },
     {
+      "path": "crates/dag-ml-core/src/runtime/host_hpo.rs",
+      "sha256": "69b03feda3e717f0ce177b3f85c49dfa8dd082dc1baef07bb8a7a44a81520550",
+      "kind": "native_host_hpo_scheduler"
+    },
+    {
       "path": "crates/dag-ml-core/src/runtime/mod.rs",
-      "sha256": "07531af4667d6aa1cb87291a50f96266e4c7ab141cd16af3e1c953dcff9f8d09",
+      "sha256": "8f6dcee1c99893de5013fe6d8003a4db3886b5bd81d4b91ea10891fe8a551708",
       "kind": "native_hpo_runtime_topology"
     },
     {
@@ -196,7 +201,7 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "0cf62f4f60ada99abbd05e88bb1c2f447542bab81418dc9b97174afafba45315",
+      "sha256": "9b89db4eb544ae2289cfaf1b8332c213407328f69a5fc97e9f80de3567fba57c",
       "kind": "python_facade"
     },
     {
@@ -206,12 +211,12 @@
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "d82519bbc6cbb24c03aaddc64514ee786eb2af67e6ce667dac774338149e582a",
+      "sha256": "96282dba0aff137dbb5f5ff9c7358536a654b60691e50faae2e7dafbad869f65",
       "kind": "python_controller_bridge"
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "101508e9b240c01476f54c7218ba250f3d603e6b3775ce2b14a6bae3afb7caec",
+      "sha256": "ee77cd66fdfac4bbc950ac9664283d5cad28eb34b4adc466495e9286041545ba",
       "kind": "python_binding"
     },
     {
@@ -516,7 +521,7 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "f01526a28580880b5f094a9493a856d9f3d2bc0557749d9680b27119c10de732",
+      "sha256": "d661585f9609b9595e42bb7edbb043f2de3b5029de32a54369ca6a389b48dabb",
       "kind": "production_validator"
     },
     {
@@ -594,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "0b7cf7dd07fc7e4965ddde12d6d92668afabf6bd36c106419b97f23134d310ea"
+  "pack_checksum": "2ee71912ffd524a66924b6064ae3b1f63ebf94f7713704960c787e27b0243629"
 }

@@ -329,6 +329,110 @@ struct PyOperatorController {
     artifact_callback: Option<Py<PyAny>>,
 }
 
+struct PyHostHpoProposals {
+    callback: Py<PyAny>,
+}
+
+impl dag_ml_core::HostHpoProposalSource for PyHostHpoProposals {
+    fn ask(
+        &mut self,
+        trial_index: u32,
+    ) -> dag_ml_core::Result<Option<std::collections::BTreeMap<String, serde_json::Value>>> {
+        call_py_bridge(
+            &self.callback,
+            &serde_json::json!({"operation": "ask", "trial_index": trial_index}),
+            "host optimizer",
+        )
+    }
+
+    fn tell(&mut self, trial_index: u32, score: f64) -> dag_ml_core::Result<()> {
+        call_py_bridge(
+            &self.callback,
+            &serde_json::json!({"operation": "tell", "trial_index": trial_index, "score": score}),
+            "host optimizer",
+        )
+    }
+}
+
+/// Bounded nonportable host-optimizer search. Only proposals cross from the
+/// tuner; all candidate execution, scoring and selection remain in core.
+#[pyfunction]
+pub fn run_host_hpo_search_in_process(
+    py: Python<'_>,
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    request_json: &str,
+    op_callback: Py<PyAny>,
+    optimizer_callback: Py<PyAny>,
+) -> PyResult<String> {
+    if !op_callback.bind(py).is_callable() || !optimizer_callback.bind(py).is_callable() {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "host HPO requires callable operator and optimizer hosts".into(),
+        )));
+    }
+    let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
+        envelope_json,
+        "host HPO envelope",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
+    envelope.validate().map_err(py_core_error)?;
+    let request: dag_ml_core::HostHpoSearchRequest =
+        dag_ml_core::canonical::deserialize_external_contract(
+            request_json,
+            "host HPO request",
+            CoreDagMlError::CampaignValidation,
+        )
+        .map_err(py_core_error)?;
+    let dsl = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
+    let dsl = fan_out_data_aware_branches(&dsl, &envelope).map_err(py_core_error)?;
+    if !compile_operator_variant_models(&dsl)
+        .map_err(py_core_error)?
+        .is_empty()
+    {
+        return Err(py_core_error(CoreDagMlError::CampaignValidation(
+            "host HPO requires a concrete operator topology".into(),
+        )));
+    }
+    let manifests: Vec<dag_ml_core::ControllerManifest> =
+        serde_json::from_str(controller_manifests_json).map_err(py_serde_error)?;
+    let mut registry = ControllerRegistry::new();
+    for manifest in manifests {
+        registry.register(manifest).map_err(py_core_error)?;
+    }
+    let compiled = compile_pipeline_dsl_with_generation_and_controller_registry(&dsl, &registry)
+        .map_err(py_core_error)?;
+    let plan = build_execution_plan(
+        format!("plan:{}:host_hpo", dsl.id),
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )
+    .map_err(py_core_error)?;
+    plan.campaign
+        .validate_data_envelope_relations(&envelope)
+        .map_err(py_core_error)?;
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+        envelope,
+    )
+    .map_err(py_core_error)?;
+    let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
+    let result = SequentialScheduler
+        .execute_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut PyHostHpoProposals {
+                callback: optimizer_callback,
+            },
+        )
+        .map_err(py_core_error)?;
+    serde_json::to_string(&result).map_err(py_serde_error)
+}
+
 #[derive(serde::Serialize)]
 struct PyArtifactHydrationRequest<'a> {
     operation: &'static str,

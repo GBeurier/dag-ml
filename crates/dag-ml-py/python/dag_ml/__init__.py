@@ -45,6 +45,7 @@ from ._dag_ml import (
     execute_loaded_methods_predictor_replay_json as _native_execute_loaded_methods_predictor_replay_json,
     execute_training_json as _native_execute_training_json,
     execute_phase_in_process as _native_execute_phase_in_process,
+    run_host_hpo_search_in_process as _native_run_host_hpo_search_in_process,
     fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
     loss_execution_attestation_json as _native_loss_execution_attestation_json,
@@ -137,6 +138,7 @@ _FACADE_EXPORTS = [
     "execute_training",
     "execute_training_json",
     "execute_phase_in_process",
+    "run_host_hpo_search_in_process",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
     "run_cv_refit_predict_in_process",
@@ -463,6 +465,21 @@ def loss_execution_attestation(training_loss_role: Any, phase: str) -> dict[str,
     return json.loads(
         _native_loss_execution_attestation_json(_coerce_json(training_loss_role), phase)
     )
+
+
+def run_host_hpo_search_in_process(
+    dsl: Any, envelope: Any, controller_manifests: Any, request: Any,
+    op_callback: Any, optimizer_callback: Any,
+) -> dict[str, Any]:
+    """Run scheduler-owned FIT_CV trials using host ask/tell proposals.
+
+    This nonportable profile returns native score evidence, not an N4MOPT
+    checkpoint or predictor package. No REFIT is performed during search.
+    """
+    return json.loads(_native_run_host_hpo_search_in_process(
+        _coerce_json(dsl), _coerce_json(envelope), _coerce_json(controller_manifests),
+        _coerce_json(request), op_callback, optimizer_callback,
+    ))
 
 
 def execute_phase_in_process(
@@ -1687,6 +1704,7 @@ __all__ = [
     "derive_controller_manifest_list_json",
     "derive_controller_manifests",
     "execute_phase_in_process",
+    "run_host_hpo_search_in_process",
     "execute_training",
     "execute_training_json",
     "execute_methods_cv_refit_terminal_predict",
