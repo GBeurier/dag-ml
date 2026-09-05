@@ -80,6 +80,13 @@ node scripts/smoke_wasm_tarball_metadata.mjs "$data_web_out_dir"
 node scripts/smoke_wasm_integration.mjs "$web_out_dir" "$data_web_out_dir" ../dag-ml-data
 ```
 
+The supply-chain gate retains one reviewed informational exception in
+`.cargo/audit.toml`: [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436.html)
+reports the unmaintained `paste` proc macro, pulled only through Parquet.
+This is accepted temporarily, not fixed; no patched version is available.
+All other warnings and vulnerabilities remain blocking. Remove the exception
+when the upstream Parquet dependency replaces `paste` and requalify result files.
+
 ## 0.3.x RC Release Scope
 
 The supported 0.3.x RC scope is a Rust-first control core that can:

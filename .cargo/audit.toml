@@ -1,0 +1,9 @@
+[advisories]
+# Temporary, reviewed V1 exception for an informational unmaintained warning.
+# paste 1.0.15 is only a build-time proc macro through parquet 53.4.1 ->
+# dag-ml-results. RustSec reports no patched version and no vulnerability for
+# this advisory. Keep Parquet data compatibility during V1 stabilization.
+# Remove when the upstream Parquet dependency no longer uses paste; reassess
+# on every Parquet update. All other warnings/vulnerabilities remain blocking.
+# https://rustsec.org/advisories/RUSTSEC-2024-0436.html
+ignore = ["RUSTSEC-2024-0436"]
