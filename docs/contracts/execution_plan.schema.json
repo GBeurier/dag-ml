@@ -309,6 +309,22 @@
             "kind": { "const": "group_kfold" },
             "n_splits": { "type": "integer", "minimum": 2 }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "n_splits", "strata"],
+          "properties": {
+            "kind": { "const": "stratified_kfold" },
+            "n_splits": { "type": "integer", "minimum": 2 },
+            "shuffle": { "type": "boolean" },
+            "seed": { "type": ["integer", "null"], "minimum": 0 },
+            "strata": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": { "type": "string", "minLength": 1 }
+            }
+          }
         }
       ]
     },
