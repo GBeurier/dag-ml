@@ -9715,6 +9715,7 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
         .unwrap();
     let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
     let mut request = HostHpoSearchRequest {
+        fold_score_reduction: None,
         target_node: NodeId::new("model:pls").unwrap(),
         trial_budget: 3,
         metric: RegressionMetricKind::Rmse,
@@ -9741,6 +9742,38 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
         result.fold_set_fingerprint,
         stable_json_fingerprint(plan.fold_set.as_ref().unwrap()).unwrap()
     );
+    assert!(!serde_json::to_value(&request)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .contains_key("fold_score_reduction"));
+    request.fold_score_reduction = Some(HostHpoFoldReduction::Mean);
+    let mut reduced_proposals = Proposals {
+        asked: 0,
+        told: Vec::new(),
+    };
+    let reduced = SequentialScheduler
+        .execute_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut reduced_proposals,
+        )
+        .unwrap();
+    assert_ne!(reduced.request_fingerprint, result.request_fingerprint);
+    assert_eq!(reduced.selected_trial_index, result.selected_trial_index);
+    for (trial, original) in reduced.trials.iter().zip(&result.trials) {
+        assert_eq!(
+            trial.objective_fold_scores.len(),
+            plan.fold_set.as_ref().unwrap().folds.len()
+        );
+        assert_eq!(
+            serde_json::to_value(&trial.scores).unwrap(),
+            serde_json::to_value(&original.scores).unwrap(),
+            "selection reduction cannot rewrite native per-fold/OOF reports"
+        );
+    }
     request.trial_budget = 0;
     assert!(SequentialScheduler
         .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
