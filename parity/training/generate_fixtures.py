@@ -64,6 +64,7 @@ BASE_PACK_ARTIFACTS = {
     "crates/dag-ml-core/src/relation.rs": "typed_contract_dependency",
     "crates/dag-ml-core/src/runtime/artifact.rs": "typed_runtime_dependency",
     "crates/dag-ml-core/src/runtime/dataview.rs": "native_hpo_runtime_session",
+    "crates/dag-ml-core/src/runtime/host_hpo.rs": "native_hpo_runtime_session",
     "crates/dag-ml-core/src/runtime/mod.rs": "native_hpo_runtime_topology",
     "crates/dag-ml-core/src/runtime/scoring.rs": "native_global_oof_scoring",
     "crates/dag-ml-core/src/runtime/scheduler.rs": "native_hpo_scheduler",
