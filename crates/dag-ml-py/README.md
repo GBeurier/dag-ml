@@ -30,6 +30,20 @@ untracked Rust inputs when that tracked extension is unchanged.
 
 ## Python Surface
 
+For a concrete host-managed pipeline without cross-validation, use
+`execute_phase_in_process(dsl, envelope, controllers, callback, "REFIT",
+training_sample_ids=[...])`. Rust verifies the supplied row ordering is an
+exact unique permutation of the attested training identities and records it
+in the effective campaign. Split invocations and unresolved operator choices
+are refused; use the CV/refit entry point for those campaigns.
+
+The same entry point with `phase="PREDICT"` requires a separately attested V2
+prediction cohort and forbids `training_sample_ids`. It executes only PREDICT,
+never fitting or selecting a model. Host-managed fitted state stays the host's
+responsibility and is not implicitly promoted to a portable predictor package.
+Both paths return JSON with native `node_results`, `scores`, `phase` and
+`effective_plan`; absent target observations produce no invented score.
+
 ```python
 import dag_ml
 

@@ -191,6 +191,10 @@ pub fn fold_set_fingerprint(fold_set: &FoldSet) -> Result<String> {
 
     let mut value = serde_json::to_value(&canonical)?;
     remove_empty_fold_set_maps(&mut value);
+    // This fingerprint has always hashed a recursively key-sorted JSON value,
+    // not typed struct field order. Preserve that published contract when an
+    // embedding aggregate enables serde_json/preserve_order.
+    value.sort_all_objects();
     stable_json_fingerprint(&value)
 }
 

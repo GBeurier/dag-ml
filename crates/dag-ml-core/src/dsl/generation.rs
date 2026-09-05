@@ -124,7 +124,11 @@ pub fn operator_variant_canonical_value(steps: &[PipelineDslStep]) -> Result<ser
     for step in steps {
         canonical.push(canonical_operator_step(step)?);
     }
-    Ok(serde_json::Value::Array(canonical))
+    let mut value = serde_json::Value::Array(canonical);
+    // The public label contract sorts keys recursively, independently of
+    // serde_json feature unification in an embedding aggregate.
+    value.sort_all_objects();
+    Ok(value)
 }
 
 /// Cross-language entry point: compute the `variant_label` (hex sha256) of a lowered operator
@@ -244,11 +248,15 @@ fn operator_class(operator: &serde_json::Value) -> Result<String> {
     reject_non_finite(operator, "operator")?;
     match operator {
         serde_json::Value::String(value) => Ok(value.clone()),
-        other => serde_json::to_string(other).map_err(|error| {
-            DagMlError::GraphValidation(format!(
-                "failed to canonicalize operator value for variant_label: {error}"
-            ))
-        }),
+        other => {
+            let mut canonical = other.clone();
+            canonical.sort_all_objects();
+            serde_json::to_string(&canonical).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to canonicalize operator value for variant_label: {error}"
+                ))
+            })
+        }
     }
 }
 

@@ -96,7 +96,7 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "ef25fbadfe80518a4cfea80a3ae07897cef05ee9e82517d726340b48cff50eda",
+      "sha256": "0cf62f4f60ada99abbd05e88bb1c2f447542bab81418dc9b97174afafba45315",
       "kind": "python_facade"
     },
     {
@@ -255,5 +255,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "e9a78348893c43fb1b57b0bb8308af279cca95f4d7121e6ea046013f4ea553f6"
+  "pack_checksum": "a8eb7beb5ed1e4d5f7e397db076fdd1e8e74254536ca52bf298b1502bf257433"
 }

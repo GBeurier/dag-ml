@@ -3542,6 +3542,19 @@ pub(crate) fn collect_input_handles(
                 branch_view_for_node.as_ref(),
                 &excluded_samples,
             )?;
+            if scope.phase == Phase::Refit
+                && scope_fold_set.is_none()
+                && view.partition == DataRequestPartition::FullTrain
+                && view.sample_ids.is_none()
+            {
+                view.sample_ids = data_provider.refit_sample_ids(binding)?;
+                if !view.include_excluded {
+                    if let Some(sample_ids) = view.sample_ids.as_mut() {
+                        sample_ids.retain(|sample_id| !excluded_samples.contains(sample_id));
+                    }
+                }
+                view.validate()?;
+            }
             if let Some(cohort) = predict_cohort.as_ref() {
                 bind_predict_cohort_to_view(&mut view, cohort)?;
             }

@@ -326,6 +326,14 @@ pub trait RuntimeDataProvider {
         Ok(None)
     }
 
+    /// Explicit training universe for a REFIT-only campaign without folds.
+    /// Providers opting in must derive these IDs from their attested training
+    /// relations, never from an external PREDICT cohort. The default preserves
+    /// historical provider-resolved views and all existing CV behavior.
+    fn refit_sample_ids(&self, _binding: &DataBinding) -> Result<Option<Vec<SampleId>>> {
+        Ok(None)
+    }
+
     /// Return the separately attested cohort that may be consumed by one
     /// top-level PREDICT request. It is unavailable to every phase that can
     /// fit, validate, rank, or calibrate a model.
