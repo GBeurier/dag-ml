@@ -2366,6 +2366,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
             params_fingerprint: "params:c-conformance".to_string(),
         },
         phase: Phase::FitCv,
+        resources: None,
         variant_id: Some(VariantId::new("variant:c-conformance").unwrap()),
         variant: None,
         fold_id: Some(FoldId::new("fold:0").unwrap()),

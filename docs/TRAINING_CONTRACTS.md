@@ -104,6 +104,31 @@ ranking from exactly one `fold_id: "avg"` validation report per plan variant for
 the selected producer, then verifies candidate order, ranks, selected score,
 metric, objective, level and `oof` evaluation scope.
 
+### Optional validity masks for sample regression
+
+`RegressionTargetBlock.validity_masks` is an optional sample-major matrix of
+booleans with exactly the shape of `values`. `true` denotes an observed label.
+An absent or null field means all labels are observed; serialization omits an
+absent mask, preserving existing payloads. All transported values must be
+finite, including hidden cells. The scheduler canonicalizes hidden cells to
+zero before retaining results; their original finite payload never contributes
+to scores or ground-truth equality checks.
+
+For sample-level regression, the coordinator aligns labels and masks by stable
+unit id and evaluates each output on its observed rows using the existing
+native metric kernels. Per-output metrics retain their target names; the scalar
+metric is their uniform macro mean. Every output must have an observation in
+each scored partition/fold, or scoring fails. Prediction and OOF tables retain
+all rows and ids, so `row_count` counts predictions, not observed target cells.
+Cross-fold averages and captured variant targets retain their aligned masks.
+Native SELECT and durable host HPO consume these same native scores.
+
+Partial masks are explicitly refused for group/target/observation scoring,
+prediction aggregation and prediction merges/late fusion. This does not claim
+masked training support for an operator: the host operator must itself fit only
+the observed labels. Missing feature masks, ragged data and classification
+target masks are outside this qualified profile.
+
 ### Output syntax
 
 Each output has these important fields:
@@ -198,7 +223,7 @@ implemented.
 | Request/runtime input | Native V1 effect |
 |---|---|
 | `parameter_patches: []` | Required. Any patch is refused until its namespace is materialized by the runtime. |
-| `resources.cpu_threads == scheduler.workers` | Required together with `memory_bytes: null`, `gpu_devices: []` and `wall_time_ms: null`. |
+| `resources.cpu_threads == scheduler.workers` | Required together with `memory_bytes: null` and `wall_time_ms: null`; `gpu_devices` is forwarded unchanged to every host `NodeTask`. |
 | `artifacts.cv_artifacts: discard` | Required; retained fold-fitted artifacts are not implemented. |
 | `artifacts.fitted_artifacts: allow_host_sidecar` | Required; V1 cannot prove a controller payload is natively portable. Sidecar handles stay process-local. |
 | `artifacts.prediction_caches: discard` | Allowed only when no graph edge requires OOF predictions. Stacking graphs must retain caches. |
@@ -745,8 +770,10 @@ scheduler. This has three practical effects:
   promise and must cover callback-owned model/data registries as well.
 
 The D3 native training operation rejects `backend: "processes"`; declaring
-`process_safe` does not bypass that runtime limit. It also rejects memory, GPU
-and wall-time resource limits in this first slice, as described in the
+`process_safe` does not bypass that runtime limit. It rejects memory and
+wall-time resource limits in this first slice. GPU device declarations are
+forwarded to every host task, whose controller must enforce the requested
+device and fail closed when it cannot do so, as described in the
 [native runtime acceptance matrix](#native-runtime-v1-acceptance-matrix).
 
 ### `TrainingResult`

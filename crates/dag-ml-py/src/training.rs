@@ -3916,6 +3916,7 @@ mod tests {
             }
             let regression_targets = if is_model && task.phase == Phase::FitCv {
                 vec![RegressionTargetBlock {
+                    validity_masks: None,
                     level: PredictionLevel::Sample,
                     unit_ids: sample_ids
                         .iter()

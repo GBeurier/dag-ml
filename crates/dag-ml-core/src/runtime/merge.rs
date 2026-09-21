@@ -227,6 +227,9 @@ pub(crate) fn reassemble_branch_merge_off_fold(
             if target_block_names.is_none() && !record.block.target_names.is_empty() {
                 target_block_names = Some(record.block.target_names.clone());
             }
+            record
+                .block
+                .require_complete_targets("prediction merge/late fusion")?;
             for (unit_id, row) in record.block.unit_ids.iter().zip(&record.block.values) {
                 let PredictionUnitId::Sample(sample_id) = unit_id else {
                     continue;
@@ -591,6 +594,9 @@ pub(crate) fn reassemble_separation_merge(
             if target_block_names.is_none() && !record.block.target_names.is_empty() {
                 target_block_names = Some(record.block.target_names.clone());
             }
+            record
+                .block
+                .require_complete_targets("prediction merge/late fusion")?;
             for (unit_id, row) in record.block.unit_ids.iter().zip(&record.block.values) {
                 let PredictionUnitId::Sample(sample_id) = unit_id else {
                     continue;
@@ -840,6 +846,9 @@ pub(crate) fn reassemble_fusion_merge(
             if target_block_names.is_none() && !record.block.target_names.is_empty() {
                 target_block_names = Some(record.block.target_names.clone());
             }
+            record
+                .block
+                .require_complete_targets("prediction merge/late fusion")?;
             for (unit_id, row) in record.block.unit_ids.iter().zip(&record.block.values) {
                 let PredictionUnitId::Sample(sample_id) = unit_id else {
                     continue;

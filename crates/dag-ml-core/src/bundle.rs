@@ -3574,6 +3574,7 @@ mod tests {
         };
         let sample = SampleId::new("sample:hpo.1").unwrap();
         let target = RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Sample,
             unit_ids: vec![PredictionUnitId::Sample(sample.clone())],
             values: vec![vec![1.0]],

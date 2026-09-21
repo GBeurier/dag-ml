@@ -36,7 +36,7 @@ use dag_ml_core::{
     RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
     RuntimeDataProvider, RuntimePredictionCacheStore, RuntimeTunerSession, SampleId, ScoreSet,
     SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, TrainingRequest,
-    VariantId, SCORE_SET_SCHEMA_VERSION,
+    TrainingResourceLimits, VariantId, SCORE_SET_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -628,6 +628,10 @@ enum Command {
         scheduler: CliScheduler,
         #[arg(long, default_value_t = 1)]
         scheduler_workers: usize,
+        #[arg(long, default_value_t = 1)]
+        cpu_threads: u32,
+        #[arg(long = "gpu-device")]
+        gpu_devices: Vec<String>,
     },
     RunProcessDslCvRefitReplay {
         #[arg(long)]
@@ -662,6 +666,10 @@ enum Command {
         scheduler: CliScheduler,
         #[arg(long, default_value_t = 1)]
         scheduler_workers: usize,
+        #[arg(long, default_value_t = 1)]
+        cpu_threads: u32,
+        #[arg(long = "gpu-device")]
+        gpu_devices: Vec<String>,
     },
     RunProcessRefitReplay {
         #[arg(long)]
@@ -1386,6 +1394,7 @@ fn main() -> Result<()> {
                 scheduler,
                 selection_metric: RegressionMetricKind::Rmse,
                 operator_variant_models: Vec::new(),
+                resource_limits: None,
             })
             .with_context(|| "mock refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
@@ -1444,6 +1453,7 @@ fn main() -> Result<()> {
                 scheduler,
                 selection_metric: RegressionMetricKind::Rmse,
                 operator_variant_models: Vec::new(),
+                resource_limits: None,
             })
             .with_context(|| "process refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
@@ -1506,6 +1516,7 @@ fn main() -> Result<()> {
                 scheduler,
                 selection_metric: selection_metric.into(),
                 operator_variant_models: Vec::new(),
+                resource_limits: None,
             })
             .with_context(|| "process CV+refit bundle capture failed")?;
             println!(
@@ -1586,6 +1597,7 @@ fn main() -> Result<()> {
                 scheduler,
                 selection_metric: selection_metric.into(),
                 operator_variant_models: Vec::new(),
+                resource_limits: None,
             })
             .with_context(|| "process CV+refit capture before replay failed")?;
             // This graph/campaign path carries no operator models, so `effective_plan` is always
@@ -1652,6 +1664,8 @@ fn main() -> Result<()> {
             root_seed,
             scheduler,
             scheduler_workers,
+            cpu_threads,
+            gpu_devices,
         } => {
             // Read the envelope first so plan-time data-aware branch fan-out can
             // discover partition values from its coordinator relations before the
@@ -1692,6 +1706,12 @@ fn main() -> Result<()> {
                 scheduler,
                 selection_metric: selection_metric.into(),
                 operator_variant_models,
+                resource_limits: Some(TrainingResourceLimits {
+                    cpu_threads,
+                    memory_bytes: None,
+                    gpu_devices,
+                    wall_time_ms: None,
+                }),
             })
             .with_context(|| "process DSL CV+refit bundle capture failed")?;
             println!(
@@ -1745,6 +1765,8 @@ fn main() -> Result<()> {
             root_seed,
             scheduler,
             scheduler_workers,
+            cpu_threads,
+            gpu_devices,
         } => {
             let (plan, operator_variant_models) =
                 build_plan_and_operator_models_from_dsl_path(&dsl, &controllers, plan_id)?;
@@ -1772,6 +1794,12 @@ fn main() -> Result<()> {
                 scheduler,
                 selection_metric: selection_metric.into(),
                 operator_variant_models,
+                resource_limits: Some(TrainingResourceLimits {
+                    cpu_threads,
+                    memory_bytes: None,
+                    gpu_devices,
+                    wall_time_ms: None,
+                }),
             })
             .with_context(|| "process DSL CV+refit capture before replay failed")?;
             // For operator-SELECT the captured bundle carries the pruned winner graph + the selected
@@ -1858,6 +1886,7 @@ fn main() -> Result<()> {
                 scheduler,
                 selection_metric: RegressionMetricKind::Rmse,
                 operator_variant_models: Vec::new(),
+                resource_limits: None,
             })
             .with_context(|| "process refit capture before replay failed")?;
             let envelope_map = replay_envelope_map_for_bundle(&captured.bundle, &envelope);
@@ -2725,6 +2754,7 @@ struct CapturedRefitBundleInput<'a> {
     /// OPERATOR-SELECT: each choice is scored on its PRUNED plan and the winner FIT_CV+REFITs on its
     /// pruned plan — NOT the Mechanism-B stacking union. More than one operator generator is rejected.
     operator_variant_models: Vec<OperatorVariantModel>,
+    resource_limits: Option<TrainingResourceLimits>,
 }
 
 struct CapturedRefitBundle {
@@ -2778,6 +2808,7 @@ fn build_bundle_from_captured_refit(
     let mut artifact_store = InMemoryArtifactStore::new();
     let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
     ctx.variant_id = Some(selected_variant_id.clone());
+    ctx.resource_limits = input.resource_limits.clone();
 
     let results = execute_campaign_phase_with_artifact_store_and_scheduler(
         input.scheduler,
@@ -2858,6 +2889,7 @@ fn resolve_operator_select(
         Some(input.root_seed),
         input.selection_metric,
         |pruned_plan, ctx| {
+            ctx.resource_limits = input.resource_limits.clone();
             execute_campaign_phase_with_scheduler(
                 input.scheduler,
                 pruned_plan,
@@ -2969,6 +3001,7 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
             Some(input.root_seed),
             input.selection_metric,
             |variant_plan, ctx| {
+                ctx.resource_limits = input.resource_limits.clone();
                 execute_campaign_phase_with_scheduler(
                     input.scheduler,
                     variant_plan,
@@ -3073,6 +3106,7 @@ fn build_bundle_from_cv_then_captured_refit(
     let mut artifact_store = InMemoryArtifactStore::new();
     let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
     ctx.variant_id = Some(selected_variant_id.clone());
+    ctx.resource_limits = input.resource_limits.clone();
 
     let fit_cv_results = execute_campaign_phase_with_scheduler(
         input.scheduler,
@@ -5692,6 +5726,7 @@ mod tests {
                             target_names: vec!["y".to_string()],
                         });
                         regression_targets.push(RegressionTargetBlock {
+                            validity_masks: None,
                             level: PredictionLevel::Sample,
                             unit_ids: vec![PredictionUnitId::Sample(sample_id)],
                             values: vec![vec![y_true]],
@@ -6003,6 +6038,7 @@ mod tests {
             scheduler,
             selection_metric: RegressionMetricKind::Rmse,
             operator_variant_models: vec![model.clone()],
+            resource_limits: None,
         })
         .expect("operator-SELECT CV+refit capture must succeed");
 
@@ -6215,6 +6251,7 @@ mod tests {
             scheduler,
             selection_metric: RegressionMetricKind::Rmse,
             operator_variant_models: Vec::new(),
+            resource_limits: None,
         })
         .expect("no-variant CV+refit capture must succeed");
 

@@ -105,6 +105,9 @@ pub struct RegressionTargetBlock {
     pub level: PredictionLevel,
     pub unit_ids: Vec<PredictionUnitId>,
     pub values: Vec<Vec<f64>>,
+    /// Sample-major validity: true means observed; absent means every cell is observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validity_masks: Option<Vec<Vec<bool>>>,
     #[serde(default)]
     pub target_names: Vec<String>,
 }
@@ -145,6 +148,14 @@ impl RegressionTargetBlock {
                 "target block has ragged target rows".to_string(),
             ));
         }
+        if let Some(masks) = &self.validity_masks {
+            if masks.len() != self.values.len() || masks.iter().any(|row| row.len() != width) {
+                return Err(DagMlError::OofValidation(
+                    "target validity_masks shape must match target values (sample-major)"
+                        .to_string(),
+                ));
+            }
+        }
         if self.values.iter().flatten().any(|value| !value.is_finite()) {
             return Err(DagMlError::OofValidation(
                 "target block contains non-finite values".to_string(),
@@ -158,6 +169,38 @@ impl RegressionTargetBlock {
             )));
         }
         Ok(width)
+    }
+
+    pub(crate) fn has_missing_values(&self) -> bool {
+        self.validity_masks
+            .as_ref()
+            .is_some_and(|masks| masks.iter().flatten().any(|observed| !observed))
+    }
+
+    /// Canonical finite transport for hidden labels, without changing identity or row coverage.
+    pub(crate) fn canonicalized(&self) -> Result<Self> {
+        self.validate_shape()?;
+        let mut block = self.clone();
+        if let Some(masks) = &block.validity_masks {
+            for (row, mask) in block.values.iter_mut().zip(masks) {
+                for (value, observed) in row.iter_mut().zip(mask) {
+                    if !observed {
+                        *value = 0.0;
+                    }
+                }
+            }
+        }
+        Ok(block)
+    }
+
+    pub(crate) fn require_complete_targets(&self, operation: &str) -> Result<()> {
+        self.validate_shape()?;
+        if self.has_missing_values() {
+            return Err(DagMlError::OofValidation(format!(
+                "masked regression targets are unsupported for {operation}; use sample-level scoring without prediction merges"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -215,6 +258,7 @@ pub fn reassemble_merge_targets(
         })
         .collect();
     Ok(Some(RegressionTargetBlock {
+        validity_masks: None,
         level: PredictionLevel::Sample,
         unit_ids: merge_sample_ids
             .iter()
@@ -600,6 +644,9 @@ fn score_regression_rows(
     } else {
         targets.target_names.clone()
     };
+    if targets.has_missing_values() {
+        return score_masked_regression_rows(predictions, targets, metrics, target_names);
+    }
     let metric_suffixes = target_metric_names(predictions.width, &target_names);
     let provider_output_ids = (0..predictions.width)
         .map(|index| format!("output:{index}"))
@@ -667,6 +714,91 @@ fn score_regression_rows(
         }
     }
 
+    let report = RegressionMetricReport {
+        prediction_id: predictions.origin.prediction_id,
+        producer_node: predictions.origin.producer_node,
+        producer_port: predictions.origin.producer_port,
+        variant_id: None,
+        variant_label: None,
+        partition: predictions.origin.partition,
+        fold_id: predictions.origin.fold_id,
+        level: predictions.level,
+        row_count: predictions.unit_ids.len(),
+        target_width: predictions.width,
+        target_names,
+        metrics: values,
+    };
+    report.validate()?;
+    Ok(report)
+}
+
+/// Slice observed cells in the coordinator, then reuse the same native metric providers.
+/// Each output is evaluated independently and the public scalar is their unweighted mean.
+fn score_masked_regression_rows(
+    predictions: PredictionRows<'_>,
+    targets: &RegressionTargetBlock,
+    metrics: &[RegressionMetricKind],
+    target_names: Vec<String>,
+) -> Result<RegressionMetricReport> {
+    if predictions.level != PredictionLevel::Sample {
+        targets.require_complete_targets("group/target/observation scoring")?;
+    }
+    let masks = targets
+        .validity_masks
+        .as_ref()
+        .expect("missing values have a mask");
+    let target_rows = targets
+        .unit_ids
+        .iter()
+        .enumerate()
+        .map(|(index, unit)| (unit, index))
+        .collect::<BTreeMap<_, _>>();
+    let suffixes = target_metric_names(predictions.width, &target_names);
+    let mut values = BTreeMap::new();
+    for (column, suffix) in suffixes.iter().enumerate() {
+        let mut unit_ids = Vec::new();
+        let mut observed_predictions = Vec::new();
+        let mut observed_targets = Vec::new();
+        for (unit, prediction) in predictions.unit_ids.iter().zip(predictions.values) {
+            let row = target_rows[unit];
+            if masks[row][column] {
+                unit_ids.push(unit.clone());
+                observed_predictions.push(vec![prediction[column]]);
+                observed_targets.push(vec![targets.values[row][column]]);
+            }
+        }
+        if unit_ids.is_empty() {
+            return Err(DagMlError::OofValidation(format!(
+                "masked regression target `{suffix}` has no observed values in scored partition {:?} fold {:?}",
+                predictions.origin.partition, predictions.origin.fold_id
+            )));
+        }
+        let observed = RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: unit_ids.clone(),
+            values: observed_targets,
+            validity_masks: None,
+            target_names: Vec::new(),
+        };
+        let report = score_regression_rows(
+            PredictionRows {
+                level: PredictionLevel::Sample,
+                unit_ids: &unit_ids,
+                values: &observed_predictions,
+                target_names: &[],
+                width: 1,
+                origin: predictions.origin.clone(),
+            },
+            &observed,
+            metrics,
+        )?;
+        for metric in metrics {
+            let value = report.metrics[metric.name()];
+            values.insert(format!("{}:{suffix}", metric.name()), value);
+            *values.entry(metric.name().to_string()).or_insert(0.0) +=
+                value / predictions.width as f64;
+        }
+    }
     let report = RegressionMetricReport {
         prediction_id: predictions.origin.prediction_id,
         producer_node: predictions.origin.producer_node,
@@ -848,9 +980,11 @@ fn combine_validation_targets(
     producer_port: &Option<String>,
     records: &[RegressionTargetRecord],
 ) -> Result<RegressionTargetBlock> {
-    let mut seen: BTreeMap<PredictionUnitId, Vec<f64>> = BTreeMap::new();
+    let mut seen: BTreeMap<PredictionUnitId, (Vec<f64>, Vec<bool>)> = BTreeMap::new();
     let mut unit_ids = Vec::new();
     let mut values = Vec::new();
+    let mut validity_masks = Vec::new();
+    let mut has_masks = false;
     let mut target_names = Vec::new();
     for record in records {
         if &record.producer_node != producer
@@ -862,14 +996,21 @@ fn combine_validation_targets(
         if target_names.is_empty() {
             target_names = record.block.target_names.clone();
         }
-        for (unit_id, row) in record.block.unit_ids.iter().zip(&record.block.values) {
+        let block = record.block.canonicalized()?;
+        has_masks |= block.validity_masks.is_some();
+        for (index, (unit_id, row)) in block.unit_ids.iter().zip(&block.values).enumerate() {
+            let mask = block
+                .validity_masks
+                .as_ref()
+                .map_or_else(|| vec![true; row.len()], |masks| masks[index].clone());
             match seen.get(unit_id) {
                 None => {
-                    seen.insert(unit_id.clone(), row.clone());
+                    seen.insert(unit_id.clone(), (row.clone(), mask.clone()));
                     unit_ids.push(unit_id.clone());
                     values.push(row.clone());
+                    validity_masks.push(mask);
                 }
-                Some(existing) if existing != row => {
+                Some((existing, existing_mask)) if existing != row || existing_mask != &mask => {
                     return Err(DagMlError::OofValidation(format!(
                         "producer `{producer}` has conflicting ground truth for unit `{unit_id:?}` across validation records — the y_true reference is mixed (e.g. several variants in one context); refusing to score against a corrupted reference"
                     )));
@@ -879,6 +1020,7 @@ fn combine_validation_targets(
         }
     }
     Ok(RegressionTargetBlock {
+        validity_masks: has_masks.then_some(validity_masks),
         level: PredictionLevel::Sample,
         unit_ids,
         values,
@@ -1009,7 +1151,16 @@ fn oof_average_block(
     };
     let target_by_unit: BTreeMap<&PredictionUnitId, &Vec<f64>> =
         targets.unit_ids.iter().zip(&targets.values).collect();
+    let mask_by_unit = targets.validity_masks.as_ref().map(|masks| {
+        targets
+            .unit_ids
+            .iter()
+            .zip(masks)
+            .collect::<BTreeMap<_, _>>()
+    });
     let y_true = RegressionTargetBlock {
+        validity_masks: mask_by_unit
+            .map(|masks| unit_ids.iter().map(|unit| masks[unit].clone()).collect()),
         level: PredictionLevel::Sample,
         unit_ids: unit_ids.clone(),
         values: unit_ids
@@ -1048,6 +1199,229 @@ mod tests {
 
     fn assert_close(left: f64, right: f64) {
         assert!((left - right).abs() < 1e-12, "expected {right}, got {left}");
+    }
+
+    fn masked_fixture() -> (PredictionBlock, RegressionTargetBlock) {
+        let predictions = PredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new("model:masked").unwrap(),
+            producer_port: Some("prediction".to_string()),
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: vec![sid("s1"), sid("s2"), sid("s3")],
+            values: vec![vec![2.0, 12.0], vec![4.0, 18.0], vec![6.0, 100.0]],
+            target_names: vec!["first".to_string(), "second".to_string()],
+        };
+        // Target order differs from prediction order; a different subset is observed per output.
+        let targets = RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: vec![sample_unit("s3"), sample_unit("s1"), sample_unit("s2")],
+            values: vec![vec![5.0, 999.0], vec![1.0, 10.0], vec![-999.0, 20.0]],
+            validity_masks: Some(vec![vec![true, false], vec![true, true], vec![false, true]]),
+            target_names: predictions.target_names.clone(),
+        };
+        (predictions, targets)
+    }
+
+    #[test]
+    fn masked_scores_observed_cells_per_target_and_macro_without_dropping_rows() {
+        let (predictions, targets) = masked_fixture();
+        let metrics = [
+            RegressionMetricKind::Rmse,
+            RegressionMetricKind::Mse,
+            RegressionMetricKind::Mae,
+            RegressionMetricKind::R2,
+        ];
+        let report = score_regression_prediction_block(&predictions, &targets, &metrics).unwrap();
+        assert_eq!(report.row_count, 3);
+        assert_eq!(report.target_width, 2);
+        assert_close(report.metrics["rmse:first"], 1.0);
+        assert_close(report.metrics["rmse:second"], 2.0);
+        assert_close(report.metrics["rmse"], 1.5);
+        assert_close(report.metrics["mse"], 2.5);
+        assert_close(report.metrics["mae"], 1.5);
+        assert_close(report.metrics["r2:first"], 0.75);
+        assert_close(report.metrics["r2:second"], 0.84);
+        assert_close(report.metrics["r2"], 0.795);
+        let mut changed = targets.clone();
+        changed.values[0][1] = -1e100;
+        changed.values[2][0] = 1e100;
+        assert_eq!(
+            report,
+            score_regression_prediction_block(&predictions, &changed, &metrics).unwrap()
+        );
+        assert_eq!(
+            targets.canonicalized().unwrap(),
+            changed.canonicalized().unwrap()
+        );
+        assert_eq!(
+            targets.canonicalized().unwrap().values,
+            vec![vec![5.0, 0.0], vec![1.0, 10.0], vec![0.0, 20.0]]
+        );
+    }
+
+    #[test]
+    fn masked_target_contract_rejects_shape_nonfinite_and_unobserved_output() {
+        let (predictions, targets) = masked_fixture();
+        for mask in [vec![], vec![vec![true]; 3], vec![vec![true, true]; 2]] {
+            let mut invalid = targets.clone();
+            invalid.validity_masks = Some(mask);
+            assert!(invalid
+                .validate_shape()
+                .unwrap_err()
+                .to_string()
+                .contains("validity_masks shape"));
+        }
+        let mut invalid = targets.clone();
+        invalid.values[0][1] = f64::NAN;
+        assert!(invalid
+            .validate_shape()
+            .unwrap_err()
+            .to_string()
+            .contains("non-finite"));
+        for mask in [vec![vec![false, false]; 3], vec![vec![true, false]; 3]] {
+            let mut invalid = targets.clone();
+            invalid.validity_masks = Some(mask);
+            let error = score_regression_prediction_block(
+                &predictions,
+                &invalid,
+                &[RegressionMetricKind::Rmse],
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("no observed values"), "{error}");
+        }
+        let mut invalid = serde_json::to_value(&targets).unwrap();
+        invalid["validity_masks"][0][0] = serde_json::json!(1);
+        assert!(serde_json::from_value::<RegressionTargetBlock>(invalid).is_err());
+    }
+
+    #[test]
+    fn absent_and_all_observed_masks_preserve_original_scores_and_wire_contract() {
+        let (predictions, mut targets) = masked_fixture();
+        targets.validity_masks = None;
+        let legacy = serde_json::to_value(&targets).unwrap();
+        assert!(legacy.get("validity_masks").is_none());
+        assert_eq!(
+            serde_json::from_value::<RegressionTargetBlock>(legacy.clone()).unwrap(),
+            targets
+        );
+        let mut null = legacy;
+        null["validity_masks"] = serde_json::Value::Null;
+        assert_eq!(
+            serde_json::from_value::<RegressionTargetBlock>(null).unwrap(),
+            targets
+        );
+        let expected = score_regression_prediction_block(
+            &predictions,
+            &targets,
+            &[RegressionMetricKind::Rmse],
+        )
+        .unwrap();
+        targets.validity_masks = Some(vec![vec![true, true]; 3]);
+        assert_eq!(
+            score_regression_prediction_block(
+                &predictions,
+                &targets,
+                &[RegressionMetricKind::Rmse]
+            )
+            .unwrap(),
+            expected
+        );
+        assert_eq!(
+            serde_json::from_value::<RegressionTargetBlock>(
+                serde_json::to_value(&targets).unwrap()
+            )
+            .unwrap(),
+            targets
+        );
+    }
+
+    #[test]
+    fn masked_oof_preserves_identity_masks_and_ignores_hidden_conflicts() {
+        let (predictions, targets) = masked_fixture();
+        let mut second = predictions.clone();
+        second.fold_id = Some(FoldId::new("fold:1").unwrap());
+        let record =
+            |block: &PredictionBlock, targets: RegressionTargetBlock| RegressionTargetRecord {
+                producer_node: block.producer_node.clone(),
+                producer_port: block.producer_port.clone(),
+                variant_id: None,
+                partition: block.partition.clone(),
+                fold_id: block.fold_id.clone(),
+                block: targets,
+            };
+        let mut changed = targets.clone();
+        changed.values[0][1] = -1000.0;
+        let records = vec![
+            record(&predictions, targets.clone()),
+            record(&second, changed),
+        ];
+        let result = cross_fold_validation_reports(
+            &[predictions.clone(), second.clone()],
+            &records,
+            &[RegressionMetricKind::Rmse],
+            FoldPartitionMode::Resampled,
+        )
+        .unwrap();
+        let average = &result.oof_averages[0];
+        assert_eq!(
+            average.predictions.unit_ids,
+            vec![sample_unit("s1"), sample_unit("s2"), sample_unit("s3")]
+        );
+        assert_eq!(average.y_true.unit_ids, average.predictions.unit_ids);
+        assert_eq!(
+            average.y_true.validity_masks,
+            Some(vec![vec![true, true], vec![false, true], vec![true, false]])
+        );
+        assert_eq!(
+            average.y_true.values,
+            vec![vec![1.0, 10.0], vec![0.0, 20.0], vec![5.0, 0.0]]
+        );
+        assert_eq!(average.predictions.values, predictions.values);
+        assert_eq!(result.reports[0].row_count, 3);
+        assert_close(result.reports[0].metrics["rmse"], 1.5);
+        let mut conflicting = records;
+        conflicting[1].block.validity_masks.as_mut().unwrap()[0][1] = true;
+        assert!(cross_fold_validation_reports(
+            &[predictions, second],
+            &conflicting,
+            &[RegressionMetricKind::Rmse],
+            FoldPartitionMode::Resampled
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("conflicting ground truth"));
+    }
+
+    #[test]
+    fn masked_targets_refuse_group_scoring_and_merge_aggregation() {
+        let (predictions, mut targets) = masked_fixture();
+        let grouped = AggregatedPredictionBlock {
+            prediction_id: None,
+            producer_node: predictions.producer_node,
+            producer_port: predictions.producer_port,
+            partition: predictions.partition,
+            fold_id: predictions.fold_id,
+            level: PredictionLevel::Group,
+            unit_ids: vec![group_unit("s1"), group_unit("s2"), group_unit("s3")],
+            values: predictions.values,
+            target_names: predictions.target_names,
+        };
+        targets.level = PredictionLevel::Group;
+        targets.unit_ids = vec![group_unit("s3"), group_unit("s1"), group_unit("s2")];
+        assert!(score_regression_aggregated_block(
+            &grouped,
+            &targets,
+            &[RegressionMetricKind::Rmse]
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported"));
+        assert!(targets
+            .require_complete_targets("prediction merge/late fusion")
+            .unwrap_err()
+            .to_string()
+            .contains("prediction merge/late fusion"));
     }
 
     #[test]
@@ -1148,6 +1522,7 @@ mod tests {
             target_names: vec!["y".to_string()],
         };
         let targets = RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Sample,
             unit_ids: vec![sample_unit("sample:2"), sample_unit("sample:1")],
             values: vec![vec![5.0], vec![1.0]],
@@ -1192,6 +1567,7 @@ mod tests {
             target_names: vec!["protein content".to_string()],
         };
         let targets = RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Sample,
             unit_ids: vec![sample_unit("sample:1"), sample_unit("sample:2")],
             values: vec![vec![1.0], vec![5.0]],
@@ -1222,6 +1598,7 @@ mod tests {
             target_names: vec!["y1".to_string(), "y2".to_string()],
         };
         let targets = RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Target,
             unit_ids: vec![target_unit("target:b"), target_unit("target:a")],
             values: vec![vec![2.0, 28.0], vec![2.0, 12.0]],
@@ -1254,6 +1631,7 @@ mod tests {
             target_names: vec!["y".to_string()],
         };
         let group_targets = RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Group,
             unit_ids: vec![group_unit("group:a")],
             values: vec![vec![1.0]],
@@ -1283,6 +1661,7 @@ mod tests {
             target_names: vec!["y".to_string()],
         };
         let missing_target = RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Target,
             unit_ids: vec![target_unit("target:b")],
             values: vec![vec![1.0]],
@@ -1296,6 +1675,7 @@ mod tests {
         .is_err());
 
         let wrong_level = RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Group,
             unit_ids: vec![group_unit("group:a")],
             values: vec![vec![1.0]],
@@ -1312,6 +1692,7 @@ mod tests {
         assert!(score_regression_aggregated_block(
             &predictions,
             &RegressionTargetBlock {
+                validity_masks: None,
                 level: PredictionLevel::Target,
                 unit_ids: vec![target_unit("target:a")],
                 values: vec![vec![1.0]],
@@ -1323,6 +1704,7 @@ mod tests {
         assert!(score_regression_aggregated_block(
             &predictions,
             &RegressionTargetBlock {
+                validity_masks: None,
                 level: PredictionLevel::Target,
                 unit_ids: vec![target_unit("target:a")],
                 values: vec![vec![1.0]],
@@ -1336,6 +1718,7 @@ mod tests {
     #[test]
     fn refuses_duplicate_and_non_finite_sample_predictions() {
         let targets = RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Sample,
             unit_ids: vec![sample_unit("sample:1")],
             values: vec![vec![1.0]],
@@ -1371,6 +1754,7 @@ mod tests {
     #[test]
     fn constant_target_r2_is_finite_and_deterministic() {
         let targets = RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Sample,
             unit_ids: vec![sample_unit("sample:1"), sample_unit("sample:2")],
             values: vec![vec![2.0], vec![2.0]],
@@ -1545,6 +1929,7 @@ mod tests {
             target_names: vec!["y".to_string()],
         };
         let targets = RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Sample,
             unit_ids: (0..10).map(|i| sample_unit(&format!("s{i}"))).collect(),
             values: vec![
@@ -1608,6 +1993,7 @@ mod tests {
             partition: PredictionPartition::Validation,
             fold_id: Some(FoldId::new(fold).unwrap()),
             block: RegressionTargetBlock {
+                validity_masks: None,
                 level: PredictionLevel::Sample,
                 unit_ids: ids.iter().map(|i| sample_unit(&format!("s{i}"))).collect(),
                 values: trues.iter().map(|t| vec![*t]).collect(),

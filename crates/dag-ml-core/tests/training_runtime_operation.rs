@@ -22,6 +22,7 @@ const PACKAGE_FIXTURE: &str =
 #[derive(Default)]
 struct CallState {
     calls: Mutex<Vec<(Phase, NodeId)>>,
+    observed_resources: Mutex<Vec<Option<TrainingResourceLimits>>>,
     fit_counts: Mutex<BTreeMap<VariantId, usize>>,
     next_handle: AtomicU64,
     preferred: Mutex<Option<VariantId>>,
@@ -284,6 +285,11 @@ impl RuntimeController for TrainingController {
 
     fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
         self.state
+            .observed_resources
+            .lock()
+            .unwrap()
+            .push(task.resources.clone());
+        self.state
             .calls
             .lock()
             .unwrap()
@@ -452,6 +458,7 @@ impl RuntimeController for TrainingController {
             is_model || (self.emits_predictions && *self.state.score_auxiliary.lock().unwrap());
         let regression_targets = if score_this_producer && task.phase == Phase::FitCv {
             vec![RegressionTargetBlock {
+                validity_masks: None,
                 level: PredictionLevel::Sample,
                 unit_ids: sample_ids
                     .iter()
@@ -4828,9 +4835,6 @@ fn unsupported_options_are_never_silently_ignored() {
         request.options.resources.memory_bytes = Some(1024)
     });
     assert_preflight_rejected(fixture(true, false), |request| {
-        request.options.resources.gpu_devices = vec!["gpu:0".to_string()]
-    });
-    assert_preflight_rejected(fixture(true, false), |request| {
         request.options.resources.wall_time_ms = Some(1000)
     });
     assert_preflight_rejected(fixture(true, false), |request| {
@@ -4900,6 +4904,22 @@ fn unsupported_options_are_never_silently_ignored() {
         request.options.selection.metric.name = "accuracy".to_string();
         request.options.selection.metric.objective = MetricObjective::Maximize;
     });
+}
+
+#[test]
+fn gpu_resources_are_forwarded_unchanged_to_every_training_task() {
+    let mut fixture = fixture(true, false);
+    fixture.request.options.resources.gpu_devices = vec!["cuda:0".to_string()];
+    rebuild(&mut fixture);
+    let state = Arc::new(CallState::default());
+    let mut store = InMemoryArtifactStore::new();
+    let outcome = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap();
+    outcome.validate().unwrap();
+    let observed = state.observed_resources.lock().unwrap();
+    assert!(!observed.is_empty());
+    assert!(observed
+        .iter()
+        .all(|resources| resources.as_ref() == Some(&fixture.request.options.resources)));
 }
 
 #[test]

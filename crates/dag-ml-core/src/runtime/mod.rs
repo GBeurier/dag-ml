@@ -65,8 +65,10 @@ pub(crate) use crate::rng::SeedContext;
 pub(crate) use crate::selection::{
     select_candidate, CandidateScore, SelectionDecision, SelectionMetric, SelectionPolicy,
 };
+pub(crate) use crate::training::TrainingResourceLimits;
 
 mod artifact;
+mod data_provider_bootstrap;
 mod dataview;
 mod host_hpo;
 mod merge;
@@ -79,6 +81,7 @@ mod stacking;
 mod task;
 
 pub use artifact::*;
+pub use data_provider_bootstrap::*;
 pub use dataview::*;
 pub use host_hpo::*;
 pub(crate) use merge::*;
@@ -252,6 +255,8 @@ pub struct RunContext {
     pub run_id: RunId,
     pub root_seed: Option<u64>,
     pub variant_id: Option<VariantId>,
+    /// Training-wide resource declaration forwarded unchanged to every host task.
+    pub resource_limits: Option<TrainingResourceLimits>,
     pub prediction_store: InMemoryPredictionStore,
     pub aggregated_prediction_store: InMemoryAggregatedPredictionStore,
     pub lineage: InMemoryLineageRecorder,
@@ -288,6 +293,7 @@ impl RunContext {
             run_id,
             root_seed,
             variant_id: None,
+            resource_limits: None,
             prediction_store: InMemoryPredictionStore::new(),
             aggregated_prediction_store: InMemoryAggregatedPredictionStore::new(),
             lineage: InMemoryLineageRecorder::new(),
@@ -998,7 +1004,24 @@ fn target_block_aligned_to_samples(
     {
         return targets.clone();
     }
+    let mask_by_sample = targets.validity_masks.as_ref().map(|masks| {
+        targets
+            .unit_ids
+            .iter()
+            .zip(masks)
+            .filter_map(|(unit, mask)| match unit {
+                PredictionUnitId::Sample(sample) => Some((sample, mask)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>()
+    });
     RegressionTargetBlock {
+        validity_masks: mask_by_sample.map(|masks| {
+            sample_ids
+                .iter()
+                .map(|sample| masks[sample].clone())
+                .collect()
+        }),
         level: PredictionLevel::Sample,
         unit_ids: sample_ids
             .iter()

@@ -62,6 +62,19 @@ class LocalImplementationRegistryTests(unittest.TestCase):
         )
         self.assertTrue(callable(dag_ml.run_cv_refit_in_process_with_training_losses))
 
+    def test_in_process_scheduler_validates_resource_limits_before_execution(self) -> None:
+        import dag_ml._dag_ml as native
+
+        with self.assertRaisesRegex(ValueError, "cpu_threads >= 1"):
+            native.run_cv_refit_in_process(
+                "{}",
+                "{}",
+                "[]",
+                lambda _task: {},
+                "rmse",
+                json.dumps({"cpu_threads": 0, "gpu_devices": ["cuda:0"]}),
+            )
+
     def test_convenience_registration_builds_native_host_local_references(self) -> None:
         registry = dag_ml.LocalImplementationRegistry()
 

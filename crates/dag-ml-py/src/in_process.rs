@@ -50,8 +50,8 @@ use dag_ml_core::{
     HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
     OperatorVariantModel, Phase, RegressionMetricKind, RegressionMetricReport, RunContext, RunId,
     RuntimeController, RuntimeControllerRegistry, ScoreSet, SequentialScheduler,
-    TerminalPredictionReplay, TerminalPredictionSelector, TrainingLossRoleReference, VariantId,
-    VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
+    TerminalPredictionReplay, TerminalPredictionSelector, TrainingLossRoleReference,
+    TrainingResourceLimits, VariantId, VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -333,6 +333,31 @@ struct PyHostHpoProposals {
     callback: Py<PyAny>,
 }
 
+struct PyDataProviderSource {
+    callback: Py<PyAny>,
+}
+
+impl dag_ml_core::RuntimeDataProviderSource for PyDataProviderSource {
+    fn materialize(&self, task: &NodeTask) -> dag_ml_core::Result<dag_ml_core::DataProviderMaterialization> {
+        call_py_bridge(&self.callback, task, "data provider")
+    }
+}
+
+/// Execute one finite source in native PLAN; the host retains all data buffers.
+#[pyfunction]
+pub fn execute_data_provider(
+    py: Python<'_>, recipe_json: &str, callback: Py<PyAny>,
+) -> PyResult<String> {
+    if !callback.bind(py).is_callable() {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation("data provider callback must be callable".into())));
+    }
+    let recipe: dag_ml_core::DataProviderRecipe = dag_ml_core::canonical::deserialize_external_contract(
+        recipe_json, "data provider recipe", CoreDagMlError::RuntimeValidation,
+    ).map_err(py_core_error)?;
+    let result = dag_ml_core::execute_data_provider(&recipe, Box::new(PyDataProviderSource { callback })).map_err(py_core_error)?;
+    serde_json::to_string(&result).map_err(py_serde_error)
+}
+
 impl dag_ml_core::HostHpoProposalSource for PyHostHpoProposals {
     fn ask(
         &mut self,
@@ -352,11 +377,43 @@ impl dag_ml_core::HostHpoProposalSource for PyHostHpoProposals {
             "host optimizer",
         )
     }
+
+    fn fail(&mut self, trial_index: u32, error: &str) -> dag_ml_core::Result<()> {
+        call_py_bridge(
+            &self.callback,
+            &serde_json::json!({"operation": "fail", "trial_index": trial_index, "error": error}),
+            "host optimizer",
+        )
+    }
+}
+
+struct PyHostHpoProgress {
+    callback: Option<Py<PyAny>>,
+}
+
+impl dag_ml_core::HostHpoProgress for PyHostHpoProgress {
+    fn checkpoint(
+        &mut self,
+        checkpoint: &dag_ml_core::HostHpoCheckpoint,
+        status: dag_ml_core::HostHpoSearchStatus,
+    ) -> dag_ml_core::Result<bool> {
+        let Some(callback) = &self.callback else {
+            return Ok(true);
+        };
+        let keep_running: Option<bool> = call_py_bridge(
+            callback,
+            &serde_json::json!({"operation": "checkpoint", "checkpoint": checkpoint, "status": status}),
+            "host HPO progress",
+        )?;
+        Ok(keep_running.unwrap_or(true))
+    }
 }
 
 /// Bounded nonportable host-optimizer search. Only proposals cross from the
 /// tuner; all candidate execution, scoring and selection remain in core.
 #[pyfunction]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, request_json, op_callback, optimizer_callback, *, resume_checkpoint_json=None, progress_callback=None))]
+#[allow(clippy::too_many_arguments)]
 pub fn run_host_hpo_search_in_process(
     py: Python<'_>,
     dsl_json: &str,
@@ -365,10 +422,20 @@ pub fn run_host_hpo_search_in_process(
     request_json: &str,
     op_callback: Py<PyAny>,
     optimizer_callback: Py<PyAny>,
+    resume_checkpoint_json: Option<&str>,
+    progress_callback: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     if !op_callback.bind(py).is_callable() || !optimizer_callback.bind(py).is_callable() {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "host HPO requires callable operator and optimizer hosts".into(),
+        )));
+    }
+    if progress_callback
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "host HPO progress callback must be callable".into(),
         )));
     }
     let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
@@ -378,6 +445,20 @@ pub fn run_host_hpo_search_in_process(
     )
     .map_err(py_core_error)?;
     envelope.validate().map_err(py_core_error)?;
+    let durable = resume_checkpoint_json.is_some() || progress_callback.is_some();
+    let resume_checkpoint = resume_checkpoint_json
+        .map(|value| {
+            dag_ml_core::canonical::deserialize_external_contract(
+                value,
+                "host HPO checkpoint",
+                CoreDagMlError::CampaignValidation,
+            )
+        })
+        .transpose()
+        .map_err(py_core_error)?;
+    let resume_options =
+        dag_ml_core::HostHpoResumeOptions::from_envelope(&envelope, resume_checkpoint)
+            .map_err(py_core_error)?;
     let request: dag_ml_core::HostHpoSearchRequest =
         dag_ml_core::canonical::deserialize_external_contract(
             request_json,
@@ -419,6 +500,24 @@ pub fn run_host_hpo_search_in_process(
     )
     .map_err(py_core_error)?;
     let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
+    if durable {
+        let result = SequentialScheduler
+            .execute_resumable_host_hpo_search(
+                &plan,
+                &controllers,
+                &provider,
+                &request,
+                &mut PyHostHpoProposals {
+                    callback: optimizer_callback,
+                },
+                &resume_options,
+                &mut PyHostHpoProgress {
+                    callback: progress_callback,
+                },
+            )
+            .map_err(py_core_error)?;
+        return serde_json::to_string(&result).map_err(py_serde_error);
+    }
     let result = SequentialScheduler
         .execute_host_hpo_search(
             &plan,
@@ -610,6 +709,7 @@ fn resolve_operator_select(
     selection_metric: RegressionMetricKind,
     runtime_controllers: &RuntimeControllerRegistry,
     data_provider: &InMemoryDataProvider,
+    resource_limits: Option<&TrainingResourceLimits>,
 ) -> Result<Option<ResolvedRefitVariant>, CoreDagMlError> {
     let selected = select_best_operator_variant_from_models(
         plan,
@@ -618,6 +718,7 @@ fn resolve_operator_select(
         Some(root_seed),
         selection_metric,
         |pruned_plan, ctx| {
+            ctx.resource_limits = resource_limits.cloned();
             SequentialScheduler
                 .execute_campaign_phase_with_data_provider(
                     pruned_plan,
@@ -724,6 +825,7 @@ fn resolve_refit_variant(
     selection_metric: RegressionMetricKind,
     runtime_controllers: &RuntimeControllerRegistry,
     data_provider: &InMemoryDataProvider,
+    resource_limits: Option<&TrainingResourceLimits>,
 ) -> Result<ResolvedRefitVariant, CoreDagMlError> {
     if !operator_variant_models.is_empty() {
         if let Some(resolved) = resolve_operator_select(
@@ -734,6 +836,7 @@ fn resolve_refit_variant(
             selection_metric,
             runtime_controllers,
             data_provider,
+            resource_limits,
         )? {
             return Ok(resolved);
         }
@@ -747,6 +850,7 @@ fn resolve_refit_variant(
             Some(root_seed),
             selection_metric,
             |variant_plan, ctx| {
+                ctx.resource_limits = resource_limits.cloned();
                 SequentialScheduler
                     .execute_campaign_phase_with_data_provider(
                         variant_plan,
@@ -894,7 +998,14 @@ fn surface_loser_validation_frames(
 /// Returns a JSON object `{ "node_results": [...], "scores": <ScoreSet|null> }`.
 /// `scores` is byte-identical to the subprocess bundle's `scores`, so the host
 /// maps it into the same `RunResult`.
-#[pyfunction]
+#[pyfunction(signature = (
+    dsl_json,
+    envelope_json,
+    controller_manifests_json,
+    op_callback,
+    selection_metric,
+    resource_limits_json = None,
+))]
 pub fn run_cv_refit_in_process(
     py: Python<'_>,
     dsl_json: &str,
@@ -902,6 +1013,7 @@ pub fn run_cv_refit_in_process(
     controller_manifests_json: &str,
     op_callback: Py<PyAny>,
     selection_metric: &str,
+    resource_limits_json: Option<&str>,
 ) -> PyResult<String> {
     run_cv_refit_in_process_impl(
         py,
@@ -911,6 +1023,7 @@ pub fn run_cv_refit_in_process(
         None,
         op_callback,
         selection_metric,
+        resource_limits_json,
     )
 }
 
@@ -941,6 +1054,7 @@ pub fn run_cv_refit_in_process_with_training_losses(
         Some(training_loss_roles_json),
         op_callback,
         selection_metric,
+        None,
     )
 }
 
@@ -1037,6 +1151,7 @@ pub fn run_cv_refit_predict_in_process(
         metric,
         &runtime_controllers,
         &data_provider,
+        None,
     )
     .map_err(py_core_error)?;
     let selected_variant_id = resolved.variant_id;
@@ -1116,8 +1231,20 @@ fn run_cv_refit_in_process_impl(
     training_loss_roles_json: Option<&str>,
     op_callback: Py<PyAny>,
     selection_metric: &str,
+    resource_limits_json: Option<&str>,
 ) -> PyResult<String> {
     let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
+    let resource_limits = resource_limits_json
+        .map(serde_json::from_str::<TrainingResourceLimits>)
+        .transpose()
+        .map_err(py_serde_error)?;
+    if let Some(resources) = &resource_limits {
+        if resources.cpu_threads == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "resource limits require cpu_threads >= 1",
+            ));
+        }
+    }
 
     // 1. Read the envelope first (the CLI reads it before the plan so data-aware
     //    branch fan-out can discover partition values from coordinator relations).
@@ -1194,6 +1321,7 @@ fn run_cv_refit_in_process_impl(
         metric,
         &runtime_controllers,
         &data_provider,
+        resource_limits.as_ref(),
     )
     .map_err(py_core_error)?;
     let selected_variant_id = resolved.variant_id;
@@ -1207,6 +1335,7 @@ fn run_cv_refit_in_process_impl(
     let mut artifact_store = InMemoryArtifactStore::new();
     let mut ctx = RunContext::new(run_id, Some(root_seed));
     ctx.variant_id = Some(selected_variant_id);
+    ctx.resource_limits = resource_limits;
 
     let fit_cv_results = SequentialScheduler
         .execute_campaign_phase_with_data_provider(
@@ -1523,6 +1652,7 @@ mod tests {
                             target_names: vec!["y".to_string()],
                         });
                         regression_targets.push(RegressionTargetBlock {
+                            validity_masks: None,
                             level: PredictionLevel::Sample,
                             unit_ids: vec![PredictionUnitId::Sample(sample_id)],
                             values: vec![vec![y_true]],
@@ -1830,6 +1960,7 @@ mod tests {
             RegressionMetricKind::Rmse,
             &controllers,
             &provider,
+            None,
         )
         .expect("in-process operator-SELECT must succeed");
 
@@ -1897,6 +2028,7 @@ mod tests {
             RegressionMetricKind::Rmse,
             &controllers,
             &provider,
+            None,
         )
         .unwrap();
 
@@ -1994,6 +2126,7 @@ mod tests {
             RegressionMetricKind::Rmse,
             &controllers,
             &provider,
+            None,
         )
         .unwrap();
         let refit_plan = resolved.pruned_plan.as_ref().unwrap();
@@ -2064,6 +2197,7 @@ mod tests {
             RegressionMetricKind::Rmse,
             &controllers,
             &provider,
+            None,
         )
         .unwrap_err()
         .to_string();
@@ -2185,6 +2319,7 @@ mod tests {
                 || (self.explicit_phase && task.phase == Phase::Refit)
             {
                 vec![RegressionTargetBlock {
+                    validity_masks: None,
                     level: PredictionLevel::Sample,
                     unit_ids: sample_ids
                         .iter()

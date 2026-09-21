@@ -16,6 +16,13 @@ pub enum HostHpoFoldReduction {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct HostHpoParameterBinding {
+    pub node_id: NodeId,
+    pub param_path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostHpoSearchRequest {
     pub target_node: NodeId,
     pub trial_budget: u32,
@@ -26,11 +33,83 @@ pub struct HostHpoSearchRequest {
     /// explicit selection evidence, never synthetic OOF ScoreSet reports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fold_score_reduction: Option<HostHpoFoldReduction>,
+    /// Public proposal paths mapped to operator-local parameters. Empty retains
+    /// the original single-target routing and its serialized fingerprints.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameter_bindings: BTreeMap<String, HostHpoParameterBinding>,
+}
+
+impl HostHpoSearchRequest {
+    fn validate_parameter_bindings(&self, plan: &ExecutionPlan) -> Result<()> {
+        let mut destinations = BTreeSet::new();
+        for (path, binding) in &self.parameter_bindings {
+            if path.trim().is_empty() || binding.param_path.trim().is_empty() {
+                return Err(DagMlError::RuntimeValidation(
+                    "host HPO parameter binding paths must be nonempty".into(),
+                ));
+            }
+            if plan.node_plans.get(&binding.node_id).is_none_or(|node| {
+                !matches!(
+                    node.kind,
+                    NodeKind::Model | NodeKind::Transform | NodeKind::YTransform
+                ) || !node.supported_phases.contains(&Phase::FitCv)
+            }) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "host HPO parameter binding `{path}` requires an existing FIT_CV model or transform node: `{}`",
+                    binding.node_id
+                )));
+            }
+            if !destinations.insert((&binding.node_id, &binding.param_path)) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "host HPO parameter bindings collide at `{}.{}`",
+                    binding.node_id, binding.param_path
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn parameter_overrides(
+        &self,
+        params: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<Vec<crate::generation::GenerationParamOverride>> {
+        if params.is_empty() || params.keys().any(|key| key.trim().is_empty()) {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO proposal parameters must be nonempty".into(),
+            ));
+        }
+        if self.parameter_bindings.is_empty() {
+            return Ok(vec![crate::generation::GenerationParamOverride {
+                node_id: self.target_node.clone(),
+                params: params.clone(),
+            }]);
+        }
+        let mut grouped: BTreeMap<NodeId, BTreeMap<String, serde_json::Value>> = BTreeMap::new();
+        for (path, value) in params {
+            let binding = self.parameter_bindings.get(path).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "host HPO proposed parameter `{path}` has no parameter binding"
+                ))
+            })?;
+            grouped
+                .entry(binding.node_id.clone())
+                .or_default()
+                .insert(binding.param_path.clone(), value.clone());
+        }
+        Ok(grouped
+            .into_iter()
+            .map(|(node_id, params)| crate::generation::GenerationParamOverride { node_id, params })
+            .collect())
+    }
 }
 
 pub trait HostHpoProposalSource {
     fn ask(&mut self, trial_index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>>;
     fn tell(&mut self, trial_index: u32, score: f64) -> Result<()>;
+    /// Terminalize a failed candidate before pairing durable optimizer state.
+    fn fail(&mut self, _trial_index: u32, _error: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,6 +137,109 @@ pub struct HostHpoSearchResult {
     pub selected_params: BTreeMap<String, serde_json::Value>,
 }
 
+/// Operational stopping state; cancellation never requests a REFIT.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostHpoSearchStatus {
+    Running,
+    Completed,
+    Cancelled,
+    Exhausted,
+    Failed,
+}
+
+/// A terminal candidate. Failed fits carry no manufactured score.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HostHpoTerminalTrial {
+    Complete {
+        evidence: HostHpoTrialEvidence,
+    },
+    Failed {
+        trial_index: u32,
+        params: BTreeMap<String, serde_json::Value>,
+        variant_id: VariantId,
+        error: String,
+    },
+}
+
+impl HostHpoTerminalTrial {
+    pub fn trial_index(&self) -> u32 {
+        match self {
+            Self::Complete { evidence } => evidence.trial_index,
+            Self::Failed { trial_index, .. } => *trial_index,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostHpoCheckpointBinding {
+    pub objective_fingerprint: String,
+    pub graph_fingerprint: String,
+    pub controller_fingerprint: String,
+    pub campaign_fingerprint: String,
+    pub fold_set_fingerprint: String,
+    /// Canonical host-data envelope including schemas, identities and relations.
+    /// Host content-version descriptors belong in that envelope or the request.
+    pub data_fingerprint: String,
+}
+
+/// Native score evidence, independent of opaque host optimizer bytes.
+/// Producers atomically pair this document with their optimizer checkpoint.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostHpoCheckpoint {
+    pub schema_version: u32,
+    pub binding: HostHpoCheckpointBinding,
+    pub trials: Vec<HostHpoTerminalTrial>,
+    pub fingerprint: String,
+}
+
+impl HostHpoCheckpoint {
+    fn seal(&mut self) -> Result<()> {
+        self.fingerprint =
+            stable_json_fingerprint(&(self.schema_version, &self.binding, &self.trials))?;
+        Ok(())
+    }
+}
+
+/// Return false only to request cancellation at this completed-trial boundary.
+pub trait HostHpoProgress {
+    fn checkpoint(
+        &mut self,
+        checkpoint: &HostHpoCheckpoint,
+        status: HostHpoSearchStatus,
+    ) -> Result<bool>;
+}
+
+pub struct HostHpoResumeOptions {
+    pub data_fingerprint: String,
+    pub checkpoint: Option<HostHpoCheckpoint>,
+}
+
+impl HostHpoResumeOptions {
+    pub fn from_envelope(
+        envelope: &crate::data::ExternalDataPlanEnvelope,
+        checkpoint: Option<HostHpoCheckpoint>,
+    ) -> Result<Self> {
+        envelope.validate()?;
+        Ok(Self {
+            data_fingerprint: stable_json_fingerprint(envelope)?,
+            checkpoint,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HostHpoSearchOutcome {
+    /// Absent when cancelled/exhausted before any successful candidate.
+    #[serde(flatten)]
+    pub result: Option<HostHpoSearchResult>,
+    pub status: HostHpoSearchStatus,
+    pub checkpoint: Option<HostHpoCheckpoint>,
+}
+
 impl SequentialScheduler {
     /// Execute candidate FIT_CV only; the caller's outer scope owns final fitting.
     /// Every trial gets an isolated context and the same already-attested folds.
@@ -70,6 +252,45 @@ impl SequentialScheduler {
         request: &HostHpoSearchRequest,
         proposals: &mut dyn HostHpoProposalSource,
     ) -> Result<HostHpoSearchResult> {
+        self.execute_host_hpo_search_inner(plan, controllers, provider, request, proposals, None)?
+            .result
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation("host HPO has no successful candidate".into())
+            })
+    }
+
+    /// Resume terminal native evidence and publish progress between trials.
+    /// The budget is a total across calls; SELECT includes historical winners.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_resumable_host_hpo_search(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        provider: &dyn RuntimeDataProvider,
+        request: &HostHpoSearchRequest,
+        proposals: &mut dyn HostHpoProposalSource,
+        options: &HostHpoResumeOptions,
+        progress: &mut dyn HostHpoProgress,
+    ) -> Result<HostHpoSearchOutcome> {
+        self.execute_host_hpo_search_inner(
+            plan,
+            controllers,
+            provider,
+            request,
+            proposals,
+            Some((options, progress)),
+        )
+    }
+
+    fn execute_host_hpo_search_inner(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        provider: &dyn RuntimeDataProvider,
+        request: &HostHpoSearchRequest,
+        proposals: &mut dyn HostHpoProposalSource,
+        mut durable: Option<(&HostHpoResumeOptions, &mut dyn HostHpoProgress)>,
+    ) -> Result<HostHpoSearchOutcome> {
         plan.validate()?;
         if request.trial_budget == 0 || request.optimizer_descriptor.is_empty() {
             return Err(DagMlError::RuntimeValidation(
@@ -90,17 +311,50 @@ impl SequentialScheduler {
                 "host HPO requires one concrete base variant and a model target".into(),
             ));
         }
-        let mut trials = Vec::new();
-        let mut candidates = Vec::new();
-        for trial_index in 0..request.trial_budget {
+        request.validate_parameter_bindings(plan)?;
+        let mut checkpoint = durable
+            .as_ref()
+            .map(|(options, _)| prepare_host_hpo_checkpoint(plan, request, options))
+            .transpose()?;
+        let mut trials = checkpoint
+            .as_ref()
+            .map(|checkpoint| {
+                checkpoint
+                    .trials
+                    .iter()
+                    .filter_map(|trial| match trial {
+                        HostHpoTerminalTrial::Complete { evidence } => Some(evidence.clone()),
+                        HostHpoTerminalTrial::Failed { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut candidates = trials
+            .iter()
+            .map(|trial| host_hpo_candidate(plan, request, trial))
+            .collect::<Result<Vec<_>>>()?;
+        let history_len = checkpoint
+            .as_ref()
+            .map_or(0, |checkpoint| checkpoint.trials.len() as u32);
+        let mut status = if history_len == request.trial_budget {
+            HostHpoSearchStatus::Completed
+        } else {
+            HostHpoSearchStatus::Running
+        };
+        if let (Some(checkpoint), Some((_, progress))) = (&checkpoint, &mut durable) {
+            if !progress.checkpoint(checkpoint, status)? && status == HostHpoSearchStatus::Running {
+                status = HostHpoSearchStatus::Cancelled;
+            }
+        }
+        for trial_index in history_len..request.trial_budget {
+            if status == HostHpoSearchStatus::Cancelled {
+                break;
+            }
             let Some(params) = proposals.ask(trial_index)? else {
+                status = HostHpoSearchStatus::Exhausted;
                 break;
             };
-            if params.is_empty() || params.keys().any(|key| key.trim().is_empty()) {
-                return Err(DagMlError::RuntimeValidation(
-                    "host HPO proposal parameters must be nonempty".into(),
-                ));
-            }
+            let param_overrides = request.parameter_overrides(&params)?;
             let mut variant = plan.variants[0].clone();
             variant.variant_id = VariantId::new(format!("host_hpo:trial:{trial_index:010}"))?;
             variant.choices.insert(
@@ -108,18 +362,23 @@ impl SequentialScheduler {
                 GenerationChoice {
                     label: format!("trial:{trial_index}"),
                     value: serde_json::json!({"trial_index": trial_index}),
-                    param_overrides: vec![crate::generation::GenerationParamOverride {
-                        node_id: request.target_node.clone(),
-                        params: params.clone(),
-                    }],
+                    param_overrides,
                     active_subsequence: None,
                 },
             );
-            variant.fingerprint = stable_json_fingerprint(&(
-                &plan.variants[0].fingerprint,
-                &variant.choices,
-                request,
-            ))?;
+            variant.fingerprint = if let Some(checkpoint) = &checkpoint {
+                stable_json_fingerprint(&(
+                    &plan.variants[0].fingerprint,
+                    &variant.choices,
+                    &checkpoint.binding.objective_fingerprint,
+                ))?
+            } else {
+                stable_json_fingerprint(&(
+                    &plan.variants[0].fingerprint,
+                    &variant.choices,
+                    request,
+                ))?
+            };
             let mut candidate_plan = plan.clone();
             candidate_plan.variants = vec![variant.clone()];
             candidate_plan.validate()?;
@@ -128,96 +387,89 @@ impl SequentialScheduler {
                 variant.seed.or(plan.campaign.root_seed),
             );
             context.variant_id = Some(variant.variant_id.clone());
-            self.execute_campaign_phase_with_data_provider(
-                &candidate_plan,
-                controllers,
-                provider,
-                &mut context,
-                Phase::FitCv,
-            )?;
-            context.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
-            let reports = context
-                .score_collector
-                .iter()
-                .filter(|report| {
-                    report.producer_node == request.target_node
-                        && report.partition == PredictionPartition::Validation
-                        && report.fold_id.as_ref().is_some_and(|fold| {
-                            if request.fold_score_reduction.is_some() {
-                                folds.folds.iter().any(|item| &item.fold_id == fold)
-                            } else {
-                                fold.as_str() == "avg"
-                                    || (folds.folds.len() == 1 && fold == &folds.folds[0].fold_id)
-                            }
-                        })
-                })
-                .collect::<Vec<_>>();
-            let mut objective_fold_scores = BTreeMap::new();
-            let (score, candidate) = if let Some(reduction) = request.fold_score_reduction {
-                for report in &reports {
-                    let fold = report.fold_id.as_ref().expect("filtered explicit fold");
-                    let score = host_hpo_metric(report, request.metric)?;
-                    if objective_fold_scores
-                        .insert(fold.as_str().to_owned(), score)
-                        .is_some()
+            let evaluated: Result<(HostHpoTrialEvidence, crate::selection::CandidateScore)> =
+                (|| {
+                    self.execute_campaign_phase_with_data_provider(
+                        &candidate_plan,
+                        controllers,
+                        provider,
+                        &mut context,
+                        Phase::FitCv,
+                    )?;
+                    context.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
+                    let scores =
+                        context
+                            .build_score_set(plan.id.clone(), None)
+                            .ok_or_else(|| {
+                                DagMlError::RuntimeValidation(
+                                    "host HPO lost native score evidence".into(),
+                                )
+                            })?;
+                    let (score, objective_fold_scores, candidate) =
+                        host_hpo_score(plan, request, &variant.variant_id, &scores)?;
+                    Ok((
+                        HostHpoTrialEvidence {
+                            trial_index,
+                            params: params.clone(),
+                            score,
+                            variant_id: variant.variant_id.clone(),
+                            scores,
+                            objective_fold_scores,
+                        },
+                        candidate,
+                    ))
+                })();
+            let (evidence, candidate) = match evaluated {
+                Ok(result) => result,
+                Err(error) => {
+                    if let (Some(checkpoint), Some((_, progress))) = (&mut checkpoint, &mut durable)
                     {
-                        return Err(DagMlError::RuntimeValidation(
-                            "host HPO has ambiguous fold score producers".into(),
-                        ));
+                        proposals.fail(trial_index, &error.to_string())?;
+                        checkpoint.trials.push(HostHpoTerminalTrial::Failed {
+                            trial_index,
+                            params,
+                            variant_id: variant.variant_id,
+                            error: error.to_string(),
+                        });
+                        checkpoint.seal()?;
+                        progress.checkpoint(checkpoint, HostHpoSearchStatus::Failed)?;
                     }
+                    return Err(error);
                 }
-                if objective_fold_scores.len() != folds.folds.len() {
-                    return Err(DagMlError::RuntimeValidation(
-                        "host HPO requires every declared fold's native score".into(),
-                    ));
-                }
-                let score = reduce_host_hpo_fold_scores(
-                    &objective_fold_scores,
-                    reduction,
-                    request.direction,
-                )?;
-                let candidate = crate::selection::CandidateScore {
-                    candidate_id: variant.variant_id.as_str().to_owned(),
-                    metrics: BTreeMap::from([(request.metric.name().to_owned(), score)]),
-                    metadata: BTreeMap::from([
-                        (
-                            "host_hpo_fold_score_reduction".into(),
-                            serde_json::to_value(reduction)?,
-                        ),
-                        (
-                            "objective_fold_scores".into(),
-                            serde_json::to_value(&objective_fold_scores)?,
-                        ),
-                    ]),
-                };
-                (score, candidate)
-            } else {
-                let [report] = reports.as_slice() else {
-                    return Err(DagMlError::RuntimeValidation(
-                        "host HPO requires exactly one native target OOF report".into(),
-                    ));
-                };
-                (
-                    host_hpo_metric(report, request.metric)?,
-                    (*report)
-                        .clone()
-                        .into_candidate_score(variant.variant_id.as_str())?,
-                )
             };
+            proposals.tell(trial_index, evidence.score)?;
             candidates.push(candidate);
-            let scores = context
-                .build_score_set(plan.id.clone(), None)
-                .ok_or_else(|| {
-                    DagMlError::RuntimeValidation("host HPO lost native score evidence".into())
-                })?;
-            proposals.tell(trial_index, score)?;
-            trials.push(HostHpoTrialEvidence {
-                trial_index,
-                params,
-                score,
-                variant_id: variant.variant_id,
-                scores,
-                objective_fold_scores,
+            trials.push(evidence.clone());
+            status = if trial_index + 1 == request.trial_budget {
+                HostHpoSearchStatus::Completed
+            } else {
+                HostHpoSearchStatus::Running
+            };
+            if let (Some(checkpoint), Some((_, progress))) = (&mut checkpoint, &mut durable) {
+                checkpoint
+                    .trials
+                    .push(HostHpoTerminalTrial::Complete { evidence });
+                checkpoint.seal()?;
+                if !progress.checkpoint(checkpoint, status)?
+                    && status == HostHpoSearchStatus::Running
+                {
+                    status = HostHpoSearchStatus::Cancelled;
+                }
+            }
+        }
+        if matches!(
+            status,
+            HostHpoSearchStatus::Cancelled | HostHpoSearchStatus::Exhausted
+        ) {
+            if let (Some(checkpoint), Some((_, progress))) = (&checkpoint, &mut durable) {
+                progress.checkpoint(checkpoint, status)?;
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(HostHpoSearchOutcome {
+                result: None,
+                status,
+                checkpoint,
             });
         }
         let policy = SelectionPolicy {
@@ -238,18 +490,221 @@ impl SequentialScheduler {
             .iter()
             .find(|trial| trial.variant_id.as_str() == selected.selected_candidate_id)
             .expect("selection returns an observed candidate");
-        Ok(HostHpoSearchResult {
-            profile: "host_optimizer_search_v1".into(),
-            portable: false,
-            request_fingerprint: stable_json_fingerprint(request)?,
-            graph_fingerprint: plan.graph_fingerprint.clone(),
-            controller_fingerprint: plan.controller_fingerprint.clone(),
-            campaign_fingerprint: stable_json_fingerprint(&plan.campaign)?,
-            fold_set_fingerprint: stable_json_fingerprint(folds)?,
-            selected_trial_index: winner.trial_index,
-            selected_params: winner.params.clone(),
-            trials,
+        Ok(HostHpoSearchOutcome {
+            result: Some(HostHpoSearchResult {
+                profile: "host_optimizer_search_v1".into(),
+                portable: false,
+                request_fingerprint: stable_json_fingerprint(request)?,
+                graph_fingerprint: plan.graph_fingerprint.clone(),
+                controller_fingerprint: plan.controller_fingerprint.clone(),
+                campaign_fingerprint: stable_json_fingerprint(&plan.campaign)?,
+                fold_set_fingerprint: stable_json_fingerprint(folds)?,
+                selected_trial_index: winner.trial_index,
+                selected_params: winner.params.clone(),
+                trials,
+            }),
+            status,
+            checkpoint,
         })
+    }
+}
+
+fn host_hpo_objective_fingerprint(request: &HostHpoSearchRequest) -> Result<String> {
+    let mut value = serde_json::to_value(request)?;
+    let object = value.as_object_mut().expect("request is an object");
+    object.remove("trial_budget");
+    if let Some(serde_json::Value::Object(descriptor)) = object.get_mut("optimizer_descriptor") {
+        for key in ["n_trials", "trial_budget", "resume", "storage"] {
+            descriptor.remove(key);
+        }
+    }
+    stable_json_fingerprint(&value)
+}
+
+fn prepare_host_hpo_checkpoint(
+    plan: &ExecutionPlan,
+    request: &HostHpoSearchRequest,
+    options: &HostHpoResumeOptions,
+) -> Result<HostHpoCheckpoint> {
+    if options.data_fingerprint.trim().is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "durable host HPO requires a data fingerprint".into(),
+        ));
+    }
+    let binding = HostHpoCheckpointBinding {
+        objective_fingerprint: host_hpo_objective_fingerprint(request)?,
+        graph_fingerprint: plan.graph_fingerprint.clone(),
+        controller_fingerprint: plan.controller_fingerprint.clone(),
+        campaign_fingerprint: stable_json_fingerprint(&plan.campaign)?,
+        fold_set_fingerprint: stable_json_fingerprint(&plan.fold_set)?,
+        data_fingerprint: options.data_fingerprint.clone(),
+    };
+    let mut checkpoint = options.checkpoint.clone().unwrap_or(HostHpoCheckpoint {
+        schema_version: 1,
+        binding: binding.clone(),
+        trials: Vec::new(),
+        fingerprint: String::new(),
+    });
+    if options.checkpoint.is_none() {
+        checkpoint.seal()?;
+    }
+    if checkpoint.schema_version != 1 || checkpoint.binding != binding {
+        return Err(DagMlError::RuntimeValidation(
+            "host HPO checkpoint objective/graph/controller/data/fold binding mismatch".into(),
+        ));
+    }
+    let expected = checkpoint.fingerprint.clone();
+    checkpoint.seal()?;
+    if checkpoint.fingerprint != expected {
+        return Err(DagMlError::RuntimeValidation(
+            "host HPO checkpoint integrity fingerprint mismatch".into(),
+        ));
+    }
+    if checkpoint.trials.len() > request.trial_budget as usize {
+        return Err(DagMlError::RuntimeValidation(
+            "host HPO total budget is smaller than checkpoint terminal history".into(),
+        ));
+    }
+    for (index, trial) in checkpoint.trials.iter().enumerate() {
+        if trial.trial_index() as usize != index {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO checkpoint trial indices must be unique and contiguous".into(),
+            ));
+        }
+        let (params, variant_id) = match trial {
+            HostHpoTerminalTrial::Complete { evidence } => {
+                host_hpo_candidate(plan, request, evidence)?;
+                (&evidence.params, &evidence.variant_id)
+            }
+            HostHpoTerminalTrial::Failed {
+                params,
+                variant_id,
+                error,
+                ..
+            } => {
+                if error.trim().is_empty() {
+                    return Err(DagMlError::RuntimeValidation(
+                        "host HPO failed trial requires error evidence".into(),
+                    ));
+                }
+                (params, variant_id)
+            }
+        };
+        if params.is_empty()
+            || params.keys().any(|key| key.trim().is_empty())
+            || variant_id.as_str() != format!("host_hpo:trial:{index:010}")
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO checkpoint has invalid parameter/variant identity".into(),
+            ));
+        }
+        request.parameter_overrides(params)?;
+    }
+    Ok(checkpoint)
+}
+
+fn host_hpo_candidate(
+    plan: &ExecutionPlan,
+    request: &HostHpoSearchRequest,
+    trial: &HostHpoTrialEvidence,
+) -> Result<crate::selection::CandidateScore> {
+    trial.scores.validate()?;
+    if trial.scores.plan_id != plan.id
+        || trial.scores.reports.iter().any(|report| {
+            report
+                .variant_id
+                .as_ref()
+                .is_some_and(|id| id != &trial.variant_id)
+        })
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "host HPO checkpoint score plan/variant mismatch".into(),
+        ));
+    }
+    let (score, fold_scores, candidate) =
+        host_hpo_score(plan, request, &trial.variant_id, &trial.scores)?;
+    if !trial.score.is_finite()
+        || score != trial.score
+        || fold_scores != trial.objective_fold_scores
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "host HPO checkpoint scalar/fold scores differ from native reports".into(),
+        ));
+    }
+    Ok(candidate)
+}
+
+fn host_hpo_score(
+    plan: &ExecutionPlan,
+    request: &HostHpoSearchRequest,
+    variant: &VariantId,
+    scores: &ScoreSet,
+) -> Result<(f64, BTreeMap<String, f64>, crate::selection::CandidateScore)> {
+    let folds = plan.fold_set.as_ref().expect("validated host HPO FoldSet");
+    let reports = scores
+        .reports
+        .iter()
+        .filter(|report| {
+            report.producer_node == request.target_node
+                && report.partition == PredictionPartition::Validation
+                && report.fold_id.as_ref().is_some_and(|fold| {
+                    if request.fold_score_reduction.is_some() {
+                        folds.folds.iter().any(|item| &item.fold_id == fold)
+                    } else {
+                        fold.as_str() == "avg"
+                            || (folds.folds.len() == 1 && fold == &folds.folds[0].fold_id)
+                    }
+                })
+        })
+        .collect::<Vec<_>>();
+    let mut fold_scores = BTreeMap::new();
+    if let Some(reduction) = request.fold_score_reduction {
+        for report in &reports {
+            let fold = report.fold_id.as_ref().expect("filtered fold");
+            if fold_scores
+                .insert(
+                    fold.as_str().to_owned(),
+                    host_hpo_metric(report, request.metric)?,
+                )
+                .is_some()
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "host HPO has ambiguous fold score producers".into(),
+                ));
+            }
+        }
+        if fold_scores.len() != folds.folds.len() {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO requires every declared fold's native score".into(),
+            ));
+        }
+        let score = reduce_host_hpo_fold_scores(&fold_scores, reduction, request.direction)?;
+        let candidate = crate::selection::CandidateScore {
+            candidate_id: variant.as_str().to_owned(),
+            metrics: BTreeMap::from([(request.metric.name().to_owned(), score)]),
+            metadata: BTreeMap::from([
+                (
+                    "host_hpo_fold_score_reduction".into(),
+                    serde_json::to_value(reduction)?,
+                ),
+                (
+                    "objective_fold_scores".into(),
+                    serde_json::to_value(&fold_scores)?,
+                ),
+            ]),
+        };
+        Ok((score, fold_scores, candidate))
+    } else {
+        let [report] = reports.as_slice() else {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO requires exactly one native target OOF report".into(),
+            ));
+        };
+        Ok((
+            host_hpo_metric(report, request.metric)?,
+            fold_scores,
+            (*report).clone().into_candidate_score(variant.as_str())?,
+        ))
     }
 }
 

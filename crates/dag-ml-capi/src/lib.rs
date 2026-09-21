@@ -6470,6 +6470,7 @@ mod tests {
                 params_fingerprint: "params:controller-fixture".to_string(),
             },
             phase: Phase::FitCv,
+            resources: None,
             variant_id: Some(VariantId::new("variant:controller").unwrap()),
             variant: None,
             fold_id: Some(FoldId::new("fold:0").unwrap()),

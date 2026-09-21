@@ -296,6 +296,11 @@
           "type": "array",
           "items": { "type": "array", "items": { "type": "number" } }
         },
+        "validity_masks": {
+          "description": "Optional sample-major boolean mask matching values; true means observed. Absent or null means all observed. All transported values must be finite; hidden cells are canonicalized to zero by the coordinator.",
+          "type": ["array", "null"],
+          "items": { "type": "array", "items": { "type": "boolean" } }
+        },
         "target_names": {
           "type": "array",
           "items": { "$ref": "#/$defs/non_empty_string" }

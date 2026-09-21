@@ -148,6 +148,8 @@ Controller inputs:
 - phase;
 - fold id, branch path, variant id, trial id;
 - deterministic `SeedContext`;
+- the training-wide CPU/GPU resource declaration, when the task belongs to a
+  native training request; the host must enforce requested GPU device ids;
 - data-plan/fingerprint refs;
 - controller params.
 
@@ -304,6 +306,41 @@ generators are graph nodes/controllers with explicit capabilities such as
 `generates_data`, `generates_model` or `expands_variants`; they are not allowed
 to mutate identity or training boundaries without emitting relation and shape
 deltas.
+
+### Finite source-provider preparation
+
+`execute_data_provider` prepares one finite, non-learned host dataset before IO
+assembly and CV planning. Its `data_provider_prepare_v1` profile constructs a
+single input-free `Generator` node, registers a stateless controller supporting
+only `PLAN`, and executes it once through the ordinary native planner and
+`SequentialScheduler`. It creates no data envelope, target authority or FoldSet.
+
+Python exposes `dag_ml.execute_data_provider(recipe, callback)`. A strict recipe
+requires `provider_id` and `provider_version`; defaults are `params={}`, `seed=0`,
+`context={}`, `scope="run"`, `finite=true`, and `learned=false`. Unknown fields,
+empty identities/keys, other scopes, learned providers and infinite providers
+fail before the callback. The callback receives a standard `NodeTask`, with
+`phase="PLAN"`, a native-derived `seed`, and no input handles, views or folds.
+The provider must use that seed for reproducible generation; metadata returned
+by the host is not proof that an operator used it correctly.
+
+The callback returns `{"handle": {"handle": 1, "kind": "data",
+"owner_controller": "<task controller id>"}, "metadata": {...}}`. Only a
+nonzero data handle owned by that controller is accepted. X, y and missingness
+buffers stay in the host; descriptive metadata can carry counts and content
+digests, but must not embed those buffers. The host owns handle lifetime and IO
+must validate the actual assembled dataset before ordinary training begins.
+Full or partial X/y production is an IO/host decision; it does not authorize
+modifying training identities or targets during CV.
+
+The core constructs and validates the resulting `NodeResult` and `LineageRecord`.
+The receipt contains `recipe_fingerprint`, `context_fingerprint`, graph and
+controller fingerprints, `task_seed`, the handle, metadata and lineage.
+`execution_fingerprint` binds those recipe/metadata/lineage facts while excluding
+the ephemeral handle. It does not independently hash or attest feature/target
+bytes. No provider state or buffers are checkpointed. Exceptions propagate
+without retries. Fold and epoch generation, learned providers and dynamic
+post-split identity changes require separate contracts and are refused here.
 
 ### Splitters
 
@@ -897,11 +934,29 @@ If any answer is "no", the implementation has drifted from the product goal.
 
 `SequentialScheduler::execute_host_hpo_search` is an additive, nonportable
 profile for a concrete model topology and an explicit evaluation FoldSet.
-The host proposal source receives `ask(trial_index)` and `tell(trial_index,
-native_score)` only. Core owns the bounded trial loop, isolated candidate
+The host proposal source receives `ask(trial_index)`, `tell(trial_index,
+native_score)` and, for durable searches, `fail(trial_index, error)`. Core owns
+the bounded trial loop, isolated candidate
 contexts, parameter-patched variant identities, FIT_CV, score collection and
 selection. Operator or optimizer errors propagate without retries or fabricated
 penalty scores. A finite search space can terminate early by returning no proposal.
+
+The optional request field `parameter_bindings` maps public proposal paths to
+`{"node_id": "...", "param_path": "..."}` destinations. `target_node` remains
+the producer whose native scores determine selection. A nonempty mapping can
+patch several models and transforms in one candidate, including the existing
+`nested_oof_v1` stacking topology; FIT_CV still uses the native nested scheduler
+and its outer-training-only inner OOF matrices. Bindings must name existing
+model, transform or target-transform nodes supporting FIT_CV, use nonempty
+public and local paths, and have unique `(node_id, param_path)` destinations.
+Native validation rejects invalid bindings before any callback. Every proposed
+parameter must have an explicit binding when the mapping is nonempty; missing
+bindings fail before candidate execution. Parameter paths are opaque operator
+keys, not instructions to change graph topology. Trial evidence and selected
+parameters retain the public keys. The entire mapping is part of objective
+identity and cannot change on resume. An absent or empty mapping routes all
+parameters to `target_node` and is omitted from serialization, preserving
+existing requests, variant identities and checkpoints.
 
 The result retains each candidate's native ScoreSet and parameters, the selected
 trial, and fingerprints of the request, graph, controller registry, campaign
@@ -918,8 +973,43 @@ No REFIT or external PREDICT occurs during search.
 Callers running nested optimization must provide only the outer-training scope
 and subsequently fit the selected model in that outer scope.
 
-This profile is **not** Methods HPO, a portable predictor package, a durable
-optimizer checkpoint or a resumable training archive. The existing Methods
-session/checkpoint ABI and published package validation remain unchanged.
-Progressive pruning, persistent host studies and multi-phase host search are
-not claimed by this initial profile.
+The optional `SequentialScheduler::execute_resumable_host_hpo_search` route
+retains the same `host_optimizer_search_v1` profile and adds a versioned native
+checkpoint. Python exposes this through keyword arguments `resume_checkpoint`
+and `progress_callback` on `dag_ml.run_host_hpo_search_in_process`. Without
+either argument, the original result contract is unchanged.
+
+The checkpoint binds terminal candidate parameters and native ScoreSets to the
+graph, controllers, campaign, FoldSet, data envelope and objective, including
+the optimizer descriptor's space and seed. Before any proposal or operator
+call, native resume validates these bindings, the checkpoint integrity hash,
+contiguous trial identities and scores recomputed from the retained native
+reports. The host must include content fingerprints for opaque training
+buffers and targets in its objective descriptor; the core never inspects feature
+buffers. A changed objective is rejected. Budget and top-level descriptor
+fields `n_trials`, `trial_budget`, `resume` and `storage` are operational controls,
+excluded from objective identity. The requested budget is the total across
+resumed calls and must cover the existing terminal history. Increasing it
+evaluates only the remaining trials. Successful historical candidates remain
+eligible for native SELECT; completed failures consume budget and never replay.
+
+Progress receives `{"operation":"checkpoint", "checkpoint": {...}, "status": ...}`
+before the first proposal, after every terminal trial and on cancellation or
+proposal exhaustion. Status is `running`, `completed`, `cancelled`, `exhausted`
+or `failed`. Returning `False` stops between trials; `True` or `None` continues.
+An operator error first calls optimizer `fail`, seals failed evidence without a
+score and publishes `failed`, then propagates the original error even if the
+progress callback returns `False`. Durable results add `status` and `checkpoint`;
+winner fields are absent when no candidate succeeded. `selected_trial_index`
+identifies the winner's score in `trials`; there is no `selected_score` field.
+
+The host owns durable file IO and atomically pairs each native checkpoint with
+the optimizer's opaque saved state after `tell` or `fail`. Before resuming, that
+adapter must validate matching trial identities, parameters, terminal states and
+scores in both histories. This provides restart between terminal trials; it does
+not checkpoint a running operator or recover a partial optimizer callback.
+Search never refits; the caller explicitly refits the selected parameters.
+This profile remains nonportable and is not Methods HPO, a portable predictor
+package or a resumable training archive. The existing Methods session/checkpoint
+ABI and published package validation remain unchanged. Progressive pruning and
+multi-phase host search are not claimed.
