@@ -266,7 +266,7 @@
     },
     {
       "path": "docs/TRAINING_REPLAY_CONTRACTS.md",
-      "sha256": "c66752b140fa69c7359e3a73ce951e4adde77295aba4178491758bfdbe2d4091",
+      "sha256": "f4ad3d7a7221e6318ce0003555da7f4e6ce8684be44a3db14fa16487c59cbd84",
       "kind": "documentation"
     },
     {
@@ -536,7 +536,7 @@
     },
     {
       "path": "docs/index.md",
-      "sha256": "503f8174932e77625e5f0eab868acdeefd20ea15106076c356790afc1af32d3d",
+      "sha256": "2a3a3d9922a46421e16e42faa557a01dde6142c34fb205d9a557191ad86aef2f",
       "kind": "documentation_index"
     },
     {
@@ -731,7 +731,7 @@
     },
     {
       "path": "parity/training/tests/test_training_replay_contracts.py",
-      "sha256": "fdecac5f9e8897ab40d0b8ae7e471c7a862f66a55fcfc3ec63f1feb34d293ee5",
+      "sha256": "8d19881e37e36fefaade9789527b50f715e601da580491a52ca14203b55bf1b5",
       "kind": "test"
     },
     {
@@ -856,5 +856,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "4d74b7ad73a94dd373f1267399cc7b04468241a70c9b85953e599403d7bbf3e6"
+  "pack_checksum": "dbb7d9186d9c862d597c0b35e6cb4dc482f0aa063a1777d0c63b93ff109af8c6"
 }
