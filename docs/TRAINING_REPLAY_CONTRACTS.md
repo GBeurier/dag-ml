@@ -1,7 +1,8 @@
 # Public training replay contracts
 
 > **RÉFÉRENCE À REQUALIFIER — 17 septembre 2026.** Contrats conservés. La section roadmap est une séquence historique à rapprocher de SUPPORTED et des tests actuels ; ne pas supposer ses primitives absentes.
-> [Backlog actif](../../BACKLOG_ECOSYSTEME.md) · [Premier chantier](../../ROADMAP_CONSOLIDATION_MULTIMODALE.md).
+> Les fichiers de pilotage mainteneur `BACKLOG_ECOSYSTEME.md` et
+> `ROADMAP_CONSOLIDATION_MULTIMODALE.md` vivent hors de ce dépôt public.
 
 
 This page specifies the public contract for replaying a completed DAG-ML

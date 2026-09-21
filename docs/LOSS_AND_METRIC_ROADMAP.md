@@ -3,7 +3,8 @@
 # Native Training Loss and Metric Roadmap
 
 > **RÉFÉRENCE À REQUALIFIER — 17 septembre 2026.** Programme technique conservé ; le tableau de juillet décrit des branches de travail. Qualifier les capacités des versions actuelles avant de rouvrir L0–L7.
-> [Backlog actif](../../BACKLOG_ECOSYSTEME.md) · [Premier chantier](../../ROADMAP_CONSOLIDATION_MULTIMODALE.md).
+> Les fichiers de pilotage mainteneur `BACKLOG_ECOSYSTEME.md` et
+> `ROADMAP_CONSOLIDATION_MULTIMODALE.md` vivent hors de ce dépôt public.
 
 
 ## Outcome
