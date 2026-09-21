@@ -1697,6 +1697,7 @@ pub fn execute_portable_full_refit(
         );
     }
     let mut ctx = RunContext::new(input.run_id.clone(), derived_target_plan.campaign.root_seed);
+    ctx.resource_limits = Some(input.target_training_request.options.resources.clone());
     ctx.variant_id = Some(input.recipe.selected_variant_id.clone());
     if let Some(nested) = nested_stacking_campaign_plan(&derived_target_plan)? {
         // Ridge's full refit trains only from target-cohort OOF base features.
@@ -1947,8 +1948,9 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             &selection_producer,
             &selection_producer_port,
         )?;
-        let campaign_context =
+        let mut campaign_context =
             RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
+        campaign_context.resource_limits = Some(input.request.options.resources.clone());
         let campaign = SequentialScheduler.execute_hpo_campaign(
             &projection.plan,
             input.controllers,
@@ -1971,6 +1973,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             Some(selection_producer_port.as_str()),
             metric_level,
             |candidate_plan, candidate_ctx| {
+                candidate_ctx.resource_limits = Some(input.request.options.resources.clone());
                 scheduler
                     .fit_cv(candidate_plan, input.controllers, input.data_provider, candidate_ctx)
                     .map(|_| ())
@@ -1992,6 +1995,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             Some(selection_producer_port.as_str()),
             metric_level,
             |candidate_plan, candidate_ctx| {
+                candidate_ctx.resource_limits = Some(input.request.options.resources.clone());
                 scheduler
                     .fit_cv(candidate_plan, input.controllers, input.data_provider, candidate_ctx)
                     .map(|_| ())
@@ -2027,6 +2031,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     effective_plan.validate()?;
 
     let mut selected_ctx = RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
+    selected_ctx.resource_limits = Some(input.request.options.resources.clone());
     selected_ctx.variant_id = Some(selected_variant_id.clone());
     let fit_cv_results = scheduler.fit_cv(
         &effective_plan,
@@ -2292,11 +2297,10 @@ fn validate_native_training_options(request: &TrainingRequest) -> Result<()> {
     let resources = &request.options.resources;
     if resources.cpu_threads != request.options.scheduler.workers
         || resources.memory_bytes.is_some()
-        || !resources.gpu_devices.is_empty()
         || resources.wall_time_ms.is_some()
     {
         return Err(DagMlError::RuntimeValidation(
-            "native training V1 supports only cpu_threads=scheduler.workers with memory_bytes=null, gpu_devices=[], and wall_time_ms=null"
+            "native training V1 supports only cpu_threads=scheduler.workers with memory_bytes=null and wall_time_ms=null; declared gpu_devices are forwarded to host controllers"
                 .to_string(),
         ));
     }

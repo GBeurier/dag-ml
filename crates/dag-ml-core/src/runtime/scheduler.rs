@@ -108,6 +108,17 @@ pub(crate) fn normalize_result_prediction_ports(
     task: &NodeTask,
     result: &mut NodeResult,
 ) -> Result<()> {
+    for targets in &mut result.regression_targets {
+        *targets = targets.canonicalized()?;
+        // Prediction consumers (including stacking) do not yet carry target masks.
+        // Refuse before an incomplete target contract can enter a downstream fit.
+        if plan.graph_plan.graph.edges.iter().any(|edge| {
+            edge.source.node_id == task.node_plan.node_id
+                && edge.contract.kind == PortKind::Prediction
+        }) {
+            targets.require_complete_targets("prediction merge/late fusion")?;
+        }
+    }
     if result.predictions.is_empty()
         && result.observation_predictions.is_empty()
         && result.aggregated_predictions.is_empty()
@@ -328,6 +339,7 @@ impl SequentialScheduler {
             candidate_plan.validate()?;
             let mut candidate_ctx =
                 RunContext::new(ctx.run_id.clone(), proposal.variant.seed.or(ctx.root_seed));
+            candidate_ctx.resource_limits = ctx.resource_limits.clone();
             candidate_ctx.variant_id = Some(proposal.variant.variant_id.clone());
 
             let evaluation = {
@@ -1225,6 +1237,7 @@ impl SequentialScheduler {
                             run_id: ctx.run_id.clone(),
                             node_plan: task_node_plan.clone(),
                             phase: scope.phase,
+                            resources: ctx.resource_limits.clone(),
                             variant_id: scope.variant_id.clone(),
                             variant: scope.variant.clone(),
                             fold_id: scope.fold_id.clone(),
@@ -1335,6 +1348,7 @@ impl SequentialScheduler {
                     run_id: ctx.run_id.clone(),
                     node_plan: task_node_plan.clone(),
                     phase: scope.phase,
+                    resources: ctx.resource_limits.clone(),
                     variant_id: scope.variant_id.clone(),
                     variant: scope.variant.clone(),
                     fold_id: scope.fold_id.clone(),
@@ -1854,6 +1868,7 @@ impl ParallelScheduler {
                         run_id: ctx.run_id.clone(),
                         node_plan: task_node_plan.clone(),
                         phase: scope.phase,
+                        resources: ctx.resource_limits.clone(),
                         variant_id: scope.variant_id.clone(),
                         variant: scope.variant.clone(),
                         fold_id: scope.fold_id.clone(),
@@ -2009,6 +2024,7 @@ impl ParallelScheduler {
                         run_id: ctx.run_id.clone(),
                         node_plan: task_node_plan.clone(),
                         phase: scope.phase,
+                        resources: ctx.resource_limits.clone(),
                         variant_id: scope.variant_id.clone(),
                         variant: scope.variant.clone(),
                         fold_id: scope.fold_id.clone(),
@@ -2292,6 +2308,7 @@ mod hpo_scheduler_tests {
                 artifact_handles: BTreeMap::new(),
                 fit_influence_diagnostics: Vec::new(),
                 regression_targets: vec![RegressionTargetBlock {
+                    validity_masks: None,
                     level: PredictionLevel::Sample,
                     unit_ids: vec![PredictionUnitId::Sample(sample_id)],
                     values: vec![vec![1.0]],

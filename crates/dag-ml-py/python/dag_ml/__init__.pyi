@@ -1,5 +1,13 @@
 from os import PathLike
-from typing import Any, Iterable, Self
+from typing import Any, Self
+
+def execute_data_provider(recipe: Any, callback: Any) -> dict[str, Any]: ...
+
+def run_host_hpo_search_in_process(
+    dsl: Any, envelope: Any, controller_manifests: Any, request: Any,
+    op_callback: Any, optimizer_callback: Any,
+    *, resume_checkpoint: Any = None, progress_callback: Any = None,
+) -> dict[str, Any]: ...
 
 class DagMlError(Exception):
     category: str
