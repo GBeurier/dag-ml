@@ -4,8 +4,9 @@ build-backend = "maturin"
 
 [project]
 name = "dag-ml"
-version = "0.3.25"
+version = "0.3.26"
 description = "Python bindings for DAG-ML JSON contracts."
+readme = "README.md"
 requires-python = ">=3.11"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
 license-files = ["LICENSE"]
@@ -27,6 +28,8 @@ classifiers = [
 features = ["extension-module", "methods-optimizer"]
 module-name = "dag_ml._dag_ml"
 python-source = "python"
+# Local interpreter caches must not become distribution contents.
+exclude = ["**/__pycache__/**", "**/*.pyc", "**/*.pyo"]
 
 [tool.maturin.sbom]
 # cargo-cyclonedx serializes absolute file:// URLs for workspace path

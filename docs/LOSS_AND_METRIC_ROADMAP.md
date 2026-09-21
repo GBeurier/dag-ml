@@ -2,6 +2,11 @@
 
 # Native Training Loss and Metric Roadmap
 
+> **RÉFÉRENCE À REQUALIFIER — 17 septembre 2026.** Programme technique conservé ; le tableau de juillet décrit des branches de travail. Qualifier les capacités des versions actuelles avant de rouvrir L0–L7.
+> Les fichiers de pilotage mainteneur `BACKLOG_ECOSYSTEME.md` et
+> `ROADMAP_CONSOLIDATION_MULTIMODALE.md` vivent hors de ce dépôt public.
+
+
 ## Outcome
 
 dag-ml becomes the single control plane for training-loss and metric semantics.

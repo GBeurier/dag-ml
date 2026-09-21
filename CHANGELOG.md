@@ -9,6 +9,26 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+## [0.3.26] - 2026-09-21
+
+### Added
+
+- Carry explicit CPU-thread and GPU-device resource requests through native
+  training, CV, selection, refit, host-HPO, the Python binding and the CLI
+  without letting the coordinator inspect host tensors.
+- Add a validated data-provider bootstrap contract and Python façade, including
+  strict scope, handle and fingerprint checks.
+- Extend native metric coverage for classification, masked multi-output
+  regression and provider-defined metrics, with identity-safe aggregation.
+- Add resumable host-HPO checkpoints, cancellation/failure evidence and strict
+  objective/binding validation before callbacks execute.
+
+### Fixed
+
+- Preserve requested resources across nested scheduler contexts and reject
+  malformed task results, resume histories and data-provider outputs before
+  committing runtime state.
+
 ## [0.3.25] - 2026-09-05
 
 ### Fixed
@@ -377,7 +397,8 @@ Initial active core scaffold. Executable Rust crates with:
   references.
 - Direct Python/YAML DSL frontends (JSON-only parser today).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.25...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.26...HEAD
+[0.3.26]: https://github.com/GBeurier/dag-ml/compare/v0.3.25...v0.3.26
 [0.3.25]: https://github.com/GBeurier/dag-ml/compare/v0.3.24...v0.3.25
 [0.3.24]: https://github.com/GBeurier/dag-ml/compare/v0.3.23...v0.3.24
 [0.2.0]: https://github.com/GBeurier/dag-ml/releases/tag/v0.2.0

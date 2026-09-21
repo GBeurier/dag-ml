@@ -597,6 +597,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         in_process::execute_phase_in_process,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(in_process::execute_data_provider, module)?)?;
     module.add_function(wrap_pyfunction!(
         in_process::run_host_hpo_search_in_process,
         module
@@ -748,6 +749,7 @@ fn contract_manifest() -> serde_json::Value {
             "canonical_operator_variant_value_json",
             "run_cv_refit_in_process",
             "execute_phase_in_process",
+            "execute_data_provider",
             "run_cv_refit_in_process_with_training_losses",
             "run_cv_refit_predict_in_process",
             "TrainingResult",

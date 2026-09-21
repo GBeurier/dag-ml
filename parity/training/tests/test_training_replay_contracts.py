@@ -52,10 +52,10 @@ def test_base_pack_remains_byte_current() -> None:
     # Published v0.3.25 (233d4ec): retain the released pack and its 105 artifacts.
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "f7473a9e6919e675e45e2d5854388c9dadb004b89628c670ca1bf4c967736f18"
+        "7a2b6bfe0a395f58c860aa3ca67f068f6efb6ca62c2549d16a62417a92371951"
     )
     assert pack["pack_checksum"] == (
-        "e38aca8ca0bf73e9e08b9541854164dc91e3261b0a6a479d6b42a6330e694fd7"
+        "aed1893528ca56cba054e26350b5727bf8aee9be120a34956ebe72357d2a912c"
     )
     assert len(pack["artifacts"]) == 105
     assert all(

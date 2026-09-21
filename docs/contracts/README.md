@@ -5,6 +5,16 @@ DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
 validator: it checks fingerprints, campaign fold membership, OOF boundaries and
 leakage policies before any controller receives a handle.
 
+## Finite Source Provider Preparation V1
+
+`data_provider_prepare.schema.json` publishes the native preparation receipt;
+its `$defs/recipe` and `$defs/materialization` define the request and host callback
+response. `execute_data_provider` runs one input-free Generator in PLAN. The
+receipt records recipe/context fingerprints and native lineage, not a dataset
+authority. X/y remain host-owned and IO validates their assembled cohort before
+fold planning. Only finite, non-learned run scope is supported. See the
+[coordinator contract](../COORDINATOR_SPEC.md#finite-source-provider-preparation).
+
 ## Native Full Refit Package V3
 
 Schemas: `portable_refit_package.v3.schema.json`,
@@ -671,7 +681,8 @@ C ABI: `DAG_ML_NODE_TASK_SCHEMA_VERSION`,
 These are the direct wire contracts between the Rust coordinator and external
 operator controllers. `NodeTask` carries the resolved node plan, including
 phase-specific training-loss roles, phase, variant/fold context, handles, data
-views, OOF prediction inputs, refit artifact inputs and deterministic seed.
+views, OOF prediction inputs, refit artifact inputs, deterministic seed and an
+optional training-wide resource declaration for host-enforced CPU/GPU routing.
 `NodeResult` returns output handles,
 sample predictions, optional observation-level predictions, optional aggregated
 sample/target/group predictions, shape deltas, artifacts and lineage. Rust validates every result

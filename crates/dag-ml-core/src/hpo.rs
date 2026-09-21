@@ -1775,6 +1775,7 @@ mod pls_controller {
                     )
                 })?;
                 vec![RegressionTargetBlock {
+                    validity_masks: None,
                     level: PredictionLevel::Sample,
                     unit_ids: dataset
                         .sample_ids
@@ -2306,6 +2307,7 @@ mod pls_controller {
                     )
                 })?;
                 vec![RegressionTargetBlock {
+                    validity_masks: None,
                     level: PredictionLevel::Sample,
                     unit_ids: output
                         .sample_ids

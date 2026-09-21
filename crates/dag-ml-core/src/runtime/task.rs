@@ -65,6 +65,10 @@ pub struct NodeTask {
     pub run_id: RunId,
     pub node_plan: NodePlan,
     pub phase: Phase,
+    /// Training-wide limits selected by the caller. Hosts enforce device use;
+    /// absence preserves non-training and legacy task wire compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<TrainingResourceLimits>,
     pub variant_id: Option<VariantId>,
     #[serde(default)]
     pub variant: Option<VariantExecutionSpec>,

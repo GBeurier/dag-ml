@@ -10564,6 +10564,14 @@ def validate_node_result_schema(schema: Any, label: str) -> None:
             f"{label} NodeResult schema misses `{definition_name}`",
         )
     properties = schema.get("properties")
+    mask = defs.get("regression_target_block", {}).get("properties", {}).get("validity_masks", {})
+    require(
+        mask.get("type") == ["array", "null"]
+        and mask.get("items", {}).get("type") == "array"
+        and mask.get("items", {}).get("items", {}).get("type") == "boolean"
+        and "validity_masks" not in defs.get("regression_target_block", {}).get("required", []),
+        f"{label} NodeResult target validity_masks must be optional sample-major booleans",
+    )
     require(isinstance(properties, dict), f"{label} NodeResult properties missing")
     require(
         "fit_influence_diagnostics" in properties,
