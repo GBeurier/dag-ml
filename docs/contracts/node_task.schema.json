@@ -15,6 +15,13 @@
     "phase": {
       "$ref": "#/$defs/phase"
     },
+    "resources": {
+      "description": "Training-wide resource declaration forwarded unchanged to the host controller.",
+      "anyOf": [
+        { "$ref": "https://github.com/GBeurier/dag-ml/schemas/training_request.v1.schema.json#/$defs/resources" },
+        { "type": "null" }
+      ]
+    },
     "variant_id": {
       "anyOf": [
         { "$ref": "#/$defs/identifier" },

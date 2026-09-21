@@ -145,6 +145,7 @@ fn aggregate_oof_targets_by_unit(
     level: PredictionLevel,
     requested_unit_order: &[PredictionUnitId],
 ) -> Result<RegressionTargetBlock> {
+    sample_targets.require_complete_targets("global group/target OOF aggregation")?;
     if sample_targets.level != PredictionLevel::Sample {
         return Err(DagMlError::OofValidation(
             "global OOF aggregation requires sample-level ground truth".to_string(),
@@ -198,6 +199,7 @@ fn aggregate_oof_targets_by_unit(
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(RegressionTargetBlock {
+        validity_masks: None,
         level,
         unit_ids: requested_unit_order.to_vec(),
         values,
@@ -284,7 +286,7 @@ pub(crate) fn apply_result_scoring(
                 variant_id: result.lineage.variant_id.clone(),
                 partition: block.partition.clone(),
                 fold_id: block.fold_id.clone(),
-                block: targets.clone(),
+                block: targets.canonicalized()?,
             });
         }
     }
@@ -332,6 +334,9 @@ pub(crate) fn apply_result_prediction_aggregation(
     }
     if !has_observation_predictions && policy.aggregation_level == PredictionLevel::Sample {
         return Ok(());
+    }
+    for targets in &result.regression_targets {
+        targets.require_complete_targets("prediction aggregation")?;
     }
 
     let mut derived_sample_blocks = Vec::new();
@@ -662,6 +667,7 @@ mod global_oof_tests {
                 target_names: vec!["class".to_string()],
             },
             y_true: RegressionTargetBlock {
+                validity_masks: None,
                 level: PredictionLevel::Sample,
                 unit_ids: sample_ids,
                 values: samples.iter().map(|(_, _, truth)| vec![*truth]).collect(),

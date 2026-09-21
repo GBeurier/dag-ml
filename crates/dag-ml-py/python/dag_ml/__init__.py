@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import secrets
+from collections.abc import Iterable
 from os import PathLike
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from ._dag_ml import (
     DagMlBundleError,
@@ -20,45 +21,21 @@ from ._dag_ml import (
     DagMlRuntimeError,
     DagMlSecurityError,
     DagMlValidationError,
-    LocalImplementationRegistry as _NativeLocalImplementationRegistry,
     MethodsTerminalPredictionReceipt,
     MethodsTerminalPredictionResult,
-    TrainingResult as _NativeTrainingResult,
     build_execution_plan_json,
-    attach_predict_cohort_to_envelope_json as _native_attach_predict_cohort_to_envelope_json,
-    build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
-    build_archive_v3_native_refit_payloads_json as _native_build_archive_v3_native_refit_payloads_json,
-    build_conformal_presentation_v1_json as _native_build_conformal_presentation_v1_json,
     canonical_operator_variant_label,
-    configure_methods_runtime as _native_configure_methods_runtime,
-    contract_manifest_json as _native_contract_manifest_json,
     compile_pipeline_dsl_artifact_json,
     compile_pipeline_dsl_artifact_with_controllers_json,
     compile_pipeline_dsl_graph_json,
     derive_controller_manifest_json,
     derive_controller_manifest_list_json,
-    execute_loaded_predictor_replay_json as _native_execute_loaded_predictor_replay_json,
-    execute_loaded_methods_portable_refit_replay_v3_json as _native_execute_loaded_methods_portable_refit_replay_v3_json,
-    execute_methods_cv_refit_terminal_predict_json as _native_execute_methods_cv_refit_terminal_predict_json,
-    execute_methods_portable_full_refit_json as _native_execute_methods_portable_full_refit_json,
-    execute_methods_training_json as _native_execute_methods_training_json,
-    execute_loaded_methods_predictor_replay_json as _native_execute_loaded_methods_predictor_replay_json,
-    execute_training_json as _native_execute_training_json,
-    execute_phase_in_process as _native_execute_phase_in_process,
-    run_host_hpo_search_in_process as _native_run_host_hpo_search_in_process,
     fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
-    loss_execution_attestation_json as _native_loss_execution_attestation_json,
     project_training_request_json,
-    run_cv_refit_predict_in_process as _native_run_cv_refit_predict_in_process,
-    read_native_results_v2_json as _native_read_native_results_v2_json,
-    write_native_results_v2_json as _native_write_native_results_v2_json,
-    run_cv_refit_in_process_with_training_losses as _native_run_cv_refit_in_process_with_training_losses,
     sample_relation_set_fingerprint_json,
-    sign_training_replay_request_json as _native_sign_training_replay_request_json,
-    sign_training_request_json as _native_sign_training_request_json,
-    validate_campaign_json,
     validate_cache_namespace_json,
+    validate_campaign_json,
     validate_controller_manifest_json,
     validate_controller_manifest_list_json,
     validate_execution_bundle_json,
@@ -74,7 +51,84 @@ from ._dag_ml import (
     validate_training_replay_outcome_json,
     validate_training_replay_request_json,
     validate_training_request_json,
+)
+from ._dag_ml import (
+    LocalImplementationRegistry as _NativeLocalImplementationRegistry,
+)
+from ._dag_ml import (
+    TrainingResult as _NativeTrainingResult,
+)
+from ._dag_ml import (
+    attach_predict_cohort_to_envelope_json as _native_attach_predict_cohort_to_envelope_json,
+)
+from ._dag_ml import (
+    build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
+)
+from ._dag_ml import (
+    build_archive_v3_native_refit_payloads_json as _native_build_archive_v3_native_refit_payloads_json,
+)
+from ._dag_ml import (
+    build_conformal_presentation_v1_json as _native_build_conformal_presentation_v1_json,
+)
+from ._dag_ml import (
+    configure_methods_runtime as _native_configure_methods_runtime,
+)
+from ._dag_ml import (
+    contract_manifest_json as _native_contract_manifest_json,
+)
+from ._dag_ml import (
+    execute_data_provider as _native_execute_data_provider,
+)
+from ._dag_ml import (
+    execute_loaded_methods_portable_refit_replay_v3_json as _native_execute_loaded_methods_portable_refit_replay_v3_json,
+)
+from ._dag_ml import (
+    execute_loaded_methods_predictor_replay_json as _native_execute_loaded_methods_predictor_replay_json,
+)
+from ._dag_ml import (
+    execute_loaded_predictor_replay_json as _native_execute_loaded_predictor_replay_json,
+)
+from ._dag_ml import (
+    execute_methods_cv_refit_terminal_predict_json as _native_execute_methods_cv_refit_terminal_predict_json,
+)
+from ._dag_ml import (
+    execute_methods_portable_full_refit_json as _native_execute_methods_portable_full_refit_json,
+)
+from ._dag_ml import (
+    execute_methods_training_json as _native_execute_methods_training_json,
+)
+from ._dag_ml import (
+    execute_phase_in_process as _native_execute_phase_in_process,
+)
+from ._dag_ml import (
+    execute_training_json as _native_execute_training_json,
+)
+from ._dag_ml import (
+    loss_execution_attestation_json as _native_loss_execution_attestation_json,
+)
+from ._dag_ml import (
+    read_native_results_v2_json as _native_read_native_results_v2_json,
+)
+from ._dag_ml import (
+    run_cv_refit_in_process_with_training_losses as _native_run_cv_refit_in_process_with_training_losses,
+)
+from ._dag_ml import (
+    run_cv_refit_predict_in_process as _native_run_cv_refit_predict_in_process,
+)
+from ._dag_ml import (
+    run_host_hpo_search_in_process as _native_run_host_hpo_search_in_process,
+)
+from ._dag_ml import (
+    sign_training_replay_request_json as _native_sign_training_replay_request_json,
+)
+from ._dag_ml import (
+    sign_training_request_json as _native_sign_training_request_json,
+)
+from ._dag_ml import (
     version as _native_version,
+)
+from ._dag_ml import (
+    write_native_results_v2_json as _native_write_native_results_v2_json,
 )
 
 # The loaded extension is the authoritative code version. Distribution metadata
@@ -137,6 +191,7 @@ _FACADE_EXPORTS = [
     "execute_loaded_methods_predictor_replay_json",
     "execute_training",
     "execute_training_json",
+    "execute_data_provider",
     "execute_phase_in_process",
     "run_host_hpo_search_in_process",
     "replay_loaded_predictor_package",
@@ -248,7 +303,7 @@ class JsonContract:
         self._json = json_text
 
     @classmethod
-    def from_path(cls, path: str | PathLike[str]) -> "JsonContract":
+    def from_path(cls, path: str | PathLike[str]) -> JsonContract:
         return cls(Path(path))
 
     @classmethod
@@ -470,16 +525,55 @@ def loss_execution_attestation(training_loss_role: Any, phase: str) -> dict[str,
 def run_host_hpo_search_in_process(
     dsl: Any, envelope: Any, controller_manifests: Any, request: Any,
     op_callback: Any, optimizer_callback: Any,
+    *, resume_checkpoint: Any = None, progress_callback: Any = None,
 ) -> dict[str, Any]:
     """Run scheduler-owned FIT_CV trials using host ask/tell proposals.
 
-    This nonportable profile returns native score evidence, not an N4MOPT
-    checkpoint or predictor package. No REFIT is performed during search.
+    Native checkpoints bind terminal scores to the graph, data envelope, folds
+    and objective. The host atomically pairs progress checkpoints with opaque
+    optimizer state after each tell (or fail). A progress callback returning
+    False cancels between trials. Progress messages contain ``operation``
+    (``checkpoint``), ``checkpoint`` and ``status``. Operator failures publish
+    ``failed`` before propagating their error, even when progress returns False.
+    The budget is a total across resumed calls and may be increased.
+    Durable results add ``status`` and ``checkpoint``; winner fields are absent
+    if cancellation precedes every successful trial. No REFIT occurs here.
+
+    ``request.parameter_bindings`` optionally maps public proposal keys to
+    ``{"node_id": ..., "param_path": ...}`` destinations on FIT_CV models or
+    transforms. It can tune several nodes in native nested OOF stacking while
+    ``target_node`` selects the scored producer. An absent or empty mapping
+    retains single-target routing. Bindings are validated before callbacks and
+    fingerprinted for resume; returned parameter keys remain public keys.
     """
     return json.loads(_native_run_host_hpo_search_in_process(
         _coerce_json(dsl), _coerce_json(envelope), _coerce_json(controller_manifests),
         _coerce_json(request), op_callback, optimizer_callback,
+        resume_checkpoint_json=None if resume_checkpoint is None else _coerce_json(resume_checkpoint),
+        progress_callback=progress_callback,
     ))
+
+
+def execute_data_provider(recipe: Any, callback: Any) -> dict[str, Any]:
+    """Prepare a finite host dataset with one native source-node PLAN task.
+
+    The recipe requires ``provider_id`` and ``provider_version``; optional fields
+    are ``params={}``, ``seed=0``, ``context={}``, ``scope='run'``, ``finite=True``
+    and ``learned=False``. Other scopes and learned/infinite providers are refused
+    before invocation. The callback receives a standard NodeTask with native
+    ``seed`` and phase ``PLAN``, without input handles, folds or data bindings.
+
+    Return ``{'handle': {'handle': positive_int, 'kind': 'data',
+    'owner_controller': task['node_plan']['controller_id']}, 'metadata': {...}}``.
+    X/y/masks remain host-owned. Metadata is descriptive, not a data authority.
+    IO must assemble and validate the result before CV planning. The caller owns
+    the handle lifetime; this operation neither persists nor releases it.
+
+    The result carries native lineage, task_seed and recipe/context/execution
+    fingerprints. Execution identity excludes the ephemeral handle and does not
+    attest feature/target bytes. No fitting, CV, prediction or retry occurs here.
+    """
+    return json.loads(_native_execute_data_provider(_coerce_json(recipe), callback))
 
 
 def execute_phase_in_process(
@@ -623,7 +717,7 @@ class TrainingRequest(JsonContract):
     def _validate_json(cls, json_text: str) -> None:
         validate_training_request_json(json_text)
 
-    def project(self) -> "TrainingContractProjection":
+    def project(self) -> TrainingContractProjection:
         return TrainingContractProjection(project_training_request_json(self._json))
 
 
@@ -1646,7 +1740,11 @@ def replay_loaded_predictor_package(
 
 
 __all__ = [
-    "__version__",
+    "CacheNamespace",
+    "CampaignSpec",
+    "CompiledPipelineArtifact",
+    "ControllerManifest",
+    "ControllerManifests",
     "DagMlBundleError",
     "DagMlCompatibilityError",
     "DagMlControllerError",
@@ -1658,11 +1756,6 @@ __all__ = [
     "DagMlRuntimeError",
     "DagMlSecurityError",
     "DagMlValidationError",
-    "CampaignSpec",
-    "CacheNamespace",
-    "CompiledPipelineArtifact",
-    "ControllerManifest",
-    "ControllerManifests",
     "ExecutionBundle",
     "ExecutionPlan",
     "FoldSet",
@@ -1670,6 +1763,8 @@ __all__ = [
     "HostControllerSpec",
     "HostControllerSpecs",
     "JsonContract",
+    "MethodsTerminalPredictionReceipt",
+    "MethodsTerminalPredictionResult",
     "ParameterProjection",
     "PipelineDslSpec",
     "PortablePredictorPackage",
@@ -1679,57 +1774,56 @@ __all__ = [
     "TrainingOutcome",
     "TrainingReplayOutcome",
     "TrainingReplayRequest",
-    "TrainingResult",
     "TrainingRequest",
-    "MethodsTerminalPredictionReceipt",
-    "MethodsTerminalPredictionResult",
-    "build_execution_plan",
+    "TrainingResult",
+    "__version__",
+    "attach_predict_cohort_to_envelope",
     "build_archive_v2_native_portable_payloads",
     "build_archive_v3_native_refit_payloads",
     "build_conformal_presentation_v1",
+    "build_execution_plan",
     "build_execution_plan_json",
     "canonical_operator_variant_label",
-    "contract_manifest_json",
-    "read_native_results_v2",
-    "write_native_results_v2",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_json",
     "compile_pipeline_dsl_artifact_with_controllers",
     "compile_pipeline_dsl_artifact_with_controllers_json",
     "compile_pipeline_dsl_graph",
     "compile_pipeline_dsl_graph_json",
-    "attach_predict_cohort_to_envelope",
+    "contract_manifest_json",
     "derive_controller_manifest",
     "derive_controller_manifest_json",
     "derive_controller_manifest_list_json",
     "derive_controller_manifests",
-    "execute_phase_in_process",
-    "run_host_hpo_search_in_process",
-    "execute_training",
-    "execute_training_json",
+    "execute_data_provider",
+    "execute_loaded_methods_portable_refit_replay_v3_json",
     "execute_methods_cv_refit_terminal_predict",
     "execute_methods_cv_refit_terminal_predict_json",
     "execute_methods_portable_full_refit",
     "execute_methods_portable_full_refit_json",
-    "execute_loaded_methods_portable_refit_replay_v3_json",
-    "replay_loaded_methods_portable_refit_package_v3",
-    "replay_loaded_predictor_package",
-    "replay_loaded_predictor_package_json",
+    "execute_phase_in_process",
+    "execute_training",
+    "execute_training_json",
     "fan_out_data_aware_branches",
     "fan_out_data_aware_branches_json",
     "fold_set_fingerprint_json",
     "loss_execution_attestation",
-    "run_cv_refit_predict_in_process",
-    "run_cv_refit_in_process_with_training_losses",
-    "sample_relation_set_fingerprint_json",
     "project_training_request",
     "project_training_request_json",
-    "sign_training_request",
-    "sign_training_request_json",
+    "read_native_results_v2",
+    "replay_loaded_methods_portable_refit_package_v3",
+    "replay_loaded_predictor_package",
+    "replay_loaded_predictor_package_json",
+    "run_cv_refit_in_process_with_training_losses",
+    "run_cv_refit_predict_in_process",
+    "run_host_hpo_search_in_process",
+    "sample_relation_set_fingerprint_json",
     "sign_training_replay_request",
     "sign_training_replay_request_json",
-    "validate_campaign_json",
+    "sign_training_request",
+    "sign_training_request_json",
     "validate_cache_namespace_json",
+    "validate_campaign_json",
     "validate_controller_manifest_json",
     "validate_controller_manifest_list_json",
     "validate_execution_bundle_json",
@@ -1743,4 +1837,5 @@ __all__ = [
     "validate_training_outcome_json",
     "validate_training_request_json",
     "version",
+    "write_native_results_v2",
 ]

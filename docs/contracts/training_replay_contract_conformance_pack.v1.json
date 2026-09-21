@@ -3,8 +3,8 @@
   "pack_id": "dag-ml.training-replay-contracts.v1",
   "mode": "current",
   "base_pack_id": "dag-ml.training-contracts.v1",
-  "base_pack_sha256": "f7473a9e6919e675e45e2d5854388c9dadb004b89628c670ca1bf4c967736f18",
-  "base_pack_checksum": "e38aca8ca0bf73e9e08b9541854164dc91e3261b0a6a479d6b42a6330e694fd7",
+  "base_pack_sha256": "7a2b6bfe0a395f58c860aa3ca67f068f6efb6ca62c2549d16a62417a92371951",
+  "base_pack_checksum": "aed1893528ca56cba054e26350b5727bf8aee9be120a34956ebe72357d2a912c",
   "base_pack_mode": "current",
   "hash_algorithm": "sha256-file-bytes",
   "canonical_profile": "DAG-ML TCV1",
@@ -26,17 +26,17 @@
     },
     {
       "path": "crates/dag-ml-capi/src/lib.rs",
-      "sha256": "f816f6a8a1ac084add3ab67c2d548e157665e5dd969ba251bb0a2da9e0667b23",
+      "sha256": "5254bb48828a0bedcc046b0cf8bf9c079934882a63b95b7eba3497964c54f83b",
       "kind": "base_c_training_binding"
     },
     {
       "path": "crates/dag-ml-capi/tests/c_conformance.rs",
-      "sha256": "0bca734f5771068d48628e94815bbf97dffb105edde97522b59dec2b04811109",
+      "sha256": "f46f594ff9cb86de5fb6cd6ffb7acc595a33d278db7318088aaa00fab4bf6147",
       "kind": "base_c_binding_test"
     },
     {
       "path": "crates/dag-ml-capi/tests/training_execute.rs",
-      "sha256": "285641a0f9cf097ca40b1fe91308db2a45858f345703b4968cf8c103ae866471",
+      "sha256": "d5b066656b6d6e463c40593f657cea96719b6e0aae9b792a4a2f1cfcfbd7ecb2",
       "kind": "base_c_training_test"
     },
     {
@@ -56,7 +56,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/bundle.rs",
-      "sha256": "c8c3ce111a1e1c37dc3d22c2df95d9abaaf2c7366068deaa603461c6b4a1ad15",
+      "sha256": "575b50cb09f6f699b9aab75de6f317bf4737c689a0e277b822fe747038fd8a53",
       "kind": "base_native_bundle_contract"
     },
     {
@@ -106,7 +106,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/hpo.rs",
-      "sha256": "f09d05a325566d91e2693a64a977dec5b5685a9d15c13dbae429e3d3426b9937",
+      "sha256": "01b4357706c2933404927f243eade77ddd9aa51243a87bb22d11d4ca93d5228f",
       "kind": "base_native_hpo_controller"
     },
     {
@@ -121,7 +121,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/metrics.rs",
-      "sha256": "2fd5b10eaa6f198e450ea1a84d954b6a44c95facd7a87700a7d6b958e880b78a",
+      "sha256": "2cb99667d227b584326b65e0687d2291fa021e165fed795172cb4b3be7549187",
       "kind": "base_typed_cache_dependency"
     },
     {
@@ -166,27 +166,27 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/host_hpo.rs",
-      "sha256": "ab215b0a2aba1ab969b03c467a6bb05a6ae579f8a9f38386ce70253dd43b3343",
+      "sha256": "896050efc52821392456cc3d48ba09efa27f03cfc62e88316c5d6f4c6b23e8df",
       "kind": "base_native_hpo_runtime_session"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/mod.rs",
-      "sha256": "8f6dcee1c99893de5013fe6d8003a4db3886b5bd81d4b91ea10891fe8a551708",
+      "sha256": "84838faecbb6f66c00a2def50d392341cd56213d7d940c6980225f2ed0280da5",
       "kind": "base_native_hpo_runtime_topology"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "90171c73de23b047dc3a81bf6eb5c8b840ad62920dc789b579da54799affaed9",
+      "sha256": "57ce8ff329989ea2277fec6f6568579351bf63aacbabc0f19111988a76d41b44",
       "kind": "base_native_hpo_scheduler"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scoring.rs",
-      "sha256": "20779af023921240b237fd5077efa3670e9a14fef39028f9daf2b81c6178a3f6",
+      "sha256": "d778b2ce7ca7e7ad7c205af53405097777ed35dbc5ec149acd264ee019a1f4d2",
       "kind": "base_native_global_oof_scoring"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/task.rs",
-      "sha256": "c643494ca625581baeaca4367a71f86b691386deecaf37d86703b6d26e51638e",
+      "sha256": "5b29b2b3b5468139a51ddd44461ccd773604afa0e290158db061a39f9895f825",
       "kind": "base_typed_runtime_dependency"
     },
     {
@@ -201,17 +201,17 @@
     },
     {
       "path": "crates/dag-ml-core/src/training_runtime.rs",
-      "sha256": "cbbb2357a274f9d6160fbb82be5dddcec9c059d64e526cb16407fc02ffb2a350",
+      "sha256": "93cf3c8cb9bbe910bae69facfa654b8ecd3a78df359041a1b3f11ef5e87f7cea",
       "kind": "base_native_runtime_contract"
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "f7d50b981b938a081624a3af976884dae2d45d407f3929c07ba7b1a42393b5a0",
+      "sha256": "b466e0c747ad2b94ce72169459c0b293d64a8c861d433406f3f8553b6b18aafd",
       "kind": "base_native_integration_test"
     },
     {
       "path": "crates/dag-ml-py/Cargo.lock",
-      "sha256": "a9e70296d7ff7c6710cc949fb9d10ea9fef07b2ef3da1dd27d78af2ecdefe866",
+      "sha256": "486c6a830b6d3fda0184532399721b1db5bcce2739d4ba1a632dea49ff3d580a",
       "kind": "base_python_binding_lockfile"
     },
     {
@@ -221,27 +221,27 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "9b89db4eb544ae2289cfaf1b8332c213407328f69a5fc97e9f80de3567fba57c",
+      "sha256": "4ce03c2fb5e9272f2529509623807f5ba8ce9e6e11c9303583ca3b887cd4b0ac",
       "kind": "base_python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "75893d4d5ff196990cda91daf8a6eb5722cea902f61162f910c4f25c04e92459",
+      "sha256": "1c52b7fe3031c8b203b00dd6364e887a822f15bccb976cfc3676dba0f0f6671f",
       "kind": "base_python_typing"
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "96282dba0aff137dbb5f5ff9c7358536a654b60691e50faae2e7dafbad869f65",
+      "sha256": "1fd2fb1c3b757933a016cdf9cd4ec2e85c91316bb480222cd3e9ac6dc6897069",
       "kind": "base_python_controller_bridge"
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "ee77cd66fdfac4bbc950ac9664283d5cad28eb34b4adc466495e9286041545ba",
+      "sha256": "44c550284691496a82e9e3229446ddcb63cd071a73d7284459af75fc7c2f98ad",
       "kind": "base_python_binding"
     },
     {
       "path": "crates/dag-ml-py/src/training.rs",
-      "sha256": "dc8f261ee4ac2fc11e5ff10e3e766f3dcbbd9fb6e6880e5943779d0e20c7bca1",
+      "sha256": "920fda3147b96b753ec54946ec8419403a33f4970883deb148c8dd0462202971",
       "kind": "base_python_training_binding"
     },
     {
@@ -261,12 +261,12 @@
     },
     {
       "path": "docs/TRAINING_CONTRACTS.md",
-      "sha256": "92a9a79c2a66daf44e322951e21ba5ffaa36265ab3ff855f192f27ccc1c3785e",
+      "sha256": "9fad7071b989cdabad5df9ead36e5b7035f4325936a047e818517e1052d45a19",
       "kind": "base_documentation"
     },
     {
       "path": "docs/TRAINING_REPLAY_CONTRACTS.md",
-      "sha256": "f308984125d19d7d307489e369d427856d6e37f23f08f44d48bc6deef2953a51",
+      "sha256": "c66752b140fa69c7359e3a73ce951e4adde77295aba4178491758bfdbe2d4091",
       "kind": "documentation"
     },
     {
@@ -281,12 +281,12 @@
     },
     {
       "path": "docs/contracts/README.md",
-      "sha256": "7ea6ed79a9bf82525d3fc8d80391c137f9af9a3ab3d15fb532f2598c6160805c",
+      "sha256": "2828d82c2700934fbfa8781bd7bece8d218c56f04343a8ff81a74c07ee07d13e",
       "kind": "base_contract_index_documentation"
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "28f7519487cf2f24adf1ac030407bbe733f8d0b1e3ee235a6f1fca3524400fd5",
+      "sha256": "3f4bb36baf0d9c9baf1c5158639ce36f7078083ace6bb9c71548a19bba0934e1",
       "kind": "base_c_abi_snapshot"
     },
     {
@@ -406,7 +406,7 @@
     },
     {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "e9d4f69d200a77ee51d87947916daa5e429aee9bb1295aeeea6a80e1f3d358af",
+      "sha256": "2fa3a551956d57bf0beab7787114c470fdfc5b6c0ff37e73d9fcb3d023007670",
       "kind": "base_schema_dependency"
     },
     {
@@ -416,7 +416,7 @@
     },
     {
       "path": "docs/contracts/node_task.schema.json",
-      "sha256": "00f5ce9750dcda89be3f7ba9d9e11c6b02cbf53a779d31ff2bbf1cf647b7aebc",
+      "sha256": "e9cefa950766940e1f586f43078298d25b0ef526e129cb8d2c122b24bf6678fd",
       "kind": "base_schema_dependency"
     },
     {
@@ -491,7 +491,7 @@
     },
     {
       "path": "docs/contracts/training_contract_conformance_pack.v1.json",
-      "sha256": "f7473a9e6919e675e45e2d5854388c9dadb004b89628c670ca1bf4c967736f18",
+      "sha256": "7a2b6bfe0a395f58c860aa3ca67f068f6efb6ca62c2549d16a62417a92371951",
       "kind": "base_conformance_pack"
     },
     {
@@ -716,7 +716,7 @@
     },
     {
       "path": "parity/training/generate_training_replay_fixtures.py",
-      "sha256": "a73697b38e0dcf4609af98964ee014378e14e4fa0bcc408aee1bb70de5fa5643",
+      "sha256": "9be2d0958413e0df374b6e859ca1f8bc041c5b5eacda5b457ecede24843c79b9",
       "kind": "generator"
     },
     {
@@ -731,7 +731,7 @@
     },
     {
       "path": "parity/training/tests/test_training_replay_contracts.py",
-      "sha256": "be3400847fa6a9ba0aa5fe73c2678b61efcd069f30a5eb8f1ebec467949ff539",
+      "sha256": "fdecac5f9e8897ab40d0b8ae7e471c7a862f66a55fcfc3ec63f1feb34d293ee5",
       "kind": "test"
     },
     {
@@ -751,7 +751,7 @@
     },
     {
       "path": "scripts/smoke_python_bindings.py",
-      "sha256": "957062e5dd26bb2bdf1345338e8740bb17bf9f15b1836a54e75be5b7746eea2a",
+      "sha256": "225043054231097ef71f5ddbfe9bc9e88b07d9f784c0f6cc42b442c71a2687a3",
       "kind": "base_binding_smoke"
     },
     {
@@ -766,12 +766,12 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "d661585f9609b9595e42bb7edbb043f2de3b5029de32a54369ca6a389b48dabb",
+      "sha256": "4f5adcc3a36e03ffa3660cd85ef8d0dd399a695a3fee36ea741a96ccd6905b41",
       "kind": "base_production_validator"
     },
     {
       "path": "scripts/validate_training_replay_contracts.py",
-      "sha256": "573561a291e240529785878883ad0269dd47ddc3e5577082adfd5e1ab51a8089",
+      "sha256": "94d83b633d84f3da7d9ea28049c9503a6d8bf2d1714bf43fa6ed6bdb6225cc01",
       "kind": "production_validator"
     },
     {
@@ -856,5 +856,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "9b7f38da1555309cac253016638c6960ab5bde9ac921bf542586e70db55f84ec"
+  "pack_checksum": "4d74b7ad73a94dd373f1267399cc7b04468241a70c9b85953e599403d7bbf3e6"
 }

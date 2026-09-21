@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/data_provider_prepare.v1.schema.json",
+  "title": "DAG-ML finite source-provider preparation v1",
+  "$ref": "#/$defs/execution",
+  "$defs": {
+    "nonempty": {"type": "string", "pattern": "\\S"},
+    "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "metadata": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/nonempty"},
+      "description": "Host descriptors only; feature/target buffers remain opaque and IO validates actual content."
+    },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_id", "provider_version"],
+      "properties": {
+        "provider_id": {"$ref": "#/$defs/nonempty"},
+        "provider_version": {"$ref": "#/$defs/nonempty"},
+        "params": {"$ref": "#/$defs/metadata", "default": {}},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615, "default": 0},
+        "scope": {"const": "run", "default": "run"},
+        "finite": {"const": true, "default": true},
+        "learned": {"const": false, "default": false},
+        "context": {"$ref": "#/$defs/metadata", "default": {}}
+      }
+    },
+    "handle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handle", "kind", "owner_controller"],
+      "properties": {
+        "handle": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "kind": {"const": "data"},
+        "owner_controller": {"$ref": "#/$defs/nonempty"}
+      }
+    },
+    "materialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handle"],
+      "properties": {
+        "handle": {"$ref": "#/$defs/handle"},
+        "metadata": {"$ref": "#/$defs/metadata", "default": {}}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "recipe_fingerprint", "context_fingerprint", "graph_fingerprint", "controller_fingerprint", "execution_fingerprint", "task_seed", "handle", "metadata", "lineage"],
+      "properties": {
+        "profile": {"const": "data_provider_prepare_v1"},
+        "recipe_fingerprint": {"$ref": "#/$defs/fingerprint"},
+        "context_fingerprint": {"$ref": "#/$defs/fingerprint"},
+        "graph_fingerprint": {"$ref": "#/$defs/fingerprint"},
+        "controller_fingerprint": {"$ref": "#/$defs/fingerprint"},
+        "execution_fingerprint": {"$ref": "#/$defs/fingerprint"},
+        "task_seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "handle": {"$ref": "#/$defs/handle"},
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "lineage": {
+          "allOf": [
+            {"$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/lineage_record"},
+            {"properties": {"phase": {"const": "PLAN"}, "fold_id": {"type": "null"}, "variant_id": {"type": "null"}}}
+          ]
+        }
+      }
+    }
+  }
+}

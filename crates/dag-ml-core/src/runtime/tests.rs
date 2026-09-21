@@ -6517,6 +6517,7 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
         run_id: RunId::new("run:fit.influence.validation").unwrap(),
         node_plan,
         phase: Phase::FitCv,
+        resources: None,
         variant_id: None,
         variant: None,
         fold_id: Some(FoldId::new("fold:0").unwrap()),
@@ -6698,6 +6699,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         run_id: RunId::new("run:result.validation").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
+        resources: None,
         variant_id: None,
         variant: None,
         fold_id: None,
@@ -7164,6 +7166,7 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
         run_id: RunId::new("run:result.validation.shape").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
+        resources: None,
         variant_id: None,
         variant: None,
         fold_id: None,
@@ -7254,6 +7257,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         run_id: RunId::new("run:result.validation.artifacts").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::Refit,
+        resources: None,
         variant_id: None,
         variant: None,
         fold_id: None,
@@ -7483,6 +7487,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
         run_id: RunId::new("run:result.validation.samples").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
+        resources: None,
         variant_id: Some(VariantId::new("variant:base").unwrap()),
         variant: None,
         fold_id: Some(FoldId::new("fold:0").unwrap()),
@@ -7600,6 +7605,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
         run_id: RunId::new("run:result.validation.aggregated").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
+        resources: None,
         variant_id: Some(VariantId::new("variant:base").unwrap()),
         variant: None,
         fold_id: Some(FoldId::new("fold:0").unwrap()),
@@ -7750,6 +7756,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         run_id: RunId::new("run:agg.policy.level").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
+        resources: None,
         variant_id: Some(VariantId::new("variant:base").unwrap()),
         variant: None,
         fold_id: None,
@@ -9191,6 +9198,7 @@ fn nested_stacking_resampled_refit_has_separate_exact_partitioned_oof() {
                 partition: PredictionPartition::Validation,
                 fold_id: block.fold_id.clone(),
                 block: crate::metrics::RegressionTargetBlock {
+                    validity_masks: None,
                     level: crate::policy::PredictionLevel::Sample,
                     unit_ids: block
                         .sample_ids
@@ -9236,6 +9244,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
         target_names: vec!["y".to_string()],
     };
     let targets = RegressionTargetBlock {
+        validity_masks: None,
         level: PredictionLevel::Sample,
         unit_ids: vec![
             PredictionUnitId::Sample(SampleId::new("s1").unwrap()),
@@ -9339,6 +9348,7 @@ fn cross_fold_validation_reports_scores_the_oof_average() {
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new(fold).unwrap()),
         block: RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Sample,
             unit_ids: rows
                 .iter()
@@ -9451,6 +9461,7 @@ fn combine_validation_targets_rejects_conflicting_ground_truth() {
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new(fold).unwrap()),
         block: RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Sample,
             unit_ids: rows
                 .iter()
@@ -9535,6 +9546,7 @@ impl RuntimeController for VariantScoringController {
             });
             if self.emit_targets {
                 regression_targets.push(crate::metrics::RegressionTargetBlock {
+                    validity_masks: None,
                     level: PredictionLevel::Sample,
                     unit_ids: vec![crate::aggregation::PredictionUnitId::Sample(sample_id)],
                     values: vec![vec![y_true]],
@@ -9715,6 +9727,7 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
         .unwrap();
     let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
     let mut request = HostHpoSearchRequest {
+        parameter_bindings: BTreeMap::new(),
         fold_score_reduction: None,
         target_node: NodeId::new("model:pls").unwrap(),
         trial_budget: 3,
@@ -9781,6 +9794,918 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     assert_eq!(proposals.asked, 3, "invalid request cannot ask or evaluate");
 }
 
+struct DurableHostProposals {
+    asked: Vec<u32>,
+    told: Vec<u32>,
+    failed: Vec<u32>,
+}
+
+impl HostHpoProposalSource for DurableHostProposals {
+    fn ask(&mut self, trial_index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+        self.asked.push(trial_index);
+        Ok(Some(BTreeMap::from([(
+            "n_components".into(),
+            json!([1.0, 3.0, 2.0][trial_index as usize]),
+        )])))
+    }
+
+    fn tell(&mut self, trial_index: u32, _score: f64) -> Result<()> {
+        self.told.push(trial_index);
+        Ok(())
+    }
+
+    fn fail(&mut self, trial_index: u32, _error: &str) -> Result<()> {
+        self.failed.push(trial_index);
+        Ok(())
+    }
+}
+
+struct DurableHostProgress {
+    stop_after: usize,
+    checkpoints: Vec<(HostHpoCheckpoint, HostHpoSearchStatus)>,
+}
+
+impl HostHpoProgress for DurableHostProgress {
+    fn checkpoint(
+        &mut self,
+        checkpoint: &HostHpoCheckpoint,
+        status: HostHpoSearchStatus,
+    ) -> Result<bool> {
+        self.checkpoints.push((checkpoint.clone(), status));
+        Ok(checkpoint.trials.len() < self.stop_after)
+    }
+}
+
+fn durable_host_fixture(
+    fail_second: bool,
+) -> (
+    ExecutionPlan,
+    RuntimeControllerRegistry,
+    InMemoryDataProvider,
+    HostHpoSearchRequest,
+) {
+    struct Model {
+        inner: VariantScoringController,
+        fail_second: bool,
+    }
+    impl RuntimeController for Model {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            assert_eq!(task.phase, Phase::FitCv, "search cannot refit");
+            if self.fail_second
+                && task
+                    .variant_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_str() == "host_hpo:trial:0000000001")
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "deliberate second trial failure".into(),
+                ));
+            }
+            self.inner.invoke(task)
+        }
+    }
+    let mut campaign = variant_scoring_campaign(vec![("base", 0.0)]);
+    campaign.generation = GenerationSpec::default();
+    let plan = build_execution_plan(
+        "plan:host_hpo:durable",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(Model {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 2,
+                emit_targets: true,
+            },
+            fail_second,
+        }))
+        .unwrap();
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let request = HostHpoSearchRequest {
+        parameter_bindings: BTreeMap::new(),
+        target_node: NodeId::new("model:pls").unwrap(),
+        trial_budget: 3,
+        metric: RegressionMetricKind::Rmse,
+        direction: crate::selection::MetricObjective::Minimize,
+        optimizer_descriptor: BTreeMap::from([
+            ("space".into(), json!({"n_components": [1, 2, 3]})),
+            ("seed".into(), json!(42)),
+        ]),
+        fold_score_reduction: None,
+    };
+    (plan, controllers, provider, request)
+}
+
+fn durable_proposals() -> DurableHostProposals {
+    DurableHostProposals {
+        asked: Vec::new(),
+        told: Vec::new(),
+        failed: Vec::new(),
+    }
+}
+
+#[test]
+fn host_hpo_durable_masked_regression_resumes_with_native_scores_and_unchanged_selection() {
+    struct MaskedModel {
+        inner: VariantScoringController,
+        hidden: f64,
+    }
+    impl RuntimeController for MaskedModel {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            let mut result = self.inner.invoke(task)?;
+            let hidden_id = SampleId::new(if task.fold_id.as_ref().unwrap().as_str() == "fold:0" {
+                "s3"
+            } else {
+                "s4"
+            })
+            .unwrap();
+            let prediction = &mut result.predictions[0];
+            prediction.sample_ids.push(hidden_id.clone());
+            prediction.values.push(vec![1e10]);
+            let targets = &mut result.regression_targets[0];
+            targets
+                .unit_ids
+                .push(crate::aggregation::PredictionUnitId::Sample(hidden_id));
+            targets.values.push(vec![self.hidden]);
+            targets.validity_masks = Some(vec![vec![true], vec![false]]);
+            Ok(result)
+        }
+    }
+    let (base_plan, _, provider, request) = durable_host_fixture(false);
+    let mut campaign = base_plan.campaign.clone();
+    let folds = campaign
+        .split_invocation
+        .as_mut()
+        .unwrap()
+        .fold_set
+        .as_mut()
+        .unwrap();
+    let s3 = SampleId::new("s3").unwrap();
+    let s4 = SampleId::new("s4").unwrap();
+    folds.sample_ids.extend([s3.clone(), s4.clone()]);
+    folds.folds[0].validation_sample_ids.push(s3.clone());
+    folds.folds[0].train_sample_ids.push(s4.clone());
+    folds.folds[1].validation_sample_ids.push(s4);
+    folds.folds[1].train_sample_ids.push(s3);
+    let plan = build_execution_plan(
+        "plan:host_hpo:masked",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let controllers = |hidden| {
+        let mut registry = RuntimeControllerRegistry::new();
+        registry
+            .register(Box::new(MockController {
+                id: ControllerId::new("controller:transform").unwrap(),
+                handle: 1,
+                emit_prediction: false,
+            }))
+            .unwrap();
+        registry
+            .register(Box::new(MaskedModel {
+                inner: VariantScoringController {
+                    id: ControllerId::new("controller:model").unwrap(),
+                    handle: 2,
+                    emit_targets: true,
+                },
+                hidden,
+            }))
+            .unwrap();
+        registry
+    };
+    let mut progress = DurableHostProgress {
+        stop_after: 1,
+        checkpoints: Vec::new(),
+    };
+    let mut proposals = durable_proposals();
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "observed-targets-and-mask".into(),
+        checkpoint: None,
+    };
+    let first = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers(42.0),
+            &provider,
+            &request,
+            &mut proposals,
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(first.status, HostHpoSearchStatus::Cancelled);
+    let checkpoint =
+        serde_json::from_value(serde_json::to_value(first.checkpoint.unwrap()).unwrap()).unwrap();
+    let mut resumed_proposals = durable_proposals();
+    progress.stop_after = usize::MAX;
+    let resumed = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers(-1e100),
+            &provider,
+            &request,
+            &mut resumed_proposals,
+            &HostHpoResumeOptions {
+                checkpoint: Some(checkpoint),
+                data_fingerprint: options.data_fingerprint.clone(),
+            },
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(resumed_proposals.asked, [1, 2]);
+    let continuous = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers(1e100),
+            &provider,
+            &request,
+            &mut durable_proposals(),
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    let resumed = resumed.result.unwrap();
+    assert_eq!(
+        serde_json::to_value(&resumed).unwrap(),
+        serde_json::to_value(continuous.result.unwrap()).unwrap()
+    );
+    assert_eq!(resumed.selected_trial_index, 0);
+    for trial in &resumed.trials {
+        let average = trial
+            .scores
+            .reports
+            .iter()
+            .find(|report| report.fold_id.as_ref().unwrap().as_str() == "avg")
+            .unwrap();
+        assert_eq!(
+            average.row_count, 4,
+            "hidden labels do not remove OOF predictions"
+        );
+    }
+}
+
+#[test]
+fn captured_masked_targets_realign_masks_with_sample_ids() {
+    let ids = [SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()];
+    let targets = RegressionTargetBlock {
+        level: PredictionLevel::Sample,
+        unit_ids: ids
+            .iter()
+            .rev()
+            .cloned()
+            .map(crate::aggregation::PredictionUnitId::Sample)
+            .collect(),
+        values: vec![vec![0.0, 2.0], vec![1.0, 0.0]],
+        validity_masks: Some(vec![vec![false, true], vec![true, false]]),
+        target_names: vec!["a".into(), "b".into()],
+    };
+    let aligned = target_block_aligned_to_samples(&ids, &targets);
+    assert_eq!(aligned.values, vec![vec![1.0, 0.0], vec![0.0, 2.0]]);
+    assert_eq!(
+        aligned.validity_masks,
+        Some(vec![vec![true, false], vec![false, true]])
+    );
+}
+
+#[test]
+fn host_hpo_durable_cancel_resume_preserves_old_winner_and_total_budget() {
+    let (plan, controllers, provider, mut request) = durable_host_fixture(false);
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data:with-relations".into(),
+        checkpoint: None,
+    };
+    let mut first = durable_proposals();
+    let mut progress = DurableHostProgress {
+        stop_after: 1,
+        checkpoints: Vec::new(),
+    };
+    let interrupted = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut first,
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(interrupted.status, HostHpoSearchStatus::Cancelled);
+    assert_eq!(first.asked, [0]);
+    assert_eq!(first.told, [0]);
+    assert_eq!(
+        progress.checkpoints.last().unwrap().1,
+        HostHpoSearchStatus::Cancelled
+    );
+    let serialized = serde_json::to_value(&interrupted).unwrap();
+    assert_eq!(serialized["selected_trial_index"], 0);
+    let checkpoint: HostHpoCheckpoint =
+        serde_json::from_value(serialized["checkpoint"].clone()).unwrap();
+    let old_score_set =
+        serde_json::to_value(&interrupted.result.as_ref().unwrap().trials[0].scores).unwrap();
+
+    // A completed one-trial budget can also be extended to three.
+    request.trial_budget = 1;
+    let mut no_work = durable_proposals();
+    let mut progress = DurableHostProgress {
+        stop_after: usize::MAX,
+        checkpoints: Vec::new(),
+    };
+    let options = HostHpoResumeOptions {
+        checkpoint: Some(checkpoint),
+        ..options
+    };
+    let completed = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut no_work,
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(completed.status, HostHpoSearchStatus::Completed);
+    assert!(no_work.asked.is_empty());
+    request.trial_budget = 3;
+    let mut resumed = durable_proposals();
+    let finished = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut resumed,
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(resumed.asked, [1, 2]);
+    assert_eq!(resumed.told, [1, 2]);
+    assert_eq!(finished.status, HostHpoSearchStatus::Completed);
+    assert_eq!(finished.checkpoint.as_ref().unwrap().trials.len(), 3);
+    let result = finished.result.unwrap();
+    assert_eq!(
+        result.selected_trial_index, 0,
+        "historical winner must participate in native SELECT"
+    );
+    assert_eq!(
+        serde_json::to_value(&result.trials[0].scores).unwrap(),
+        old_score_set
+    );
+    assert_eq!(
+        result
+            .trials
+            .iter()
+            .map(|trial| trial.trial_index)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+
+    let mut uninterrupted = durable_proposals();
+    let baseline = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut uninterrupted,
+            &HostHpoResumeOptions {
+                checkpoint: None,
+                ..options
+            },
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&result).unwrap(),
+        serde_json::to_value(baseline.result.unwrap()).unwrap()
+    );
+}
+
+#[test]
+fn host_hpo_durable_refuses_changed_binding_corruption_and_inconsistent_scores_before_ask() {
+    let (plan, controllers, provider, request) = durable_host_fixture(false);
+    let mut progress = DurableHostProgress {
+        stop_after: 1,
+        checkpoints: Vec::new(),
+    };
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data:A".into(),
+        checkpoint: None,
+    };
+    let first = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut durable_proposals(),
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    let checkpoint = first.checkpoint.unwrap();
+    for mutation in [
+        "data",
+        "space",
+        "seed",
+        "metric",
+        "reduction",
+        "graph",
+        "controller",
+        "campaign",
+        "fold",
+        "corruption",
+        "indices",
+        "scores",
+    ] {
+        let mut changed_plan = plan.clone();
+        let mut changed_request = request.clone();
+        let mut changed_checkpoint = checkpoint.clone();
+        let mut data_fingerprint = "data:A".to_string();
+        match mutation {
+            "data" => data_fingerprint = "data:B".into(),
+            "space" => {
+                changed_request
+                    .optimizer_descriptor
+                    .insert("space".into(), json!({"n_components":[2,3]}));
+            }
+            "seed" => {
+                changed_request
+                    .optimizer_descriptor
+                    .insert("seed".into(), json!(99));
+            }
+            "metric" => changed_request.metric = RegressionMetricKind::Mae,
+            "reduction" => changed_request.fold_score_reduction = Some(HostHpoFoldReduction::Mean),
+            "graph" => changed_checkpoint.binding.graph_fingerprint = "different".into(),
+            "controller" => changed_checkpoint.binding.controller_fingerprint = "different".into(),
+            "campaign" => changed_checkpoint.binding.campaign_fingerprint = "different".into(),
+            "fold" => changed_checkpoint.binding.fold_set_fingerprint = "different".into(),
+            "corruption" => changed_checkpoint.fingerprint = "broken".into(),
+            "indices" | "scores" => {
+                let HostHpoTerminalTrial::Complete { evidence } = &mut changed_checkpoint.trials[0]
+                else {
+                    panic!("expected success")
+                };
+                if mutation == "indices" {
+                    evidence.trial_index = 5;
+                } else {
+                    evidence.score += 0.5;
+                }
+                // Even a recomputed integrity digest cannot bypass semantic checks.
+                changed_checkpoint.fingerprint = stable_json_fingerprint(&(
+                    changed_checkpoint.schema_version,
+                    &changed_checkpoint.binding,
+                    &changed_checkpoint.trials,
+                ))
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        // Keep the current plan itself valid; mismatches belong to checkpoint validation.
+        changed_plan.id = plan.id.clone();
+        let options = HostHpoResumeOptions {
+            data_fingerprint,
+            checkpoint: Some(changed_checkpoint),
+        };
+        let mut proposals = durable_proposals();
+        assert!(
+            SequentialScheduler
+                .execute_resumable_host_hpo_search(
+                    &changed_plan,
+                    &controllers,
+                    &provider,
+                    &changed_request,
+                    &mut proposals,
+                    &options,
+                    &mut progress
+                )
+                .is_err(),
+            "{mutation}"
+        );
+        assert!(
+            proposals.asked.is_empty(),
+            "{mutation} cannot ask an optimizer"
+        );
+    }
+}
+
+#[test]
+fn host_hpo_durable_records_failed_trial_and_never_replays_it() {
+    let (plan, controllers, provider, request) = durable_host_fixture(true);
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data".into(),
+        checkpoint: None,
+    };
+    let mut proposals = durable_proposals();
+    let mut progress = DurableHostProgress {
+        stop_after: usize::MAX,
+        checkpoints: Vec::new(),
+    };
+    let failed = SequentialScheduler.execute_resumable_host_hpo_search(
+        &plan,
+        &controllers,
+        &provider,
+        &request,
+        &mut proposals,
+        &options,
+        &mut progress,
+    );
+    assert!(failed
+        .unwrap_err()
+        .to_string()
+        .contains("deliberate second trial failure"));
+    assert_eq!(proposals.asked, [0, 1]);
+    assert_eq!(proposals.failed, [1]);
+    let (checkpoint, status) = progress.checkpoints.last().unwrap();
+    assert_eq!(*status, HostHpoSearchStatus::Failed);
+    assert!(matches!(
+        &checkpoint.trials[1],
+        HostHpoTerminalTrial::Failed { trial_index: 1, .. }
+    ));
+    let options = HostHpoResumeOptions {
+        checkpoint: Some(checkpoint.clone()),
+        ..options
+    };
+    let mut resumed = durable_proposals();
+    let finished = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut resumed,
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(resumed.asked, [2]);
+    assert_eq!(finished.checkpoint.unwrap().trials.len(), 3);
+    assert_eq!(finished.result.unwrap().trials.len(), 2);
+}
+
+#[test]
+fn host_hpo_durable_cancel_before_first_trial_has_no_fabricated_winner() {
+    let (plan, controllers, provider, request) = durable_host_fixture(false);
+    let mut progress = DurableHostProgress {
+        stop_after: 0,
+        checkpoints: Vec::new(),
+    };
+    let mut proposals = durable_proposals();
+    let result = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut proposals,
+            &HostHpoResumeOptions {
+                data_fingerprint: "data".into(),
+                checkpoint: None,
+            },
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(result.status, HostHpoSearchStatus::Cancelled);
+    assert!(result.result.is_none());
+    assert!(proposals.asked.is_empty());
+    assert!(serde_json::to_value(result)
+        .unwrap()
+        .get("selected_trial_index")
+        .is_none());
+}
+
+#[test]
+fn host_hpo_bindings_validate_before_callbacks_and_preserve_legacy_wire() {
+    let (plan, controllers, provider, request) = durable_host_fixture(false);
+    let legacy = serde_json::to_value(&request).unwrap();
+    assert!(legacy.get("parameter_bindings").is_none());
+    let mut explicit_empty = legacy.clone();
+    explicit_empty["parameter_bindings"] = json!({});
+    let decoded: HostHpoSearchRequest = serde_json::from_value(explicit_empty).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
+
+    let binding = |node: &str, path: &str| HostHpoParameterBinding {
+        node_id: NodeId::new(node).unwrap(),
+        param_path: path.into(),
+    };
+    for bindings in [
+        BTreeMap::from([("alpha".into(), binding("missing", "alpha"))]),
+        BTreeMap::from([(" ".into(), binding("model:pls", "alpha"))]),
+        BTreeMap::from([("alpha".into(), binding("model:pls", " "))]),
+        BTreeMap::from([
+            ("a".into(), binding("model:pls", "alpha")),
+            ("b".into(), binding("model:pls", "alpha")),
+        ]),
+    ] {
+        let mut invalid = request.clone();
+        invalid.parameter_bindings = bindings;
+        let mut proposals = durable_proposals();
+        let mut progress = DurableHostProgress {
+            stop_after: usize::MAX,
+            checkpoints: Vec::new(),
+        };
+        assert!(SequentialScheduler
+            .execute_resumable_host_hpo_search(
+                &plan,
+                &controllers,
+                &provider,
+                &invalid,
+                &mut proposals,
+                &HostHpoResumeOptions {
+                    data_fingerprint: "data".into(),
+                    checkpoint: None
+                },
+                &mut progress,
+            )
+            .is_err());
+        assert!(proposals.asked.is_empty());
+        assert!(progress.checkpoints.is_empty());
+    }
+    let mut explicit = request.clone();
+    explicit
+        .parameter_bindings
+        .insert("other".into(), binding("model:pls", "alpha"));
+    let mut proposals = durable_proposals();
+    let error = SequentialScheduler
+        .execute_host_hpo_search(&plan, &controllers, &provider, &explicit, &mut proposals)
+        .unwrap_err();
+    assert!(error.to_string().contains("has no parameter binding"));
+    assert_eq!(proposals.asked, [0]);
+    assert!(proposals.told.is_empty());
+}
+
+#[test]
+fn host_hpo_bindings_route_nested_stacking_and_resume_without_replaying() {
+    struct Proposals {
+        asked: Vec<u32>,
+    }
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            self.asked.push(index);
+            Ok(Some(BTreeMap::from([
+                ("branches.a.alpha".into(), json!(index + 1)),
+                ("branches.b.alpha".into(), json!(10 * (index + 1))),
+                ("meta.alpha".into(), json!(100 * (index + 1))),
+            ])))
+        }
+        fn tell(&mut self, _: u32, _: f64) -> Result<()> {
+            Ok(())
+        }
+    }
+    struct NestedModel {
+        inner: VariantScoringController,
+        folds: BTreeMap<FoldId, FoldAssignment>,
+        calls: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    impl RuntimeController for NestedModel {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            assert_eq!(task.phase, Phase::FitCv);
+            let fold = &self.folds[task.fold_id.as_ref().unwrap()];
+            let node = task.node_plan.node_id.as_str();
+            let alpha = task.node_plan.params["alpha"].as_f64().unwrap();
+            let index = task
+                .variant_id
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .rsplit(':')
+                .next()
+                .unwrap()
+                .parse::<u32>()
+                .unwrap();
+            let scale = match node {
+                "model:base.a" => 1,
+                "model:base.b" => 10,
+                _ => 100,
+            };
+            assert_eq!(alpha, f64::from(scale * (index + 1)));
+            self.calls
+                .lock()
+                .unwrap()
+                .push((node.into(), fold.fold_id.to_string()));
+            if node == "model:meta" {
+                assert_eq!(task.prediction_inputs.len(), 4);
+                for (key, input) in &task.prediction_inputs {
+                    if key.ends_with(":outer") {
+                        assert_eq!(input.sample_ids, fold.validation_sample_ids);
+                    } else {
+                        assert_eq!(input.sample_ids, fold.train_sample_ids);
+                        assert!(input
+                            .sample_ids
+                            .iter()
+                            .all(|id| !fold.validation_sample_ids.contains(id)));
+                        assert!(input.fold_ids.iter().all(|id| id != &fold.fold_id));
+                    }
+                    let base_scale = if key.contains("base.a") { 1 } else { 10 };
+                    assert!(input
+                        .values
+                        .iter()
+                        .all(|row| row == &vec![f64::from(base_scale * (index + 1))]));
+                }
+            }
+            let mut result = self.inner.invoke(task)?;
+            result.predictions = vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{node}:{}", fold.fold_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                producer_port: Some("pred".into()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                sample_ids: fold.validation_sample_ids.clone(),
+                values: vec![vec![alpha]; fold.validation_sample_ids.len()],
+                target_names: vec!["y".into()],
+            }];
+            result.regression_targets = vec![RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: fold
+                    .validation_sample_ids
+                    .iter()
+                    .cloned()
+                    .map(crate::aggregation::PredictionUnitId::Sample)
+                    .collect(),
+                values: vec![vec![0.0]; fold.validation_sample_ids.len()],
+                validity_masks: None,
+                target_names: vec!["y".into()],
+            }];
+            Ok(result)
+        }
+    }
+    let samples = (1..=6)
+        .map(|i| SampleId::new(format!("s{i}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = crate::fold::KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let plan = nested_stacking_test_plan(outer.clone(), false);
+    let nested = nested_stacking_campaign_plan(&plan).unwrap().unwrap();
+    let folds = outer
+        .folds
+        .iter()
+        .chain(
+            nested
+                .outer_scopes
+                .iter()
+                .flat_map(|scope| &scope.inner.inner_fold_set.folds),
+        )
+        .map(|fold| (fold.fold_id.clone(), fold.clone()))
+        .collect();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(NestedModel {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 1,
+                emit_targets: true,
+            },
+            folds,
+            calls: calls.clone(),
+        }))
+        .unwrap();
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let (_, _, _, mut request) = durable_host_fixture(false);
+    request.target_node = NodeId::new("model:meta").unwrap();
+    request.fold_score_reduction = Some(HostHpoFoldReduction::Mean);
+    request.parameter_bindings = [
+        ("branches.a.alpha", "model:base.a"),
+        ("branches.b.alpha", "model:base.b"),
+        ("meta.alpha", "model:meta"),
+    ]
+    .into_iter()
+    .map(|(path, node)| {
+        (
+            path.into(),
+            HostHpoParameterBinding {
+                node_id: NodeId::new(node).unwrap(),
+                param_path: "alpha".into(),
+            },
+        )
+    })
+    .collect();
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "nested:data".into(),
+        checkpoint: None,
+    };
+    let mut progress = DurableHostProgress {
+        stop_after: 1,
+        checkpoints: Vec::new(),
+    };
+    let first = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut Proposals { asked: Vec::new() },
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(first.status, HostHpoSearchStatus::Cancelled);
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        21,
+        "2 bases × (2 inner + 1 outer) × 3 folds + 3 meta fits"
+    );
+    let options = HostHpoResumeOptions {
+        checkpoint: first.checkpoint,
+        ..options
+    };
+    let mut changed = request.clone();
+    changed
+        .parameter_bindings
+        .get_mut("branches.a.alpha")
+        .unwrap()
+        .param_path = "beta".into();
+    let mut rejected = Proposals { asked: Vec::new() };
+    assert!(SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &changed,
+            &mut rejected,
+            &options,
+            &mut progress,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("binding mismatch"));
+    assert!(rejected.asked.is_empty());
+    assert_eq!(calls.lock().unwrap().len(), 21);
+    progress.stop_after = usize::MAX;
+    let mut resumed = Proposals { asked: Vec::new() };
+    let result = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut resumed,
+            &options,
+            &mut progress,
+        )
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(resumed.asked, [1, 2]);
+    assert_eq!(calls.lock().unwrap().len(), 63);
+    assert_eq!(result.selected_trial_index, 0);
+    assert_eq!(
+        result.trials.iter().map(|t| t.score).collect::<Vec<_>>(),
+        [100.0, 200.0, 300.0]
+    );
+    assert_eq!(result.selected_params["branches.b.alpha"], json!(10));
+    let baseline = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut Proposals { asked: Vec::new() },
+            &HostHpoResumeOptions {
+                checkpoint: None,
+                ..options
+            },
+            &mut progress,
+        )
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(result).unwrap(),
+        serde_json::to_value(baseline).unwrap()
+    );
+}
+
 fn multi_port_model_graph() -> GraphSpec {
     let mut graph = simple_graph();
     graph.id = "g:multi.port.model".to_string();
@@ -9835,6 +10760,7 @@ impl RuntimeController for MultiPortVariantScoringController {
                 });
             }
             regression_targets.push(crate::metrics::RegressionTargetBlock {
+                validity_masks: None,
                 level: PredictionLevel::Sample,
                 unit_ids: vec![crate::aggregation::PredictionUnitId::Sample(sample_id)],
                 values: vec![vec![y_true]],
@@ -11886,6 +12812,7 @@ impl RuntimeController for ScoringBranchController {
                     target_names: vec!["y".to_string()],
                 }];
                 let targets = vec![crate::metrics::RegressionTargetBlock {
+                    validity_masks: None,
                     level: PredictionLevel::Sample,
                     unit_ids: partition_ids
                         .iter()
@@ -12628,6 +13555,7 @@ impl RuntimeController for FusionBranchController {
                 // Ground truth is the sample's numeric suffix — identical across
                 // branches (a sample's y_true is fold/branch-independent).
                 let targets = vec![crate::metrics::RegressionTargetBlock {
+                    validity_masks: None,
                     level: PredictionLevel::Sample,
                     unit_ids: fold_validation_ids
                         .iter()
@@ -13325,6 +14253,7 @@ impl RuntimeController for OffFoldScoringController {
                 target_names: vec!["y".to_string()],
             }];
             let targets = vec![crate::metrics::RegressionTargetBlock {
+                validity_masks: None,
                 level: PredictionLevel::Sample,
                 unit_ids: partition_ids
                     .iter()
@@ -13679,6 +14608,7 @@ impl RuntimeController for OffFoldDuplicationController {
                 target_names: vec!["y".to_string()],
             }];
             let targets = vec![crate::metrics::RegressionTargetBlock {
+                validity_masks: None,
                 level: PredictionLevel::Sample,
                 unit_ids: ids
                     .iter()
@@ -14578,6 +15508,7 @@ impl RuntimeController for OperatorScoringController {
                 target_names: vec!["y".to_string()],
             });
             regression_targets.push(crate::metrics::RegressionTargetBlock {
+                validity_masks: None,
                 level: PredictionLevel::Sample,
                 unit_ids: vec![crate::aggregation::PredictionUnitId::Sample(sample_id)],
                 values: vec![vec![y_true]],
@@ -15244,6 +16175,7 @@ fn captured_validation_y_true_is_realigned_to_prediction_sample_order() {
     // The y_true block arrives in a DIFFERENT order than `sample_order` (s3, s1, s2), each row a
     // distinct value tied to its sample so a misalignment would be observable.
     let shuffled_targets = RegressionTargetBlock {
+        validity_masks: None,
         level: PredictionLevel::Sample,
         unit_ids: vec![
             PredictionUnitId::Sample(SampleId::new("s3").unwrap()),
@@ -15315,6 +16247,7 @@ fn capture_variant_validation_predictions_realigns_shuffled_fold_targets() {
         partition: PredictionPartition::Validation,
         fold_id: Some(FoldId::new("fold:0").unwrap()),
         block: RegressionTargetBlock {
+            validity_masks: None,
             level: PredictionLevel::Sample,
             unit_ids: vec![
                 PredictionUnitId::Sample(SampleId::new("s3").unwrap()),
