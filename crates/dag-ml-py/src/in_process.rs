@@ -249,7 +249,8 @@ pub fn replay_initial_full_refit_in_process(
         .collect::<std::collections::BTreeSet<_>>();
     if handles.keys().collect::<std::collections::BTreeSet<_>>() != expected {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
-            "initial full-refit replay handles must exactly cover package host-sidecar artifacts".into(),
+            "initial full-refit replay handles must exactly cover package host-sidecar artifacts"
+                .into(),
         )));
     }
     let provider = ExplicitPhaseDataProvider::new(
@@ -3084,7 +3085,9 @@ mod tests {
             let parsed =
                 dag_ml_core::InitialFullRefitPackage::from_json(&package.to_string()).unwrap();
             assert_eq!(
-                parsed.predict_envelope(envelope.predict_cohort.clone().unwrap()).unwrap(),
+                parsed
+                    .predict_envelope(envelope.predict_cohort.clone().unwrap())
+                    .unwrap(),
                 envelope,
             );
             crate::validate_initial_full_refit_package_json(&package.to_string()).unwrap();
