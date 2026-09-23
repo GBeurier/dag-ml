@@ -10331,6 +10331,77 @@ fn durable_host_fixture(
     (plan, controllers, provider, request)
 }
 
+#[test]
+fn host_hpo_sequential_prepares_terminal_before_optimizer_tell() {
+    let (plan, controllers, provider, request) = durable_host_fixture(false);
+    let prepared = Arc::new(AtomicUsize::new(0));
+    struct Proposals {
+        prepared: Arc<AtomicUsize>,
+    }
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, trial_index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            Ok(Some(BTreeMap::from([(
+                "n_components".into(),
+                json!([1.0, 3.0, 2.0][trial_index as usize]),
+            )])))
+        }
+        fn tell(&mut self, trial_index: u32, _score: f64) -> Result<()> {
+            assert_eq!(
+                self.prepared.load(Ordering::SeqCst),
+                trial_index as usize + 1
+            );
+            Ok(())
+        }
+    }
+    struct Progress {
+        prepared: Arc<AtomicUsize>,
+        published: Vec<usize>,
+    }
+    impl HostHpoProgress for Progress {
+        fn prepare_terminal(
+            &mut self,
+            checkpoint: &HostHpoCheckpoint,
+            _status: HostHpoSearchStatus,
+        ) -> Result<()> {
+            checkpoint.verify_seal()?;
+            self.prepared
+                .store(checkpoint.trials.len(), Ordering::SeqCst);
+            Ok(())
+        }
+        fn checkpoint(
+            &mut self,
+            checkpoint: &HostHpoCheckpoint,
+            _status: HostHpoSearchStatus,
+        ) -> Result<bool> {
+            self.published.push(checkpoint.trials.len());
+            Ok(true)
+        }
+    }
+    let mut proposals = Proposals {
+        prepared: prepared.clone(),
+    };
+    let mut progress = Progress {
+        prepared,
+        published: Vec::new(),
+    };
+    let result = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut proposals,
+            &HostHpoResumeOptions {
+                data_fingerprint: "sequential-prepare".into(),
+                checkpoint: None,
+            },
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(result.status, HostHpoSearchStatus::Completed);
+    assert_eq!(progress.published, vec![0, 1, 2, 3]);
+}
+
 fn durable_proposals() -> DurableHostProposals {
     DurableHostProposals {
         asked: Vec::new(),
