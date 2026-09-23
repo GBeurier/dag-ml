@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
+use std::rc::Rc;
 use std::sync::{
     mpsc::{self, Receiver, RecvTimeoutError},
     Mutex,
@@ -29,10 +31,12 @@ use dag_ml_core::{
     ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle, ExplanationBlock,
     ExplicitPhaseDataProvider, ExternalDataPlanEnvelope, FileArtifactManifestStore,
     FileArtifactPayloadStore, FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef,
-    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, LossSpec,
-    MetricObjective, MetricSpec, NodeId, NodeResult, NodeTask, OofCampaign, OperatorVariantModel,
-    ParallelScheduler, Phase, PipelineDslSpec, PortablePredictorPackage, PredictionBlock,
-    PredictionLevel, PredictionPartition, PredictionUnitId, RefitArtifactRecord,
+    HostHpoCandidateControllerFactory, HostHpoCandidateProviderFactory, HostHpoCheckpoint,
+    HostHpoProgress, HostHpoProposalSource, HostHpoResumeOptions, HostHpoSearchRequest,
+    HostHpoSearchStatus, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
+    LossSpec, MetricObjective, MetricSpec, NodeId, NodeResult, NodeTask, OofCampaign,
+    OperatorVariantModel, ParallelScheduler, Phase, PipelineDslSpec, PortablePredictorPackage,
+    PredictionBlock, PredictionLevel, PredictionPartition, PredictionUnitId, RefitArtifactRecord,
     RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
     ResearchProvenancePackage, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
     RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
@@ -227,6 +231,29 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run scheduler-owned HPO with host optimizer and operator JSONL adapters.
+    RunHostHpo {
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        operator_adapter: PathBuf,
+        #[arg(long)]
+        operator_persistent: bool,
+        #[arg(long)]
+        optimizer_adapter: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        parallel_trials: usize,
+        #[arg(long)]
+        checkpoint: Option<PathBuf>,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value_t = 30_000)]
+        adapter_timeout_ms: u64,
+    },
     ValidateGraph {
         path: PathBuf,
     },
@@ -952,6 +979,29 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::RunHostHpo {
+            plan,
+            envelope,
+            request,
+            operator_adapter,
+            operator_persistent,
+            optimizer_adapter,
+            parallel_trials,
+            checkpoint,
+            output,
+            adapter_timeout_ms,
+        } => run_host_hpo_cli(
+            &plan,
+            &envelope,
+            &request,
+            &operator_adapter,
+            operator_persistent,
+            &optimizer_adapter,
+            parallel_trials,
+            checkpoint.as_deref(),
+            output.as_deref(),
+            Duration::from_millis(adapter_timeout_ms),
+        )?,
         Command::ValidateGraph { path } => {
             let graph = read_external_contract(&path, "graph", GraphSpec::from_json)?;
             println!("valid graph: {}", graph.id);
@@ -3704,6 +3754,384 @@ fn oof_prediction_summary(
         },
     ));
     Ok(output)
+}
+
+struct CliHpoProviderFactory {
+    envelope: ExternalDataPlanEnvelope,
+}
+
+impl HostHpoCandidateProviderFactory for CliHpoProviderFactory {
+    fn create(
+        &self,
+        _trial_index: u32,
+    ) -> dag_ml_core::Result<Box<dyn RuntimeDataProvider + Send>> {
+        Ok(Box::new(InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider")?,
+            self.envelope.clone(),
+        )?))
+    }
+}
+
+struct CliHpoControllerFactory {
+    plan: dag_ml_core::ExecutionPlan,
+    adapter: PathBuf,
+    persistent: bool,
+    timeout: Duration,
+}
+
+impl HostHpoCandidateControllerFactory for CliHpoControllerFactory {
+    fn create(&self, _trial_index: u32) -> dag_ml_core::Result<RuntimeControllerRegistry> {
+        process_runtime_controllers_for_mode(
+            &self.plan,
+            self.adapter.clone(),
+            self.persistent,
+            ProcessAdapterRuntimeConfig {
+                process_workers: 1,
+                timeout: self.timeout,
+                retries: 0,
+                control_frames: false,
+            },
+            SchedulerConfig {
+                scheduler: CliScheduler::Sequential,
+                workers: 1,
+            },
+        )
+        .map_err(|error| DagMlError::RuntimeValidation(error.to_string()))
+    }
+}
+
+struct CliHpoOptimizer {
+    child: Child,
+    stdin: ChildStdin,
+    stdout_rx: Receiver<PersistentReadEvent>,
+    timeout: Duration,
+}
+
+impl CliHpoOptimizer {
+    fn spawn(path: &Path, timeout: Duration) -> Result<Self> {
+        if timeout.is_zero() {
+            bail!("--adapter-timeout-ms must be positive");
+        }
+        let mut command = process_adapter_command(path, ProcessAdapterMode::OneShot);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("spawn HPO optimizer adapter {}", path.display()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .context("HPO optimizer adapter has no stdin")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("HPO optimizer adapter has no stdout")?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout_rx: spawn_persistent_stdout_reader(stdout),
+            timeout,
+        })
+    }
+
+    fn call(&mut self, event: serde_json::Value) -> dag_ml_core::Result<serde_json::Value> {
+        serde_json::to_writer(&mut self.stdin, &event).map_err(|error| {
+            DagMlError::RuntimeValidation(format!("write HPO optimizer event: {error}"))
+        })?;
+        self.stdin
+            .write_all(b"\n")
+            .and_then(|()| self.stdin.flush())
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!("flush HPO optimizer event: {error}"))
+            })?;
+        let line = match self.stdout_rx.recv_timeout(self.timeout) {
+            Ok(PersistentReadEvent::Line(line)) => line,
+            Ok(PersistentReadEvent::Eof) => {
+                return Err(DagMlError::RuntimeValidation(
+                    "HPO optimizer adapter exited before responding".into(),
+                ))
+            }
+            Ok(PersistentReadEvent::Error(error)) => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "read HPO optimizer adapter: {error}"
+                )))
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(DagMlError::RuntimeValidation(
+                    "HPO optimizer adapter timed out".into(),
+                ))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(DagMlError::RuntimeValidation(
+                    "HPO optimizer adapter disconnected".into(),
+                ))
+            }
+        };
+        let reply: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "HPO optimizer adapter returned invalid JSON: {error}"
+            ))
+        })?;
+        if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "HPO optimizer adapter: {error}"
+            )));
+        }
+        Ok(reply)
+    }
+}
+
+impl Drop for CliHpoOptimizer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+struct CliHpoProposals(Rc<RefCell<CliHpoOptimizer>>);
+
+impl HostHpoProposalSource for CliHpoProposals {
+    fn ask(
+        &mut self,
+        trial_index: u32,
+    ) -> dag_ml_core::Result<Option<BTreeMap<String, serde_json::Value>>> {
+        self.ask_in_phase(trial_index, None)
+    }
+
+    fn ask_in_phase(
+        &mut self,
+        trial_index: u32,
+        phase_index: Option<u32>,
+    ) -> dag_ml_core::Result<Option<BTreeMap<String, serde_json::Value>>> {
+        let reply = self.0.borrow_mut().call(serde_json::json!({
+            "operation": "ask", "trial_index": trial_index, "phase_index": phase_index,
+        }))?;
+        serde_json::from_value(reply.get("params").cloned().ok_or_else(|| {
+            DagMlError::RuntimeValidation("HPO optimizer ask reply lacks params".into())
+        })?)
+        .map_err(DagMlError::Serialization)
+    }
+
+    fn tell(&mut self, trial_index: u32, score: f64) -> dag_ml_core::Result<()> {
+        cli_hpo_ack(self.0.borrow_mut().call(serde_json::json!({
+            "operation": "tell", "trial_index": trial_index, "score": score,
+        }))?)
+    }
+
+    fn report_intermediate(
+        &mut self,
+        trial_index: u32,
+        step: u32,
+        score: f64,
+    ) -> dag_ml_core::Result<bool> {
+        self.0.borrow_mut().call(serde_json::json!({
+            "operation": "report_intermediate", "trial_index": trial_index, "step": step, "score": score,
+        }))?.get("prune").and_then(serde_json::Value::as_bool).ok_or_else(||
+            DagMlError::RuntimeValidation("HPO optimizer intermediate reply lacks prune boolean".into()))
+    }
+
+    fn pruned(&mut self, trial_index: u32) -> dag_ml_core::Result<()> {
+        cli_hpo_ack(self.0.borrow_mut().call(serde_json::json!({
+            "operation": "pruned", "trial_index": trial_index,
+        }))?)
+    }
+
+    fn fail(&mut self, trial_index: u32, error: &str) -> dag_ml_core::Result<()> {
+        cli_hpo_ack(self.0.borrow_mut().call(serde_json::json!({
+            "operation": "fail", "trial_index": trial_index, "error": error,
+        }))?)
+    }
+}
+
+fn cli_hpo_ack(reply: serde_json::Value) -> dag_ml_core::Result<()> {
+    if reply.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        Err(DagMlError::RuntimeValidation(
+            "HPO optimizer adapter did not acknowledge transition".into(),
+        ))
+    }
+}
+
+struct CliHpoProgress {
+    optimizer: Rc<RefCell<CliHpoOptimizer>>,
+    checkpoint_path: PathBuf,
+}
+
+impl HostHpoProgress for CliHpoProgress {
+    fn prepare_terminal(
+        &mut self,
+        checkpoint: &HostHpoCheckpoint,
+        status: HostHpoSearchStatus,
+    ) -> dag_ml_core::Result<()> {
+        cli_hpo_ack(self.optimizer.borrow_mut().call(serde_json::json!({
+            "operation": "prepare_terminal", "checkpoint": checkpoint, "status": status,
+        }))?)
+    }
+
+    fn checkpoint(
+        &mut self,
+        checkpoint: &HostHpoCheckpoint,
+        status: HostHpoSearchStatus,
+    ) -> dag_ml_core::Result<bool> {
+        let reply = self.optimizer.borrow_mut().call(serde_json::json!({
+            "operation": "checkpoint", "checkpoint": checkpoint, "status": status,
+        }))?;
+        cli_hpo_ack(reply.clone())?;
+        let bytes = serde_json::to_vec_pretty(checkpoint).map_err(DagMlError::Serialization)?;
+        let staging = self.checkpoint_path.with_extension("json.tmp");
+        std::fs::write(&staging, bytes)
+            .and_then(|()| std::fs::rename(&staging, &self.checkpoint_path))
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "publish HPO checkpoint {}: {error}",
+                    self.checkpoint_path.display()
+                ))
+            })?;
+        Ok(reply
+            .get("continue")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_host_hpo_cli(
+    plan_path: &Path,
+    envelope_path: &Path,
+    request_path: &Path,
+    operator_adapter: &Path,
+    operator_persistent: bool,
+    optimizer_adapter: &Path,
+    parallel_trials: usize,
+    checkpoint_path: Option<&Path>,
+    output: Option<&Path>,
+    timeout: Duration,
+) -> Result<()> {
+    if parallel_trials == 0 {
+        bail!("--parallel-trials must be positive");
+    }
+    let plan: dag_ml_core::ExecutionPlan =
+        read_json(&plan_path.to_path_buf(), "HPO execution plan")?;
+    plan.validate()?;
+    let envelope: ExternalDataPlanEnvelope =
+        read_json(&envelope_path.to_path_buf(), "HPO data envelope")?;
+    envelope.validate()?;
+    plan.campaign.validate_data_envelope_relations(&envelope)?;
+    let request: HostHpoSearchRequest = read_json(&request_path.to_path_buf(), "HPO request")?;
+    let provider_factory = CliHpoProviderFactory {
+        envelope: envelope.clone(),
+    };
+    let controller_factory = CliHpoControllerFactory {
+        plan: plan.clone(),
+        adapter: operator_adapter.to_path_buf(),
+        persistent: operator_persistent,
+        timeout,
+    };
+    let optimizer = Rc::new(RefCell::new(CliHpoOptimizer::spawn(
+        optimizer_adapter,
+        timeout,
+    )?));
+    let saved: Option<HostHpoCheckpoint> = checkpoint_path
+        .filter(|path| path.exists())
+        .map(|path| read_json(&path.to_path_buf(), "HPO checkpoint"))
+        .transpose()?;
+    let init = optimizer.borrow_mut().call(serde_json::json!({
+        "operation": "init", "request": request, "checkpoint": saved,
+    }))?;
+    let prepared: Option<HostHpoCheckpoint> = serde_json::from_value(
+        init.get("prepared_checkpoint")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )?;
+    let interrupted = serde_json::from_value(
+        init.get("interrupted")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )?;
+    let saved = match saved {
+        Some(saved) => Some(saved.recover_interrupted_trials(prepared, interrupted)?),
+        None if prepared.is_none() && interrupted.is_empty() => None,
+        None => {
+            bail!("HPO optimizer returned interrupted trials without a native checkpoint file")
+        }
+    };
+    let mut proposals = CliHpoProposals(optimizer.clone());
+    let scheduler = SequentialScheduler;
+    let result = if let Some(checkpoint_path) = checkpoint_path {
+        let options = HostHpoResumeOptions::from_envelope(&envelope, saved)?;
+        let mut progress = CliHpoProgress {
+            optimizer,
+            checkpoint_path: checkpoint_path.to_path_buf(),
+        };
+        if parallel_trials > 1 {
+            serde_json::to_value(
+                scheduler.execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+                    &plan,
+                    &provider_factory,
+                    &controller_factory,
+                    &request,
+                    &mut proposals,
+                    parallel_trials,
+                    &options,
+                    &mut progress,
+                )?,
+            )?
+        } else {
+            let provider = InMemoryDataProvider::with_envelope(
+                ControllerId::new("controller:data.provider")?,
+                envelope,
+            )?;
+            serde_json::to_value(
+                scheduler.execute_resumable_host_hpo_search_with_candidate_factories(
+                    &plan,
+                    &RuntimeControllerRegistry::new(),
+                    &provider,
+                    &provider_factory,
+                    &controller_factory,
+                    &request,
+                    &mut proposals,
+                    &options,
+                    &mut progress,
+                )?,
+            )?
+        }
+    } else if parallel_trials > 1 {
+        serde_json::to_value(
+            scheduler.execute_parallel_host_hpo_search_with_candidate_factories(
+                &plan,
+                &provider_factory,
+                &controller_factory,
+                &request,
+                &mut proposals,
+                parallel_trials,
+            )?,
+        )?
+    } else {
+        let provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider")?,
+            envelope,
+        )?;
+        serde_json::to_value(scheduler.execute_host_hpo_search_with_candidate_factories(
+            &plan,
+            &RuntimeControllerRegistry::new(),
+            &provider,
+            &provider_factory,
+            &controller_factory,
+            &request,
+            &mut proposals,
+        )?)?
+    };
+    let bytes = serde_json::to_vec_pretty(&result)?;
+    if let Some(path) = output {
+        std::fs::write(path, bytes)
+            .with_context(|| format!("write HPO result {}", path.display()))?;
+    } else {
+        println!("{}", String::from_utf8(bytes)?);
+    }
+    Ok(())
 }
 
 struct CliMockController {
@@ -6509,6 +6937,87 @@ mod tests {
             registry.register(manifest).unwrap();
         }
         build_execution_plan("plan:cli.no.variant", graph, campaign, &registry).unwrap()
+    }
+
+    #[test]
+    fn host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint() {
+        let directory = std::env::temp_dir().join(format!(
+            "dagml-host-hpo-cli-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let plan_path = directory.join("plan.json");
+        let envelope_path = directory.join("envelope.json");
+        let request_path = directory.join("request.json");
+        let checkpoint_path = directory.join("checkpoint.json");
+        let output_path = directory.join("output.json");
+        let graph: GraphSpec =
+            serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
+        let mut campaign: CampaignSpec = serde_json::from_str(include_str!(
+            "../../../examples/campaign_oof_generation.json"
+        ))
+        .unwrap();
+        campaign.generation = Default::default();
+        campaign.data_bindings.clear();
+        let manifests: Vec<ControllerManifest> =
+            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
+                .unwrap();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        let plan = build_execution_plan("plan:cli.host_hpo", graph, campaign, &registry).unwrap();
+        std::fs::write(&plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
+        std::fs::write(
+            &envelope_path,
+            include_bytes!(
+                "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            ),
+        )
+        .unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let operator = root.join("examples/adapters/hpo_process_controller.py");
+        let optimizer = root.join("examples/adapters/hpo_optimizer_jsonl.py");
+        for budget in [2, 3] {
+            std::fs::write(
+                &request_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "target_node": "model:base", "trial_budget": budget,
+                    "metric": "rmse", "direction": "minimize",
+                    "optimizer_descriptor": {"adapter": "example"},
+                    "progressive_pruning": true,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            run_host_hpo_cli(
+                &plan_path,
+                &envelope_path,
+                &request_path,
+                &operator,
+                false,
+                &optimizer,
+                2,
+                Some(&checkpoint_path),
+                Some(&output_path),
+                Duration::from_secs(10),
+            )
+            .unwrap();
+            let result: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&output_path).unwrap()).unwrap();
+            assert_eq!(result["status"], "completed");
+            assert_eq!(result["trials"].as_array().unwrap().len(), budget);
+            assert_eq!(result["selected_trial_index"], 0);
+            let checkpoint: HostHpoCheckpoint =
+                serde_json::from_slice(&std::fs::read(&checkpoint_path).unwrap()).unwrap();
+            assert_eq!(checkpoint.trials.len(), budget);
+            checkpoint.verify_seal().unwrap();
+        }
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
