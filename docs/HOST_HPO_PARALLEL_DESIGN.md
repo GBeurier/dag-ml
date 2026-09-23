@@ -94,10 +94,14 @@ manufactured score. Existing sequential behavior is unchanged.
 
 The browser host must give each candidate a fresh controller/model handle
 namespace, even when reusing a Web Worker. The Node smoke uses two
-`worker_threads` with separate WASM instances and checks simultaneous
-dispatch, ordered terminalization, checkpoint resume, and an actual prune
-before the next fold. The synchronous single-worker API also supports fold
-pruning. R/MATLAB JSONL adapters remain usable as separate CLI processes.
+`worker_threads` with separate WASM instances and a host-local ridge operator
+fitted on each declared fold's training samples. It checks native per-fold and
+pooled OOF scores, simultaneous dispatch, ordered terminalization, checkpoint
+resume, and an actual prune before the next fold. The synchronous
+single-worker API also supports fold pruning. This HPO surface returns CV
+trial evidence and selected parameters; it does not execute a REFIT or create
+a replayable predictor artifact. R/MATLAB JSONL adapters remain usable as
+separate CLI processes.
 The R and Octave CI jobs require their JSONL adapter, CLI wrapper, and native
 two-worker HPO/resume tests to pass; the latter exercises actual optimizer
 processes, not only a fake CLI. The web target is also exercised in headless
