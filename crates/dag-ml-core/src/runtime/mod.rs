@@ -280,6 +280,10 @@ pub struct RunContext {
     /// still available to the scheduler/meta learner, but can never enter
     /// selection or cross-fold score aggregation.
     pub(crate) validation_scoring_fold_ids: Option<BTreeSet<FoldId>>,
+    /// Calibrated residual weights, keyed by the variant and evaluation fold.
+    /// `None` fold is the full-training refit weight.
+    pub(crate) residual_gates:
+        BTreeMap<(Option<VariantId>, Option<FoldId>), crate::residual::ResidualGateResult>,
 }
 
 #[derive(Clone, Debug)]
@@ -289,6 +293,59 @@ pub(crate) struct GlobalOofAggregationSpec {
 }
 
 impl RunContext {
+    /// Return calibrated gates, including the full-training (foldless) gate
+    /// needed by portable bundle replay and host archive export.
+    pub fn residual_gate_records(&self) -> Vec<crate::residual::ResidualGateRecord> {
+        self.residual_gates
+            .iter()
+            .map(
+                |((variant_id, fold_id), result)| crate::residual::ResidualGateRecord {
+                    variant_id: variant_id.clone(),
+                    fold_id: fold_id.clone(),
+                    gate: result.gate,
+                    rli: result.rli,
+                },
+            )
+            .collect()
+    }
+
+    /// Restore calibrated full-training gates from an attested execution
+    /// bundle before a fresh replay context evaluates its fusion node.
+    pub fn import_residual_gate_records(&mut self, value: &serde_json::Value) -> Result<()> {
+        let records: Vec<crate::residual::ResidualGateRecord> =
+            serde_json::from_value(value.clone()).map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "bundle has invalid residual gate records: {error}"
+                ))
+            })?;
+        for record in records {
+            if !record.gate.is_finite()
+                || !(0.0..=1.0).contains(&record.gate)
+                || !record.rli.is_finite()
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "bundle has non-finite or out-of-range automatic residual gate".to_string(),
+                ));
+            }
+            let key = (record.variant_id, record.fold_id);
+            let calibrated = crate::residual::ResidualGateResult {
+                gate: record.gate,
+                rli: record.rli,
+            };
+            if self
+                .residual_gates
+                .get(&key)
+                .is_some_and(|existing| existing != &calibrated)
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "bundle contradicts an existing residual gate scope".to_string(),
+                ));
+            }
+            self.residual_gates.insert(key, calibrated);
+        }
+        Ok(())
+    }
+
     pub fn new(run_id: RunId, root_seed: Option<u64>) -> Self {
         Self {
             run_id,
@@ -303,6 +360,7 @@ impl RunContext {
             oof_average_blocks: Vec::new(),
             global_oof_aggregation: BTreeMap::new(),
             validation_scoring_fold_ids: None,
+            residual_gates: BTreeMap::new(),
         }
     }
 

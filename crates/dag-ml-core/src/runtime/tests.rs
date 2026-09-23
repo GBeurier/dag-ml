@@ -100,6 +100,26 @@ fn lineage_rejects_duplicate_or_out_of_scope_early_stopping_records() {
         .contains("does not match lineage task scope"));
 }
 
+#[test]
+fn residual_gate_bundle_records_restore_one_portable_refit_scope() {
+    let mut ctx = RunContext::new(RunId::new("run:residual.gate.replay").unwrap(), Some(17));
+    let records = serde_json::json!([{
+        "variant_id": "variant:base", "fold_id": null, "gate": 0.625, "rli": 0.18
+    }]);
+    ctx.import_residual_gate_records(&records).unwrap();
+    assert_eq!(ctx.residual_gate_records()[0].gate, 0.625);
+    ctx.import_residual_gate_records(&records).unwrap();
+    assert_eq!(ctx.residual_gate_records().len(), 1);
+    let tampered = serde_json::json!([{
+        "variant_id": "variant:base", "fold_id": null, "gate": 0.75, "rli": 0.18
+    }]);
+    assert!(ctx.import_residual_gate_records(&tampered).is_err());
+    let invalid = serde_json::json!([{
+        "variant_id": "variant:base", "fold_id": null, "gate": 1.1, "rli": 0.18
+    }]);
+    assert!(ctx.import_residual_gate_records(&invalid).is_err());
+}
+
 struct MockController {
     id: ControllerId,
     handle: u64,
@@ -9172,6 +9192,7 @@ fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof(
         &NestedStackingInput {
             meta_node_id: &meta_id,
             inner: &selected_outer.inner,
+            parent_fold_set: &outer,
             kind: NestedMetaKind::Stacking,
         },
         &mut handles,
@@ -9256,6 +9277,7 @@ fn nested_residual_campaign_delivers_only_parent_train_targets() {
     let nested_input = NestedStackingInput {
         meta_node_id: &meta_id,
         inner: &selected.inner,
+        parent_fold_set: plan.fold_set.as_ref().expect("outer folds"),
         kind: NestedMetaKind::Residual,
     };
     let mut ctx = RunContext::new(RunId::new("run:nested.residual.inputs").unwrap(), Some(11));

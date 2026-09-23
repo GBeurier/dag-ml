@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{DagMlError, Result};
 use crate::fold::FoldSet;
+use crate::ids::{FoldId, VariantId};
 use crate::ids::{NodeId, SampleId};
 use crate::oof::{
     validate_prediction_blocks_against_folds, validate_producer_oof_coverage, PredictionBlock,
@@ -38,6 +39,16 @@ pub enum ResidualGate {
 /// A calibrated scalar and the residual-learnability index used to derive it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResidualGateResult {
+    pub gate: f64,
+    pub rli: f64,
+}
+
+/// Persisted calibration evidence for one selected variant and scope.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResidualGateRecord {
+    pub variant_id: Option<VariantId>,
+    pub fold_id: Option<FoldId>,
     pub gate: f64,
     pub rli: f64,
 }

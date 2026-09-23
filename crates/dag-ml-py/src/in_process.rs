@@ -1387,6 +1387,12 @@ pub fn run_cv_refit_predict_in_process(
     )
     .map_err(py_core_error)?;
     bundle.scores = scores;
+    if !ctx.residual_gate_records().is_empty() {
+        bundle.metadata.insert(
+            "residual_gates".to_string(),
+            serde_json::to_value(ctx.residual_gate_records()).map_err(py_serde_error)?,
+        );
+    }
 
     let terminal = execute_terminal_prediction(
         TerminalPredictionReplay {
@@ -1679,6 +1685,7 @@ fn run_cv_refit_in_process_impl(
     let payload = serde_json::json!({
         "node_results": node_results,
         "scores": scores,
+        "residual_gates": ctx.residual_gate_records(),
         "refit_enabled": refit,
         "selected_refit_variant_ids": std::iter::once(&selected_variant_id).chain(additional_variant_ids.iter()).collect::<Vec<_>>(),
         "variant_catalog": plan.variants,

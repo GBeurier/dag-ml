@@ -1008,6 +1008,28 @@ impl SequentialScheduler {
         } else {
             ctx.validation_scoring_fold_ids = Some(outer_fold_ids);
         }
+        let auto_threshold = if nested.kind == NestedMetaKind::Residual {
+            plan.graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == nested.meta_node_id)
+                .and_then(|node| {
+                    (node
+                        .metadata
+                        .get("residual_gate")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("auto"))
+                    .then(|| {
+                        node.metadata
+                            .get("residual_rli_threshold")
+                            .and_then(serde_json::Value::as_f64)
+                            .unwrap_or(0.0)
+                    })
+                })
+        } else {
+            None
+        };
         let mut results = Vec::new();
         for variant in &plan.variants {
             if ctx
@@ -1037,6 +1059,88 @@ impl SequentialScheduler {
                         ..Default::default()
                     },
                 )?);
+            }
+            if let Some(threshold) = auto_threshold {
+                let meta_plan = plan
+                    .node_plans
+                    .get(&nested.meta_node_id)
+                    .expect("validated residual learner");
+                let inner_spec = crate::fold::resolve_inner_cv(
+                    meta_plan.inner_cv.as_ref(),
+                    plan.campaign.inner_cv.as_ref(),
+                )
+                .expect("validated inner CV");
+                let learner_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                let variant_id = Some(variant.variant_id.clone());
+                let variant_spec = Some(VariantExecutionSpec::from_plan(variant));
+                let seed_root = variant.seed.or(ctx.root_seed);
+                for fold in &folds.folds {
+                    let subinner = inner_spec.build_nested_fold_set(fold, &folds.sample_groups)?;
+                    for base_fold in &subinner.inner_fold_set.folds {
+                        results.extend(self.execute_phase_scope(
+                            plan,
+                            controllers,
+                            ctx,
+                            PhaseScope {
+                                phase: Phase::FitCv,
+                                variant_id: variant_id.clone(),
+                                variant: variant_spec.clone(),
+                                fold_id: Some(base_fold.fold_id.clone()),
+                                seed_root,
+                            },
+                            PhaseScopeResources {
+                                data_provider: Some(data_provider),
+                                fold_set_override: Some(&subinner.inner_fold_set),
+                                node_filter: Some(&nested.base_node_ids),
+                                suppress_inner_cv: true,
+                                ..Default::default()
+                            },
+                        )?);
+                    }
+                    results.extend(self.execute_phase_scope(
+                        plan,
+                        controllers,
+                        ctx,
+                        PhaseScope {
+                            phase: Phase::FitCv,
+                            variant_id: variant_id.clone(),
+                            variant: variant_spec.clone(),
+                            fold_id: Some(fold.fold_id.clone()),
+                            seed_root,
+                        },
+                        PhaseScopeResources {
+                            data_provider: Some(data_provider),
+                            fold_set_override: Some(folds),
+                            node_filter: Some(&learner_only),
+                            suppress_inner_cv: true,
+                            nested_stacking: Some(NestedStackingInput {
+                                meta_node_id: &nested.meta_node_id,
+                                inner: &subinner,
+                                parent_fold_set: folds,
+                                kind: NestedMetaKind::Residual,
+                            }),
+                            ..Default::default()
+                        },
+                    )?);
+                }
+                let refit_scope = PhaseScope {
+                    phase: Phase::Refit,
+                    variant_id: variant_id.clone(),
+                    variant: variant_spec,
+                    fold_id: None,
+                    seed_root,
+                };
+                let targets = nested_residual_targets(plan, meta_plan, ctx, &refit_scope, None)?
+                    .expect("residual REFIT targets");
+                let learner_oof = residual_learner_oof(ctx, &nested.meta_node_id, folds)?;
+                let calibrated = crate::residual::calibrate_residual_gate(
+                    &targets,
+                    &learner_oof,
+                    crate::residual::ResidualGate::Automatic {
+                        rli_threshold: threshold,
+                    },
+                )?;
+                ctx.residual_gates.insert((variant_id, None), calibrated);
             }
         }
         Ok(results)
@@ -1073,6 +1177,43 @@ impl SequentialScheduler {
         } else {
             ctx.validation_scoring_fold_ids = Some(parent_fold_ids);
         }
+        let residual_auto_threshold = if nested.kind == NestedMetaKind::Residual {
+            plan.graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == nested.meta_node_id)
+                .and_then(|node| {
+                    (node
+                        .metadata
+                        .get("residual_gate")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("auto"))
+                    .then(|| {
+                        node.metadata
+                            .get("residual_rli_threshold")
+                            .and_then(serde_json::Value::as_f64)
+                            .unwrap_or(0.0)
+                    })
+                })
+        } else {
+            None
+        };
+        let inner_spec = if residual_auto_threshold.is_some() {
+            let meta_plan = plan
+                .node_plans
+                .get(&nested.meta_node_id)
+                .expect("validated meta node");
+            Some(
+                crate::fold::resolve_inner_cv(
+                    meta_plan.inner_cv.as_ref(),
+                    plan.campaign.inner_cv.as_ref(),
+                )
+                .expect("validated nested inner CV"),
+            )
+        } else {
+            None
+        };
         let mut results = Vec::new();
         for variant in &plan.variants {
             if ctx
@@ -1106,6 +1247,107 @@ impl SequentialScheduler {
                             ..Default::default()
                         },
                     )?);
+                }
+
+                if let (Some(threshold), Some(inner_spec)) =
+                    (residual_auto_threshold, inner_spec.as_ref())
+                {
+                    let learner_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                    for inner_fold in &outer.inner.inner_fold_set.folds {
+                        // Cross-fit the learner on residuals derived entirely
+                        // inside this inner fold's training universe.  The
+                        // third CV level prevents its held-out target from
+                        // influencing any base prediction used for fitting.
+                        let subinner = inner_spec.build_nested_fold_set(
+                            inner_fold,
+                            &outer.inner.inner_fold_set.sample_groups,
+                        )?;
+                        for base_fold in &subinner.inner_fold_set.folds {
+                            results.extend(self.execute_phase_scope(
+                                plan,
+                                controllers,
+                                ctx,
+                                PhaseScope {
+                                    phase: Phase::FitCv,
+                                    variant_id: variant_id.clone(),
+                                    variant: variant_spec.clone(),
+                                    fold_id: Some(base_fold.fold_id.clone()),
+                                    seed_root,
+                                },
+                                PhaseScopeResources {
+                                    data_provider: Some(data_provider),
+                                    fold_set_override: Some(&subinner.inner_fold_set),
+                                    node_filter: Some(&nested.base_node_ids),
+                                    suppress_inner_cv: true,
+                                    ..Default::default()
+                                },
+                            )?);
+                        }
+                        results.extend(self.execute_phase_scope(
+                            plan,
+                            controllers,
+                            ctx,
+                            PhaseScope {
+                                phase: Phase::FitCv,
+                                variant_id: variant_id.clone(),
+                                variant: variant_spec.clone(),
+                                fold_id: Some(inner_fold.fold_id.clone()),
+                                seed_root,
+                            },
+                            PhaseScopeResources {
+                                data_provider: Some(data_provider),
+                                fold_set_override: Some(&outer.inner.inner_fold_set),
+                                node_filter: Some(&learner_only),
+                                suppress_inner_cv: true,
+                                nested_stacking: Some(NestedStackingInput {
+                                    meta_node_id: &nested.meta_node_id,
+                                    inner: &subinner,
+                                    parent_fold_set: &outer.inner.inner_fold_set,
+                                    kind: NestedMetaKind::Residual,
+                                }),
+                                ..Default::default()
+                            },
+                        )?);
+                    }
+                    let outer_scope = PhaseScope {
+                        phase: Phase::FitCv,
+                        variant_id: variant_id.clone(),
+                        variant: variant_spec.clone(),
+                        fold_id: Some(outer.outer_fold_id.clone()),
+                        seed_root,
+                    };
+                    let nested_input = NestedStackingInput {
+                        meta_node_id: &nested.meta_node_id,
+                        inner: &outer.inner,
+                        parent_fold_set: plan.fold_set.as_ref().expect("validated outer folds"),
+                        kind: NestedMetaKind::Residual,
+                    };
+                    let target_set = nested_residual_targets(
+                        plan,
+                        plan.node_plans
+                            .get(&nested.meta_node_id)
+                            .expect("validated learner"),
+                        ctx,
+                        &outer_scope,
+                        Some(&nested_input),
+                    )?
+                    .expect("residual target campaign");
+                    let learner_oof = residual_learner_oof(
+                        ctx,
+                        &nested.meta_node_id,
+                        &outer.inner.inner_fold_set,
+                    )?;
+                    let calibrated = crate::residual::calibrate_residual_gate(
+                        &target_set,
+                        &learner_oof,
+                        crate::residual::ResidualGate::Automatic {
+                            rli_threshold: threshold,
+                        },
+                    )?;
+                    ctx.residual_gates.insert(
+                        (variant_id.clone(), Some(outer.outer_fold_id.clone())),
+                        calibrated,
+                    );
                 }
 
                 // Materialize outer-validation base features in a distinct
@@ -1170,6 +1412,7 @@ impl SequentialScheduler {
                         nested_stacking: Some(NestedStackingInput {
                             meta_node_id: &nested.meta_node_id,
                             inner: &outer.inner,
+                            parent_fold_set: plan.fold_set.as_ref().expect("validated outer folds"),
                             kind: nested.kind,
                         }),
                         ..Default::default()
@@ -1211,6 +1454,9 @@ impl SequentialScheduler {
         direct_sample_prediction_only: bool,
     ) -> Result<Vec<NodeResult>> {
         replay.bundle.validate_against_plan(replay.plan)?;
+        if let Some(value) = replay.bundle.metadata.get("residual_gates") {
+            ctx.import_residual_gate_records(value)?;
+        }
         replay
             .replay_request
             .validate_for_bundle_with_prediction_cache_store(
@@ -1799,6 +2045,9 @@ impl ParallelScheduler {
         ctx: &mut RunContext,
     ) -> Result<Vec<NodeResult>> {
         replay.bundle.validate_against_plan(replay.plan)?;
+        if let Some(value) = replay.bundle.metadata.get("residual_gates") {
+            ctx.import_residual_gate_records(value)?;
+        }
         replay
             .replay_request
             .validate_for_bundle_with_prediction_cache_store(
