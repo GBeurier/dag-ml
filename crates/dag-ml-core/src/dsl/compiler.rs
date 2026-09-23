@@ -1169,7 +1169,7 @@ impl PipelineCompiler {
             input_name: "oof".to_string(),
             branch_id,
         };
-        if step.metadata.get("residual_target_execution").is_some() {
+        if step.metadata.contains_key("residual_target_execution") {
             if predictions.len() != 1 || !step.include_original_data {
                 return Err(DagMlError::GraphValidation(format!(
                     "residual learner `{}` requires exactly one base prediction and original data",
