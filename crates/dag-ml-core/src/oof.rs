@@ -14,6 +14,8 @@ pub const STACKING_OOF_REFIT_CONTRACT_METADATA_KEY: &str = "stacking_oof_refit_c
 #[serde(rename_all = "snake_case")]
 pub enum PredictionPartition {
     Train,
+    /// Report-only CV fold-model predictions on the whole training pool.
+    TrainPool,
     Validation,
     Test,
     Final,
@@ -697,7 +699,9 @@ pub fn validate_prediction_blocks_against_folds(
         let Some(fold_id) = &block.fold_id else {
             if matches!(
                 block.partition,
-                PredictionPartition::Train | PredictionPartition::Validation
+                PredictionPartition::Train
+                    | PredictionPartition::TrainPool
+                    | PredictionPartition::Validation
             ) {
                 return Err(DagMlError::OofValidation(format!(
                     "producer `{}` emitted {:?} predictions without fold_id",
@@ -715,6 +719,19 @@ pub fn validate_prediction_blocks_against_folds(
         match block.partition {
             PredictionPartition::Train => {
                 assert_exact_partition_samples(block, &fold.train_sample_ids, "train")?
+            }
+            PredictionPartition::TrainPool => {
+                let pool = fold
+                    .train_sample_ids
+                    .iter()
+                    .chain(&fold.validation_sample_ids)
+                    .collect::<BTreeSet<_>>();
+                if block.sample_ids.iter().any(|id| !pool.contains(id)) {
+                    return Err(DagMlError::OofValidation(format!(
+                        "producer `{}` emitted train-pool predictions outside fold `{fold_id}` training population",
+                        block.producer_node
+                    )));
+                }
             }
             PredictionPartition::Validation => {
                 assert_exact_partition_samples(block, &fold.validation_sample_ids, "validation")?
