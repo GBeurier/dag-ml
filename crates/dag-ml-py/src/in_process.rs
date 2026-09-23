@@ -63,7 +63,7 @@ use crate::{py_core_error, py_serde_error};
 /// scheduler. This does not select variants, invent folds, fit before PREDICT,
 /// or claim a portable predictor package for host-managed artifacts.
 #[pyfunction]
-#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, op_callback, phase, training_sample_ids=None, package_id=None))]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, op_callback, phase, training_sample_ids=None, package_id=None, artifact_callback=None))]
 #[allow(clippy::too_many_arguments)] // Preserve the public PyO3 phase call while adding optional package capture.
 pub fn execute_phase_in_process(
     py: Python<'_>,
@@ -74,6 +74,7 @@ pub fn execute_phase_in_process(
     phase: &str,
     training_sample_ids: Option<Vec<String>>,
     package_id: Option<String>,
+    artifact_callback: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     let phase = match phase {
         "REFIT" => Phase::Refit,
@@ -169,7 +170,21 @@ pub fn execute_phase_in_process(
         training_sample_ids.clone(),
     )
     .map_err(py_core_error)?;
-    let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
+    if artifact_callback
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "artifact_callback must be callable".into(),
+        )));
+    }
+    let controllers = build_runtime_controllers_with_artifact_callback(
+        py,
+        &plan,
+        &op_callback,
+        artifact_callback.as_ref(),
+    )
+    .map_err(py_core_error)?;
     let run_id = RunId::new(format!("run:{}:{}:in-process", dsl.id, phase.as_str()))
         .map_err(py_core_error)?;
     if let Some(package_id) = package_id {
@@ -216,6 +231,8 @@ pub fn execute_phase_in_process(
 /// The host supplies only invocation-local handles for the package's exact
 /// artifact IDs; the core checks their metadata before invoking any operator.
 #[pyfunction]
+#[pyo3(signature = (package_json, envelope_json, op_callback, artifact_handles_json, output_ids_json, run_id, artifact_callback=None))]
+#[allow(clippy::too_many_arguments)] // Keep the public replay call compatible while adding an optional Raw bridge.
 pub fn replay_initial_full_refit_in_process(
     py: Python<'_>,
     package_json: &str,
@@ -224,10 +241,19 @@ pub fn replay_initial_full_refit_in_process(
     artifact_handles_json: &str,
     output_ids_json: &str,
     run_id: &str,
+    artifact_callback: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     if !op_callback.bind(py).is_callable() {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "op_callback must be callable".into(),
+        )));
+    }
+    if artifact_callback
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "artifact_callback must be callable".into(),
         )));
     }
     let package =
@@ -259,8 +285,13 @@ pub fn replay_initial_full_refit_in_process(
         None,
     )
     .map_err(py_core_error)?;
-    let controllers = build_runtime_controllers(py, &package.effective_plan, &op_callback)
-        .map_err(py_core_error)?;
+    let controllers = build_runtime_controllers_with_artifact_callback(
+        py,
+        &package.effective_plan,
+        &op_callback,
+        artifact_callback.as_ref(),
+    )
+    .map_err(py_core_error)?;
     let mut artifact_store = InMemoryArtifactStore::new();
     for artifact in &package.artifacts {
         if artifact.load_mode != dag_ml_core::ArtifactLoadMode::HostSidecar {
@@ -831,6 +862,12 @@ pub fn run_host_hpo_search_in_process(
 }
 
 #[derive(serde::Serialize)]
+struct PyArtifactExportRequest<'a> {
+    operation: &'static str,
+    artifact_id: &'a dag_ml_core::ArtifactId,
+}
+
+#[derive(serde::Serialize)]
 struct PyArtifactHydrationRequest<'a> {
     operation: &'static str,
     request: &'a ArtifactMaterializationRequest,
@@ -861,6 +898,32 @@ impl RuntimeController for PyOperatorController {
             task,
             "aggregation",
         )
+    }
+
+    fn export_artifact_payload(
+        &self,
+        artifact_id: &dag_ml_core::ArtifactId,
+    ) -> Result<Option<Vec<u8>>, CoreDagMlError> {
+        let callback = self.artifact_callback.as_ref().ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(format!(
+                "Python runtime controller `{}` cannot export a raw portable artifact without artifact_callback",
+                self.controller_id
+            ))
+        })?;
+        let payload = call_py_bridge::<PyArtifactExportRequest<'_>, Vec<u8>>(
+            callback,
+            &PyArtifactExportRequest {
+                operation: "export",
+                artifact_id,
+            },
+            "artifact export",
+        )?;
+        if payload.is_empty() {
+            return Err(CoreDagMlError::RuntimeValidation(
+                "Python artifact_callback returned an empty raw payload".into(),
+            ));
+        }
+        Ok(Some(payload))
     }
 
     fn hydrate_artifact_payload(
@@ -1870,6 +1933,15 @@ mod tests {
                 .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing operation"))?;
             self.calls.lock().unwrap().push(operation.to_string());
             match operation {
+                "export" => {
+                    assert!(
+                        request["artifact_id"] == "artifact:python.native"
+                            || request["artifact_id"] == "artifact:model:terminal:refit"
+                    );
+                    pythonize(py, &vec![1u8, 2, 3])
+                        .map(|value| value.unbind())
+                        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+                }
                 "hydrate" => {
                     assert_eq!(request["payload"], serde_json::json!([1, 2, 3]));
                     let owner: ControllerId =
@@ -1897,7 +1969,7 @@ mod tests {
     }
 
     #[test]
-    fn python_artifact_callback_hydrates_and_releases_invocation_local_handles() {
+    fn python_artifact_callback_exports_hydrates_and_releases_portable_payloads() {
         Python::initialize();
         Python::attach(|py| {
             let controller_id = ControllerId::new("controller:python.native").unwrap();
@@ -1932,6 +2004,12 @@ mod tests {
                 params_fingerprint: "a".repeat(64),
                 training_loss_fingerprint: None,
             };
+            assert_eq!(
+                controller
+                    .export_artifact_payload(&ArtifactId::new("artifact:python.native").unwrap())
+                    .unwrap(),
+                Some(vec![1, 2, 3])
+            );
             let handle = controller
                 .hydrate_artifact_payload(&request, &[1, 2, 3])
                 .unwrap();
@@ -1940,7 +2018,7 @@ mod tests {
                 .release_hydrated_artifact_payload(&handle)
                 .unwrap();
             let calls = callback.bind(py).borrow().calls.lock().unwrap().clone();
-            assert_eq!(calls, ["hydrate", "release"]);
+            assert_eq!(calls, ["export", "hydrate", "release"]);
         });
     }
 
@@ -2617,6 +2695,7 @@ mod tests {
         calls: std::sync::Mutex<Vec<String>>,
         saw_predict_refit_artifact: std::sync::Mutex<bool>,
         explicit_phase: bool,
+        portable_raw: bool,
     }
 
     #[pymethods]
@@ -2744,10 +2823,14 @@ mod tests {
                     id: ArtifactId::new("artifact:model:terminal:refit").unwrap(),
                     kind: "mock_model".to_string(),
                     controller_id: task.node_plan.controller_id.clone(),
-                    backend: None,
+                    backend: self
+                        .portable_raw
+                        .then_some(dag_ml_core::ArtifactBackend::Raw),
                     uri: None,
-                    content_fingerprint: None,
-                    size_bytes: Some(1),
+                    content_fingerprint: self.portable_raw.then(|| {
+                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81".into()
+                    }),
+                    size_bytes: Some(if self.portable_raw { 3 } else { 1 }),
                     plugin: None,
                     plugin_version: None,
                     abi_major: None,
@@ -2990,6 +3073,7 @@ mod tests {
                     phase,
                     (phase == "REFIT").then(|| vec!["sample:2".into(), "sample:1".into()]),
                     None,
+                    None,
                 )
                 .unwrap();
                 let result: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -3065,6 +3149,7 @@ mod tests {
                 "REFIT",
                 Some(vec!["sample:2".into(), "sample:1".into()]),
                 Some("package:test:initial-refit".into()),
+                None,
             )
             .expect("initial package executes without CV");
             let outcome: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -3115,6 +3200,7 @@ mod tests {
                 &artifact_handles,
                 &output_ids,
                 "run:test:initial.refit.predict",
+                None,
             )
             .expect("independent initial-refit package replays PREDICT");
             let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
@@ -3132,12 +3218,108 @@ mod tests {
     }
 
     #[test]
+    fn initial_full_refit_raw_package_replays_without_host_sidecars() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut dsl: serde_json::Value =
+                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+            dsl.as_object_mut().unwrap().remove("split_invocation");
+            let mut envelope: ExternalDataPlanEnvelope =
+                serde_json::from_str(&terminal_predict_envelope_json()).unwrap();
+            envelope.data_content_fingerprint = Some("e".repeat(64));
+            envelope.target_content_fingerprint = Some("f".repeat(64));
+            let relation_fingerprint = envelope
+                .coordinator_relations
+                .as_ref()
+                .unwrap()
+                .fingerprint()
+                .unwrap();
+            envelope.relation_fingerprint = Some(relation_fingerprint.clone());
+            dsl["data_bindings"][0]["relation_fingerprint"] =
+                serde_json::json!(relation_fingerprint);
+            let refit_callback = Py::new(
+                py,
+                TerminalPredictCallback {
+                    explicit_phase: true,
+                    portable_raw: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let capture_artifacts = Py::new(py, ArtifactCallback::default()).unwrap();
+            let captured = execute_phase_in_process(
+                py,
+                &dsl.to_string(),
+                &serde_json::to_string(&envelope).unwrap(),
+                &terminal_predict_manifest_json(),
+                refit_callback.into_any(),
+                "REFIT",
+                Some(vec!["sample:2".into(), "sample:1".into()]),
+                Some("package:test:python.raw".into()),
+                Some(capture_artifacts.clone_ref(py).into_any()),
+            )
+            .unwrap();
+            let captured: serde_json::Value = serde_json::from_str(&captured).unwrap();
+            let package = &captured["initial_full_refit_package"];
+            assert_eq!(package["artifacts"][0]["load_mode"], "native_portable");
+            assert_eq!(
+                package["raw_artifact_payloads"]["artifact:model:terminal:refit"],
+                serde_json::json!([1, 2, 3])
+            );
+            let predict_callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            let replay_artifacts = Py::new(py, ArtifactCallback::default()).unwrap();
+            let output_ids = serde_json::json!([package["outputs"][0]["output_id"]]).to_string();
+            let replay = replay_initial_full_refit_in_process(
+                py,
+                &package.to_string(),
+                &serde_json::to_string(&envelope).unwrap(),
+                predict_callback.clone_ref(py).into_any(),
+                "{}",
+                &output_ids,
+                "run:test:python.raw.predict",
+                Some(replay_artifacts.clone_ref(py).into_any()),
+            )
+            .unwrap();
+            let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+            assert_eq!(
+                replay["replay_outcome"]["outputs"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(*predict_callback
+                .bind(py)
+                .borrow()
+                .saw_predict_refit_artifact
+                .lock()
+                .unwrap());
+            let capture_calls = capture_artifacts
+                .bind(py)
+                .borrow()
+                .calls
+                .lock()
+                .unwrap()
+                .clone();
+            let replay_calls = replay_artifacts
+                .bind(py)
+                .borrow()
+                .calls
+                .lock()
+                .unwrap()
+                .clone();
+            assert_eq!(capture_calls, ["export"]);
+            assert_eq!(replay_calls, ["hydrate", "release"]);
+        });
+    }
+
+    #[test]
     fn explicit_phase_rejects_invalid_phase_and_unattested_predict_before_callback() {
         Python::initialize();
         Python::attach(|py| {
             let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
             for phase in ["FIT_CV", "PREDICT"] {
-                let error = execute_phase_in_process(py, "{}", include_str!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "[]", callback.clone_ref(py).into_any(), phase, None, None).unwrap_err().to_string();
+                let error = execute_phase_in_process(py, "{}", include_str!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "[]", callback.clone_ref(py).into_any(), phase, None, None, None).unwrap_err().to_string();
                 assert!(
                     error.contains(if phase == "FIT_CV" {
                         "REFIT or PREDICT"
@@ -3164,6 +3346,7 @@ mod tests {
                 callback.clone_ref(py).into_any(),
                 "REFIT",
                 Some(vec!["sample:1".into(), "sample:2".into()]),
+                None,
                 None,
             )
             .unwrap_err()
@@ -3197,6 +3380,7 @@ mod tests {
                     "REFIT",
                     ids,
                     None,
+                    None,
                 )
                 .unwrap_err()
                 .to_string();
@@ -3210,6 +3394,7 @@ mod tests {
                 callback.clone_ref(py).into_any(),
                 "PREDICT",
                 Some(vec!["sample:1".into()]),
+                None,
                 None,
             )
             .unwrap_err()
@@ -3235,6 +3420,7 @@ mod tests {
                 callback.clone_ref(py).into_any(),
                 "REFIT",
                 Some(vec!["sample:2".into(), "sample:1".into()]),
+                None,
                 None,
             )
             .unwrap_err()

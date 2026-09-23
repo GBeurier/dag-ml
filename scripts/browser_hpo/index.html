@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>DAG-ML browser worker HPO smoke</title></head>
+<body data-result="pending">pending
+<script type="module">
+import init, * as dagMl from "/pkg/dag_ml_wasm.js";
+
+async function run() {
+  await init();
+  const graph = {
+    id: "graph:browser-hpo", interface: {inputs: [], outputs: []},
+    nodes: [{id: "model:m", kind: "model", operator: {type: "BrowserModel"}, params: {},
+      ports: {inputs: [], outputs: [{name: "oof", kind: "prediction", representation: null,
+        cardinality: "one", description: ""}]}, metadata: {}, seed_label: null}],
+    edges: [], search_space_fingerprint: null, metadata: {},
+  };
+  const manifest = JSON.parse(dagMl.derive_controller_manifest_json(JSON.stringify({
+    controller_id: "controller:browser-hpo", controller_version: "1.0.0", operator_kind: "model",
+    input_ports: [], output_ports: graph.nodes[0].ports.outputs,
+  })));
+  const campaign = {
+    id: "campaign:browser-hpo", root_seed: 7,
+    split_invocation: {id: "split:outer", controller_id: null,
+      leakage_policy: {split_unit: "sample", forbid_origin_cross_fold: true,
+        allow_observation_split_with_shared_target: false, require_group_ids: false, unsafe_flags: []},
+      params: {}, fold_set: {id: "folds:browser-hpo", sample_ids: ["s1", "s2"], sample_groups: {},
+        folds: [
+          {fold_id: "fold:0", train_sample_ids: ["s2"], validation_sample_ids: ["s1"], metadata: {}},
+          {fold_id: "fold:1", train_sample_ids: ["s1"], validation_sample_ids: ["s2"], metadata: {}},
+        ]}},
+  };
+  const plan = dagMl.build_execution_plan_json(
+    "plan:browser-hpo", JSON.stringify(graph), JSON.stringify(campaign), JSON.stringify([manifest]));
+  const envelope = await (await fetch("/fixture.json")).text();
+  const manifests = JSON.stringify([manifest]);
+  const request = {target_node: "model:m", trial_budget: 2, metric: "rmse", direction: "minimize",
+    optimizer_descriptor: {owner: "browser-smoke"}};
+  const workers = [new Worker("/worker.js", {type: "module"}), new Worker("/worker.js", {type: "module"})];
+  const busy = new Set();
+  let maxInFlight = 0;
+  const dispatch = (taskJson) => new Promise((resolve, reject) => {
+    const worker = workers.find(candidate => !busy.has(candidate));
+    if (!worker) return reject(new Error("dispatcher exceeded two Web Workers"));
+    busy.add(worker);
+    maxInFlight = Math.max(maxInFlight, busy.size);
+    const finish = () => { worker.removeEventListener("message", onMessage);
+      worker.removeEventListener("error", onError); busy.delete(worker); };
+    const onMessage = event => { finish(); event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.result); };
+    const onError = event => { finish(); reject(new Error(event.message)); };
+    worker.addEventListener("message", onMessage);
+    worker.addEventListener("error", onError);
+    worker.postMessage({taskJson, manifests, envelope, request: JSON.stringify(request)});
+  });
+  const terminalized = [];
+  const optimizer = (operation, payloadJson) => {
+    const payload = JSON.parse(payloadJson);
+    if (operation === "ask") return JSON.stringify({params: {offset: payload.trial_index + 1}});
+    if (operation === "tell") terminalized.push(payload.trial_index);
+    if (operation === "report_intermediate") return JSON.stringify({prune: false});
+    if (operation === "checkpoint") return JSON.stringify({continue: true});
+    return JSON.stringify({ok: true});
+  };
+  try {
+    const first = JSON.parse(await dagMl.host_hpo_search_parallel_json(
+      plan, manifests, envelope, JSON.stringify(request), undefined, 2, dispatch, optimizer));
+    if (first.status !== "completed" || first.checkpoint.trials.length !== 2 ||
+        first.selected_trial_index !== 0 || maxInFlight !== 2 || terminalized.join(",") !== "0,1") {
+      throw new Error("browser Web Workers failed parallel native HPO");
+    }
+    request.trial_budget = 3;
+    const resumed = JSON.parse(await dagMl.host_hpo_search_parallel_json(
+      plan, manifests, envelope, JSON.stringify(request), JSON.stringify(first.checkpoint),
+      2, dispatch, optimizer));
+    if (resumed.status !== "completed" || resumed.checkpoint.trials.length !== 3 ||
+        terminalized.join(",") !== "0,1,2") {
+      throw new Error("browser Web Worker HPO failed checkpoint resume");
+    }
+    document.body.dataset.result = "pass";
+    document.body.textContent = "PASS browser Web Worker HPO";
+  } finally {
+    workers.forEach(worker => worker.terminate());
+  }
+}
+run().catch(error => {
+  document.body.dataset.result = "fail";
+  document.body.textContent = "FAIL " + String(error.stack || error);
+});
+</script></body></html>

@@ -497,6 +497,11 @@ jobs:
           node scripts/smoke_wasm_web_bindings.mjs "$out_dir"
           (cd crates/dag-ml-wasm && wasm-pack pack --pkg-dir pkg-web .)
           node scripts/smoke_wasm_tarball_metadata.mjs "$out_dir"
+      - name: Chrome Web Worker parallel HPO and resume
+        if: matrix.node-version == '22'
+        run: |
+          google-chrome --version
+          node scripts/smoke_wasm_browser_hpo.mjs "$PWD/crates/dag-ml-wasm/pkg-web"
       - name: Cross-repo browser integration smoke
         run: |
           dag_ml_out="$PWD/crates/dag-ml-wasm/pkg-web"
