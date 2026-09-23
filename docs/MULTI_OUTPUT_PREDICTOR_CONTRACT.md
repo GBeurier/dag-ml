@@ -122,7 +122,9 @@ and explicit selection behavior are.
 
 The current legacy `by_source`/`merge: auto` export is not an oracle for this
 contract: it writes an archive but its `BundleLoader.predict` fails with
-`No model step found in bundle` (and writes duplicate artifact names). DAG-ML
-currently refuses the ambiguous export. The public training/test predictions
-remain supported; this contract defines the additional work needed for a
-replayable multi-output archive.
+`No model step found in bundle` (and writes duplicate artifact names). The
+nirs4all DAG-ML host archive now retains all fitted source models and exposes
+named outputs with explicit selection. It still accepts row-aligned, concatenated
+input rather than independently keyed source blocks, and it does not capture a
+signed `PortablePredictorPackage`. The acceptance tests above therefore remain
+the gate for portable, cross-language multi-output replay.
