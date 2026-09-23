@@ -10075,6 +10075,96 @@ fn durable_proposals() -> DurableHostProposals {
 }
 
 #[test]
+fn host_hpo_provider_factory_keeps_candidate_handles_isolated_across_resume() {
+    struct ObservedProvider {
+        trial_index: u32,
+        inner: InMemoryDataProvider,
+        dropped: Arc<Mutex<Vec<(u32, usize, usize)>>>,
+    }
+    impl RuntimeDataProvider for ObservedProvider {
+        fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+            self.inner.materialize(request)
+        }
+        fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+            self.inner.make_view(request)
+        }
+    }
+    impl Drop for ObservedProvider {
+        fn drop(&mut self) {
+            self.dropped.lock().unwrap().push((
+                self.trial_index,
+                self.inner.handle_records().len(),
+                self.inner.view_records().len(),
+            ));
+        }
+    }
+    struct Factory(Arc<Mutex<Vec<(u32, usize, usize)>>>);
+    impl HostHpoCandidateProviderFactory for Factory {
+        fn create(&self, trial_index: u32) -> Result<Box<dyn RuntimeDataProvider + Send>> {
+            Ok(Box::new(ObservedProvider {
+                trial_index,
+                inner: InMemoryDataProvider::new(ControllerId::new("controller:data")?),
+                dropped: self.0.clone(),
+            }))
+        }
+    }
+    let (plan, controllers, provider, request) = durable_host_fixture(false);
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let factory = Factory(observations.clone());
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "candidate-local-data".into(),
+        checkpoint: None,
+    };
+    let mut progress = DurableHostProgress {
+        stop_after: 1,
+        checkpoints: Vec::new(),
+    };
+    let mut proposals = durable_proposals();
+    let first = SequentialScheduler
+        .execute_resumable_host_hpo_search_with_provider_factory(
+            &plan,
+            &controllers,
+            &provider,
+            &factory,
+            &request,
+            &mut proposals,
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(first.status, HostHpoSearchStatus::Cancelled);
+    assert_eq!(observations.lock().unwrap().len(), 1);
+    let resumed = SequentialScheduler
+        .execute_resumable_host_hpo_search_with_provider_factory(
+            &plan,
+            &controllers,
+            &provider,
+            &factory,
+            &request,
+            &mut proposals,
+            &HostHpoResumeOptions {
+                data_fingerprint: "candidate-local-data".into(),
+                checkpoint: first.checkpoint,
+            },
+            &mut DurableHostProgress {
+                stop_after: usize::MAX,
+                checkpoints: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(resumed.status, HostHpoSearchStatus::Completed);
+    assert_eq!(proposals.asked, vec![0, 1, 2]);
+    let observed = observations.lock().unwrap();
+    assert_eq!(
+        observed.iter().map(|entry| entry.0).collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    assert!(observed.iter().all(|entry| entry.1 == 0 && entry.2 == 0));
+    assert!(provider.handle_records().is_empty());
+    assert!(provider.view_records().is_empty());
+}
+
+#[test]
 fn host_hpo_durable_masked_regression_resumes_with_native_scores_and_unchanged_selection() {
     struct MaskedModel {
         inner: VariantScoringController,

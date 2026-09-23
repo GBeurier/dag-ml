@@ -277,6 +277,20 @@ struct PyHostHpoProposals {
     callback: Py<PyAny>,
 }
 
+struct PyHostHpoProviderFactory {
+    envelope: ExternalDataPlanEnvelope,
+    controller_id: ControllerId,
+}
+
+impl dag_ml_core::HostHpoCandidateProviderFactory for PyHostHpoProviderFactory {
+    fn create(&self, _trial_index: u32) -> dag_ml_core::Result<Box<dyn dag_ml_core::RuntimeDataProvider + Send>> {
+        Ok(Box::new(InMemoryDataProvider::with_envelope(
+            self.controller_id.clone(),
+            self.envelope.clone(),
+        )?))
+    }
+}
+
 struct PyDataProviderSource {
     callback: Py<PyAny>,
 }
@@ -466,18 +480,24 @@ pub fn run_host_hpo_search_in_process(
     plan.campaign
         .validate_data_envelope_relations(&envelope)
         .map_err(py_core_error)?;
+    let provider_controller_id = ControllerId::new("controller:data.provider").map_err(py_core_error)?;
+    let provider_factory = PyHostHpoProviderFactory {
+        envelope: envelope.clone(),
+        controller_id: provider_controller_id.clone(),
+    };
     let provider = InMemoryDataProvider::with_envelope(
-        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+        provider_controller_id,
         envelope,
     )
     .map_err(py_core_error)?;
     let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
     if durable {
         let result = SequentialScheduler
-            .execute_resumable_host_hpo_search(
+            .execute_resumable_host_hpo_search_with_provider_factory(
                 &plan,
                 &controllers,
                 &provider,
+                &provider_factory,
                 &request,
                 &mut PyHostHpoProposals {
                     callback: optimizer_callback,
@@ -491,10 +511,11 @@ pub fn run_host_hpo_search_in_process(
         return serde_json::to_string(&result).map_err(py_serde_error);
     }
     let result = SequentialScheduler
-        .execute_host_hpo_search(
+        .execute_host_hpo_search_with_provider_factory(
             &plan,
             &controllers,
             &provider,
+            &provider_factory,
             &request,
             &mut PyHostHpoProposals {
                 callback: optimizer_callback,

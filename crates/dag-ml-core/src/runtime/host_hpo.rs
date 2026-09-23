@@ -154,6 +154,13 @@ pub trait HostHpoProposalSource {
     }
 }
 
+/// Creates a fresh data-provider namespace for one candidate. Implementations
+/// must preserve the attested input envelope while keeping handle maps local
+/// to the candidate; the returned provider may move to a worker thread.
+pub trait HostHpoCandidateProviderFactory: Send + Sync {
+    fn create(&self, trial_index: u32) -> Result<Box<dyn RuntimeDataProvider + Send>>;
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HostHpoTrialEvidence {
     pub trial_index: u32,
@@ -314,11 +321,17 @@ impl SequentialScheduler {
         request: &HostHpoSearchRequest,
         proposals: &mut dyn HostHpoProposalSource,
     ) -> Result<HostHpoSearchResult> {
-        self.execute_host_hpo_search_inner(plan, controllers, provider, request, proposals, None)?
-            .result
-            .ok_or_else(|| {
-                DagMlError::RuntimeValidation("host HPO has no successful candidate".into())
-            })
+        self.execute_host_hpo_search_inner(
+            plan,
+            controllers,
+            provider,
+            None,
+            request,
+            proposals,
+            None,
+        )?
+        .result
+        .ok_or_else(|| DagMlError::RuntimeValidation("host HPO has no successful candidate".into()))
     }
 
     /// Resume terminal native evidence and publish progress between trials.
@@ -338,6 +351,33 @@ impl SequentialScheduler {
             plan,
             controllers,
             provider,
+            None,
+            request,
+            proposals,
+            Some((options, progress)),
+        )
+    }
+
+    /// Candidate-local provider variant of the durable host search. The
+    /// factory is invoked only for trials that are actually evaluated, never
+    /// for terminal trials restored from a checkpoint.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_resumable_host_hpo_search_with_provider_factory(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        provider: &dyn RuntimeDataProvider,
+        provider_factory: &dyn HostHpoCandidateProviderFactory,
+        request: &HostHpoSearchRequest,
+        proposals: &mut dyn HostHpoProposalSource,
+        options: &HostHpoResumeOptions,
+        progress: &mut dyn HostHpoProgress,
+    ) -> Result<HostHpoSearchOutcome> {
+        self.execute_host_hpo_search_inner(
+            plan,
+            controllers,
+            provider,
+            Some(provider_factory),
             request,
             proposals,
             Some((options, progress)),
@@ -349,6 +389,7 @@ impl SequentialScheduler {
         plan: &ExecutionPlan,
         controllers: &RuntimeControllerRegistry,
         provider: &dyn RuntimeDataProvider,
+        provider_factory: Option<&dyn HostHpoCandidateProviderFactory>,
         request: &HostHpoSearchRequest,
         proposals: &mut dyn HostHpoProposalSource,
         mut durable: Option<(&HostHpoResumeOptions, &mut dyn HostHpoProgress)>,
@@ -477,6 +518,13 @@ impl SequentialScheduler {
                 variant.seed.or(plan.campaign.root_seed),
             );
             context.variant_id = Some(variant.variant_id.clone());
+            let candidate_provider = provider_factory
+                .map(|factory| factory.create(trial_index))
+                .transpose()?;
+            let provider = candidate_provider
+                .as_deref()
+                .map(|provider| provider as &dyn RuntimeDataProvider)
+                .unwrap_or(provider);
             let evaluated: Result<HostHpoEvaluation> = (|| {
                 if request.progressive_pruning {
                     let mut intermediates = Vec::new();
@@ -663,6 +711,30 @@ impl SequentialScheduler {
             status,
             checkpoint,
         })
+    }
+
+    /// Non-durable search with a separate provider and handle namespace for
+    /// every evaluated candidate.
+    pub fn execute_host_hpo_search_with_provider_factory(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        provider: &dyn RuntimeDataProvider,
+        provider_factory: &dyn HostHpoCandidateProviderFactory,
+        request: &HostHpoSearchRequest,
+        proposals: &mut dyn HostHpoProposalSource,
+    ) -> Result<HostHpoSearchResult> {
+        self.execute_host_hpo_search_inner(
+            plan,
+            controllers,
+            provider,
+            Some(provider_factory),
+            request,
+            proposals,
+            None,
+        )?
+        .result
+        .ok_or_else(|| DagMlError::RuntimeValidation("host HPO has no successful candidate".into()))
     }
 }
 
