@@ -47,10 +47,10 @@ pub(crate) use crate::ids::{
     VariantId,
 };
 pub(crate) use crate::metrics::{
-    cross_fold_validation_reports, reassemble_merge_targets, score_regression_aggregated_block,
-    score_regression_prediction_block, OofAverageBlock, RegressionMetricKind,
-    RegressionMetricReport, RegressionTargetBlock, RegressionTargetRecord, ScoreSet,
-    SCORE_SET_SCHEMA_VERSION,
+    cross_fold_test_reports, cross_fold_validation_reports, reassemble_merge_targets,
+    score_regression_aggregated_block, score_regression_prediction_block, OofAverageBlock,
+    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, RegressionTargetRecord,
+    ScoreSet, SCORE_SET_SCHEMA_VERSION,
 };
 pub(crate) use crate::oof::{
     PredictionBlock, PredictionPartition, StackingOofRefitContract, StackingOofRefitDecision,
@@ -270,6 +270,8 @@ pub struct RunContext {
     /// average reports — one per scored producer. Surfaced so the host can fill the `(validation, avg)`
     /// row's per-sample y_pred; populated by `collect_cross_fold_validation_scores`, empty otherwise.
     pub oof_average_blocks: Vec<OofAverageBlock>,
+    /// Fold-estimator held-out test averages, kept distinct from OOF validation averages.
+    pub test_ensemble_blocks: Vec<OofAverageBlock>,
     /// Declarative per-producer aggregation contracts that are applied only after every
     /// validation fold has contributed its raw sample-level OOF block.  This is deliberately
     /// separate from the per-task aggregation path: a semantic unit may span CV folds, so
@@ -358,6 +360,7 @@ impl RunContext {
             score_collector: Vec::new(),
             regression_target_records: Vec::new(),
             oof_average_blocks: Vec::new(),
+            test_ensemble_blocks: Vec::new(),
             global_oof_aggregation: BTreeMap::new(),
             validation_scoring_fold_ids: None,
             residual_gates: BTreeMap::new(),
@@ -435,6 +438,24 @@ impl RunContext {
         let outcome = apply_global_oof_aggregation(outcome, &self.global_oof_aggregation)?;
         self.score_collector.extend(outcome.reports);
         self.oof_average_blocks.extend(outcome.oof_averages);
+        Ok(())
+    }
+
+    /// Score equal and validation-weighted ensembles of the fold estimators on the held-out test
+    /// cohort. Each test fold is scored as it runs; this finalizer adds the `avg` and `w_avg` rows.
+    pub fn collect_cross_fold_test_scores(
+        &mut self,
+        selection_metric: RegressionMetricKind,
+    ) -> Result<()> {
+        let outcome = cross_fold_test_reports(
+            self.prediction_store.blocks(),
+            &self.regression_target_records,
+            &self.score_collector,
+            selection_metric,
+            SCORE_METRICS,
+        )?;
+        self.score_collector.extend(outcome.reports);
+        self.test_ensemble_blocks.extend(outcome.oof_averages);
         Ok(())
     }
 

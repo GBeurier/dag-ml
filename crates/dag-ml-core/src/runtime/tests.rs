@@ -6719,6 +6719,42 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
     }
 }
 
+#[test]
+fn fit_cv_test_predictions_require_attested_test_view_and_current_fold() {
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    let test_id = SampleId::new("test:0").unwrap();
+    let mut prediction = PredictionBlock {
+        prediction_id: None,
+        producer_node: task.node_plan.node_id.clone(),
+        producer_port: Some("prediction".to_string()),
+        partition: PredictionPartition::Test,
+        fold_id: task.fold_id.clone(),
+        sample_ids: vec![test_id.clone()],
+        values: vec![vec![1.0]],
+        target_names: vec!["y".to_string()],
+    };
+    assert!(validate_prediction_scope(&prediction, &task).is_err());
+    task.data_views.insert(
+        "data:x:test".to_string(),
+        DataProviderViewSpec {
+            sample_ids: Some(vec![test_id]),
+            partition: DataRequestPartition::Predict,
+            fold_id: None,
+            source_ids: None,
+            columns: None,
+            include_augmented: false,
+            include_excluded: true,
+            branch_view: None,
+            extra: BTreeMap::new(),
+        },
+    );
+    validate_prediction_scope(&prediction, &task).unwrap();
+    prediction.sample_ids = vec![SampleId::new("test:unattested").unwrap()];
+    assert!(validate_prediction_scope(&prediction, &task).is_err());
+    prediction.fold_id = Some(FoldId::new("fold:other").unwrap());
+    assert!(validate_prediction_scope(&prediction, &task).is_err());
+}
+
 #[cfg(dag_ml_workspace_contract_fixtures)]
 fn runtime_custom_loss_role(node_id: NodeId) -> TrainingLossRoleReference {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(

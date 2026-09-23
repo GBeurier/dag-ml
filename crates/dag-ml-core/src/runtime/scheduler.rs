@@ -3985,9 +3985,16 @@ pub(crate) fn collect_input_handles(
         for binding in &node_plan.data_bindings {
             let predict_cohort = if scope.phase == Phase::Predict {
                 data_provider.predict_cohort(binding, scope.phase)?
+            } else if scope.phase == Phase::FitCv {
+                data_provider.cv_test_cohort(binding)?
             } else {
                 None
             };
+            // FIT_CV keeps its ordinary train/validation materialization. The separately
+            // attested external test cohort is materialized only for a companion non-fit view.
+            let primary_cohort = (scope.phase == Phase::Predict)
+                .then(|| predict_cohort.clone())
+                .flatten();
             let materialized = data_provider.materialize(&DataMaterializationRequest {
                 run_id: ctx.run_id.clone(),
                 node_id: node_plan.node_id.clone(),
@@ -3996,7 +4003,7 @@ pub(crate) fn collect_input_handles(
                 variant_id: scope.variant_id.clone(),
                 fold_id: scope.fold_id.clone(),
                 binding: binding.clone(),
-                predict_cohort: predict_cohort.clone(),
+                predict_cohort: primary_cohort.clone(),
             })?;
             let branch_view_for_node = branch_view_from_node_metadata(plan, &node_plan.node_id)?;
             let mut view = data_view_for_scope(
@@ -4019,7 +4026,7 @@ pub(crate) fn collect_input_handles(
                 }
                 view.validate()?;
             }
-            if let Some(cohort) = predict_cohort.as_ref() {
+            if let Some(cohort) = primary_cohort.as_ref() {
                 bind_predict_cohort_to_view(&mut view, cohort)?;
             }
             let key = data_view_key(&binding.input_name);
@@ -4032,7 +4039,7 @@ pub(crate) fn collect_input_handles(
                 DataViewHandleInput {
                     data_handle: &materialized,
                     view: &view,
-                    predict_cohort: predict_cohort.as_ref(),
+                    predict_cohort: primary_cohort.as_ref(),
                 },
             )?;
             if data_views.insert(key.clone(), view).is_some() {
@@ -4046,6 +4053,48 @@ pub(crate) fn collect_input_handles(
                     "node `{}` received duplicate data input `{key}`",
                     node_plan.node_id
                 )));
+            }
+
+            if scope.phase == Phase::FitCv {
+                if let Some(cohort) = predict_cohort.as_ref() {
+                    let test_materialized =
+                        data_provider.materialize(&DataMaterializationRequest {
+                            run_id: ctx.run_id.clone(),
+                            node_id: node_plan.node_id.clone(),
+                            input_name: binding.input_name.clone(),
+                            phase: scope.phase,
+                            variant_id: scope.variant_id.clone(),
+                            fold_id: scope.fold_id.clone(),
+                            binding: binding.clone(),
+                            predict_cohort: Some(cohort.clone()),
+                        })?;
+                    let mut test_view = data_view_for_partition(
+                        binding,
+                        scope_fold_set,
+                        scope,
+                        DataRequestPartition::Predict,
+                        branch_view_for_node.as_ref(),
+                        DataViewRole::NonFit,
+                        &excluded_samples,
+                    )?;
+                    test_view.include_augmented = false;
+                    bind_predict_cohort_to_view(&mut test_view, cohort)?;
+                    let test_key = format!("{key}:test");
+                    let test_handle = make_data_view_handle(
+                        data_provider,
+                        ctx,
+                        node_plan,
+                        scope,
+                        binding,
+                        DataViewHandleInput {
+                            data_handle: &test_materialized,
+                            view: &test_view,
+                            predict_cohort: Some(cohort),
+                        },
+                    )?;
+                    data_views.insert(test_key.clone(), test_view);
+                    inputs.insert(test_key, test_handle);
+                }
             }
 
             if let Some(validation_view) = validation_data_view_for_scope(
