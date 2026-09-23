@@ -227,6 +227,7 @@ pub(crate) struct BranchCompileOutput {
 #[derive(Clone, Debug)]
 pub(crate) struct SequenceCompileState {
     current_data: DataSource,
+    current_target: Option<PortRef>,
     pending_predictions: Vec<PredictionSource>,
     pending_branch_data: Vec<BranchDataSource>,
 }
@@ -234,8 +235,16 @@ impl SequenceCompileState {
     fn new(current_data: DataSource) -> Self {
         Self {
             current_data,
+            current_target: None,
             pending_predictions: Vec::new(),
             pending_branch_data: Vec::new(),
+        }
+    }
+
+    fn with_target(current_data: DataSource, current_target: Option<PortRef>) -> Self {
+        Self {
+            current_target,
+            ..Self::new(current_data)
         }
     }
 
@@ -279,7 +288,11 @@ impl PipelineCompiler {
                 Ok(())
             }
             PipelineDslStep::YTransform(step) => {
-                self.compile_y_transform_with_extra(step, extra_metadata)?;
+                state.current_target = Some(self.compile_y_transform_with_extra(
+                    step,
+                    state.current_target.as_ref(),
+                    extra_metadata,
+                )?);
                 state.clear_pending();
                 Ok(())
             }
@@ -377,6 +390,7 @@ impl PipelineCompiler {
                     .push(self.compile_model_with_extra(
                         step,
                         &state.current_data,
+                        state.current_target.as_ref(),
                         branch_id,
                         extra_metadata,
                     )?);
@@ -388,21 +402,30 @@ impl PipelineCompiler {
                     .push(self.compile_tuner_with_extra(
                         step,
                         &state.current_data,
+                        state.current_target.as_ref(),
                         branch_id,
                         extra_metadata,
                     )?);
                 Ok(())
             }
             PipelineDslStep::Branch(step) => {
-                let output =
-                    self.compile_branch_with_extra(step, &state.current_data, extra_metadata)?;
+                let output = self.compile_branch_with_extra(
+                    step,
+                    &state.current_data,
+                    state.current_target.as_ref(),
+                    extra_metadata,
+                )?;
                 state.pending_predictions = output.predictions;
                 state.pending_branch_data = output.data_sources;
                 Ok(())
             }
             PipelineDslStep::Generator(step) => {
-                state.pending_predictions =
-                    self.compile_generator_with_extra(step, &state.current_data, extra_metadata)?;
+                state.pending_predictions = self.compile_generator_with_extra(
+                    step,
+                    &state.current_data,
+                    state.current_target.as_ref(),
+                    extra_metadata,
+                )?;
                 state.pending_branch_data.clear();
                 Ok(())
             }
@@ -512,6 +535,7 @@ impl PipelineCompiler {
         &mut self,
         step: &PipelineDslBranchStep,
         current_data: &DataSource,
+        current_target: Option<&PortRef>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<BranchCompileOutput> {
         if step.branches.is_empty() {
@@ -531,7 +555,8 @@ impl PipelineCompiler {
                 )));
             }
             let branch_view_plan = compile_branch_view_plan(step, branch)?;
-            let mut branch_state = SequenceCompileState::new(current_data.clone());
+            let mut branch_state =
+                SequenceCompileState::with_target(current_data.clone(), current_target.cloned());
             let mut branch_metadata = branch_context_metadata(step, branch)?;
             if let Some(plan) = &branch_view_plan {
                 branch_metadata.insert(
@@ -603,6 +628,7 @@ impl PipelineCompiler {
         &mut self,
         step: &PipelineDslGeneratorStep,
         current_data: &DataSource,
+        current_target: Option<&PortRef>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<Vec<PredictionSource>> {
         let choices = expand_generator_sequences(step)?;
@@ -622,7 +648,8 @@ impl PipelineCompiler {
                     step.id, choice.id
                 )));
             }
-            let mut choice_state = SequenceCompileState::new(current_data.clone());
+            let mut choice_state =
+                SequenceCompileState::with_target(current_data.clone(), current_target.cloned());
             let mut choice_metadata = generator_choice_metadata(step, &choice)?;
             choice_metadata.extend(extra_metadata.clone());
             for choice_step in &choice.steps {
@@ -765,8 +792,9 @@ impl PipelineCompiler {
     fn compile_y_transform_with_extra(
         &mut self,
         step: &PipelineDslOperatorStep,
+        input: Option<&PortRef>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
-    ) -> Result<()> {
+    ) -> Result<PortRef> {
         let mut metadata = operator_runtime_metadata(step, None)?;
         metadata.extend(extra_metadata);
         let node = NodeSpec {
@@ -783,7 +811,12 @@ impl PipelineCompiler {
         };
         self.push_node(node)?;
         self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
-        self.collect_shape_plan(&step.id, step.shape.as_ref())
+        self.collect_shape_plan(&step.id, step.shape.as_ref())?;
+        self.connect_target(input, &step.id, "y")?;
+        Ok(PortRef {
+            node_id: step.id.clone(),
+            port_name: "y_out".to_string(),
+        })
     }
 
     fn compile_concat_transform_with_extra(
@@ -850,6 +883,7 @@ impl PipelineCompiler {
         &mut self,
         step: &PipelineDslOperatorStep,
         input: &DataSource,
+        target: Option<&PortRef>,
         branch_id: Option<&str>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<PredictionSource> {
@@ -857,6 +891,7 @@ impl PipelineCompiler {
             NodeKind::Model,
             step,
             input,
+            target,
             branch_id,
             extra_metadata,
         )
@@ -866,6 +901,7 @@ impl PipelineCompiler {
         &mut self,
         step: &PipelineDslOperatorStep,
         input: &DataSource,
+        target: Option<&PortRef>,
         branch_id: Option<&str>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<PredictionSource> {
@@ -873,6 +909,7 @@ impl PipelineCompiler {
             NodeKind::Tuner,
             step,
             input,
+            target,
             branch_id,
             extra_metadata,
         )
@@ -883,6 +920,7 @@ impl PipelineCompiler {
         kind: NodeKind,
         step: &PipelineDslOperatorStep,
         input: &DataSource,
+        target: Option<&PortRef>,
         branch_id: Option<&str>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<PredictionSource> {
@@ -894,7 +932,14 @@ impl PipelineCompiler {
             operator: Some(step.operator.clone()),
             params: step.params.clone(),
             ports: PortSchema {
-                inputs: vec![data_port("x", input.representation.clone(), "")],
+                inputs: if target.is_some() {
+                    vec![
+                        data_port("x", input.representation.clone(), ""),
+                        target_port("y", ""),
+                    ]
+                } else {
+                    vec![data_port("x", input.representation.clone(), "")]
+                },
                 outputs: vec![prediction_port("oof", "")],
             },
             metadata,
@@ -904,6 +949,7 @@ impl PipelineCompiler {
         self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
         self.collect_shape_plan(&step.id, step.shape.as_ref())?;
         self.connect_data(input, &step.id, "x")?;
+        self.connect_target(target, &step.id, "y")?;
         Ok(PredictionSource {
             node_id: step.id.clone(),
             port_name: "oof".to_string(),
@@ -1368,6 +1414,28 @@ impl PipelineCompiler {
                     requires_oof: false,
                     requires_fold_alignment: true,
                     ..EdgeContract::new(PortKind::Data, input.representation.clone())
+                },
+            });
+        }
+        Ok(())
+    }
+
+    fn connect_target(
+        &mut self,
+        input: Option<&PortRef>,
+        target_id: &NodeId,
+        target_port: &str,
+    ) -> Result<()> {
+        if let Some(source) = input {
+            self.edges.push(EdgeSpec {
+                source: source.clone(),
+                target: PortRef {
+                    node_id: target_id.clone(),
+                    port_name: target_port.to_string(),
+                },
+                contract: EdgeContract {
+                    requires_fold_alignment: true,
+                    ..EdgeContract::new(PortKind::Target, None)
                 },
             });
         }

@@ -64,6 +64,43 @@ fn compiles_linear_pipeline_dsl_to_valid_graph() {
 }
 
 #[test]
+fn source_models_keep_their_target_transform_in_predictor_closure() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+  "id": "dsl-source-target-closure",
+  "steps": [{
+    "kind": "branch", "mode": "duplication", "branches": [
+      {"id": "source_0", "steps": [
+        {"kind": "y_transform", "id": "source_0:target", "operator": {"type": "MinMaxScaler"}},
+        {"kind": "transform", "id": "source_0:scale", "operator": {"type": "StandardScaler"}},
+        {"kind": "model", "id": "source_0:model", "operator": {"type": "PLSRegression"}}
+      ]},
+      {"id": "source_1", "steps": [
+        {"kind": "y_transform", "id": "source_1:target", "operator": {"type": "MinMaxScaler"}},
+        {"kind": "transform", "id": "source_1:scale", "operator": {"type": "StandardScaler"}},
+        {"kind": "model", "id": "source_1:model", "operator": {"type": "PLSRegression"}}
+      ]}
+    ]
+  }]
+}"#,
+    )
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    for index in 0..2 {
+        let source = format!("source_{index}:target");
+        let target = format!("source_{index}:model");
+        assert!(graph.edges.iter().any(|edge| {
+            edge.source.node_id.as_str() == source
+                && edge.source.port_name == "y_out"
+                && edge.target.node_id.as_str() == target
+                && edge.target.port_name == "y"
+                && edge.contract.kind == PortKind::Target
+        }));
+    }
+    graph.validate().unwrap();
+}
+
+#[test]
 fn compiles_pipeline_dsl_unit_contracts_to_graph_interface() {
     let spec: PipelineDslSpec = serde_json::from_str(
         r#"{
