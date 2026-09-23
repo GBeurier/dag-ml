@@ -9379,6 +9379,154 @@ fn prediction_feature_specs_join_in_graph_order_by_sample_identity() {
 }
 
 #[test]
+fn prediction_feature_views_keep_train_and_outer_validation_separate() {
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    let train = vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()];
+    let validation = vec![SampleId::new("s3").unwrap()];
+    task.prediction_feature_matrix = Some(crate::oof::OofMatrix {
+        sample_ids: train.clone(),
+        columns: vec!["model:a.pred__y".to_string()],
+        values: vec![vec![1.0], vec![2.0]],
+    });
+    task.prediction_inputs.insert(
+        "model:a.pred:outer".to_string(),
+        PredictionInputSpec {
+            producer_node: NodeId::new("model:a").unwrap(),
+            source_port: "pred".to_string(),
+            target_port: "a".to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
+            fold_id: task.fold_id.clone(),
+            fold_ids: Vec::new(),
+            unit_ids: Vec::new(),
+            sample_ids: validation.clone(),
+            values: vec![vec![3.0]],
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        },
+    );
+    let primary = prediction_feature_data_view(&task, false).unwrap().unwrap();
+    let outer = prediction_feature_data_view(&task, true).unwrap().unwrap();
+    assert_eq!(primary.sample_ids, Some(train));
+    assert_eq!(primary.partition, DataRequestPartition::FoldTrain);
+    assert_eq!(outer.sample_ids, Some(validation));
+    assert_eq!(outer.partition, DataRequestPartition::FoldValidation);
+    task.prediction_inputs
+        .get_mut("model:a.pred:outer")
+        .unwrap()
+        .sample_ids = vec![SampleId::new("s2").unwrap()];
+    assert!(prediction_feature_data_view(&task, true)
+        .unwrap_err()
+        .to_string()
+        .contains("inconsistent outer-validation"));
+}
+
+#[test]
+fn nested_residual_prediction_feature_plan_separates_source_and_base_scopes() {
+    use crate::fold::KFoldSpec;
+
+    let samples = (1..=6)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let original = nested_stacking_test_plan(outer, false);
+    let mut graph = original.graph_plan.graph;
+    let join_id = NodeId::new("merge:prediction.features").unwrap();
+    let base_id = NodeId::new("model:base.a").unwrap();
+    graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == base_id)
+        .unwrap()
+        .ports
+        .inputs
+        .push(port("x", PortKind::Data));
+    let mut join = node(
+        join_id.as_str(),
+        NodeKind::PredictionJoin,
+        vec![
+            port("a", PortKind::Prediction),
+            port("b", PortKind::Prediction),
+        ],
+        vec![port("x_out", PortKind::Data)],
+    );
+    join.metadata.insert(
+        "prediction_feature_execution".to_string(),
+        json!("native_oof_v1"),
+    );
+    graph.nodes.push(join);
+    for (name, port_name) in [("model:source.a", "a"), ("model:source.b", "b")] {
+        let source_id = NodeId::new(name).unwrap();
+        graph.nodes.push(node(
+            name,
+            NodeKind::Model,
+            Vec::new(),
+            vec![port("pred", PortKind::Prediction)],
+        ));
+        graph.edges.push(EdgeSpec {
+            source: PortRef {
+                node_id: source_id,
+                port_name: "pred".to_string(),
+            },
+            target: PortRef {
+                node_id: join_id.clone(),
+                port_name: port_name.to_string(),
+            },
+            contract: EdgeContract {
+                requires_oof: true,
+                requires_fold_alignment: true,
+                ..EdgeContract::new(PortKind::Prediction, None)
+            },
+        });
+    }
+    graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: join_id.clone(),
+            port_name: "x_out".to_string(),
+        },
+        target: PortRef {
+            node_id: base_id.clone(),
+            port_name: "x".to_string(),
+        },
+        contract: EdgeContract::new(PortKind::Data, None),
+    });
+    let mut registry = manifests();
+    let mut join_manifest =
+        controller_manifest("controller:prediction.join", NodeKind::PredictionJoin);
+    join_manifest
+        .capabilities
+        .insert(ControllerCapability::ConsumesOofPredictions);
+    registry.register(join_manifest).unwrap();
+    let plan = build_execution_plan(
+        "plan:prediction.feature.residual",
+        graph,
+        original.campaign,
+        &registry,
+    )
+    .unwrap();
+    let nested = nested_stacking_campaign_plan(&plan).unwrap().unwrap();
+    let feature = prediction_feature_join_plan(&plan, &nested)
+        .unwrap()
+        .unwrap();
+    assert_eq!(feature.join_node_id, join_id);
+    assert_eq!(
+        feature.source_node_ids,
+        BTreeSet::from([
+            NodeId::new("model:source.a").unwrap(),
+            NodeId::new("model:source.b").unwrap(),
+        ])
+    );
+    assert!(feature.downstream_node_ids.contains(&base_id));
+    assert!(!feature.downstream_node_ids.contains(&join_id));
+}
+
+#[test]
 fn nested_stacking_accepts_one_oof_base_producer() {
     use crate::fold::KFoldSpec;
 

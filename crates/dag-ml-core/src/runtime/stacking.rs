@@ -41,6 +41,89 @@ pub(crate) struct NestedStackingCampaignPlan {
     pub(crate) refit_fold_set: Option<FoldSet>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PredictionFeatureJoinPlan {
+    pub(crate) join_node_id: NodeId,
+    /// All ancestors that must run once per lower-level fold before the join.
+    pub(crate) source_node_ids: BTreeSet<NodeId>,
+    /// Base prediction producers after the joined Data output is cached.
+    pub(crate) downstream_node_ids: BTreeSet<NodeId>,
+}
+
+pub(crate) fn prediction_feature_join_plan(
+    plan: &ExecutionPlan,
+    nested: &NestedStackingCampaignPlan,
+) -> Result<Option<PredictionFeatureJoinPlan>> {
+    let joins = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            nested.base_node_ids.contains(&node.id)
+                && node.kind == NodeKind::PredictionJoin
+                && node
+                    .metadata
+                    .get("prediction_feature_execution")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("native_oof_v1")
+        })
+        .collect::<Vec<_>>();
+    if joins.is_empty() {
+        return Ok(None);
+    }
+    if joins.len() != 1 {
+        return Err(DagMlError::RuntimeValidation(
+            "nested prediction-feature execution currently requires one join node".to_string(),
+        ));
+    }
+    let join = joins[0];
+    let sources = plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == join.id && edge.contract.requires_oof)
+        .map(|edge| edge.source.node_id.clone())
+        .collect::<BTreeSet<_>>();
+    if sources.is_empty() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction feature join `{}` needs OOF source models",
+            join.id
+        )));
+    }
+    let source_node_ids = dependency_closure(plan, &sources);
+    if source_node_ids.contains(&join.id) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction feature join `{}` depends on itself",
+            join.id
+        )));
+    }
+    let downstream_node_ids = nested
+        .base_node_ids
+        .difference(&source_node_ids)
+        .filter(|node_id| **node_id != join.id)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if downstream_node_ids.is_empty()
+        || !plan.graph_plan.graph.edges.iter().any(|edge| {
+            edge.source.node_id == join.id
+                && edge.contract.kind == PortKind::Data
+                && downstream_node_ids.contains(&edge.target.node_id)
+        })
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction feature join `{}` must feed a downstream base model through Data",
+            join.id
+        )));
+    }
+    Ok(Some(PredictionFeatureJoinPlan {
+        join_node_id: join.id.clone(),
+        source_node_ids,
+        downstream_node_ids,
+    }))
+}
+
 /// Per-outer-fold evidence made available only while the scheduler invokes the
 /// declared stacking meta node.  The generic OOF collector first obtains the
 /// outer-validation blocks, then this scope atomically replaces the ordinary

@@ -1234,6 +1234,17 @@ pub(crate) fn derive_output_data_views(
                 task.node_plan.node_id, port.name, handle.kind
             )));
         }
+        let prediction_primary = if node.kind == NodeKind::PredictionJoin
+            && node
+                .metadata
+                .get("prediction_feature_execution")
+                .and_then(serde_json::Value::as_str)
+                == Some("native_oof_v1")
+        {
+            prediction_feature_data_view(task, false)?
+        } else {
+            None
+        };
         let joined_primary = if node.kind == NodeKind::FeatureJoin
             && node
                 .metadata
@@ -1245,8 +1256,9 @@ pub(crate) fn derive_output_data_views(
         } else {
             None
         };
-        if let Some(view) = joined_primary
+        if let Some(view) = prediction_primary
             .as_ref()
+            .or(joined_primary.as_ref())
             .or_else(|| primary_output_data_view(task))
         {
             views.insert(
@@ -1254,6 +1266,17 @@ pub(crate) fn derive_output_data_views(
                 output_data_view_for_port(task, result, &port.name, view)?,
             );
         }
+        let prediction_validation = if node.kind == NodeKind::PredictionJoin
+            && node
+                .metadata
+                .get("prediction_feature_execution")
+                .and_then(serde_json::Value::as_str)
+                == Some("native_oof_v1")
+        {
+            prediction_feature_data_view(task, true)?
+        } else {
+            None
+        };
         let joined_validation = if node.kind == NodeKind::FeatureJoin
             && node
                 .metadata
@@ -1265,8 +1288,9 @@ pub(crate) fn derive_output_data_views(
         } else {
             None
         };
-        if let Some(validation_view) = joined_validation
+        if let Some(validation_view) = prediction_validation
             .as_ref()
+            .or(joined_validation.as_ref())
             .or_else(|| validation_output_data_view(task))
         {
             views.insert(
@@ -1276,6 +1300,73 @@ pub(crate) fn derive_output_data_views(
         }
     }
     Ok(views)
+}
+
+pub(crate) fn prediction_feature_data_view(
+    task: &NodeTask,
+    validation: bool,
+) -> Result<Option<DataProviderViewSpec>> {
+    if validation && task.phase != Phase::FitCv {
+        return Ok(None);
+    }
+    let sample_ids = if validation {
+        let outer = task
+            .prediction_inputs
+            .iter()
+            .filter(|(key, _)| key.ends_with(":outer"))
+            .map(|(_, input)| input)
+            .collect::<Vec<_>>();
+        let Some(first) = outer.first() else {
+            return Ok(None);
+        };
+        let expected = first.sample_ids.iter().collect::<BTreeSet<_>>();
+        let train_ids = task
+            .prediction_feature_matrix
+            .as_ref()
+            .map(|matrix| matrix.sample_ids.iter().collect::<BTreeSet<_>>())
+            .unwrap_or_default();
+        if first.partition != PredictionPartition::Validation
+            || expected.len() != first.sample_ids.len()
+            || !expected.is_disjoint(&train_ids)
+            || outer.iter().any(|input| {
+                input.partition != PredictionPartition::Validation
+                    || input.sample_ids.iter().collect::<BTreeSet<_>>() != expected
+            })
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "prediction feature join `{}` has inconsistent outer-validation identities",
+                task.node_plan.node_id
+            )));
+        }
+        first.sample_ids.clone()
+    } else {
+        let Some(matrix) = task.prediction_feature_matrix.as_ref() else {
+            return Ok(None);
+        };
+        matrix.sample_ids.clone()
+    };
+    let partition = match (task.phase, validation) {
+        (Phase::FitCv, false) => DataRequestPartition::FoldTrain,
+        (Phase::FitCv, true) => DataRequestPartition::FoldValidation,
+        (Phase::Refit, false) => DataRequestPartition::FullTrain,
+        (Phase::Predict, false) => DataRequestPartition::Predict,
+        _ => return Ok(None),
+    };
+    let view = DataProviderViewSpec {
+        sample_ids: Some(sample_ids),
+        partition,
+        fold_id: (task.phase == Phase::FitCv)
+            .then(|| task.fold_id.clone())
+            .flatten(),
+        source_ids: None,
+        columns: None,
+        include_augmented: false,
+        include_excluded: false,
+        branch_view: None,
+        extra: BTreeMap::new(),
+    };
+    view.validate()?;
+    Ok(Some(view))
 }
 
 /// A row-partition feature join restores the full fold view after its branches.
