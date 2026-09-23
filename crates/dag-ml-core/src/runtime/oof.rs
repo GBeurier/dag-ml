@@ -17,6 +17,12 @@ pub(crate) fn apply_stacking_prediction_aggregations(
         .iter()
         .find(|node| node.id == node_plan.node_id)
         .expect("validated node plan");
+    // Mixed/prediction joins also carry DSL `selectors`, but their selection
+    // contract is interpreted by their own controller. This reduction belongs
+    // only to a compiled merge_model stacking node.
+    if node.kind != crate::graph::NodeKind::Model || !node.metadata.contains_key("merge_mode") {
+        return Ok(());
+    }
     let Some(value) = node.metadata.get("selectors") else {
         return Ok(());
     };
