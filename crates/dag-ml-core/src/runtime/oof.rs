@@ -437,6 +437,7 @@ pub(crate) fn apply_stacking_prediction_aggregations(
                 )));
             }
             let inputs = select_stacking_inputs(
+                plan,
                 inputs,
                 selector,
                 scores,
@@ -668,6 +669,13 @@ impl StackingProducerSelectionRequest {
         {
             return self.selected_fold_candidate_nodes(config);
         }
+        if let Some(config) = self
+            .select
+            .as_object()
+            .and_then(|config| config.get("diverse_fold_candidates"))
+        {
+            return self.selected_diverse_candidate_nodes(config);
+        }
         let limit = match &self.select {
             serde_json::Value::String(mode) if mode == "all" => {
                 return Ok(self.producer_nodes.clone())
@@ -835,9 +843,113 @@ impl StackingProducerSelectionRequest {
             })
             .collect())
     }
+
+    fn selected_diverse_candidate_nodes(&self, config: &serde_json::Value) -> Result<Vec<NodeId>> {
+        let max_per_class = config
+            .get("max_per_class")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "stacking diverse_fold_candidates needs a positive max_per_class".to_string(),
+                )
+            })?;
+        let kind = RegressionMetricKind::from_name(&self.metric).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "stacking diverse fold selection has unsupported metric `{}`",
+                self.metric
+            ))
+        })?;
+        let ascending = kind.objective() != crate::selection::MetricObjective::Maximize;
+        let allowed = self.fold_ids.iter().collect::<BTreeSet<_>>();
+        let producers = self.producer_nodes.iter().collect::<BTreeSet<_>>();
+        let mut classes: BTreeMap<&str, Vec<(usize, &NodeId, f64)>> = BTreeMap::new();
+        for (index, report) in self.reports.iter().enumerate() {
+            let Some(fold) = report.fold_id.as_ref() else {
+                continue;
+            };
+            let Some(score) = report.metrics.get(&self.metric).copied() else {
+                continue;
+            };
+            if report.partition != PredictionPartition::Validation
+                || report.level != PredictionLevel::Sample
+                || !score.is_finite()
+                || !producers.contains(&report.producer_node)
+                || (!allowed.is_empty() && !allowed.contains(fold))
+                || self
+                    .variant_id
+                    .as_ref()
+                    .is_some_and(|variant| report.variant_id.as_ref() != Some(variant))
+            {
+                continue;
+            }
+            let class = self
+                .producer_classes
+                .get(&report.producer_node)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "stacking diverse fold selection lacks class for producer `{}`",
+                        report.producer_node
+                    ))
+                })?;
+            classes
+                .entry(class.as_str())
+                .or_default()
+                .push((index, &report.producer_node, score));
+        }
+        if classes.is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "stacking diverse fold selection has no validation `{}` scores in its fold scope",
+                self.metric,
+            )));
+        }
+        let preferred = config
+            .get("preferred_classes")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "stacking diverse fold selection needs preferred_classes strings".to_string(),
+                )
+            })?;
+        let mut class_order = preferred
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|class| classes.contains_key(class))
+            .collect::<Vec<_>>();
+        for class in classes.keys() {
+            if !class_order.contains(class) {
+                class_order.push(class);
+            }
+        }
+        let mut selected = BTreeSet::new();
+        for class in class_order {
+            let candidates = classes
+                .get_mut(class)
+                .expect("class order came from groups");
+            candidates.sort_by(|left, right| {
+                (if ascending {
+                    left.2.total_cmp(&right.2)
+                } else {
+                    right.2.total_cmp(&left.2)
+                })
+                .then_with(|| left.0.cmp(&right.0))
+            });
+            for (_, producer, _) in candidates.iter().take(max_per_class) {
+                selected.insert((*producer).clone());
+            }
+        }
+        Ok(self
+            .producer_nodes
+            .iter()
+            .filter(|producer| selected.contains(*producer))
+            .cloned()
+            .collect())
+    }
 }
 
 fn select_stacking_inputs<'a>(
+    plan: &ExecutionPlan,
     inputs: Vec<(&'a String, &'a PredictionInputSpec)>,
     selector: &crate::dsl::PipelineDslMergeSelector,
     scores: &[RegressionMetricReport],
@@ -861,7 +973,48 @@ fn select_stacking_inputs<'a>(
         fold_ids: candidate_score_folds
             .map_or_else(Vec::new, |folds| folds.iter().cloned().collect()),
         variant_id: candidate_variant.cloned(),
-        producer_classes: BTreeMap::new(),
+        producer_classes: if select
+            .as_object()
+            .is_some_and(|value| value.contains_key("diverse_fold_candidates"))
+        {
+            inputs
+                .iter()
+                .map(|(_, input)| {
+                    let node = plan
+                        .graph_plan
+                        .graph
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == input.producer_node)
+                        .ok_or_else(|| {
+                            DagMlError::RuntimeValidation(format!(
+                                "stacking diverse fold selection lacks producer `{}`",
+                                input.producer_node,
+                            ))
+                        })?;
+                    let class = node
+                        .operator
+                        .as_ref()
+                        .and_then(|operator| {
+                            operator
+                                .get("class")
+                                .and_then(serde_json::Value::as_str)
+                                .or_else(|| operator.as_str())
+                        })
+                        .and_then(|name| name.rsplit('.').next())
+                        .filter(|name| !name.is_empty())
+                        .ok_or_else(|| {
+                            DagMlError::RuntimeValidation(format!(
+                                "stacking diverse fold selection needs operator class for `{}`",
+                                input.producer_node,
+                            ))
+                        })?;
+                    Ok((input.producer_node.clone(), class.to_string()))
+                })
+                .collect::<Result<BTreeMap<_, _>>>()?
+        } else {
+            BTreeMap::new()
+        },
     };
     let selected = request.selected_producer_nodes()?;
     Ok(selected

@@ -1235,7 +1235,10 @@ impl PipelineCompiler {
                 .select
                 .as_ref()
                 .and_then(|value| value.as_object())
-                .is_some_and(|select| select.contains_key("fold_candidates_top_k"));
+                .is_some_and(|select| {
+                    select.contains_key("fold_candidates_top_k")
+                        || select.contains_key("diverse_fold_candidates")
+                });
             if !matches!(
                 selector.aggregate.as_deref(),
                 None | Some("mean" | "weighted_mean" | "proba_mean")
@@ -2148,6 +2151,39 @@ pub(crate) fn validate_merge_selector_select(
             selector_index,
             selector,
             "fold_candidates_top_k",
+        );
+    }
+    if object.len() == 1 && object.contains_key("diverse_fold_candidates") {
+        let Some(diverse) = object["diverse_fold_candidates"].as_object() else {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} diverse_fold_candidates must be an object"
+            )));
+        };
+        let max_per_class = diverse
+            .get("max_per_class")
+            .and_then(|value| value.as_u64());
+        let preferred = diverse
+            .get("preferred_classes")
+            .and_then(|value| value.as_array());
+        if diverse
+            .keys()
+            .any(|key| key != "max_per_class" && key != "preferred_classes")
+            || max_per_class.is_none_or(|value| value == 0)
+            || preferred.is_none_or(|values| {
+                values
+                    .iter()
+                    .any(|value| value.as_str().is_none_or(str::is_empty))
+            })
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} diverse_fold_candidates needs positive max_per_class and preferred_classes strings"
+            )));
+        }
+        return require_selector_metric(
+            merge_id,
+            selector_index,
+            selector,
+            "diverse_fold_candidates",
         );
     }
     if object.len() != 1 || !object.contains_key("top_k") {

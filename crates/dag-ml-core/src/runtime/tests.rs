@@ -2799,6 +2799,49 @@ fn stacking_fold_candidate_top_k_uses_only_inner_validation_scores() {
 }
 
 #[test]
+fn stacking_diverse_fold_candidates_are_ranked_per_operator_class() {
+    let report = |producer_node: &str, fold_id: &str, rmse: f64| {
+        json!({
+            "producer_node": producer_node,
+            "partition": "validation",
+            "fold_id": fold_id,
+            "level": "sample",
+            "row_count": 1,
+            "target_width": 1,
+            "metrics": {"rmse": rmse},
+        })
+    };
+    let request: StackingProducerSelectionRequest = serde_json::from_value(json!({
+        "producer_nodes": ["model:ridge1", "model:ridge2", "model:pls"],
+        "select": {"diverse_fold_candidates": {
+            "max_per_class": 1,
+            "preferred_classes": ["Ridge"],
+        }},
+        "metric": "rmse",
+        "fold_ids": ["fold:inner"],
+        "producer_classes": {
+            "model:ridge1": "Ridge",
+            "model:ridge2": "Ridge",
+            "model:pls": "PLSRegression",
+        },
+        "reports": [
+            report("model:ridge1", "fold:inner", 0.4),
+            report("model:ridge2", "fold:inner", 0.2),
+            report("model:pls", "fold:inner", 0.5),
+            report("model:ridge1", "fold:outer", 0.001),
+        ],
+    }))
+    .unwrap();
+    assert_eq!(
+        request.selected_producer_nodes().unwrap(),
+        vec![
+            NodeId::new("model:ridge2").unwrap(),
+            NodeId::new("model:pls").unwrap(),
+        ]
+    );
+}
+
+#[test]
 fn stacking_selection_ignores_test_scores_and_rejects_duplicate_producers() {
     let mut request: StackingProducerSelectionRequest = serde_json::from_value(json!({
         "producer_nodes": ["model:a", "model:b"], "select": "best", "metric": "rmse",
