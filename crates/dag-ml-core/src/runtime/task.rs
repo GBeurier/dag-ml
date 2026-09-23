@@ -795,8 +795,9 @@ impl ExplanationBlock {
     }
 }
 
-/// Class-aligned probabilities for one labelled CV prediction block. This is
-/// evidence for cross-fold classification ensembles, not another numeric target prediction.
+/// Class-aligned probabilities for one labelled CV prediction block. Validation
+/// probabilities also attest the class score of a projected stacking feature;
+/// they never replace the prediction values delivered across the graph edge.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClassificationProbabilityBlock {
@@ -814,11 +815,14 @@ impl ClassificationProbabilityBlock {
     pub fn validate(&self) -> Result<()> {
         if !matches!(
             self.partition,
-            PredictionPartition::Train | PredictionPartition::TrainPool | PredictionPartition::Test
-        ) || self.fold_id.is_none()
+            PredictionPartition::Train
+                | PredictionPartition::TrainPool
+                | PredictionPartition::Validation
+                | PredictionPartition::Test
+        ) || (self.partition != PredictionPartition::Test && self.fold_id.is_none())
         {
             return Err(DagMlError::RuntimeValidation(
-                "classification probabilities require a CV train, train-pool or test fold"
+                "classification probabilities require a CV train, train-pool or validation fold, or a test block"
                     .to_string(),
             ));
         }
@@ -1111,14 +1115,16 @@ impl NodeResult {
         }
         for block in &self.classification_probabilities {
             block.validate()?;
-            if task.phase != Phase::FitCv
+            if !matches!(task.phase, Phase::FitCv | Phase::Refit)
                 || block.producer_node != self.node_id
                 || block.fold_id != task.fold_id
+                || (task.phase == Phase::Refit && block.partition != PredictionPartition::Test)
                 || !self.predictions.iter().any(|prediction| {
                     matches!(
                         prediction.partition,
                         PredictionPartition::Train
                             | PredictionPartition::TrainPool
+                            | PredictionPartition::Validation
                             | PredictionPartition::Test
                     ) && prediction.fold_id == block.fold_id
                         && prediction.producer_port == block.producer_port
@@ -1128,7 +1134,7 @@ impl NodeResult {
                 })
             {
                 return Err(DagMlError::RuntimeValidation(
-                    "classification probabilities require a matching single-target CV train/test prediction"
+                    "classification probabilities require a matching single-target CV prediction"
                         .to_string(),
                 ));
             }

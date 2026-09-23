@@ -275,7 +275,34 @@ pub(crate) fn apply_result_scoring(
             .iter()
             .find(|targets| sample_targets_match_block(block, targets))
         {
-            let mut report = score_regression_prediction_block(block, targets, SCORE_METRICS)?;
+            let probability_blocks = result
+                .classification_probabilities
+                .iter()
+                .filter(|candidate| {
+                    candidate.producer_node == block.producer_node
+                        && candidate.producer_port == block.producer_port
+                        && candidate.partition == block.partition
+                        && candidate.fold_id == block.fold_id
+                        && candidate.sample_ids.iter().collect::<BTreeSet<_>>()
+                            == block.sample_ids.iter().collect::<BTreeSet<_>>()
+                })
+                .collect::<Vec<_>>();
+            if probability_blocks.len() > 1 {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted ambiguous classification probability scores",
+                    block.producer_node
+                )));
+            }
+            let mut report = if let Some(probabilities) = probability_blocks.first() {
+                score_prediction_with_class_probabilities(
+                    block,
+                    probabilities,
+                    targets,
+                    SCORE_METRICS,
+                )?
+            } else {
+                score_regression_prediction_block(block, targets, SCORE_METRICS)?
+            };
             report.variant_id = result.lineage.variant_id.clone();
             collector.push(report);
             // Retain y_true (tagged with its variant/fold/partition) so the OOF average can be
