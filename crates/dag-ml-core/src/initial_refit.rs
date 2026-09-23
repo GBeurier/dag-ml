@@ -4,6 +4,7 @@
 //! deliberately distinct from the parent-bound portable refit Package V3.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -11,15 +12,20 @@ use crate::canonical::parse_typed_json;
 use crate::data::data_binding_requirement_key;
 use crate::error::{DagMlError, Result};
 use crate::graph::PortKind;
-use crate::ids::{ArtifactId, NodeId, RunId, SampleId, VariantId};
+use crate::ids::{ArtifactId, ControllerId, NodeId, RunId, SampleId, VariantId};
 use crate::phase::Phase;
 use crate::relation::SampleRelationSet;
 use crate::runtime::{
-    ArtifactBackend, InMemoryArtifactStore, NodeResult, ParallelScheduler, RunContext,
-    RuntimeControllerRegistry, RuntimeDataProvider, SequentialScheduler,
+    ArtifactBackend, ArtifactMaterializationRequest, HandleRef, InMemoryArtifactStore, NodeResult,
+    ParallelScheduler, RunContext, RuntimeArtifactStore, RuntimeControllerRegistry,
+    RuntimeDataProvider, SequentialScheduler,
 };
 use crate::training::{ArtifactLoadMode, TrainingDataIdentity};
-use crate::{ExecutionPlan, RefitArtifactRecord, TrainingResourceLimits};
+use crate::{
+    require_terminal_predict_cohort, validate_terminal_prediction_preflight, ExecutionPlan,
+    ExternalDataPlanEnvelope, PredictCohort, PredictionBlock, PredictionPartition,
+    RefitArtifactRecord, ScoreSet, TerminalPredictionSelector, TrainingResourceLimits,
+};
 
 pub const INITIAL_FULL_REFIT_PACKAGE_SCHEMA_VERSION: u32 = 1;
 
@@ -335,6 +341,8 @@ pub enum InitialRefitScheduler {
 pub struct InitialFullRefitExecution {
     pub package: InitialFullRefitPackage,
     pub results: Vec<NodeResult>,
+    /// Native resubstitution/test reports are execution evidence, never CV selection.
+    pub scores: Option<ScoreSet>,
 }
 
 /// Execute REFIT exactly once and capture its independently attested package.
@@ -499,5 +507,287 @@ pub fn execute_initial_full_refit(
     };
     package.package_fingerprint = package.compute_fingerprint()?;
     package.validate()?;
-    Ok(InitialFullRefitExecution { package, results })
+    let scores = context.build_score_set(input.plan.id.clone(), None);
+    Ok(InitialFullRefitExecution {
+        package,
+        results,
+        scores,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialRefitReplayOutput {
+    pub output_id: String,
+    pub prediction: PredictionBlock,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialRefitReplayOutcome {
+    pub schema_version: u32,
+    pub package_id: String,
+    pub package_fingerprint: String,
+    pub run_id: RunId,
+    pub cohort_fingerprint: String,
+    pub outputs: Vec<InitialRefitReplayOutput>,
+    pub outcome_fingerprint: String,
+}
+
+impl InitialRefitReplayOutcome {
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        fingerprint(self, Some("outcome_fingerprint"))
+    }
+
+    pub fn validate_against(
+        &self,
+        package: &InitialFullRefitPackage,
+        cohort: &PredictCohort,
+    ) -> Result<()> {
+        package.validate()?;
+        cohort.validate()?;
+        if self.schema_version != 1
+            || self.package_id != package.package_id
+            || self.package_fingerprint != package.package_fingerprint
+            || self.cohort_fingerprint != cohort.cohort_fingerprint
+            || self.outputs.is_empty()
+        {
+            return Err(package_error(
+                "initial full-refit replay identity does not match package/cohort",
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        for output in &self.outputs {
+            let binding = package
+                .outputs
+                .iter()
+                .find(|binding| binding.output_id == output.output_id)
+                .ok_or_else(|| {
+                    package_error("initial full-refit replay has unknown output binding")
+                })?;
+            if !ids.insert(&output.output_id)
+                || output.prediction.producer_node != binding.node_id
+                || output.prediction.producer_port.as_deref() != Some(binding.port_name.as_str())
+                || output.prediction.partition != PredictionPartition::Final
+                || output.prediction.fold_id.is_some()
+                || output.prediction.sample_ids != cohort.physical_sample_ids
+                || output.prediction.target_names != cohort.target_names
+            {
+                return Err(package_error(
+                    "initial full-refit replay output differs from selected binding/cohort",
+                ));
+            }
+            output.prediction.validate_content()?;
+        }
+        if self.outcome_fingerprint != self.compute_fingerprint()? {
+            return Err(package_error(
+                "initial full-refit replay outcome fingerprint mismatch",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub struct InitialRefitReplayInput<'a> {
+    pub package: &'a InitialFullRefitPackage,
+    pub envelope: &'a ExternalDataPlanEnvelope,
+    pub output_ids: &'a [String],
+    pub run_id: RunId,
+    pub controllers: &'a RuntimeControllerRegistry,
+    pub data_provider: &'a dyn RuntimeDataProvider,
+    pub artifact_store: &'a dyn RuntimeArtifactStore,
+}
+
+pub struct InitialRefitReplayExecution {
+    pub outcome: InitialRefitReplayOutcome,
+    pub results: Vec<NodeResult>,
+}
+
+struct InitialPayloadArtifactStore<'a> {
+    package: &'a InitialFullRefitPackage,
+    controllers: &'a RuntimeControllerRegistry,
+    fallback: &'a dyn RuntimeArtifactStore,
+    hydrated: Mutex<Vec<(ControllerId, HandleRef)>>,
+}
+
+impl RuntimeArtifactStore for InitialPayloadArtifactStore<'_> {
+    fn materialize(&self, request: &ArtifactMaterializationRequest) -> Result<HandleRef> {
+        let Some(payload) = self.package.raw_artifact_payloads.get(&request.artifact.id) else {
+            return self.fallback.materialize(request);
+        };
+        let controller = self
+            .controllers
+            .get(&request.controller_id)
+            .ok_or_else(|| {
+                package_error("initial full-refit raw artifact controller is missing")
+            })?;
+        let handle = controller.hydrate_artifact_payload(request, payload)?;
+        self.hydrated
+            .lock()
+            .map_err(|_| package_error("initial full-refit hydrated-handle registry poisoned"))?
+            .push((request.controller_id.clone(), handle.clone()));
+        Ok(handle)
+    }
+}
+
+impl InitialPayloadArtifactStore<'_> {
+    fn release_hydrated(&self) -> Result<()> {
+        let handles =
+            std::mem::take(&mut *self.hydrated.lock().map_err(|_| {
+                package_error("initial full-refit hydrated-handle registry poisoned")
+            })?);
+        let mut failures = Vec::new();
+        for (controller_id, handle) in handles.into_iter().rev() {
+            let result = self
+                .controllers
+                .get(&controller_id)
+                .ok_or_else(|| {
+                    package_error("initial full-refit hydrated artifact controller disappeared")
+                })
+                .and_then(|controller| controller.release_hydrated_artifact_payload(&handle));
+            if let Err(error) = result {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(package_error(format!(
+                "initial full-refit hydrated artifact release failed: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+}
+
+/// Run PREDICT from the captured REFIT artifacts and an independent V2 cohort.
+/// No package-bound CV selection or training phase is replayed.
+pub fn execute_initial_full_refit_prediction(
+    input: InitialRefitReplayInput<'_>,
+) -> Result<InitialRefitReplayExecution> {
+    input.package.validate()?;
+    let cohort = require_terminal_predict_cohort(input.envelope)?;
+    if input.output_ids.is_empty()
+        || input.output_ids.iter().collect::<BTreeSet<_>>().len() != input.output_ids.len()
+    {
+        return Err(package_error(
+            "initial full-refit replay requires distinct explicit output IDs",
+        ));
+    }
+    let plan = &input.package.effective_plan;
+    for output_id in input.output_ids {
+        let binding = input
+            .package
+            .outputs
+            .iter()
+            .find(|binding| binding.output_id == *output_id)
+            .ok_or_else(|| {
+                package_error(format!("unknown initial full-refit output `{output_id}`"))
+            })?;
+        validate_terminal_prediction_preflight(
+            plan,
+            input.envelope,
+            &TerminalPredictionSelector::new(binding.node_id.clone(), binding.port_name.clone())?,
+        )?;
+    }
+    for node in plan.node_plans.values().filter(|node| {
+        node.supported_phases.contains(&Phase::Predict)
+            && node
+                .controller_capabilities
+                .contains(&crate::ControllerCapability::Stateful)
+    }) {
+        if !input
+            .package
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.record.node_id == node.node_id)
+        {
+            return Err(package_error(format!(
+                "initial full-refit stateful node `{}` has no captured artifact",
+                node.node_id
+            )));
+        }
+    }
+    for binding in plan
+        .node_plans
+        .values()
+        .flat_map(|node| node.data_bindings.iter())
+    {
+        binding.validate_envelope(input.envelope)?;
+        if input
+            .data_provider
+            .predict_cohort(binding, Phase::Predict)?
+            .as_ref()
+            != Some(cohort)
+        {
+            return Err(package_error(
+                "initial full-refit provider cohort differs from replay envelope",
+            ));
+        }
+    }
+    let mut ctx = RunContext::new(input.run_id.clone(), input.package.execution_root_seed);
+    ctx.variant_id = Some(input.package.variant_id.clone());
+    ctx.resource_limits = input.package.resource_limits.clone();
+    let payload_store = InitialPayloadArtifactStore {
+        package: input.package,
+        controllers: input.controllers,
+        fallback: input.artifact_store,
+        hydrated: Mutex::new(Vec::new()),
+    };
+    let execution = SequentialScheduler.execute_initial_full_refit_predict(
+        input.package,
+        input.envelope,
+        input.controllers,
+        input.data_provider,
+        &payload_store,
+        &mut ctx,
+    );
+    let released = payload_store.release_hydrated();
+    let results = execution?;
+    released?;
+    let mut outputs = Vec::new();
+    for output_id in input.output_ids {
+        let binding = input
+            .package
+            .outputs
+            .iter()
+            .find(|binding| binding.output_id == *output_id)
+            .expect("preflighted output");
+        let mut matches = results
+            .iter()
+            .flat_map(|result| result.predictions.iter())
+            .filter(|block| {
+                block.producer_node == binding.node_id
+                    && block.producer_port.as_deref() == Some(binding.port_name.as_str())
+            });
+        let prediction = matches
+            .next()
+            .ok_or_else(|| {
+                package_error(format!(
+                    "initial full-refit output `{output_id}` was not emitted"
+                ))
+            })?
+            .clone();
+        if matches.next().is_some() {
+            return Err(package_error(format!(
+                "initial full-refit output `{output_id}` was emitted more than once"
+            )));
+        }
+        outputs.push(InitialRefitReplayOutput {
+            output_id: output_id.clone(),
+            prediction,
+        });
+    }
+    let mut outcome = InitialRefitReplayOutcome {
+        schema_version: 1,
+        package_id: input.package.package_id.clone(),
+        package_fingerprint: input.package.package_fingerprint.clone(),
+        run_id: input.run_id,
+        cohort_fingerprint: cohort.cohort_fingerprint.clone(),
+        outputs,
+        outcome_fingerprint: "0".repeat(64),
+    };
+    outcome.outcome_fingerprint = outcome.compute_fingerprint()?;
+    outcome.validate_against(input.package, cohort)?;
+    Ok(InitialRefitReplayExecution { outcome, results })
 }

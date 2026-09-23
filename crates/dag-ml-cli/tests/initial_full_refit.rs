@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use dag_ml_core::{ExternalDataPlanEnvelope, InitialFullRefitPackage};
+use dag_ml_core::{
+    ExternalDataPlanEnvelope, InitialFullRefitPackage, PredictCohort, PredictCohortRole,
+    SampleRelationSet, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
+};
 use serde_json::json;
 
 fn root() -> PathBuf {
@@ -100,10 +103,79 @@ fn cli_captures_closed_initial_full_refit_without_cv() {
     assert_eq!(package.execution_root_seed, Some(12345));
     let outcome: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&outcome_path).unwrap()).unwrap();
-    assert!(outcome.get("scores").is_none());
+    if let Some(reports) = outcome["scores"]["reports"].as_array() {
+        assert!(reports
+            .iter()
+            .all(|report| report["partition"] == "final" || report["partition"] == "test"));
+    }
     assert_eq!(
         outcome["initial_full_refit_package"]["package_fingerprint"],
         package.package_fingerprint
+    );
+    let mut replay_envelope: ExternalDataPlanEnvelope = serde_json::from_value(envelope).unwrap();
+    let heldout: SampleRelationSet = serde_json::from_value(json!({"records": [
+        {"observation_id": "obs.H001", "sample_id": "sample:holdout:1", "target_id": "target:holdout:1", "group_id": "group:holdout", "origin_sample_id": null, "source_id": "nir", "is_augmented": false},
+        {"observation_id": "obs.H002", "sample_id": "sample:holdout:2", "target_id": "target:holdout:2", "group_id": "group:holdout", "origin_sample_id": null, "source_id": "nir", "is_augmented": false}
+    ]})).unwrap();
+    replay_envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+    replay_envelope.predict_cohort = Some(
+        PredictCohort::from_relations(
+            PredictCohortRole::ExternalTest,
+            heldout,
+            vec!["y".into()],
+            "a".repeat(64),
+            Some("b".repeat(64)),
+        )
+        .unwrap(),
+    );
+    let replay_envelope_path = temp.join("predict_envelope.json");
+    let handles_path = temp.join("artifact_handles.json");
+    let output_ids_path = temp.join("output_ids.json");
+    let replay_path = temp.join("predict.json");
+    std::fs::write(
+        &replay_envelope_path,
+        serde_json::to_vec(&replay_envelope).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        &handles_path,
+        outcome["node_results"][0]["artifact_handles"].to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        &output_ids_path,
+        json!([package.outputs[0].output_id]).to_string(),
+    )
+    .unwrap();
+    let replay = Command::new(env!("CARGO_BIN_EXE_dag-ml-cli"))
+        .current_dir(&root)
+        .arg("run-process-initial-full-refit-predict")
+        .args([
+            "--package",
+            package_path.to_str().unwrap(),
+            "--envelope",
+            replay_envelope_path.to_str().unwrap(),
+            "--adapter",
+            "examples/adapters/python_process_controller.py",
+            "--artifact-handles",
+            handles_path.to_str().unwrap(),
+            "--output-ids",
+            output_ids_path.to_str().unwrap(),
+            "--output",
+            replay_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let replay: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&replay_path).unwrap()).unwrap();
+    assert_eq!(
+        replay["replay_outcome"]["outputs"][0]["prediction"]["sample_ids"],
+        json!(["sample:holdout:1", "sample:holdout:2"])
     );
     let valid = Command::new(env!("CARGO_BIN_EXE_dag-ml-cli"))
         .arg("validate-initial-full-refit-package")

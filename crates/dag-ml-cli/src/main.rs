@@ -717,6 +717,31 @@ enum Command {
         #[arg(long = "gpu-device")]
         gpu_devices: Vec<String>,
     },
+    /// Replay PREDICT from an independently captured no-CV full-refit package.
+    RunProcessInitialFullRefitPredict {
+        #[arg(long)]
+        package: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long)]
+        artifact_handles: PathBuf,
+        #[arg(long)]
+        output_ids: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = "run:cli.initial.refit.predict")]
+        run_id: String,
+        #[arg(long)]
+        persistent: bool,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
+    },
     RunProcessDslCvRefitReplay {
         #[arg(long)]
         dsl: PathBuf,
@@ -1973,6 +1998,7 @@ fn main() -> Result<()> {
                     &serde_json::json!({
                         "node_results": execution.results, "phase": Phase::Refit,
                         "effective_plan": plan, "initial_full_refit_package": execution.package,
+                        "scores": execution.scores,
                     }),
                     "explicit phase outcome",
                 )?;
@@ -1997,6 +2023,84 @@ fn main() -> Result<()> {
                     "effective_plan": plan,
                 }),
                 "explicit phase outcome",
+            )?;
+        }
+        Command::RunProcessInitialFullRefitPredict {
+            package,
+            envelope,
+            adapter,
+            artifact_handles,
+            output_ids,
+            output,
+            run_id,
+            persistent,
+            process_workers,
+            process_timeout_ms,
+            process_retries,
+        } => {
+            let package_json = std::fs::read_to_string(&package)?;
+            let package = dag_ml_core::InitialFullRefitPackage::from_json(&package_json)?;
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "PREDICT data-plan envelope")?;
+            let handles: BTreeMap<ArtifactId, HandleRef> =
+                read_json(&artifact_handles, "REFIT artifact handles")?;
+            let output_ids: Vec<String> = read_json(&output_ids, "PREDICT output IDs")?;
+            if handles.keys().collect::<BTreeSet<_>>()
+                != package
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| {
+                        artifact.load_mode == dag_ml_core::ArtifactLoadMode::HostSidecar
+                    })
+                    .map(|artifact| &artifact.record.artifact.id)
+                    .collect()
+            {
+                bail!("initial full-refit PREDICT handles must exactly cover package host-sidecar artifacts");
+            }
+            let provider = ExplicitPhaseDataProvider::new(
+                ControllerId::new("controller:data.provider")?,
+                envelope.clone(),
+                None,
+            )?;
+            let scheduler = SchedulerConfig::new(CliScheduler::Sequential, 1)?;
+            let controllers = process_runtime_controllers_for_mode(
+                &package.effective_plan,
+                adapter,
+                persistent,
+                process_adapter_runtime_config(
+                    process_workers,
+                    process_timeout_ms,
+                    process_retries,
+                )?,
+                scheduler,
+            )?;
+            let mut artifact_store = InMemoryArtifactStore::new();
+            for artifact in &package.artifacts {
+                if artifact.load_mode != dag_ml_core::ArtifactLoadMode::HostSidecar {
+                    continue;
+                }
+                artifact_store.register(
+                    &artifact.record,
+                    handles[&artifact.record.artifact.id].clone(),
+                )?;
+            }
+            let replay = dag_ml_core::execute_initial_full_refit_prediction(
+                dag_ml_core::InitialRefitReplayInput {
+                    package: &package,
+                    envelope: &envelope,
+                    output_ids: &output_ids,
+                    run_id: RunId::new(run_id)?,
+                    controllers: &controllers,
+                    data_provider: &provider,
+                    artifact_store: &artifact_store,
+                },
+            )?;
+            emit_json(
+                output.as_ref(),
+                &serde_json::json!({
+                    "replay_outcome": replay.outcome, "node_results": replay.results,
+                }),
+                "initial full-refit PREDICT outcome",
             )?;
         }
         Command::RunProcessDslCvRefitReplay {
