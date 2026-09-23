@@ -16022,7 +16022,7 @@ fn select_best_operator_variant_runs_both_pruned_candidates_and_picks_winner() {
     let controllers = operator_select_controllers();
     let run_id = RunId::new("run:operator.select").unwrap();
 
-    let selected = select_best_operator_variant_by_cv(
+    let selected = select_best_operator_variant_outcome_by_cv(
         &plan,
         &model,
         &run_id,
@@ -16044,10 +16044,19 @@ fn select_best_operator_variant_runs_both_pruned_candidates_and_picks_winner() {
     )
     .unwrap();
 
-    let selection = selected.expect("operator scoring is on (targets emitted)");
+    let outcome = selected.expect("operator scoring is on (targets emitted)");
+    let ranking = &outcome.decision.ranked_candidates;
+    assert_eq!(ranking.len(), 2);
+    assert_eq!(ranking[0].rank, 1);
+    assert_eq!(ranking[1].rank, 2);
+    let selection = outcome.selection;
     // The winner is choice0 (RMSE 0) — recover its variant id from the model's enumeration.
     let (winner_variant, _, _) = operator_variant_for_choice(&model, "choice0");
     assert_eq!(selection.selected_variant_id, winner_variant.variant_id);
+    assert_eq!(
+        ranking[0].candidate_id,
+        winner_variant.variant_id.to_string()
+    );
 
     // Both choices' Validation reports are present and tagged with their own variant ids.
     let scored: BTreeSet<VariantId> = selection
