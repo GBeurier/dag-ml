@@ -611,6 +611,7 @@ def execute_phase_in_process(
     phase: str,
     training_sample_ids: list[str] | None = None,
     package_id: str | None = None,
+    artifact_callback: Any = None,
 ) -> str:
     """Run one explicit phase without selection or synthetic CV.
 
@@ -619,6 +620,8 @@ def execute_phase_in_process(
     and records their order in the effective plan. PREDICT forbids this argument
     and uses only its separately attested V2 cohort.
     ``package_id`` captures an independent no-CV full-refit package during REFIT.
+    A controller publishing ``Raw`` artifacts must supply ``artifact_callback``
+    with an ``export`` operation returning the portable bytes.
     """
     return _native_execute_phase_in_process(
         _coerce_json(dsl_json),
@@ -628,17 +631,24 @@ def execute_phase_in_process(
         phase,
         training_sample_ids,
         package_id,
+        artifact_callback,
     )
 
 
 def replay_initial_full_refit_in_process(
     package: Any, envelope: Any, op_callback: Any,
     artifact_handles: Any, output_ids: list[str], run_id: str,
+    artifact_callback: Any = None,
 ) -> dict[str, Any]:
-    """Replay explicit outputs from a no-CV package on an attested PREDICT cohort."""
+    """Replay explicit outputs from a no-CV package on an attested PREDICT cohort.
+
+    Raw package payloads use ``artifact_callback`` to hydrate and release
+    invocation-local handles; host sidecars use ``artifact_handles``.
+    """
     return json.loads(_native_replay_initial_full_refit_in_process(
         _coerce_json(package), _coerce_json(envelope), op_callback,
         _coerce_json(artifact_handles), _coerce_json(output_ids), run_id,
+        artifact_callback,
     ))
 
 

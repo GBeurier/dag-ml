@@ -28,6 +28,12 @@ In PyO3, `execute_phase_in_process(..., phase="REFIT",
 training_sample_ids=..., package_id=...)` returns the same package in its JSON
 outcome; `validate_initial_full_refit_package_json` validates it. The public
 Python wrapper exposes `InitialFullRefitPackage` for the same validation.
+PyO3 `execute_phase_in_process(..., artifact_callback=...)` can also export
+raw operator bytes into the package. The callback receives
+`{"operation":"export","artifact_id":...}` and returns a nonempty byte list.
+`replay_initial_full_refit_in_process(..., artifact_callback=...)` sends the
+existing `hydrate` and `release` requests to materialize those bytes in a
+fresh Python process; an all-raw package needs no host-sidecar handles.
 
 `run-process-initial-full-refit-predict` and
 `replay_initial_full_refit_in_process` take the closed package, a separate V2
@@ -38,6 +44,11 @@ materializes the REFIT artifacts, and emits a fingerprinted replay outcome.
 The host must resolve its own sidecar bytes into those invocation-local handles;
 the package cannot claim to contain them. A missing artifact or a different
 cohort fails before operator execution.
+The CLI process-controller path currently captures host sidecars: a one-shot
+operator process exits before the core can request Raw bytes, and the
+persistent JSONL frame protocol does not yet define Raw export/hydrate/release.
+The package's native Raw capability therefore requires a controller binding
+that implements those hooks (Rust, C, WASM, or PyO3), not only the CLI adapter.
 
 ## Raw-artifact callback protocol for C and WASM hosts
 

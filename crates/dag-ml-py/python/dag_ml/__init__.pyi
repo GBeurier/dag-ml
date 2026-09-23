@@ -5,11 +5,11 @@ def execute_data_provider(recipe: Any, callback: Any) -> dict[str, Any]: ...
 def execute_phase_in_process(
     dsl_json: Any, envelope_json: Any, controller_manifests_json: Any,
     op_callback: Any, phase: str, training_sample_ids: list[str] | None = ...,
-    package_id: str | None = ...,
+    package_id: str | None = ..., artifact_callback: Any = ...,
 ) -> str: ...
 def replay_initial_full_refit_in_process(
     package: Any, envelope: Any, op_callback: Any, artifact_handles: Any,
-    output_ids: list[str], run_id: str,
+    output_ids: list[str], run_id: str, artifact_callback: Any = ...,
 ) -> dict[str, Any]: ...
 
 def run_host_hpo_search_in_process(
