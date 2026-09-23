@@ -61,6 +61,8 @@ pub struct InitialFullRefitPackage {
     pub variant_id: VariantId,
     pub training_sample_ids: Vec<SampleId>,
     pub training_relations: SampleRelationSet,
+    /// Reusable training schema/plan authority; a fresh V2 cohort is attached for PREDICT.
+    pub training_envelope: ExternalDataPlanEnvelope,
     pub data_identities: Vec<TrainingDataIdentity>,
     pub outputs: Vec<InitialRefitOutput>,
     pub artifacts: Vec<InitialRefitArtifact>,
@@ -178,6 +180,18 @@ impl InitialFullRefitPackage {
             ));
         }
         self.training_relations.validate()?;
+        self.training_envelope.validate()?;
+        if self.training_envelope.schema_version != 1
+            || self.training_envelope.predict_cohort.is_some()
+            || self.training_envelope.coordinator_relations.as_ref()
+                != Some(&self.training_relations)
+            || self.training_envelope.relation_fingerprint.as_deref()
+                != Some(self.training_relations.fingerprint()?.as_str())
+        {
+            return Err(package_error(
+                "initial full-refit training envelope differs from its relations",
+            ));
+        }
         if self
             .training_relations
             .records
@@ -230,6 +244,12 @@ impl InitialFullRefitPackage {
                 })?;
             if identity.schema_fingerprint != binding.schema_fingerprint
                 || identity.plan_fingerprint != binding.plan_fingerprint
+                || identity.schema_fingerprint != self.training_envelope.schema_fingerprint
+                || identity.plan_fingerprint != self.training_envelope.plan_fingerprint
+                || Some(identity.data_content_fingerprint.as_str())
+                    != self.training_envelope.data_content_fingerprint.as_deref()
+                || Some(identity.target_content_fingerprint.as_str())
+                    != self.training_envelope.target_content_fingerprint.as_deref()
                 || Some(identity.relation_fingerprint.as_str())
                     != binding.relation_fingerprint.as_deref()
                 || identity.relation_fingerprint != self.training_relations.fingerprint()?
@@ -318,12 +338,24 @@ impl InitialFullRefitPackage {
         }
         Ok(())
     }
+
+    /// Attach an independent cohort to the closed training data-plan authority.
+    pub fn predict_envelope(&self, cohort: PredictCohort) -> Result<ExternalDataPlanEnvelope> {
+        self.validate()?;
+        cohort.validate()?;
+        let mut envelope = self.training_envelope.clone();
+        envelope.schema_version = 2;
+        envelope.predict_cohort = Some(cohort);
+        envelope.validate()?;
+        Ok(envelope)
+    }
 }
 
 pub struct InitialFullRefitExecutionInput<'a> {
     pub package_id: String,
     pub run_id: RunId,
     pub plan: &'a ExecutionPlan,
+    pub training_envelope: &'a ExternalDataPlanEnvelope,
     pub training_sample_ids: &'a [SampleId],
     pub controllers: &'a RuntimeControllerRegistry,
     pub data_provider: &'a dyn RuntimeDataProvider,
@@ -351,6 +383,11 @@ pub fn execute_initial_full_refit(
     input: InitialFullRefitExecutionInput<'_>,
 ) -> Result<InitialFullRefitExecution> {
     input.plan.validate()?;
+    input.training_envelope.validate()?;
+    let mut training_envelope = input.training_envelope.clone();
+    training_envelope.schema_version = 1;
+    training_envelope.predict_cohort = None;
+    training_envelope.validate()?;
     if input.plan.fold_set.is_some() || input.plan.variants.len() != 1 {
         return Err(package_error(
             "initial full refit requires one concrete no-splitter plan",
@@ -499,6 +536,7 @@ pub fn execute_initial_full_refit(
         training_sample_ids: input.training_sample_ids.to_vec(),
         training_relations: training_relations
             .ok_or_else(|| package_error("initial full refit has no training relations"))?,
+        training_envelope,
         data_identities: identities,
         outputs: output_bindings(input.plan),
         artifacts,

@@ -11,7 +11,10 @@ training sample IDs, complete sample relations, and feature and target content
 fingerprints for every data binding. It checks the supplied order against the
 provider's training order, and the sample set against the relations. The
 package closes the effective plan, the content identities, output node/port
-bindings, execution seed/resources/scheduler, and REFIT artifact inventory under TCV1 fingerprints. A raw native
+bindings, the training schema/plan envelope, execution seed/resources/scheduler,
+and REFIT artifact inventory under TCV1 fingerprints. The envelope retains the
+training relations while a new, separate V2 prediction cohort is attached for
+replay. A raw native
 artifact includes its bytes in `raw_artifact_payloads`; a host artifact is
 marked `HostSidecar` and needs its separately persisted sidecar for replay.
 The package itself does not claim to contain host model bytes.
