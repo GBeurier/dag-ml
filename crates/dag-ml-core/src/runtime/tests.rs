@@ -6349,7 +6349,7 @@ fn all_observations_fit_scope_is_explicit_and_visible_in_cv_and_refit_views() {
     assert!(all_views.iter().all(|record| {
         record.view.sample_ids.is_none()
             && record.view.fold_id.is_none()
-            && !record.view.include_augmented
+            && record.view.include_augmented
             && record.view.extra["unsafe_flags"]
                 .as_array()
                 .unwrap()

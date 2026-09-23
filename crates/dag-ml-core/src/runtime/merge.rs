@@ -1076,8 +1076,9 @@ pub(crate) fn data_view_for_partition(
         DataRequestPartition::FoldValidation | DataRequestPartition::Predict => {
             binding.view_policy.include_augmented_validation
         }
-        // Legacy fit_on_all uses base observations from every partition by default.
-        DataRequestPartition::AllObservations => false,
+        // Explicit all-observation fits may include previously augmented train
+        // observations; the host provider still owns that cohort's membership.
+        DataRequestPartition::AllObservations => binding.view_policy.include_augmented_train,
     };
     // Exclusion is keyed off the FIT role, not the partition name. A fit
     // (training) read drops excluded rows by default (the policy escape hatch
