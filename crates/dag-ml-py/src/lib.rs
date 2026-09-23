@@ -8,7 +8,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyType};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 
 mod in_process;
 mod local_implementation;
@@ -24,7 +24,7 @@ use dag_ml_core::{
     ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle,
     ExecutionPlan, ExternalDataPlanEnvelope, FoldSet, GraphSpec, HostControllerSpec,
     NamedSourceAlignmentRequest, ParameterProjection, PortablePredictorPackage,
-    PortableRefitPackageV3, PredictCohort, PredictCohortRole, SampleRelationSet, SelectionPolicy,
+    PortableRefitPackageV3, PredictCohortConstructionRequest, SampleRelationSet, SelectionPolicy,
     TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
     TrainingRequest, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
 };
@@ -202,22 +202,6 @@ fn sample_relation_set_fingerprint_json(json: &str) -> PyResult<String> {
     relations.fingerprint().map_err(py_core_error)
 }
 
-/// Host input for a closed PREDICT cohort.
-///
-/// The host supplies only its authoritative relation records and content
-/// identities. DAG-ML derives all cohort identity lists and fingerprints, so
-/// Python, IO, or another language cannot reproduce a subtly different hash.
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct PredictCohortConstructionRequest {
-    role: PredictCohortRole,
-    relations: SampleRelationSet,
-    target_names: Vec<String>,
-    data_content_fingerprint: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    target_content_fingerprint: Option<String>,
-}
-
 /// Attach a fully derived V2 PREDICT cohort to a host-supplied envelope.
 ///
 /// This is the only supported Python producer path for a V2 `predict_cohort`:
@@ -242,14 +226,7 @@ fn attach_predict_cohort_to_envelope_json(
             CoreDagMlError::CampaignValidation,
         )
         .map_err(py_core_error)?;
-    let cohort = PredictCohort::from_relations(
-        request.role,
-        request.relations,
-        request.target_names,
-        request.data_content_fingerprint,
-        request.target_content_fingerprint,
-    )
-    .map_err(py_core_error)?;
+    let cohort = request.derive().map_err(py_core_error)?;
     envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
     envelope.predict_cohort = Some(cohort);
     envelope.validate().map_err(py_core_error)?;

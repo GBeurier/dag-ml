@@ -600,6 +600,32 @@ DagMlStatusCode dagml_selection_decision_contract_json(DagMlOwnedBytes *out_json
 DagMlStatusCode dagml_selection_decision_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_select_portable_output_json(const uint8_t *package_ptr, size_t package_len, DagMlBytesView binding_id, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_initial_full_refit_package_validate_json(const uint8_t *package_ptr, size_t package_len, DagMlString *error_out);
+/* cohort_request_json is a PredictCohortConstructionRequest; the core derives
+ * the signed cohort and rejects mismatched relation/target/fingerprint data. */
+DagMlStatusCode dagml_initial_full_refit_predict_envelope_json(const uint8_t *package_ptr, size_t package_len, const uint8_t *cohort_request_ptr, size_t cohort_request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+typedef struct DagMlInitialFullRefitExecuteRequest {
+    DagMlBytesView plan_json;
+    DagMlBytesView envelope_json;
+    DagMlBytesView trusted_controllers_json;
+    DagMlBytesView training_sample_ids_json;
+    DagMlBytesView package_id;
+    DagMlBytesView run_id;
+    uint64_t root_seed;
+    const DagMlControllerBinding *controller_bindings;
+    size_t controller_binding_count;
+} DagMlInitialFullRefitExecuteRequest;
+typedef struct DagMlInitialFullRefitPredictRequest {
+    DagMlBytesView package_json;
+    DagMlBytesView envelope_json;
+    DagMlBytesView output_ids_json;
+    DagMlBytesView artifact_handles_json;
+    DagMlBytesView run_id;
+    const DagMlControllerBinding *controller_bindings;
+    size_t controller_binding_count;
+} DagMlInitialFullRefitPredictRequest;
+DagMlStatusCode dagml_initial_full_refit_execute_json(const DagMlInitialFullRefitExecuteRequest *request, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_initial_full_refit_predict_json(const DagMlInitialFullRefitPredictRequest *request, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_align_named_source_rows_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_groups_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, const uint8_t *groups_ptr, size_t groups_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_score_regression_prediction_block_json(const uint8_t *predictions_ptr, size_t predictions_len, const uint8_t *targets_ptr, size_t targets_len, const uint8_t *metrics_ptr, size_t metrics_len, DagMlOwnedBytes *out_json, DagMlString *error_out);

@@ -39,15 +39,18 @@ use dag_ml_core::{
 use dag_ml_core::{
     execute_attached_training_replay, execute_training, parse_typed_json,
     AttachedTrainingReplayInput, BundleId, DataBinding, EnvelopeAttestedRuntimeDataProvider,
-    SampleRelationSet, TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome,
-    TrainingReplayRequest, TrainingRequest,
+    InitialFullRefitPackage, PredictCohortConstructionRequest, SampleRelationSet,
+    TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest,
+    TrainingRequest,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
 mod host_hpo;
+mod initial_refit;
 mod local_implementation;
 
 pub use host_hpo::*;
+pub use initial_refit::*;
 pub use local_implementation::*;
 
 pub type DagMlHandle = u64;
@@ -1955,6 +1958,69 @@ pub unsafe extern "C" fn dagml_select_portable_output_json(
     };
     match package.select_output(&binding_id) {
         Ok(selected) => write_owned_json(out_json, error_out, &selected),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Validate the closed no-splitter REFIT package, including its TCV1 signature.
+///
+/// # Safety
+/// `package_ptr` addresses `package_len` bytes; errors use `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_initial_full_refit_package_validate_json(
+    package_ptr: *const u8,
+    package_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    match parse_external_contract_ptr(
+        package_ptr,
+        package_len,
+        error_out,
+        "initial full-refit package",
+        InitialFullRefitPackage::from_json,
+    ) {
+        Ok(_) => DagMlStatusCode::OK,
+        Err(status) => status,
+    }
+}
+
+/// Attach a separately attested PREDICT cohort to the package's signed training envelope.
+///
+/// # Safety
+/// JSON pointers address their declared byte lengths. Release returned bytes with
+/// `dagml_owned_bytes_free` and errors with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_initial_full_refit_predict_envelope_json(
+    package_ptr: *const u8,
+    package_len: usize,
+    cohort_ptr: *const u8,
+    cohort_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let package = match parse_external_contract_ptr(
+        package_ptr,
+        package_len,
+        error_out,
+        "initial full-refit package",
+        InitialFullRefitPackage::from_json,
+    ) {
+        Ok(package) => package,
+        Err(status) => return status,
+    };
+    let request: PredictCohortConstructionRequest =
+        match parse_json_ptr(cohort_ptr, cohort_len, error_out, "predict cohort") {
+            Ok(request) => request,
+            Err(status) => return status,
+        };
+    match request
+        .derive()
+        .and_then(|cohort| package.predict_envelope(cohort))
+    {
+        Ok(envelope) => write_owned_json(out_json, error_out, &envelope),
         Err(error) => validation_error(error_out, error),
     }
 }
@@ -8930,6 +8996,80 @@ mod tests {
         assert!(out.ptr.is_null());
         assert!(error_message(&error).contains("borrowed controller vtables"));
         assert_eq!(transform_state.invocation_count, 0);
+        unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn initial_full_refit_package_validates_and_builds_predict_envelope_over_abi() {
+        let package =
+            include_bytes!("../../dag-ml-core/tests/fixtures/initial_full_refit/package.json");
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_initial_full_refit_package_validate_json(
+                package.as_ptr(),
+                package.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let parsed =
+            InitialFullRefitPackage::from_json(std::str::from_utf8(package).unwrap()).unwrap();
+        let heldout: SampleRelationSet = serde_json::from_value(serde_json::json!({"records": [{
+            "observation_id": "obs.H001", "sample_id": "sample:heldout:1",
+            "target_id": "target:heldout:1", "group_id": "group:heldout",
+            "origin_sample_id": null, "source_id": "nir", "is_augmented": false
+        }]}))
+        .unwrap();
+        let cohort = dag_ml_core::PredictCohort::from_relations(
+            dag_ml_core::PredictCohortRole::ExternalTest,
+            heldout.clone(),
+            vec!["y".into()],
+            "a".repeat(64),
+            Some("b".repeat(64)),
+        )
+        .unwrap();
+        let cohort_json = serde_json::to_vec(&dag_ml_core::PredictCohortConstructionRequest {
+            role: dag_ml_core::PredictCohortRole::ExternalTest,
+            relations: heldout,
+            target_names: vec!["y".into()],
+            data_content_fingerprint: "a".repeat(64),
+            target_content_fingerprint: Some("b".repeat(64)),
+        })
+        .unwrap();
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_initial_full_refit_predict_envelope_json(
+                package.as_ptr(),
+                package.len(),
+                cohort_json.as_ptr(),
+                cohort_json.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let envelope: ExternalDataPlanEnvelope =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(envelope.schema_version, 2);
+        assert_eq!(envelope.predict_cohort, Some(cohort));
+        assert_eq!(
+            envelope.coordinator_relations,
+            Some(parsed.training_relations)
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let mut forged: serde_json::Value = serde_json::from_slice(package).unwrap();
+        forged["outputs"][0]["output_id"] = serde_json::json!("output:forged");
+        let forged = serde_json::to_vec(&forged).unwrap();
+        let status = unsafe {
+            dagml_initial_full_refit_package_validate_json(
+                forged.as_ptr(),
+                forged.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(error_message(&error).contains("fingerprint"));
         unsafe { dagml_string_free(error) };
     }
 
