@@ -32,6 +32,9 @@ pub(crate) struct NestedStackingCampaignPlan {
     /// Every dependency needed to produce base predictions for either the
     /// inner or outer scope. The meta node itself is deliberately excluded.
     pub(crate) base_node_ids: BTreeSet<NodeId>,
+    /// Data-only dependencies to materialize again when a residual learner is
+    /// scheduled separately from its base OOF producer.
+    pub(crate) meta_data_node_ids: BTreeSet<NodeId>,
     pub(crate) outer_scopes: Vec<NestedStackingOuterScope>,
     /// Explicit, independently partitioned OOF preparation for meta REFIT.
     /// These folds never contribute to report-grade outer CV scores.
@@ -189,6 +192,28 @@ pub(crate) fn nested_stacking_campaign_plan(
             "nested stacking meta node `{meta_node_id}` is in its base dependency closure"
         )));
     }
+    let data_sources = plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            edge.target.node_id == meta_node_id
+                && edge.contract.kind == PortKind::Data
+                && !edge.contract.requires_oof
+        })
+        .map(|edge| edge.source.node_id.clone())
+        .collect::<BTreeSet<_>>();
+    let meta_data_node_ids = if kind == NestedMetaKind::Residual {
+        dependency_closure(plan, &data_sources)
+    } else {
+        BTreeSet::new()
+    };
+    if meta_data_node_ids.contains(&meta_node_id) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "residual learner `{meta_node_id}` is in its own data dependency closure"
+        )));
+    }
 
     let fold_set = plan.fold_set.as_ref().ok_or_else(|| {
         DagMlError::RuntimeValidation(
@@ -273,6 +298,7 @@ pub(crate) fn nested_stacking_campaign_plan(
         meta_node_id,
         kind,
         base_node_ids,
+        meta_data_node_ids,
         outer_scopes,
         refit_fold_set,
     }))
