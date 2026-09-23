@@ -2624,7 +2624,8 @@ fn stacking_probability_selector_reduces_inner_and_outer_inputs_by_identity() {
             input(second.clone(), &["s2", "s1"], &[[0.5, 0.5], [0.6, 0.4]]),
         );
     }
-    apply_stacking_prediction_aggregations(&plan, &meta_plan, &mut inputs, &[]).unwrap();
+    apply_stacking_prediction_aggregations(&plan, &meta_plan, &mut inputs, &[], None, None)
+        .unwrap();
     assert_eq!(inputs.len(), 2);
     for suffix in ["", ":outer"] {
         let spec = &inputs[&format!("model:meta.branch.branch_0.oof{suffix}")];
@@ -2708,10 +2709,93 @@ fn stacking_best_selector_uses_validation_score_before_meta_fit() {
         &meta_plan,
         &mut inputs,
         &[report(first, 4.0), report(second.clone(), 2.0)],
+        None,
+        None,
     )
     .unwrap();
     assert_eq!(inputs.len(), 1);
     assert_eq!(inputs.values().next().unwrap().producer_node, second);
+}
+
+#[test]
+fn stacking_fold_candidate_top_k_uses_only_inner_validation_scores() {
+    let mut plan = fixture_plan("plan:stacking.fold-candidates");
+    let first = NodeId::new("model:base").unwrap();
+    let second = NodeId::new("model:second").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let base_node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == first)
+        .unwrap()
+        .clone();
+    let mut second_node = base_node.clone();
+    second_node.id = second.clone();
+    let mut meta_node = base_node;
+    meta_node.id = meta.clone();
+    meta_node
+        .metadata
+        .insert("merge_mode".to_string(), json!("predictions"));
+    meta_node.metadata.insert(
+        "selectors".to_string(),
+        json!([{
+            "select": {"fold_candidates_top_k": 1}, "metric": "rmse"
+        }]),
+    );
+    plan.graph_plan.graph.nodes.extend([second_node, meta_node]);
+    let mut meta_plan = plan.node_plans[&first].clone();
+    meta_plan.node_id = meta;
+    let input = |producer_node: NodeId| PredictionInputSpec {
+        producer_node,
+        source_port: "oof".to_string(),
+        target_port: "oof".to_string(),
+        partition: PredictionPartition::Validation,
+        prediction_level: PredictionLevel::Sample,
+        fold_id: None,
+        fold_ids: vec![FoldId::new("fold:inner").unwrap()],
+        unit_ids: vec![PredictionUnitId::Sample(SampleId::new("s1").unwrap())],
+        sample_ids: vec![SampleId::new("s1").unwrap()],
+        values: vec![vec![1.0]],
+        prediction_width: 1,
+        target_names: vec!["y".to_string()],
+    };
+    let report = |producer_node, fold, rmse| crate::metrics::RegressionMetricReport {
+        prediction_id: None,
+        producer_node,
+        producer_port: None,
+        variant_id: None,
+        variant_label: None,
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new(fold).unwrap()),
+        level: PredictionLevel::Sample,
+        row_count: 1,
+        target_width: 1,
+        target_names: vec!["y".to_string()],
+        metrics: BTreeMap::from([("rmse".to_string(), rmse)]),
+    };
+    let reports = [
+        report(second.clone(), "fold:outer", 0.001),
+        report(first.clone(), "fold:inner", 0.2),
+        report(second.clone(), "fold:inner", 0.4),
+    ];
+    let allowed = BTreeSet::from([FoldId::new("fold:inner").unwrap()]);
+    let mut inputs = BTreeMap::from([
+        (format!("{first}.oof"), input(first.clone())),
+        (format!("{second}.oof"), input(second.clone())),
+    ]);
+    apply_stacking_prediction_aggregations(
+        &plan,
+        &meta_plan,
+        &mut inputs,
+        &reports,
+        Some(&allowed),
+        None,
+    )
+    .unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs.values().next().unwrap().producer_node, first);
 }
 
 #[test]

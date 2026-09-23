@@ -337,6 +337,8 @@ pub(crate) fn apply_stacking_prediction_aggregations(
     node_plan: &NodePlan,
     prediction_inputs: &mut BTreeMap<String, PredictionInputSpec>,
     scores: &[RegressionMetricReport],
+    candidate_score_folds: Option<&BTreeSet<FoldId>>,
+    candidate_variant: Option<&VariantId>,
 ) -> Result<()> {
     let node = plan
         .graph_plan
@@ -434,7 +436,13 @@ pub(crate) fn apply_stacking_prediction_aggregations(
                     "stacking branch `{branch}` models differ in OOF fold identities"
                 )));
             }
-            let inputs = select_stacking_inputs(inputs, selector, scores)?;
+            let inputs = select_stacking_inputs(
+                inputs,
+                selector,
+                scores,
+                candidate_score_folds,
+                candidate_variant,
+            )?;
             if selector.aggregate.is_none() {
                 for (key, spec) in inputs {
                     if reduced.insert(key.clone(), spec.clone()).is_some() {
@@ -518,6 +526,13 @@ pub struct StackingProducerSelectionRequest {
     pub select: serde_json::Value,
     pub metric: String,
     pub reports: Vec<RegressionMetricReport>,
+    /// Report-grade fold scope used for candidate ranking (outer CV folds for REFIT/replay).
+    #[serde(default)]
+    pub fold_ids: Vec<FoldId>,
+    #[serde(default)]
+    pub variant_id: Option<VariantId>,
+    #[serde(default)]
+    pub producer_classes: BTreeMap<NodeId, String>,
 }
 
 /// Choose the one CV estimator whose held-out prediction supplies a stacking
@@ -646,6 +661,13 @@ impl StackingProducerSelectionRequest {
                 "stacking selection needs distinct producer nodes".to_string(),
             ));
         }
+        if let Some(config) = self
+            .select
+            .as_object()
+            .filter(|config| config.contains_key("fold_candidates_top_k"))
+        {
+            return self.selected_fold_candidate_nodes(config);
+        }
         let limit = match &self.select {
             serde_json::Value::String(mode) if mode == "all" => {
                 return Ok(self.producer_nodes.clone())
@@ -743,12 +765,84 @@ impl StackingProducerSelectionRequest {
             .map(|(index, _)| self.producer_nodes[index].clone())
             .collect())
     }
+
+    fn selected_fold_candidate_nodes(
+        &self,
+        config: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Vec<NodeId>> {
+        let limit = config
+            .get("fold_candidates_top_k")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "stacking fold_candidates_top_k must be a positive integer".to_string(),
+                )
+            })?;
+        let kind = RegressionMetricKind::from_name(&self.metric).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "stacking fold candidate selection has unsupported metric `{}`",
+                self.metric
+            ))
+        })?;
+        let ascending = config
+            .get("ascending")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(kind.objective() != crate::selection::MetricObjective::Maximize);
+        let allowed = self.fold_ids.iter().collect::<BTreeSet<_>>();
+        let producers = self.producer_nodes.iter().collect::<BTreeSet<_>>();
+        let mut candidates = self
+            .reports
+            .iter()
+            .enumerate()
+            .filter_map(|(index, report)| {
+                let fold = report.fold_id.as_ref()?;
+                let score = *report.metrics.get(&self.metric)?;
+                (report.partition == PredictionPartition::Validation
+                    && report.level == PredictionLevel::Sample
+                    && score.is_finite()
+                    && producers.contains(&report.producer_node)
+                    && (allowed.is_empty() || allowed.contains(fold))
+                    && self
+                        .variant_id
+                        .as_ref()
+                        .is_none_or(|variant| report.variant_id.as_ref() == Some(variant)))
+                .then_some((index, &report.producer_node, score))
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "stacking fold candidate selection has no validation `{}` scores in its fold scope",
+                self.metric,
+            )));
+        }
+        candidates.sort_by(|left, right| {
+            (if ascending {
+                left.2.total_cmp(&right.2)
+            } else {
+                right.2.total_cmp(&left.2)
+            })
+            .then_with(|| left.0.cmp(&right.0))
+        });
+        let mut seen = BTreeSet::new();
+        Ok(candidates
+            .into_iter()
+            .take(limit)
+            .filter_map(|(_, producer, _)| {
+                seen.insert((*producer).clone())
+                    .then_some((*producer).clone())
+            })
+            .collect())
+    }
 }
 
 fn select_stacking_inputs<'a>(
     inputs: Vec<(&'a String, &'a PredictionInputSpec)>,
     selector: &crate::dsl::PipelineDslMergeSelector,
     scores: &[RegressionMetricReport],
+    candidate_score_folds: Option<&BTreeSet<FoldId>>,
+    candidate_variant: Option<&VariantId>,
 ) -> Result<Vec<(&'a String, &'a PredictionInputSpec)>> {
     let Some(select) = &selector.select else {
         return Ok(inputs);
@@ -764,6 +858,10 @@ fn select_stacking_inputs<'a>(
             .clone()
             .unwrap_or_else(|| "rmse".to_string()),
         reports: scores.to_vec(),
+        fold_ids: candidate_score_folds
+            .map_or_else(Vec::new, |folds| folds.iter().cloned().collect()),
+        variant_id: candidate_variant.cloned(),
+        producer_classes: BTreeMap::new(),
     };
     let selected = request.selected_producer_nodes()?;
     Ok(selected
