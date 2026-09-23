@@ -372,6 +372,20 @@ fn merge_model_routes_explicit_auxiliary_prediction_ports_without_changing_prima
         .unwrap_err()
         .to_string()
         .contains("reserved prediction output port"));
+
+    let invalid_data_step: PipelineDslSpec = serde_json::from_value(serde_json::json!({
+        "id": "dsl-invalid-data-prediction-output",
+        "steps": [
+            {"kind": "transform", "id": "transform:x", "operator": {"type": "Scale"},
+             "prediction_output_ports": ["proba"]},
+            {"kind": "model", "id": "model:base", "operator": {"type": "Classifier"}}
+        ]
+    }))
+    .unwrap();
+    assert!(compile_pipeline_dsl(&invalid_data_step)
+        .unwrap_err()
+        .to_string()
+        .contains("cannot declare prediction output ports"));
 }
 
 #[test]

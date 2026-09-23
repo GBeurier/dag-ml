@@ -3105,11 +3105,31 @@ fn select_prediction_cache_blocks(
     blocks: &[PredictionBlock],
 ) -> Result<Vec<PredictionBlock>> {
     requirement.validate()?;
+    // Old single-output cache blocks may omit producer_port. That fallback is
+    // safe only when this producer has no distinct explicit sibling port in
+    // the candidate fold cohort. Multi-output caches are always port-exact.
+    let explicit_ports = blocks
+        .iter()
+        .filter(|block| {
+            block.producer_node == requirement.producer_node
+                && block.partition == requirement.partition
+                && block
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold_id| requirement.fold_ids.contains(fold_id))
+        })
+        .filter_map(|block| block.producer_port.as_deref())
+        .collect::<BTreeSet<_>>();
+    let absent_port_is_unambiguous = explicit_ports
+        .iter()
+        .all(|port| *port == requirement.source_port);
     let mut selected = blocks
         .iter()
         .filter(|block| {
             block.producer_node == requirement.producer_node
                 && block.partition == requirement.partition
+                && (block.producer_port.as_deref() == Some(requirement.source_port.as_str())
+                    || (block.producer_port.is_none() && absent_port_is_unambiguous))
                 && block
                     .fold_id
                     .as_ref()
@@ -3857,7 +3877,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some(format!("prediction:{producer_node}:fold0")),
                 producer_node: producer_node.clone(),
-                producer_port: Some("pred".to_string()),
+                producer_port: Some("oof".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:0").unwrap()),
                 sample_ids: vec![SampleId::new(fold0_sample).unwrap()],
@@ -3867,7 +3887,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some(format!("prediction:{producer_node}:fold1")),
                 producer_node,
-                producer_port: Some("pred".to_string()),
+                producer_port: Some("oof".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:1").unwrap()),
                 sample_ids: vec![SampleId::new(fold1_sample).unwrap()],
@@ -3977,7 +3997,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some(format!("prediction:{producer_node}:fold0")),
                 producer_node: producer_node.clone(),
-                producer_port: Some("pred".to_string()),
+                producer_port: Some("oof".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:0").unwrap()),
                 sample_ids: samples[0..2].to_vec(),
@@ -3987,7 +4007,7 @@ mod tests {
             PredictionBlock {
                 prediction_id: Some(format!("prediction:{producer_node}:fold1")),
                 producer_node,
-                producer_port: Some("pred".to_string()),
+                producer_port: Some("oof".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(FoldId::new("fold:1").unwrap()),
                 sample_ids: samples[2..4].to_vec(),
@@ -3995,6 +4015,73 @@ mod tests {
                 target_names: vec!["y".to_string()],
             },
         ]
+    }
+
+    #[test]
+    fn prediction_cache_keeps_label_and_probability_ports_separate() {
+        let labels_requirement = branch_merge_requirement("branch:b0.model:ridge", "branch_b0_oof");
+        let mut probabilities_requirement = labels_requirement.clone();
+        probabilities_requirement.source_port = "proba".to_string();
+        probabilities_requirement.prediction_width = 2;
+        probabilities_requirement.target_names = vec!["0".to_string(), "1".to_string()];
+        let labels = branch_merge_prediction_blocks("branch:b0.model:ridge", 0.0);
+        let probabilities = labels
+            .iter()
+            .map(|block| PredictionBlock {
+                prediction_id: block.prediction_id.as_ref().map(|id| format!("{id}:proba")),
+                producer_port: Some("proba".to_string()),
+                values: block.values.iter().map(|_| vec![0.3, 0.7]).collect(),
+                target_names: vec!["0".to_string(), "1".to_string()],
+                ..block.clone()
+            })
+            .collect::<Vec<_>>();
+        let all = labels
+            .iter()
+            .chain(&probabilities)
+            .cloned()
+            .collect::<Vec<_>>();
+        let label_cache = build_prediction_cache_record(&labels_requirement, &all).unwrap();
+        let probability_cache =
+            build_prediction_cache_record(&probabilities_requirement, &all).unwrap();
+        assert_eq!(label_cache.prediction_width, 1);
+        assert_eq!(probability_cache.prediction_width, 2);
+        assert_eq!(label_cache.block_count, 2);
+        assert_eq!(probability_cache.block_count, 2);
+        let label_payload = build_prediction_cache_payload(&labels_requirement, &all).unwrap();
+        assert!(label_payload
+            .blocks
+            .iter()
+            .all(|block| block.producer_port.as_deref() == Some("oof")));
+        let probability_payload =
+            build_prediction_cache_payload(&probabilities_requirement, &all).unwrap();
+        assert!(probability_payload
+            .blocks
+            .iter()
+            .all(|block| block.producer_port.as_deref() == Some("proba")));
+
+        let legacy = labels
+            .iter()
+            .cloned()
+            .map(|mut block| {
+                block.producer_port = None;
+                block
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            build_prediction_cache_record(&labels_requirement, &legacy)
+                .unwrap()
+                .block_count,
+            2
+        );
+        assert!(build_prediction_cache_record(
+            &labels_requirement,
+            &legacy
+                .iter()
+                .chain(&probabilities)
+                .cloned()
+                .collect::<Vec<_>>()
+        )
+        .is_err());
     }
 
     fn decision() -> SelectionDecision {

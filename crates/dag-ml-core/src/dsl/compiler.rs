@@ -813,6 +813,12 @@ impl PipelineCompiler {
         input: &DataSource,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<DataSource> {
+        if !step.prediction_output_ports.is_empty() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL data operator `{}` cannot declare prediction output ports",
+                step.id
+            )));
+        }
         if kind == NodeKind::Augmentation && step.shape.is_none() {
             return Err(DagMlError::GraphValidation(format!(
                 "pipeline DSL augmentation `{}` requires a shape plan for leakage-safe scope validation",
