@@ -3415,6 +3415,7 @@ fn build_bundle_from_cv_with_refit_count(
     // no predictions/handles ride along), so the bundle surfaces every variant's CV score, not
     // just the winner's.
     ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
+    ctx.collect_cross_fold_train_scores(input.selection_metric)?;
     ctx.collect_cross_fold_test_scores(input.selection_metric)?;
     let mut scores = ctx.build_score_set(plan.id.clone(), None);
     // Phase 5: the winner reports come from the REAL winner FIT_CV/REFIT pass above (not the
@@ -3521,6 +3522,7 @@ fn build_bundle_from_cv_with_refit_count(
         .oof_average_blocks
         .iter()
         .chain(&ctx.test_ensemble_blocks)
+        .chain(&ctx.train_ensemble_blocks)
         .map(|oof| {
             serde_json::json!({
                 "node_id": oof.predictions.producer_node,

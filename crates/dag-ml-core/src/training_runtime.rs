@@ -2742,9 +2742,10 @@ fn materialize_selected_variant(
 fn is_cv_ensemble_partition(partition: &PredictionPartition) -> bool {
     match partition {
         PredictionPartition::Validation => true,
-        PredictionPartition::Train | PredictionPartition::Test | PredictionPartition::Final => {
-            false
-        }
+        PredictionPartition::Train
+        | PredictionPartition::TrainPool
+        | PredictionPartition::Test
+        | PredictionPartition::Final => false,
     }
 }
 

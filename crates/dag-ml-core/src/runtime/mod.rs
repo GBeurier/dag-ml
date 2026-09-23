@@ -47,10 +47,10 @@ pub(crate) use crate::ids::{
     VariantId,
 };
 pub(crate) use crate::metrics::{
-    cross_fold_test_reports, cross_fold_validation_reports, reassemble_merge_targets,
-    score_regression_aggregated_block, score_regression_prediction_block, OofAverageBlock,
-    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, RegressionTargetRecord,
-    ScoreSet, SCORE_SET_SCHEMA_VERSION,
+    cross_fold_test_reports, cross_fold_train_reports, cross_fold_validation_reports,
+    reassemble_merge_targets, score_regression_aggregated_block, score_regression_prediction_block,
+    OofAverageBlock, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
+    RegressionTargetRecord, ScoreSet, SCORE_SET_SCHEMA_VERSION,
 };
 pub(crate) use crate::oof::{
     PredictionBlock, PredictionPartition, StackingOofRefitContract, StackingOofRefitDecision,
@@ -277,6 +277,8 @@ pub struct RunContext {
     pub oof_average_blocks: Vec<OofAverageBlock>,
     /// Fold-estimator held-out test averages, kept distinct from OOF validation averages.
     pub test_ensemble_blocks: Vec<OofAverageBlock>,
+    /// Descriptive in-sample CV fold ensembles; never selection evidence.
+    pub train_ensemble_blocks: Vec<OofAverageBlock>,
     /// Declarative per-producer aggregation contracts that are applied only after every
     /// validation fold has contributed its raw sample-level OOF block.  This is deliberately
     /// separate from the per-task aggregation path: a semantic unit may span CV folds, so
@@ -380,6 +382,7 @@ impl RunContext {
             classification_probability_blocks: Vec::new(),
             oof_average_blocks: Vec::new(),
             test_ensemble_blocks: Vec::new(),
+            train_ensemble_blocks: Vec::new(),
             global_oof_aggregation: BTreeMap::new(),
             validation_scoring_fold_ids: None,
             residual_gates: BTreeMap::new(),
@@ -477,6 +480,54 @@ impl RunContext {
         )?;
         self.score_collector.extend(outcome.reports);
         self.test_ensemble_blocks.extend(outcome.oof_averages);
+        Ok(())
+    }
+
+    /// Score in-sample CV fold ensembles without affecting OOF selection.
+    pub fn collect_cross_fold_train_scores(
+        &mut self,
+        selection_metric: RegressionMetricKind,
+    ) -> Result<()> {
+        let allowed = self.validation_scoring_fold_ids.as_ref();
+        let blocks = self
+            .prediction_store
+            .blocks()
+            .iter()
+            .filter(|block| {
+                block.partition != PredictionPartition::Train
+                    || allowed.is_none_or(|folds| {
+                        block
+                            .fold_id
+                            .as_ref()
+                            .is_some_and(|fold| folds.contains(fold))
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let targets = self
+            .regression_target_records
+            .iter()
+            .filter(|record| {
+                record.partition != PredictionPartition::Train
+                    || allowed.is_none_or(|folds| {
+                        record
+                            .fold_id
+                            .as_ref()
+                            .is_some_and(|fold| folds.contains(fold))
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let outcome = cross_fold_train_reports(
+            &blocks,
+            &self.classification_probability_blocks,
+            &targets,
+            &self.score_collector,
+            selection_metric,
+            SCORE_METRICS,
+        )?;
+        self.score_collector.extend(outcome.reports);
+        self.train_ensemble_blocks.extend(outcome.oof_averages);
         Ok(())
     }
 

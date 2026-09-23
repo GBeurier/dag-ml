@@ -1103,8 +1103,12 @@ impl NodeResult {
                 || block.producer_node != self.node_id
                 || block.fold_id != task.fold_id
                 || !self.predictions.iter().any(|prediction| {
-                    prediction.partition == PredictionPartition::Test
-                        && prediction.fold_id == block.fold_id
+                    matches!(
+                        prediction.partition,
+                        PredictionPartition::Train
+                            | PredictionPartition::TrainPool
+                            | PredictionPartition::Test
+                    ) && prediction.fold_id == block.fold_id
                         && prediction.producer_port == block.producer_port
                         && prediction.sample_ids.iter().collect::<BTreeSet<_>>()
                             == block.sample_ids.iter().collect::<BTreeSet<_>>()
@@ -1112,7 +1116,7 @@ impl NodeResult {
                 })
             {
                 return Err(DagMlError::RuntimeValidation(
-                    "classification probabilities require a matching single-target CV test prediction"
+                    "classification probabilities require a matching single-target CV train/test prediction"
                         .to_string(),
                 ));
             }
@@ -1212,6 +1216,70 @@ pub(crate) fn validate_prediction_scope(
     prediction: &PredictionBlock,
     task: &NodeTask,
 ) -> Result<()> {
+    if prediction.partition == PredictionPartition::TrainPool {
+        if task.phase != Phase::FitCv || prediction.fold_id != task.fold_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted train-pool predictions outside its FIT_CV fold",
+                task.node_plan.node_id
+            )));
+        }
+        // This report-only view can include both fit and validation rows, but
+        // never an external test row. The two attested fold views define its
+        // allowed population; it cannot be used as OOF training input.
+        let pool_ids: BTreeSet<_> = task
+            .data_views
+            .values()
+            .filter(|view| {
+                matches!(
+                    view.partition,
+                    DataRequestPartition::FoldTrain | DataRequestPartition::FoldValidation
+                )
+            })
+            .filter_map(|view| view.sample_ids.as_ref())
+            .flat_map(|ids| ids.iter().cloned())
+            .collect();
+        if pool_ids.is_empty()
+            || prediction
+                .sample_ids
+                .iter()
+                .any(|id| !pool_ids.contains(id))
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted train-pool predictions outside its attested fold population",
+                task.node_plan.node_id
+            )));
+        }
+        return Ok(());
+    }
+    if prediction.partition == PredictionPartition::Train && task.phase == Phase::FitCv {
+        if prediction.fold_id != task.fold_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted train predictions for fold {:?}, expected {:?}",
+                task.node_plan.node_id, prediction.fold_id, task.fold_id
+            )));
+        }
+        if !task.data_views.is_empty() {
+            let train_ids: BTreeSet<_> = task
+                .data_views
+                .values()
+                .filter(|view| view.partition == DataRequestPartition::FoldTrain)
+                .filter_map(|view| view.sample_ids.as_ref())
+                .flat_map(|ids| ids.iter().cloned())
+                .collect();
+            if train_ids.is_empty()
+                || prediction
+                    .sample_ids
+                    .iter()
+                    .any(|id| !train_ids.contains(id))
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted FIT_CV train predictions outside its fold-train data view",
+                    task.node_plan.node_id
+                )));
+            }
+        }
+        return Ok(());
+    }
     if prediction.partition == PredictionPartition::Test && task.phase == Phase::FitCv {
         if prediction.fold_id != task.fold_id {
             return Err(DagMlError::RuntimeValidation(format!(

@@ -1209,7 +1209,13 @@ pub fn cross_fold_test_reports(
                 continue;
             }
             let average = if classification {
-                reduce_classification_test_folds(&blocks, probability_blocks, weights, label)?
+                reduce_classification_folds(
+                    &blocks,
+                    probability_blocks,
+                    weights,
+                    label,
+                    PredictionPartition::Test,
+                )?
             } else {
                 reduce_predictions_across_folds(&blocks, weights, label)?
             };
@@ -1224,13 +1230,112 @@ pub fn cross_fold_test_reports(
     Ok(output)
 }
 
+/// Report the average prediction of CV estimators on the whole training pool.
+/// Per-fold `Train` reports remain scoped to each estimator's fit rows; the
+/// separate `TrainPool` blocks provide one prediction from every fold estimator
+/// for every training sample. These are report-only and never enter OOF selection.
+pub fn cross_fold_train_reports(
+    prediction_blocks: &[PredictionBlock],
+    probability_blocks: &[ClassificationProbabilityBlock],
+    target_records: &[RegressionTargetRecord],
+    validation_reports: &[RegressionMetricReport],
+    selection_metric: RegressionMetricKind,
+    metrics: &[RegressionMetricKind],
+) -> Result<CrossFoldValidation> {
+    let classification = matches!(
+        selection_metric,
+        RegressionMetricKind::Accuracy | RegressionMetricKind::BalancedAccuracy
+    );
+    let mut by_producer: BTreeMap<(NodeId, Option<String>), Vec<PredictionBlock>> = BTreeMap::new();
+    for block in prediction_blocks.iter().filter(|block| {
+        block.partition == PredictionPartition::TrainPool && block.fold_id.is_some()
+    }) {
+        by_producer
+            .entry((block.producer_node.clone(), block.producer_port.clone()))
+            .or_default()
+            .push(block.clone());
+    }
+    let mut output = CrossFoldValidation::default();
+    for ((producer, port), blocks) in by_producer {
+        if blocks.len() < 2 {
+            continue;
+        }
+        let mut folds = BTreeSet::new();
+        for block in &blocks {
+            block.validate_content()?;
+            if !folds.insert(block.fold_id.clone().expect("filtered above")) {
+                return Err(DagMlError::OofValidation(format!(
+                    "producer `{producer}` has duplicate train fold {:?}",
+                    block.fold_id
+                )));
+            }
+        }
+        let targets = combine_partition_targets(
+            &producer,
+            &port,
+            target_records,
+            PredictionPartition::TrainPool,
+        )?;
+        if targets.unit_ids.is_empty() {
+            continue;
+        }
+        let mut scores = Vec::with_capacity(blocks.len());
+        for block in &blocks {
+            let report = validation_reports.iter().find(|report| {
+                report.producer_node == producer
+                    && report.producer_port == port
+                    && report.partition == PredictionPartition::Validation
+                    && report.fold_id == block.fold_id
+                    && report.level == PredictionLevel::Sample
+            });
+            let Some(report) = report else { continue };
+            let score = report.metrics.get(selection_metric.name()).ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "producer `{producer}` train fold {:?} has no validation score for `{}`",
+                    block.fold_id,
+                    selection_metric.name()
+                ))
+            })?;
+            scores.push(*score);
+        }
+        let weights = (scores.len() == blocks.len())
+            .then(|| validation_score_weights(&scores, selection_metric.objective()));
+        for (label, weights) in [("avg", None), ("w_avg", weights.as_deref())] {
+            if label == "w_avg" && weights.is_none() {
+                continue;
+            }
+            let average = if classification {
+                reduce_classification_folds(
+                    &blocks,
+                    probability_blocks,
+                    weights,
+                    label,
+                    PredictionPartition::TrainPool,
+                )?
+            } else {
+                reduce_predictions_across_folds(&blocks, weights, label)?
+            };
+            let mut average = average;
+            average.partition = PredictionPartition::Train;
+            output.reports.push(score_regression_prediction_block(
+                &average, &targets, metrics,
+            )?);
+            output
+                .oof_averages
+                .push(oof_average_block(&average, &targets));
+        }
+    }
+    Ok(output)
+}
+
 /// Aggregate class identities by aligned probability mean, falling back to a hard vote only
 /// when at least one fold cannot provide probabilities. A numeric class label is never averaged.
-fn reduce_classification_test_folds(
+fn reduce_classification_folds(
     blocks: &[PredictionBlock],
     probability_blocks: &[ClassificationProbabilityBlock],
     weights: Option<&[f64]>,
     fold_label: &str,
+    partition: PredictionPartition,
 ) -> Result<PredictionBlock> {
     let first = &blocks[0];
     let probabilities = blocks
@@ -1240,7 +1345,7 @@ fn reduce_classification_test_folds(
                 candidate.producer_node == block.producer_node
                     && candidate.producer_port == block.producer_port
                     && candidate.fold_id == block.fold_id
-                    && candidate.partition == PredictionPartition::Test
+                    && candidate.partition == partition
             })
         })
         .collect::<Vec<_>>();
@@ -1271,20 +1376,29 @@ fn reduce_classification_test_folds(
             "classification ensemble has invalid class labels".to_string(),
         ));
     }
-    let mut rows = Vec::with_capacity(first.sample_ids.len());
-    for sample_id in &first.sample_ids {
+    let mut ids = Vec::new();
+    let mut seen = BTreeSet::new();
+    for block in blocks {
+        for sample_id in &block.sample_ids {
+            if seen.insert(sample_id.clone()) {
+                ids.push(sample_id.clone());
+            }
+        }
+    }
+    let mut rows = Vec::with_capacity(ids.len());
+    for sample_id in &ids {
         let mut scores = vec![0.0; classes.len()];
         let mut total = 0.0;
         for (fold_index, block) in blocks.iter().enumerate() {
-            let position = block
-                .sample_ids
-                .iter()
-                .position(|id| id == sample_id)
-                .ok_or_else(|| {
-                    DagMlError::OofValidation(
+            let position = block.sample_ids.iter().position(|id| id == sample_id);
+            let Some(position) = position else {
+                if partition == PredictionPartition::Test {
+                    return Err(DagMlError::OofValidation(
                         "classification test folds have inconsistent sample identities".to_string(),
-                    )
-                })?;
+                    ));
+                }
+                continue;
+            };
             let base_weight = weights.map_or(1.0, |weights| weights[fold_index]);
             if !base_weight.is_finite() || base_weight < 0.0 {
                 return Err(DagMlError::OofValidation(
@@ -1347,9 +1461,9 @@ fn reduce_classification_test_folds(
         prediction_id: None,
         producer_node: first.producer_node.clone(),
         producer_port: first.producer_port.clone(),
-        partition: PredictionPartition::Test,
+        partition,
         fold_id: Some(FoldId::new(fold_label)?),
-        sample_ids: first.sample_ids.clone(),
+        sample_ids: ids,
         values: rows,
         target_names: first.target_names.clone(),
     })
@@ -1567,6 +1681,97 @@ mod tests {
             &[RegressionMetricKind::BalancedAccuracy],
         )
         .is_err());
+    }
+
+    #[test]
+    fn train_fold_ensembles_join_overlapping_training_ids_without_selection_leakage() {
+        let producer = NodeId::new("model:train-ensemble").unwrap();
+        let blocks: Vec<_> = [
+            ("fold:0", vec!["s0", "s1"], vec![0.0, 2.0]),
+            ("fold:1", vec!["s1", "s2"], vec![4.0, 6.0]),
+        ]
+        .into_iter()
+        .map(|(fold, ids, values)| PredictionBlock {
+            prediction_id: None,
+            producer_node: producer.clone(),
+            producer_port: Some("prediction".to_string()),
+            partition: PredictionPartition::TrainPool,
+            fold_id: Some(FoldId::new(fold).unwrap()),
+            sample_ids: ids.into_iter().map(sid).collect(),
+            values: values.into_iter().map(|value| vec![value]).collect(),
+            target_names: vec!["y".to_string()],
+        })
+        .collect();
+        let targets = blocks
+            .iter()
+            .map(|block| RegressionTargetRecord {
+                producer_node: producer.clone(),
+                producer_port: block.producer_port.clone(),
+                variant_id: None,
+                partition: PredictionPartition::TrainPool,
+                fold_id: block.fold_id.clone(),
+                block: RegressionTargetBlock {
+                    validity_masks: None,
+                    level: PredictionLevel::Sample,
+                    unit_ids: block
+                        .sample_ids
+                        .iter()
+                        .cloned()
+                        .map(PredictionUnitId::Sample)
+                        .collect(),
+                    values: block
+                        .sample_ids
+                        .iter()
+                        .map(|id| {
+                            vec![match id.as_str() {
+                                "s0" => 0.0,
+                                "s1" => 3.0,
+                                _ => 6.0,
+                            }]
+                        })
+                        .collect(),
+                    target_names: vec!["y".to_string()],
+                },
+            })
+            .collect::<Vec<_>>();
+        let validation = blocks
+            .iter()
+            .zip([1.0, 3.0])
+            .map(|(block, rmse)| RegressionMetricReport {
+                prediction_id: None,
+                producer_node: block.producer_node.clone(),
+                producer_port: block.producer_port.clone(),
+                variant_id: None,
+                variant_label: None,
+                partition: PredictionPartition::Validation,
+                fold_id: block.fold_id.clone(),
+                level: PredictionLevel::Sample,
+                row_count: 1,
+                target_width: 1,
+                target_names: vec!["y".to_string()],
+                metrics: BTreeMap::from([("rmse".to_string(), rmse)]),
+            })
+            .collect::<Vec<_>>();
+        let result = cross_fold_train_reports(
+            &blocks,
+            &[],
+            &targets,
+            &validation,
+            RegressionMetricKind::Rmse,
+            &[RegressionMetricKind::Rmse],
+        )
+        .unwrap();
+        assert_eq!(result.reports.len(), 2);
+        assert_eq!(
+            result.oof_averages[0].predictions.values,
+            vec![vec![0.0], vec![3.0], vec![6.0]]
+        );
+        assert_eq!(
+            result.oof_averages[1].predictions.values,
+            vec![vec![0.0], vec![2.5], vec![6.0]]
+        );
+        assert_close(result.reports[0].metrics["rmse"], 0.0);
+        assert_close(result.reports[1].metrics["rmse"], (0.25_f64 / 3.0).sqrt());
     }
 
     #[test]
