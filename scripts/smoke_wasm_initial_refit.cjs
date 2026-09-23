@@ -85,4 +85,75 @@ module.exports = function smokeInitialFullRefit(dagMl, repo) {
     if (!String(error).includes("fingerprint")) throw error;
   }
   if (calls !== 2) throw new Error("WASM controller ran after package tamper");
+
+  const graph = structuredClone(fixture.effective_plan.graph_plan.graph);
+  const second = structuredClone(graph.nodes[0]);
+  second.id = "model:second";
+  graph.nodes.push(second);
+  const campaign = structuredClone(fixture.effective_plan.campaign);
+  const secondBinding = structuredClone(campaign.data_bindings["model:initial"][0]);
+  secondBinding.node_id = "model:second";
+  campaign.data_bindings["model:second"] = [secondBinding];
+  const multiPlan = JSON.parse(dagMl.build_execution_plan_json(
+    "plan:wasm.multi-output", JSON.stringify(graph), JSON.stringify(campaign),
+    JSON.stringify(manifests),
+  ));
+  let multiCalls = 0;
+  const multiInvoke = (_controllerId, taskJson) => {
+    const task = JSON.parse(taskJson);
+    const node = task.node_plan.node_id;
+    const result = JSON.parse(refitResultJson);
+    multiCalls++;
+    result.lineage.seed = null;
+    result.lineage.run_id = task.run_id;
+    result.lineage.record_id = `lineage:wasm.multi.${task.phase}:${node}`;
+    result.predictions[0].prediction_id = `pred:wasm.multi.${task.phase}:${node}`;
+    if (node !== "model:initial") {
+      const oldId = "artifact:model:initial:refit";
+      const newId = `artifact:${node}:refit`;
+      result.node_id = node;
+      result.lineage.node_id = node;
+      result.artifacts[0].id = newId;
+      result.lineage.artifact_refs[0].id = newId;
+      result.artifact_handles[newId] = result.artifact_handles[oldId];
+      delete result.artifact_handles[oldId];
+      result.predictions[0].producer_node = node;
+    }
+    if (task.phase === "PREDICT") {
+      result.artifacts = [];
+      result.artifact_handles = {};
+      result.lineage.artifact_refs = [];
+      result.lineage.phase = "PREDICT";
+      result.lineage.run_id = task.run_id;
+      result.lineage.record_id = `lineage:wasm.multi.predict:${node}`;
+      result.predictions[0].prediction_id = `pred:wasm.multi.predict:${node}`;
+      result.predictions[0].sample_ids = ["sample:heldout:1"];
+      result.predictions[0].values = [[node === "model:initial" ? 7.0 : 8.0]];
+    }
+    return JSON.stringify(result);
+  };
+  const multiCapture = JSON.parse(dagMl.execute_initial_full_refit_json(
+    JSON.stringify(multiPlan), JSON.stringify(manifests),
+    JSON.stringify(fixture.training_envelope), JSON.stringify(fixture.training_sample_ids),
+    "package:wasm.multi-output", "run:wasm.multi.refit", "12345", multiInvoke,
+  ));
+  const multiPackage = multiCapture.initial_full_refit_package;
+  if (multiCalls !== 2 || multiPackage.outputs.length !== 2 || multiPackage.artifacts.length !== 2) {
+    throw new Error("WASM initial refit failed to capture two independent outputs");
+  }
+  const multiEnvelope = dagMl.initial_full_refit_predict_envelope_json(
+    JSON.stringify(multiPackage), JSON.stringify(cohortRequest),
+  );
+  const multiHandles = Object.assign({}, ...multiCapture.node_results.map(result => result.artifact_handles));
+  const multiReplay = JSON.parse(dagMl.replay_initial_full_refit_json(
+    JSON.stringify(multiPackage), multiEnvelope,
+    JSON.stringify(multiPackage.outputs.map(output => output.output_id)),
+    JSON.stringify(multiHandles), "run:wasm.multi.predict", multiInvoke,
+  ));
+  const multiOutputs = multiReplay.replay_outcome.outputs;
+  if (multiCalls !== 4 || multiOutputs.length !== 2 ||
+      multiOutputs[0].prediction.values[0][0] !== 7 ||
+      multiOutputs[1].prediction.values[0][0] !== 8) {
+    throw new Error("WASM initial refit failed to replay two named predictions");
+  }
 };
