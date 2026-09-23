@@ -403,6 +403,116 @@ pub struct HostHpoSearchOutcome {
     pub checkpoint: Option<HostHpoCheckpoint>,
 }
 
+/// One candidate that a browser may evaluate in an isolated Web Worker.
+/// The worker receives a complete candidate plan, never an unbound parameter
+/// map; the coordinator retains the checkpoint and orders terminalization.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostHpoWorkerTask {
+    pub trial_index: u32,
+    pub phase_index: Option<u32>,
+    pub params: BTreeMap<String, serde_json::Value>,
+    pub candidate_plan: ExecutionPlan,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostHpoWorkerWindow {
+    pub window_id: String,
+    pub checkpoint: HostHpoCheckpoint,
+    pub tasks: Vec<HostHpoWorkerTask>,
+}
+
+/// Prepare one phase-bounded browser worker window. This is intentionally a
+/// pure coordinator step: no operator callback or worker result is accepted
+/// here, and existing sequential HPO remains unchanged. The window is tied
+/// to the validated native checkpoint, data fingerprint, and candidate plans.
+pub fn prepare_host_hpo_worker_window(
+    plan: &ExecutionPlan,
+    request: &HostHpoSearchRequest,
+    options: &HostHpoResumeOptions,
+    proposals: &mut dyn HostHpoProposalSource,
+    max_workers: usize,
+) -> Result<HostHpoWorkerWindow> {
+    plan.validate()?;
+    if max_workers < 2 || request.trial_budget == 0 || request.optimizer_descriptor.is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "browser HPO worker windows require at least two workers, a positive budget and an optimizer descriptor".into(),
+        ));
+    }
+    if !request.phase_trial_budgets.is_empty()
+        && (request.phase_trial_budgets.contains(&0)
+            || request
+                .phase_trial_budgets
+                .iter()
+                .try_fold(0u32, |sum, count| sum.checked_add(*count))
+                != Some(request.trial_budget))
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "host HPO phase budgets must be positive and sum to trial_budget".into(),
+        ));
+    }
+    if plan.fold_set.is_none()
+        || plan.variants.len() != 1
+        || !plan.variants[0].choices.is_empty()
+        || plan
+            .node_plans
+            .get(&request.target_node)
+            .is_none_or(|node| node.kind != NodeKind::Model)
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "browser HPO requires explicit folds, one concrete base variant and a model target"
+                .into(),
+        ));
+    }
+    request.validate_parameter_bindings(plan)?;
+    let checkpoint = prepare_host_hpo_checkpoint(plan, request, options)?;
+    let first = checkpoint.trials.len() as u32;
+    let phase_index = request.phase_index(first);
+    let mut tasks = Vec::new();
+    for trial_index in first..request.trial_budget {
+        if tasks.len() == max_workers || request.phase_index(trial_index) != phase_index {
+            break;
+        }
+        let Some(params) = proposals.ask_in_phase(trial_index, phase_index)? else {
+            break;
+        };
+        let param_overrides = request.parameter_overrides(&params)?;
+        let mut variant = plan.variants[0].clone();
+        variant.variant_id = VariantId::new(format!("host_hpo:trial:{trial_index:010}"))?;
+        variant.choices.insert(
+            "host_hpo".into(),
+            GenerationChoice {
+                label: format!("trial:{trial_index}"),
+                value: serde_json::json!({"trial_index": trial_index}),
+                param_overrides,
+                active_subsequence: None,
+            },
+        );
+        variant.fingerprint = stable_json_fingerprint(&(
+            &plan.variants[0].fingerprint,
+            &variant.choices,
+            &checkpoint.binding.objective_fingerprint,
+        ))?;
+        let mut candidate_plan = plan.clone();
+        candidate_plan.variants = vec![variant];
+        candidate_plan.validate()?;
+        tasks.push(HostHpoWorkerTask {
+            trial_index,
+            phase_index,
+            params,
+            candidate_plan,
+        });
+    }
+    let window_id =
+        stable_json_fingerprint(&(&checkpoint.fingerprint, &options.data_fingerprint, &tasks))?;
+    Ok(HostHpoWorkerWindow {
+        window_id,
+        checkpoint,
+        tasks,
+    })
+}
+
 impl SequentialScheduler {
     /// Execute candidate FIT_CV only; the caller's outer scope owns final fitting.
     /// Every trial gets an isolated context and the same already-attested folds.
