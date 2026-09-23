@@ -9,6 +9,7 @@ use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
 use crate::ids::{FoldId, NodeId, SampleId};
 
 pub const STACKING_OOF_REFIT_CONTRACT_METADATA_KEY: &str = "stacking_oof_refit_contract";
+pub const STACKING_OOF_COVERAGE_CONTRACT_METADATA_KEY: &str = "stacking_oof_coverage_contract";
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -187,6 +188,80 @@ pub fn validate_producer_oof_coverage(
         }
     }
     Ok(())
+}
+
+/// Minimum fraction of the training universe with report-grade validation OOF.
+/// A nested stack may train on a complete inner OOF set while its outer
+/// ShuffleSplit evaluation covers only part of the original training pool.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StackingOofCoverageContract {
+    pub min_coverage_ratio: f64,
+}
+
+impl StackingOofCoverageContract {
+    pub fn from_metadata(metadata: &BTreeMap<String, Value>) -> Result<Option<Self>> {
+        let Some(value) = metadata.get(STACKING_OOF_COVERAGE_CONTRACT_METADATA_KEY) else {
+            return Ok(None);
+        };
+        let contract = serde_json::from_value::<Self>(value.clone()).map_err(|error| {
+            DagMlError::OofValidation(format!(
+                "`{STACKING_OOF_COVERAGE_CONTRACT_METADATA_KEY}` requires min_coverage_ratio: {error}"
+            ))
+        })?;
+        if !contract.min_coverage_ratio.is_finite()
+            || !(0.0..=1.0).contains(&contract.min_coverage_ratio)
+        {
+            return Err(DagMlError::OofValidation(
+                "stacking min_coverage_ratio must be finite and between 0 and 1".to_string(),
+            ));
+        }
+        Ok(Some(contract))
+    }
+}
+
+pub fn validate_stacking_oof_coverage_ratio(
+    producer_node: &NodeId,
+    blocks: &[&PredictionBlock],
+    fold_set: &FoldSet,
+    contract: &StackingOofCoverageContract,
+) -> Result<f64> {
+    let requested = fold_set.sample_ids.iter().collect::<BTreeSet<_>>();
+    if requested.is_empty() {
+        return Err(DagMlError::OofValidation(
+            "stacking coverage universe is empty".to_string(),
+        ));
+    }
+    let mut covered = BTreeSet::new();
+    for block in blocks {
+        if block.producer_node != *producer_node
+            || block.partition != PredictionPartition::Validation
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "stacking coverage for `{producer_node}` received a foreign or non-validation block"
+            )));
+        }
+        block.validate_content()?;
+        for sample_id in &block.sample_ids {
+            if !requested.contains(sample_id) {
+                return Err(DagMlError::OofValidation(format!(
+                    "stacking coverage for `{producer_node}` received unknown sample `{sample_id}`"
+                )));
+            }
+            covered.insert(sample_id);
+        }
+    }
+    let ratio = covered.len() as f64 / requested.len() as f64;
+    if ratio < contract.min_coverage_ratio {
+        return Err(DagMlError::OofValidation(format!(
+            "stacking OOF coverage ratio {:.1}% for `{producer_node}` is below minimum required {:.1}% ({} of {} training samples)",
+            ratio * 100.0,
+            contract.min_coverage_ratio * 100.0,
+            covered.len(),
+            requested.len(),
+        )));
+    }
+    Ok(ratio)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -918,6 +993,37 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
         }
+    }
+
+    #[test]
+    fn stacking_coverage_contract_counts_unique_oof_ids_and_enforces_minimum() {
+        let folds = contract_fold_set();
+        let producer = NodeId::new("model:meta").unwrap();
+        let first = campaign_block("model:meta", "fold0", &["s1", "s2"]);
+        let second = campaign_block("model:meta", "fold1", &["s2"]);
+        let blocks = [&first, &second];
+        assert_eq!(
+            validate_stacking_oof_coverage_ratio(
+                &producer,
+                &blocks,
+                &folds,
+                &StackingOofCoverageContract {
+                    min_coverage_ratio: 0.5
+                },
+            )
+            .unwrap(),
+            0.5
+        );
+        let error = validate_stacking_oof_coverage_ratio(
+            &producer,
+            &blocks,
+            &folds,
+            &StackingOofCoverageContract {
+                min_coverage_ratio: 0.75,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("below minimum required 75.0%"));
     }
 
     fn load_fixture(source: &str) -> OofCampaign {
