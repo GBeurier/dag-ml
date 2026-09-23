@@ -1348,7 +1348,10 @@ fn validate_prediction_cache_record_units(cache: &BundlePredictionCacheRecord) -
         ))),
         PredictionLevel::Sample => {
             validate_unique_ids("sample id", &cache.sample_ids)?;
-            if cache.row_count != cache.sample_ids.len() {
+            // Repeated validation (for example ShuffleSplit) can score the same
+            // sample in different folds. The cache counts fold/sample rows while
+            // sample_ids describes their unique union.
+            if cache.row_count < cache.sample_ids.len() {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "prediction cache `{}` row_count does not match unique sample ids",
                     cache.cache_id
@@ -1376,7 +1379,7 @@ fn validate_prediction_cache_record_units(cache: &BundlePredictionCacheRecord) -
                 cache.prediction_level,
                 &cache.unit_ids,
             )?;
-            if cache.row_count != cache.unit_ids.len() {
+            if cache.row_count < cache.unit_ids.len() {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "prediction cache `{}` row_count does not match unique unit ids",
                     cache.cache_id
@@ -1391,6 +1394,8 @@ fn validate_prediction_cache_record_blocks(cache: &BundlePredictionCacheRecord) 
     let mut row_count = 0usize;
     let mut samples = BTreeSet::new();
     let mut units = BTreeSet::new();
+    let mut fold_samples = BTreeSet::new();
+    let mut fold_units = BTreeSet::new();
     for block in &cache.blocks {
         block.validate()?;
         if block.prediction_level != cache.prediction_level {
@@ -1403,22 +1408,24 @@ fn validate_prediction_cache_record_blocks(cache: &BundlePredictionCacheRecord) 
         match cache.prediction_level {
             PredictionLevel::Sample => {
                 for sample_id in &block.sample_ids {
-                    if !samples.insert(sample_id.clone()) {
+                    if !fold_samples.insert((block.fold_id.clone(), sample_id.clone())) {
                         return Err(DagMlError::RuntimeValidation(format!(
-                            "prediction cache `{}` contains duplicate sample `{sample_id}`",
+                            "prediction cache `{}` contains duplicate sample `{sample_id}` in one fold",
                             cache.cache_id
                         )));
                     }
+                    samples.insert(sample_id.clone());
                 }
             }
             PredictionLevel::Target | PredictionLevel::Group => {
                 for unit_id in &block.unit_ids {
-                    if !units.insert(unit_id.clone()) {
+                    if !fold_units.insert((block.fold_id.clone(), unit_id.clone())) {
                         return Err(DagMlError::RuntimeValidation(format!(
-                            "prediction cache `{}` contains duplicate unit `{unit_id}`",
+                            "prediction cache `{}` contains duplicate unit `{unit_id}` in one fold",
                             cache.cache_id
                         )));
                     }
+                    units.insert(unit_id.clone());
                 }
             }
             PredictionLevel::Observation => {
@@ -1471,7 +1478,7 @@ fn validate_sample_prediction_cache_payload_blocks(
     payload: &BundlePredictionCachePayload,
 ) -> Result<usize> {
     let mut row_count = 0usize;
-    let mut sample_ids = BTreeSet::new();
+    let mut fold_samples = BTreeSet::new();
     for block in &payload.blocks {
         block.validate_shape()?;
         if block.partition != payload.partition {
@@ -1481,9 +1488,9 @@ fn validate_sample_prediction_cache_payload_blocks(
             )));
         }
         for sample_id in &block.sample_ids {
-            if !sample_ids.insert(sample_id) {
+            if !fold_samples.insert((block.fold_id.as_ref(), sample_id)) {
                 return Err(DagMlError::RuntimeValidation(format!(
-                    "prediction cache payload `{}` contains duplicate sample `{}`",
+                    "prediction cache payload `{}` contains duplicate sample `{}` in one fold",
                     payload.cache_id, sample_id
                 )));
             }
@@ -1497,7 +1504,7 @@ fn validate_aggregated_prediction_cache_payload_blocks(
     payload: &BundlePredictionCachePayload,
 ) -> Result<usize> {
     let mut row_count = 0usize;
-    let mut unit_ids = BTreeSet::new();
+    let mut fold_units = BTreeSet::new();
     for block in &payload.aggregated_blocks {
         block.validate_shape()?;
         if block.partition != payload.partition {
@@ -1513,9 +1520,9 @@ fn validate_aggregated_prediction_cache_payload_blocks(
             )));
         }
         for unit_id in &block.unit_ids {
-            if !unit_ids.insert(unit_id) {
+            if !fold_units.insert((block.fold_id.as_ref(), unit_id)) {
                 return Err(DagMlError::RuntimeValidation(format!(
-                    "prediction cache payload `{}` contains duplicate unit `{unit_id}`",
+                    "prediction cache payload `{}` contains duplicate unit `{unit_id}` in one fold",
                     payload.cache_id
                 )));
             }
@@ -2348,6 +2355,21 @@ fn is_concat_merge_consumer(plan: &ExecutionPlan, consumer_node: &NodeId) -> boo
         == Some("concat")
 }
 
+fn expected_oof_sample_ids(fold_set: &crate::fold::FoldSet) -> BTreeSet<SampleId> {
+    if fold_set.partition_mode == crate::fold::FoldPartitionMode::Resampled {
+        // Repeated holdouts need not validate every training sample. Their OOF
+        // universe is the union of actual validation rows, with a sample
+        // allowed to appear in more than one fold.
+        fold_set
+            .folds
+            .iter()
+            .flat_map(|fold| fold.validation_sample_ids.iter().cloned())
+            .collect()
+    } else {
+        fold_set.sample_ids.iter().cloned().collect()
+    }
+}
+
 fn validate_prediction_requirement_against_plan(
     bundle: &ExecutionBundle,
     plan: &ExecutionPlan,
@@ -2405,7 +2427,7 @@ fn validate_prediction_requirement_against_plan(
         }
         return Ok(());
     }
-    let expected_sample_ids = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let expected_sample_ids = expected_oof_sample_ids(fold_set);
     let requirement_sample_ids = requirement
         .sample_ids
         .iter()
@@ -2476,7 +2498,7 @@ fn validate_concat_merge_branch_input_requirement(
             requirement.prediction_level
         )));
     }
-    let universe_sample_ids = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let universe_sample_ids = expected_oof_sample_ids(fold_set);
     let requirement_sample_ids = requirement
         .sample_ids
         .iter()
@@ -2610,7 +2632,7 @@ fn validate_concat_merge_requirement_group(
     }
 
     // Union over all branch inputs must equal the full fold universe, disjointly.
-    let expected_universe = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let expected_universe = expected_oof_sample_ids(fold_set);
     let mut covered_universe = BTreeSet::new();
     for requirement in requirements {
         for sample_id in &requirement.sample_ids {
@@ -2756,7 +2778,7 @@ fn validate_prediction_cache_blocks_match_fold_set(
             requirement.key()
         )));
     }
-    let expected_sample_ids = fold_set.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let expected_sample_ids = expected_oof_sample_ids(fold_set);
     if covered_sample_ids != expected_sample_ids {
         return Err(DagMlError::RuntimeValidation(format!(
             "bundle `{}` prediction cache `{}` does not cover the full OOF sample universe for requirement `{}`",
@@ -3740,6 +3762,27 @@ mod tests {
         build_execution_plan("plan:branch.merge.bundle", graph, campaign, &registry).unwrap()
     }
 
+    #[test]
+    fn resampled_oof_universe_contains_only_observed_validation_samples() {
+        let mut fold_set = branch_merge_plan().fold_set.unwrap();
+        fold_set.partition_mode = crate::fold::FoldPartitionMode::Resampled;
+        fold_set.folds[1].train_sample_ids = vec![
+            SampleId::new("sample:1").unwrap(),
+            SampleId::new("sample:4").unwrap(),
+        ];
+        fold_set.folds[1].validation_sample_ids = vec![
+            SampleId::new("sample:2").unwrap(),
+            SampleId::new("sample:3").unwrap(),
+        ];
+        fold_set.validate().unwrap();
+
+        let expected = ["sample:1", "sample:2", "sample:3"]
+            .into_iter()
+            .map(|sample| SampleId::new(sample).unwrap())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected_oof_sample_ids(&fold_set), expected);
+    }
+
     /// A separation-branch + concat-merge plan: two model branches, each scoped to
     /// a disjoint partition of the sample universe, feeding one `prediction_join`
     /// concat-merge node. The branch OOF edges are `requires_oof +
@@ -4148,9 +4191,110 @@ mod tests {
 
         let error = cache.validate().unwrap_err().to_string();
         assert!(
-            error.contains("row_count does not match unique unit ids"),
+            error.contains("block units do not match cache unit ids"),
             "unexpected D9 missing-unit-id cache error: {error}"
         );
+    }
+
+    #[test]
+    fn prediction_caches_key_repeated_validation_rows_by_fold_and_unit() {
+        let producer = NodeId::new("model:source").unwrap();
+        let consumer = NodeId::new("merge:fusion").unwrap();
+        let folds = [
+            FoldId::new("fold:0").unwrap(),
+            FoldId::new("fold:1").unwrap(),
+        ];
+        let sample = SampleId::new("sample:repeated").unwrap();
+        let requirement = BundlePredictionRequirement {
+            producer_node: producer.clone(),
+            source_port: "oof".to_string(),
+            consumer_node: consumer.clone(),
+            target_port: "branch_0_oof".to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
+            fold_ids: folds.to_vec(),
+            unit_ids: Vec::new(),
+            sample_ids: vec![sample.clone()],
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let blocks = folds
+            .iter()
+            .enumerate()
+            .map(|(index, fold)| PredictionBlock {
+                prediction_id: Some(format!("prediction:repeated:{index}")),
+                producer_node: producer.clone(),
+                producer_port: Some("oof".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.clone()),
+                sample_ids: vec![sample.clone()],
+                values: vec![vec![index as f64]],
+                target_names: vec!["y".to_string()],
+            })
+            .collect::<Vec<_>>();
+        let cache = build_prediction_cache_record(&requirement, &blocks).unwrap();
+        let payload = build_prediction_cache_payload(&requirement, &blocks).unwrap();
+        assert_eq!(cache.sample_ids, vec![sample]);
+        assert_eq!(cache.row_count, 2);
+        validate_prediction_cache_payload_matches_record(&payload, &cache).unwrap();
+
+        let mut duplicate = blocks.clone();
+        duplicate[1].fold_id = duplicate[0].fold_id.clone();
+        assert!(build_prediction_cache_record(&requirement, &duplicate).is_err());
+        assert!(build_prediction_cache_payload(&requirement, &duplicate).is_err());
+
+        let unit = PredictionUnitId::Target(TargetId::new("target:repeated").unwrap());
+        let aggregated_requirement = BundlePredictionRequirement {
+            producer_node: producer.clone(),
+            source_port: "oof".to_string(),
+            consumer_node: consumer,
+            target_port: "branch_0_oof".to_string(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Target,
+            fold_ids: folds.to_vec(),
+            unit_ids: vec![unit.clone()],
+            sample_ids: Vec::new(),
+            prediction_width: 1,
+            target_names: vec!["y".to_string()],
+        };
+        let aggregated_blocks = folds
+            .iter()
+            .enumerate()
+            .map(|(index, fold)| AggregatedPredictionBlock {
+                prediction_id: Some(format!("prediction:target:{index}")),
+                producer_node: producer.clone(),
+                producer_port: Some("oof".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.clone()),
+                level: PredictionLevel::Target,
+                unit_ids: vec![unit.clone()],
+                values: vec![vec![index as f64]],
+                target_names: vec!["y".to_string()],
+            })
+            .collect::<Vec<_>>();
+        let aggregated_cache =
+            build_aggregated_prediction_cache_record(&aggregated_requirement, &aggregated_blocks)
+                .unwrap();
+        let aggregated_payload =
+            build_aggregated_prediction_cache_payload(&aggregated_requirement, &aggregated_blocks)
+                .unwrap();
+        assert_eq!(aggregated_cache.unit_ids, vec![unit]);
+        assert_eq!(aggregated_cache.row_count, 2);
+        validate_prediction_cache_payload_matches_record(&aggregated_payload, &aggregated_cache)
+            .unwrap();
+
+        let mut duplicate_aggregated = aggregated_blocks;
+        duplicate_aggregated[1].fold_id = duplicate_aggregated[0].fold_id.clone();
+        assert!(build_aggregated_prediction_cache_record(
+            &aggregated_requirement,
+            &duplicate_aggregated,
+        )
+        .is_err());
+        assert!(build_aggregated_prediction_cache_payload(
+            &aggregated_requirement,
+            &duplicate_aggregated,
+        )
+        .is_err());
     }
 
     #[test]
