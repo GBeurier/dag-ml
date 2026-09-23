@@ -1159,17 +1159,15 @@ impl PipelineCompiler {
         }
         validate_merge_selectors(&step.id, &step.selectors, predictions)?;
         for (index, selector) in step.selectors.iter().enumerate() {
-            if selector.select.as_ref().is_some_and(|mode| mode != "all")
-                || !matches!(
-                    selector.aggregate.as_deref(),
-                    None | Some("mean" | "weighted_mean" | "proba_mean")
-                )
-                || (selector.branch.is_none() && selector.model.is_none())
+            if !matches!(
+                selector.aggregate.as_deref(),
+                None | Some("mean" | "weighted_mean" | "proba_mean")
+            ) || (selector.branch.is_none() && selector.model.is_none())
                 || selector.input_name.is_some()
                 || (selector.aggregate.is_some() && selector.branch.is_none())
             {
                 return Err(DagMlError::GraphValidation(format!(
-                    "pipeline DSL merge_model `{}` selector {index} requires a branch or model, select=all, and aggregate=mean/weighted_mean/proba_mean when present",
+                    "pipeline DSL merge_model `{}` selector {index} requires a branch or model and aggregate=mean/weighted_mean/proba_mean when present",
                     step.id
                 )));
             }

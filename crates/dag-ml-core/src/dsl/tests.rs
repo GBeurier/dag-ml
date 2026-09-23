@@ -286,6 +286,15 @@ fn merge_model_compiles_per_branch_probability_selector() {
     }
     assert!(compile_pipeline_dsl(&weighted).is_ok());
     if let PipelineDslStep::MergeModel(step) = &mut weighted.steps[1] {
+        step.selectors[0].select = Some(serde_json::json!("best"));
+        step.selectors[0].metric = Some("rmse".to_string());
+    }
+    assert!(compile_pipeline_dsl(&weighted).is_ok());
+    if let PipelineDslStep::MergeModel(step) = &mut weighted.steps[1] {
+        step.selectors[0].select = Some(serde_json::json!({"top_k": 2}));
+    }
+    assert!(compile_pipeline_dsl(&weighted).is_ok());
+    if let PipelineDslStep::MergeModel(step) = &mut weighted.steps[1] {
         step.selectors[0].aggregate = Some("median".to_string());
     }
     assert!(compile_pipeline_dsl(&weighted)

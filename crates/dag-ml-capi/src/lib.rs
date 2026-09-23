@@ -40,8 +40,8 @@ use dag_ml_core::{
     execute_attached_training_replay, execute_training, parse_typed_json,
     AttachedTrainingReplayInput, BundleId, DataBinding, EnvelopeAttestedRuntimeDataProvider,
     InitialFullRefitPackage, PredictCohortConstructionRequest, SampleRelationSet,
-    TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest,
-    TrainingRequest,
+    StackingProducerSelectionRequest, TrainingExecutionInput, TrainingInfluenceManifest,
+    TrainingOutcome, TrainingReplayRequest, TrainingRequest,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -1957,6 +1957,35 @@ pub unsafe extern "C" fn dagml_select_portable_output_json(
         Err(status) => return status,
     };
     match package.select_output(&binding_id) {
+        Ok(selected) => write_owned_json(out_json, error_out, &selected),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Select stacking producers from validation score evidence in the native core.
+///
+/// # Safety
+/// `request_ptr` addresses `request_len` bytes; release outputs with
+/// `dagml_owned_bytes_free` and errors with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_select_stacking_producers_json(
+    request_ptr: *const u8,
+    request_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let request: StackingProducerSelectionRequest = match parse_json_ptr(
+        request_ptr,
+        request_len,
+        error_out,
+        "stacking producer selection",
+    ) {
+        Ok(request) => request,
+        Err(status) => return status,
+    };
+    match request.selected_producer_nodes() {
         Ok(selected) => write_owned_json(out_json, error_out, &selected),
         Err(error) => validation_error(error_out, error),
     }
@@ -9113,6 +9142,30 @@ mod tests {
         assert!(out.ptr.is_null());
         assert!(error_message(&error).contains("no output binding"));
         unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn selects_stacking_producer_from_validation_scores_over_abi() {
+        let request = serde_json::json!({
+            "producer_nodes": ["model:a", "model:b"], "select": "best", "metric": "rmse",
+            "reports": [
+                {"producer_node": "model:a", "partition": "validation", "fold_id": "fold:0",
+                 "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 4.0}},
+                {"producer_node": "model:b", "partition": "validation", "fold_id": "fold:0",
+                 "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 2.0}}
+            ]
+        });
+        let bytes = serde_json::to_vec(&request).unwrap();
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_select_stacking_producers_json(bytes.as_ptr(), bytes.len(), &mut out, &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let selected: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(selected, serde_json::json!(["model:b"]));
+        unsafe { dagml_owned_bytes_free(out) };
     }
 
     #[test]
