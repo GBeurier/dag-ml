@@ -301,7 +301,7 @@ struct HpoFoldFeedback<'a> {
 }
 
 fn validate_hpo_progressive_fold_topology(plan: &ExecutionPlan) -> Result<()> {
-    if nested_stacking_campaign_plan(plan)?.is_some() {
+    if !nested_stacking_campaign_plans(plan)?.is_empty() {
         return Err(DagMlError::RuntimeValidation(
             "runtime HPO progressive pruning does not support nested-stacking FIT_CV; the scheduler cannot attest one report-grade intermediate per outer fold"
                 .to_string(),
@@ -714,7 +714,7 @@ impl SequentialScheduler {
         fold_index: usize,
     ) -> Result<(ScoreSet, f64)> {
         plan.validate()?;
-        if nested_stacking_campaign_plan(plan)?.is_some() {
+        if !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "host HPO progressive pruning cannot attest nested-stacking outer folds".into(),
             ));
@@ -797,7 +797,7 @@ impl SequentialScheduler {
         request: &HostHpoSearchRequest,
         on_fold: &mut dyn FnMut(u32, f64) -> Result<bool>,
     ) -> Result<bool> {
-        if nested_stacking_campaign_plan(plan)?.is_some() {
+        if !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "host HPO progressive pruning cannot attest nested-stacking outer folds".into(),
             ));
@@ -1015,7 +1015,7 @@ impl SequentialScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
-        if phase == Phase::FitCv && nested_stacking_campaign_plan(plan)?.is_some() {
+        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV requires execute_campaign_phase_with_data_provider so the scheduler can materialize parent-bound inner folds"
                     .to_string(),
@@ -1075,14 +1075,19 @@ impl SequentialScheduler {
         plan.validate()?;
         if phase == Phase::FitCv {
             ctx.configure_global_oof_aggregation(plan, data_provider)?;
-            if let Some(nested) = nested_stacking_campaign_plan(plan)? {
-                return self.execute_nested_stacking_fit_cv(
-                    plan,
-                    controllers,
-                    data_provider,
-                    ctx,
-                    &nested,
-                );
+            let campaigns = nested_stacking_campaign_plans(plan)?;
+            if !campaigns.is_empty() {
+                let mut results = Vec::new();
+                for nested in &campaigns {
+                    results.extend(self.execute_nested_stacking_fit_cv(
+                        plan,
+                        controllers,
+                        data_provider,
+                        ctx,
+                        nested,
+                    )?);
+                }
+                return Ok(results);
             }
         }
         let mut results = Vec::new();
@@ -1151,17 +1156,22 @@ impl SequentialScheduler {
         plan.validate()?;
         if phase == Phase::FitCv {
             ctx.configure_global_oof_aggregation(plan, data_provider)?;
-            if let Some(nested) = nested_stacking_campaign_plan(plan)? {
+            let campaigns = nested_stacking_campaign_plans(plan)?;
+            if !campaigns.is_empty() {
                 // FIT_CV produces no refit artifacts. Keep the data-provider
                 // route canonical rather than silently using an artifact store
                 // that cannot participate in the inner-OOF proof.
-                return self.execute_nested_stacking_fit_cv(
-                    plan,
-                    controllers,
-                    data_provider,
-                    ctx,
-                    &nested,
-                );
+                let mut results = Vec::new();
+                for nested in &campaigns {
+                    results.extend(self.execute_nested_stacking_fit_cv(
+                        plan,
+                        controllers,
+                        data_provider,
+                        ctx,
+                        nested,
+                    )?);
+                }
+                return Ok(results);
             }
         }
         let mut results = Vec::new();
@@ -1232,10 +1242,17 @@ impl SequentialScheduler {
         data_provider: &dyn RuntimeDataProvider,
         ctx: &mut RunContext,
     ) -> Result<Vec<NodeResult>> {
-        let Some(nested) = nested_stacking_campaign_plan(plan)? else {
-            return Ok(Vec::new());
-        };
-        self.execute_stacking_refit_oof_for_node(plan, controllers, data_provider, ctx, &nested)
+        let mut results = Vec::new();
+        for nested in nested_stacking_campaign_plans(plan)? {
+            results.extend(self.execute_stacking_refit_oof_for_node(
+                plan,
+                controllers,
+                data_provider,
+                ctx,
+                &nested,
+            )?);
+        }
+        Ok(results)
     }
 
     fn execute_stacking_refit_oof_for_node(
@@ -2676,7 +2693,7 @@ impl ParallelScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
-        if phase == Phase::FitCv && nested_stacking_campaign_plan(plan)?.is_some() {
+        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV is scheduler-serial by construction; use SequentialScheduler so inner OOF evidence is retained before outer evaluation"
                     .to_string(),
@@ -2737,7 +2754,7 @@ impl ParallelScheduler {
         if phase == Phase::FitCv {
             ctx.configure_global_oof_aggregation(plan, data_provider)?;
         }
-        if phase == Phase::FitCv && nested_stacking_campaign_plan(plan)?.is_some() {
+        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV is scheduler-serial by construction; use SequentialScheduler so inner OOF evidence is retained before outer evaluation"
                     .to_string(),
@@ -2799,7 +2816,7 @@ impl ParallelScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
-        if phase == Phase::FitCv && nested_stacking_campaign_plan(plan)?.is_some() {
+        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV is scheduler-serial by construction; use SequentialScheduler so inner OOF evidence is retained before outer evaluation"
                     .to_string(),

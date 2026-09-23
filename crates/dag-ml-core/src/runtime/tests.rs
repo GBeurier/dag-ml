@@ -9606,6 +9606,213 @@ fn nested_stacking_test_plan(outer: FoldSet, partitioned_refit_oof: bool) -> Exe
     build_execution_plan("plan:nested.stacking", graph, campaign, &manifests()).unwrap()
 }
 
+#[test]
+fn independent_terminal_meta_nodes_keep_distinct_report_grade_oof() {
+    use crate::fold::KFoldSpec;
+
+    struct IndependentModel {
+        inner: VariantScoringController,
+        folds: BTreeMap<FoldId, FoldAssignment>,
+    }
+    impl RuntimeController for IndependentModel {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            if task.phase == Phase::Refit {
+                if task.node_plan.node_id.as_str().starts_with("model:meta") {
+                    assert_eq!(task.prediction_inputs.len(), 1);
+                    assert_eq!(
+                        task.prediction_inputs
+                            .values()
+                            .next()
+                            .unwrap()
+                            .sample_ids
+                            .len(),
+                        12
+                    );
+                }
+                return self.inner.invoke(task);
+            }
+            let fold = &self.folds[task.fold_id.as_ref().expect("FIT_CV fold")];
+            if task.node_plan.node_id.as_str().starts_with("model:meta") {
+                assert_eq!(task.prediction_inputs.len(), 2);
+                for (key, input) in &task.prediction_inputs {
+                    let expected = if key.ends_with(":outer") {
+                        &fold.validation_sample_ids
+                    } else {
+                        &fold.train_sample_ids
+                    };
+                    assert_eq!(
+                        input.sample_ids.iter().collect::<BTreeSet<_>>(),
+                        expected.iter().collect::<BTreeSet<_>>()
+                    );
+                }
+            }
+            let mut result = self.inner.invoke(task)?;
+            result.predictions = vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{}:{}", task.node_plan.node_id, fold.fold_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                producer_port: Some("pred".into()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                sample_ids: fold.validation_sample_ids.clone(),
+                values: vec![vec![1.0]; fold.validation_sample_ids.len()],
+                target_names: vec!["y".into()],
+            }];
+            result.regression_targets = vec![RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: fold
+                    .validation_sample_ids
+                    .iter()
+                    .cloned()
+                    .map(crate::aggregation::PredictionUnitId::Sample)
+                    .collect(),
+                values: vec![vec![0.0]; fold.validation_sample_ids.len()],
+                validity_masks: None,
+                target_names: vec!["y".into()],
+            }];
+            Ok(result)
+        }
+    }
+
+    let samples = (1..=12)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let original = nested_stacking_test_plan(outer.clone(), true);
+    let mut graph = original.graph_plan.graph;
+    let first = NodeId::new("model:meta").unwrap();
+    let second = NodeId::new("model:meta.b").unwrap();
+    graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == first)
+        .unwrap()
+        .ports
+        .inputs
+        .retain(|port| port.name == "a");
+    graph
+        .edges
+        .iter_mut()
+        .find(|edge| edge.source.node_id.as_str() == "model:base.b")
+        .unwrap()
+        .target = PortRef {
+        node_id: second.clone(),
+        port_name: "b".into(),
+    };
+    let mut second_node = node(
+        second.as_str(),
+        NodeKind::Model,
+        vec![port("b", PortKind::Prediction)],
+        vec![port("pred", PortKind::Prediction)],
+    );
+    second_node.metadata.insert(
+        NESTED_STACKING_EXECUTION_METADATA_KEY.into(),
+        json!(NESTED_STACKING_EXECUTION_V1),
+    );
+    second_node.metadata.insert(
+        STACKING_REFIT_OOF_METADATA_KEY.into(),
+        json!(STACKING_REFIT_PARTITIONED_INNER_V1),
+    );
+    graph.nodes.push(second_node);
+    let registry = oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit]));
+    let plan =
+        build_execution_plan("plan:independent.meta", graph, original.campaign, &registry).unwrap();
+    let campaigns = nested_stacking_campaign_plans(&plan).unwrap();
+    assert_eq!(
+        campaigns
+            .iter()
+            .map(|campaign| &campaign.meta_node_id)
+            .collect::<Vec<_>>(),
+        vec![&first, &second]
+    );
+    assert!(campaigns[0]
+        .base_node_ids
+        .is_disjoint(&campaigns[1].base_node_ids));
+
+    let folds = outer
+        .folds
+        .iter()
+        .chain(campaigns.iter().flat_map(|campaign| {
+            campaign
+                .outer_scopes
+                .iter()
+                .flat_map(|scope| &scope.inner.inner_fold_set.folds)
+        }))
+        .chain(
+            campaigns
+                .iter()
+                .flat_map(|campaign| campaign.refit_fold_set.as_ref().unwrap().folds.iter()),
+        )
+        .map(|fold| (fold.fold_id.clone(), fold.clone()))
+        .collect();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(IndependentModel {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 1,
+                emit_targets: true,
+            },
+            folds,
+        }))
+        .unwrap();
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let mut ctx = RunContext::new(RunId::new("run:independent.meta").unwrap(), Some(7));
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+    for producer in [&first, &second] {
+        for fold in &outer.folds {
+            assert_eq!(
+                ctx.prediction_store
+                    .find(
+                        Some(producer),
+                        Some(&PredictionPartition::Validation),
+                        Some(&fold.fold_id)
+                    )
+                    .len(),
+                1
+            );
+        }
+    }
+    let score_set = ctx.build_score_set(plan.id.clone(), None).unwrap();
+    for producer in [&first, &second] {
+        assert!(score_set
+            .reports
+            .iter()
+            .any(|report| report.producer_node == *producer && report.fold_id.is_some()));
+    }
+    let refit = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::Refit,
+        )
+        .unwrap();
+    for producer in [&first, &second] {
+        assert!(refit
+            .iter()
+            .any(|result| result.node_id == *producer && result.lineage.phase == Phase::Refit));
+    }
+}
+
 // Contract for a second OOF stage. The first meta-model must be fitted from
 // inner OOF predictions before it can itself produce OOF predictions for a
 // downstream residual learner. A single global inner fold set cannot attest
