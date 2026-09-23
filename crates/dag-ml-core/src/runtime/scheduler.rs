@@ -1817,7 +1817,7 @@ impl SequentialScheduler {
                 }
                 if let Some(store) = resources.artifact_store.as_deref_mut() {
                     if scope.phase == Phase::Refit {
-                        store.capture_refit_artifacts(&task, &result)?;
+                        store.capture_refit_artifacts(plan, &task, &result)?;
                     }
                 }
                 for prediction in &result.predictions {
@@ -2412,7 +2412,7 @@ impl ParallelScheduler {
                     }
                     if let Some(store) = resources.artifact_store.as_deref_mut() {
                         if scope.phase == Phase::Refit {
-                            store.capture_refit_artifacts(&prepared_task.task, &result)?;
+                            store.capture_refit_artifacts(plan, &prepared_task.task, &result)?;
                         }
                     }
                     for prediction in &result.predictions {

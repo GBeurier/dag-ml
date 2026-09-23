@@ -465,6 +465,7 @@ impl InMemoryArtifactStore {
 
     pub fn capture_refit_artifacts(
         &mut self,
+        plan: &ExecutionPlan,
         task: &NodeTask,
         result: &NodeResult,
     ) -> Result<Vec<RefitArtifactRecord>> {
@@ -474,6 +475,27 @@ impl InMemoryArtifactStore {
                 task.phase
             )));
         }
+        // A controller may receive a synthetic, already-combined OOF input
+        // (for example a weighted branch selector). Only graph OOF edges have
+        // portable cache requirements; the synthetic input is reconstructed
+        // from those edges and must not become an artifact dependency key.
+        let portable_prediction_keys = plan
+            .graph_plan
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.contract.requires_oof && edge.target.node_id == task.node_plan.node_id
+            })
+            .map(|edge| {
+                bundle_prediction_requirement_key(
+                    &edge.source.node_id,
+                    &edge.source.port_name,
+                    &edge.target.node_id,
+                    &edge.target.port_name,
+                )
+            })
+            .collect::<BTreeSet<_>>();
         let mut records = Vec::new();
         for artifact in &result.artifacts {
             let handle = result.artifact_handles.get(&artifact.id).ok_or_else(|| {
@@ -508,13 +530,14 @@ impl InMemoryArtifactStore {
                     .prediction_inputs
                     .values()
                     .filter(|spec| spec.partition == PredictionPartition::Validation)
-                    .map(|spec| {
-                        bundle_prediction_requirement_key(
+                    .filter_map(|spec| {
+                        let key = bundle_prediction_requirement_key(
                             &spec.producer_node,
                             &spec.source_port,
                             &task.node_plan.node_id,
                             &spec.target_port,
-                        )
+                        );
+                        portable_prediction_keys.contains(&key).then_some(key)
                     })
                     .collect(),
             };
