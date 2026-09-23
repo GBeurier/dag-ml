@@ -6,6 +6,15 @@ The WASM package exposes validation, DSL compilation, execution-plan
 construction and synchronous host-controller execution over UTF-8 JSON strings.
 Artifacts and data-buffer ownership remain outside the binding.
 
+For parallel browser HPO, call `host_hpo_search_parallel_json` with a
+dispatcher that returns a Promise for each serialized candidate task. Each Web
+Worker loads its own WASM instance and calls `host_hpo_evaluate_worker_task_json`
+with candidate-local controller state. The core dispatches a whole trial window
+before awaiting results, validates scores and checkpoints, then tells the
+optimizer in trial order. `host_hpo_search_json` remains the synchronous
+single-worker route and supports progressive pruning; the parallel route
+currently rejects progressive pruning.
+
 `contract_manifest_json()` returns a stable JSON manifest with the package
 version, supported contract ids, exported Python/WASM function names and shared
 fixture digests. Browser integrations should check it before accepting cached

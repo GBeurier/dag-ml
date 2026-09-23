@@ -31,10 +31,11 @@ operator callbacks; nirs4all has legacy/DAG PyO3 and outer CLI oracles for
 parallel Optuna storage and pruning. C ABI v1 exposes non-durable parallel work;
 `dagml_host_hpo_search_json_v2` exposes fold feedback, pruning and durable
 checkpoint callbacks, while `dagml_host_hpo_checkpoint_recover_json` validates
-recovery. Its C/Rust test proves these transitions. WASM now exposes a
-single-worker `host_hpo_search_json` adapter over the same core search and
-synchronous JavaScript operator/optimizer callbacks. Browser worker-parallel
-HPO remains open. R and MATLAB/Octave can already supply the optimizer through
+recovery. Its C/Rust test proves these transitions. WASM exposes both the
+single-worker `host_hpo_search_json` adapter and the asynchronous
+`host_hpo_search_parallel_json` coordinator. The latter dispatches a native,
+phase-bounded candidate window to separate Web Worker/WASM instances and
+reconciles their scores in trial order. R and MATLAB/Octave can supply the optimizer through
 the standalone CLI JSONL process protocol (examples below), or use the C ABI
 v2 from a native host; these examples are not an idiomatic language binding.
 
@@ -71,16 +72,24 @@ replies, skipping only absent language runtimes. The CLI test runs two concurren
 trials with the Python adapter and fold feedback, then resumes to a third trial
 from the native checkpoint.
 
-The browser gap is architectural: `host_hpo_search_json` runs
-`SequentialScheduler.execute_resumable_host_hpo_search` synchronously in one
-WASM instance. Its operator callback must return a `NodeResult` immediately;
-`postMessage` to another Web Worker returns later and cannot satisfy that
-callback. Merely creating workers around this export would serialize whole
-searches, not parallelize one native trial window, and would lose the core's
-single ordering of `ask`, fold pruning, terminal transitions and checkpoint
-publication. A real browser implementation needs a cooperative/async core
-window API: core emits candidate/fold tasks with stable trial IDs and seeds,
-the browser dispatches them to isolated workers, and core consumes keyed
-results before ordered `tell` and sealed checkpoint publication. Until that
-exists, browser HPO is single-worker; native Rust/PyO3/C/CLI parallel HPO is
-supported.
+`host_hpo_search_parallel_json` accepts a dispatcher
+`(taskJson) => Promise<workerResultJson>` and a synchronous optimizer callback
+with the same operations as `host_hpo_search_json`. It dispatches all tasks in
+each phase-bounded window before awaiting a result. Each worker calls
+`host_hpo_evaluate_worker_task_json` with its own controller callback, trusted
+manifest and data envelope; this runs FIT_CV and produces native fold scores.
+Core checks the checkpoint/data fingerprint, exact candidate plan, fold
+reports, derived objective and complete trial-key coverage before any optimizer
+transition. `prepare_terminal` precedes ordered `tell`/`fail`; `checkpoint`
+follows. A rejected worker Promise becomes a failed candidate with no
+manufactured score. Existing sequential behavior is unchanged.
+
+The browser host must give each candidate a fresh controller/model handle
+namespace, even when reusing a Web Worker. The Node smoke uses two
+`worker_threads` with separate WASM instances and checks simultaneous
+dispatch, ordered terminalization and checkpoint resume. Progressive
+cross-worker fold pruning is **not supported** by this window API yet; it is
+rejected before asking the optimizer. The synchronous single-worker API
+continues to support fold pruning. R/MATLAB JSONL adapters remain usable as
+separate CLI processes; dynamic language validation requires Rscript with
+jsonlite or Octave/MATLAB installed.

@@ -10923,12 +10923,13 @@ fn browser_hpo_worker_window_reduces_out_of_order_native_results() {
             HostHpoWorkerResult::Complete {
                 evidence: evaluate_host_hpo_worker_task(task, &request, &controllers, &provider)
                     .unwrap(),
+                data_fingerprint: options.data_fingerprint.clone(),
             }
         })
         .collect::<Vec<_>>();
     results.reverse();
     let mut tampered = results.clone();
-    if let HostHpoWorkerResult::Complete { evidence } = &mut tampered[0] {
+    if let HostHpoWorkerResult::Complete { evidence, .. } = &mut tampered[0] {
         evidence.score += 1.0;
     }
     let mut progress = DurableHostProgress {

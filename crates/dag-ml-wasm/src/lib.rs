@@ -30,7 +30,10 @@ use dag_ml_core::{
 mod host_hpo;
 mod local_implementation;
 
-pub use host_hpo::{host_hpo_search_json, recover_host_hpo_checkpoint_json};
+pub use host_hpo::{
+    host_hpo_evaluate_worker_task_json, host_hpo_search_json, host_hpo_search_parallel_json,
+    recover_host_hpo_checkpoint_json,
+};
 pub use local_implementation::{loss_execution_attestation_json, LocalImplementationRegistry};
 
 const SHARED_FOLD_SET_FINGERPRINT: &str =
@@ -344,6 +347,7 @@ fn contract_manifest() -> serde_json::Value {
             "bind_training_losses_to_execution_plan",
             "execute_execution_plan_phase",
             "host_hpo_search_sequential",
+            "host_hpo_search_parallel_workers",
             "host_hpo_checkpoint_recovery",
             "fold_set_fingerprint",
             "process_local_implementation_registry",
@@ -399,8 +403,10 @@ fn contract_manifest() -> serde_json::Value {
             "LocalImplementationRegistry",
             "loss_execution_attestation_json",
             "execute_campaign_phase_json",
-            "execute_execution_plan_phase_json"
-            ,"host_hpo_search_json",
+            "execute_execution_plan_phase_json",
+            "host_hpo_search_json",
+            "host_hpo_search_parallel_json",
+            "host_hpo_evaluate_worker_task_json",
             "recover_host_hpo_checkpoint_json"
         ]
     })

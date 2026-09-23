@@ -595,14 +595,20 @@ pub fn evaluate_host_hpo_worker_task(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostHpoWorkerResult {
-    Complete { evidence: HostHpoTrialEvidence },
-    Failed { trial_index: u32, error: String },
+    Complete {
+        evidence: HostHpoTrialEvidence,
+        data_fingerprint: String,
+    },
+    Failed {
+        trial_index: u32,
+        error: String,
+    },
 }
 
 impl HostHpoWorkerResult {
     fn trial_index(&self) -> u32 {
         match self {
-            Self::Complete { evidence } => evidence.trial_index,
+            Self::Complete { evidence, .. } => evidence.trial_index,
             Self::Failed { trial_index, .. } => *trial_index,
         }
     }
@@ -682,9 +688,13 @@ pub fn complete_host_hpo_worker_window(
             .get(&task.trial_index)
             .expect("checked result coverage")
         {
-            HostHpoWorkerResult::Complete { evidence } => {
+            HostHpoWorkerResult::Complete {
+                evidence,
+                data_fingerprint,
+            } => {
                 if evidence.params != task.params
                     || evidence.variant_id != task.candidate_plan.variants[0].variant_id
+                    || data_fingerprint != &options.data_fingerprint
                 {
                     return Err(DagMlError::RuntimeValidation(
                         "browser HPO worker evidence proposal/variant mismatch".into(),
@@ -708,7 +718,7 @@ pub fn complete_host_hpo_worker_window(
             .remove(&task.trial_index)
             .expect("checked result coverage");
         let terminal = match &result {
-            HostHpoWorkerResult::Complete { evidence } => HostHpoTerminalTrial::Complete {
+            HostHpoWorkerResult::Complete { evidence, .. } => HostHpoTerminalTrial::Complete {
                 evidence: evidence.clone(),
             },
             HostHpoWorkerResult::Failed { error, .. } => {
@@ -733,7 +743,7 @@ pub fn complete_host_hpo_worker_window(
         prepared.seal()?;
         progress.prepare_terminal(&prepared, status)?;
         match result {
-            HostHpoWorkerResult::Complete { evidence } => {
+            HostHpoWorkerResult::Complete { evidence, .. } => {
                 proposals.tell(task.trial_index, evidence.score)?;
             }
             HostHpoWorkerResult::Failed { error, .. } => {
