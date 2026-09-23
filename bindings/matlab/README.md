@@ -109,3 +109,10 @@ MATLAB/Octave retains host model sidecars. The replay adapter must resolve
 exactly the artifact handles attested in the package. Run the wrapper smoke
 with `addpath('bindings/matlab'); addpath('bindings/matlab/tests');
 initial_full_refit`.
+
+`dagml.cvRefitPredict()` runs a pipeline with CV, winner REFIT and PREDICT in
+one native CLI session, returning the bundle, OOF averages and replay
+prediction blocks. It keeps host model handles alive for that replay only;
+the bundle JSON alone does not contain MATLAB/Octave model sidecars. Its smoke
+is `addpath('bindings/matlab'); addpath('bindings/matlab/tests');
+cv_refit_predict`.
