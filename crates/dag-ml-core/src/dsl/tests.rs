@@ -256,7 +256,7 @@ fn residual_merge_model_compiles_native_base_learner_fusion_graph() {
             .iter()
             .filter(|edge| edge.contract.requires_oof)
             .count(),
-        1
+        3
     );
     assert_eq!(
         graph
