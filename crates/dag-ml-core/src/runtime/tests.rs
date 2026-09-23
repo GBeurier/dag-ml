@@ -2570,6 +2570,9 @@ fn stacking_probability_selector_reduces_inner_and_outer_inputs_by_identity() {
     let mut meta_node = base_node.clone();
     meta_node.id = meta.clone();
     meta_node.metadata.remove("dsl_branch");
+    meta_node
+        .metadata
+        .insert("merge_mode".to_string(), json!("predictions"));
     meta_node.metadata.insert(
         "selectors".to_string(),
         json!([

@@ -425,15 +425,6 @@ impl RuntimeController for TrainingController {
                 },
                 PredictionBlock {
                     prediction_id: Some(format!(
-                        "prediction:{}:FIT_CV:test:{}",
-                        task.node_plan.node_id,
-                        task.fold_id.as_ref().map(FoldId::as_str).unwrap_or("full")
-                    )),
-                    partition: PredictionPartition::Test,
-                    ..validation.clone()
-                },
-                PredictionBlock {
-                    prediction_id: Some(format!(
                         "prediction:{}:FIT_CV:final:{}",
                         task.node_plan.node_id,
                         task.fold_id.as_ref().map(FoldId::as_str).unwrap_or("full")
@@ -4259,7 +4250,7 @@ fn cv_ensemble_excludes_non_validation_fit_cv_blocks_and_refit_stays_final() {
             .predictions
             .iter()
             .all(|block| block.partition == PredictionPartition::Validation),
-        "Train/Test/Final FIT_CV blocks must not enter a cv_ensemble output"
+        "Train/Final FIT_CV blocks must not enter a cv_ensemble output"
     );
     assert!(
         !cv_output.aggregated_predictions.is_empty()
