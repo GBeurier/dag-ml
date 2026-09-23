@@ -116,3 +116,10 @@ prediction blocks. It keeps host model handles alive for that replay only;
 the bundle JSON alone does not contain MATLAB/Octave model sidecars. Its smoke
 is `addpath('bindings/matlab'); addpath('bindings/matlab/tests');
 cv_refit_predict`.
+
+For replay after restarting MATLAB/Octave, persist model sidecars in the host
+and pass their exact invocation-local handle JSON to `dagml.replayBundle()`.
+Its `envelopes` argument is a `containers.Map` from data key to V2 JSON path.
+DAG-ML validates the artifact map against the bundle; the adapter reloads and
+checks its sidecar bytes. The CLI's `--artifact-handles` selects this real
+replay path; omitting it still uses mock handles for conformance examples.

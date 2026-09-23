@@ -180,6 +180,7 @@ jobs:
         run: |
           cargo build -p dag-ml-cli
           python scripts/smoke_cv_refit_replay_output.py target/debug/dag-ml-cli
+          python scripts/smoke_persisted_bundle_replay.py target/debug/dag-ml-cli
       - name: All core contracts with downstream JSON feature unification
         run: cargo test --locked --manifest-path crates/dag-ml-core/Cargo.toml --features serde_json/preserve_order
       - name: Terminal PREDICT V2 in-process gate
@@ -454,6 +455,8 @@ jobs:
         run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); initial_full_refit"
       - name: Test Octave CV to REFIT to PREDICT wrapper
         run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); cv_refit_predict"
+      - name: Test Octave persisted bundle replay wrapper
+        run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); replay_bundle"
 
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}

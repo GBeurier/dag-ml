@@ -114,3 +114,10 @@ and PREDICT in one native CLI session. Its outcome includes the execution
 bundle, OOF averages and replay prediction blocks. This keeps host model
 handles alive for the replay in that session; persisting the bundle JSON alone
 does not persist R model sidecars.
+
+For replay in a later process, persist those sidecars in the host and call
+`dagml_replay_bundle()` with the bundle JSON, V2 replay envelopes and an exact
+artifact-ID-to-invocation-handle JSON map. The host adapter reloads sidecars
+from its own storage and checks their fingerprints; DAG-ML validates the map
+against the bundle before PREDICT. `--artifact-handles` on the CLI enables this
+path, while omitting it retains mock handles for conformance examples only.
