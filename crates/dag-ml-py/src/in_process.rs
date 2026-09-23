@@ -1349,9 +1349,9 @@ fn run_cv_refit_in_process_impl(
     let mut node_results = fit_cv_results;
     node_results.extend(refit_results);
     for variant_id in &additional_variant_ids {
-        let extra_pruned_plan = if let Some(model) = operator_variant_models.first() {
+        let extra_pruned_plan = if !operator_variant_models.is_empty() {
             Some(
-                pruned_plan_for_operator_variant(&plan, model, variant_id, root_seed)
+                pruned_plan_for_operator_variant(&plan, &operator_variant_models, variant_id, root_seed)
                     .map_err(py_core_error)?,
             )
         } else {
