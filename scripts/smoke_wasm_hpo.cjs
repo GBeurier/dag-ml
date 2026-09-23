@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { ridgeNodeResult, assertRidgeHpoScores } = require("./hpo_ridge_operator.cjs");
 
 module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
   const graph = {
@@ -65,27 +66,7 @@ module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
     if (operation === "report_intermediate") return JSON.stringify({ prune: false });
     return JSON.stringify({ ok: true });
   };
-  const controller = (controllerId, taskJson) => {
-    const task = JSON.parse(taskJson);
-    const sample = task.fold_id === "fold:0" ? "s1" : "s2";
-    const target = sample === "s1" ? 1 : 2;
-    return JSON.stringify({
-      node_id: task.node_plan.node_id, outputs: {},
-      predictions: [{ producer_node: task.node_plan.node_id, partition: "validation",
-        fold_id: task.fold_id, sample_ids: [sample], values: [[target + task.node_plan.params.offset]], target_names: ["y"] }],
-      regression_targets: [{ level: "sample", unit_ids: [{ level: "sample", id: sample }],
-        values: [[target]], target_names: ["y"] }],
-      lineage: {
-        record_id: `lineage:js-hpo:${task.variant_id}:${task.fold_id}`,
-        run_id: task.run_id, node_id: task.node_plan.node_id, phase: task.phase,
-        controller_id: controllerId, controller_version: task.node_plan.controller_version,
-        variant_id: task.variant_id, fold_id: task.fold_id, branch_path: task.branch_path,
-        input_lineage: [], artifact_refs: [], params_fingerprint: task.node_plan.params_fingerprint,
-        data_model_shape_fingerprint: null, aggregation_policy_fingerprint: null, seed: null,
-        unsafe_flags: [], metrics: {}, loss_attestations: [], early_stopping_records: [],
-      },
-    });
-  };
+  const controller = (controllerId, taskJson) => ridgeNodeResult(controllerId, taskJson, folds);
   const first = JSON.parse(dagMl.host_hpo_search_json(
     plan, JSON.stringify([manifest]), envelope, JSON.stringify(request), undefined, controller, optimizer,
   ));
@@ -93,6 +74,7 @@ module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
       || prepared.join(",") !== "1,2" || published.join(",") !== "0,1,2" || told.join(",") !== "0,1") {
     throw new Error("WASM HPO did not select and journal two native trials");
   }
+  assertRidgeHpoScores(first);
   const recovered = JSON.parse(dagMl.recover_host_hpo_checkpoint_json(
     JSON.stringify(first.checkpoint), "null", "[]",
   ));
@@ -108,6 +90,7 @@ module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
       || prepared.join(",") !== "1,2,3" || told.join(",") !== "0,1,2") {
     throw new Error("WASM HPO resume replayed historical trials or changed selection");
   }
+  assertRidgeHpoScores(resumed);
   const interruptedAfterNativeEvaluation = JSON.parse(dagMl.recover_host_hpo_checkpoint_json(
     JSON.stringify(first.checkpoint), JSON.stringify(lastPrepared), "[]",
   ));
@@ -117,7 +100,7 @@ module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
 
   const { Worker } = require("worker_threads");
   const workers = [0, 1].map(() => new Worker(path.join(__dirname, "smoke_wasm_hpo_worker.cjs"), {
-    workerData: { pkgDir, manifests: JSON.stringify([manifest]), envelope, request: JSON.stringify(request) },
+    workerData: { pkgDir, manifests: JSON.stringify([manifest]), envelope, request: JSON.stringify(request), folds },
   }));
   const busy = new Set();
   let maximumInFlight = 0;
@@ -176,6 +159,7 @@ module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
         || parallelTold.join(",") !== "0,1") {
       throw new Error("WASM worker HPO did not execute two concurrent candidates with ordered native terminalization");
     }
+    assertRidgeHpoScores(parallel);
     request.trial_budget = 3;
     const resumedParallel = JSON.parse(await dagMl.host_hpo_search_parallel_json(
       plan, JSON.stringify([manifest]), envelope, JSON.stringify(request),
@@ -185,6 +169,7 @@ module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
         || resumedParallel.selected_trial_index !== 0) {
       throw new Error("WASM worker HPO replayed historical candidates or changed selection on resume");
     }
+    assertRidgeHpoScores(resumedParallel);
 
     request.trial_budget = 2;
     request.progressive_pruning = true;
@@ -213,6 +198,7 @@ module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
         || pruningTerminal.map((event) => event.join(":")).join(",") !== "tell:0,pruned:1") {
       throw new Error("WASM worker pruning did not stop candidate 1 before its second fold");
     }
+    assertRidgeHpoScores(pruned);
   } finally {
     await Promise.all(workers.map((worker) => worker.terminate()));
   }
