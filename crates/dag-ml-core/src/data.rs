@@ -2112,6 +2112,13 @@ impl RuntimeDataProvider for ExplicitPhaseDataProvider {
         binding.validate_envelope(&self.envelope)?;
         Ok(self.training_sample_ids.clone())
     }
+
+    fn training_data_identity(
+        &self,
+        binding: &DataBinding,
+    ) -> Result<Option<crate::training::TrainingDataIdentity>> {
+        self.inner.training_data_identity(binding)
+    }
 }
 
 impl RuntimeDataProvider for InMemoryDataProvider {

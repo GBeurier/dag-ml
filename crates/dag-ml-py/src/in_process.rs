@@ -63,7 +63,8 @@ use crate::{py_core_error, py_serde_error};
 /// scheduler. This does not select variants, invent folds, fit before PREDICT,
 /// or claim a portable predictor package for host-managed artifacts.
 #[pyfunction]
-#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, op_callback, phase, training_sample_ids=None))]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, op_callback, phase, training_sample_ids=None, package_id=None))]
+#[allow(clippy::too_many_arguments)] // Preserve the public PyO3 phase call while adding optional package capture.
 pub fn execute_phase_in_process(
     py: Python<'_>,
     dsl_json: &str,
@@ -72,6 +73,7 @@ pub fn execute_phase_in_process(
     op_callback: Py<PyAny>,
     phase: &str,
     training_sample_ids: Option<Vec<String>>,
+    package_id: Option<String>,
 ) -> PyResult<String> {
     let phase = match phase {
         "REFIT" => Phase::Refit,
@@ -85,6 +87,11 @@ pub fn execute_phase_in_process(
     if !op_callback.bind(py).is_callable() {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "op_callback must be callable".into(),
+        )));
+    }
+    if package_id.is_some() && phase != Phase::Refit {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "initial full-refit package is only available for REFIT".into(),
         )));
     }
     let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
@@ -159,12 +166,36 @@ pub fn execute_phase_in_process(
     let provider = ExplicitPhaseDataProvider::new(
         ControllerId::new("controller:data.provider").map_err(py_core_error)?,
         envelope,
-        training_sample_ids,
+        training_sample_ids.clone(),
     )
     .map_err(py_core_error)?;
     let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
     let run_id = RunId::new(format!("run:{}:{}:in-process", dsl.id, phase.as_str()))
         .map_err(py_core_error)?;
+    if let Some(package_id) = package_id {
+        let execution =
+            dag_ml_core::execute_initial_full_refit(dag_ml_core::InitialFullRefitExecutionInput {
+                package_id,
+                run_id,
+                plan: &plan,
+                training_sample_ids: training_sample_ids.as_deref().ok_or_else(|| {
+                    py_core_error(CoreDagMlError::RuntimeValidation(
+                        "REFIT package requires training ids".into(),
+                    ))
+                })?,
+                controllers: &controllers,
+                data_provider: &provider,
+                root_seed: plan.campaign.root_seed,
+                resource_limits: None,
+                scheduler: dag_ml_core::InitialRefitScheduler::Sequential,
+            })
+            .map_err(py_core_error)?;
+        return serde_json::to_string(&serde_json::json!({
+            "node_results": execution.results, "phase": phase,
+            "effective_plan": plan, "initial_full_refit_package": execution.package,
+        }))
+        .map_err(py_serde_error);
+    }
     let mut context = RunContext::new(run_id, plan.campaign.root_seed);
     let results = SequentialScheduler
         .execute_campaign_phase_with_data_provider(
@@ -465,8 +496,8 @@ pub fn recover_host_hpo_checkpoint_json(
     prepared_json: &str,
     interrupted_json: &str,
 ) -> PyResult<String> {
-    let checkpoint: dag_ml_core::HostHpoCheckpoint = serde_json::from_str(checkpoint_json)
-        .map_err(py_serde_error)?;
+    let checkpoint: dag_ml_core::HostHpoCheckpoint =
+        serde_json::from_str(checkpoint_json).map_err(py_serde_error)?;
     let prepared: Option<dag_ml_core::HostHpoCheckpoint> =
         serde_json::from_str(prepared_json).map_err(py_serde_error)?;
     let interrupted: Vec<dag_ml_core::HostHpoInterruptedTrial> =
@@ -615,8 +646,30 @@ pub fn run_host_hpo_search_in_process(
                 ))
             })?;
             if durable {
-                let result = py.detach(|| {
-                    SequentialScheduler.execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+                let result = py
+                    .detach(|| {
+                        SequentialScheduler
+                            .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+                                &plan,
+                                &provider_factory,
+                                factory,
+                                &request,
+                                &mut PyHostHpoProposals {
+                                    callback: optimizer_callback,
+                                },
+                                workers,
+                                &resume_options,
+                                &mut PyHostHpoProgress {
+                                    callback: progress_callback,
+                                },
+                            )
+                    })
+                    .map_err(py_core_error)?;
+                return serde_json::to_string(&result).map_err(py_serde_error);
+            }
+            let result = py
+                .detach(|| {
+                    SequentialScheduler.execute_parallel_host_hpo_search_with_candidate_factories(
                         &plan,
                         &provider_factory,
                         factory,
@@ -625,26 +678,9 @@ pub fn run_host_hpo_search_in_process(
                             callback: optimizer_callback,
                         },
                         workers,
-                        &resume_options,
-                        &mut PyHostHpoProgress {
-                            callback: progress_callback,
-                        },
                     )
-                }).map_err(py_core_error)?;
-                return serde_json::to_string(&result).map_err(py_serde_error);
-            }
-            let result = py.detach(|| {
-                SequentialScheduler.execute_parallel_host_hpo_search_with_candidate_factories(
-                    &plan,
-                    &provider_factory,
-                    factory,
-                    &request,
-                    &mut PyHostHpoProposals {
-                        callback: optimizer_callback,
-                    },
-                    workers,
-                )
-            }).map_err(py_core_error)?;
+                })
+                .map_err(py_core_error)?;
             return serde_json::to_string(&result).map_err(py_serde_error);
         }
     }
@@ -1374,8 +1410,10 @@ pub fn run_cv_refit_predict_in_process(
     // CV selection evidence.
     ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))
         .map_err(py_core_error)?;
-    ctx.collect_cross_fold_train_scores(metric).map_err(py_core_error)?;
-    ctx.collect_cross_fold_test_scores(metric).map_err(py_core_error)?;
+    ctx.collect_cross_fold_train_scores(metric)
+        .map_err(py_core_error)?;
+    ctx.collect_cross_fold_test_scores(metric)
+        .map_err(py_core_error)?;
     let mut scores = ctx.build_score_set(refit_plan.id.clone(), None);
     stamp_winner_variant_label(&mut scores, winner_variant_label);
     merge_loser_validation_reports(&mut scores, &refit_plan.id, loser_validation_reports);
@@ -1584,8 +1622,10 @@ fn run_cv_refit_in_process_impl(
     //    `bundle.scores`.
     ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))
         .map_err(py_core_error)?;
-    ctx.collect_cross_fold_train_scores(metric).map_err(py_core_error)?;
-    ctx.collect_cross_fold_test_scores(metric).map_err(py_core_error)?;
+    ctx.collect_cross_fold_train_scores(metric)
+        .map_err(py_core_error)?;
+    ctx.collect_cross_fold_test_scores(metric)
+        .map_err(py_core_error)?;
     let mut scores = ctx.build_score_set(refit_plan.id.clone(), None);
     // Phase 5: the winner reports come from the REAL winner FIT_CV/REFIT pass above (not the
     // transient selection loop), so stamp the winner's operator-variant content fingerprint on them
@@ -1666,7 +1706,12 @@ fn run_cv_refit_in_process_impl(
         serde_json::Value::Array(frames) => frames,
         other => vec![other],
     };
-    for oof in ctx.oof_average_blocks.iter().chain(&ctx.test_ensemble_blocks).chain(&ctx.train_ensemble_blocks) {
+    for oof in ctx
+        .oof_average_blocks
+        .iter()
+        .chain(&ctx.test_ensemble_blocks)
+        .chain(&ctx.train_ensemble_blocks)
+    {
         node_results.push(serde_json::json!({
             "node_id": oof.predictions.producer_node,
             "aggregated_predictions": [oof.predictions],
@@ -2864,6 +2909,7 @@ mod tests {
                     callback.clone_ref(py).into_any(),
                     phase,
                     (phase == "REFIT").then(|| vec!["sample:2".into(), "sample:1".into()]),
+                    None,
                 )
                 .unwrap();
                 let result: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -2903,12 +2949,81 @@ mod tests {
     }
 
     #[test]
+    fn initial_full_refit_package_has_no_cv_parent_or_selection() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut dsl: serde_json::Value =
+                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+            dsl.as_object_mut().unwrap().remove("split_invocation");
+            let mut envelope: ExternalDataPlanEnvelope =
+                serde_json::from_str(&terminal_predict_envelope_json()).unwrap();
+            envelope.data_content_fingerprint = Some("e".repeat(64));
+            envelope.target_content_fingerprint = Some("f".repeat(64));
+            let relations_fingerprint = envelope
+                .coordinator_relations
+                .as_ref()
+                .unwrap()
+                .fingerprint()
+                .unwrap();
+            envelope.relation_fingerprint = Some(relations_fingerprint.clone());
+            dsl["data_bindings"][0]["relation_fingerprint"] =
+                serde_json::json!(relations_fingerprint);
+            let callback = Py::new(
+                py,
+                TerminalPredictCallback {
+                    explicit_phase: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let payload = execute_phase_in_process(
+                py,
+                &dsl.to_string(),
+                &serde_json::to_string(&envelope).unwrap(),
+                &terminal_predict_manifest_json(),
+                callback.clone_ref(py).into_any(),
+                "REFIT",
+                Some(vec!["sample:2".into(), "sample:1".into()]),
+                Some("package:test:initial-refit".into()),
+            )
+            .expect("initial package executes without CV");
+            let outcome: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            assert!(outcome.get("scores").is_none());
+            let package = &outcome["initial_full_refit_package"];
+            assert_eq!(package["schema_version"], 1);
+            assert_eq!(package["execution_root_seed"], 7);
+            assert_eq!(
+                package["training_sample_ids"],
+                serde_json::json!(["sample:2", "sample:1"])
+            );
+            assert!(package.get("parent_bundle_id").is_none());
+            assert!(package.get("selection").is_none());
+            let parsed =
+                dag_ml_core::InitialFullRefitPackage::from_json(&package.to_string()).unwrap();
+            crate::validate_initial_full_refit_package_json(&package.to_string()).unwrap();
+            assert_eq!(parsed.artifacts.len(), 1);
+            assert_eq!(
+                parsed.artifacts[0].load_mode,
+                dag_ml_core::ArtifactLoadMode::HostSidecar
+            );
+            let mut tampered = package.clone();
+            tampered["training_sample_ids"][0] = serde_json::json!("sample:1");
+            assert!(
+                dag_ml_core::InitialFullRefitPackage::from_json(&tampered.to_string()).is_err()
+            );
+            assert!(
+                crate::validate_initial_full_refit_package_json(&tampered.to_string()).is_err()
+            );
+        });
+    }
+
+    #[test]
     fn explicit_phase_rejects_invalid_phase_and_unattested_predict_before_callback() {
         Python::initialize();
         Python::attach(|py| {
             let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
             for phase in ["FIT_CV", "PREDICT"] {
-                let error = execute_phase_in_process(py, "{}", include_str!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "[]", callback.clone_ref(py).into_any(), phase, None).unwrap_err().to_string();
+                let error = execute_phase_in_process(py, "{}", include_str!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "[]", callback.clone_ref(py).into_any(), phase, None, None).unwrap_err().to_string();
                 assert!(
                     error.contains(if phase == "FIT_CV" {
                         "REFIT or PREDICT"
@@ -2935,6 +3050,7 @@ mod tests {
                 callback.clone_ref(py).into_any(),
                 "REFIT",
                 Some(vec!["sample:1".into(), "sample:2".into()]),
+                None,
             )
             .unwrap_err()
             .to_string();
@@ -2948,6 +3064,9 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            let mut dsl: serde_json::Value =
+                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+            dsl.as_object_mut().unwrap().remove("split_invocation");
             for ids in [
                 None,
                 Some(vec![]),
@@ -2957,12 +3076,13 @@ mod tests {
             ] {
                 let error = execute_phase_in_process(
                     py,
-                    "{}",
+                    &dsl.to_string(),
                     &terminal_predict_envelope_json(),
-                    "[]",
+                    &terminal_predict_manifest_json(),
                     callback.clone_ref(py).into_any(),
                     "REFIT",
                     ids,
+                    None,
                 )
                 .unwrap_err()
                 .to_string();
@@ -2970,12 +3090,13 @@ mod tests {
             }
             let error = execute_phase_in_process(
                 py,
-                "{}",
+                &dsl.to_string(),
                 &terminal_predict_envelope_json(),
-                "[]",
+                &terminal_predict_manifest_json(),
                 callback.clone_ref(py).into_any(),
                 "PREDICT",
                 Some(vec!["sample:1".into()]),
+                None,
             )
             .unwrap_err()
             .to_string();
@@ -3000,6 +3121,7 @@ mod tests {
                 callback.clone_ref(py).into_any(),
                 "REFIT",
                 Some(vec!["sample:2".into(), "sample:1".into()]),
+                None,
             )
             .unwrap_err()
             .to_string();
