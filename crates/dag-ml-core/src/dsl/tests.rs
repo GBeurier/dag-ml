@@ -247,6 +247,42 @@ fn compiles_branch_merge_predictions_plus_original_dsl() {
 }
 
 #[test]
+fn merge_model_can_reuse_earlier_prediction_producers_in_declared_order() {
+    let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
+        "id": "dsl-multilevel-sources",
+        "steps": [
+            {"kind": "model", "id": "model:base", "operator": {"type": "Ridge"}},
+            {"kind": "merge_model", "id": "model:first", "operator": {"type": "Ridge"}},
+            {"kind": "merge_model", "id": "model:second", "operator": {"type": "Lasso"},
+             "sources": ["model:first", "model:base"]}
+        ]
+    }))
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    let second = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:second")
+        .unwrap();
+    assert_eq!(
+        second.metadata["prediction_source_order"],
+        serde_json::json!(["model:first", "model:base"])
+    );
+    let inputs = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == second.id)
+        .filter(|edge| edge.contract.requires_oof)
+        .collect::<Vec<_>>();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(inputs[0].source.node_id.as_str(), "model:first");
+    assert_eq!(inputs[1].source.node_id.as_str(), "model:base");
+    assert_eq!(inputs[0].target.port_name, "source_0_oof");
+    assert_eq!(inputs[1].target.port_name, "source_1_oof");
+    graph.validate().unwrap();
+}
+
+#[test]
 fn merge_model_compiles_per_branch_probability_selector() {
     let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
         "id": "dsl-branch-proba",

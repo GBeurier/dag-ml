@@ -493,6 +493,9 @@ pub struct PipelineDslMergeSelector {
 pub struct PipelineDslMergeModelStep {
     pub id: NodeId,
     pub operator: serde_json::Value,
+    /// Explicit ordered prediction producers. Empty uses the pending predictions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<NodeId>,
     #[serde(default)]
     pub params: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
