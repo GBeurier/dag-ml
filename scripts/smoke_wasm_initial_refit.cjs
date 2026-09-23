@@ -58,7 +58,10 @@ module.exports = function smokeInitialFullRefit(dagMl, repo) {
   if (calls !== 1 || !execution.initial_full_refit_package.package_fingerprint) {
     throw new Error("WASM initial full-refit execution did not capture a package");
   }
-  const capturedJson = JSON.stringify(execution.initial_full_refit_package);
+  const capturedJson = execution.initial_full_refit_package_json;
+  if (typeof capturedJson !== "string") {
+    throw new Error("WASM initial full-refit did not return exact package JSON");
+  }
   dagMl.validate_initial_full_refit_package_json(capturedJson);
   const replay = JSON.parse(dagMl.replay_initial_full_refit_json(
     capturedJson, JSON.stringify(envelope),

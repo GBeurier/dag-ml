@@ -13,6 +13,8 @@ const files = new Map([
   ["/", [path.join(repo, "scripts/browser_hpo/index.html"), "text/html"]],
   ["/worker.js", [path.join(repo, "scripts/browser_hpo/worker.js"), "text/javascript"]],
   ["/ridge_operator.js", [path.join(repo, "scripts/browser_hpo/ridge_operator.js"), "text/javascript"]],
+  ["/ridge_refit_oracle.js", [path.join(repo, "scripts/wasm_ridge_refit_oracle.mjs"), "text/javascript"]],
+  ["/initial_refit_fixture.json", [path.join(repo, "crates/dag-ml-core/tests/fixtures/initial_full_refit/package.json"), "application/json"]],
   ["/fixture.json", [path.join(repo, "crates/dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "application/json"]],
   ["/pkg/dag_ml_wasm.js", [path.join(pkg, "dag_ml_wasm.js"), "text/javascript"]],
   ["/pkg/dag_ml_wasm_bg.wasm", [path.join(pkg, "dag_ml_wasm_bg.wasm"), "application/wasm"]],
@@ -92,7 +94,7 @@ try {
     child.kill();
     await rm(profile, {recursive: true, force: true, maxRetries: 3});
   }
-  process.stdout.write("Chrome ridge Web Worker HPO parallel/pruning/resume: PASS\n");
+  process.stdout.write("Chrome ridge HPO parallel/pruning/resume, REFIT and replay: PASS\n");
 } finally {
   await new Promise(resolve => server.close(resolve));
 }
