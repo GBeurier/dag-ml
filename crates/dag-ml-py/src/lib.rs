@@ -15,18 +15,18 @@ mod local_implementation;
 mod training;
 
 use dag_ml_core::{
-    align_named_source_rows, build_archive_v2_native_portable_payloads, build_archive_v3_native_refit_payloads,
-    build_conformal_presentation_v1, build_execution_plan, compile_pipeline_dsl,
-    compile_pipeline_dsl_with_generation,
+    align_named_source_rows, build_archive_v2_native_portable_payloads,
+    build_archive_v3_native_refit_payloads, build_conformal_presentation_v1, build_execution_plan,
+    compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
     parse_pipeline_dsl_json, select_candidate, CacheNamespace, CampaignSpec, CandidateScore,
     ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle,
-    ExecutionPlan, ExternalDataPlanEnvelope,
-    FoldSet, GraphSpec, HostControllerSpec, NamedSourceAlignmentRequest, ParameterProjection, PortablePredictorPackage,
-    PortableRefitPackageV3, PredictCohort, PredictCohortRole, SampleRelationSet,
+    ExecutionPlan, ExternalDataPlanEnvelope, FoldSet, GraphSpec, HostControllerSpec,
+    NamedSourceAlignmentRequest, ParameterProjection, PortablePredictorPackage,
+    PortableRefitPackageV3, PredictCohort, PredictCohortRole, SampleRelationSet, SelectionPolicy,
     TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
-    TrainingRequest, SelectionPolicy, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
+    TrainingRequest, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -376,7 +376,8 @@ fn select_portable_output_json(package_json: &str, binding_id: &str) -> PyResult
 /// Plan feature-row permutations in the core without copying host feature buffers.
 #[pyfunction]
 fn align_named_source_rows_json(request_json: &str) -> PyResult<String> {
-    let request: NamedSourceAlignmentRequest = serde_json::from_str(request_json).map_err(py_serde_error)?;
+    let request: NamedSourceAlignmentRequest =
+        serde_json::from_str(request_json).map_err(py_serde_error)?;
     let alignment = align_named_source_rows(&request).map_err(py_core_error)?;
     serde_json::to_string(&alignment).map_err(py_serde_error)
 }
@@ -384,6 +385,13 @@ fn align_named_source_rows_json(request_json: &str) -> PyResult<String> {
 #[pyfunction]
 fn validate_portable_refit_package_v3_json(json: &str) -> PyResult<()> {
     PortableRefitPackageV3::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_initial_full_refit_package_json(json: &str) -> PyResult<()> {
+    dag_ml_core::InitialFullRefitPackage::from_json(json)
         .map(|_| ())
         .map_err(py_core_error)
 }
@@ -458,7 +466,8 @@ fn fan_out_data_aware_branches_json(dsl_json: &str, envelope_json: &str) -> PyRe
 #[pyfunction]
 fn select_candidate_json(policy_json: &str, candidates_json: &str) -> PyResult<String> {
     let policy: SelectionPolicy = serde_json::from_str(policy_json).map_err(py_serde_error)?;
-    let candidates: Vec<CandidateScore> = serde_json::from_str(candidates_json).map_err(py_serde_error)?;
+    let candidates: Vec<CandidateScore> =
+        serde_json::from_str(candidates_json).map_err(py_serde_error)?;
     let decision = select_candidate(&policy, &candidates).map_err(py_core_error)?;
     serde_json::to_string(&decision).map_err(py_serde_error)
 }
@@ -586,6 +595,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(align_named_source_rows_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_portable_refit_package_v3_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_initial_full_refit_package_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(validate_training_outcome_json, module)?)?;
@@ -768,6 +781,7 @@ fn contract_manifest() -> serde_json::Value {
             "validate_portable_predictor_package_json",
             "align_named_source_rows_json",
             "validate_portable_refit_package_v3_json",
+            "validate_initial_full_refit_package_json",
             "validate_training_outcome_json",
             "validate_training_replay_request_json",
             "validate_training_replay_outcome_json",
@@ -913,8 +927,14 @@ mod tests {
         let request = r#"{"sample_ids":["s1","s2"],"required_source_ids":["source_0","source_1"],"sources":[{"source_id":"source_1","sample_ids":["s1","s2"]},{"source_id":"source_0","sample_ids":["s2","s1"]}]}"#;
         let aligned: serde_json::Value =
             serde_json::from_str(&align_named_source_rows_json(request).unwrap()).unwrap();
-        assert_eq!(aligned["sources"][0]["row_indices"], serde_json::json!([1, 0]));
-        assert_eq!(aligned["sources"][1]["row_indices"], serde_json::json!([0, 1]));
+        assert_eq!(
+            aligned["sources"][0]["row_indices"],
+            serde_json::json!([1, 0])
+        );
+        assert_eq!(
+            aligned["sources"][1]["row_indices"],
+            serde_json::json!([0, 1])
+        );
     }
 
     #[test]

@@ -48,6 +48,7 @@ from ._dag_ml import (
     validate_pipeline_dsl_json,
     validate_portable_predictor_package_json,
     validate_portable_refit_package_v3_json,
+    validate_initial_full_refit_package_json,
     validate_training_contract_projection_json,
     validate_training_outcome_json,
     validate_training_replay_outcome_json,
@@ -171,6 +172,7 @@ _FACADE_EXPORTS = [
     "CacheNamespace",
     "PortablePredictorPackage",
     "PortableRefitPackageV3",
+    "InitialFullRefitPackage",
     "PortableRefitReplayOutcomeV3",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
@@ -604,6 +606,7 @@ def execute_phase_in_process(
     op_callback: Any,
     phase: str,
     training_sample_ids: list[str] | None = None,
+    package_id: str | None = None,
 ) -> str:
     """Run one explicit phase without selection or synthetic CV.
 
@@ -611,6 +614,7 @@ def execute_phase_in_process(
     universe. Rust verifies the unique identities against the attested envelope
     and records their order in the effective plan. PREDICT forbids this argument
     and uses only its separately attested V2 cohort.
+    ``package_id`` captures an independent no-CV full-refit package during REFIT.
     """
     return _native_execute_phase_in_process(
         _coerce_json(dsl_json),
@@ -619,6 +623,7 @@ def execute_phase_in_process(
         op_callback,
         phase,
         training_sample_ids,
+        package_id,
     )
 
 
@@ -800,6 +805,14 @@ class PortableRefitPackageV3(JsonContract):
     @classmethod
     def _validate_json(cls, json_text: str) -> None:
         validate_portable_refit_package_v3_json(json_text)
+
+
+class InitialFullRefitPackage(JsonContract):
+    """Strict, independent full-refit package for a no-splitter campaign."""
+
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_initial_full_refit_package_json(json_text)
 
 
 class PortableRefitReplayOutcomeV3(JsonContract):
@@ -1810,6 +1823,7 @@ __all__ = [
     "PipelineDslSpec",
     "PortablePredictorPackage",
     "PortableRefitPackageV3",
+    "InitialFullRefitPackage",
     "PortableRefitReplayOutcomeV3",
     "TrainingContractProjection",
     "TrainingOutcome",

@@ -279,6 +279,10 @@ enum Command {
     ValidatePortablePredictorPackage {
         path: PathBuf,
     },
+    /// Strictly validate an independent no-splitter full-refit package.
+    ValidateInitialFullRefitPackage {
+        path: PathBuf,
+    },
     /// Strictly validate a FIT_CV-only W1 cache namespace.
     ValidateCacheNamespace {
         path: PathBuf,
@@ -693,6 +697,11 @@ enum Command {
         process_retries: usize,
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Write an independently attested package for this no-splitter full refit.
+        #[arg(long)]
+        package_output: Option<PathBuf>,
+        #[arg(long, default_value = "package:cli.process.dsl.initial.refit")]
+        package_id: String,
         #[arg(long, default_value = "plan:cli.process.dsl.refit.phase")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.process.dsl.refit.phase")]
@@ -1044,6 +1053,19 @@ fn main() -> Result<()> {
                 format!("invalid portable predictor package at {}", path.display())
             })?;
             println!("valid portable predictor package: {}", package.package_id);
+        }
+        Command::ValidateInitialFullRefitPackage { path } => {
+            let json = std::fs::read_to_string(&path).with_context(|| {
+                format!(
+                    "failed to read initial full-refit package at {}",
+                    path.display()
+                )
+            })?;
+            let package =
+                dag_ml_core::InitialFullRefitPackage::from_json(&json).with_context(|| {
+                    format!("invalid initial full-refit package at {}", path.display())
+                })?;
+            println!("valid initial full-refit package: {}", package.package_id);
         }
         Command::ValidateCacheNamespace { path } => {
             let json = std::fs::read_to_string(&path).with_context(|| {
@@ -1869,6 +1891,8 @@ fn main() -> Result<()> {
             process_timeout_ms,
             process_retries,
             output,
+            package_output,
+            package_id,
             plan_id,
             run_id,
             root_seed,
@@ -1898,7 +1922,7 @@ fn main() -> Result<()> {
             let provider = ExplicitPhaseDataProvider::new(
                 ControllerId::new("controller:data.provider")?,
                 envelope,
-                Some(ids),
+                Some(ids.clone()),
             )?;
             let process_config = process_adapter_runtime_config(
                 process_workers,
@@ -1913,13 +1937,49 @@ fn main() -> Result<()> {
                 process_config,
                 scheduler,
             )?;
-            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
-            ctx.resource_limits = Some(TrainingResourceLimits {
+            let resource_limits = TrainingResourceLimits {
                 cpu_threads,
                 memory_bytes: None,
                 gpu_devices,
                 wall_time_ms: None,
-            });
+            };
+            if let Some(path) = package_output.as_ref() {
+                let execution = dag_ml_core::execute_initial_full_refit(
+                    dag_ml_core::InitialFullRefitExecutionInput {
+                        package_id,
+                        run_id: RunId::new(run_id)?,
+                        plan: &plan,
+                        training_sample_ids: &ids,
+                        controllers: &runtime_controllers,
+                        data_provider: &provider,
+                        root_seed: Some(root_seed),
+                        resource_limits: Some(resource_limits),
+                        scheduler: match scheduler.scheduler {
+                            CliScheduler::Sequential => {
+                                dag_ml_core::InitialRefitScheduler::Sequential
+                            }
+                            CliScheduler::Parallel => {
+                                dag_ml_core::InitialRefitScheduler::Parallel {
+                                    workers: scheduler.workers,
+                                }
+                            }
+                        },
+                    },
+                )
+                .with_context(|| "explicit process DSL initial full-refit package failed")?;
+                emit_json(Some(path), &execution.package, "initial full-refit package")?;
+                emit_json(
+                    output.as_ref(),
+                    &serde_json::json!({
+                        "node_results": execution.results, "phase": Phase::Refit,
+                        "effective_plan": plan, "initial_full_refit_package": execution.package,
+                    }),
+                    "explicit phase outcome",
+                )?;
+                return Ok(());
+            }
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
+            ctx.resource_limits = Some(resource_limits);
             let results = execute_campaign_phase_with_scheduler(
                 scheduler,
                 &plan,
