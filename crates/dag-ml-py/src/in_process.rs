@@ -282,6 +282,25 @@ struct PyHostHpoProviderFactory {
     controller_id: ControllerId,
 }
 
+struct PyHostHpoControllerFactory {
+    callback_factory: Py<PyAny>,
+    plan: ExecutionPlan,
+}
+
+impl dag_ml_core::HostHpoCandidateControllerFactory for PyHostHpoControllerFactory {
+    fn create(&self, trial_index: u32) -> dag_ml_core::Result<RuntimeControllerRegistry> {
+        Python::attach(|py| {
+            let callback = self.callback_factory.bind(py).call1((trial_index,)).map_err(core_error_from_py)?;
+            if !callback.is_callable() {
+                return Err(CoreDagMlError::RuntimeValidation(
+                    "host HPO candidate callback factory must return a callable".into(),
+                ));
+            }
+            build_runtime_controllers(py, &self.plan, &callback.unbind())
+        })
+    }
+}
+
 impl dag_ml_core::HostHpoCandidateProviderFactory for PyHostHpoProviderFactory {
     fn create(&self, _trial_index: u32) -> dag_ml_core::Result<Box<dyn dag_ml_core::RuntimeDataProvider + Send>> {
         Ok(Box::new(InMemoryDataProvider::with_envelope(
@@ -398,7 +417,7 @@ impl dag_ml_core::HostHpoProgress for PyHostHpoProgress {
 /// Bounded nonportable host-optimizer search. Only proposals cross from the
 /// tuner; all candidate execution, scoring and selection remain in core.
 #[pyfunction]
-#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, request_json, op_callback, optimizer_callback, *, resume_checkpoint_json=None, progress_callback=None))]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, request_json, op_callback, optimizer_callback, *, resume_checkpoint_json=None, progress_callback=None, candidate_callback_factory=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn run_host_hpo_search_in_process(
     py: Python<'_>,
@@ -410,6 +429,7 @@ pub fn run_host_hpo_search_in_process(
     optimizer_callback: Py<PyAny>,
     resume_checkpoint_json: Option<&str>,
     progress_callback: Option<Py<PyAny>>,
+    candidate_callback_factory: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     if !op_callback.bind(py).is_callable() || !optimizer_callback.bind(py).is_callable() {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
@@ -422,6 +442,11 @@ pub fn run_host_hpo_search_in_process(
     {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "host HPO progress callback must be callable".into(),
+        )));
+    }
+    if candidate_callback_factory.as_ref().is_some_and(|callback| !callback.bind(py).is_callable()) {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "host HPO candidate callback factory must be callable".into(),
         )));
     }
     let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
@@ -491,8 +516,20 @@ pub fn run_host_hpo_search_in_process(
     )
     .map_err(py_core_error)?;
     let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
+    let candidate_controllers = candidate_callback_factory.map(|callback_factory| PyHostHpoControllerFactory {
+        callback_factory,
+        plan: plan.clone(),
+    });
     if durable {
-        let result = SequentialScheduler
+        let scheduler = SequentialScheduler;
+        let result = if let Some(factory) = &candidate_controllers {
+            scheduler.execute_resumable_host_hpo_search_with_candidate_factories(
+                &plan, &controllers, &provider, &provider_factory, factory, &request,
+                &mut PyHostHpoProposals { callback: optimizer_callback }, &resume_options,
+                &mut PyHostHpoProgress { callback: progress_callback },
+            )
+        } else {
+            scheduler
             .execute_resumable_host_hpo_search_with_provider_factory(
                 &plan,
                 &controllers,
@@ -507,10 +544,17 @@ pub fn run_host_hpo_search_in_process(
                     callback: progress_callback,
                 },
             )
-            .map_err(py_core_error)?;
+        }.map_err(py_core_error)?;
         return serde_json::to_string(&result).map_err(py_serde_error);
     }
-    let result = SequentialScheduler
+    let scheduler = SequentialScheduler;
+    let result = if let Some(factory) = &candidate_controllers {
+        scheduler.execute_host_hpo_search_with_candidate_factories(
+            &plan, &controllers, &provider, &provider_factory, factory, &request,
+            &mut PyHostHpoProposals { callback: optimizer_callback },
+        )
+    } else {
+        scheduler
         .execute_host_hpo_search_with_provider_factory(
             &plan,
             &controllers,
@@ -521,7 +565,7 @@ pub fn run_host_hpo_search_in_process(
                 callback: optimizer_callback,
             },
         )
-        .map_err(py_core_error)?;
+    }.map_err(py_core_error)?;
     serde_json::to_string(&result).map_err(py_serde_error)
 }
 

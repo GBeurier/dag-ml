@@ -527,6 +527,7 @@ def run_host_hpo_search_in_process(
     dsl: Any, envelope: Any, controller_manifests: Any, request: Any,
     op_callback: Any, optimizer_callback: Any,
     *, resume_checkpoint: Any = None, progress_callback: Any = None,
+    candidate_callback_factory: Any = None,
 ) -> dict[str, Any]:
     """Run scheduler-owned FIT_CV trials using host ask/tell proposals.
 
@@ -552,6 +553,7 @@ def run_host_hpo_search_in_process(
         _coerce_json(request), op_callback, optimizer_callback,
         resume_checkpoint_json=None if resume_checkpoint is None else _coerce_json(resume_checkpoint),
         progress_callback=progress_callback,
+        candidate_callback_factory=candidate_callback_factory,
     ))
 
 

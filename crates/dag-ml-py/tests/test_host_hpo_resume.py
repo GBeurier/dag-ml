@@ -113,6 +113,25 @@ class HostHpoResumeTests(unittest.TestCase):
         self.assertEqual(resumed, uninterrupted)
         self.assertEqual(operator.calls + resumed_operator.calls, ["FIT_CV"] * 6)
 
+    def test_candidate_callback_factory_isolates_operator_state(self) -> None:
+        fallback = _Operators()
+        candidates: dict[int, _Operators] = {}
+
+        def factory(trial_index: int) -> _Operators:
+            self.assertNotIn(trial_index, candidates)
+            operator = _Operators()
+            candidates[trial_index] = operator
+            return operator
+
+        outcome = self._run(
+            3, fallback, _Proposals(), candidate_callback_factory=factory,
+        )
+        self.assertEqual(outcome["selected_trial_index"], 0)
+        self.assertEqual(fallback.calls, [])
+        self.assertEqual(list(candidates), [0, 1, 2])
+        self.assertEqual([operator.offsets for operator in candidates.values()],
+                         [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+
     def test_python_operator_failure_is_checkpointed_before_error_then_skipped(self) -> None:
         operator, proposals = _Operators(fail_first=True), _Proposals()
         progress: list[dict[str, Any]] = []
