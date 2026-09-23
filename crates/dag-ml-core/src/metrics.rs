@@ -1129,8 +1129,10 @@ pub fn cross_fold_validation_reports(
 }
 
 /// Score the held-out test cohort with each CV estimator's predictions combined by an equal
-/// mean and a validation-score-weighted mean. Test identities must be identical across folds;
-/// a partial fold cannot silently change the population being evaluated.
+/// mean and, when every fold has a validation score, a validation-score-weighted mean. Test
+/// identities must be identical across folds; a partial fold cannot silently change the
+/// population being evaluated. A sparse branch may predict test rows in a fold with no
+/// validation rows, so it can contribute to `avg` but cannot be assigned a `w_avg` weight.
 pub fn cross_fold_test_reports(
     prediction_blocks: &[PredictionBlock],
     probability_blocks: &[ClassificationProbabilityBlock],
@@ -1181,27 +1183,31 @@ pub fn cross_fold_test_reports(
         }
         let mut scores = Vec::with_capacity(blocks.len());
         for block in &blocks {
-            let score = validation_reports
-                .iter()
-                .find(|report| {
-                    report.producer_node == producer
-                        && report.producer_port == port
-                        && report.partition == PredictionPartition::Validation
-                        && report.fold_id == block.fold_id
-                        && report.level == PredictionLevel::Sample
-                })
-                .and_then(|report| report.metrics.get(selection_metric.name()))
-                .ok_or_else(|| {
-                    DagMlError::OofValidation(format!(
-                        "producer `{producer}` test fold {:?} has no validation score for `{}`",
-                        block.fold_id,
-                        selection_metric.name()
-                    ))
-                })?;
+            let report = validation_reports.iter().find(|report| {
+                report.producer_node == producer
+                    && report.producer_port == port
+                    && report.partition == PredictionPartition::Validation
+                    && report.fold_id == block.fold_id
+                    && report.level == PredictionLevel::Sample
+            });
+            let Some(report) = report else {
+                continue;
+            };
+            let score = report.metrics.get(selection_metric.name()).ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "producer `{producer}` test fold {:?} has no validation score for `{}`",
+                    block.fold_id,
+                    selection_metric.name()
+                ))
+            })?;
             scores.push(*score);
         }
-        let weights = validation_score_weights(&scores, selection_metric.objective());
-        for (label, weights) in [("avg", None), ("w_avg", Some(weights.as_slice()))] {
+        let weights = (scores.len() == blocks.len())
+            .then(|| validation_score_weights(&scores, selection_metric.objective()));
+        for (label, weights) in [("avg", None), ("w_avg", weights.as_deref())] {
+            if label == "w_avg" && weights.is_none() {
+                continue;
+            }
             let average = if classification {
                 reduce_classification_test_folds(&blocks, probability_blocks, weights, label)?
             } else {
@@ -1521,6 +1527,25 @@ mod tests {
             result.oof_averages[1].predictions.values,
             vec![vec![0.5], vec![2.5]]
         );
+        let sparse_validation = cross_fold_test_reports(
+            &blocks,
+            &[],
+            &target_records,
+            &validation_reports[..1],
+            RegressionMetricKind::Rmse,
+            &[RegressionMetricKind::Rmse],
+        )
+        .unwrap();
+        assert_eq!(sparse_validation.reports.len(), 1);
+        assert_eq!(
+            sparse_validation.reports[0]
+                .fold_id
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "avg"
+        );
+        assert_close(sparse_validation.reports[0].metrics["rmse"], 0.0);
         let mut incomplete = blocks.clone();
         incomplete[1].sample_ids.pop();
         incomplete[1].values.pop();
