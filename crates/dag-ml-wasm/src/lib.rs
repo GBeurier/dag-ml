@@ -27,8 +27,10 @@ use dag_ml_core::{
     RuntimeController, RuntimeControllerRegistry, SequentialScheduler,
 };
 
+mod host_hpo;
 mod local_implementation;
 
+pub use host_hpo::{host_hpo_search_json, recover_host_hpo_checkpoint_json};
 pub use local_implementation::{loss_execution_attestation_json, LocalImplementationRegistry};
 
 const SHARED_FOLD_SET_FINGERPRINT: &str =
@@ -321,6 +323,8 @@ fn contract_manifest() -> serde_json::Value {
             "build_execution_plan",
             "bind_training_losses_to_execution_plan",
             "execute_execution_plan_phase",
+            "host_hpo_search_sequential",
+            "host_hpo_checkpoint_recovery",
             "fold_set_fingerprint",
             "process_local_implementation_registry",
             "loss_execution_attestation",
@@ -374,6 +378,8 @@ fn contract_manifest() -> serde_json::Value {
             "loss_execution_attestation_json",
             "execute_campaign_phase_json",
             "execute_execution_plan_phase_json"
+            ,"host_hpo_search_json",
+            "recover_host_hpo_checkpoint_json"
         ]
     })
 }

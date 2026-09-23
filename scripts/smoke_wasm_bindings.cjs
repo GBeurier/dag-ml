@@ -20,6 +20,8 @@ const REQUIRED_DTS_EXPORTS = [
   "derive_controller_manifest_list_json",
   "execute_execution_plan_phase_json",
   "fold_set_fingerprint_json",
+  "host_hpo_search_json",
+  "recover_host_hpo_checkpoint_json",
   "loss_execution_attestation_json",
   "validate_fold_set_json",
 ];
@@ -118,6 +120,9 @@ if (!manifest.capabilities.includes("bind_training_losses_to_execution_plan")) {
 }
 if (!manifest.capabilities.includes("execute_execution_plan_phase")) {
   throw new Error("contract manifest is missing execution-plan runtime capability");
+}
+if (!manifest.capabilities.includes("host_hpo_search_sequential")) {
+  throw new Error("contract manifest is missing native sequential host HPO capability");
 }
 if (manifest.shared.fold_set_fixture_fingerprint !== SHARED_FOLD_SET_FINGERPRINT) {
   throw new Error("contract manifest shared fold fingerprint drifted");
@@ -536,6 +541,7 @@ if (dagMl.fold_set_fingerprint_json(JSON.stringify(reorderedFoldSet)) !== foldFi
 if (!dagMl.dag_ml_version()) {
   throw new Error("dag_ml_version() returned an empty version");
 }
+require("./smoke_wasm_hpo.cjs")(dagMl, repo);
 try {
   dagMl.validate_graph_json('{"id":"","interface":{},"nodes":[],"edges":[]}');
   throw new Error("invalid graph JSON was accepted");

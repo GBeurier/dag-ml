@@ -31,8 +31,11 @@ operator callbacks; nirs4all has legacy/DAG PyO3 and outer CLI oracles for
 parallel Optuna storage and pruning. C ABI v1 exposes non-durable parallel work;
 `dagml_host_hpo_search_json_v2` exposes fold feedback, pruning and durable
 checkpoint callbacks, while `dagml_host_hpo_checkpoint_recover_json` validates
-recovery. Its C/Rust test proves these transitions. R, MATLAB and WASM language
-adapters have not been implemented or tested.
+recovery. Its C/Rust test proves these transitions. WASM now exposes a
+single-worker `host_hpo_search_json` adapter over the same core search and
+synchronous JavaScript operator/optimizer callbacks. Browser worker-parallel
+HPO and idiomatic R/MATLAB wrappers remain open; those native hosts can use the
+C ABI v2 or standalone CLI process protocol meanwhile.
 
 `dag-ml-cli run-host-hpo` is a standalone host HPO command. It reads an
 `ExecutionPlan`, an `ExternalDataPlanEnvelope`, and a `HostHpoSearchRequest`
