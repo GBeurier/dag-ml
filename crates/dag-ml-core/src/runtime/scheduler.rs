@@ -1781,6 +1781,18 @@ impl SequentialScheduler {
         } else {
             None
         };
+        let coverage_contract = if report_grade && nested.kind == NestedMetaKind::Stacking {
+            let meta_node = plan
+                .graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == nested.meta_node_id)
+                .expect("validated nested stacking meta node");
+            crate::oof::StackingOofCoverageContract::from_metadata(&meta_node.metadata)?
+        } else {
+            None
+        };
         let mut results = Vec::new();
         if let Some(folds) = &plan.fold_set {
             results.extend(self.execute_dependent_meta_campaigns(
@@ -2117,6 +2129,32 @@ impl SequentialScheduler {
                         ..Default::default()
                     },
                 )?);
+            }
+            if let Some(contract) = &coverage_contract {
+                let fold_set = plan.fold_set.as_ref().expect("validated outer folds");
+                let blocks = nested
+                    .outer_scopes
+                    .iter()
+                    .flat_map(|outer| {
+                        ctx.prediction_store.find(
+                            Some(&nested.meta_node_id),
+                            Some(&PredictionPartition::Validation),
+                            Some(&outer.outer_fold_id),
+                        )
+                    })
+                    .filter(|block| {
+                        block
+                            .producer_port
+                            .as_deref()
+                            .is_none_or(|port| port == "oof")
+                    })
+                    .collect::<Vec<_>>();
+                crate::oof::validate_stacking_oof_coverage_ratio(
+                    &nested.meta_node_id,
+                    &blocks,
+                    fold_set,
+                    contract,
+                )?;
             }
         }
         Ok(results)
