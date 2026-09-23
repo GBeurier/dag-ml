@@ -1,57 +1,59 @@
-# Host HPO trial concurrency: proposed native contract
+# Host HPO concurrency and recovery
 
-Status: bounded concurrent execution is implemented for non-durable trials
-without progressive pruning. `n_jobs > 1` asks a window of proposals in trial
-order, evaluates them on separate native workers, and tells the optimizer in
-trial order. The Python binding releases the GIL while those workers run and
-creates a separate data provider, operator callback, resolver and artifact
-store for each candidate. The native test and PyO3 test assert actual overlap.
-Durable storage/resume and progressive pruning remain unsupported for parallel
-trials until the checkpoint and intermediate-feedback parts below are added.
+DAG-ML core owns the trial window, FIT_CV work, native fold scores, pruning feedback,
+selection, and checkpoint validation. The host optimizer only proposes parameters
+and receives terminal or intermediate scores. `max_parallel_trials` bounds real
+concurrent candidate evaluation. The coordinator asks in trial order, workers
+use separate providers, controllers and run contexts, and the coordinator tells
+in trial order. A phase boundary is never crossed by one window. The host may
+sample differently than a sequential optimizer, but an evaluated candidate's
+score has the same native meaning.
 
-Rust hosts can call
-`SequentialScheduler::execute_parallel_host_hpo_search_with_candidate_factories`
-with their own proposal source and candidate-local controller/provider factories;
-the core test exercises this public method. The PyO3 binding implements those
-factories and has a direct overlap test. The C ABI exposes
-`dagml_host_hpo_search_json` with proposal and candidate-state callbacks; a
-C/Rust test proves concurrent FIT_CV, ordered optimizer transitions and one
-destroy per candidate. R, MATLAB and WASM can call the C ABI, but their
-language-specific HPO adapters have not been implemented or tested. The
-`dag-ml-cli` has no host HPO command. A Python nirs4all outer run may use the
-CLI for its ordinary pipeline while still invoking PyO3 for the nested host
-HPO. That is not CLI HPO support.
+When progressive pruning is enabled, each worker sends its native fold score
+to the coordinator and waits for a prune decision. Workers never call the
+optimizer. A cancelled search finishes all candidates already in flight before
+publishing the window's terminal checkpoint. A failed worker terminalizes its
+siblings before the first error propagates.
 
-The current core loop is `ask -> FIT_CV -> tell -> checkpoint`. The Python
-binding supplies one `InMemoryDataProvider`, whose handle maps use `RefCell`,
-and nirs4all's operator callback uses a shared mutable resolver and artifact
-store. Running this loop on several threads would share candidate-local state
-and allow one trial's handles or fitted model to enter another trial.
+For durable storage, core seals a prospective checkpoint and calls
+`HostHpoProgress::prepare_terminal` before the optimizer's `tell`, `pruned`, or
+`fail` transition. It publishes the actual checkpoint after that transition.
+The nirs4all Optuna host stores both records in the study. On restart it
+validates the prepared native record, completes any interrupted optimizer
+transition, and marks other in-flight candidates failed without inventing a
+score. A direct fault-injection test interrupts between `tell` and checkpoint
+publication, then resumes successfully. A clean restart can increase the total
+trial budget without repeating historical fits.
 
-The remaining durable/pruning extension builds on a coordinator-owned window
-of at most `max_parallel_trials` candidates:
+Rust hosts use `execute_parallel_host_hpo_search_with_candidate_factories` or
+its resumable counterpart. PyO3 uses the same core methods with candidate-local
+operator callbacks; nirs4all has legacy/DAG PyO3 and outer CLI oracles for
+parallel Optuna storage and pruning. The C ABI `dagml_host_hpo_search_json`
+currently exposes non-durable parallel work but does not yet expose native
+progress or pruning callbacks. R, MATLAB and WASM language adapters have not
+been implemented or tested.
 
-1. Implemented: the coordinator calls the proposal source's `ask` on one
-   thread, assigns a stable trial index and immutable parameter overrides,
-   then dispatches each candidate to a worker. No worker calls the mutable
-   proposal source.
-2. Implemented for the Python host: each worker receives its own data-provider
-   instance, `RunContext`, handle namespace, operator callback, resolver and
-   artifact namespace. Other language hosts must provide equivalent factories.
-3. Workers return native fold reports and candidate evidence. For progressive
-   pruning, a worker sends an intermediate score to the coordinator and waits
-   for its prune/continue decision. The coordinator alone calls the host
-   optimizer's `report_intermediate`, `pruned`, `tell` or `fail` callback.
-4. Completed trials may arrive out of order. The durable checkpoint must
-   record each trial's stable index and terminal state without pretending the
-   terminal list is already contiguous; active proposals must be represented
-   or a resume must fail closed. A phase's next sampler starts only after all
-   prior-phase trials are terminal.
+`dag-ml-cli run-host-hpo` is a standalone host HPO command. It reads an
+`ExecutionPlan`, an `ExternalDataPlanEnvelope`, and a `HostHpoSearchRequest`
+from JSON files. `--operator-adapter` uses the existing process-controller
+protocol; `--operator-persistent` gives each candidate its own persistent
+controller process when the operator needs state across folds. An optimizer
+JSONL process receives one object per line and must reply with one object per
+line:
 
-The binding and host must pair the native checkpoint with the optimizer study
-after each terminal transition. Tests should prove overlapping candidate
-execution, per-trial data/artifact isolation, truthful pruning, a failed trial
-beside a successful one, CLI/PyO3 parity, and restart with out-of-order
-terminal evidence. Equal scores for a fixed candidate are required; identical
-sampling order to sequential Optuna is not, because `n_jobs > 1` asks while
-other trials are still running.
+| Operation | Required reply |
+| --- | --- |
+| `init` | `{"prepared_checkpoint": null, "interrupted": []}` or a prepared native checkpoint plus interrupted trial proposals |
+| `ask` | `{"params": {"parameter": value}}` or `{"params": null}` |
+| `report_intermediate` | `{"prune": false}` or `true` |
+| `tell`, `pruned`, `fail`, `prepare_terminal`, `checkpoint` | `{"ok": true}` |
+
+`--parallel-trials` sets the worker bound. `--checkpoint PATH` enables durable
+native checkpoints, written through a temporary file and rename after each
+terminal transition; the optimizer adapter must persist its own paired state.
+On `init`, its `prepared_checkpoint` and `interrupted` proposals are validated
+and recovered by core before resuming. `--output PATH` writes the search result
+as JSON. `examples/adapters/hpo_optimizer_jsonl.py` and
+`examples/adapters/hpo_process_controller.py` provide a small working pair.
+The CLI test runs two concurrent trials with fold feedback, then resumes to a
+third trial from the native checkpoint.
