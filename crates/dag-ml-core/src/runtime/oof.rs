@@ -861,7 +861,10 @@ impl StackingProducerSelectionRequest {
                 self.metric
             ))
         })?;
-        let ascending = kind.objective() != crate::selection::MetricObjective::Maximize;
+        let ascending = config
+            .get("ascending")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(kind.objective() != crate::selection::MetricObjective::Maximize);
         let allowed = self.fold_ids.iter().collect::<BTreeSet<_>>();
         let producers = self.producer_nodes.iter().collect::<BTreeSet<_>>();
         let mut classes: BTreeMap<&str, Vec<(usize, &NodeId, f64)>> = BTreeMap::new();

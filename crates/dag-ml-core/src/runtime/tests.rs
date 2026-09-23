@@ -2811,7 +2811,7 @@ fn stacking_diverse_fold_candidates_are_ranked_per_operator_class() {
             "metrics": {"rmse": rmse},
         })
     };
-    let request: StackingProducerSelectionRequest = serde_json::from_value(json!({
+    let mut request: StackingProducerSelectionRequest = serde_json::from_value(json!({
         "producer_nodes": ["model:ridge1", "model:ridge2", "model:pls"],
         "select": {"diverse_fold_candidates": {
             "max_per_class": 1,
@@ -2837,6 +2837,14 @@ fn stacking_diverse_fold_candidates_are_ranked_per_operator_class() {
         vec![
             NodeId::new("model:ridge2").unwrap(),
             NodeId::new("model:pls").unwrap(),
+        ]
+    );
+    request.select["diverse_fold_candidates"]["ascending"] = json!(false);
+    assert_eq!(
+        request.selected_producer_nodes().unwrap(),
+        vec![
+            NodeId::new("model:ridge1").unwrap(),
+            NodeId::new("model:pls").unwrap()
         ]
     );
 }
