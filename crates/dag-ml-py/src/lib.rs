@@ -25,7 +25,7 @@ use dag_ml_core::{
     ExecutionPlan, ExternalDataPlanEnvelope, FoldSet, GraphSpec, HostControllerSpec,
     NamedSourceAlignmentRequest, ParameterProjection, PortablePredictorPackage,
     PortableRefitPackageV3, PredictCohortConstructionRequest, SampleRelationSet, SelectionPolicy,
-    StackingProducerSelectionRequest,
+    StackingFoldSelectionRequest, StackingProducerSelectionRequest,
     TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
     TrainingRequest, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
 };
@@ -359,6 +359,14 @@ fn select_stacking_producers_json(request_json: &str) -> PyResult<String> {
     serde_json::to_string(&selected).map_err(py_serde_error)
 }
 
+#[pyfunction]
+fn select_stacking_fold_json(request_json: &str) -> PyResult<String> {
+    let request: StackingFoldSelectionRequest =
+        serde_json::from_str(request_json).map_err(py_serde_error)?;
+    let selected = request.selected_fold_id().map_err(py_core_error)?;
+    serde_json::to_string(&selected).map_err(py_serde_error)
+}
+
 /// Plan feature-row permutations in the core without copying host feature buffers.
 #[pyfunction]
 fn align_named_source_rows_json(request_json: &str) -> PyResult<String> {
@@ -579,6 +587,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_function(wrap_pyfunction!(select_portable_output_json, module)?)?;
     module.add_function(wrap_pyfunction!(select_stacking_producers_json, module)?)?;
+    module.add_function(wrap_pyfunction!(select_stacking_fold_json, module)?)?;
     module.add_function(wrap_pyfunction!(align_named_source_rows_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_portable_refit_package_v3_json,

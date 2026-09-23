@@ -20,8 +20,8 @@ use dag_ml_core::{
     CampaignSpec, CandidateScore, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec,
     HostControllerSpec, InitialFullRefitPackage, KFoldSpec, PortablePredictorPackage,
-    PredictCohortConstructionRequest, SampleId, SelectionPolicy, StackingProducerSelectionRequest,
-    StratifiedKFoldSpec, TrainingLossRoleReference,
+    PredictCohortConstructionRequest, SampleId, SelectionPolicy, StackingFoldSelectionRequest,
+    StackingProducerSelectionRequest, StratifiedKFoldSpec, TrainingLossRoleReference,
 };
 use dag_ml_core::{
     ArtifactId, ArtifactMaterializationRequest, ControllerId, HandleRef, NodeResult, NodeTask,
@@ -211,6 +211,19 @@ pub fn select_stacking_producers_json(request_json: &str) -> Result<String, JsVa
     )
     .map_err(js_core_error)?;
     let selected = request.selected_producer_nodes().map_err(js_core_error)?;
+    serde_json::to_string(&selected).map_err(js_serde_error)
+}
+
+/// Select a CV fold for stacking test predictions from validation scores.
+#[wasm_bindgen]
+pub fn select_stacking_fold_json(request_json: &str) -> Result<String, JsValue> {
+    let request: StackingFoldSelectionRequest = deserialize_external_contract(
+        request_json,
+        "stacking fold selection",
+        CoreDagMlError::RuntimeValidation,
+    )
+    .map_err(js_core_error)?;
+    let selected = request.selected_fold_id().map_err(js_core_error)?;
     serde_json::to_string(&selected).map_err(js_serde_error)
 }
 
@@ -446,6 +459,7 @@ fn contract_manifest() -> serde_json::Value {
             "select_candidates_json",
             "select_portable_output_json",
             "select_stacking_producers_json",
+            "select_stacking_fold_json",
             "validate_initial_full_refit_package_json",
             "initial_full_refit_predict_envelope_json",
             "execute_initial_full_refit_json",
@@ -916,6 +930,28 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("select_stacking_producers_json")));
+    }
+
+    #[test]
+    fn stacking_fold_selection_uses_native_validation_scores() {
+        let request = serde_json::json!({
+            "producer_node": "model:a", "fold_ids": ["fold:0", "fold:1"], "metric": "rmse",
+            "reports": [
+                {"producer_node": "model:a", "partition": "validation", "fold_id": "fold:0",
+                 "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 4.0}},
+                {"producer_node": "model:a", "partition": "validation", "fold_id": "fold:1",
+                 "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 2.0}}
+            ]
+        });
+        let selected = select_stacking_fold_json(&request.to_string()).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&selected).unwrap(),
+            serde_json::json!("fold:1")
+        );
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("select_stacking_fold_json")));
     }
 
     #[test]

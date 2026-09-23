@@ -42,8 +42,8 @@ use dag_ml_core::{
     execute_attached_training_replay, execute_training, parse_typed_json,
     AttachedTrainingReplayInput, BundleId, DataBinding, EnvelopeAttestedRuntimeDataProvider,
     InitialFullRefitPackage, PredictCohortConstructionRequest, SampleRelationSet,
-    StackingProducerSelectionRequest, TrainingExecutionInput, TrainingInfluenceManifest,
-    TrainingOutcome, TrainingReplayRequest, TrainingRequest,
+    StackingFoldSelectionRequest, StackingProducerSelectionRequest, TrainingExecutionInput,
+    TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest, TrainingRequest,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -1988,6 +1988,35 @@ pub unsafe extern "C" fn dagml_select_stacking_producers_json(
         Err(status) => return status,
     };
     match request.selected_producer_nodes() {
+        Ok(selected) => write_owned_json(out_json, error_out, &selected),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Select one CV fold from validation evidence for a stacking test feature.
+///
+/// # Safety
+/// `request_ptr` addresses `request_len` bytes; release outputs with
+/// `dagml_owned_bytes_free` and errors with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_select_stacking_fold_json(
+    request_ptr: *const u8,
+    request_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let request: StackingFoldSelectionRequest = match parse_json_ptr(
+        request_ptr,
+        request_len,
+        error_out,
+        "stacking fold selection",
+    ) {
+        Ok(request) => request,
+        Err(status) => return status,
+    };
+    match request.selected_fold_id() {
         Ok(selected) => write_owned_json(out_json, error_out, &selected),
         Err(error) => validation_error(error_out, error),
     }
@@ -9237,6 +9266,21 @@ mod tests {
         let selected: serde_json::Value =
             serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
         assert_eq!(selected, serde_json::json!(["model:b"]));
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn selects_stacking_fold_from_validation_scores_over_abi() {
+        let request = br#"{"producer_node":"model:a","fold_ids":["fold:0","fold:1"],"metric":"rmse","reports":[{"producer_node":"model:a","partition":"validation","fold_id":"fold:0","level":"sample","row_count":1,"target_width":1,"metrics":{"rmse":4.0}},{"producer_node":"model:a","partition":"validation","fold_id":"fold:1","level":"sample","row_count":1,"target_width":1,"metrics":{"rmse":2.0}}]}"#;
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_select_stacking_fold_json(request.as_ptr(), request.len(), &mut out, &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let selected: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(selected, serde_json::json!("fold:1"));
         unsafe { dagml_owned_bytes_free(out) };
     }
 

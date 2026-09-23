@@ -604,6 +604,7 @@ DagMlStatusCode dagml_selection_decision_validate_json(const uint8_t *json_ptr, 
 DagMlStatusCode dagml_select_candidate_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_select_portable_output_json(const uint8_t *package_ptr, size_t package_len, DagMlBytesView binding_id, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_select_stacking_producers_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_select_stacking_fold_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_initial_full_refit_package_validate_json(const uint8_t *package_ptr, size_t package_len, DagMlString *error_out);
 /* cohort_request_json is a PredictCohortConstructionRequest; the core derives
  * the signed cohort and rejects mismatched relation/target/fingerprint data. */

@@ -520,6 +520,69 @@ pub struct StackingProducerSelectionRequest {
     pub reports: Vec<RegressionMetricReport>,
 }
 
+/// Choose the one CV estimator whose held-out prediction supplies a stacking
+/// test feature. Fold identity and ranking live in the core; hosts retain the
+/// corresponding estimator and apply it to the prediction cohort.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StackingFoldSelectionRequest {
+    pub producer_node: NodeId,
+    pub fold_ids: Vec<FoldId>,
+    pub metric: String,
+    pub reports: Vec<RegressionMetricReport>,
+}
+
+impl StackingFoldSelectionRequest {
+    pub fn selected_fold_id(&self) -> Result<FoldId> {
+        if self.fold_ids.is_empty()
+            || self.fold_ids.iter().collect::<BTreeSet<_>>().len() != self.fold_ids.len()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "stacking fold selection needs distinct fold ids".to_string(),
+            ));
+        }
+        let kind = RegressionMetricKind::from_name(&self.metric).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "stacking fold selection has unsupported metric `{}`",
+                self.metric
+            ))
+        })?;
+        let mut ranked = self
+            .fold_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(index, fold_id)| {
+                self.reports
+                    .iter()
+                    .find(|report| {
+                        report.producer_node == self.producer_node
+                            && report.partition == PredictionPartition::Validation
+                            && report.fold_id.as_ref() == Some(fold_id)
+                            && report
+                                .metrics
+                                .get(&self.metric)
+                                .is_some_and(|score| score.is_finite())
+                    })
+                    .and_then(|report| report.metrics.get(&self.metric))
+                    .map(|score| (index, *score))
+            })
+            .collect::<Vec<_>>();
+        if ranked.is_empty() {
+            return Ok(self.fold_ids[0].clone());
+        }
+        let higher_better = kind.objective() == crate::selection::MetricObjective::Maximize;
+        ranked.sort_by(|left, right| {
+            let order = if higher_better {
+                right.1.total_cmp(&left.1)
+            } else {
+                left.1.total_cmp(&right.1)
+            };
+            order.then_with(|| left.0.cmp(&right.0))
+        });
+        Ok(self.fold_ids[ranked[0].0].clone())
+    }
+}
+
 impl StackingProducerSelectionRequest {
     pub fn selected_producer_nodes(&self) -> Result<Vec<NodeId>> {
         if self.producer_nodes.is_empty()
@@ -902,11 +965,59 @@ pub(crate) fn collect_off_fold_prediction_input(
 ) -> Result<Option<CollectedPredictionInput>> {
     validate_oof_source_port_provenance(plan, edge)?;
     let expected_partition = expected_off_fold_partition(scope.phase);
+    let best_fold = if scope.phase == Phase::Refit
+        && plan
+            .graph_plan
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == edge.target.node_id)
+            .and_then(|node| node.metadata.get("stacking_test_aggregation"))
+            .and_then(serde_json::Value::as_str)
+            == Some("best")
+    {
+        let fold_set = plan.fold_set.as_ref().ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "stacking best-fold test aggregation requires a CV fold set".to_string(),
+            )
+        })?;
+        let metric = plan
+            .graph_plan
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == edge.target.node_id)
+            .and_then(|node| node.metadata.get("stacking_test_metric"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("rmse");
+        let request = StackingFoldSelectionRequest {
+            producer_node: edge.source.node_id.clone(),
+            fold_ids: fold_set
+                .folds
+                .iter()
+                .map(|fold| fold.fold_id.clone())
+                .collect(),
+            metric: metric.to_string(),
+            reports: if ctx.score_collector.is_empty() {
+                ctx.stacking_weight_scores.clone()
+            } else {
+                ctx.score_collector.clone()
+            },
+        };
+        Some(request.selected_fold_id()?)
+    } else {
+        None
+    };
     let raw_blocks: Vec<&PredictionBlock> = ctx
         .prediction_store
         .find(Some(&edge.source.node_id), Some(&expected_partition), None)
         .into_iter()
-        .filter(|block| block.fold_id.is_none())
+        .filter(|block| {
+            best_fold.as_ref().map_or_else(
+                || block.fold_id.is_none(),
+                |fold| block.fold_id.as_ref() == Some(fold),
+            )
+        })
         .collect();
     let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, raw_blocks.clone())?;
     if !raw_blocks.is_empty() && blocks.is_empty() {
