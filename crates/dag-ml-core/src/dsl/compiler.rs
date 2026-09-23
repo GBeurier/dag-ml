@@ -527,7 +527,11 @@ impl PipelineCompiler {
                             node_id: source_id.clone(),
                             port_name: output.name.clone(),
                             input_name: format!("source_{index}_oof"),
-                            branch_id: None,
+                            branch_id: source
+                                .metadata
+                                .get("dsl_branch")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
                         })
                     }).collect::<Result<Vec<_>>>()?
                 };
