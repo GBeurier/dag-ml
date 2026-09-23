@@ -42,6 +42,7 @@ module.exports = function smokeHostHpo(dagMl, repo) {
     optimizer_descriptor: { owner: "wasm-smoke" },
   };
   const prepared = [];
+  let lastPrepared = null;
   const published = [];
   const told = [];
   const optimizer = (operation, payloadJson) => {
@@ -49,6 +50,7 @@ module.exports = function smokeHostHpo(dagMl, repo) {
     if (operation === "ask") return JSON.stringify({ params: { offset: payload.trial_index + 1 } });
     if (operation === "prepare_terminal") {
       prepared.push(payload.checkpoint.trials.length);
+      lastPrepared = payload.checkpoint;
       return JSON.stringify({ ok: true });
     }
     if (operation === "checkpoint") {
@@ -105,5 +107,11 @@ module.exports = function smokeHostHpo(dagMl, repo) {
   if (resumed.selected_trial_index !== 0 || resumed.checkpoint.trials.length !== 3
       || prepared.join(",") !== "1,2,3" || told.join(",") !== "0,1,2") {
     throw new Error("WASM HPO resume replayed historical trials or changed selection");
+  }
+  const interruptedAfterNativeEvaluation = JSON.parse(dagMl.recover_host_hpo_checkpoint_json(
+    JSON.stringify(first.checkpoint), JSON.stringify(lastPrepared), "[]",
+  ));
+  if (interruptedAfterNativeEvaluation.fingerprint !== resumed.checkpoint.fingerprint) {
+    throw new Error("WASM HPO failed to recover a prepared terminal after optimizer transition");
   }
 };
