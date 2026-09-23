@@ -10,6 +10,14 @@ pub(crate) const NESTED_STACKING_EXECUTION_METADATA_KEY: &str = "stacking_oof_ex
 pub(crate) const NESTED_STACKING_EXECUTION_V1: &str = "nested_oof_v1";
 pub(crate) const STACKING_REFIT_OOF_METADATA_KEY: &str = "stacking_refit_oof";
 pub(crate) const STACKING_REFIT_PARTITIONED_INNER_V1: &str = "partitioned_inner_v1";
+pub(crate) const RESIDUAL_TARGET_EXECUTION_METADATA_KEY: &str = "residual_target_execution";
+pub(crate) const RESIDUAL_TARGET_EXECUTION_V1: &str = "nested_oof_v1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NestedMetaKind {
+    Stacking,
+    Residual,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NestedStackingOuterScope {
@@ -20,6 +28,7 @@ pub(crate) struct NestedStackingOuterScope {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NestedStackingCampaignPlan {
     pub(crate) meta_node_id: NodeId,
+    pub(crate) kind: NestedMetaKind,
     /// Every dependency needed to produce base predictions for either the
     /// inner or outer scope. The meta node itself is deliberately excluded.
     pub(crate) base_node_ids: BTreeSet<NodeId>,
@@ -37,6 +46,7 @@ pub(crate) struct NestedStackingCampaignPlan {
 pub(crate) struct NestedStackingInput<'a> {
     pub(crate) meta_node_id: &'a NodeId,
     pub(crate) inner: &'a crate::fold::NestedFoldSet,
+    pub(crate) kind: NestedMetaKind,
 }
 
 /// Whether one graph node opted into the exact V1 nested-stacking contract.
@@ -55,18 +65,36 @@ pub(crate) fn is_nested_stacking_meta_node(plan: &ExecutionPlan, node_id: &NodeI
                 "nested stacking node `{node_id}` is absent from the execution graph"
             ))
         })?;
-    let Some(value) = node.metadata.get(NESTED_STACKING_EXECUTION_METADATA_KEY) else {
+    let stacking = node.metadata.get(NESTED_STACKING_EXECUTION_METADATA_KEY);
+    let residual = node.metadata.get(RESIDUAL_TARGET_EXECUTION_METADATA_KEY);
+    if stacking.is_some() && residual.is_some() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "node `{node_id}` cannot declare both nested stacking and residual targets"
+        )));
+    }
+    let Some(value) = stacking.or(residual) else {
         return Ok(false);
+    };
+    let (key, expected) = if stacking.is_some() {
+        (
+            NESTED_STACKING_EXECUTION_METADATA_KEY,
+            NESTED_STACKING_EXECUTION_V1,
+        )
+    } else {
+        (
+            RESIDUAL_TARGET_EXECUTION_METADATA_KEY,
+            RESIDUAL_TARGET_EXECUTION_V1,
+        )
     };
     let Some(value) = value.as_str() else {
         return Err(DagMlError::RuntimeValidation(format!(
-            "node `{}` has non-string `{NESTED_STACKING_EXECUTION_METADATA_KEY}` metadata",
+            "node `{}` has non-string `{key}` metadata",
             node.id
         )));
     };
-    if value != NESTED_STACKING_EXECUTION_V1 {
+    if value != expected {
         return Err(DagMlError::RuntimeValidation(format!(
-            "node `{}` declares unsupported `{NESTED_STACKING_EXECUTION_METADATA_KEY}` value `{value}`",
+            "node `{}` declares unsupported `{key}` value `{value}`",
             node.id
         )));
     }
@@ -98,6 +126,20 @@ pub(crate) fn nested_stacking_campaign_plan(
         ));
     }
     let meta_node_id = requested.pop().expect("checked non-empty singleton");
+    let kind = if plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == meta_node_id)
+        .expect("validated meta node")
+        .metadata
+        .contains_key(RESIDUAL_TARGET_EXECUTION_METADATA_KEY)
+    {
+        NestedMetaKind::Residual
+    } else {
+        NestedMetaKind::Stacking
+    };
     let meta_plan = plan.node_plans.get(&meta_node_id).ok_or_else(|| {
         DagMlError::RuntimeValidation(format!(
             "nested stacking meta node `{meta_node_id}` has no execution plan"
@@ -117,20 +159,27 @@ pub(crate) fn nested_stacking_campaign_plan(
         .filter(|edge| edge.target.node_id == meta_node_id && edge.contract.requires_oof)
         .map(|edge| edge.source.node_id.clone())
         .collect::<BTreeSet<_>>();
-    if oof_sources.len() < 2 {
-        return Err(DagMlError::RuntimeValidation(format!(
-            "nested stacking meta node `{meta_node_id}` requires at least two OOF base producers"
-        )));
-    }
-    if plan
-        .graph_plan
-        .graph
-        .edges
-        .iter()
-        .any(|edge| edge.target.node_id == meta_node_id && !edge.contract.requires_oof)
+    if (kind == NestedMetaKind::Stacking && oof_sources.len() < 2)
+        || (kind == NestedMetaKind::Residual && oof_sources.len() != 1)
     {
         return Err(DagMlError::RuntimeValidation(format!(
-            "nested stacking meta node `{meta_node_id}` has a non-OOF graph input; V1 accepts only explicit OOF base edges"
+            "nested {:?} meta node `{meta_node_id}` requires {} OOF base producer(s)",
+            kind,
+            if kind == NestedMetaKind::Stacking {
+                "at least two"
+            } else {
+                "exactly one"
+            },
+        )));
+    }
+    if plan.graph_plan.graph.edges.iter().any(|edge| {
+        edge.target.node_id == meta_node_id
+            && !edge.contract.requires_oof
+            && (kind == NestedMetaKind::Stacking || edge.contract.kind != PortKind::Data)
+    }) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "nested {:?} meta node `{meta_node_id}` has an unsupported non-OOF graph input",
+            kind,
         )));
     }
     let base_node_ids = dependency_closure(plan, &oof_sources);
@@ -214,8 +263,14 @@ pub(crate) fn nested_stacking_campaign_plan(
             )))
         }
     };
+    if kind == NestedMetaKind::Residual && refit_fold_set.is_none() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "residual learner `{meta_node_id}` requires partitioned inner OOF preparation for REFIT"
+        )));
+    }
     Ok(Some(NestedStackingCampaignPlan {
         meta_node_id,
+        kind,
         base_node_ids,
         outer_scopes,
         refit_fold_set,
@@ -375,6 +430,112 @@ pub(crate) fn replace_nested_stacking_fit_cv_inputs(
         }
     }
     Ok(())
+}
+
+/// Produce the learner's target inside the scheduler from inner-fold base OOF
+/// and the corresponding scored y_true records. Neither row order nor a host
+/// callback may decide which base predictions define the residual target.
+pub(crate) fn nested_residual_targets(
+    plan: &ExecutionPlan,
+    node_plan: &NodePlan,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+    nested: Option<&NestedStackingInput<'_>>,
+) -> Result<Option<crate::residual::ResidualTargetSet>> {
+    let campaign = match nested_stacking_campaign_plan(plan)? {
+        Some(campaign)
+            if campaign.kind == NestedMetaKind::Residual
+                && campaign.meta_node_id == node_plan.node_id =>
+        {
+            campaign
+        }
+        _ => return Ok(None),
+    };
+    let fold_set = match scope.phase {
+        Phase::FitCv => match nested {
+            Some(input)
+                if input.kind == NestedMetaKind::Residual
+                    && input.meta_node_id == &node_plan.node_id =>
+            {
+                &input.inner.inner_fold_set
+            }
+            _ => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "residual learner `{}` requires nested inner OOF scope in FIT_CV",
+                    node_plan.node_id
+                )))
+            }
+        },
+        Phase::Refit => campaign
+            .refit_fold_set
+            .as_ref()
+            .expect("validated residual REFIT OOF"),
+        _ => return Ok(None),
+    };
+    let edges = incoming_oof_edges(plan, node_plan)?;
+    let edge = edges.first().expect("validated single residual base edge");
+    let fold_ids = fold_set
+        .folds
+        .iter()
+        .map(|fold| fold.fold_id.clone())
+        .collect::<BTreeSet<_>>();
+    let raw_blocks = ctx
+        .prediction_store
+        .find(
+            Some(&edge.source.node_id),
+            Some(&PredictionPartition::Validation),
+            None,
+        )
+        .into_iter()
+        .filter(|block| {
+            block
+                .fold_id
+                .as_ref()
+                .is_some_and(|id| fold_ids.contains(id))
+        });
+    let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, raw_blocks)?
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut observed = BTreeMap::new();
+    for record in &ctx.regression_target_records {
+        if record.producer_node != edge.source.node_id
+            || record.partition != PredictionPartition::Validation
+            || record.variant_id != scope.variant_id
+            || !record
+                .fold_id
+                .as_ref()
+                .is_some_and(|id| fold_ids.contains(id))
+            || !producer_port_matches_edge_source_port(
+                plan,
+                edge,
+                &record.producer_node,
+                record.producer_port.as_deref(),
+                "residual target record",
+            )?
+        {
+            continue;
+        }
+        record
+            .block
+            .require_complete_targets("residual target derivation")?;
+        for (unit_id, values) in record.block.unit_ids.iter().zip(&record.block.values) {
+            let PredictionUnitId::Sample(sample) = unit_id else {
+                return Err(DagMlError::OofValidation(
+                    "residual target derivation requires sample-level targets".to_string(),
+                ));
+            };
+            if let Some(previous) = observed.insert(sample.clone(), values.clone()) {
+                if previous != *values {
+                    return Err(DagMlError::OofValidation(format!(
+                        "residual target disagrees across folds for sample `{sample}`"
+                    )));
+                }
+            }
+        }
+    }
+    crate::residual::derive_residual_targets(fold_set, &edge.source.node_id, &blocks, &observed)
+        .map(Some)
 }
 
 fn dependency_closure(plan: &ExecutionPlan, seeds: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
