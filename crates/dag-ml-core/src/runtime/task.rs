@@ -1435,7 +1435,9 @@ pub(crate) fn equal_sample_influence_weights(
         .filter(|view| {
             matches!(
                 view.partition,
-                DataRequestPartition::FoldTrain | DataRequestPartition::FullTrain
+                DataRequestPartition::FoldTrain
+                    | DataRequestPartition::FullTrain
+                    | DataRequestPartition::AllObservations
             )
         })
         .filter_map(|view| view.sample_ids.as_ref())

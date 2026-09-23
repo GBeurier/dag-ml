@@ -311,7 +311,7 @@
       "enum": ["serializable", "host_only", "content_addressed", "replay_required"]
     },
     "data_partition": {
-      "enum": ["fold_train", "fold_validation", "full_train", "predict"]
+      "enum": ["fold_train", "fold_validation", "full_train", "all_observations", "predict"]
     },
     "prediction_partition": {
       "enum": ["train", "validation", "test", "final"]

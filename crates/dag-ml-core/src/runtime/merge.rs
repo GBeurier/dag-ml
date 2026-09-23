@@ -1076,6 +1076,8 @@ pub(crate) fn data_view_for_partition(
         DataRequestPartition::FoldValidation | DataRequestPartition::Predict => {
             binding.view_policy.include_augmented_validation
         }
+        // Legacy fit_on_all uses base observations from every partition by default.
+        DataRequestPartition::AllObservations => false,
     };
     // Exclusion is keyed off the FIT role, not the partition name. A fit
     // (training) read drops excluded rows by default (the policy escape hatch
@@ -1123,7 +1125,9 @@ pub(crate) fn data_view_for_partition(
             DataRequestPartition::FoldTrain | DataRequestPartition::FoldValidation => {
                 scope.fold_id.clone()
             }
-            DataRequestPartition::FullTrain | DataRequestPartition::Predict => None,
+            DataRequestPartition::FullTrain
+            | DataRequestPartition::AllObservations
+            | DataRequestPartition::Predict => None,
         },
         source_ids: source_ids_for_view(binding, branch_view)?,
         columns: None,
@@ -1168,6 +1172,11 @@ pub(crate) fn data_partition_for_scope(
 ) -> DataRequestPartition {
     match scope.phase {
         Phase::FitCv => binding.view_policy.fit_partition,
+        Phase::Refit
+            if binding.view_policy.fit_partition == DataRequestPartition::AllObservations =>
+        {
+            DataRequestPartition::AllObservations
+        }
         Phase::Refit => DataRequestPartition::FullTrain,
         Phase::Predict | Phase::Explain if scope.fold_id.is_none() => DataRequestPartition::Predict,
         Phase::Predict | Phase::Explain => binding.view_policy.predict_partition,
@@ -1287,6 +1296,8 @@ pub(crate) fn sample_ids_for_partition(
             );
             fold_set.sample_ids.clone()
         }),
-        DataRequestPartition::Predict => None,
+        // The provider owns the held-out cohort. It must resolve this explicitly
+        // opted-in view across train and held-out partitions, not from FoldSet.
+        DataRequestPartition::AllObservations | DataRequestPartition::Predict => None,
     }
 }

@@ -6290,6 +6290,94 @@ fn campaign_data_bindings_require_unsafe_flags_for_full_train_cv_views() {
 }
 
 #[test]
+fn all_observations_fit_scope_is_explicit_and_visible_in_cv_and_refit_views() {
+    let model_id = NodeId::new("model:pls").unwrap();
+    let mut binding = data_binding(&model_id);
+    binding.view_policy.fit_partition = DataRequestPartition::AllObservations;
+    let mut invalid_campaign = oof_edge_campaign();
+    invalid_campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![binding.clone()])]);
+    let error = build_execution_plan(
+        "plan:data.all-observations.missing-flag",
+        simple_graph(),
+        invalid_campaign,
+        &manifests(),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("allow_fit_cv_all_observations_view"));
+
+    binding.view_policy.unsafe_flags =
+        BTreeSet::from([DataViewPolicy::ALLOW_FIT_CV_ALL_OBSERVATIONS_VIEW.to_string()]);
+    let mut campaign = oof_edge_campaign();
+    campaign.data_bindings = BTreeMap::from([(model_id, vec![binding.clone()])]);
+    let plan = build_execution_plan(
+        "plan:data.all-observations.opt-in",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+        "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
+    ))
+    .unwrap();
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data.provider").unwrap(),
+        envelope,
+    )
+    .unwrap();
+    let mut ctx = RunContext::new(
+        RunId::new("run:data.all-observations.opt-in").unwrap(),
+        Some(11),
+    );
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &runtime_controllers(),
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+    let views = provider.view_records();
+    let all_views = views
+        .iter()
+        .filter(|record| record.view.partition == DataRequestPartition::AllObservations)
+        .collect::<Vec<_>>();
+    assert_eq!(all_views.len(), 2);
+    assert!(all_views.iter().all(|record| {
+        record.view.sample_ids.is_none()
+            && record.view.fold_id.is_none()
+            && !record.view.include_augmented
+            && record.view.extra["unsafe_flags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|flag| {
+                    flag.as_str() == Some(DataViewPolicy::ALLOW_FIT_CV_ALL_OBSERVATIONS_VIEW)
+                })
+    }));
+    let refit_scope = PhaseScope {
+        phase: Phase::Refit,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: Some(11),
+    };
+    let refit_view = data_view_for_scope(
+        &binding,
+        plan.fold_set.as_ref(),
+        &refit_scope,
+        None,
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert_eq!(refit_view.partition, DataRequestPartition::AllObservations);
+    assert!(refit_view.sample_ids.is_none());
+}
+
+#[test]
 fn campaign_refit_data_bindings_create_full_train_views() {
     let plan = fixture_plan("plan:refit.views");
     let provider = replay_data_provider();
