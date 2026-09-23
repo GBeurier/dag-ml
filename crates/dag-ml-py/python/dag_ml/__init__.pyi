@@ -7,6 +7,10 @@ def execute_phase_in_process(
     op_callback: Any, phase: str, training_sample_ids: list[str] | None = ...,
     package_id: str | None = ...,
 ) -> str: ...
+def replay_initial_full_refit_in_process(
+    package: Any, envelope: Any, op_callback: Any, artifact_handles: Any,
+    output_ids: list[str], run_id: str,
+) -> dict[str, Any]: ...
 
 def run_host_hpo_search_in_process(
     dsl: Any, envelope: Any, controller_manifests: Any, request: Any,

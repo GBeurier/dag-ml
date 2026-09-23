@@ -1,5 +1,6 @@
 // Auto-split from the former monolithic `runtime.rs` (pure refactor).
 use super::*;
+use crate::initial_refit::InitialFullRefitPackage;
 
 #[derive(Clone, Debug, Default)]
 pub struct SequentialScheduler;
@@ -769,6 +770,96 @@ impl SequentialScheduler {
             },
             PhaseScopeResources {
                 data_provider: Some(data_provider),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Replay PREDICT from a no-CV full-refit package without fabricating an
+    /// ExecutionBundle or a selected CV variant.
+    pub fn execute_initial_full_refit_predict(
+        &self,
+        package: &InitialFullRefitPackage,
+        envelope: &ExternalDataPlanEnvelope,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        artifact_store: &dyn RuntimeArtifactStore,
+        ctx: &mut RunContext,
+    ) -> Result<Vec<NodeResult>> {
+        package.validate()?;
+        let plan = &package.effective_plan;
+        let package_context_id = BundleId::new(package.package_id.clone())?;
+        let mut handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
+        let mut inputs = BTreeMap::<NodeId, BTreeMap<String, ArtifactInputSpec>>::new();
+        for artifact in &package.artifacts {
+            let record = &artifact.record;
+            let handle = artifact_store.materialize(&ArtifactMaterializationRequest {
+                run_id: ctx.run_id.clone(),
+                bundle_id: package_context_id.clone(),
+                node_id: record.node_id.clone(),
+                phase: Phase::Predict,
+                variant_id: Some(package.variant_id.clone()),
+                controller_id: record.controller_id.clone(),
+                artifact: record.artifact.clone(),
+                params_fingerprint: record.params_fingerprint.clone(),
+                training_loss_fingerprint: record.training_loss_fingerprint.clone(),
+            })?;
+            if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact)
+                || handle.owner_controller != record.controller_id
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "initial full-refit artifact `{}` materialized with invalid handle",
+                    record.artifact.id
+                )));
+            }
+            let key = refit_artifact_input_key(&record.artifact.id);
+            if handles
+                .entry(record.node_id.clone())
+                .or_default()
+                .insert(key.clone(), handle)
+                .is_some()
+                || inputs
+                    .entry(record.node_id.clone())
+                    .or_default()
+                    .insert(key, ArtifactInputSpec::from_refit_record(record)?)
+                    .is_some()
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "duplicate initial full-refit replay artifact".into(),
+                ));
+            }
+        }
+        let data_envelopes = plan
+            .node_plans
+            .values()
+            .flat_map(|node| node.data_bindings.iter())
+            .map(|binding| {
+                (
+                    data_binding_requirement_key(&binding.node_id, &binding.input_name),
+                    envelope.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let variant = VariantExecutionSpec::from_plan(&plan.variants[0]);
+        let seed_root = variant.seed.or(ctx.root_seed);
+        self.execute_phase_scope(
+            plan,
+            controllers,
+            ctx,
+            PhaseScope {
+                phase: Phase::Predict,
+                variant_id: Some(package.variant_id.clone()),
+                variant: Some(variant),
+                fold_id: None,
+                seed_root,
+            },
+            PhaseScopeResources {
+                data_provider: Some(data_provider),
+                replay_artifact_handles: Some(&handles),
+                replay_artifact_inputs: Some(&inputs),
+                replay_bundle_id: Some(&package_context_id),
+                data_envelopes: Some(&data_envelopes),
+                direct_sample_prediction_only: true,
                 ..Default::default()
             },
         )

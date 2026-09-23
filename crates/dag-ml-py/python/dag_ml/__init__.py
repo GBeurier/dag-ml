@@ -105,6 +105,7 @@ from ._dag_ml import (
 )
 from ._dag_ml import (
     execute_phase_in_process as _native_execute_phase_in_process,
+    replay_initial_full_refit_in_process as _native_replay_initial_full_refit_in_process,
 )
 from ._dag_ml import (
     execute_training_json as _native_execute_training_json,
@@ -204,6 +205,7 @@ _FACADE_EXPORTS = [
     "execute_training_json",
     "execute_data_provider",
     "execute_phase_in_process",
+    "replay_initial_full_refit_in_process",
     "run_host_hpo_search_in_process",
     "recover_host_hpo_checkpoint",
     "replay_loaded_predictor_package",
@@ -625,6 +627,17 @@ def execute_phase_in_process(
         training_sample_ids,
         package_id,
     )
+
+
+def replay_initial_full_refit_in_process(
+    package: Any, envelope: Any, op_callback: Any,
+    artifact_handles: Any, output_ids: list[str], run_id: str,
+) -> dict[str, Any]:
+    """Replay explicit outputs from a no-CV package on an attested PREDICT cohort."""
+    return json.loads(_native_replay_initial_full_refit_in_process(
+        _coerce_json(package), _coerce_json(envelope), op_callback,
+        _coerce_json(artifact_handles), _coerce_json(output_ids), run_id,
+    ))
 
 
 def run_cv_refit_in_process_with_training_losses(
@@ -1857,6 +1870,7 @@ __all__ = [
     "execute_methods_portable_full_refit",
     "execute_methods_portable_full_refit_json",
     "execute_phase_in_process",
+    "replay_initial_full_refit_in_process",
     "execute_training",
     "execute_training_json",
     "fan_out_data_aware_branches",

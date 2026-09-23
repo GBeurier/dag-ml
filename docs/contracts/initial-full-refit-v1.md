@@ -18,14 +18,20 @@ The package itself does not claim to contain host model bytes.
 
 In the CLI, `run-process-dsl-refit-phase --package-output PATH` executes and
 writes the package; `--package-id` selects its ID. The outcome JSON includes
-`initial_full_refit_package` and no invented score. The
+`initial_full_refit_package` and may retain actual final/test reports, but no
+CV or selection score is invented. The
 `validate-initial-full-refit-package PATH` command checks the closed package.
 In PyO3, `execute_phase_in_process(..., phase="REFIT",
 training_sample_ids=..., package_id=...)` returns the same package in its JSON
 outcome; `validate_initial_full_refit_package_json` validates it. The public
 Python wrapper exposes `InitialFullRefitPackage` for the same validation.
 
-This V1 captures and validates a full-training result. Its output bindings and
-artifact records provide the inputs for a separate prediction replay request;
-the execution surface in this change does not automatically run prediction or
-resolve host sidecars.
+`run-process-initial-full-refit-predict` and
+`replay_initial_full_refit_in_process` take the closed package, a separate V2
+PREDICT cohort, exact host-sidecar artifact handles and explicit output IDs. Raw
+native artifacts are hydrated from the package without external handles. The
+native scheduler validates the requested terminal ports and provider cohort,
+materializes the REFIT artifacts, and emits a fingerprinted replay outcome.
+The host must resolve its own sidecar bytes into those invocation-local handles;
+the package cannot claim to contain them. A missing artifact or a different
+cohort fails before operator execution.

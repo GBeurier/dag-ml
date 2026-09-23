@@ -193,6 +193,7 @@ pub fn execute_phase_in_process(
         return serde_json::to_string(&serde_json::json!({
             "node_results": execution.results, "phase": phase,
             "effective_plan": plan, "initial_full_refit_package": execution.package,
+            "scores": execution.scores,
         }))
         .map_err(py_serde_error);
     }
@@ -208,6 +209,83 @@ pub fn execute_phase_in_process(
         .map_err(py_core_error)?;
     let scores = context.build_score_set(plan.id.clone(), None);
     serde_json::to_string(&serde_json::json!({"node_results": results, "scores": scores, "phase": phase, "effective_plan": plan})).map_err(py_serde_error)
+}
+
+/// Replay a separately attested PREDICT cohort from a no-CV REFIT package.
+/// The host supplies only invocation-local handles for the package's exact
+/// artifact IDs; the core checks their metadata before invoking any operator.
+#[pyfunction]
+pub fn replay_initial_full_refit_in_process(
+    py: Python<'_>,
+    package_json: &str,
+    envelope_json: &str,
+    op_callback: Py<PyAny>,
+    artifact_handles_json: &str,
+    output_ids_json: &str,
+    run_id: &str,
+) -> PyResult<String> {
+    if !op_callback.bind(py).is_callable() {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "op_callback must be callable".into(),
+        )));
+    }
+    let package =
+        dag_ml_core::InitialFullRefitPackage::from_json(package_json).map_err(py_core_error)?;
+    let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
+        envelope_json,
+        "initial full-refit replay envelope",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
+    let handles: BTreeMap<dag_ml_core::ArtifactId, HandleRef> =
+        serde_json::from_str(artifact_handles_json).map_err(py_serde_error)?;
+    let output_ids: Vec<String> = serde_json::from_str(output_ids_json).map_err(py_serde_error)?;
+    let expected = package
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.load_mode == dag_ml_core::ArtifactLoadMode::HostSidecar)
+        .map(|artifact| &artifact.record.artifact.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    if handles.keys().collect::<std::collections::BTreeSet<_>>() != expected {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "initial full-refit replay handles must exactly cover package host-sidecar artifacts".into(),
+        )));
+    }
+    let provider = ExplicitPhaseDataProvider::new(
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+        envelope.clone(),
+        None,
+    )
+    .map_err(py_core_error)?;
+    let controllers = build_runtime_controllers(py, &package.effective_plan, &op_callback)
+        .map_err(py_core_error)?;
+    let mut artifact_store = InMemoryArtifactStore::new();
+    for artifact in &package.artifacts {
+        if artifact.load_mode != dag_ml_core::ArtifactLoadMode::HostSidecar {
+            continue;
+        }
+        artifact_store
+            .register(
+                &artifact.record,
+                handles[&artifact.record.artifact.id].clone(),
+            )
+            .map_err(py_core_error)?;
+    }
+    let execution =
+        dag_ml_core::execute_initial_full_refit_prediction(dag_ml_core::InitialRefitReplayInput {
+            package: &package,
+            envelope: &envelope,
+            output_ids: &output_ids,
+            run_id: RunId::new(run_id.to_owned()).map_err(py_core_error)?,
+            controllers: &controllers,
+            data_provider: &provider,
+            artifact_store: &artifact_store,
+        })
+        .map_err(py_core_error)?;
+    serde_json::to_string(&serde_json::json!({
+        "replay_outcome": execution.outcome, "node_results": execution.results,
+    }))
+    .map_err(py_serde_error)
 }
 
 /// Serialize a `dag-ml-core` value directly to a Python object with `pythonize`
@@ -2988,7 +3066,11 @@ mod tests {
             )
             .expect("initial package executes without CV");
             let outcome: serde_json::Value = serde_json::from_str(&payload).unwrap();
-            assert!(outcome.get("scores").is_none());
+            assert!(outcome["scores"]["reports"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|report| report["partition"] == "final" || report["partition"] == "test"));
             let package = &outcome["initial_full_refit_package"];
             assert_eq!(package["schema_version"], 1);
             assert_eq!(package["execution_root_seed"], 7);
@@ -3014,6 +3096,30 @@ mod tests {
             assert!(
                 crate::validate_initial_full_refit_package_json(&tampered.to_string()).is_err()
             );
+            let replay_callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            let artifact_handles = outcome["node_results"][0]["artifact_handles"].to_string();
+            let output_ids = serde_json::json!([package["outputs"][0]["output_id"]]).to_string();
+            let replay = replay_initial_full_refit_in_process(
+                py,
+                &package.to_string(),
+                &serde_json::to_string(&envelope).unwrap(),
+                replay_callback.clone_ref(py).into_any(),
+                &artifact_handles,
+                &output_ids,
+                "run:test:initial.refit.predict",
+            )
+            .expect("independent initial-refit package replays PREDICT");
+            let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+            assert_eq!(
+                replay["replay_outcome"]["outputs"][0]["prediction"]["sample_ids"],
+                serde_json::json!(["sample:holdout:1", "sample:holdout:2"])
+            );
+            assert!(*replay_callback
+                .bind(py)
+                .borrow()
+                .saw_predict_refit_artifact
+                .lock()
+                .unwrap());
         });
     }
 
