@@ -1163,12 +1163,77 @@ impl PipelineCompiler {
         if step.include_original_data {
             self.connect_data_to_port(external_data, &step.id, "x_original")?;
         }
-        Ok(PredictionSource {
+        let learner_prediction = PredictionSource {
             node_id: step.id.clone(),
             port_name: "oof".to_string(),
             input_name: "oof".to_string(),
             branch_id,
-        })
+        };
+        if step.metadata.get("residual_target_execution").is_some() {
+            if predictions.len() != 1 || !step.include_original_data {
+                return Err(DagMlError::GraphValidation(format!(
+                    "residual learner `{}` requires exactly one base prediction and original data",
+                    step.id
+                )));
+            }
+            let base = &predictions[0];
+            let fusion_id = NodeId::new(format!("{}.residual_fusion", step.id))?;
+            let mut fusion_metadata = BTreeMap::from([
+                (
+                    "merge_mode".to_string(),
+                    serde_json::json!("residual_fusion"),
+                ),
+                (
+                    "residual_fusion_for".to_string(),
+                    serde_json::json!(step.id.as_str()),
+                ),
+                (
+                    "residual_base".to_string(),
+                    serde_json::json!(base.node_id.as_str()),
+                ),
+                (
+                    "residual_learner".to_string(),
+                    serde_json::json!(step.id.as_str()),
+                ),
+            ]);
+            for key in ["residual_lambda", "residual_gate", "residual_rli_threshold"] {
+                if let Some(value) = step.metadata.get(key) {
+                    fusion_metadata.insert(key.to_string(), value.clone());
+                }
+            }
+            self.push_node(NodeSpec {
+                id: fusion_id.clone(),
+                kind: NodeKind::PredictionJoin,
+                operator: None,
+                params: BTreeMap::new(),
+                ports: PortSchema {
+                    inputs: vec![prediction_port("base", ""), prediction_port("learner", "")],
+                    outputs: vec![prediction_port("prediction", "")],
+                },
+                metadata: fusion_metadata,
+                seed_label: None,
+            })?;
+            for (source, target_port) in [(base, "base"), (&learner_prediction, "learner")] {
+                self.edges.push(EdgeSpec {
+                    source: PortRef {
+                        node_id: source.node_id.clone(),
+                        port_name: source.port_name.clone(),
+                    },
+                    target: PortRef {
+                        node_id: fusion_id.clone(),
+                        port_name: target_port.to_string(),
+                    },
+                    contract: EdgeContract::new(PortKind::Prediction, None),
+                });
+            }
+            return Ok(PredictionSource {
+                node_id: fusion_id,
+                port_name: "prediction".to_string(),
+                input_name: "prediction".to_string(),
+                branch_id: None,
+            });
+        }
+        Ok(learner_prediction)
     }
 
     fn push_node(&mut self, node: NodeSpec) -> Result<()> {
