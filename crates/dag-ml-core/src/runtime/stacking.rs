@@ -421,6 +421,21 @@ pub(crate) fn is_nested_stacking_meta_node(plan: &ExecutionPlan, node_id: &NodeI
 pub(crate) fn nested_stacking_campaign_plan(
     plan: &ExecutionPlan,
 ) -> Result<Option<NestedStackingCampaignPlan>> {
+    let mut plans = nested_stacking_campaign_plans(plan)?;
+    if plans.len() > 1 {
+        return Err(DagMlError::RuntimeValidation(
+            "this single-output operation requires one terminal meta node".to_string(),
+        ));
+    }
+    Ok(plans.pop())
+}
+
+/// Independent terminal meta nodes are separate report-grade outputs of one
+/// graph. Each keeps its own nested OOF campaign and REFIT preparation; a
+/// terminal never silently wins merely because it appears last in the DSL.
+pub(crate) fn nested_stacking_campaign_plans(
+    plan: &ExecutionPlan,
+) -> Result<Vec<NestedStackingCampaignPlan>> {
     let mut requested = Vec::new();
     for node in &plan.graph_plan.graph.nodes {
         if is_nested_stacking_meta_node(plan, &node.id)? {
@@ -428,7 +443,7 @@ pub(crate) fn nested_stacking_campaign_plan(
         }
     }
     if requested.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let terminal = requested
         .iter()
@@ -441,13 +456,13 @@ pub(crate) fn nested_stacking_campaign_plan(
         })
         .cloned()
         .collect::<Vec<_>>();
-    if terminal.len() != 1 {
-        return Err(DagMlError::RuntimeValidation(
-            "nested stacking requires one terminal meta node; independent meta branches need an explicit terminal join"
-                .to_string(),
-        ));
-    }
-    nested_stacking_campaign_plan_for_node(plan, terminal.into_iter().next().expect("one terminal"))
+    terminal
+        .into_iter()
+        .map(|node_id| {
+            nested_stacking_campaign_plan_for_node(plan, node_id)
+                .map(|campaign| campaign.expect("terminal is a validated meta node"))
+        })
+        .collect()
 }
 
 pub(crate) fn nested_stacking_campaign_plan_for_node(
