@@ -295,7 +295,7 @@ def check(repo: Path) -> int:
         newer = rust_paths_requiring_rebuild_after(repo, paths, so_ts)
         if not newer:
             print(
-                f"{NOTICE} fresh — Rust commits newer than {SO_RELATIVE} are comment/doc-only; "
+                f"{NOTICE} fresh — commits newer than {SO_RELATIVE} do not change its compiled inputs; "
                 f"tracked .so ct={so_ts}, newest Rust ct={rust_ts}; checked {len(paths)} Rust path(s)."
             )
             return 0
